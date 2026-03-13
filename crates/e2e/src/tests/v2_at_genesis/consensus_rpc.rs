@@ -85,7 +85,7 @@ async fn consensus_subscribe_and_query_finalization() {
                 saw_notarized = true;
             }
             Event::Finalized { block, .. } => {
-                let height = block.height.unwrap();
+                let height = block.block.inner.number;
                 assert!(
                     height > current_height,
                     "finalized height should be > {current_height}"

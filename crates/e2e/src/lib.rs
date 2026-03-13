@@ -91,6 +91,7 @@ fn generate_consensus_node_config(
                     address: crate::execution_runtime::validator(i as u32),
                     ingress: SocketAddr::from(([127, 0, 0, (i + 1) as u8], 8000)),
                     egress: SocketAddr::from(([127, 0, 0, (i + 1) as u8], 0)),
+                    fee_recipient: Address::ZERO,
                     private_key,
                     share: shares.get_value(&public_key).cloned(),
                 };
@@ -108,6 +109,7 @@ pub struct ConsensusNodeConfig {
     pub address: Address,
     pub ingress: SocketAddr,
     pub egress: SocketAddr,
+    pub fee_recipient: Address,
     pub private_key: PrivateKey,
     pub share: Option<Share>,
 }

@@ -112,7 +112,7 @@ impl AssertTransition {
                 .parse::<Url>()
                 .unwrap();
 
-            for i in 0..how_many_signers {
+            for i in (0..how_many_signers).rev() {
                 tracing::debug!(
                     block.number = execution_runtime
                         .migrate_validator(http_url.clone(), i as u64)

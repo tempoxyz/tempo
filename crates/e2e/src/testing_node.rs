@@ -120,6 +120,10 @@ where
         }
     }
 
+    pub fn fee_recipient(&self) -> Address {
+        Address::ZERO
+    }
+
     pub fn private_key(&self) -> &PrivateKey {
         &self.private_key
     }

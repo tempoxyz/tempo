@@ -188,6 +188,7 @@ impl Builder {
                         address,
                         ingress,
                         egress,
+                        fee_recipient,
                         private_key,
                         share: Some(_),
                     } = validator
@@ -214,19 +215,21 @@ impl Builder {
                                         publicKey: public_key.encode().as_ref().try_into().unwrap(),
                                         ingress: ingress.to_string(),
                                         egress: egress.ip().to_string(),
+                                        feeRecipient: fee_recipient,
                                         signature: sign_add_validator_args(
                                             genesis.config.chain_id,
                                             &private_key,
                                             address,
                                             ingress,
                                             egress.ip(),
+                                            fee_recipient,
                                         )
                                         .encode()
                                         .to_vec()
                                         .into(),
                                     },
                                 )
-                                .unwrap()
+                                .unwrap();
                         }
                     }
                 }
@@ -448,6 +451,7 @@ impl ExecutionRuntime {
                                 address,
                                 ingress,
                                 egress,
+                                fee_recipient,
                                 response,
                             } = add_validator_v2;
                             let provider = ProviderBuilder::new()
@@ -466,12 +470,14 @@ impl ExecutionRuntime {
                                         .unwrap(),
                                     ingress.to_string(),
                                     egress.to_string(),
+                                    fee_recipient,
                                     sign_add_validator_args(
                                         EthChainSpec::chain(&chain_spec).id(),
                                         &private_key,
                                         address,
                                         ingress,
                                         egress,
+                                        fee_recipient,
                                     )
                                     .encode()
                                     .to_vec()
@@ -518,8 +524,14 @@ impl ExecutionRuntime {
                                 .connect_http(http_url);
                             let validator_config_v2 =
                                 IValidatorConfigV2::new(VALIDATOR_CONFIG_V2_ADDRESS, provider);
+                            let id = validator_config_v2
+                                .validatorByAddress(address)
+                                .call()
+                                .await
+                                .unwrap()
+                                .index;
                             let receipt = validator_config_v2
-                                .deactivateValidator(address)
+                                .deactivateValidator(id)
                                 .send()
                                 .await
                                 .unwrap()
@@ -546,7 +558,7 @@ impl ExecutionRuntime {
                             let validator_config =
                                 IValidatorConfigV2::new(VALIDATOR_CONFIG_V2_ADDRESS, provider);
                             let validators =
-                                validator_config.getAllValidators().call().await.unwrap();
+                                validator_config.getActiveValidators().call().await.unwrap();
                             let _ = response.send(validators);
                         }
                         Message::InitializeIfMigrated(InitializeIfMigrated {
@@ -603,9 +615,15 @@ impl ExecutionRuntime {
                                 .connect_http(http_url);
                             let validator_config =
                                 IValidatorConfigV2::new(VALIDATOR_CONFIG_V2_ADDRESS, provider);
+                            let id = validator_config
+                                .validatorByAddress(address)
+                                .call()
+                                .await
+                                .unwrap()
+                                .index;
                             let receipt = validator_config
                                 .rotateValidator(
-                                    address,
+                                    id,
                                     private_key
                                         .public_key()
                                         .encode()
@@ -666,7 +684,7 @@ impl ExecutionRuntime {
                             let validator_config =
                                 IValidatorConfigV2::new(VALIDATOR_CONFIG_V2_ADDRESS, provider);
                             let receipt = validator_config
-                                .setNextFullDkgCeremony(epoch)
+                                .setNetworkIdentityRotationEpoch(epoch)
                                 .send()
                                 .await
                                 .unwrap()
@@ -760,6 +778,7 @@ impl ExecutionRuntime {
                     address: validator.chain_address,
                     ingress: validator.ingress(),
                     egress: validator.egress(),
+                    fee_recipient: validator.fee_recipient(),
                     response: tx,
                 }
                 .into(),
@@ -1291,6 +1310,7 @@ struct AddValidatorV2 {
     address: Address,
     ingress: SocketAddr,
     egress: IpAddr,
+    fee_recipient: Address,
     response: oneshot::Sender<TransactionReceipt>,
 }
 
@@ -1391,13 +1411,17 @@ fn sign_add_validator_args(
     address: Address,
     ingress: SocketAddr,
     egress: IpAddr,
+    fee_recipient: Address,
 ) -> Signature {
     let mut hasher = Keccak256::new();
     hasher.update(chain_id.to_be_bytes());
     hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
     hasher.update(address.as_slice());
+    hasher.update([ingress.to_string().len() as u8]);
     hasher.update(ingress.to_string().as_bytes());
+    hasher.update([egress.to_string().len() as u8]);
     hasher.update(egress.to_string().as_bytes());
+    hasher.update(fee_recipient.as_slice());
     let msg = hasher.finalize();
     key.sign(VALIDATOR_NS_ADD, msg.as_slice())
 }
@@ -1413,7 +1437,9 @@ fn sign_rotate_validator_args(
     hasher.update(chain_id.to_be_bytes());
     hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
     hasher.update(address.as_slice());
+    hasher.update([ingress.to_string().len() as u8]);
     hasher.update(ingress.to_string().as_bytes());
+    hasher.update([egress.to_string().len() as u8]);
     hasher.update(egress.to_string().as_bytes());
     let msg = hasher.finalize();
     key.sign(VALIDATOR_NS_ROTATE, msg.as_slice())
