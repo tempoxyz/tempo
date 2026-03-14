@@ -1,0 +1,114 @@
+name: tempo-consensus
+
+networks:
+  consensus:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.0.0.0/24
+          gateway: 10.0.0.254
+
+x-validator: &validator-defaults
+  image: ${DOCKER_IMAGE:-ghcr.io/tempoxyz/tempo:latest} # If not working, please regenerate the genesis with just `just generate-genesis`
+  init: true
+  restart: "no"
+  networks:
+    - consensus
+  environment:
+    RUST_LOG: ${RUST_LOG:-debug}
+  command:
+    - node
+    - --chain
+    - /tmp/genesis.json
+    - --datadir
+    - /tmp/data
+    - --port
+    - "30303"
+    - --http
+    - --http.addr
+    - "0.0.0.0"
+    - --http.port
+    - "8545"
+    - --http.api
+    - all
+    - --consensus.signing-key
+    - /tmp/signing-key
+    - --consensus.signing-share
+    - /tmp/signing-share
+    - --consensus.listen-address
+    - "0.0.0.0:8000"
+    - --consensus.metrics-address
+    - "0.0.0.0:8001"
+    - --consensus.datadir
+    - /tmp/consensus
+    - --consensus.fee-recipient
+    - "0x0000000000000000000000000000000000000000"
+    - --consensus.use-local-defaults
+    - --consensus.allow-private-ips
+    - --consensus.bypass-ip-check
+    - --consensus.allow-dns
+    - --consensus.wait-for-peer-response
+    - "200ms"
+    - --consensus.wait-for-notarizations
+    - "2000ms"
+    - --consensus.wait-for-proposal
+    - "2000ms"
+    - --consensus.time-to-build-proposal
+    - "100ms"
+    - --consensus.wait-to-rebroadcast-nullify
+    - "3s"
+    - --consensus.time-to-build-subblock
+    - "100ms"
+
+services:
+  validator-0:
+    <<: *validator-defaults
+    container_name: tempo-validator-0
+    ports:
+      - "8545:8545"
+    networks:
+      consensus:
+        ipv4_address: 10.0.0.1
+    volumes:
+      - ./generated/validator-0/signing.key:/tmp/signing-key:ro
+      - ./generated/validator-0/signing.share:/tmp/signing-share:ro
+      - ./generated/genesis.json:/tmp/genesis.json:ro
+
+  validator-1:
+    <<: *validator-defaults
+    container_name: tempo-validator-1
+    ports:
+      - "8546:8545"
+    networks:
+      consensus:
+        ipv4_address: 10.0.0.2
+    volumes:
+      - ./generated/validator-1/signing.key:/tmp/signing-key:ro
+      - ./generated/validator-1/signing.share:/tmp/signing-share:ro
+      - ./generated/genesis.json:/tmp/genesis.json:ro
+
+  validator-2:
+    <<: *validator-defaults
+    container_name: tempo-validator-2
+    ports:
+      - "8547:8545"
+    networks:
+      consensus:
+        ipv4_address: 10.0.0.3
+    volumes:
+      - ./generated/validator-2/signing.key:/tmp/signing-key:ro
+      - ./generated/validator-2/signing.share:/tmp/signing-share:ro
+      - ./generated/genesis.json:/tmp/genesis.json:ro
+
+  validator-3:
+    <<: *validator-defaults
+    container_name: tempo-validator-3
+    ports:
+      - "8548:8545"
+    networks:
+      consensus:
+        ipv4_address: 10.0.0.4
+    volumes:
+      - ./generated/validator-3/signing.key:/tmp/signing-key:ro
+      - ./generated/validator-3/signing.share:/tmp/signing-share:ro
+      - ./generated/genesis.json:/tmp/genesis.json:ro

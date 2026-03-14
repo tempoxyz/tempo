@@ -14,10 +14,10 @@ Full network failure and recovery. This test starts the network and tx generator
 ## Scripts
 
 ### start-network.sh
-Starts a 4 validator network with Docker.
+Runs `docker compose up` and waits for block production.
 
 ### stop-network.sh
-Stops and cleans up the validator containers and the Docker network.
+Runs `docker compose down`.
 
 ### tx-generator.sh
 Uses cast to send 0 value transfers and confirm tx success. This is used to generate network activity during tests.
@@ -27,8 +27,35 @@ Shared utilities for monitoring block production, starting/stopping validators, 
 
 ## Configuration
 
-To regenerate the validator configs, run the following command:
-```bash
-cargo x generate-config --output scripts/consensus/configs --peers 4 --bootstrappers 1 --message-backlog 16384 --mailbox-size 16384 --deque-size 10 --from-port 8000 --fee-recipient 0x0000000000000000000000000000000000000000 --seed 0
+### File layout
+
 ```
+generated/
+  genesis.json                      # genesis with DKG outcome in extraData
+  validator-{0,1,2,3}/
+    signing.key                     # ed25519 signing key
+    signing.share                   # BLS signing share
+docker-compose.yml
+start-network.sh
+```
+
+### Regenerating the genesis
+
+If the genesis needs to be regenerated, run from the repo root:
+
+```bash
+rm -rf generated
+cargo xtask generate-genesis \
+  --validators 10.0.0.1:8000,10.0.0.2:8000,10.0.0.3:8000,10.0.0.4:8000 \
+  --seed 0 \
+  --accounts 100 \
+  --no-extra-tokens \
+  --no-pairwise-liquidity \
+  --output generated
+
+cd generated
+for i in 0 1 2 3; do mv "10.0.0.$((i+1)):8000" "validator-$i"; done
+```
+
+The validator IPs must match the static IPs assigned in `docker-compose.yml`.
 
