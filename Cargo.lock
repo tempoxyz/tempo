@@ -11846,6 +11846,7 @@ dependencies = [
  "alloy-signer",
  "alloy-signer-local",
  "alloy-transport",
+ "async-trait",
  "dashmap",
  "derive_more",
  "eyre",
