@@ -1664,16 +1664,13 @@ mod tests {
     fn test_keychain_v2_binds_user_address() {
         use crate::transaction::tt_authorization::tests::{generate_secp256k1_keypair, sign_hash};
 
-        let (signing_key, _access_key_address) = generate_secp256k1_keypair();
+        let (signing_key, access_key_address) = generate_secp256k1_keypair();
         let user_a = Address::repeat_byte(0xAA);
         let user_b = Address::repeat_byte(0xBB);
 
-        // Sign for user_a with V2
+        // Sign for user_a using the production signing_hash helper (0x04 || sig_hash || user_address)
         let sig_hash = B256::from([0x22; 32]);
-        let mut buf = [0u8; 52];
-        buf[..32].copy_from_slice(sig_hash.as_slice());
-        buf[32..].copy_from_slice(user_a.as_slice());
-        let effective_hash = keccak256(buf);
+        let effective_hash = KeychainSignature::signing_hash(sig_hash, user_a);
         let inner_sig = sign_hash(&signing_key, &effective_hash);
 
         let inner_primitive = match inner_sig {
@@ -1681,27 +1678,22 @@ mod tests {
             _ => panic!("Expected primitive signature"),
         };
 
-        // Valid for user_a
+        // Valid for user_a — key_id must recover to the actual access key
         let sig_a =
             TempoSignature::Keychain(KeychainSignature::new(user_a, inner_primitive.clone()));
-        let recovered_a = sig_a.recover_signer(&sig_hash).unwrap();
-        assert_eq!(recovered_a, user_a);
-
-        // Same inner signature but for user_b — key_id will differ
-        // because user_address is part of the signed hash
-        let sig_b = TempoSignature::Keychain(KeychainSignature::new(user_b, inner_primitive));
-        let recovered_b = sig_b.recover_signer(&sig_hash).unwrap();
+        let key_id_a = sig_a.as_keychain().unwrap().key_id(&sig_hash).unwrap();
         assert_eq!(
-            recovered_b, user_b,
-            "recover_signer returns the claimed user_address"
+            key_id_a, access_key_address,
+            "V2 should recover the correct access key for the legitimate signer"
         );
 
-        // But the key_id recovered under user_b will be a garbage address (not the real access key)
-        let key_id_a = sig_a.as_keychain().unwrap().key_id(&sig_hash).unwrap();
+        // Same inner signature but claimed for user_b — key_id must NOT recover
+        // to the real access key, because user_address is bound into the signed hash
+        let sig_b = TempoSignature::Keychain(KeychainSignature::new(user_b, inner_primitive));
         let key_id_b = sig_b.as_keychain().unwrap().key_id(&sig_hash).unwrap();
         assert_ne!(
-            key_id_a, key_id_b,
-            "V2 should recover different key_ids for different user_addresses"
+            key_id_b, access_key_address,
+            "V2 should not recover the real access key for a different user_address"
         );
     }
 
