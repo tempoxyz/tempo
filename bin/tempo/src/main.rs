@@ -188,10 +188,10 @@ fn main() -> eyre::Result<()> {
     {
         Ok(cli) => {
             // Fast path: extension management commands don't need reth's tracing or runtime.
-            if let Commands::Ext(subcmd) = &cli.command {
-                if let Some(ext) = subcmd.as_ext() {
-                    return ext.run();
-                }
+            if let Commands::Ext(subcmd) = &cli.command
+                && let Some(ext) = subcmd.as_ext()
+            {
+                return ext.run();
             }
             cli
         }
