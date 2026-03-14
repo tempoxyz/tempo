@@ -4,7 +4,7 @@ consensus_dir := justfile_directory()
 
 generate-genesis:
     rm -rf {{consensus_dir}}/generated
-    cargo xtask generate-genesis \
+    CARGO_HOME=/tmp/cargo-home cargo xtask generate-genesis \
         --validators 10.0.0.1:8000,10.0.0.2:8000,10.0.0.3:8000,10.0.0.4:8000 \
         --seed 0 \
         --accounts 100 \

@@ -9,7 +9,7 @@ networks:
           gateway: 10.0.0.254
 
 x-validator: &validator-defaults
-  image: ${DOCKER_IMAGE:-ghcr.io/tempoxyz/tempo:1.4.0} # TODO: change to :latest once it works
+  image: ${DOCKER_IMAGE:-ghcr.io/tempoxyz/tempo:latest} # If not working, please regenerate the genesis with just `just generate-genesis`
   init: true
   restart: "no"
   networks:
@@ -50,9 +50,9 @@ x-validator: &validator-defaults
     - --consensus.wait-for-peer-response
     - "200ms"
     - --consensus.wait-for-notarizations
-    - "200ms"
+    - "2000ms"
     - --consensus.wait-for-proposal
-    - "200ms"
+    - "2000ms"
     - --consensus.time-to-build-proposal
     - "100ms"
     - --consensus.wait-to-rebroadcast-nullify
