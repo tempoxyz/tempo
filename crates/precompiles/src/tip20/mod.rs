@@ -17,7 +17,7 @@ use crate::{
     storage::{Handler, Mapping},
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
-    tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
+    tip403_registry::{self, AuthRole},
 };
 use alloy::{
     hex,
@@ -211,9 +211,7 @@ impl TIP20Token {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
 
         // Validate that the policy exists
-        if !TIP403Registry::new().policy_exists(ITIP403Registry::policyExistsCall {
-            policyId: call.newPolicyId,
-        })? {
+        if !tip403_registry::check_policy_exists(call.newPolicyId)? {
             return Err(TIP20Error::invalid_transfer_policy_id().into());
         }
 
@@ -370,7 +368,7 @@ impl TIP20Token {
 
         // Check if the `to` address is authorized to receive minted tokens
         let policy_id = self.transfer_policy_id()?;
-        if !TIP403Registry::new().is_authorized_as(policy_id, to, AuthRole::mint_recipient())? {
+        if !tip403_registry::authorize(policy_id, to, AuthRole::mint_recipient())? {
             return Err(TIP20Error::policy_forbids().into());
         }
 
@@ -443,7 +441,7 @@ impl TIP20Token {
 
         // Check if the address is blocked from transferring (sender authorization)
         let policy_id = self.transfer_policy_id()?;
-        if TIP403Registry::new().is_authorized_as(policy_id, call.from, AuthRole::sender())? {
+        if tip403_registry::authorize(policy_id, call.from, AuthRole::sender())? {
             // Only allow burning from addresses that are blocked from transferring
             return Err(TIP20Error::policy_forbids().into());
         }
@@ -800,14 +798,13 @@ impl TIP20Token {
     /// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
     pub fn is_transfer_authorized(&self, from: Address, to: Address) -> Result<bool> {
         let policy_id = self.transfer_policy_id()?;
-        let registry = TIP403Registry::new();
 
         // (spec: +T2) short-circuit and skip recipient check if sender fails
-        let sender_auth = registry.is_authorized_as(policy_id, from, AuthRole::sender())?;
+        let sender_auth = tip403_registry::authorize(policy_id, from, AuthRole::sender())?;
         if self.storage.spec().is_t2() && !sender_auth {
             return Ok(false);
         }
-        let recipient_auth = registry.is_authorized_as(policy_id, to, AuthRole::recipient())?;
+        let recipient_auth = tip403_registry::authorize(policy_id, to, AuthRole::recipient())?;
         Ok(sender_auth && recipient_auth)
     }
 
@@ -974,6 +971,7 @@ pub(crate) mod tests {
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, setup_storage},
+        tip403_registry::{ITIP403Registry, TIP403Registry},
     };
     use rand_08::{Rng, distributions::Alphanumeric, thread_rng};
     use tempo_chainspec::hardfork::TempoHardfork;
