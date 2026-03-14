@@ -683,9 +683,13 @@ fn release_public_key() -> String {
 }
 
 /// Builds the manifest URL for an extension, optionally pinned to a version.
+///
+/// Strips `tempo-` and `v` prefixes from the extension name and version respectively
+/// to avoid double-prefixing (e.g. `tempo add tempo-wallet` resolves correctly).
 fn manifest_url(extension: &str, version: Option<&str>) -> String {
     let base = base_url();
     let base = base.trim_end_matches('/');
+    let extension = extension.strip_prefix("tempo-").unwrap_or(extension);
     match version {
         Some(v) => {
             let v = v.strip_prefix('v').unwrap_or(v);
@@ -776,6 +780,18 @@ mod tests {
             manifest_url("wallet", Some("v0.2.0")),
             "https://cli.tempo.xyz/extensions/tempo-wallet/v0.2.0/manifest.json",
             "v-prefix should not be doubled"
+        );
+
+        assert_eq!(
+            manifest_url("tempo-wallet", None),
+            "https://cli.tempo.xyz/extensions/tempo-wallet/manifest.json",
+            "tempo- prefix should not be doubled"
+        );
+
+        assert_eq!(
+            manifest_url("tempo-wallet", Some("0.2.0")),
+            "https://cli.tempo.xyz/extensions/tempo-wallet/v0.2.0/manifest.json",
+            "tempo- prefix should not be doubled with version"
         );
     }
 
