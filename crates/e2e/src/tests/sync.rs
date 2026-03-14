@@ -112,7 +112,7 @@ fn joins_from_snapshot() {
         // Now turn the receiver into the donor - except for the database dir and
         // env. This simulates a start from a snapshot.
         receiver.uid = donor.uid;
-        receiver.public_key = donor.public_key;
+        receiver.private_key = donor.private_key;
         {
             let peer_manager = receiver.consensus_config.peer_manager.clone();
             receiver.consensus_config = donor.consensus_config;
@@ -161,7 +161,9 @@ fn joins_from_snapshot() {
                         assert!(
                             epoch >= last_epoch_before_stop.saturating_sub(1),
                             "when starting from snapshot, older epochs must never \
-                            had consensus engines running"
+                            had consensus engines running; entered epoch `{epoch}` \
+                            but the snapshot was supposed to be in  \
+                            `{last_epoch_before_stop}`"
                         );
                     }
                 }
@@ -273,7 +275,7 @@ fn can_restart_after_joining_from_snapshot() {
         // Now turn the receiver into the donor - except for the database dir and
         // env. This simulates a start from a snapshot.
         receiver.uid = donor.uid;
-        receiver.public_key = donor.public_key;
+        receiver.private_key = donor.private_key;
         {
             let peer_manager = receiver.consensus_config.peer_manager.clone();
             receiver.consensus_config = donor.consensus_config;

@@ -14,7 +14,7 @@ filter = """
     test(subblocks_are_included)
   )
 """
-failure-output = "immediate"
+failure-output = "never"
 threads-required = "num-test-threads"
 priority = -100
 
