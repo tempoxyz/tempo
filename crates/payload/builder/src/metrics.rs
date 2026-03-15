@@ -41,6 +41,8 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) gas_used: Histogram,
     /// Amount of gas used in the payload.
     pub(crate) gas_used_last: Gauge,
+    /// Time to create the pool's `BestTransactions` iterator, including lock acquisition and snapshot.
+    pub(crate) pool_fetch_duration_seconds: Histogram,
     /// Time to acquire the state provider and initialize the state DB.
     pub(crate) state_setup_duration_seconds: Histogram,
     /// The time it took to prepare system transactions in seconds.
