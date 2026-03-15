@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
 use axum::{
     Extension, Router,
@@ -8,6 +8,7 @@ use axum::{
 };
 use commonware_runtime::{Handle, Metrics as _, Spawner as _, tokio::Context};
 use eyre::WrapErr as _;
+use prometheus_client::metrics::gauge::Gauge;
 use tokio::net::TcpListener;
 
 /// Installs a metrics server so that commonware can publish its metrics.
@@ -48,4 +49,52 @@ pub fn install(context: Context, listen_addr: SocketAddr) -> Handle<eyre::Result
             .await
             .map_err(Into::into)
     })
+}
+
+/// How often the consensus directory disk size is recalculated.
+const DISK_SIZE_REPORT_INTERVAL: Duration = Duration::from_secs(5 * 60);
+
+/// Spawns a background task that periodically reports the total disk size of the
+/// consensus storage directory as a gauge metric.
+pub fn install_disk_size_reporter(context: Context, storage_dir: PathBuf) -> Handle<()> {
+    let gauge: Gauge = Gauge::default();
+    context.register(
+        "disk_size_bytes",
+        "total disk size of the consensus storage directory in bytes",
+        gauge.clone(),
+    );
+
+    context.spawn(move |_context| async move {
+        loop {
+            match dir_size(&storage_dir) {
+                Ok(size) => {
+                    gauge.set(size);
+                }
+                Err(err) => {
+                    tracing::warn!(%err, path = %storage_dir.display(), "failed to compute consensus disk size");
+                }
+            }
+            tokio::time::sleep(DISK_SIZE_REPORT_INTERVAL).await;
+        }
+    })
+}
+
+/// Recursively walks a directory and sums the size of all files.
+fn dir_size(path: &std::path::Path) -> std::io::Result<i64> {
+    let mut total: u64 = 0;
+    let mut stack = vec![path.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let metadata = entry.metadata()?;
+            if metadata.is_dir() {
+                stack.push(entry.path());
+            } else {
+                total += metadata.len();
+            }
+        }
+    }
+
+    Ok(total as i64)
 }
