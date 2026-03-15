@@ -1163,7 +1163,7 @@ mod tests {
         transaction::{
             TempoTransaction,
             envelope::TEMPO_SYSTEM_TX_SIGNATURE,
-            tempo_transaction::Call,
+            tempo_transaction::{Call, TEMPO_TX_TYPE_ID},
             tt_signature::{PrimitiveSignature, TempoSignature},
             tt_signed::AASigned,
         },
@@ -1257,10 +1257,11 @@ mod tests {
             ]),
         );
 
-        let inner =
-            EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
-                .disable_balance_check()
-                .build(InMemoryBlobStore::default());
+        let evm_config = TempoEvmConfig::new(MODERATO.clone());
+        let inner = EthTransactionValidatorBuilder::new(provider.clone(), evm_config)
+            .disable_balance_check()
+            .with_custom_tx_type(TEMPO_TX_TYPE_ID)
+            .build(InMemoryBlobStore::default());
         let amm_cache =
             AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
         let validator = TempoTransactionValidator::new(
@@ -4448,6 +4449,82 @@ mod tests {
                 "Expired key authorization rejection should NOT be a bad transaction (timing-sensitive)"
             );
         }
+
+        /// Test keychain expiry caching boundary: `expiry < u64::MAX` should set key_expiry,
+        /// `expiry == u64::MAX` should NOT set key_expiry.
+        #[test]
+        fn test_keychain_expiry_caching_boundary() {
+            let access_key_signer = PrivateKeySigner::random();
+            let access_key_address: Address = access_key_signer.address();
+            let user_address = Address::random();
+            let current_time = 1000u64;
+
+            // expiry == u64::MAX - 1 — should cache expiry
+            let transaction = TxBuilder::aa(Address::random())
+                .fee_token(PATH_USD_ADDRESS)
+                .gas_limit(1_000_000)
+                .build_keychain(user_address, &access_key_signer);
+
+            let slot_value = AuthorizedKey {
+                signature_type: 0,
+                expiry: u64::MAX - 1,
+                enforce_limits: false,
+                is_revoked: false,
+            }
+            .encode_to_slot();
+
+            let validator = setup_validator_with_keychain_storage_and_timestamp(
+                &transaction,
+                user_address,
+                access_key_address,
+                Some(slot_value),
+                current_time,
+            );
+            let state_provider = validator.inner.client().latest().unwrap();
+            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            assert!(
+                result.is_ok() && result.unwrap().is_ok(),
+                "expiry < u64::MAX should pass keychain validation"
+            );
+            assert_eq!(
+                transaction.key_expiry(),
+                Some(u64::MAX - 1),
+                "expiry < u64::MAX should be cached via set_key_expiry"
+            );
+
+            // expiry == u64::MAX — should NOT cache expiry
+            let transaction2 = TxBuilder::aa(Address::random())
+                .fee_token(PATH_USD_ADDRESS)
+                .gas_limit(1_000_000)
+                .build_keychain(user_address, &access_key_signer);
+
+            let slot_value_max = AuthorizedKey {
+                signature_type: 0,
+                expiry: u64::MAX,
+                enforce_limits: false,
+                is_revoked: false,
+            }
+            .encode_to_slot();
+
+            let validator2 = setup_validator_with_keychain_storage_and_timestamp(
+                &transaction2,
+                user_address,
+                access_key_address,
+                Some(slot_value_max),
+                current_time,
+            );
+            let state_provider2 = validator2.inner.client().latest().unwrap();
+            let result2 = validator2.validate_against_keychain(&transaction2, &state_provider2);
+            assert!(
+                result2.is_ok() && result2.unwrap().is_ok(),
+                "expiry == u64::MAX should pass keychain validation"
+            );
+            assert_eq!(
+                transaction2.key_expiry(),
+                None,
+                "expiry == u64::MAX should NOT be cached"
+            );
+        }
     }
 
     // ============================================
@@ -5482,6 +5559,851 @@ mod tests {
         assert!(
             matches!(result, Err(InvalidPoolTransactionError::IntrinsicGasTooLow)),
             "Gas limit one below intrinsic gas should fail, got: {result:?}"
+        );
+    }
+
+    /// Test `ensure_valid_conditionals` boundary for `valid_after`.
+    /// Since `ensure_valid_conditionals` uses `SystemTime::now()` for the `valid_after` check
+    /// (not tip_timestamp), we set `aa_valid_after_max_secs = 0` so the boundary is `now()`.
+    /// This kills mutants that flip `>` to `>=` on the `valid_after > max_allowed` check.
+    #[test]
+    fn test_valid_after_exact_boundary_unit() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let base_tx = TempoTransaction {
+            chain_id: 1,
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 20_000_000_000,
+            gas_limit: 1_000_000,
+            calls: vec![Call {
+                to: TxKind::Call(Address::random()),
+                value: U256::ZERO,
+                input: Default::default(),
+            }],
+            nonce_key: U256::ZERO,
+            nonce: 0,
+            valid_after: None,
+            valid_before: None,
+            fee_token: Some(address!("0000000000000000000000000000000000000002")),
+            ..Default::default()
+        };
+
+        // Build a validator with aa_valid_after_max_secs = 0 so max_allowed = now()
+        let dummy_tx = create_aa_transaction(None, None);
+        let provider = MockEthProvider::<TempoPrimitives>::new()
+            .with_chain_spec(Arc::unwrap_or_clone(MODERATO.clone()));
+        provider.add_account(dummy_tx.sender(), ExtendedAccount::new(0, U256::ZERO));
+        provider.add_block(B256::random(), Block::default());
+        let inner =
+            EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
+                .disable_balance_check()
+                .build(InMemoryBlobStore::default());
+        let amm_cache =
+            AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
+        let validator = TempoTransactionValidator::new(
+            inner,
+            0, // aa_valid_after_max_secs = 0
+            DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            amm_cache,
+        );
+        let mock_block = create_mock_block(current_time);
+        validator.on_new_head_block(&mock_block);
+
+        // valid_after = 0 (in the past) — should pass since 0 <= now() + 0
+        let tx_past = TempoTransaction {
+            valid_after: Some(0),
+            ..base_tx.clone()
+        };
+        let result = validator.ensure_valid_conditionals(&tx_past);
+        assert!(
+            result.is_ok(),
+            "valid_after in the past should pass, got: {result:?}"
+        );
+
+        // valid_after far in the future — should fail since it exceeds now() + 0
+        let tx_future = TempoTransaction {
+            valid_after: Some(current_time + 3600),
+            ..base_tx
+        };
+        let result = validator.ensure_valid_conditionals(&tx_future);
+        assert!(
+            matches!(
+                result,
+                Err(TempoPoolTransactionError::InvalidValidAfter { .. })
+            ),
+            "valid_after far in the future should be rejected, got: {result:?}"
+        );
+    }
+
+    /// Test `MAX_TOKEN_LIMITS` boundary: exactly at limit is accepted, one above is rejected.
+    /// Tests `ensure_aa_field_limits` directly since keychain validation runs first in the
+    /// full pipeline and would reject the test signature.
+    #[test]
+    fn test_aa_token_limits_boundary() {
+        use tempo_primitives::transaction::{KeyAuthorization, SignatureType, TokenLimit};
+
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Exactly MAX_TOKEN_LIMITS should pass
+        let limits_at: Vec<TokenLimit> = (0..MAX_TOKEN_LIMITS)
+            .map(|_| TokenLimit {
+                token: Address::random(),
+                limit: U256::from(1000),
+            })
+            .collect();
+
+        let key_auth_at = KeyAuthorization {
+            chain_id: 1,
+            key_type: SignatureType::Secp256k1,
+            key_id: Address::random(),
+            expiry: None,
+            limits: Some(limits_at),
+        };
+        let signed_at =
+            key_auth_at.into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+
+        let tx_at = TxBuilder::aa(Address::random())
+            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .key_authorization(signed_at)
+            .build();
+
+        let dummy = create_aa_transaction(None, None);
+        let validator = setup_validator(&dummy, current_time);
+        let result = validator.ensure_aa_field_limits(&tx_at);
+        assert!(
+            result.is_ok(),
+            "Exactly MAX_TOKEN_LIMITS should pass, got: {result:?}"
+        );
+
+        // MAX_TOKEN_LIMITS + 1 should fail
+        let limits_over: Vec<TokenLimit> = (0..MAX_TOKEN_LIMITS + 1)
+            .map(|_| TokenLimit {
+                token: Address::random(),
+                limit: U256::from(1000),
+            })
+            .collect();
+
+        let key_auth_over = KeyAuthorization {
+            chain_id: 1,
+            key_type: SignatureType::Secp256k1,
+            key_id: Address::random(),
+            expiry: None,
+            limits: Some(limits_over),
+        };
+        let signed_over =
+            key_auth_over.into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+
+        let tx_over = TxBuilder::aa(Address::random())
+            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .key_authorization(signed_over)
+            .build();
+
+        let result = validator.ensure_aa_field_limits(&tx_over);
+        assert!(
+            matches!(
+                result,
+                Err(TempoPoolTransactionError::TooManyTokenLimits {
+                    count,
+                    max_allowed,
+                }) if count == MAX_TOKEN_LIMITS + 1 && max_allowed == MAX_TOKEN_LIMITS
+            ),
+            "MAX_TOKEN_LIMITS + 1 should be rejected, got: {result:?}"
+        );
+    }
+
+    /// Test `valid_before` boundary for expiring nonce transactions.
+    /// `valid_before` exactly at `current_time + TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS` passes,
+    /// one second beyond fails with `ExpiringNonceValidBeforeTooFar`.
+    #[test]
+    fn test_valid_before_expiring_nonce_boundary() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let dummy_tx = create_aa_transaction(None, None);
+        let validator = setup_validator(&dummy_tx, current_time);
+        let max_allowed = current_time.saturating_add(TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS);
+
+        let base_tx = TempoTransaction {
+            chain_id: 1,
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 20_000_000_000,
+            gas_limit: 1_000_000,
+            calls: vec![Call {
+                to: TxKind::Call(Address::random()),
+                value: U256::ZERO,
+                input: Default::default(),
+            }],
+            nonce_key: TEMPO_EXPIRING_NONCE_KEY,
+            nonce: 0,
+            fee_token: Some(address!("0000000000000000000000000000000000000002")),
+            ..Default::default()
+        };
+
+        // Exactly at max_allowed — should pass
+        let tx_at = TempoTransaction {
+            valid_before: Some(max_allowed),
+            ..base_tx.clone()
+        };
+        assert!(
+            validator.ensure_valid_conditionals(&tx_at).is_ok(),
+            "valid_before == max_allowed should pass"
+        );
+
+        // One beyond — should fail
+        let tx_over = TempoTransaction {
+            valid_before: Some(max_allowed + 1),
+            ..base_tx
+        };
+        assert!(
+            matches!(
+                validator.ensure_valid_conditionals(&tx_over),
+                Err(TempoPoolTransactionError::ExpiringNonceValidBeforeTooFar { .. })
+            ),
+            "valid_before > max_allowed should be rejected"
+        );
+    }
+
+    /// Test expiring nonce AA intrinsic gas: 50k gas passes (needs ~37k with 13k
+    /// EXPIRING_NONCE_GAS), 21k gas fails.
+    #[tokio::test]
+    async fn test_expiring_nonce_gas_boundary() {
+        use alloy_primitives::Signature;
+        use tempo_primitives::transaction::{
+            tempo_transaction::Call as TxCall,
+            tt_signature::{PrimitiveSignature, TempoSignature},
+            tt_signed::AASigned,
+        };
+
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let create_expiring_tx = |gas_limit: u64| {
+            let tx = TempoTransaction {
+                chain_id: 1,
+                max_priority_fee_per_gas: 1_000_000_000,
+                max_fee_per_gas: 20_000_000_000,
+                gas_limit,
+                calls: vec![TxCall {
+                    to: TxKind::Call(Address::from([1u8; 20])),
+                    value: U256::ZERO,
+                    input: alloy_primitives::Bytes::from(vec![0xd0, 0x9d, 0xe0, 0x8a]),
+                }],
+                nonce_key: TEMPO_EXPIRING_NONCE_KEY,
+                nonce: 0,
+                valid_before: Some(current_time + TEST_VALIDITY_WINDOW),
+                fee_token: Some(address!("0000000000000000000000000000000000000002")),
+                ..Default::default()
+            };
+            let signed = AASigned::new_unhashed(
+                tx,
+                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                    Signature::test_signature(),
+                )),
+            );
+            TempoPooledTransaction::new(TempoTxEnvelope::from(signed).try_into_recovered().unwrap())
+        };
+
+        let is_intrinsic_gas_err = |outcome: &TransactionValidationOutcome<_>| {
+            matches!(
+                outcome,
+                TransactionValidationOutcome::Invalid(_, err)
+                    if matches!(
+                        err.downcast_other_ref::<TempoPoolTransactionError>(),
+                        Some(TempoPoolTransactionError::InsufficientGasForAAIntrinsicCost { .. })
+                    )
+            )
+        };
+
+        // 50k gas: base ~24k + 13k EXPIRING_NONCE_GAS ≈ 37k — should pass
+        let tx_ok = create_expiring_tx(50_000);
+        let v = setup_validator(&tx_ok, current_time);
+        let out = v
+            .validate_transaction(TransactionOrigin::External, tx_ok)
+            .await;
+        assert!(
+            !is_intrinsic_gas_err(&out),
+            "50k gas should pass intrinsic gas check"
+        );
+
+        // 21k gas: not enough when EXPIRING_NONCE_GAS (13k) is added — should fail
+        let tx_low = create_expiring_tx(21_000);
+        let v = setup_validator(&tx_low, current_time);
+        let out = v
+            .validate_transaction(TransactionOrigin::External, tx_low)
+            .await;
+        assert!(
+            is_intrinsic_gas_err(&out),
+            "21k gas should fail intrinsic gas check"
+        );
+    }
+
+    /// Test `ensure_intrinsic_gas_tempo_tx` exact boundary for nonce=0.
+    /// nonce=0 adds new_account_cost (250k). Gas exactly at intrinsic passes, one below fails.
+    #[test]
+    fn test_ensure_intrinsic_gas_tempo_tx_nonce_zero_boundary() {
+        use tempo_chainspec::hardfork::TempoHardfork;
+        use tempo_revm::gas_params::tempo_gas_params;
+
+        let spec = TempoHardfork::T1;
+        let gas_params = tempo_gas_params(spec);
+
+        // build_eip1559 always produces nonce=0, so the 250k new_account_cost applies
+        let probe = TxBuilder::eip1559(Address::random())
+            .gas_limit(10_000_000)
+            .build_eip1559();
+        let base_gas = gas_params.initial_tx_gas(
+            probe.input(),
+            probe.is_create(),
+            probe.access_list().map(|l| l.len()).unwrap_or_default() as u64,
+            probe
+                .access_list()
+                .map(|l| l.iter().map(|i| i.storage_keys.len()).sum::<usize>())
+                .unwrap_or_default() as u64,
+            probe
+                .authorization_list()
+                .map(|l| l.len())
+                .unwrap_or_default() as u64,
+        );
+        let intrinsic = std::cmp::max(
+            base_gas.initial_gas + gas_params.get(GasId::new_account_cost()),
+            base_gas.floor_gas,
+        );
+
+        // Exactly at intrinsic — should pass
+        let tx_exact = TxBuilder::eip1559(Address::random())
+            .gas_limit(intrinsic)
+            .build_eip1559();
+        assert!(
+            ensure_intrinsic_gas_tempo_tx(&tx_exact, spec).is_ok(),
+            "gas == intrinsic should pass, intrinsic={intrinsic}"
+        );
+
+        // One below — should fail
+        let tx_below = TxBuilder::eip1559(Address::random())
+            .gas_limit(intrinsic - 1)
+            .build_eip1559();
+        assert!(
+            matches!(
+                ensure_intrinsic_gas_tempo_tx(&tx_below, spec),
+                Err(InvalidPoolTransactionError::IntrinsicGasTooLow)
+            ),
+            "gas == intrinsic-1 should fail"
+        );
+    }
+
+    /// Test AA floor gas (EIP-7623) boundary with large calldata.
+    /// 1M gas passes, 30k gas fails because floor_gas exceeds gas_limit.
+    #[tokio::test]
+    async fn test_aa_floor_gas_boundary() {
+        use alloy_primitives::Signature;
+        use tempo_primitives::transaction::{
+            tempo_transaction::Call as TxCall,
+            tt_signature::{PrimitiveSignature, TempoSignature},
+            tt_signed::AASigned,
+        };
+
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // 10k non-zero bytes → floor_gas well above 30k
+        let big_calldata = vec![0xFF; 10_000];
+        let create_tx = |gas_limit: u64| {
+            let tx = TempoTransaction {
+                chain_id: 1,
+                max_priority_fee_per_gas: 1_000_000_000,
+                max_fee_per_gas: 20_000_000_000,
+                gas_limit,
+                calls: vec![TxCall {
+                    to: TxKind::Call(Address::from([1u8; 20])),
+                    value: U256::ZERO,
+                    input: alloy_primitives::Bytes::from(big_calldata.clone()),
+                }],
+                nonce_key: U256::ZERO,
+                nonce: 0,
+                fee_token: Some(address!("0000000000000000000000000000000000000002")),
+                ..Default::default()
+            };
+            let signed = AASigned::new_unhashed(
+                tx,
+                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                    Signature::test_signature(),
+                )),
+            );
+            TempoPooledTransaction::new(TempoTxEnvelope::from(signed).try_into_recovered().unwrap())
+        };
+
+        let is_intrinsic_gas_err = |outcome: &TransactionValidationOutcome<_>| {
+            matches!(
+                outcome,
+                TransactionValidationOutcome::Invalid(_, err)
+                    if matches!(
+                        err.downcast_other_ref::<TempoPoolTransactionError>(),
+                        Some(TempoPoolTransactionError::InsufficientGasForAAIntrinsicCost { .. })
+                    )
+            )
+        };
+
+        // 1M gas — should pass
+        let tx_ok = create_tx(1_000_000);
+        let v = setup_validator(&tx_ok, current_time);
+        let out = v
+            .validate_transaction(TransactionOrigin::External, tx_ok)
+            .await;
+        assert!(
+            !is_intrinsic_gas_err(&out),
+            "1M gas should pass floor gas check"
+        );
+
+        // 30k gas — should fail (floor gas for 10k non-zero bytes >> 30k)
+        let tx_low = create_tx(30_000);
+        let v = setup_validator(&tx_low, current_time);
+        let out = v
+            .validate_transaction(TransactionOrigin::External, tx_low)
+            .await;
+        assert!(
+            is_intrinsic_gas_err(&out),
+            "30k gas should fail floor gas check"
+        );
+    }
+
+    /// Helper to set up a validator with custom storage on the nonce precompile.
+    /// `nonce_storage` is a list of `(slot, value)` pairs to inject into `NONCE_PRECOMPILE_ADDRESS`.
+    /// `balance` overrides the PATH_USD balance for the sender (default: 1M USD in 6 decimals).
+    fn setup_validator_with_nonce_storage(
+        transaction: &TempoPooledTransaction,
+        tip_timestamp: u64,
+        nonce_storage: Vec<(U256, U256)>,
+        balance: Option<U256>,
+    ) -> TempoTransactionValidator<MockEthProvider<TempoPrimitives, TempoChainSpec>> {
+        let provider = MockEthProvider::<TempoPrimitives>::new()
+            .with_chain_spec(Arc::unwrap_or_clone(MODERATO.clone()));
+        provider.add_account(
+            transaction.sender(),
+            ExtendedAccount::new(transaction.nonce(), U256::ZERO),
+        );
+        let block = Block {
+            header: TempoHeader {
+                inner: Header {
+                    gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        provider.add_block(B256::random(), block);
+
+        // Setup PATH_USD as a valid fee token
+        let usd_currency_value =
+            uint!(0x5553440000000000000000000000000000000000000000000000000000000006_U256);
+        let transfer_policy_id_packed =
+            uint!(0x0000000000000000000000010000000000000000000000000000000000000000_U256);
+        let balance_slot = TIP20Token::from_address(PATH_USD_ADDRESS)
+            .expect("PATH_USD_ADDRESS is a valid TIP20 token")
+            .balances[transaction.sender()]
+        .slot();
+        let fee_payer_balance = balance.unwrap_or(U256::from(1_000_000_000_000u64));
+        provider.add_account(
+            PATH_USD_ADDRESS,
+            ExtendedAccount::new(0, U256::ZERO).extend_storage([
+                (tip20_slots::CURRENCY.into(), usd_currency_value),
+                (
+                    tip20_slots::TRANSFER_POLICY_ID.into(),
+                    transfer_policy_id_packed,
+                ),
+                (balance_slot.into(), fee_payer_balance),
+            ]),
+        );
+
+        // Setup nonce precompile storage
+        if !nonce_storage.is_empty() {
+            provider.add_account(
+                NONCE_PRECOMPILE_ADDRESS,
+                ExtendedAccount::new(0, U256::ZERO).extend_storage(
+                    nonce_storage
+                        .into_iter()
+                        .map(|(slot, value)| (slot.into(), value))
+                        .collect::<Vec<_>>(),
+                ),
+            );
+        }
+
+        let evm_config = TempoEvmConfig::new(MODERATO.clone());
+        let inner = EthTransactionValidatorBuilder::new(provider.clone(), evm_config)
+            .disable_balance_check()
+            .with_custom_tx_type(TEMPO_TX_TYPE_ID)
+            .build(InMemoryBlobStore::default());
+        let amm_cache =
+            AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
+        let validator = TempoTransactionValidator::new(
+            inner,
+            DEFAULT_AA_VALID_AFTER_MAX_SECS,
+            DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            amm_cache,
+        );
+
+        let mock_block = create_mock_block(tip_timestamp);
+        validator.on_new_head_block(&mock_block);
+        validator
+    }
+
+    /// Test `balance < cost` boundary: balance exactly equal to cost passes,
+    /// balance one unit below fails with `InsufficientFunds`.
+    #[tokio::test]
+    async fn test_balance_boundary() {
+        let sender = Address::random();
+        let transaction = TxBuilder::aa(sender)
+            .fee_token(PATH_USD_ADDRESS)
+            .gas_limit(1_000_000)
+            .build();
+
+        let cost = transaction.fee_token_cost();
+
+        // balance == cost — should pass (or at least not fail with InsufficientFunds)
+        let v = setup_validator_with_nonce_storage(&transaction, 0, vec![], Some(cost));
+        let out = v
+            .validate_transaction(TransactionOrigin::External, transaction.clone())
+            .await;
+        assert!(
+            !matches!(
+                &out,
+                TransactionValidationOutcome::Invalid(_, err)
+                    if matches!(err, InvalidPoolTransactionError::Consensus(
+                        InvalidTransactionError::InsufficientFunds(_)
+                    ))
+            ),
+            "balance == cost should not fail with InsufficientFunds, got: {out:?}"
+        );
+
+        // balance == cost - 1 — should fail with InsufficientFunds
+        let v =
+            setup_validator_with_nonce_storage(&transaction, 0, vec![], Some(cost - U256::from(1)));
+        let out = v
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+        assert!(
+            matches!(
+                &out,
+                TransactionValidationOutcome::Invalid(_, err)
+                    if matches!(err, InvalidPoolTransactionError::Consensus(
+                        InvalidTransactionError::InsufficientFunds(_)
+                    ))
+            ),
+            "balance < cost should fail with InsufficientFunds, got: {out:?}"
+        );
+    }
+
+    /// Test expiring nonce replay boundary: `seen_expiry > current_time` is rejected,
+    /// `seen_expiry == current_time` is allowed (not in the future).
+    #[tokio::test]
+    async fn test_expiring_nonce_replay_boundary() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let sender = Address::random();
+
+        // Build an expiring nonce transaction with valid_before in range
+        let transaction = TxBuilder::aa(sender)
+            .fee_token(PATH_USD_ADDRESS)
+            .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+            .valid_before(current_time + TEST_VALIDITY_WINDOW)
+            .gas_limit(1_000_000)
+            .build();
+
+        // Compute the seen_slot for this transaction's replay hash
+        let replay_hash = transaction
+            .inner()
+            .as_aa()
+            .expect("must be AA")
+            .expiring_nonce_hash(sender);
+        let seen_slot = NonceManager::new().expiring_seen_slot(replay_hash);
+
+        // seen_expiry == current_time (not in the future) — should pass replay check
+        let v = setup_validator_with_nonce_storage(
+            &transaction,
+            current_time,
+            vec![(seen_slot, U256::from(current_time))],
+            None,
+        );
+        let out = v
+            .validate_transaction(TransactionOrigin::External, transaction.clone())
+            .await;
+        assert!(
+            !matches!(
+                &out,
+                TransactionValidationOutcome::Invalid(_, err)
+                    if matches!(
+                        err.downcast_other_ref::<TempoPoolTransactionError>(),
+                        Some(TempoPoolTransactionError::ExpiringNonceReplay)
+                    )
+            ),
+            "seen_expiry == current_time should not trigger ExpiringNonceReplay, got: {out:?}"
+        );
+
+        // seen_expiry == current_time + 1 (in the future) — should fail
+        let v = setup_validator_with_nonce_storage(
+            &transaction,
+            current_time,
+            vec![(seen_slot, U256::from(current_time + 1))],
+            None,
+        );
+        let out = v
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+        assert!(
+            matches!(
+                &out,
+                TransactionValidationOutcome::Invalid(_, err)
+                    if matches!(
+                        err.downcast_other_ref::<TempoPoolTransactionError>(),
+                        Some(TempoPoolTransactionError::ExpiringNonceReplay)
+                    )
+            ),
+            "seen_expiry > current_time should fail with ExpiringNonceReplay, got: {out:?}"
+        );
+    }
+
+    /// Test 2D nonce consistency boundary: `tx_nonce == state_nonce` passes,
+    /// `tx_nonce < state_nonce` fails with `NonceNotConsistent`.
+    #[tokio::test]
+    async fn test_2d_nonce_consistency_boundary() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let sender = Address::random();
+        let nonce_key = U256::from(42);
+
+        // tx_nonce == 5, state_nonce == 5 — should pass
+        let transaction = TxBuilder::aa(sender)
+            .fee_token(PATH_USD_ADDRESS)
+            .nonce_key(nonce_key)
+            .nonce(5)
+            .gas_limit(1_000_000)
+            .build();
+        let nonce_slot = NonceManager::new().nonces[sender][nonce_key].slot();
+        let v = setup_validator_with_nonce_storage(
+            &transaction,
+            current_time,
+            vec![(nonce_slot, U256::from(5))],
+            None,
+        );
+        let out = v
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+        assert!(
+            !matches!(
+                &out,
+                TransactionValidationOutcome::Invalid(_, err)
+                    if matches!(err, InvalidPoolTransactionError::Consensus(
+                        InvalidTransactionError::NonceNotConsistent { .. }
+                    ))
+            ),
+            "tx_nonce == state_nonce should not fail with NonceNotConsistent, got: {out:?}"
+        );
+
+        // tx_nonce == 4, state_nonce == 5 — should fail
+        let transaction = TxBuilder::aa(sender)
+            .fee_token(PATH_USD_ADDRESS)
+            .nonce_key(nonce_key)
+            .nonce(4)
+            .gas_limit(1_000_000)
+            .build();
+        let v = setup_validator_with_nonce_storage(
+            &transaction,
+            current_time,
+            vec![(nonce_slot, U256::from(5))],
+            None,
+        );
+        let out = v
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+        assert!(
+            matches!(
+                &out,
+                TransactionValidationOutcome::Invalid(_, err)
+                    if matches!(err, InvalidPoolTransactionError::Consensus(
+                        InvalidTransactionError::NonceNotConsistent { .. }
+                    ))
+            ),
+            "tx_nonce < state_nonce should fail with NonceNotConsistent, got: {out:?}"
+        );
+    }
+
+    /// Test `tx_size > max_size` boundary: a transaction at the max size passes,
+    /// one byte beyond is rejected with `OversizedData`.
+    #[tokio::test]
+    async fn test_transaction_size_boundary() {
+        let sender = Address::random();
+        let target = Address::random();
+
+        // Get max_size from the validator
+        let probe = TxBuilder::aa(sender)
+            .fee_token(PATH_USD_ADDRESS)
+            .gas_limit(1_000_000)
+            .build();
+        let v = setup_validator(&probe, 0);
+        let max_size = v.inner.max_tx_input_bytes();
+
+        // Iteratively find the exact padding that produces encoded_length == max_size.
+        // RLP length prefixes add overhead that varies with data size, so we adjust.
+        let mut padding = max_size;
+        let tx_at_limit = loop {
+            let tx = TxBuilder::aa(sender)
+                .fee_token(PATH_USD_ADDRESS)
+                .gas_limit(1_000_000)
+                .calls(vec![Call {
+                    to: TxKind::Call(target),
+                    value: U256::ZERO,
+                    input: vec![0u8; padding].into(),
+                }])
+                .build();
+            let actual = tx.encoded_length();
+            if actual == max_size {
+                break tx;
+            }
+            assert!(
+                actual > max_size,
+                "padding too small to reach max_size; shouldn't happen"
+            );
+            padding -= actual - max_size;
+        };
+
+        let v = setup_validator(&tx_at_limit, 0);
+        let out = v
+            .validate_transaction(TransactionOrigin::External, tx_at_limit)
+            .await;
+        assert!(
+            !matches!(
+                &out,
+                TransactionValidationOutcome::Invalid(
+                    _,
+                    InvalidPoolTransactionError::OversizedData { .. }
+                )
+            ),
+            "tx at exactly max_size should not be rejected as OversizedData, got: {out:?}"
+        );
+
+        // Create tx one byte over max_size
+        let tx_over_limit = TxBuilder::aa(sender)
+            .fee_token(PATH_USD_ADDRESS)
+            .gas_limit(1_000_000)
+            .calls(vec![Call {
+                to: TxKind::Call(target),
+                value: U256::ZERO,
+                input: vec![0u8; padding + 1].into(),
+            }])
+            .build();
+        assert_eq!(
+            tx_over_limit.encoded_length(),
+            max_size + 1,
+            "tx should be one byte over max size"
+        );
+        let v = setup_validator(&tx_over_limit, 0);
+        let out = v
+            .validate_transaction(TransactionOrigin::External, tx_over_limit)
+            .await;
+        assert!(
+            matches!(
+                &out,
+                TransactionValidationOutcome::Invalid(
+                    _,
+                    InvalidPoolTransactionError::OversizedData { .. }
+                )
+            ),
+            "tx over max_size should be rejected as OversizedData, got: {out:?}"
+        );
+    }
+
+    /// Test CREATE + 2D nonce account creation gas boundary: when sender's account nonce is 0,
+    /// an extra 250k gas (`new_account_cost`) is charged. When nonce > 0, it is not.
+    #[tokio::test]
+    async fn test_create_2d_nonce_account_creation_gas_boundary() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let nonce_key = U256::from(42);
+
+        // Setup a CREATE call with 2D nonce (nonce_key != 0)
+        let create_tx = |gas_limit: u64| {
+            let tx = TempoTransaction {
+                chain_id: MODERATO.chain_id(),
+                max_priority_fee_per_gas: 1_000_000_000,
+                max_fee_per_gas: 20_000_000_000,
+                gas_limit,
+                calls: vec![Call {
+                    to: TxKind::Create,
+                    value: U256::ZERO,
+                    input: Default::default(),
+                }],
+                nonce_key,
+                nonce: 0,
+                fee_token: Some(PATH_USD_ADDRESS),
+                ..Default::default()
+            };
+            let signed = AASigned::new_unhashed(
+                tx,
+                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                    Signature::test_signature(),
+                )),
+            );
+            TempoPooledTransaction::new(TempoTxEnvelope::from(signed).try_into_recovered().unwrap())
+        };
+
+        // With account nonce == 0, extra 250k gas is charged.
+        // Use a high gas limit that should pass (2M gas covers all intrinsic costs).
+        let tx_high = create_tx(2_000_000);
+        let v = setup_validator(&tx_high, current_time);
+        let out = v
+            .validate_transaction(TransactionOrigin::External, tx_high)
+            .await;
+        // Should not fail with intrinsic gas error for 2M gas
+        assert!(
+            !matches!(
+                &out,
+                TransactionValidationOutcome::Invalid(_, err)
+                    if matches!(
+                        err.downcast_other_ref::<TempoPoolTransactionError>(),
+                        Some(TempoPoolTransactionError::InsufficientGasForAAIntrinsicCost { .. })
+                    )
+            ),
+            "CREATE + 2D nonce with 2M gas should pass, got: {out:?}"
+        );
+
+        // With a gas limit that covers base intrinsic gas but NOT the extra 250k for account
+        // creation, it should fail. We use a gas limit computed to be exactly at the boundary.
+        // The base cost includes: call_gas + nonce_key_gas(250k for nonce==0) + create_gas(32k)
+        // The account-creation adds another 250k.
+        // With 300k gas it should fail since base + account_creation >> 300k.
+        let tx_low = create_tx(300_000);
+        let v = setup_validator(&tx_low, current_time);
+        let out = v
+            .validate_transaction(TransactionOrigin::External, tx_low)
+            .await;
+        assert!(
+            matches!(
+                &out,
+                TransactionValidationOutcome::Invalid(_, err)
+                    if matches!(
+                        err.downcast_other_ref::<TempoPoolTransactionError>(),
+                        Some(TempoPoolTransactionError::InsufficientGasForAAIntrinsicCost { .. })
+                    )
+            ),
+            "CREATE + 2D nonce with 300k gas should fail intrinsic gas check, got: {out:?}"
         );
     }
 }
