@@ -305,6 +305,7 @@ where
             // which leaves the only reason for transactions to get invalidated by expiry of
             // `valid_before` field.
             if has_expired_transactions(subblock, attributes.timestamp()) {
+                self.metrics.inc_subblocks_expired();
                 return false;
             }
 
@@ -539,7 +540,7 @@ where
                         );
                         self.highest_invalid_subblock
                             .store(builder.evm().block().number.to(), Ordering::Relaxed);
-
+                        self.metrics.inc_build_failure("subblock_invalid_tx");
                         return Err(PayloadBuilderError::evm(err));
                     } else {
                         return Err(PayloadBuilderError::evm(err));

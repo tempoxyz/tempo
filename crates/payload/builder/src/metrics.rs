@@ -87,6 +87,19 @@ impl TempoPayloadBuilderMetrics {
         metrics::counter!("tempo_payload_builder_pool_transactions_skipped_total", "reason" => reason)
             .increment(1);
     }
+
+    /// Increments the build failure counter for a given reason.
+    #[inline]
+    pub(crate) fn inc_build_failure(&self, reason: &'static str) {
+        metrics::counter!("tempo_payload_builder_build_failures_total", "reason" => reason)
+            .increment(1);
+    }
+
+    /// Increments the counter for subblocks dropped due to expired transactions.
+    #[inline]
+    pub(crate) fn inc_subblocks_expired(&self) {
+        metrics::counter!("tempo_payload_builder_subblocks_expired_total").increment(1);
+    }
 }
 
 /// Wraps a [`StateProvider`] reference to instrument `hashed_post_state` and
