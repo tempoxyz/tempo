@@ -228,7 +228,7 @@ pub fn decode_error<'a>(data: &'a [u8]) -> Option<DecodedTempoPrecompileError<'a
         .and_then(|decoder| decoder(data))
 }
 
-/// Extension trait to convert `Result<T, TempoPrecompileError` into `PrecompileResult`
+/// Extension trait to convert `Result<T, TempoPrecompileError>` into `PrecompileResult`
 pub trait IntoPrecompileResult<T> {
     fn into_precompile_result(
         self,

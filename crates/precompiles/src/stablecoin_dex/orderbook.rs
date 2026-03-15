@@ -9,16 +9,13 @@ use alloy::primitives::{Address, B256, U256, keccak256};
 use tempo_contracts::precompiles::StablecoinDEXError;
 use tempo_precompiles_macros::Storable;
 
-/// Constants from Solidity implementation
-pub const MIN_TICK: i16 = -2000;
-pub const MAX_TICK: i16 = 2000;
-pub const PRICE_SCALE: u32 = 100_000;
+pub use tempo_contracts::precompiles::stablecoin_dex::{MAX_TICK, MIN_TICK, PRICE_SCALE};
 
 /// Rounding direction for price conversions.
 ///
-/// Rounding should always favor the protocol to prevent insolvency:
-/// - When users deposit funds (escrow) → round UP (user pays more)
-/// - When users receive funds (settlement/refunds) → round DOWN (user receives less)
+/// Rounding prevents dust-level insolvency in maker/taker settlement:
+/// - When escrowing funds from a user → round UP (user pays more)
+/// - When releasing funds to a user → round DOWN (user receives less)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoundingDirection {
     /// Round down (floor division) - favors protocol when user receives funds

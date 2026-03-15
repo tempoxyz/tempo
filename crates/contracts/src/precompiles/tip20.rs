@@ -3,6 +3,9 @@ pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
 use alloy_primitives::{Address, U256};
 use alloy_sol_types::{SolCall, SolType};
 
+/// Decimal precision for all TIP-20 tokens.
+pub const DECIMALS: u8 = 6;
+
 /// USD currency string constant.
 pub const USD_CURRENCY: &str = "USD";
 

@@ -49,8 +49,8 @@ tempo_precompiles_macros::storable_nested_arrays!();
 /// let array = handler.read()?;
 /// handler.write([1; 32])?;
 ///
-/// // Individual element operations
-/// if let Some(slot) = handler[0] {
+/// // Individual element operations (at() returns Option, [] panics on OOB)
+/// if let Some(slot) = handler.at(0) {
 ///     let elem = slot.read()?;
 ///     slot.write(42)?;
 /// }

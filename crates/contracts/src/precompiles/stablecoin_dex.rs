@@ -2,6 +2,13 @@ pub use IStablecoinDEX::{
     IStablecoinDEXErrors as StablecoinDEXError, IStablecoinDEXEvents as StablecoinDEXEvents,
 };
 
+/// Minimum tick value for the orderbook price grid.
+pub const MIN_TICK: i16 = -2000;
+/// Maximum tick value for the orderbook price grid.
+pub const MAX_TICK: i16 = 2000;
+/// Price scale factor for tick-to-price conversions.
+pub const PRICE_SCALE: u32 = 100_000;
+
 crate::sol! {
     /// StablecoinDEX interface for managing orderbook based trading of stablecoins.
     ///

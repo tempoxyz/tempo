@@ -51,8 +51,8 @@ pub struct PoolKey {
     pub validator_token: Address,
 }
 
-// TODO(rusowsky): remove this and create a read-only wrapper that is callable from read-only ctx with db access
 impl Pool {
+    /// Decodes a `Pool` from a raw slot value (needed from changeset diffs).
     pub fn decode_from_slot(slot_value: U256) -> Self {
         use crate::storage::{LayoutCtx, Storable, packing::PackedSlot};
 
@@ -93,8 +93,8 @@ impl TipFeeManager {
         self.pools[pool_id].read()
     }
 
-    /// Ensures that pool has enough liquidity for a fee swap and reserves funds.
-    /// Returns the amount out needed for the swap
+    /// Checks that the pool has enough liquidity for a fee swap.
+    /// Returns the amount out needed (does not reserve; see `reserve_pool_liquidity`).
     pub fn check_sufficient_liquidity(&mut self, pool_id: B256, max_amount: U256) -> Result<u128> {
         let amount_out_needed = compute_amount_out(max_amount)?;
         let pool = self.pools[pool_id].read()?;

@@ -134,10 +134,10 @@ where
 ///
 /// // Full vector operations
 /// let vec = handler.read()?;
-/// handler.write(&mut storage, vec![1, 2, 3])?;
+/// handler.write(vec![1, 2, 3])?;
 ///
-/// // Individual element operations
-/// if let Some(slot) = handler[0]? {
+/// // Individual element operations (at() returns Option, [] panics on OOB)
+/// if let Some(slot) = handler.at(0) {
 ///     let elem = slot.read()?;
 ///     slot.write(42)?;
 /// }
