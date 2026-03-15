@@ -29,44 +29,15 @@ interface ITempoStreamChannel {
         external
         returns (bytes32 channelId);
 
-    function settle(
-        bytes32 channelId,
-        uint128 cumulativeAmount,
-        bytes calldata signature,
-        address token,
-        address authorizedSigner,
-        bytes32 salt
-    )
-        external;
+    function settle(bytes calldata key, uint128 cumulativeAmount, bytes calldata signature) external;
 
-    function topUp(
-        bytes32 channelId,
-        uint256 additionalDeposit,
-        address token,
-        address authorizedSigner,
-        bytes32 salt
-    )
-        external;
+    function topUp(bytes calldata key, uint256 additionalDeposit) external;
 
-    function close(
-        bytes32 channelId,
-        uint128 cumulativeAmount,
-        bytes calldata signature,
-        address token,
-        address authorizedSigner,
-        bytes32 salt
-    )
-        external;
+    function close(bytes calldata key, uint128 cumulativeAmount, bytes calldata signature) external;
 
-    function requestClose(bytes32 channelId) external;
+    function requestClose(bytes calldata key) external;
 
-    function withdraw(
-        bytes32 channelId,
-        address token,
-        address authorizedSigner,
-        bytes32 salt
-    )
-        external;
+    function withdraw(bytes calldata key) external;
 
     function getChannel(bytes32 channelId) external view returns (Channel memory);
 
@@ -156,6 +127,6 @@ interface ITempoStreamChannel {
     error CloseNotReady();
     error InvalidPayee();
     error DepositOverflow();
-    error InvalidChannelParams();
+    error InvalidChannelKey();
 
 }
