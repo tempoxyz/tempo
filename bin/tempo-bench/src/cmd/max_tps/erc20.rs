@@ -53,7 +53,7 @@ pub(super) async fn setup(
                     let token = token.clone();
                     Box::pin(async move {
                         let tx = token.mint(to, mint_amount);
-                        tx.send().await
+                        tx.send_sync().await
                     }) as BoxFuture<'static, _>
                 })
             })

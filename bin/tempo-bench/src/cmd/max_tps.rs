@@ -330,7 +330,7 @@ impl MaxTpsArgs {
                 .map(async |(_, provider)| {
                     IFeeManagerInstance::new(TIP_FEE_MANAGER_ADDRESS, provider.clone())
                         .setUserToken(self.fee_token)
-                        .send()
+                        .send_sync()
                         .await
                 })
                 .progress(),
@@ -795,7 +795,7 @@ async fn fund_accounts(
         .chunks(max_concurrent_transactions);
 
     for chunk in chunks.into_iter() {
-        let tx_hashes = stream::iter(chunk)
+        let receipts = stream::iter(chunk)
             .buffer_unordered(max_concurrent_requests)
             .try_collect::<Vec<_>>()
             .await?
@@ -803,13 +803,14 @@ async fn fund_accounts(
             .inspect(|_| progress.inc(1))
             .flatten()
             .map(async |hash| {
-                Ok(
-                    PendingTransactionBuilder::new(provider.root().clone(), hash)
-                        .get_receipt()
-                        .await?,
-                )
+                let receipt = PendingTransactionBuilder::new(provider.root().clone(), hash)
+                    .get_receipt()
+                    .await?;
+                assert_receipt(receipt).await
             });
-        assert_receipts(tx_hashes, max_concurrent_requests)
+        stream::iter(receipts)
+            .buffer_unordered(max_concurrent_requests)
+            .try_collect::<()>()
             .await
             .expect("Failed to fund accounts");
     }
@@ -979,43 +980,24 @@ async fn monitor_tps(counters: TransactionCounters, target_count: usize, token: 
     }
 }
 
-async fn join_all<
-    T: Future<Output = alloy::contract::Result<PendingTransactionBuilder<TempoNetwork>>>,
->(
-    futures: impl IntoIterator<Item = T>,
+async fn join_all<R: ReceiptResponse>(
+    futures: impl IntoIterator<
+        Item = impl Future<Output = alloy::contract::Result<R>>,
+    >,
     max_concurrent_requests: usize,
     max_concurrent_transactions: usize,
 ) -> eyre::Result<()> {
     let chunks = futures.into_iter().chunks(max_concurrent_transactions);
 
     for chunk in chunks.into_iter() {
-        // Send transactions and collect pending builders
-        let pending_txs = stream::iter(chunk)
+        stream::iter(chunk)
+            .map(|fut| async { Ok::<_, eyre::Report>(fut.await?) })
             .buffer_unordered(max_concurrent_requests)
-            .try_collect::<Vec<_>>()
+            .try_for_each(|receipt| assert_receipt(receipt))
             .await?;
-
-        // Fetch receipts and assert status
-        assert_receipts(
-            pending_txs
-                .into_iter()
-                .map(|tx| async move { Ok(tx.get_receipt().await?) }),
-            max_concurrent_requests,
-        )
-        .await?;
     }
 
     Ok(())
-}
-
-async fn assert_receipts<R: ReceiptResponse, F: Future<Output = eyre::Result<R>>>(
-    receipts: impl IntoIterator<Item = F>,
-    max_concurrent_requests: usize,
-) -> eyre::Result<()> {
-    stream::iter(receipts)
-        .buffer_unordered(max_concurrent_requests)
-        .try_for_each(|receipt| assert_receipt(receipt))
-        .await
 }
 
 async fn assert_receipt<R: ReceiptResponse>(receipt: R) -> eyre::Result<()> {
