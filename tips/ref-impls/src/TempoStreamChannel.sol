@@ -19,8 +19,8 @@ contract TempoStreamChannel is EIP712 {
     // --- Types ---
 
     struct Channel {
-        uint64 closeRequestedAt; // Timestamp when close was requested (0 if not)
         bool finalized; // Prevents double-withdraw
+        uint64 closeRequestedAt; // Timestamp when close was requested (0 if not)
         address payer; // User who deposited funds
         address payee; // Server authorized to withdraw
         address token; // TIP-20 token address
