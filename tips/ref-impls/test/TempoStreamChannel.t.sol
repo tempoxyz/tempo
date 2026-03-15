@@ -873,15 +873,13 @@ contract TempoStreamChannelTest is BaseTest {
         channel.open(payee, address(mockToken), DEPOSIT, SALT, address(0));
     }
 
-    // --- Channel Tombstone and Cleanup ---
+    // --- Channel Finalization and Cleanup ---
 
-    function test_close_setsTombstone_andDeletesChannelStruct() public {
+    function test_close_marksFinalized_andClearsChannelFields() public {
         bytes32 channelId = _openChannel();
 
         vm.prank(payee);
         channel.close(channelId, 0, "");
-
-        assertTrue(channel.closedChannels(channelId));
 
         (
             address rawPayer,
@@ -901,7 +899,7 @@ contract TempoStreamChannelTest is BaseTest {
         assertEq(rawDeposit, 0);
         assertEq(rawSettled, 0);
         assertEq(rawCloseRequestedAt, 0);
-        assertFalse(rawFinalized);
+        assertTrue(rawFinalized);
 
         assertTrue(channel.getChannel(channelId).finalized);
 
@@ -910,7 +908,7 @@ contract TempoStreamChannelTest is BaseTest {
         channel.open(payee, address(token), DEPOSIT, SALT, address(0));
     }
 
-    function test_withdraw_setsTombstone_andDeletesChannelStruct() public {
+    function test_withdraw_marksFinalized_andClearsChannelFields() public {
         bytes32 channelId = _openChannel();
 
         vm.prank(payer);
@@ -920,7 +918,6 @@ contract TempoStreamChannelTest is BaseTest {
         vm.prank(payer);
         channel.withdraw(channelId);
 
-        assertTrue(channel.closedChannels(channelId));
         assertTrue(channel.getChannel(channelId).finalized);
 
         vm.prank(payer);

@@ -39,7 +39,6 @@ contract TempoStreamChannel is EIP712 {
     // --- State ---
 
     mapping(bytes32 => Channel) public channels;
-    mapping(bytes32 => bool) public closedChannels;
 
     // --- Events ---
 
@@ -149,7 +148,7 @@ contract TempoStreamChannel is EIP712 {
 
         channelId = computeChannelId(msg.sender, payee, token, salt, authorizedSigner);
 
-        if (closedChannels[channelId] || channels[channelId].payer != address(0)) {
+        if (channels[channelId].payer != address(0) || channels[channelId].finalized) {
             revert ChannelAlreadyExists();
         }
 
@@ -187,12 +186,11 @@ contract TempoStreamChannel is EIP712 {
     )
         external
     {
-        if (closedChannels[channelId]) {
-            revert ChannelFinalized();
-        }
-
         Channel storage channel = channels[channelId];
 
+        if (channel.finalized) {
+            revert ChannelFinalized();
+        }
         if (channel.payer == address(0)) {
             revert ChannelNotFound();
         }
@@ -236,12 +234,11 @@ contract TempoStreamChannel is EIP712 {
      * @param additionalDeposit Amount to add
      */
     function topUp(bytes32 channelId, uint256 additionalDeposit) external {
-        if (closedChannels[channelId]) {
-            revert ChannelFinalized();
-        }
-
         Channel storage channel = channels[channelId];
 
+        if (channel.finalized) {
+            revert ChannelFinalized();
+        }
         if (channel.payer == address(0)) {
             revert ChannelNotFound();
         }
@@ -276,12 +273,11 @@ contract TempoStreamChannel is EIP712 {
      * @param channelId The channel to close
      */
     function requestClose(bytes32 channelId) external {
-        if (closedChannels[channelId]) {
-            revert ChannelFinalized();
-        }
-
         Channel storage channel = channels[channelId];
 
+        if (channel.finalized) {
+            revert ChannelFinalized();
+        }
         if (channel.payer == address(0)) {
             revert ChannelNotFound();
         }
@@ -306,12 +302,11 @@ contract TempoStreamChannel is EIP712 {
      * @param signature EIP-712 signature (empty if cumulativeAmount == 0 or same as settled)
      */
     function close(bytes32 channelId, uint128 cumulativeAmount, bytes calldata signature) external {
-        if (closedChannels[channelId]) {
-            revert ChannelFinalized();
-        }
-
         Channel storage channel = channels[channelId];
 
+        if (channel.finalized) {
+            revert ChannelFinalized();
+        }
         if (channel.payer == address(0)) {
             revert ChannelNotFound();
         }
@@ -350,8 +345,7 @@ contract TempoStreamChannel is EIP712 {
 
         // Effects before interactions
         uint128 refund = channel.deposit - settledAmount;
-        closedChannels[channelId] = true;
-        delete channels[channelId];
+        _clearAndFinalize(channel);
 
         // Interactions
         if (delta > 0) {
@@ -376,12 +370,11 @@ contract TempoStreamChannel is EIP712 {
      * @param channelId The channel to withdraw from
      */
     function withdraw(bytes32 channelId) external {
-        if (closedChannels[channelId]) {
-            revert ChannelFinalized();
-        }
-
         Channel storage channel = channels[channelId];
 
+        if (channel.finalized) {
+            revert ChannelFinalized();
+        }
         if (channel.payer == address(0)) {
             revert ChannelNotFound();
         }
@@ -403,8 +396,7 @@ contract TempoStreamChannel is EIP712 {
         }
 
         uint128 refund = channel.deposit - settledAmount;
-        closedChannels[channelId] = true;
-        delete channels[channelId];
+        _clearAndFinalize(channel);
 
         if (refund > 0) {
             bool success = ITIP20(token).transfer(payer, refund);
@@ -423,10 +415,7 @@ contract TempoStreamChannel is EIP712 {
      * @notice Get channel state.
      */
     function getChannel(bytes32 channelId) external view returns (Channel memory channelState) {
-        channelState = channels[channelId];
-        if (channelState.payer == address(0) && closedChannels[channelId]) {
-            channelState.finalized = true;
-        }
+        return channels[channelId];
     }
 
     /**
@@ -489,12 +478,21 @@ contract TempoStreamChannel is EIP712 {
         channelStates = new Channel[](length);
 
         for (uint256 i = 0; i < length; ++i) {
-            bytes32 channelId = channelIds[i];
-            channelStates[i] = channels[channelId];
-            if (channelStates[i].payer == address(0) && closedChannels[channelId]) {
-                channelStates[i].finalized = true;
-            }
+            channelStates[i] = channels[channelIds[i]];
         }
+    }
+
+    // --- Internal Functions ---
+
+    function _clearAndFinalize(Channel storage channel) internal {
+        channel.payer = address(0);
+        channel.payee = address(0);
+        channel.token = address(0);
+        channel.authorizedSigner = address(0);
+        channel.deposit = 0;
+        channel.settled = 0;
+        channel.closeRequestedAt = 0;
+        channel.finalized = true;
     }
 
 }
