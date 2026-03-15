@@ -144,12 +144,11 @@ fn validator_loses_consensus_state_becomes_observer() {
                 assert!(epoch < 3);
 
                 // Only receive shares in Epoch 1
-                if epoch == 1 {
-                    if let Some(v) =
+                if epoch == 1
+                    && let Some(v) =
                         metric_value(&metrics, &uid, "_dkg_manager_how_often_dealer_total")
-                    {
-                        assert_eq!(v, 0);
-                    }
+                {
+                    assert_eq!(v, 0);
                 }
 
                 // Participate as a Dealer in Epoch 2
