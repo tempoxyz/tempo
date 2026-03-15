@@ -169,6 +169,14 @@ impl<TContext: Spawner> Actor<TContext> {
         let (round, payload) = match &activity {
             Activity::Notarization(n) => (n.proposal.round, n.proposal.payload),
             Activity::Finalization(f) => (f.proposal.round, f.proposal.payload),
+            Activity::Notarize(_)
+            | Activity::Finalize(_)
+            | Activity::Nullify(_)
+            | Activity::Certification(_)
+            | Activity::Nullification(_) => {
+                info_span!("handle_activity", activity = ?activity).in_scope(|| {});
+                return;
+            }
             _ => return,
         };
 
