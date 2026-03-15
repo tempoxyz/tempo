@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import { TIP20 } from "../src/TIP20.sol";
-import { TempoStreamChannel } from "../src/TempoStreamChannel.sol";
-import { BaseTest } from "./BaseTest.t.sol";
+import {TIP20} from "../src/TIP20.sol";
+import {TempoStreamChannel} from "../src/TempoStreamChannel.sol";
+import {BaseTest} from "./BaseTest.t.sol";
+import {MockTIP20} from "./mocks/MockTIP20.sol";
+import {ShortCreditTIP20} from "./mocks/ShortCreditTIP20.sol";
 
 contract TempoStreamChannelTest is BaseTest {
-
     TempoStreamChannel public channel;
     TIP20 public token;
 
@@ -16,14 +17,13 @@ contract TempoStreamChannelTest is BaseTest {
 
     uint128 constant DEPOSIT = 1_000_000;
     bytes32 constant SALT = bytes32(uint256(1));
+    address constant SHORT_CREDIT_TIP20 = 0x20C0000000000000000000000000000000001234;
 
     function setUp() public override {
         super.setUp();
 
         channel = new TempoStreamChannel();
-        token = TIP20(
-            factory.createToken("Stream Token", "STR", "USD", pathUSD, admin, bytes32("stream"))
-        );
+        token = TIP20(factory.createToken("Stream Token", "STR", "USD", pathUSD, admin, bytes32("stream")));
 
         (payer, payerKey) = makeAddrAndKey("payer");
         payee = makeAddr("payee");
@@ -46,6 +46,12 @@ contract TempoStreamChannelTest is BaseTest {
         bytes32 digest = channel.getVoucherDigest(channelId, amount);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(payerKey, digest);
         return abi.encodePacked(r, s, v);
+    }
+
+    function _deployShortCreditTIP20() internal returns (ShortCreditTIP20 shortCreditToken) {
+        ShortCreditTIP20 implementation = new ShortCreditTIP20();
+        vm.etch(SHORT_CREDIT_TIP20, address(implementation).code);
+        shortCreditToken = ShortCreditTIP20(SHORT_CREDIT_TIP20);
     }
 
     // --- Open Tests ---
@@ -276,8 +282,7 @@ contract TempoStreamChannelTest is BaseTest {
         bytes32 channelId1 = _openChannel();
 
         vm.prank(payer);
-        bytes32 channelId2 =
-            channel.open(payee, address(token), DEPOSIT, bytes32(uint256(2)), address(0));
+        bytes32 channelId2 = channel.open(payee, address(token), DEPOSIT, bytes32(uint256(2)), address(0));
 
         bytes memory sig = _signVoucher(channelId1, 500_000);
         vm.prank(payee);
@@ -637,8 +642,7 @@ contract TempoStreamChannelTest is BaseTest {
 
     function test_computeChannelId_differentSaltDifferentId() public view {
         bytes32 id1 = channel.computeChannelId(payer, payee, address(token), SALT, address(0));
-        bytes32 id2 =
-            channel.computeChannelId(payer, payee, address(token), bytes32(uint256(2)), address(0));
+        bytes32 id2 = channel.computeChannelId(payer, payee, address(token), bytes32(uint256(2)), address(0));
         assertTrue(id1 != id2);
     }
 
@@ -674,9 +678,7 @@ contract TempoStreamChannelTest is BaseTest {
         bytes memory sig = _signVoucher(channelId, 500_000);
 
         TempoStreamChannel channel2 = new TempoStreamChannel();
-        TIP20 token2 = TIP20(
-            factory.createToken("Stream Token 2", "ST2", "USD", pathUSD, admin, bytes32("stream2"))
-        );
+        TIP20 token2 = TIP20(factory.createToken("Stream Token 2", "ST2", "USD", pathUSD, admin, bytes32("stream2")));
 
         vm.startPrank(admin);
         token2.grantRole(_ISSUER_ROLE, admin);
@@ -702,9 +704,7 @@ contract TempoStreamChannelTest is BaseTest {
         vm.chainId(originalChainId + 1);
 
         TempoStreamChannel channel2 = new TempoStreamChannel();
-        TIP20 token2 = TIP20(
-            factory.createToken("Stream Token 3", "ST3", "USD", pathUSD, admin, bytes32("stream3"))
-        );
+        TIP20 token2 = TIP20(factory.createToken("Stream Token 3", "ST3", "USD", pathUSD, admin, bytes32("stream3")));
 
         vm.startPrank(admin);
         token2.grantRole(_ISSUER_ROLE, admin);
@@ -808,8 +808,7 @@ contract TempoStreamChannelTest is BaseTest {
 
         bytes32 salt = bytes32(uint256(block.timestamp));
 
-        uint256 totalBefore =
-            token.balanceOf(payer) + token.balanceOf(payee) + token.balanceOf(address(channel));
+        uint256 totalBefore = token.balanceOf(payer) + token.balanceOf(payee) + token.balanceOf(address(channel));
 
         vm.prank(payer);
         bytes32 channelId = channel.open(payee, address(token), depositAmt, salt, address(0));
@@ -818,8 +817,7 @@ contract TempoStreamChannelTest is BaseTest {
         vm.prank(payee);
         channel.close(channelId, settleAmt, sig);
 
-        uint256 totalAfter =
-            token.balanceOf(payer) + token.balanceOf(payee) + token.balanceOf(address(channel));
+        uint256 totalAfter = token.balanceOf(payer) + token.balanceOf(payee) + token.balanceOf(address(channel));
 
         assertEq(totalAfter, totalBefore);
     }
@@ -858,6 +856,161 @@ contract TempoStreamChannelTest is BaseTest {
         assertEq(token.balanceOf(address(channel)), 0);
     }
 
+    // --- Token Validation and Accounting Hardening ---
+
+    function test_open_revert_invalidToken_nonTIP20() public {
+        MockTIP20 mockToken = new MockTIP20("Mock Token", "MOCK", 10_000_000);
+
+        mockToken.transfer(payer, DEPOSIT);
+        vm.prank(payer);
+        mockToken.approve(address(channel), type(uint256).max);
+
+        vm.prank(payer);
+        vm.expectRevert(TempoStreamChannel.InvalidToken.selector);
+        channel.open(payee, address(mockToken), DEPOSIT, SALT, address(0));
+    }
+
+    function test_open_revert_shortCreditTransferFrom() public {
+        ShortCreditTIP20 shortCreditToken = _deployShortCreditTIP20();
+        shortCreditToken.mint(payer, DEPOSIT);
+
+        vm.prank(payer);
+        shortCreditToken.approve(address(channel), type(uint256).max);
+
+        shortCreditToken.setShortCreditEnabled(true);
+
+        vm.prank(payer);
+        vm.expectRevert(TempoStreamChannel.TransferFailed.selector);
+        channel.open(payee, address(shortCreditToken), DEPOSIT, SALT, address(0));
+
+        assertEq(shortCreditToken.balanceOf(address(channel)), 0);
+    }
+
+    function test_topUp_revert_shortCreditTransferFrom() public {
+        ShortCreditTIP20 shortCreditToken = _deployShortCreditTIP20();
+        shortCreditToken.mint(payer, DEPOSIT * 2);
+
+        vm.prank(payer);
+        shortCreditToken.approve(address(channel), type(uint256).max);
+
+        vm.prank(payer);
+        bytes32 channelId = channel.open(payee, address(shortCreditToken), DEPOSIT, SALT, address(0));
+
+        shortCreditToken.setShortCreditEnabled(true);
+
+        vm.prank(payer);
+        vm.expectRevert(TempoStreamChannel.TransferFailed.selector);
+        channel.topUp(channelId, 10_000);
+
+        TempoStreamChannel.Channel memory state = channel.getChannel(channelId);
+        assertEq(state.deposit, DEPOSIT);
+        assertEq(shortCreditToken.balanceOf(address(channel)), DEPOSIT);
+    }
+
+    // --- Channel Tombstone and Cleanup ---
+
+    function test_close_setsTombstone_andDeletesChannelStruct() public {
+        bytes32 channelId = _openChannel();
+
+        vm.prank(payee);
+        channel.close(channelId, 0, "");
+
+        assertTrue(channel.channelTombstones(channelId));
+
+        (
+            address rawPayer,
+            address rawPayee,
+            address rawToken,
+            address rawSigner,
+            uint128 rawDeposit,
+            uint128 rawSettled,
+            uint64 rawCloseRequestedAt,
+            bool rawFinalized
+        ) = channel.channels(channelId);
+
+        assertEq(rawPayer, address(0));
+        assertEq(rawPayee, address(0));
+        assertEq(rawToken, address(0));
+        assertEq(rawSigner, address(0));
+        assertEq(rawDeposit, 0);
+        assertEq(rawSettled, 0);
+        assertEq(rawCloseRequestedAt, 0);
+        assertFalse(rawFinalized);
+
+        assertTrue(channel.getChannel(channelId).finalized);
+
+        vm.prank(payer);
+        vm.expectRevert(TempoStreamChannel.ChannelAlreadyExists.selector);
+        channel.open(payee, address(token), DEPOSIT, SALT, address(0));
+    }
+
+    function test_withdraw_setsTombstone_andDeletesChannelStruct() public {
+        bytes32 channelId = _openChannel();
+
+        vm.prank(payer);
+        channel.requestClose(channelId);
+        vm.warp(block.timestamp + channel.CLOSE_GRACE_PERIOD() + 1);
+
+        vm.prank(payer);
+        channel.withdraw(channelId);
+
+        assertTrue(channel.channelTombstones(channelId));
+        assertTrue(channel.getChannel(channelId).finalized);
+
+        vm.prank(payer);
+        vm.expectRevert(TempoStreamChannel.ChannelAlreadyExists.selector);
+        channel.open(payee, address(token), DEPOSIT, SALT, address(0));
+    }
+
+    function test_closedChannel_operationsRevertFinalized() public {
+        bytes32 channelId = _openChannel();
+
+        vm.prank(payee);
+        channel.close(channelId, 0, "");
+
+        bytes memory sig = _signVoucher(channelId, 1);
+
+        vm.prank(payee);
+        vm.expectRevert(TempoStreamChannel.ChannelFinalized.selector);
+        channel.settle(channelId, 1, sig);
+
+        vm.prank(payer);
+        vm.expectRevert(TempoStreamChannel.ChannelFinalized.selector);
+        channel.topUp(channelId, 1);
+
+        vm.prank(payer);
+        vm.expectRevert(TempoStreamChannel.ChannelFinalized.selector);
+        channel.requestClose(channelId);
+
+        vm.prank(payee);
+        vm.expectRevert(TempoStreamChannel.ChannelFinalized.selector);
+        channel.close(channelId, 0, "");
+
+        vm.prank(payer);
+        vm.expectRevert(TempoStreamChannel.ChannelFinalized.selector);
+        channel.withdraw(channelId);
+    }
+
+    function test_getChannelsBatch_marksFinalizedForTombstonedChannel() public {
+        bytes32 channelId1 = _openChannel();
+
+        vm.prank(payer);
+        bytes32 channelId2 = channel.open(payee, address(token), DEPOSIT, bytes32(uint256(2)), address(0));
+
+        vm.prank(payee);
+        channel.close(channelId1, 0, "");
+
+        bytes32[] memory ids = new bytes32[](2);
+        ids[0] = channelId1;
+        ids[1] = channelId2;
+
+        TempoStreamChannel.Channel[] memory states = channel.getChannelsBatch(ids);
+
+        assertTrue(states[0].finalized);
+        assertFalse(states[1].finalized);
+        assertEq(states[1].payer, payer);
+    }
+
     // --- InvalidPayee Tests ---
 
     function test_open_revert_zeroPayee() public {
@@ -865,5 +1018,4 @@ contract TempoStreamChannelTest is BaseTest {
         vm.expectRevert(TempoStreamChannel.InvalidPayee.selector);
         channel.open(address(0), address(token), DEPOSIT, SALT, address(0));
     }
-
 }
