@@ -1,7 +1,7 @@
-//! Testnet RPC transaction checks.
+//! Remote RPC transaction checks (testnet & devnet).
 //!
 //! These tests target a live RPC endpoint and cover the same core transaction
-//! matrices as the local integration tests, using the testnet faucet for funding.
+//! matrices as the local integration tests, using the faucet for funding.
 use alloy::{
     consensus::BlockHeader,
     primitives::{Address, B256, Bytes, U256},
@@ -18,22 +18,18 @@ use tempo_primitives::{TempoTxEnvelope, transaction::tempo_transaction::Call};
 
 use super::helpers::*;
 
-/// Testnet RPC url (unpermissioned).
-const TESTNET_RPC_URL: &str = "https://rpc.moderato.tempo.xyz";
-
-/// Maximum number of 1-second poll iterations when waiting for testnet RPC state to settle.
+/// Maximum number of 1-second poll iterations when waiting for RPC state to settle.
 const RPC_POLL_RETRIES: usize = 30;
 
-pub(super) struct Testnet {
+pub(super) struct RpcEnv {
     provider: alloy::providers::RootProvider,
     chain_id: u64,
     hardfork: TempoHardfork,
 }
 
-impl Testnet {
-    pub(super) async fn new() -> eyre::Result<Self> {
+impl RpcEnv {
+    async fn connect(rpc_url: &str) -> eyre::Result<Self> {
         reth_tracing::init_test_tracing();
-        let rpc_url = std::env::var("TEMPO_TESTNET_RPC_URL").unwrap_or(TESTNET_RPC_URL.to_string());
         let provider = alloy::providers::RootProvider::new_http(rpc_url.parse()?);
         let chain_id = provider.get_chain_id().await?;
 
@@ -56,9 +52,23 @@ impl Testnet {
             hardfork,
         })
     }
+
+    pub(super) async fn testnet() -> eyre::Result<Option<Self>> {
+        match std::env::var("TEMPO_TESTNET_RPC_URL") {
+            Ok(url) => Self::connect(&url).await.map(Some),
+            Err(_) => Ok(None),
+        }
+    }
+
+    pub(super) async fn devnet() -> eyre::Result<Option<Self>> {
+        match std::env::var("TEMPO_DEVNET_RPC_URL") {
+            Ok(url) => Self::connect(&url).await.map(Some),
+            Err(_) => Ok(None),
+        }
+    }
 }
 
-impl super::types::TestEnv for Testnet {
+impl super::types::TestEnv for RpcEnv {
     type P = alloy::providers::RootProvider;
 
     fn provider(&self) -> &Self::P {
@@ -74,7 +84,7 @@ impl super::types::TestEnv for Testnet {
     }
 
     fn uses_legacy_keyauth_pool_validation(&self) -> bool {
-        true
+        false
     }
 
     async fn fund_account(&mut self, addr: Address) -> eyre::Result<U256> {
