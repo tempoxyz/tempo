@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 contract ShortCreditTIP20 {
+
     mapping(address => uint256) public balanceOf;
     mapping(address => mapping(address => uint256)) public allowance;
 
@@ -40,4 +41,5 @@ contract ShortCreditTIP20 {
 
         return true;
     }
+
 }
