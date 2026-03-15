@@ -7,9 +7,7 @@ use reth_tracing::{
     RethTracer, Tracer,
     tracing::{debug, error, info},
 };
-use tempo_alloy::{
-    TempoNetwork, fillers::ExpiringNonceFiller, provider::ext::TempoProviderBuilderExt,
-};
+use tempo_alloy::{TempoNetwork, fillers::ExpiringNonceFiller, primitives::TempoTxEnvelope};
 
 use alloy::{
     consensus::BlockHeader,
@@ -173,20 +171,18 @@ pub struct MaxTpsArgs {
     #[arg(long)]
     clear_txpool: bool,
 
-    /// Use 2D nonces instead of expiring nonces.
+    /// Use standard sequential nonces instead of expiring nonces.
     ///
-    /// By default, tempo-bench uses expiring nonces ([TIP-1009]) which use a circular buffer
-    /// for replay protection, avoiding state bloat. Use this flag to switch to 2D nonces
-    /// which store nonce state per (address, nonce_key) pair.
-    ///
-    /// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
+    /// This disables expiring nonces, using traditional sequential nonce management.
     #[arg(long)]
-    use_2d_nonces: bool,
+    use_standard_nonces: bool,
 
     /// Use standard sequential nonces instead of expiring nonces.
     ///
-    /// This disables both expiring nonces and 2D nonces, using traditional sequential
-    /// nonce management.
+    /// Since expiring nonces have a 25-second validity window, transactions must be signed
+    /// in batches close to when they're sent. This controls how many transactions to
+    /// generate/sign before sending. Default is 15 seconds worth of transactions at the
+    /// target TPS (e.g., 75,000 at 5,000 TPS).
     #[arg(long)]
     use_standard_nonces: bool,
 }
@@ -214,25 +210,7 @@ impl MaxTpsArgs {
                 .erased()
         });
 
-        if self.use_2d_nonces {
-            info!(
-                accounts = self.accounts,
-                "Creating signers (with 2D nonces)"
-            );
-            let signer_provider_manager = SignerProviderManager::new(
-                self.mnemonic.resolve(),
-                self.from_mnemonic_index,
-                accounts,
-                self.target_urls.clone(),
-                Box::new(|target_url, _cached_nonce_manager| {
-                    ProviderBuilder::new_with_network::<TempoNetwork>()
-                        .with_random_2d_nonces()
-                        .connect_http(target_url)
-                }),
-                signer_provider_factory,
-            );
-            self.run_with_manager(signer_provider_manager).await
-        } else if self.use_standard_nonces {
+        if self.use_standard_nonces {
             info!(
                 accounts = self.accounts,
                 "Creating signers (with standard nonces)"
@@ -413,45 +391,50 @@ impl MaxTpsArgs {
             expiry_secs,
         };
 
-        info!(total_txs, "Generating and sending transactions");
+        // For expiring nonces, we need to generate/sign/send in batches to avoid
+        // transactions expiring before they're sent. We pipeline batch generation
+        // with sending to avoid gaps that would cause empty blocks.
+        let use_expiring_nonces = !self.use_standard_nonces;
+        let mut pending_txs = if use_expiring_nonces {
+            let batch_secs = self.expiring_batch_secs.unwrap_or(15);
+            let batch_size = self.tps * batch_secs;
+            let num_batches = total_txs.div_ceil(batch_size);
 
-        let counters = TransactionCounters::default();
-        let target_count = total_txs as usize;
-        let cancel_token = CancellationToken::new();
+            info!(
+                total_txs,
+                batch_size,
+                num_batches,
+                batch_secs,
+                "Generating and sending transactions in batches (expiring nonces, pipelined)"
+            );
 
-        // Start TPS monitor
-        tokio::spawn(monitor_tps(
-            counters.clone(),
-            target_count,
-            cancel_token.clone(),
-        ));
+            let tx_counter = Arc::new(AtomicUsize::new(0));
+            let success_counter = Arc::new(AtomicUsize::new(0));
+            let failed_counter = Arc::new(AtomicUsize::new(0));
+            let tx_counter_clone = tx_counter.clone();
+            let success_counter_clone = success_counter.clone();
+            let failed_counter_clone = failed_counter.clone();
+            let target_count = total_txs as usize;
+            let token = CancellationToken::new();
+            let token_clone = token.clone();
 
-        let rate_limiter =
-            RateLimiter::direct(Quota::per_second(NonZeroU32::new(self.tps as u32).unwrap()));
-        let start_block_number = provider.get_block_number().await?;
+            // Start TPS monitor
+            tokio::spawn(async move {
+                monitor_tps(tx_counter_clone, target_count, token_clone).await;
+            });
 
-        let mut pending_txs =
-            generate_transactions(signer_provider_manager.clone(), gen_input, counters.clone())
-                .buffer_unordered(self.tps as usize)
-                .filter_map(|result| async {
-                    match result {
-                        Ok(bytes) => Some(bytes),
-                        Err(e) => {
-                            debug!(?e, "Transaction generation failed");
-                            None
-                        }
-                    }
-                })
-                .boxed()
-                .ratelimit_stream(&rate_limiter)
-                .zip(stream::repeat_with(|| {
-                    signer_provider_manager.random_unsigned_provider()
-                }))
-                .map(|(bytes, provider)| async move {
-                    tokio::time::timeout(
-                        Duration::from_secs(1),
-                        provider.send_raw_transaction(&bytes),
-                    )
+            let mut all_pending_txs = VecDeque::new();
+            let start_time = std::time::Instant::now();
+            let total_duration = Duration::from_secs(self.duration);
+
+            // Generate first batch before starting the send loop
+            let first_batch_size = batch_size.min(total_txs);
+            let batch_input = GenerateTransactionsInput {
+                total_txs: first_batch_size,
+                ..gen_input.clone()
+            };
+            let mut current_batch = Some(
+                generate_transactions(batch_input)
                     .await
                 })
                 .buffer_unordered(self.max_concurrent_requests)
