@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {TempoUtilities} from "./TempoUtilities.sol";
-import {ITIP20} from "./interfaces/ITIP20.sol";
-import {ECDSA} from "solady/utils/ECDSA.sol";
-import {EIP712} from "solady/utils/EIP712.sol";
+import { TempoUtilities } from "./TempoUtilities.sol";
+import { ITIP20 } from "./interfaces/ITIP20.sol";
+import { ECDSA } from "solady/utils/ECDSA.sol";
+import { EIP712 } from "solady/utils/EIP712.sol";
 
 /**
  * @title TempoStreamChannel
@@ -15,6 +15,7 @@ import {EIP712} from "solady/utils/EIP712.sol";
  *      following a user's close request.
  */
 contract TempoStreamChannel is EIP712 {
+
     // --- Types ---
 
     struct Channel {
@@ -30,7 +31,8 @@ contract TempoStreamChannel is EIP712 {
 
     // --- Constants ---
 
-    bytes32 public constant VOUCHER_TYPEHASH = keccak256("Voucher(bytes32 channelId,uint128 cumulativeAmount)");
+    bytes32 public constant VOUCHER_TYPEHASH =
+        keccak256("Voucher(bytes32 channelId,uint128 cumulativeAmount)");
 
     uint64 public constant CLOSE_GRACE_PERIOD = 15 minutes;
 
@@ -61,7 +63,10 @@ contract TempoStreamChannel is EIP712 {
     );
 
     event CloseRequested(
-        bytes32 indexed channelId, address indexed payer, address indexed payee, uint256 closeGraceEnd
+        bytes32 indexed channelId,
+        address indexed payer,
+        address indexed payee,
+        uint256 closeGraceEnd
     );
 
     event TopUp(
@@ -80,7 +85,9 @@ contract TempoStreamChannel is EIP712 {
         uint256 refundedToPayer
     );
 
-    event CloseRequestCancelled(bytes32 indexed channelId, address indexed payer, address indexed payee);
+    event CloseRequestCancelled(
+        bytes32 indexed channelId, address indexed payer, address indexed payee
+    );
 
     event ChannelExpired(bytes32 indexed channelId, address indexed payer, address indexed payee);
 
@@ -102,7 +109,12 @@ contract TempoStreamChannel is EIP712 {
 
     // --- EIP-712 Domain ---
 
-    function _domainNameAndVersion() internal pure override returns (string memory name, string memory version) {
+    function _domainNameAndVersion()
+        internal
+        pure
+        override
+        returns (string memory name, string memory version)
+    {
         name = "Tempo Stream Channel";
         version = "1";
     }
@@ -118,7 +130,13 @@ contract TempoStreamChannel is EIP712 {
      * @param authorizedSigner Address authorized to sign vouchers (0 = use msg.sender)
      * @return channelId The unique channel identifier
      */
-    function open(address payee, address token, uint128 deposit, bytes32 salt, address authorizedSigner)
+    function open(
+        address payee,
+        address token,
+        uint128 deposit,
+        bytes32 salt,
+        address authorizedSigner
+    )
         external
         returns (bytes32 channelId)
     {
@@ -162,7 +180,13 @@ contract TempoStreamChannel is EIP712 {
      * @param cumulativeAmount Total amount authorized by the voucher
      * @param signature EIP-712 signature from the payer/authorizedSigner
      */
-    function settle(bytes32 channelId, uint128 cumulativeAmount, bytes calldata signature) external {
+    function settle(
+        bytes32 channelId,
+        uint128 cumulativeAmount,
+        bytes calldata signature
+    )
+        external
+    {
         if (closedChannels[channelId]) {
             revert ChannelFinalized();
         }
@@ -186,7 +210,8 @@ contract TempoStreamChannel is EIP712 {
         bytes32 digest = _hashTypedData(structHash);
         address signer = ECDSA.recoverCalldata(digest, signature);
 
-        address expectedSigner = channel.authorizedSigner != address(0) ? channel.authorizedSigner : channel.payer;
+        address expectedSigner =
+            channel.authorizedSigner != address(0) ? channel.authorizedSigner : channel.payer;
 
         if (signer != expectedSigner) {
             revert InvalidSignature();
@@ -200,7 +225,9 @@ contract TempoStreamChannel is EIP712 {
             revert TransferFailed();
         }
 
-        emit Settled(channelId, channel.payer, channel.payee, cumulativeAmount, delta, channel.settled);
+        emit Settled(
+            channelId, channel.payer, channel.payee, cumulativeAmount, delta, channel.settled
+        );
     }
 
     /**
@@ -227,7 +254,8 @@ contract TempoStreamChannel is EIP712 {
                 revert DepositOverflow();
             }
 
-            bool success = ITIP20(channel.token).transferFrom(msg.sender, address(this), additionalDeposit);
+            bool success =
+                ITIP20(channel.token).transferFrom(msg.sender, address(this), additionalDeposit);
             if (!success) {
                 revert TransferFailed();
             }
@@ -264,7 +292,9 @@ contract TempoStreamChannel is EIP712 {
         // Only set if not already requested
         if (channel.closeRequestedAt == 0) {
             channel.closeRequestedAt = uint64(block.timestamp);
-            emit CloseRequested(channelId, channel.payer, channel.payee, block.timestamp + CLOSE_GRACE_PERIOD);
+            emit CloseRequested(
+                channelId, channel.payer, channel.payee, block.timestamp + CLOSE_GRACE_PERIOD
+            );
         }
     }
 
@@ -302,11 +332,13 @@ contract TempoStreamChannel is EIP712 {
                 revert AmountExceedsDeposit();
             }
 
-            bytes32 structHash = keccak256(abi.encode(VOUCHER_TYPEHASH, channelId, cumulativeAmount));
+            bytes32 structHash =
+                keccak256(abi.encode(VOUCHER_TYPEHASH, channelId, cumulativeAmount));
             bytes32 digest = _hashTypedData(structHash);
             address signer = ECDSA.recoverCalldata(digest, signature);
 
-            address expectedSigner = channel.authorizedSigner != address(0) ? channel.authorizedSigner : channel.payer;
+            address expectedSigner =
+                channel.authorizedSigner != address(0) ? channel.authorizedSigner : channel.payer;
 
             if (signer != expectedSigner) {
                 revert InvalidSignature();
@@ -363,8 +395,8 @@ contract TempoStreamChannel is EIP712 {
         uint128 settledAmount = channel.settled;
 
         // Check if eligible to withdraw
-        bool closeGracePassed =
-            channel.closeRequestedAt != 0 && block.timestamp >= channel.closeRequestedAt + CLOSE_GRACE_PERIOD;
+        bool closeGracePassed = channel.closeRequestedAt != 0
+            && block.timestamp >= channel.closeRequestedAt + CLOSE_GRACE_PERIOD;
 
         if (!closeGracePassed) {
             revert CloseNotReady();
@@ -405,12 +437,20 @@ contract TempoStreamChannel is EIP712 {
      * @param salt Random salt
      * @param authorizedSigner Address authorized to sign vouchers
      */
-    function computeChannelId(address payer, address payee, address token, bytes32 salt, address authorizedSigner)
+    function computeChannelId(
+        address payer,
+        address payee,
+        address token,
+        bytes32 salt,
+        address authorizedSigner
+    )
         public
         view
         returns (bytes32)
     {
-        return keccak256(abi.encode(payer, payee, token, salt, authorizedSigner, address(this), block.chainid));
+        return keccak256(
+            abi.encode(payer, payee, token, salt, authorizedSigner, address(this), block.chainid)
+        );
     }
 
     /**
@@ -423,7 +463,14 @@ contract TempoStreamChannel is EIP712 {
     /**
      * @notice Compute the digest for a voucher (for off-chain signing).
      */
-    function getVoucherDigest(bytes32 channelId, uint128 cumulativeAmount) external view returns (bytes32) {
+    function getVoucherDigest(
+        bytes32 channelId,
+        uint128 cumulativeAmount
+    )
+        external
+        view
+        returns (bytes32)
+    {
         bytes32 structHash = keccak256(abi.encode(VOUCHER_TYPEHASH, channelId, cumulativeAmount));
         return _hashTypedData(structHash);
     }
@@ -433,7 +480,11 @@ contract TempoStreamChannel is EIP712 {
      * @param channelIds Array of channel IDs to query
      * @return channelStates Array of Channel structs
      */
-    function getChannelsBatch(bytes32[] calldata channelIds) external view returns (Channel[] memory channelStates) {
+    function getChannelsBatch(bytes32[] calldata channelIds)
+        external
+        view
+        returns (Channel[] memory channelStates)
+    {
         uint256 length = channelIds.length;
         channelStates = new Channel[](length);
 
@@ -445,4 +496,5 @@ contract TempoStreamChannel is EIP712 {
             }
         }
     }
+
 }

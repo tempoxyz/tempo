@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {TIP20} from "../src/TIP20.sol";
-import {TempoStreamChannel} from "../src/TempoStreamChannel.sol";
-import {BaseTest} from "./BaseTest.t.sol";
-import {MockTIP20} from "./mocks/MockTIP20.sol";
+import { TIP20 } from "../src/TIP20.sol";
+import { TempoStreamChannel } from "../src/TempoStreamChannel.sol";
+import { BaseTest } from "./BaseTest.t.sol";
+import { MockTIP20 } from "./mocks/MockTIP20.sol";
 
 contract TempoStreamChannelTest is BaseTest {
+
     TempoStreamChannel public channel;
     TIP20 public token;
 
@@ -21,7 +22,9 @@ contract TempoStreamChannelTest is BaseTest {
         super.setUp();
 
         channel = new TempoStreamChannel();
-        token = TIP20(factory.createToken("Stream Token", "STR", "USD", pathUSD, admin, bytes32("stream")));
+        token = TIP20(
+            factory.createToken("Stream Token", "STR", "USD", pathUSD, admin, bytes32("stream"))
+        );
 
         (payer, payerKey) = makeAddrAndKey("payer");
         payee = makeAddr("payee");
@@ -274,7 +277,8 @@ contract TempoStreamChannelTest is BaseTest {
         bytes32 channelId1 = _openChannel();
 
         vm.prank(payer);
-        bytes32 channelId2 = channel.open(payee, address(token), DEPOSIT, bytes32(uint256(2)), address(0));
+        bytes32 channelId2 =
+            channel.open(payee, address(token), DEPOSIT, bytes32(uint256(2)), address(0));
 
         bytes memory sig = _signVoucher(channelId1, 500_000);
         vm.prank(payee);
@@ -634,7 +638,8 @@ contract TempoStreamChannelTest is BaseTest {
 
     function test_computeChannelId_differentSaltDifferentId() public view {
         bytes32 id1 = channel.computeChannelId(payer, payee, address(token), SALT, address(0));
-        bytes32 id2 = channel.computeChannelId(payer, payee, address(token), bytes32(uint256(2)), address(0));
+        bytes32 id2 =
+            channel.computeChannelId(payer, payee, address(token), bytes32(uint256(2)), address(0));
         assertTrue(id1 != id2);
     }
 
@@ -670,7 +675,9 @@ contract TempoStreamChannelTest is BaseTest {
         bytes memory sig = _signVoucher(channelId, 500_000);
 
         TempoStreamChannel channel2 = new TempoStreamChannel();
-        TIP20 token2 = TIP20(factory.createToken("Stream Token 2", "ST2", "USD", pathUSD, admin, bytes32("stream2")));
+        TIP20 token2 = TIP20(
+            factory.createToken("Stream Token 2", "ST2", "USD", pathUSD, admin, bytes32("stream2"))
+        );
 
         vm.startPrank(admin);
         token2.grantRole(_ISSUER_ROLE, admin);
@@ -696,7 +703,9 @@ contract TempoStreamChannelTest is BaseTest {
         vm.chainId(originalChainId + 1);
 
         TempoStreamChannel channel2 = new TempoStreamChannel();
-        TIP20 token2 = TIP20(factory.createToken("Stream Token 3", "ST3", "USD", pathUSD, admin, bytes32("stream3")));
+        TIP20 token2 = TIP20(
+            factory.createToken("Stream Token 3", "ST3", "USD", pathUSD, admin, bytes32("stream3"))
+        );
 
         vm.startPrank(admin);
         token2.grantRole(_ISSUER_ROLE, admin);
@@ -800,7 +809,8 @@ contract TempoStreamChannelTest is BaseTest {
 
         bytes32 salt = bytes32(uint256(block.timestamp));
 
-        uint256 totalBefore = token.balanceOf(payer) + token.balanceOf(payee) + token.balanceOf(address(channel));
+        uint256 totalBefore =
+            token.balanceOf(payer) + token.balanceOf(payee) + token.balanceOf(address(channel));
 
         vm.prank(payer);
         bytes32 channelId = channel.open(payee, address(token), depositAmt, salt, address(0));
@@ -809,7 +819,8 @@ contract TempoStreamChannelTest is BaseTest {
         vm.prank(payee);
         channel.close(channelId, settleAmt, sig);
 
-        uint256 totalAfter = token.balanceOf(payer) + token.balanceOf(payee) + token.balanceOf(address(channel));
+        uint256 totalAfter =
+            token.balanceOf(payer) + token.balanceOf(payee) + token.balanceOf(address(channel));
 
         assertEq(totalAfter, totalBefore);
     }
@@ -950,7 +961,8 @@ contract TempoStreamChannelTest is BaseTest {
         bytes32 channelId1 = _openChannel();
 
         vm.prank(payer);
-        bytes32 channelId2 = channel.open(payee, address(token), DEPOSIT, bytes32(uint256(2)), address(0));
+        bytes32 channelId2 =
+            channel.open(payee, address(token), DEPOSIT, bytes32(uint256(2)), address(0));
 
         vm.prank(payee);
         channel.close(channelId1, 0, "");
@@ -973,4 +985,5 @@ contract TempoStreamChannelTest is BaseTest {
         vm.expectRevert(TempoStreamChannel.InvalidPayee.selector);
         channel.open(address(0), address(token), DEPOSIT, SALT, address(0));
     }
+
 }
