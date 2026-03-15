@@ -95,10 +95,10 @@ pub trait PrecompileStorageProvider {
     /// auto-reverts on drop and is hardfork-aware (no-op pre-T1C).
     fn checkpoint(&mut self) -> JournalCheckpoint;
 
-    /// Commits all state changes since the last checkpoint.
+    /// Commits all state changes since the given checkpoint.
     ///
     /// Prefer [`CheckpointGuard::commit`].
-    fn checkpoint_commit(&mut self);
+    fn checkpoint_commit(&mut self, checkpoint: JournalCheckpoint);
 
     /// Reverts all state changes back to the given checkpoint.
     ///
