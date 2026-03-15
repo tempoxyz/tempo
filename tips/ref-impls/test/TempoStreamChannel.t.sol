@@ -915,7 +915,7 @@ contract TempoStreamChannelTest is BaseTest {
         vm.prank(payee);
         channel.close(channelId, 0, "");
 
-        assertTrue(channel.channelTombstones(channelId));
+        assertTrue(channel.closedChannels(channelId));
 
         (
             address rawPayer,
@@ -954,7 +954,7 @@ contract TempoStreamChannelTest is BaseTest {
         vm.prank(payer);
         channel.withdraw(channelId);
 
-        assertTrue(channel.channelTombstones(channelId));
+        assertTrue(channel.closedChannels(channelId));
         assertTrue(channel.getChannel(channelId).finalized);
 
         vm.prank(payer);
