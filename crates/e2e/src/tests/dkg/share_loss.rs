@@ -58,8 +58,11 @@ fn validator_lost_share_but_gets_share_in_next_epoch() {
 
         'acquire_share: loop {
             context.sleep(Duration::from_secs(1)).await;
-
             let metrics = context.encode();
+
+            if let Some(v) = metric_value(&metrics, &uid, "peers_blocked") {
+                assert_eq!(v, 0);
+            }
 
             if let Some(epoch) = metric_value(&metrics, &uid, "_epoch_manager_latest_epoch") {
                 assert!(epoch < 2, "reached 2nd epoch without recovering new share");
