@@ -882,14 +882,14 @@ contract TempoStreamChannelTest is BaseTest {
         channel.close(channelId, 0, "");
 
         (
+            uint64 rawCloseRequestedAt,
+            bool rawFinalized,
             address rawPayer,
             address rawPayee,
             address rawToken,
             address rawSigner,
             uint128 rawDeposit,
-            uint128 rawSettled,
-            uint64 rawCloseRequestedAt,
-            bool rawFinalized
+            uint128 rawSettled
         ) = channel.channels(channelId);
 
         assertEq(rawPayer, address(0));
