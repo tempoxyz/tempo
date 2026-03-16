@@ -38,6 +38,8 @@ struct Config {
     /// Number of V1 validators skipped during migration (bad pubkey, duplicate, etc).
     /// Packed alongside `is_init` and `init_at_height` since all are migration lifecycle state.
     migration_skipped_count: u8,
+    /// Snapshotted V1 validator count, captured on the first `migrateValidator` call.
+    /// Used for index validation so V1 mutations cannot break migration ordering.
     v1_validator_count: u8,
 }
 
