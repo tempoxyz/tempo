@@ -16,7 +16,7 @@ use futures::future::join_all;
 use rand_08::Rng;
 use tracing::debug;
 
-use crate::{CONSENSUS_NODE_PREFIX, Setup, setup_validators};
+use crate::{CONSENSUS_NODE_PREFIX, Setup, connect_execution_peers, setup_validators};
 
 #[test_traced("WARN")]
 fn committee_of_one() {
@@ -66,8 +66,7 @@ impl SimpleRestart {
             .how_many_signers(committee_size)
             .seed(0)
             .epoch_length(epoch_length)
-            .t2_time(0)
-            .connect_execution_layer_nodes(connect_execution_layer);
+            .t2_time(0);
 
         let cfg = deterministic::Config::default().with_seed(setup.seed);
         let executor = Runner::from(cfg);
@@ -77,6 +76,9 @@ impl SimpleRestart {
                 setup_validators(&mut context, setup.clone()).await;
 
             join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+            if connect_execution_layer {
+                connect_execution_peers(&validators).await;
+            }
 
             debug!(
                 height = restart_after,
@@ -243,10 +245,8 @@ impl RestartSetup {
         } = self;
         let _ = tempo_eyre::install();
 
-        let setup = Setup::new()
-            .epoch_length(epoch_length)
-            .t2_time(0)
-            .connect_execution_layer_nodes(connect_execution_layer);
+        let setup = Setup::new().epoch_length(epoch_length).t2_time(0);
+
         let cfg = deterministic::Config::default().with_seed(setup.seed);
         let executor = Runner::from(cfg);
 
@@ -255,6 +255,9 @@ impl RestartSetup {
             setup_validators(&mut context, setup.clone()).await;
 
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+        if connect_execution_layer {
+            connect_execution_peers(&validators).await;
+        }
 
         debug!(
             height = shutdown_height,

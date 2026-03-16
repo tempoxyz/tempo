@@ -19,8 +19,8 @@ use reth_ethereum::provider::BlockNumReader as _;
 use tracing::info;
 
 use crate::{
-    CONSENSUS_NODE_PREFIX, Setup, setup_validators,
-    tests::v2_at_genesis::dkg::common::wait_for_outcome,
+    CONSENSUS_NODE_PREFIX, Setup, connect_execution_peers, connect_execution_to_peers,
+    setup_validators, tests::v2_at_genesis::dkg::common::wait_for_outcome,
 };
 
 /// This is a lengthy test. First, a validator needs to be run for a sufficiently
@@ -38,8 +38,8 @@ fn joins_from_snapshot() {
         .how_many_signers(4)
         .how_many_verifiers(1)
         .t2_time(0)
-        .connect_execution_layer_nodes(true)
         .epoch_length(epoch_length);
+
     let cfg = deterministic::Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);
 
@@ -55,7 +55,9 @@ fn joins_from_snapshot() {
                 .expect("at least one node must be a verifier, i.e. not have a share");
             validators.remove(idx)
         };
+
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+        connect_execution_peers(&validators).await;
 
         // The validator that will donate it its database to the replacement.
         let mut donor = validators.pop().unwrap();
@@ -178,7 +180,9 @@ fn joins_from_snapshot() {
         }
         donor.network_address = replacement.network_address;
         donor.chain_address = replacement.chain_address;
+
         donor.start(&context).await;
+        connect_execution_to_peers(&donor, &validators).await;
 
         // Rename, so that it's less confusing below.
         let replacement = donor;
@@ -246,8 +250,8 @@ fn can_restart_after_joining_from_snapshot() {
         .how_many_signers(4)
         .how_many_verifiers(1)
         .t2_time(0)
-        .connect_execution_layer_nodes(true)
         .epoch_length(epoch_length);
+
     let cfg = deterministic::Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);
 
@@ -263,7 +267,9 @@ fn can_restart_after_joining_from_snapshot() {
                 .expect("at least one node must be a verifier, i.e. not have a share");
             validators.remove(idx)
         };
+
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+        connect_execution_peers(&validators).await;
 
         // The validator that will donate its database to the replacement.
         let mut donor = validators.pop().unwrap();
@@ -384,7 +390,9 @@ fn can_restart_after_joining_from_snapshot() {
         }
         donor.network_address = replacement.network_address;
         donor.chain_address = replacement.chain_address;
+
         donor.start(&context).await;
+        connect_execution_to_peers(&donor, &validators).await;
 
         // Rename, so that it's less confusing below.
         let mut replacement = donor;
@@ -448,6 +456,7 @@ fn can_restart_after_joining_from_snapshot() {
             .unwrap();
 
         replacement.start(&context).await;
+        connect_execution_to_peers(&replacement, &validators).await;
 
         info!(
             network_head,

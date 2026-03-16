@@ -16,7 +16,7 @@ use futures::future::join_all;
 use reth_ethereum::provider::BlockNumReader as _;
 use tracing::info;
 
-use crate::{CONSENSUS_NODE_PREFIX, Setup, setup_validators};
+use crate::{CONSENSUS_NODE_PREFIX, Setup, connect_execution_peers, setup_validators};
 
 #[test_traced]
 fn joins_from_snapshot() {
@@ -28,7 +28,6 @@ fn joins_from_snapshot() {
     let setup = Setup::new()
         .how_many_signers(4)
         .how_many_verifiers(1)
-        .connect_execution_layer_nodes(true)
         .epoch_length(epoch_length);
     let cfg = deterministic::Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);
@@ -54,6 +53,7 @@ fn joins_from_snapshot() {
             "must have removed the one non-signer node; must be left with only signers",
         );
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+        connect_execution_peers(&validators).await;
 
         // The validator that will receive the donor's addresses to simulate
         // a late start.
@@ -178,8 +178,7 @@ fn can_restart_after_joining_from_snapshot() {
     let setup = Setup::new()
         .how_many_signers(4)
         .how_many_verifiers(1)
-        .epoch_length(epoch_length)
-        .connect_execution_layer_nodes(true);
+        .epoch_length(epoch_length);
     let cfg = deterministic::Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);
 
@@ -204,6 +203,7 @@ fn can_restart_after_joining_from_snapshot() {
             "must have removed the one non-signer node; must be left with only signers",
         );
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+        connect_execution_peers(&validators).await;
 
         // The validator that will receive the donor's addresses to simulate
         // a late start.

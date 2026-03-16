@@ -15,7 +15,7 @@ use super::common::{
     assert_no_dkg_failures, assert_skipped_rounds, wait_for_outcome,
     wait_for_validators_to_reach_epoch,
 };
-use crate::{Setup, setup_validators};
+use crate::{Setup, connect_execution_peers, setup_validators};
 
 /// Tests that a late-joining validator can sync and participate after a full DKG ceremony.
 ///
@@ -35,8 +35,7 @@ fn validator_can_fast_sync_after_full_dkg() {
 
     let setup = Setup::new()
         .how_many_signers(how_many_signers)
-        .epoch_length(epoch_length)
-        .connect_execution_layer_nodes(true);
+        .epoch_length(epoch_length);
 
     let cfg = Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);
@@ -46,6 +45,7 @@ fn validator_can_fast_sync_after_full_dkg() {
 
         let mut late_validator = validators.pop().unwrap();
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+        connect_execution_peers(&validators).await;
 
         let http_url: Url = validators[0]
             .execution()

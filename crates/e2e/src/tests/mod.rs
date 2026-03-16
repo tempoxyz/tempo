@@ -37,13 +37,7 @@ fn spawning_execution_node_works() {
     let handle = runtime.handle();
 
     futures::executor::block_on(async move {
-        let config = crate::ExecutionNodeConfig {
-            secret_key: alloy_primitives::B256::random(),
-            trusted_peers: vec![],
-            port: 0,
-            validator_key: None,
-            feed_state: None,
-        };
+        let config = crate::ExecutionNodeConfig::generate();
         let db_path = handle.nodes_dir().join("node-1").join("db");
         std::fs::create_dir_all(&db_path).expect("failed to create database directory");
         let database = reth_db::init_db(db_path, reth_db::mdbx::DatabaseArguments::default())
