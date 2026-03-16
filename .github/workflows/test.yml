@@ -192,7 +192,7 @@ jobs:
       - name: Build e2e tests
         run: cargo nextest run --profile ci -E 'package(tempo-e2e)' --no-run
       - name: Run e2e tests
-        run: cargo nextest run --profile ci -E 'package(tempo-e2e)' -E 'test(v2_at_genesis::snapshot::can_restart_after_joining_from_snapshot)'
+        run: cargo nextest run --profile ci -E 'package(tempo-e2e) & test(v2_at_genesis::snapshot::can_restart_after_joining_from_snapshot)'
 
   cli:
     name: CLI smoke tests
