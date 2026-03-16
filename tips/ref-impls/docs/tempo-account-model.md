@@ -4,17 +4,36 @@
 
 Tempo extends Ethereum's account model to support multiple signing key schemes at the protocol level. This document lays out the problem space, the decisions we've already made, the ones we haven't, and where the model is headed.
 
-## Ethereum's Account Model and Contract Design
+## The Problem
 
-Ethereum has one EOA type: secp256k1 ECDSA. An EOA's address is the hash of it's public key. Because of this, all contracts today determine the identity of EOAs in 2 ways:
+Ethereum's account model assumes a single key type and signature scheme. EOAs use secp256k1 ECDSA exclusively. Smart contracts verify identity through two mechanisms, both locked to secp256k1:
 
-1. **`msg.sender`**: Transfer tokens, vote, deposit into a vault. In Tempo, all key types are granted an address space and would work with `msg.sender` based interactions.
+1. **`msg.sender`**: on-chain identity for transfers, deposits, votes, and any call-based interaction. The caller's address is implicitly trusted.
+2. **`ecrecover`**: off-chain signature verification. Contracts pass a `(v, r, s)` tuple to recover the signer's address. Permits, gasless approvals, off-chain order signing, and governance voting by signature all rely on this path.
 
-2. **`ecrecover`**: contracts use it to verify off-chain signatures. These take a `(v, r, s)` tuple and call `ecrecover` to recover the signer's address, and only works for secp256k1 EOAs.
+The `msg.sender` half is solvable — Tempo grants every key type its own address space, so on-chain interactions work across account types. The `ecrecover` half is the harder problem: any account using a non-secp256k1 key scheme is a second-class citizen for signature-based workflows. In practice, this affects Uniswap Permit2 approvals, Seaport order signing, Aave/Compound governance (`castVoteBySig`), DAI permit, CoW Protocol intent signing, ERC-2612 gasless permits, any ERC-2771/GSN meta-transaction relayer, and more.
 
-## The Tempo account model today
+This is a structural limitation. As passkey-based wallets (P256/WebAuthn), multisig schemes, and post-quantum cryptography become necessary, Ethereum's single-scheme assumption forces the ecosystem into increasingly complex workarounds.
 
-Tempo has introduced new account types and will keep introducing more:
+## Why Existing Solutions Fall Short
+
+The AA debate on Ethereum splits into two camps: enshrine specific features into the protocol, or provide generic primitives and let developers build. Ethereum's proposals have gravitated toward the latter, and the resulting complexity is the cost.
+
+**[ERC-4337](https://eips.ethereum.org/EIPS/eip-4337)** builds a second transaction pipeline at the application layer: separate message type (UserOperations), separate relay network (bundlers), and a singleton `EntryPoint` contract mediating every execution. This adds gas overhead per `UserOp`, depends on a thin bundler market with no protocol-level liveness guarantee, and forces every block explorer, indexer, and wallet to handle a second class of transaction.
+
+**[EIP-7702](https://eips.ethereum.org/EIPS/eip-7702)** lets an EOA delegate execution to a contract for one transaction — enabling batching, gas sponsorship, and custom validation. But the delegating account is still a secp256k1 EOA. A passkey holder or multisig cannot initiate a 7702 delegation on its own. Existing EOAs gain new capabilities, but remain secp256k1 accounts underneath.
+
+**[EIP-8141](https://eips.ethereum.org/EIPS/eip-8141) (Frame Transactions)** a fully generic account model: authorization, gas payment, and execution are all arbitrary EVM code. This can express any AA use case, but there are no sane defaults — every integrator independently solves key management, gas abstraction, and replay protection:
+
+- Clients must execute arbitrary code to validate transactions before inclusion, which makes mempool DoS protection more complex.
+- Developer tooling (block explorers, debuggers, simulators) must handle transactions with no well-defined structure, where authorization and payment can happen at any point during execution.
+- Wallets must integrate and audit smart account implementations on every chain — whether their own or third-party.
+
+## Tempo's Account Model
+
+Tempo solves this at the protocol level. Multiple key schemes authenticate in the execution layer, outside the EVM, before a transaction ever touches a contract — without bundlers, wrapper contracts, or alternative mempools.
+
+All account types share the same transaction format, mempool, and gas semantics.
 
 | Key Type | Scheme | Status |
 |---|---|---|
@@ -23,29 +42,37 @@ Tempo has introduced new account types and will keep introducing more:
 | Multisig | M-of-N or weighted M-of-N quorum | In progress |
 | Post-Quantum | TBD | Future |
 
-All of these authenticate in the execution layer outside the EVM. 
+All key types receive their own address space at the protocol level, so `msg.sender`-based interactions work identically across account types.
 
-## The `ecrecover` gap
+## The Verification Precompile (TIP-1020)
 
-P256 accounts, multisig or post-quantum keys cannot produce a valid `(v, r, s)` tuple that validates within the ecrecover precompile. Thus, these accounts cannot use any contracts that verifies signatures via `ecrecover`. This includes permits, gasless approvals, off-chain order signing, and governance voting by signature.
+Protocol-level authentication solves the `msg.sender` half of the problem. But contracts that verify off-chain signatures — the `ecrecover` half — still can't work with non-secp256k1 accounts.
 
-Protocols that would reject signatures from non-secp256k1 Tempo accounts today include Uniswap (Permit2 approvals), OpenSea/Seaport (order signing), Aave and Compound (governance `castVoteBySig`), MakerDAO (DAI permit), CoW Protocol (intent signing), OpenZeppelin Governor (vote by signature), ERC-2612 tokens broadly (gasless `permit`), and any ERC-2771/GSN meta-transaction relayer.
+The solution is a unified verification precompile: a single address that accepts `(address signer, bytes32 hash, bytes signature)` and returns whether the signature is valid, regardless of what key type backs the account.
 
-For Tempo-native contracts (TIP-20 tokens, the stablecoin DEX, governance) we control the code and can use a different verification path. Ethereum contracts that use `ecrecover` on Tempo can only serve secp256k1 EOAs.
+```solidity
+// Instead of:
+address signer = ecrecover(hash, v, r, s);
 
-## The TIP-1020 Verification Precompile
-
-The solution for Tempo-native contracts is a unified signature verification precompile: a single address that accepts `(address signer, bytes32 hash, bytes signature)` and returns whether the signature is valid, regardless of what key type backs the account.
+// Tempo-native contracts call:
+bool valid = TEMPO_VERIFY.verify(signer, hash, signature);
+```
 
 Contracts call this precompile instead of `ecrecover`. They don't need to know what key type the signer uses, and they don't need to be redeployed when new key types are added.
 
-Critically, this precompile serves as the gateway to Tempo's evolving account model. As key types are activated or deprecated through hardforks, their corresponding verification logic is added or removed accordingly. This makes the precompile the single policy enforcement point governing which cryptographic schemes the chain considers valid at any given block height.
+Three properties matter:
 
-Without the precompile, these contracts will be forced to implement upgradeability on Tempo just to maintain compatibility with the Tempo account model. The precompile allows smart contracts to remain immutable and support the entire suite of Tempo EOAs while the Tempo account model changes. They delegate the "is this signature valid" question to the chain, and the chain's answer changes over time.
+1. **Forward-compatible.** As key types are activated or deprecated through hardforks, their verification logic is added or removed from the precompile. Contracts don't change; the chain's answer to "is this signature valid?" evolves over time.
 
-## Address derivation
+2. **Preserves immutability.** Without the precompile, contracts would need upgradeability mechanisms just to keep up with new key types. The precompile lets contracts remain immutable while supporting all Tempo EOAs.
 
-Today, all Tempo key types derive addresses that maps to the entire full key space, a `bytes20`. This works fine as long as every active key scheme is cryptographically strong. If a weak scheme is introduced, or an existing scheme is broken, an attacker could find a key under that scheme whose derived address collides with an existing account. One broken scheme poisons the entire address space.
+3. **Single policy enforcement point.** The precompile is the authoritative boundary between the account model (which changes) and the contract layer (which doesn't). It governs which cryptographic schemes the chain considers valid at any given block height, letting the model evolve without breaking deployed contracts.
+
+For Tempo-native contracts — TIP-20 tokens, the stablecoin DEX, governance — this is the standard verification path. Ethereum-origin contracts deployed on Tempo that use `ecrecover` will continue to work, but only for secp256k1 accounts.
+
+## Address Derivation and Cryptographic Isolation
+
+Supporting multiple key schemes introduces a security consideration: the chain's address space is only as strong as its weakest active scheme. If a scheme is broken, an attacker could derive a key whose address collides with an existing account under a different scheme. One compromised scheme poisons the entire address space.
 
 There are two approaches to contain this blast radius:
 
@@ -60,22 +87,18 @@ No prefix   → secp256k1
 0x03_______ → Post-Quantum
 ```
 
-A broken scheme can then only collide with addresses in its own partition. A compromised PQ derivation can't take over a P256 account because the addresses live in different spaces.
+A compromised scheme can only collide with addresses in its own partition — a broken PQ derivation cannot take over a P256 account.
 
-The catch is that secp256k1 addresses already exist everywhere with no prefix restriction, so the secp256k1 partition can't be enforced retroactively. Users whose secp256k1 address happens to fall in another scheme's range would be encouraged to migrate. Non-secp256k1 key generation also gets slightly slower, since devices need to mine for addresses with valid prefixes. Effective address space per partition drops from 160 to 152 bits with a 1-byte prefix.
+**Tradeoffs:** secp256k1 addresses already exist without prefix restrictions, so this partition can't be enforced retroactively (affected users would need to migrate). Non-secp256k1 key generation becomes slightly slower as devices mine for valid prefixes. Effective address space per partition drops from 160 to 152 bits.
 
 ### Option B: Register key type on first use
 
-Keep address derivation uniform. The first transaction from an account records its key type at the protocol level. From that point on, the protocol rejects signatures from a different key type unless the account explicitly rotates via a migration operation.
+Keep address derivation uniform. The first transaction from an account records its key type at the protocol level. Subsequent signatures from a different key type are rejected unless the account explicitly rotates via a migration operation.
 
-This preserves address format compatibility and requires the fewest changes. It also opens a clean path to key rotation. The tradeoff is that blast radius remains broad: a broken scheme still has access to the full address space for counterfactual addresses and unactivated accounts such as burn addresses `0x00..00` and `0x00..dead`.
+This preserves address format compatibility and requires the fewest changes. It also opens a clean path to key rotation. The tradeoff is that the blast radius remains broad: a broken scheme still has access to the full address space for counterfactual (never-activated) addresses, including burn addresses like `0x00..00` and `0x00..dead`.
 
-### Bottom line
-
-This model gives Tempo a clean form of account abstraction without the complexity that
-comes with existing solutions. Every account — regardless of key type — submits transactions the same way, lands in the same mempool, and executes with the same gas semantics.
+## Open Problems
 
 Two problems remain open. First, the account model changes but smart contracts do not. The verification precompile is the seam between these two worlds — it must remain a stable interface while everything behind it evolves with each hardfork. Getting this boundary right is what lets the model evolve without breaking what's already deployed.
 
-Second, the chain's security is bounded by its weakest active key scheme. Whether we
-partition the address space or register key types on first use, we should find a resolution here.
+Second, the chain's security is bounded by its weakest active key scheme. Whether we partition the address space or register key types on first use, we need to resolve which isolation strategy to adopt.
