@@ -13,7 +13,7 @@ use revm::{
     context::{
         Block, Cfg, ContextTr, JournalTr, LocalContextTr, Transaction, TransactionType,
         journaled_state::account::JournaledAccountTr,
-        result::{EVMError, ExecutionResult, InvalidTransaction},
+        result::{EVMError, ExecutionResult, InvalidTransaction, ResultGas},
         transaction::{AccessListItem, AccessListItemTr},
     },
     context_interface::cfg::{GasId, GasParams},
@@ -605,6 +605,7 @@ where
         &mut self,
         evm: &mut Self::Evm,
         result: <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
+        result_gas: ResultGas,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
         evm.logs.clear();
         // reset initial gas to 0 to avoid gas limit check errors
@@ -614,7 +615,7 @@ where
         }
 
         MainnetHandler::default()
-            .execution_result(evm, result)
+            .execution_result(evm, result, result_gas)
             .map(|result| result.map_haltreason(Into::into))
     }
 
@@ -625,12 +626,12 @@ where
     /// of an aa_authorization_list in the tempo_tx_env.
     #[inline]
     fn apply_eip7702_auth_list(&self, evm: &mut Self::Evm) -> Result<u64, Self::Error> {
-        let ctx = evm.ctx();
-        let spec = *ctx.cfg().spec();
+        let ctx = &mut evm.ctx;
+        let spec = ctx.cfg.spec;
 
         // Check if this is an AA transaction with an authorization list
         let has_aa_auth_list = ctx
-            .tx()
+            .tx
             .tempo_tx_env
             .as_ref()
             .map(|aa_env| !aa_env.tempo_authorization_list.is_empty())
@@ -639,20 +640,17 @@ where
         // If it's an AA transaction with authorization list, we need to apply it manually
         // since the default implementation only checks for TransactionType::Eip7702
         let refunded_gas = if has_aa_auth_list {
-            let chain_id = ctx.cfg().chain_id();
-
-            let (tx, journal) = evm.ctx().tx_journal_mut();
-
-            let tempo_tx_env = tx.tempo_tx_env.as_ref().unwrap();
+            let tempo_tx_env = ctx.tx.tempo_tx_env.as_ref().unwrap();
 
             apply_auth_list::<_, Self::Error>(
-                chain_id,
+                ctx.cfg.chain_id,
+                ctx.cfg.gas_params.tx_eip7702_auth_refund(),
                 tempo_tx_env
                     .tempo_authorization_list
                     .iter()
                     // T0 hardfork: skip keychain signatures in auth list processing
                     .filter(|auth| !(spec.is_t0() && auth.signature().is_keychain())),
-                journal,
+                &mut ctx.journaled_state,
             )?
         } else {
             // For standard EIP-7702 transactions, use the default implementation
@@ -1430,7 +1428,8 @@ where
 
             Ok(ExecutionResult::Halt {
                 reason: TempoHaltReason::SubblockTxFeePayment,
-                gas_used: 0,
+                logs: Default::default(),
+                gas: ResultGas::default().with_limit(evm.ctx.tx.gas_limit),
             })
         } else {
             MainnetHandler::default()
