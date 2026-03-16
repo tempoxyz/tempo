@@ -136,12 +136,19 @@ pub struct Setup {
     /// Whether to connect execution layer nodes directly.
     pub connect_execution_layer_nodes: bool,
 
+    /// The amount of time the node waits for the execution layer to return
+    /// a build a payload.
+    pub new_payload_wait_time: Duration,
+
     /// The t2 hardfork time.
     ///
     /// Validators will only be written into the V2 contract if t2_time == 0.
     ///
     /// Default: 1.
     pub t2_time: u64,
+
+    /// Whether to activate subblocks building.
+    pub with_subblocks: bool,
 }
 
 impl Setup {
@@ -157,7 +164,9 @@ impl Setup {
             },
             epoch_length: 20,
             connect_execution_layer_nodes: false,
+            new_payload_wait_time: Duration::from_millis(300),
             t2_time: 1,
+            with_subblocks: false,
         }
     }
 
@@ -197,6 +206,20 @@ impl Setup {
         }
     }
 
+    pub fn new_payload_wait_time(self, new_payload_wait_time: Duration) -> Self {
+        Self {
+            new_payload_wait_time,
+            ..self
+        }
+    }
+
+    pub fn subblocks(self, with_subblocks: bool) -> Self {
+        Self {
+            with_subblocks,
+            ..self
+        }
+    }
+
     pub fn t2_time(self, t2_time: u64) -> Self {
         Self { t2_time, ..self }
     }
@@ -217,12 +240,14 @@ impl Default for Setup {
 pub async fn setup_validators(
     context: &mut Context,
     Setup {
+        epoch_length,
         how_many_signers,
         how_many_verifiers,
         connect_execution_layer_nodes,
         linkage,
-        epoch_length,
+        new_payload_wait_time,
         t2_time,
+        with_subblocks,
         ..
     }: Setup,
 ) -> (Vec<TestingNode<Context>>, ExecutionRuntime) {
@@ -288,12 +313,12 @@ pub async fn setup_validators(
             views_to_track: 10,
             views_until_leader_skip: 5,
             payload_interrupt_time: Duration::from_millis(200),
-            new_payload_wait_time: Duration::from_millis(300),
+            new_payload_wait_time,
             time_to_build_subblock: Duration::from_millis(100),
             subblock_broadcast_interval: Duration::from_millis(50),
             fcu_heartbeat_interval: Duration::from_secs(3),
             feed_state,
-            with_subblocks: false,
+            with_subblocks,
         };
 
         nodes.push(TestingNode::new(

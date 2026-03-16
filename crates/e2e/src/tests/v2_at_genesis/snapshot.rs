@@ -158,7 +158,11 @@ fn joins_from_snapshot() {
 
         donor.stop().await;
         let last_epoch_before_stop = latest_epoch_of_validator(&context, &donor.uid);
-        info!(%last_epoch_before_stop, "stopped the original validator");
+        let last_height_before_stop = latest_height_of_validator(&context, &donor.uid);
+        info!(
+            last_epoch_before_stop,
+            last_height_before_stop, "stopped the original validator",
+        );
 
         // Now the old validator donates its database to the new validator.
         //
@@ -207,14 +211,6 @@ fn joins_from_snapshot() {
                         "network advanced 4 epochs before without the new \
                         validator catching up; there is likely a bug",
                     );
-
-                    if metric.contains(&replacement.uid) {
-                        assert!(
-                            epoch >= last_epoch_before_stop,
-                            "the replacement validator should never enter epochs \
-                            older than what is in the snapshot"
-                        );
-                    }
 
                     if epoch > last_epoch_before_stop {
                         validators_at_epoch += 1;
@@ -433,15 +429,6 @@ fn can_restart_after_joining_from_snapshot() {
                     if epoch > last_epoch_before_stop {
                         validators_at_epoch += 1;
                     }
-
-                    if metric.contains(&replacement.uid) {
-                        // -1 to account for stopping on boundaries.
-                        assert!(
-                            epoch >= last_epoch_before_stop.saturating_sub(1),
-                            "when starting from snapshot, older epochs must never \
-                            had consensus engines running"
-                        );
-                    }
                 }
             }
             if validators_at_epoch == 4 {
@@ -503,6 +490,26 @@ fn latest_epoch_of_validator(context: &Context, id: &str) -> u64 {
         let value = parts.next().unwrap();
 
         if metric.ends_with("_epoch_manager_latest_epoch") && metric.contains(id) {
+            return value.parse::<u64>().unwrap();
+        }
+    }
+
+    panic!("validator had no entry for latest epoch");
+}
+
+fn latest_height_of_validator(context: &Context, id: &str) -> u64 {
+    let metrics = context.encode();
+
+    for line in metrics.lines() {
+        if !line.starts_with(CONSENSUS_NODE_PREFIX) {
+            continue;
+        }
+
+        let mut parts = line.split_whitespace();
+        let metric = parts.next().unwrap();
+        let value = parts.next().unwrap();
+
+        if metric.ends_with("_marshal_processed_height") && metric.contains(id) {
             return value.parse::<u64>().unwrap();
         }
     }

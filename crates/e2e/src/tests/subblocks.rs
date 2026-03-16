@@ -42,7 +42,11 @@ fn subblocks_are_included_1_node() {
 
         let setup = Setup::new()
             .how_many_signers(how_many_signers)
-            .epoch_length(100);
+            .epoch_length(100)
+            // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
+            // to ensure that payload builder has enough time to accumulate subblocks.
+            .new_payload_wait_time(Duration::from_millis(500))
+            .subblocks(true);
 
         // Setup and start all nodes.
         let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup.clone()).await;
@@ -50,11 +54,6 @@ fn subblocks_are_included_1_node() {
         let mut fee_recipients = Vec::new();
 
         for node in &mut nodes {
-            // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
-            // to ensure that payload builder has enough time to accumulate subblocks.
-            node.consensus_config_mut().new_payload_wait_time = Duration::from_millis(500);
-            node.consensus_config_mut().with_subblocks = true;
-
             let fee_recipient = Address::random();
             node.consensus_config_mut().fee_recipient = fee_recipient;
             fee_recipients.push(fee_recipient);
@@ -150,7 +149,11 @@ fn subblocks_are_included_4_nodes() {
 
         let setup = Setup::new()
             .how_many_signers(how_many_signers)
-            .epoch_length(40);
+            .epoch_length(40)
+            // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
+            // to ensure that payload builder has enough time to accumulate subblocks.
+            .new_payload_wait_time(Duration::from_millis(500))
+            .subblocks(true);
 
         // Setup and start all nodes.
         let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup.clone()).await;
@@ -158,10 +161,6 @@ fn subblocks_are_included_4_nodes() {
         let mut fee_recipients = Vec::new();
 
         for node in &mut nodes {
-            // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
-            // to ensure that payload builder has enough time to accumulate subblocks.
-            node.consensus_config_mut().new_payload_wait_time = Duration::from_millis(500);
-
             let fee_recipient = Address::random();
             node.consensus_config_mut().fee_recipient = fee_recipient;
             fee_recipients.push(fee_recipient);
@@ -257,7 +256,11 @@ fn subblocks_are_included_with_failing_txs_5_nodes() {
 
         let setup = Setup::new()
             .how_many_signers(how_many_signers)
-            .epoch_length(100);
+            .epoch_length(100)
+            // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
+            // to ensure that payload builder has enough time to accumulate subblocks.
+            .new_payload_wait_time(Duration::from_millis(500))
+            .subblocks(true);
 
         // Setup and start all nodes.
         let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup.clone()).await;
@@ -265,11 +268,6 @@ fn subblocks_are_included_with_failing_txs_5_nodes() {
         let mut fee_recipients = Vec::new();
 
         for node in &mut nodes {
-            // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
-            // to ensure that payload builder has enough time to accumulate subblocks.
-            node.consensus_config_mut().new_payload_wait_time = Duration::from_millis(500);
-            node.consensus_config_mut().with_subblocks = true;
-
             let fee_recipient = Address::random();
             node.consensus_config_mut().fee_recipient = fee_recipient;
             fee_recipients.push(fee_recipient);
@@ -439,14 +437,13 @@ fn oversized_subblock_txs_are_removed() {
 
         let setup = Setup::new()
             .how_many_signers(how_many_signers)
-            .epoch_length(100);
+            .epoch_length(100)
+            // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
+            // to ensure that payload builder has enough time to accumulate subblocks.
+            .new_payload_wait_time(Duration::from_millis(500))
+            .subblocks(true);
 
         let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup.clone()).await;
-
-        for node in &mut nodes {
-            node.consensus_config_mut().new_payload_wait_time = Duration::from_millis(500);
-            node.consensus_config_mut().with_subblocks = true;
-        }
 
         join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
 
