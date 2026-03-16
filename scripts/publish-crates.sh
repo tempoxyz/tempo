@@ -216,16 +216,16 @@ retry_publish() {
 # Publish order: contracts → primitives → alloy
 CRATES=("$TMP_WORK_DIR/contracts" "$TMP_WORK_DIR/primitives" "$TMP_WORK_DIR/alloy")
 
-# Preflight all crates first to catch errors before any real publish
-log "Running publish preflight for all crates …"
-for crate_dir in "${CRATES[@]}"; do
-    preflight_crate "$crate_dir"
-done
-log "Preflight passed ✓"
-
 if $DRY_RUN; then
     log "Dry-run complete. Use --publish to actually publish."
 else
+    # Preflight all crates first to catch errors before any real publish
+    log "Running publish preflight for all crates …"
+    for crate_dir in "${CRATES[@]}"; do
+        preflight_crate "$crate_dir"
+    done
+    log "Preflight passed ✓"
+
     for crate_dir in "${CRATES[@]}"; do
         retry_publish "$crate_dir"
     done
