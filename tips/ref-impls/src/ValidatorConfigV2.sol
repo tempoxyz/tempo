@@ -457,7 +457,10 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             revert AlreadyInitialized();
         }
 
-        if (_v1ValidatorCount == 0 || validatorsArray.length + _migrationSkippedCount < _v1ValidatorCount) {
+        if (
+            _v1ValidatorCount == 0
+                || validatorsArray.length + _migrationSkippedCount < _v1ValidatorCount
+        ) {
             revert MigrationNotComplete();
         }
 
