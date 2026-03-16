@@ -11,17 +11,19 @@ use commonware_cryptography::ed25519::PublicKey;
 use commonware_p2p::{AddressableManager, Provider};
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, spawn_cell};
 use commonware_utils::{Acknowledgement, acknowledgement::Exact};
-use eyre::{OptionExt as _, WrapErr as _};
+use eyre::{OptionExt as _, WrapErr as _, eyre};
 use futures::{StreamExt as _, channel::mpsc};
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
-use reth_ethereum::{network::NetworkInfo, rpc::eth::primitives::BlockNumHash};
+use reth_ethereum::{
+    chainspec::EthChainSpec as _, network::NetworkInfo as _, rpc::eth::primitives::BlockNumHash,
+};
 use reth_provider::{BlockNumReader as _, HeaderProvider};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::TempoFullNode;
 use tracing::{Span, error, info, info_span, instrument, warn};
 
 use crate::{
-    consensus::block::Block,
+    consensus::{Digest, block::Block},
     validators::{self, DecodedValidator, read_validator_config_with_retry},
 };
 
@@ -159,11 +161,12 @@ where
                         .expect("epoch strategy covers all epochs")
                 })
         };
-        let Some((_, latest_boundary_digest)) = self.marshal.get_info(latest_boundary_height).await
-        else {
-            eyre::bail!(
+        let latest_boundary_digest = if latest_boundary_height == Height::zero() {
+            Digest(self.execution_node.chain_spec().genesis_hash())
+        } else {
+            self.marshal.get_info(latest_boundary_height).await.ok_or_else(|| eyre!(
                 "marshal actor does not have digest for the latest boundary height `{latest_boundary_height}`",
-            );
+            ))?.1
         };
         let header = self
             .execution_node
