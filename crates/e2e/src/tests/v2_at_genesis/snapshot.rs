@@ -443,27 +443,21 @@ fn can_restart_after_joining_from_snapshot() {
 
         info!("restarting node");
 
-        // // Restart the node. This ensures that it's state is still sound after
-        // // doing a snapshot sync.
-        // replacement.stop().await;
+        // Restart the node. This ensures that it's state is still sound after
+        // doing a snapshot sync.
+        replacement.stop().await;
 
-        let exec = validators[0].execution_provider();
-        let network_head = exec.best_block_number().unwrap();
+        let network_head = validators[0]
+            .execution_provider()
+            .best_block_number()
+            .unwrap();
+
         info!(
             network_head,
             "restarting the node and waiting for it to catch up"
         );
-        // let network_head = validators[0]
-        //     .execution_provider()
-        //     .best_block_number()
-        //     .unwrap();
 
         // replacement.start(&context).await;
-
-        // info!(
-        //     network_head,
-        //     "restarting the node and waiting for it to catch up"
-        // );
 
         // 'progress: loop {
         //     context.sleep(Duration::from_secs(1)).await;
