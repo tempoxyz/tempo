@@ -42,6 +42,10 @@ contract TempoStreamChannelTest is BaseTest {
         return channel.open(payee, address(token), DEPOSIT, SALT, address(0));
     }
 
+    function _key(bytes32 channelId) internal view returns (bytes memory) {
+        return abi.encodePacked(channelId, address(token), address(0), SALT);
+    }
+
     function _signVoucher(bytes32 channelId, uint128 amount) internal view returns (bytes memory) {
         bytes32 digest = channel.getVoucherDigest(channelId, amount);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(payerKey, digest);
@@ -57,7 +61,6 @@ contract TempoStreamChannelTest is BaseTest {
         TempoStreamChannel.Channel memory ch = channel.getChannel(channelId);
         assertEq(ch.payer, payer);
         assertEq(ch.payee, payee);
-        assertEq(ch.token, address(token));
         assertEq(ch.deposit, DEPOSIT);
         assertEq(ch.settled, 0);
         assertFalse(ch.finalized);
@@ -82,7 +85,7 @@ contract TempoStreamChannelTest is BaseTest {
         bytes memory sig = _signVoucher(channelId, amount);
 
         vm.prank(payee);
-        channel.settle(channelId, amount, sig);
+        channel.settle(_key(channelId), amount, sig);
 
         TempoStreamChannel.Channel memory ch = channel.getChannel(channelId);
         assertEq(ch.settled, amount);
@@ -94,11 +97,11 @@ contract TempoStreamChannelTest is BaseTest {
 
         bytes memory sig1 = _signVoucher(channelId, 200_000);
         vm.prank(payee);
-        channel.settle(channelId, 200_000, sig1);
+        channel.settle(_key(channelId), 200_000, sig1);
 
         bytes memory sig2 = _signVoucher(channelId, 500_000);
         vm.prank(payee);
-        channel.settle(channelId, 500_000, sig2);
+        channel.settle(_key(channelId), 500_000, sig2);
 
         assertEq(token.balanceOf(payee), 500_000);
         assertEq(channel.getChannel(channelId).settled, 500_000);
@@ -109,12 +112,12 @@ contract TempoStreamChannelTest is BaseTest {
 
         bytes memory sig1 = _signVoucher(channelId, 500_000);
         vm.prank(payee);
-        channel.settle(channelId, 500_000, sig1);
+        channel.settle(_key(channelId), 500_000, sig1);
 
         bytes memory sig2 = _signVoucher(channelId, 400_000);
         vm.prank(payee);
         vm.expectRevert(TempoStreamChannel.AmountNotIncreasing.selector);
-        channel.settle(channelId, 400_000, sig2);
+        channel.settle(_key(channelId), 400_000, sig2);
     }
 
     function test_settle_revert_exceedsDeposit() public {
@@ -123,7 +126,7 @@ contract TempoStreamChannelTest is BaseTest {
         bytes memory sig = _signVoucher(channelId, DEPOSIT + 1);
         vm.prank(payee);
         vm.expectRevert(TempoStreamChannel.AmountExceedsDeposit.selector);
-        channel.settle(channelId, DEPOSIT + 1, sig);
+        channel.settle(_key(channelId), DEPOSIT + 1, sig);
     }
 
     function test_settle_revert_invalidSignature() public {
@@ -136,7 +139,7 @@ contract TempoStreamChannelTest is BaseTest {
 
         vm.prank(payee);
         vm.expectRevert(TempoStreamChannel.InvalidSignature.selector);
-        channel.settle(channelId, 500_000, sig);
+        channel.settle(_key(channelId), 500_000, sig);
     }
 
     // --- TopUp Tests ---
@@ -145,7 +148,7 @@ contract TempoStreamChannelTest is BaseTest {
         bytes32 channelId = _openChannel();
 
         vm.prank(payer);
-        channel.topUp(channelId, 500_000);
+        channel.topUp(_key(channelId), 500_000);
 
         assertEq(channel.getChannel(channelId).deposit, DEPOSIT + 500_000);
         assertEq(token.balanceOf(address(channel)), DEPOSIT + 500_000);
@@ -156,7 +159,7 @@ contract TempoStreamChannelTest is BaseTest {
 
         vm.prank(payee);
         vm.expectRevert(TempoStreamChannel.NotPayer.selector);
-        channel.topUp(channelId, 500_000);
+        channel.topUp(_key(channelId), 500_000);
     }
 
     // --- RequestClose Tests ---
@@ -165,7 +168,7 @@ contract TempoStreamChannelTest is BaseTest {
         bytes32 channelId = _openChannel();
 
         vm.prank(payer);
-        channel.requestClose(channelId);
+        channel.requestClose(_key(channelId));
 
         assertEq(channel.getChannel(channelId).closeRequestedAt, block.timestamp);
     }
@@ -175,7 +178,7 @@ contract TempoStreamChannelTest is BaseTest {
 
         vm.prank(payee);
         vm.expectRevert(TempoStreamChannel.NotPayer.selector);
-        channel.requestClose(channelId);
+        channel.requestClose(_key(channelId));
     }
 
     // --- Close Tests (Server-initiated) ---
@@ -190,7 +193,7 @@ contract TempoStreamChannelTest is BaseTest {
         uint256 payerBalanceBefore = token.balanceOf(payer);
 
         vm.prank(payee);
-        channel.close(channelId, amount, sig);
+        channel.close(_key(channelId), amount, sig);
 
         assertEq(token.balanceOf(payee), payeeBalanceBefore + amount);
         assertEq(token.balanceOf(payer), payerBalanceBefore + (DEPOSIT - amount));
@@ -203,7 +206,7 @@ contract TempoStreamChannelTest is BaseTest {
         uint256 payerBalanceBefore = token.balanceOf(payer);
 
         vm.prank(payee);
-        channel.close(channelId, 0, "");
+        channel.close(_key(channelId), 0, "");
 
         assertEq(token.balanceOf(payer), payerBalanceBefore + DEPOSIT);
         assertEq(token.balanceOf(payee), 0);
@@ -215,7 +218,7 @@ contract TempoStreamChannelTest is BaseTest {
 
         vm.prank(payer);
         vm.expectRevert(TempoStreamChannel.NotPayee.selector);
-        channel.close(channelId, 0, "");
+        channel.close(_key(channelId), 0, "");
     }
 
     // --- Withdraw Tests ---
@@ -224,13 +227,13 @@ contract TempoStreamChannelTest is BaseTest {
         bytes32 channelId = _openChannel();
 
         vm.prank(payer);
-        channel.requestClose(channelId);
+        channel.requestClose(_key(channelId));
         vm.warp(block.timestamp + channel.CLOSE_GRACE_PERIOD() + 1);
 
         uint256 payerBalanceBefore = token.balanceOf(payer);
 
         vm.prank(payer);
-        channel.withdraw(channelId);
+        channel.withdraw(_key(channelId));
 
         assertEq(token.balanceOf(payer), payerBalanceBefore + DEPOSIT);
         assertTrue(channel.getChannel(channelId).finalized);
@@ -240,11 +243,11 @@ contract TempoStreamChannelTest is BaseTest {
         bytes32 channelId = _openChannel();
 
         vm.prank(payer);
-        channel.requestClose(channelId);
+        channel.requestClose(_key(channelId));
 
         vm.prank(payer);
         vm.expectRevert(TempoStreamChannel.CloseNotReady.selector);
-        channel.withdraw(channelId);
+        channel.withdraw(_key(channelId));
     }
 
     function test_withdraw_revert_noCloseRequest() public {
@@ -252,22 +255,22 @@ contract TempoStreamChannelTest is BaseTest {
 
         vm.prank(payer);
         vm.expectRevert(TempoStreamChannel.CloseNotReady.selector);
-        channel.withdraw(channelId);
+        channel.withdraw(_key(channelId));
     }
 
     function test_withdraw_revert_doubleWithdraw() public {
         bytes32 channelId = _openChannel();
 
         vm.prank(payer);
-        channel.requestClose(channelId);
+        channel.requestClose(_key(channelId));
         vm.warp(block.timestamp + channel.CLOSE_GRACE_PERIOD() + 1);
 
         vm.prank(payer);
-        channel.withdraw(channelId);
+        channel.withdraw(_key(channelId));
 
         vm.prank(payer);
         vm.expectRevert(TempoStreamChannel.ChannelFinalized.selector);
-        channel.withdraw(channelId);
+        channel.withdraw(_key(channelId));
     }
 
     // --- Batch Read Test ---
@@ -281,7 +284,7 @@ contract TempoStreamChannelTest is BaseTest {
 
         bytes memory sig = _signVoucher(channelId1, 500_000);
         vm.prank(payee);
-        channel.settle(channelId1, 500_000, sig);
+        channel.settle(_key(channelId1), 500_000, sig);
 
         bytes32[] memory channelIds = new bytes32[](2);
         channelIds[0] = channelId1;
@@ -306,8 +309,10 @@ contract TempoStreamChannelTest is BaseTest {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(delegateKey, digest);
         bytes memory sig = abi.encodePacked(r, s, v);
 
+        bytes memory key = abi.encodePacked(channelId, address(token), delegateSigner, SALT);
+
         vm.prank(payee);
-        channel.settle(channelId, 500_000, sig);
+        channel.settle(key, 500_000, sig);
 
         assertEq(channel.getChannel(channelId).settled, 500_000);
         assertEq(token.balanceOf(payee), 500_000);
@@ -323,9 +328,11 @@ contract TempoStreamChannelTest is BaseTest {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(payerKey, digest);
         bytes memory sig = abi.encodePacked(r, s, v);
 
+        bytes memory key = abi.encodePacked(channelId, address(token), delegateSigner, SALT);
+
         vm.prank(payee);
         vm.expectRevert(TempoStreamChannel.InvalidSignature.selector);
-        channel.settle(channelId, 500_000, sig);
+        channel.settle(key, 500_000, sig);
     }
 
     function test_authorizedSigner_closeWithDelegateVoucher() public {
@@ -339,8 +346,10 @@ contract TempoStreamChannelTest is BaseTest {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(delegateKey, digest);
         bytes memory sig = abi.encodePacked(r, s, v);
 
+        bytes memory key = abi.encodePacked(channelId, address(token), delegateSigner, SALT);
+
         vm.prank(payee);
-        channel.close(channelId, amount, sig);
+        channel.close(key, amount, sig);
 
         assertTrue(channel.getChannel(channelId).finalized);
         assertEq(token.balanceOf(payee), amount);
@@ -352,8 +361,10 @@ contract TempoStreamChannelTest is BaseTest {
         bytes32 channelId = channel.open(payee, address(token), DEPOSIT, SALT, payer);
 
         bytes memory sig = _signVoucher(channelId, 500_000);
+        bytes memory key = abi.encodePacked(channelId, address(token), payer, SALT);
+
         vm.prank(payee);
-        channel.settle(channelId, 500_000, sig);
+        channel.settle(key, 500_000, sig);
 
         assertEq(channel.getChannel(channelId).settled, 500_000);
     }
@@ -365,17 +376,17 @@ contract TempoStreamChannelTest is BaseTest {
 
         bytes memory sig1 = _signVoucher(channelId, 900_000);
         vm.prank(payee);
-        channel.settle(channelId, 900_000, sig1);
+        channel.settle(_key(channelId), 900_000, sig1);
         assertEq(channel.getChannel(channelId).settled, 900_000);
 
         vm.prank(payer);
-        channel.topUp(channelId, 500_000);
+        channel.topUp(_key(channelId), 500_000);
         assertEq(channel.getChannel(channelId).deposit, DEPOSIT + 500_000);
 
         uint128 beyondInitial = DEPOSIT + 200_000;
         bytes memory sig2 = _signVoucher(channelId, beyondInitial);
         vm.prank(payee);
-        channel.settle(channelId, beyondInitial, sig2);
+        channel.settle(_key(channelId), beyondInitial, sig2);
 
         assertEq(channel.getChannel(channelId).settled, beyondInitial);
         assertEq(token.balanceOf(payee), beyondInitial);
@@ -386,7 +397,7 @@ contract TempoStreamChannelTest is BaseTest {
 
         uint256 balanceBefore = token.balanceOf(address(channel));
         vm.prank(payer);
-        channel.topUp(channelId, 0);
+        channel.topUp(_key(channelId), 0);
 
         assertEq(channel.getChannel(channelId).deposit, DEPOSIT);
         assertEq(token.balanceOf(address(channel)), balanceBefore);
@@ -396,11 +407,11 @@ contract TempoStreamChannelTest is BaseTest {
         bytes32 channelId = _openChannel();
 
         vm.prank(payer);
-        channel.requestClose(channelId);
+        channel.requestClose(_key(channelId));
         assertEq(channel.getChannel(channelId).closeRequestedAt, block.timestamp);
 
         vm.prank(payer);
-        channel.topUp(channelId, 100_000);
+        channel.topUp(_key(channelId), 100_000);
 
         assertEq(channel.getChannel(channelId).closeRequestedAt, 0);
     }
@@ -409,11 +420,11 @@ contract TempoStreamChannelTest is BaseTest {
         bytes32 channelId = _openChannel();
 
         vm.prank(payee);
-        channel.close(channelId, 0, "");
+        channel.close(_key(channelId), 0, "");
 
         vm.prank(payer);
         vm.expectRevert(TempoStreamChannel.ChannelFinalized.selector);
-        channel.topUp(channelId, 100_000);
+        channel.topUp(_key(channelId), 100_000);
     }
 
     // --- Grace Period Boundary Tests ---
@@ -422,13 +433,13 @@ contract TempoStreamChannelTest is BaseTest {
         bytes32 channelId = _openChannel();
 
         vm.prank(payer);
-        channel.requestClose(channelId);
+        channel.requestClose(_key(channelId));
 
         vm.warp(block.timestamp + channel.CLOSE_GRACE_PERIOD() - 1);
 
         bytes memory sig = _signVoucher(channelId, 600_000);
         vm.prank(payee);
-        channel.settle(channelId, 600_000, sig);
+        channel.settle(_key(channelId), 600_000, sig);
 
         assertEq(channel.getChannel(channelId).settled, 600_000);
         assertEq(token.balanceOf(payee), 600_000);
@@ -438,7 +449,7 @@ contract TempoStreamChannelTest is BaseTest {
         bytes32 channelId = _openChannel();
 
         vm.prank(payer);
-        channel.requestClose(channelId);
+        channel.requestClose(_key(channelId));
 
         vm.warp(block.timestamp + channel.CLOSE_GRACE_PERIOD() - 1);
 
@@ -446,7 +457,7 @@ contract TempoStreamChannelTest is BaseTest {
         bytes memory sig = _signVoucher(channelId, amount);
 
         vm.prank(payee);
-        channel.close(channelId, amount, sig);
+        channel.close(_key(channelId), amount, sig);
 
         assertTrue(channel.getChannel(channelId).finalized);
         assertEq(token.balanceOf(payee), amount);
@@ -456,12 +467,12 @@ contract TempoStreamChannelTest is BaseTest {
         bytes32 channelId = _openChannel();
 
         vm.prank(payer);
-        channel.requestClose(channelId);
+        channel.requestClose(_key(channelId));
 
         vm.warp(block.timestamp + channel.CLOSE_GRACE_PERIOD());
 
         vm.prank(payer);
-        channel.withdraw(channelId);
+        channel.withdraw(_key(channelId));
 
         assertTrue(channel.getChannel(channelId).finalized);
     }
@@ -471,15 +482,15 @@ contract TempoStreamChannelTest is BaseTest {
 
         bytes memory sig = _signVoucher(channelId, 300_000);
         vm.prank(payee);
-        channel.settle(channelId, 300_000, sig);
+        channel.settle(_key(channelId), 300_000, sig);
 
         vm.prank(payer);
-        channel.requestClose(channelId);
+        channel.requestClose(_key(channelId));
         vm.warp(block.timestamp + channel.CLOSE_GRACE_PERIOD() + 1);
 
         uint256 payerBalanceBefore = token.balanceOf(payer);
         vm.prank(payer);
-        channel.withdraw(channelId);
+        channel.withdraw(_key(channelId));
 
         uint128 expectedRefund = DEPOSIT - 300_000;
         assertEq(token.balanceOf(payer), payerBalanceBefore + expectedRefund);
@@ -493,12 +504,12 @@ contract TempoStreamChannelTest is BaseTest {
 
         bytes memory sig = _signVoucher(channelId, 500_000);
         vm.prank(payee);
-        channel.settle(channelId, 500_000, sig);
+        channel.settle(_key(channelId), 500_000, sig);
 
         uint256 payerBalanceBefore = token.balanceOf(payer);
 
         vm.prank(payee);
-        channel.close(channelId, 500_000, "");
+        channel.close(_key(channelId), 500_000, "");
 
         assertTrue(channel.getChannel(channelId).finalized);
         assertEq(token.balanceOf(payer), payerBalanceBefore + (DEPOSIT - 500_000));
@@ -509,13 +520,13 @@ contract TempoStreamChannelTest is BaseTest {
 
         bytes memory sig = _signVoucher(channelId, 500_000);
         vm.prank(payee);
-        channel.settle(channelId, 500_000, sig);
+        channel.settle(_key(channelId), 500_000, sig);
 
         uint256 payerBalanceBefore = token.balanceOf(payer);
         uint256 payeeBalanceBefore = token.balanceOf(payee);
 
         vm.prank(payee);
-        channel.close(channelId, 200_000, "");
+        channel.close(_key(channelId), 200_000, "");
 
         assertTrue(channel.getChannel(channelId).finalized);
         assertEq(token.balanceOf(payer), payerBalanceBefore + (DEPOSIT - 500_000));
@@ -527,12 +538,12 @@ contract TempoStreamChannelTest is BaseTest {
 
         bytes memory sig = _signVoucher(channelId, 300_000);
         vm.prank(payee);
-        channel.settle(channelId, 300_000, sig);
+        channel.settle(_key(channelId), 300_000, sig);
 
         uint256 payerBalanceBefore = token.balanceOf(payer);
 
         vm.prank(payee);
-        channel.close(channelId, 0, "");
+        channel.close(_key(channelId), 0, "");
 
         assertTrue(channel.getChannel(channelId).finalized);
         assertEq(token.balanceOf(payer), payerBalanceBefore + (DEPOSIT - 300_000));
@@ -544,7 +555,7 @@ contract TempoStreamChannelTest is BaseTest {
         bytes memory sig = _signVoucher(channelId, DEPOSIT);
 
         vm.prank(payee);
-        channel.close(channelId, DEPOSIT, sig);
+        channel.close(_key(channelId), DEPOSIT, sig);
 
         assertTrue(channel.getChannel(channelId).finalized);
         assertEq(token.balanceOf(payee), DEPOSIT);
@@ -558,13 +569,13 @@ contract TempoStreamChannelTest is BaseTest {
 
         vm.warp(1000);
         vm.prank(payer);
-        channel.requestClose(channelId);
+        channel.requestClose(_key(channelId));
 
         uint64 firstTimestamp = channel.getChannel(channelId).closeRequestedAt;
 
         vm.warp(2000);
         vm.prank(payer);
-        channel.requestClose(channelId);
+        channel.requestClose(_key(channelId));
 
         assertEq(channel.getChannel(channelId).closeRequestedAt, firstTimestamp);
     }
@@ -573,11 +584,11 @@ contract TempoStreamChannelTest is BaseTest {
         bytes32 channelId = _openChannel();
 
         vm.prank(payee);
-        channel.close(channelId, 0, "");
+        channel.close(_key(channelId), 0, "");
 
         vm.prank(payer);
         vm.expectRevert(TempoStreamChannel.ChannelFinalized.selector);
-        channel.requestClose(channelId);
+        channel.requestClose(_key(channelId));
     }
 
     // --- Settle Edge Cases ---
@@ -586,12 +597,12 @@ contract TempoStreamChannelTest is BaseTest {
         bytes32 channelId = _openChannel();
 
         vm.prank(payee);
-        channel.close(channelId, 0, "");
+        channel.close(_key(channelId), 0, "");
 
         bytes memory sig = _signVoucher(channelId, 100_000);
         vm.prank(payee);
         vm.expectRevert(TempoStreamChannel.ChannelFinalized.selector);
-        channel.settle(channelId, 100_000, sig);
+        channel.settle(_key(channelId), 100_000, sig);
     }
 
     function test_settle_revert_nonExistentChannel() public {
@@ -600,7 +611,7 @@ contract TempoStreamChannelTest is BaseTest {
 
         vm.prank(payee);
         vm.expectRevert(TempoStreamChannel.ChannelNotFound.selector);
-        channel.settle(fakeId, 100_000, sig);
+        channel.settle(_key(fakeId), 100_000, sig);
     }
 
     function test_settle_revert_sameAmount() public {
@@ -608,12 +619,12 @@ contract TempoStreamChannelTest is BaseTest {
 
         bytes memory sig1 = _signVoucher(channelId, 500_000);
         vm.prank(payee);
-        channel.settle(channelId, 500_000, sig1);
+        channel.settle(_key(channelId), 500_000, sig1);
 
         bytes memory sig2 = _signVoucher(channelId, 500_000);
         vm.prank(payee);
         vm.expectRevert(TempoStreamChannel.AmountNotIncreasing.selector);
-        channel.settle(channelId, 500_000, sig2);
+        channel.settle(_key(channelId), 500_000, sig2);
     }
 
     function test_settle_revert_notPayee() public {
@@ -624,7 +635,7 @@ contract TempoStreamChannelTest is BaseTest {
 
         vm.prank(randomCaller);
         vm.expectRevert(TempoStreamChannel.NotPayee.selector);
-        channel.settle(channelId, 500_000, sig);
+        channel.settle(_key(channelId), 500_000, sig);
     }
 
     // --- View Function Tests ---
@@ -654,7 +665,7 @@ contract TempoStreamChannelTest is BaseTest {
 
         vm.prank(payer);
         vm.expectRevert(TempoStreamChannel.NotPayee.selector);
-        channel.settle(channelId, 500_000, sig);
+        channel.settle(_key(channelId), 500_000, sig);
     }
 
     function test_settle_revert_thirdParty() public {
@@ -664,7 +675,7 @@ contract TempoStreamChannelTest is BaseTest {
         address stranger = makeAddr("stranger");
         vm.prank(stranger);
         vm.expectRevert(TempoStreamChannel.NotPayee.selector);
-        channel.settle(channelId, 500_000, sig);
+        channel.settle(_key(channelId), 500_000, sig);
     }
 
     // --- Cross-Contract / Cross-Chain Replay Tests ---
@@ -689,9 +700,11 @@ contract TempoStreamChannelTest is BaseTest {
         vm.prank(payer);
         bytes32 channelId2 = channel2.open(payee, address(token2), DEPOSIT, SALT, address(0));
 
+        bytes memory key2 = abi.encodePacked(channelId2, address(token2), address(0), SALT);
+
         vm.prank(payee);
         vm.expectRevert(TempoStreamChannel.InvalidSignature.selector);
-        channel2.settle(channelId2, 500_000, sig);
+        channel2.settle(key2, 500_000, sig);
     }
 
     function test_settle_revert_crossChainReplay() public {
@@ -717,9 +730,11 @@ contract TempoStreamChannelTest is BaseTest {
         vm.prank(payer);
         bytes32 channelId2 = channel2.open(payee, address(token2), DEPOSIT, SALT, address(0));
 
+        bytes memory key2 = abi.encodePacked(channelId2, address(token2), address(0), SALT);
+
         vm.prank(payee);
         vm.expectRevert(TempoStreamChannel.InvalidSignature.selector);
-        channel2.settle(channelId2, 500_000, sig);
+        channel2.settle(key2, 500_000, sig);
 
         vm.chainId(originalChainId);
     }
@@ -727,21 +742,24 @@ contract TempoStreamChannelTest is BaseTest {
     // --- Zero Deposit Edge Case ---
 
     function test_open_zeroDeposit() public {
+        bytes32 zeroSalt = bytes32(uint256(99));
         vm.prank(payer);
-        bytes32 channelId = channel.open(payee, address(token), 0, bytes32(uint256(99)), address(0));
+        bytes32 channelId = channel.open(payee, address(token), 0, zeroSalt, address(0));
 
         TempoStreamChannel.Channel memory ch = channel.getChannel(channelId);
         assertEq(ch.deposit, 0);
         assertEq(ch.settled, 0);
         assertFalse(ch.finalized);
 
+        bytes memory key = abi.encodePacked(channelId, address(token), address(0), zeroSalt);
+
         bytes memory sig = _signVoucher(channelId, 1);
         vm.prank(payee);
         vm.expectRevert(TempoStreamChannel.AmountExceedsDeposit.selector);
-        channel.settle(channelId, 1, sig);
+        channel.settle(key, 1, sig);
 
         vm.prank(payee);
-        channel.close(channelId, 0, "");
+        channel.close(key, 0, "");
         assertTrue(channel.getChannel(channelId).finalized);
         assertEq(token.balanceOf(payer), 10_000_000);
     }
@@ -753,13 +771,13 @@ contract TempoStreamChannelTest is BaseTest {
 
         bytes memory sig = _signVoucher(channelId, 600_000);
         vm.prank(payee);
-        channel.settle(channelId, 600_000, sig);
+        channel.settle(_key(channelId), 600_000, sig);
 
         uint256 payeeBalanceBefore = token.balanceOf(payee);
         uint256 payerBalanceBefore = token.balanceOf(payer);
 
         vm.prank(payee);
-        channel.close(channelId, 600_000, "");
+        channel.close(_key(channelId), 600_000, "");
 
         assertEq(token.balanceOf(payee), payeeBalanceBefore);
         assertEq(token.balanceOf(payer), payerBalanceBefore + (DEPOSIT - 600_000));
@@ -772,7 +790,7 @@ contract TempoStreamChannelTest is BaseTest {
         uint256 payerBalanceBefore = token.balanceOf(payer);
 
         vm.prank(payee);
-        channel.close(channelId, 0, "");
+        channel.close(_key(channelId), 0, "");
 
         assertEq(token.balanceOf(payee), 0);
         assertEq(token.balanceOf(payer), payerBalanceBefore + DEPOSIT);
@@ -789,12 +807,12 @@ contract TempoStreamChannelTest is BaseTest {
 
         bytes memory sig1 = _signVoucher(channelId, amount1);
         vm.prank(payee);
-        channel.settle(channelId, amount1, sig1);
+        channel.settle(_key(channelId), amount1, sig1);
         assertEq(channel.getChannel(channelId).settled, amount1);
 
         bytes memory sig2 = _signVoucher(channelId, amount2);
         vm.prank(payee);
-        channel.settle(channelId, amount2, sig2);
+        channel.settle(_key(channelId), amount2, sig2);
         assertEq(channel.getChannel(channelId).settled, amount2);
     }
 
@@ -814,9 +832,11 @@ contract TempoStreamChannelTest is BaseTest {
         vm.prank(payer);
         bytes32 channelId = channel.open(payee, address(token), depositAmt, salt, address(0));
 
+        bytes memory key = abi.encodePacked(channelId, address(token), address(0), salt);
+
         bytes memory sig = _signVoucher(channelId, settleAmt);
         vm.prank(payee);
-        channel.close(channelId, settleAmt, sig);
+        channel.close(key, settleAmt, sig);
 
         uint256 totalAfter =
             token.balanceOf(payer) + token.balanceOf(payee) + token.balanceOf(address(channel));
@@ -832,7 +852,7 @@ contract TempoStreamChannelTest is BaseTest {
         uint256 tooLarge = uint256(type(uint128).max);
         vm.prank(payer);
         vm.expectRevert(TempoStreamChannel.DepositOverflow.selector);
-        channel.topUp(channelId, tooLarge);
+        channel.topUp(_key(channelId), tooLarge);
     }
 
     function test_topUp_revert_overflowExact() public {
@@ -841,7 +861,7 @@ contract TempoStreamChannelTest is BaseTest {
         uint256 maxAdditional = uint256(type(uint128).max) - DEPOSIT;
         vm.prank(payer);
         vm.expectRevert(TempoStreamChannel.DepositOverflow.selector);
-        channel.topUp(channelId, maxAdditional + 1);
+        channel.topUp(_key(channelId), maxAdditional + 1);
     }
 
     // --- Settle Exact Deposit ---
@@ -851,7 +871,7 @@ contract TempoStreamChannelTest is BaseTest {
 
         bytes memory sig = _signVoucher(channelId, DEPOSIT);
         vm.prank(payee);
-        channel.settle(channelId, DEPOSIT, sig);
+        channel.settle(_key(channelId), DEPOSIT, sig);
 
         assertEq(channel.getChannel(channelId).settled, DEPOSIT);
         assertEq(token.balanceOf(payee), DEPOSIT);

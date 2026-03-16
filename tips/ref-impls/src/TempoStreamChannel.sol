@@ -12,20 +12,26 @@ import { EIP712 } from "solady/utils/EIP712.sol";
  *      can settle or close at any time. Channels have no expiry - they are
  *      closed either cooperatively by the server or after a grace period
  *      following a user's close request.
+ *
+ *      Functions that mutate or interact with a channel accept a packed `key`
+ *      parameter: `abi.encodePacked(channelId, token, authorizedSigner, salt)`
+ *      (32 + 20 + 20 + 32 = 104 bytes). The contract verifies that these
+ *      components hash to the stored channelId.
  */
 contract TempoStreamChannel is EIP712 {
 
     // --- Types ---
 
     struct Channel {
-        address payer; // User who deposited funds
-        address payee; // Server authorized to withdraw
-        address token; // TIP-20 token address
-        address authorizedSigner; // Address authorized to sign vouchers (0 = payer)
-        uint128 deposit; // Total amount deposited
-        uint128 settled; // Cumulative amount already withdrawn
-        uint64 closeRequestedAt; // Timestamp when close was requested (0 if not)
-        bool finalized; // Prevents double-withdraw
+        address payer; // 20 bytes
+        uint64 closeRequestedAt; //  8 bytes
+        bool finalized; //  1 byte
+        // ─── slot 0: 29 bytes ───
+        address payee; // 20 bytes
+        // ─── slot 1: 20 bytes ───
+        uint128 deposit; // 16 bytes
+        uint128 settled; // 16 bytes
+        // ─── slot 2: 32 bytes ───
     }
 
     // --- Constants ---
@@ -103,6 +109,7 @@ contract TempoStreamChannel is EIP712 {
     error CloseNotReady();
     error InvalidPayee();
     error DepositOverflow();
+    error InvalidChannelKey();
 
     // --- EIP-712 Domain ---
 
@@ -149,13 +156,11 @@ contract TempoStreamChannel is EIP712 {
 
         channels[channelId] = Channel({
             payer: msg.sender,
-            payee: payee,
-            token: token,
-            authorizedSigner: authorizedSigner,
-            deposit: deposit,
-            settled: 0,
             closeRequestedAt: 0,
-            finalized: false
+            finalized: false,
+            payee: payee,
+            deposit: deposit,
+            settled: 0
         });
 
         bool success = ITIP20(token).transferFrom(msg.sender, address(this), deposit);
@@ -168,17 +173,18 @@ contract TempoStreamChannel is EIP712 {
 
     /**
      * @notice Settle funds using a signed voucher.
-     * @param channelId The channel to settle
+     * @param key Packed channel key: abi.encodePacked(channelId, token, authorizedSigner, salt)
      * @param cumulativeAmount Total amount authorized by the voucher
      * @param signature EIP-712 signature from the payer/authorizedSigner
      */
     function settle(
-        bytes32 channelId,
+        bytes calldata key,
         uint128 cumulativeAmount,
         bytes calldata signature
     )
         external
     {
+        (bytes32 channelId, address token, address authorizedSigner) = _decodeKey(key);
         Channel storage channel = channels[channelId];
 
         if (channel.payer == address(0)) {
@@ -190,6 +196,9 @@ contract TempoStreamChannel is EIP712 {
         if (channel.finalized) {
             revert ChannelFinalized();
         }
+
+        _verifyKey(key, channel.payer, channel.payee);
+
         if (cumulativeAmount > channel.deposit) {
             revert AmountExceedsDeposit();
         }
@@ -202,7 +211,7 @@ contract TempoStreamChannel is EIP712 {
         address signer = ECDSA.recoverCalldata(digest, signature);
 
         address expectedSigner =
-            channel.authorizedSigner != address(0) ? channel.authorizedSigner : channel.payer;
+            authorizedSigner != address(0) ? authorizedSigner : channel.payer;
 
         if (signer != expectedSigner) {
             revert InvalidSignature();
@@ -211,7 +220,7 @@ contract TempoStreamChannel is EIP712 {
         uint128 delta = cumulativeAmount - channel.settled;
         channel.settled = cumulativeAmount;
 
-        bool success = ITIP20(channel.token).transfer(channel.payee, delta);
+        bool success = ITIP20(token).transfer(channel.payee, delta);
         if (!success) {
             revert TransferFailed();
         }
@@ -223,10 +232,11 @@ contract TempoStreamChannel is EIP712 {
 
     /**
      * @notice Add more funds to a channel.
-     * @param channelId The channel to top up
+     * @param key Packed channel key: abi.encodePacked(channelId, token, authorizedSigner, salt)
      * @param additionalDeposit Amount to add
      */
-    function topUp(bytes32 channelId, uint256 additionalDeposit) external {
+    function topUp(bytes calldata key, uint256 additionalDeposit) external {
+        (bytes32 channelId, address token,) = _decodeKey(key);
         Channel storage channel = channels[channelId];
 
         if (channel.payer == address(0)) {
@@ -239,6 +249,8 @@ contract TempoStreamChannel is EIP712 {
             revert ChannelFinalized();
         }
 
+        _verifyKey(key, channel.payer, channel.payee);
+
         if (additionalDeposit > 0) {
             if (additionalDeposit > type(uint128).max - channel.deposit) {
                 revert DepositOverflow();
@@ -246,7 +258,7 @@ contract TempoStreamChannel is EIP712 {
             channel.deposit += uint128(additionalDeposit);
 
             bool success =
-                ITIP20(channel.token).transferFrom(msg.sender, address(this), additionalDeposit);
+                ITIP20(token).transferFrom(msg.sender, address(this), additionalDeposit);
             if (!success) {
                 revert TransferFailed();
             }
@@ -263,9 +275,10 @@ contract TempoStreamChannel is EIP712 {
     /**
      * @notice Request early channel closure.
      * @dev Starts a grace period after which the payer can withdraw.
-     * @param channelId The channel to close
+     * @param key Packed channel key: abi.encodePacked(channelId, token, authorizedSigner, salt)
      */
-    function requestClose(bytes32 channelId) external {
+    function requestClose(bytes calldata key) external {
+        (bytes32 channelId,,) = _decodeKey(key);
         Channel storage channel = channels[channelId];
 
         if (channel.payer == address(0)) {
@@ -290,11 +303,12 @@ contract TempoStreamChannel is EIP712 {
     /**
      * @notice Close a channel immediately (server only).
      * @dev Settles any outstanding voucher and refunds remainder to payer.
-     * @param channelId The channel to close
+     * @param key Packed channel key: abi.encodePacked(channelId, token, authorizedSigner, salt)
      * @param cumulativeAmount Final cumulative amount (0 if no payments)
      * @param signature EIP-712 signature (empty if cumulativeAmount == 0 or same as settled)
      */
-    function close(bytes32 channelId, uint128 cumulativeAmount, bytes calldata signature) external {
+    function close(bytes calldata key, uint128 cumulativeAmount, bytes calldata signature) external {
+        (bytes32 channelId, address token, address authorizedSigner) = _decodeKey(key);
         Channel storage channel = channels[channelId];
 
         if (channel.payer == address(0)) {
@@ -306,6 +320,8 @@ contract TempoStreamChannel is EIP712 {
         if (channel.finalized) {
             revert ChannelFinalized();
         }
+
+        _verifyKey(key, channel.payer, channel.payee);
 
         uint128 settledAmount = channel.settled;
         uint128 delta = 0;
@@ -322,7 +338,7 @@ contract TempoStreamChannel is EIP712 {
             address signer = ECDSA.recoverCalldata(digest, signature);
 
             address expectedSigner =
-                channel.authorizedSigner != address(0) ? channel.authorizedSigner : channel.payer;
+                authorizedSigner != address(0) ? authorizedSigner : channel.payer;
 
             if (signer != expectedSigner) {
                 revert InvalidSignature();
@@ -339,14 +355,14 @@ contract TempoStreamChannel is EIP712 {
 
         // Interactions
         if (delta > 0) {
-            bool success = ITIP20(channel.token).transfer(channel.payee, delta);
+            bool success = ITIP20(token).transfer(channel.payee, delta);
             if (!success) {
                 revert TransferFailed();
             }
         }
 
         if (refund > 0) {
-            bool success = ITIP20(channel.token).transfer(channel.payer, refund);
+            bool success = ITIP20(token).transfer(channel.payer, refund);
             if (!success) {
                 revert TransferFailed();
             }
@@ -357,9 +373,10 @@ contract TempoStreamChannel is EIP712 {
 
     /**
      * @notice Withdraw remaining funds after close grace period.
-     * @param channelId The channel to withdraw from
+     * @param key Packed channel key: abi.encodePacked(channelId, token, authorizedSigner, salt)
      */
-    function withdraw(bytes32 channelId) external {
+    function withdraw(bytes calldata key) external {
+        (bytes32 channelId, address token,) = _decodeKey(key);
         Channel storage channel = channels[channelId];
 
         if (channel.payer == address(0)) {
@@ -371,6 +388,8 @@ contract TempoStreamChannel is EIP712 {
         if (channel.finalized) {
             revert ChannelFinalized();
         }
+
+        _verifyKey(key, channel.payer, channel.payee);
 
         // Check if eligible to withdraw
         bool closeGracePassed = channel.closeRequestedAt != 0
@@ -384,7 +403,7 @@ contract TempoStreamChannel is EIP712 {
         channel.finalized = true;
 
         if (refund > 0) {
-            bool success = ITIP20(channel.token).transfer(channel.payer, refund);
+            bool success = ITIP20(token).transfer(channel.payer, refund);
             if (!success) {
                 revert TransferFailed();
             }
@@ -392,6 +411,31 @@ contract TempoStreamChannel is EIP712 {
 
         emit ChannelExpired(channelId, channel.payer, channel.payee);
         emit ChannelClosed(channelId, channel.payer, channel.payee, channel.settled, refund);
+    }
+
+    // --- Internal Functions ---
+
+    /// @dev Decodes a packed channel key into its components.
+    ///      Layout: channelId (32) | token (20) | authorizedSigner (20) | salt (32) = 104 bytes
+    function _decodeKey(bytes calldata key)
+        internal
+        pure
+        returns (bytes32 channelId, address token, address authorizedSigner)
+    {
+        if (key.length != 104) revert InvalidChannelKey();
+        channelId = bytes32(key[0:32]);
+        token = address(bytes20(key[32:52]));
+        authorizedSigner = address(bytes20(key[52:72]));
+    }
+
+    /// @dev Verifies that the packed key components hash to the expected channelId.
+    function _verifyKey(bytes calldata key, address payer, address payee) internal view {
+        bytes32 channelId = bytes32(key[0:32]);
+        address token = address(bytes20(key[32:52]));
+        address authorizedSigner = address(bytes20(key[52:72]));
+        bytes32 salt = bytes32(key[72:104]);
+        bytes32 expected = computeChannelId(payer, payee, token, salt, authorizedSigner);
+        if (expected != channelId) revert InvalidChannelKey();
     }
 
     // --- View Functions ---
