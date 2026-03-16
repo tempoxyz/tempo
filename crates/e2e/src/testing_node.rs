@@ -11,7 +11,7 @@ use commonware_runtime::{Handle, Metrics as _, deterministic::Context};
 use reth_db::{Database, DatabaseEnv, mdbx::DatabaseArguments, open_db_read_only};
 use reth_ethereum::{
     provider::{
-        DatabaseProviderFactory, ProviderFactory,
+        DatabaseProviderFactory, ProviderFactory, RocksDBProviderFactory,
         providers::{BlockchainProvider, RocksDBProvider, StaticFileProvider},
     },
     storage::BlockNumReader,
@@ -56,7 +56,9 @@ where
     /// Configuration for the execution node
     pub execution_config: ExecutionNodeConfig,
     /// Database instance for the execution node
-    pub execution_database: Option<Arc<DatabaseEnv>>,
+    pub execution_database: Option<DatabaseEnv>,
+    /// RocksDB provider for the execution node
+    pub execution_rocksdb: Option<RocksDBProvider>,
     /// The execution node name assigned at initialization. Important when
     /// constructing the datadir at which to find the node.
     pub execution_node_name: String,
@@ -112,6 +114,7 @@ where
             execution_config,
             execution_node_name,
             execution_database: None,
+            execution_rocksdb: None,
             last_db_block_on_stop: None,
             network_address,
             chain_address,
@@ -201,11 +204,11 @@ where
         // Create database if not exists
         if self.execution_database.is_none() {
             let db_path = self.execution_node_datadir.join("db");
-            self.execution_database = Some(Arc::new(
+            self.execution_database = Some(
                 reth_db::init_db(db_path, DatabaseArguments::default())
                     .expect("failed to init database")
                     .with_metrics(),
-            ));
+            );
         }
 
         let execution_node = self
@@ -214,9 +217,14 @@ where
                 &self.execution_node_name,
                 self.execution_config.clone(),
                 self.execution_database.as_ref().unwrap().clone(),
+                self.execution_rocksdb.clone(),
             )
             .await
             .expect("must be able to spawn execution node");
+
+        if self.execution_rocksdb.is_none() {
+            self.execution_rocksdb = Some(execution_node.node.provider().rocksdb_provider());
+        }
 
         // verify database persistence on restart
         if let Some(expected_block) = self.last_db_block_on_stop {
@@ -320,7 +328,7 @@ where
     /// Panics if either consensus or execution is not running.
     pub async fn stop(&mut self) {
         self.stop_consensus().await;
-        self.stop_execution().await
+        self.stop_execution().await;
     }
 
     /// Stop only the consensus engine.
@@ -432,7 +440,7 @@ where
     /// Panics if the execution node is not running.
     pub fn execution_provider(
         &self,
-    ) -> BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, Arc<DatabaseEnv>>> {
+    ) -> BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>> {
         self.execution().provider.clone()
     }
 
@@ -441,18 +449,16 @@ where
     /// This provider MUST BE DROPPED before starting the node again.
     pub fn execution_provider_offline(
         &self,
-    ) -> BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, Arc<DatabaseEnv>>> {
+    ) -> BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>> {
         // Open a read-only provider to the database
         // Note: MDBX allows multiple readers, so this is safe even if another process
         // has the database open for reading
-        let database = Arc::new(
-            open_db_read_only(
-                self.execution_node_datadir.join("db"),
-                DatabaseArguments::default(),
-            )
-            .expect("failed to open execution node database")
-            .with_metrics(),
-        );
+        let database = open_db_read_only(
+            self.execution_node_datadir.join("db"),
+            DatabaseArguments::default(),
+        )
+        .expect("failed to open execution node database")
+        .with_metrics();
 
         let static_file_provider =
             StaticFileProvider::read_only(self.execution_node_datadir.join("static_files"), true)
@@ -467,6 +473,7 @@ where
             Arc::new(execution_runtime::chainspec()),
             static_file_provider,
             rocksdb,
+            reth_ethereum::tasks::Runtime::test(),
         )
         .expect("failed to create provider factory");
 

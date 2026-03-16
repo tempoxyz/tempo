@@ -81,7 +81,10 @@ impl ExtendedCommand for TempoSubcommand {
         match self {
             Self::Consensus(cmd) => cmd.run(),
             Self::InitFromBinaryDump(cmd) => {
-                runner.run_blocking_until_ctrl_c(cmd.execute::<tempo_node::node::TempoNode>())?;
+                let runtime = runner.runtime();
+                runner.run_blocking_until_ctrl_c(
+                    cmd.execute::<tempo_node::node::TempoNode>(runtime),
+                )?;
                 Ok(())
             }
             Self::Add(_) | Self::Update(_) | Self::Remove(_) | Self::List(_) => {
