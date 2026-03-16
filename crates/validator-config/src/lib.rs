@@ -1,3 +1,8 @@
+//! Provides [`ValidatorConfig`] which builds the keccak256 message preimages expected by
+//! `addValidator` and `rotateValidator`, and verifies ed25519 signatures over them.
+
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
+
 use std::net::{IpAddr, SocketAddr};
 
 use alloy_primitives::{Address, B256, Keccak256};

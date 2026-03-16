@@ -1,5 +1,6 @@
 [package]
 name = "tempo-validator-config"
+description = "Ed25519 signature construction and verification for ValidatorConfigV2 add/rotate operations"
 
 version.workspace = true
 edition.workspace = true
