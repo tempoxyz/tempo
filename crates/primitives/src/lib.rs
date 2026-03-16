@@ -41,7 +41,7 @@ pub use reth_compat::TempoReceipt;
 #[cfg(not(feature = "reth"))]
 pub type TempoReceipt<L = alloy_primitives::Log> = alloy_consensus::EthereumReceipt<TempoTxType, L>;
 
-/// A [`NodePrimitives`] implementation for Tempo.
+/// Marker type for Tempo node primitives.
 /// Implements [`reth_primitives_traits::NodePrimitives`] when the `reth` feature is enabled.
 #[derive(Debug, Clone, Default, Eq, PartialEq)]
 #[non_exhaustive]
