@@ -237,7 +237,7 @@ fn joins_from_snapshot() {
 /// snapshot.
 #[test_traced]
 fn can_restart_after_joining_from_snapshot() {
-    // unsafe { backtrace_on_stack_overflow::enable() };
+    unsafe { backtrace_on_stack_overflow::enable() };
     let _ = tempo_eyre::install();
 
     let epoch_length = 20;
@@ -436,6 +436,8 @@ fn can_restart_after_joining_from_snapshot() {
                 break;
             }
         }
+
+        info!("restarting node");
 
         // Restart the node. This ensures that it's state is still sound after
         // doing a snapshot sync.
