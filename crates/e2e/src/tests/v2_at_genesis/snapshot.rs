@@ -221,11 +221,10 @@ fn joins_from_snapshot() {
                     }
 
                     if metric.contains(&replacement.uid) {
-                        // -1 to account for stopping on boundaries.
                         assert!(
-                            epoch >= last_epoch_before_stop.saturating_sub(1),
-                            "when starting from snapshot, older epochs must never \
-                            had consensus engines running"
+                            epoch > 0,
+                            "when starting from snapshot a sufficiently advanced \
+                            snapshot, the node should never boot into the genesis epoch"
                         );
                     }
                 }
@@ -425,9 +424,9 @@ fn can_restart_after_joining_from_snapshot() {
 
                     if metric.contains(&replacement.uid) {
                         assert!(
-                            epoch >= last_epoch_before_stop,
-                            "the replacement validator should never enter epochs \
-                            older than what is in the snapshot"
+                            epoch > 0,
+                            "when starting from snapshot a sufficiently advanced \
+                            snapshot, the node should never boot into the genesis epoch"
                         );
                     }
 

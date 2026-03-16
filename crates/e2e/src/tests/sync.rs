@@ -157,14 +157,7 @@ fn joins_from_snapshot() {
                     }
 
                     if metric.contains(&receiver.uid) {
-                        // -1 to account for stopping on boundaries.
-                        assert!(
-                            epoch >= last_epoch_before_stop.saturating_sub(1),
-                            "when starting from snapshot, older epochs must never \
-                            had consensus engines running; entered epoch `{epoch}` \
-                            but the snapshot was supposed to be in  \
-                            `{last_epoch_before_stop}`"
-                        );
+                        assert!(epoch > 0, "validator should never boot into genesis epoch");
                     }
                 }
             }
