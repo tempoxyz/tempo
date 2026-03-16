@@ -33,7 +33,8 @@ use reth_ethereum::{
             events::{NetworkEvent, PeerEvent},
         },
     },
-    tasks::TaskManager,
+    provider::providers::RocksDBProvider,
+    tasks::Runtime,
 };
 use reth_network_peers::{NodeRecord, TrustedPeer};
 use reth_node_builder::{NodeBuilder, NodeConfig};
@@ -335,7 +336,7 @@ impl ExecutionRuntime {
             rt.block_on(async move {
                 while let Some(msg) = from_handle.recv().await {
                     // create a new task manager for the new node instance
-                    let task_manager = TaskManager::current();
+                    let runtime = Runtime::test();
                     match msg {
                         Message::AddValidator(add_validator) => {
                             let AddValidator {
@@ -413,14 +414,16 @@ impl ExecutionRuntime {
                             name,
                             config,
                             database,
+                            rocksdb,
                             response,
                         } => {
                             let node = launch_execution_node(
-                                task_manager,
+                                runtime,
                                 chain_spec.clone(),
                                 datadir.join(name),
-                                config,
+                                *config,
                                 database,
+                                rocksdb,
                             )
                             .await
                             .expect("must be able to launch execution nodes");
@@ -598,14 +601,16 @@ impl ExecutionRuntimeHandle {
         &self,
         name: &str,
         config: ExecutionNodeConfig,
-        database: Arc<DatabaseEnv>,
+        database: DatabaseEnv,
+        rocksdb: Option<RocksDBProvider>,
     ) -> eyre::Result<ExecutionNode> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.to_runtime
             .send(Message::SpawnNode {
                 name: name.to_string(),
-                config,
+                config: Box::new(config),
                 database,
+                rocksdb,
                 response: tx,
             })
             .map_err(|_| eyre::eyre!("the execution runtime went away"))?;
@@ -622,8 +627,8 @@ impl ExecutionRuntimeHandle {
 pub struct ExecutionNode {
     /// All handles to interact with the launched node instances and services.
     pub node: TempoFullNode,
-    /// The [`TaskManager`] that drives the node's services.
-    pub task_manager: TaskManager,
+    /// The [`Runtime`] that drives the node's services.
+    pub runtime: Runtime,
     /// The exist future that resolves when the node's engine future resolves.
     pub exit_fut: NodeExitFuture,
 }
@@ -659,7 +664,7 @@ impl ExecutionNode {
     /// Shuts down the node and awaits until the node is terminated.
     pub async fn shutdown(self) {
         let _ = self.node.rpc_server_handle().clone().stop();
-        self.task_manager
+        self.runtime
             .graceful_shutdown_with_timeout(Duration::from_secs(10));
         let _ = self.exit_fut.await;
     }
@@ -700,11 +705,12 @@ pub fn genesis() -> Genesis {
 ///    are not passed to it).
 /// 3. consensus config is not necessary
 pub async fn launch_execution_node<P: AsRef<Path>>(
-    task_manager: TaskManager,
+    runtime: Runtime,
     chain_spec: TempoChainSpec,
     datadir: P,
     config: ExecutionNodeConfig,
-    database: Arc<DatabaseEnv>,
+    database: DatabaseEnv,
+    rocksdb: Option<RocksDBProvider>,
 ) -> eyre::Result<ExecutionNode> {
     println!("launching node at {}", datadir.as_ref().display());
     let node_config = NodeConfig::new(Arc::new(chain_spec))
@@ -741,29 +747,35 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
 
     let tempo_node = TempoNode::default().with_validator_key(config.validator_key);
     let feed_state = config.feed_state;
-    let node_handle = NodeBuilder::new(node_config)
-        .with_database(database)
-        .with_launch_context(task_manager.executor())
-        .node(tempo_node)
-        .extend_rpc_modules(move |ctx| {
-            if let Some(feed_state) = feed_state {
-                ctx.modules
-                    .merge_configured(TempoConsensusRpc::new(feed_state).into_rpc())?;
-            }
-            Ok(())
-        })
-        .launch()
-        .await
-        .wrap_err_with(|| {
-            format!(
-                "failed launching node; databasedir: `{}`",
-                datadir.as_ref().display()
-            )
-        })?;
+
+    let node_handle = if let Some(rocksdb) = rocksdb {
+        NodeBuilder::new(node_config)
+            .with_database(database)
+            .with_rocksdb_provider(rocksdb)
+    } else {
+        NodeBuilder::new(node_config).with_database(database)
+    }
+    .with_launch_context(runtime.clone())
+    .node(tempo_node)
+    .extend_rpc_modules(move |ctx| {
+        if let Some(feed_state) = feed_state {
+            ctx.modules
+                .merge_configured(TempoConsensusRpc::new(feed_state).into_rpc())?;
+        }
+        Ok(())
+    })
+    .launch()
+    .await
+    .wrap_err_with(|| {
+        format!(
+            "failed launching node; databasedir: `{}`",
+            datadir.as_ref().display()
+        )
+    })?;
 
     Ok(ExecutionNode {
         node: node_handle.node,
-        task_manager,
+        runtime,
         exit_fut: node_handle.node_exit_future,
     })
 }
@@ -774,8 +786,9 @@ enum Message {
     SetNextFullDkgCeremony(Box<SetNextFullDkgCeremony>),
     SpawnNode {
         name: String,
-        config: ExecutionNodeConfig,
-        database: Arc<DatabaseEnv>,
+        config: Box<ExecutionNodeConfig>,
+        database: DatabaseEnv,
+        rocksdb: Option<RocksDBProvider>,
         response: tokio::sync::oneshot::Sender<ExecutionNode>,
     },
     RunAsync(BoxFuture<'static, ()>),
