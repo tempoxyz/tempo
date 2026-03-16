@@ -305,6 +305,7 @@ where
             // which leaves the only reason for transactions to get invalidated by expiry of
             // `valid_before` field.
             if has_expired_transactions(subblock, attributes.timestamp()) {
+                self.metrics.inc_subblocks_expired();
                 return false;
             }
 
@@ -366,6 +367,7 @@ where
             .record(prepare_system_txs_elapsed);
 
         let base_fee = builder.evm_mut().block().basefee;
+        let pool_fetch_start = Instant::now();
         let mut best_txs = best_txs(BestTransactionsAttributes::new(
             base_fee,
             builder
@@ -374,6 +376,9 @@ where
                 .blob_gasprice()
                 .map(|gasprice| gasprice as u64),
         ));
+        self.metrics
+            .pool_fetch_duration_seconds
+            .record(pool_fetch_start.elapsed());
 
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
@@ -539,7 +544,7 @@ where
                         );
                         self.highest_invalid_subblock
                             .store(builder.evm().block().number.to(), Ordering::Relaxed);
-
+                        self.metrics.inc_build_failure("subblock_invalid_tx");
                         return Err(PayloadBuilderError::evm(err));
                     } else {
                         return Err(PayloadBuilderError::evm(err));
