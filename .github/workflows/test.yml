@@ -167,9 +167,9 @@ jobs:
         with:
           tool: nextest@0.9.124
       - name: Build e2e tests
-        run: cargo nextest run --profile ci -E 'package(tempo-e2e)' --partition count:${{ matrix.partition }}/2 --no-run
+        run: cargo nextest run --profile ci -E 'package(tempo-e2e)' --partition count:${{ matrix.partition }}/3 --no-run
       - name: Run e2e tests
-        run: cargo nextest run --profile ci -E 'package(tempo-e2e)' --partition count:${{ matrix.partition }}/2
+        run: cargo nextest run --profile ci -E 'package(tempo-e2e)' --partition count:${{ matrix.partition }}/3
 
   cli:
     name: CLI smoke tests
