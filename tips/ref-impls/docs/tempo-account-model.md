@@ -21,15 +21,13 @@ The AA debate on Ethereum splits into two camps: enshrine specific features into
 
 **[ERC-4337](https://eips.ethereum.org/EIPS/eip-4337)** builds a second transaction pipeline at the application layer: separate message type (UserOperations), separate relay network (bundlers), and a singleton `EntryPoint` contract mediating every execution. This adds gas overhead per `UserOp`, depends on a thin bundler market with no protocol-level liveness guarantee, and forces every block explorer, indexer, and wallet to handle a second class of transaction.
 
-**[EIP-7702](https://eips.ethereum.org/EIPS/eip-7702)** lets an EOA delegate execution to a contract for one transaction — enabling batching, gas sponsorship, and custom validation. But the delegating account is still a secp256k1 EOA. A passkey holder or multisig cannot initiate a 7702 delegation on its own. It improves what existing EOAs can *do*; it doesn't change what they *are*.
+**[EIP-7702](https://eips.ethereum.org/EIPS/eip-7702)** lets an EOA delegate execution to a contract for one transaction — enabling batching, gas sponsorship, and custom validation. But the delegating account is still a secp256k1 EOA. A passkey holder or multisig cannot initiate a 7702 delegation on its own. Existing EOAs gain new capabilities, but remain secp256k1 accounts underneath.
 
 **[EIP-8141](https://eips.ethereum.org/EIPS/eip-8141) (Frame Transactions)** a fully generic account model: authorization, gas payment, and execution are all arbitrary EVM code. This can express any AA use case, but there are no sane defaults — every integrator independently solves key management, gas abstraction, and replay protection:
 
 - Clients must execute arbitrary code to validate transactions before inclusion, which makes mempool DoS protection more complex.
 - Developer tooling (block explorers, debuggers, simulators) must handle transactions with no well-defined structure, where authorization and payment can happen at any point during execution.
 - Wallets must integrate and audit smart account implementations on every chain — whether their own or third-party.
-
-It's a toolkit, not a solution. Each integrator independently solves problems that a protocol-level design solves once.
 
 ## Tempo's Account Model
 
