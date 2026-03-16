@@ -447,40 +447,40 @@ fn can_restart_after_joining_from_snapshot() {
         // doing a snapshot sync.
         replacement.stop().await;
 
-        // let network_head = validators[0]
-        //     .execution_provider()
-        //     .best_block_number()
-        //     .unwrap();
+        let network_head = validators[0]
+            .execution_provider()
+            .best_block_number()
+            .unwrap();
 
-        // replacement.start(&context).await;
+        replacement.start(&context).await;
 
-        // info!(
-        //     network_head,
-        //     "restarting the node and waiting for it to catch up"
-        // );
+        info!(
+            network_head,
+            "restarting the node and waiting for it to catch up"
+        );
 
-        // 'progress: loop {
-        //     context.sleep(Duration::from_secs(1)).await;
+        'progress: loop {
+            context.sleep(Duration::from_secs(1)).await;
 
-        //     let metrics = context.encode();
+            let metrics = context.encode();
 
-        //     for line in metrics.lines() {
-        //         if !line.starts_with(CONSENSUS_NODE_PREFIX) {
-        //             continue;
-        //         }
+            for line in metrics.lines() {
+                if !line.starts_with(CONSENSUS_NODE_PREFIX) {
+                    continue;
+                }
 
-        //         let mut parts = line.split_whitespace();
-        //         let metric = parts.next().unwrap();
-        //         let value = parts.next().unwrap();
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
 
-        //         if metric.contains(&replacement.uid)
-        //             && metric.ends_with("_marshal_processed_height")
-        //             && value.parse::<u64>().unwrap() > network_head
-        //         {
-        //             break 'progress;
-        //         }
-        //     }
-        // }
+                if metric.contains(&replacement.uid)
+                    && metric.ends_with("_marshal_processed_height")
+                    && value.parse::<u64>().unwrap() > network_head
+                {
+                    break 'progress;
+                }
+            }
+        }
     });
 }
 
