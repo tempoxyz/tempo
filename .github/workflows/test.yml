@@ -147,7 +147,7 @@ jobs:
           retention-days: 1
 
   e2e:
-    name: e2e (${{ matrix.partition }}/2)
+    name: e2e (${{ matrix.partition }}/3)
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 30
     permissions:
@@ -155,7 +155,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        partition: [1, 2]
+        partition: [1, 2, 3]
     steps:
       - uses: actions/checkout@v6
         with:
