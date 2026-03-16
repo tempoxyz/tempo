@@ -26,10 +26,9 @@ use reth_ethereum_cli::ExtendedCommand;
 use serde::Serialize;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
-use tempo_commonware_node_config::{
-    SigningKey,
-    validator::{self as validator, ValidatorConfig},
-};
+use tempo_commonware_node_config::SigningKey;
+use tempo_precompiles::validator_config_v2::{VALIDATOR_NS_ADD, VALIDATOR_NS_ROTATE};
+use tempo_validator_config::ValidatorConfig;
 use tempo_contracts::precompiles::{
     IValidatorConfig, IValidatorConfigV2, VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
@@ -129,10 +128,8 @@ impl ConsensusSubcommand {
         match self {
             Self::AddValidator(args) => args.run(),
             Self::RotateValidator(args) => args.run(),
-            Self::CreateAddValidatorSignature(args) => args.run(validator::ADD_VALIDATOR_NAMESPACE),
-            Self::CreateRotateValidatorSignature(args) => {
-                args.run(validator::ROTATE_VALIDATOR_NAMESPACE)
-            }
+            Self::CreateAddValidatorSignature(args) => args.run(VALIDATOR_NS_ADD),
+            Self::CreateRotateValidatorSignature(args) => args.run(VALIDATOR_NS_ROTATE),
             Self::GeneratePrivateKey(args) => args.run(),
             Self::CalculatePublicKey(args) => args.run(),
             Self::ValidatorsInfo(args) => args.run(),
