@@ -1597,8 +1597,7 @@ dependencies = [
 [[package]]
 name = "backtrace-on-stack-overflow"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7fd2d70527f3737a1ad17355e260706c1badebabd1fa06a7a053407380df841b"
+source = "git+https://github.com/Pistonight/backtrace-on-stack-overflow?branch=feature%2Flimit_stack_size#fa3874ecb04b3cb76a5a6563c620630dc5e15e7c"
 dependencies = [
  "backtrace",
  "libc",

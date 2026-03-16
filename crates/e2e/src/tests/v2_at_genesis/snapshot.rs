@@ -237,7 +237,7 @@ fn joins_from_snapshot() {
 /// snapshot.
 #[test_traced]
 fn can_restart_after_joining_from_snapshot() {
-    unsafe { backtrace_on_stack_overflow::enable() };
+    unsafe { backtrace_on_stack_overflow::enable_with_limit(20) };
     let _ = tempo_eyre::install();
 
     let epoch_length = 20;
@@ -490,6 +490,7 @@ fn latest_epoch_of_validator(context: &Context, id: &str) -> u64 {
 
         let mut parts = line.split_whitespace();
         let metric = parts.next().unwrap();
+
         let value = parts.next().unwrap();
 
         if metric.ends_with("_epoch_manager_latest_epoch") && metric.contains(id) {

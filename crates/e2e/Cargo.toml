@@ -70,7 +70,8 @@ alloy-network.workspace = true
 
 rand_08.workspace = true
 
-backtrace-on-stack-overflow = "0.3.0"
+# backtrace-on-stack-overflow = "0.3.0"
+backtrace-on-stack-overflow = { git = "https://github.com/Pistonight/backtrace-on-stack-overflow", branch = "feature/limit_stack_size" }
 
 [lints]
 workspace = true
