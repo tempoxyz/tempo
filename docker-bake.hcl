@@ -19,7 +19,7 @@ target "chef" {
   platforms = ["linux/amd64", "linux/arm64"]
   args = {
     RUST_PROFILE = "profiling"
-    RUST_FEATURES = "asm-keccak,jemalloc,otlp"
+    RUST_FEATURES = "asm-keccak,jemalloc,jemalloc-symbols,otlp"
   }
 }
 
@@ -32,7 +32,7 @@ target "_common" {
   args = {
     CHEF_IMAGE = "chef"
     RUST_PROFILE = "profiling"
-    RUST_FEATURES = "asm-keccak,jemalloc,otlp"
+    RUST_FEATURES = "asm-keccak,jemalloc,jemalloc-symbols,otlp"
     VERGEN_GIT_SHA = "${VERGEN_GIT_SHA}"
     VERGEN_GIT_SHA_SHORT = "${VERGEN_GIT_SHA_SHORT}"
   }
