@@ -12435,7 +12435,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-validator-config"
-version = "1.4.0"
+version = "1.4.2"
 dependencies = [
  "alloy-primitives",
  "commonware-codec",
