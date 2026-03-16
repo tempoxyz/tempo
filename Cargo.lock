@@ -12118,13 +12118,11 @@ dependencies = [
 name = "tempo-commonware-node-config"
 version = "1.4.0"
 dependencies = [
- "alloy-primitives",
  "commonware-codec",
  "commonware-cryptography",
  "commonware-utils",
  "const-hex",
  "rand 0.8.5",
- "tempo-contracts",
  "thiserror 2.0.18",
 ]
 
@@ -12578,6 +12576,18 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "tempo-validator-config"
+version = "1.4.0"
+dependencies = [
+ "alloy-primitives",
+ "commonware-codec",
+ "commonware-cryptography",
+ "tempo-contracts",
+ "tempo-precompiles",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

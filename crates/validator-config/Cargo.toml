@@ -1,5 +1,5 @@
 [package]
-name = "tempo-commonware-node-config"
+name = "tempo-validator-config"
 
 version.workspace = true
 edition.workspace = true
@@ -11,11 +11,9 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+alloy-primitives.workspace = true
 commonware-codec.workspace = true
 commonware-cryptography.workspace = true
-const-hex.workspace = true
+tempo-contracts.workspace = true
+tempo-precompiles.workspace = true
 thiserror.workspace = true
-
-[dev-dependencies]
-commonware-utils.workspace = true
-rand_08.workspace = true

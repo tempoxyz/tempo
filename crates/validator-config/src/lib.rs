@@ -4,12 +4,7 @@ use alloy_primitives::{Address, B256, Keccak256};
 use commonware_codec::DecodeExt as _;
 use commonware_cryptography::{Verifier as _, ed25519};
 use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
-
-/// Namespace used for ed25519 signatures when adding a validator.
-pub const ADD_VALIDATOR_NAMESPACE: &[u8] = b"TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR";
-
-/// Namespace used for ed25519 signatures when rotating a validator.
-pub const ROTATE_VALIDATOR_NAMESPACE: &[u8] = b"TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR";
+use tempo_precompiles::validator_config_v2::{VALIDATOR_NS_ADD, VALIDATOR_NS_ROTATE};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ValidatorConfigError {
@@ -56,7 +51,7 @@ impl ValidatorConfig {
         &self,
         signature: &[u8],
     ) -> Result<(), ValidatorConfigError> {
-        self.check_signature(ADD_VALIDATOR_NAMESPACE, signature)
+        self.check_signature(VALIDATOR_NS_ADD, signature)
     }
 
     /// Verifies that `signature` is a valid `rotateValidator` ed25519 signature.
@@ -64,7 +59,7 @@ impl ValidatorConfig {
         &self,
         signature: &[u8],
     ) -> Result<(), ValidatorConfigError> {
-        self.check_signature(ROTATE_VALIDATOR_NAMESPACE, signature)
+        self.check_signature(VALIDATOR_NS_ROTATE, signature)
     }
 
     fn check_signature(
