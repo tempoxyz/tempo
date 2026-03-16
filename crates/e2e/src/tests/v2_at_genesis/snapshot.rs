@@ -447,6 +447,12 @@ fn can_restart_after_joining_from_snapshot() {
         // // doing a snapshot sync.
         // replacement.stop().await;
 
+        let exec = validators[0].execution_provider();
+        let network_head = exec.best_block_number().unwrap();
+        info!(
+            network_head,
+            "restarting the node and waiting for it to catch up"
+        );
         // let network_head = validators[0]
         //     .execution_provider()
         //     .best_block_number()
