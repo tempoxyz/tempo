@@ -287,8 +287,10 @@ fn can_restart_after_joining_from_snapshot() {
             .unwrap();
 
         let rotate_height = Height::new(receipt.block_number.unwrap());
-        tracing::debug!(
+        tracing::info!(
             block.height = %rotate_height,
+            old.uid = %donor.uid,
+            new.uid = %replacement.uid,
             "validatorConfigV2.rotateValidator executed",
         );
 
@@ -390,7 +392,7 @@ fn can_restart_after_joining_from_snapshot() {
         donor.start(&context).await;
 
         // Rename, so that it's less confusing below.
-        let replacement = donor;
+        let mut replacement = donor;
 
         info!(
             uid = %replacement.uid,
@@ -438,6 +440,47 @@ fn can_restart_after_joining_from_snapshot() {
                 break;
             }
         }
+
+        info!("restarting node");
+
+        // Restart the node. This ensures that it's state is still sound after
+        // doing a snapshot sync.
+        replacement.stop().await;
+
+        // let network_head = validators[0]
+        //     .execution_provider()
+        //     .best_block_number()
+        //     .unwrap();
+
+        // replacement.start(&context).await;
+
+        // info!(
+        //     network_head,
+        //     "restarting the node and waiting for it to catch up"
+        // );
+
+        // 'progress: loop {
+        //     context.sleep(Duration::from_secs(1)).await;
+
+        //     let metrics = context.encode();
+
+        //     for line in metrics.lines() {
+        //         if !line.starts_with(CONSENSUS_NODE_PREFIX) {
+        //             continue;
+        //         }
+
+        //         let mut parts = line.split_whitespace();
+        //         let metric = parts.next().unwrap();
+        //         let value = parts.next().unwrap();
+
+        //         if metric.contains(&replacement.uid)
+        //             && metric.ends_with("_marshal_processed_height")
+        //             && value.parse::<u64>().unwrap() > network_head
+        //         {
+        //             break 'progress;
+        //         }
+        //     }
+        // }
     });
 }
 
