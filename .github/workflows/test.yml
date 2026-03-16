@@ -156,6 +156,9 @@ jobs:
       fail-fast: false
       matrix:
         partition: [1, 2, 3]
+    env:
+      # Set to 8 MiB because some tests run into stack overflows with jemalloc
+      RUST_MIN_STACK: 8388608
     steps:
       - uses: actions/checkout@v6
         with:
@@ -170,37 +173,6 @@ jobs:
         run: cargo nextest run --profile ci -E 'package(tempo-e2e)' --partition count:${{ matrix.partition }}/3 --no-run
       - name: Run e2e tests
         run: cargo nextest run --profile ci -E 'package(tempo-e2e)' --partition count:${{ matrix.partition }}/3
-
-  debug-test:
-    name: e2e debug test
-    runs-on: depot-ubuntu-latest-32
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-    # env:
-    #   # 8 MiB
-    #   RUST_MIN_STACK: 8388608
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
-      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
-      - uses: taiki-e/install-action@3f67faa728964808f52294a9cd15561b15550b28 # v2.67.19
-        with:
-          tool: nextest@0.9.124
-      - name: Show stack
-        run: ulimit -s
-      - name: Build e2e tests
-        run: cargo nextest run --profile ci -E 'package(tempo-e2e)' --no-run
-      - name: Run e2e tests
-        run: |
-          cargo nextest run --profile ci \
-          -E 'package(tempo-e2e) & test(v2_at_genesis::snapshot::can_restart_after_joining_from_snapshot)' \
-          --no-capture
 
   cli:
     name: CLI smoke tests
