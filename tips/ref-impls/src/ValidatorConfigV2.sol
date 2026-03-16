@@ -23,8 +23,8 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     address private _owner;
     bool private _initialized;
     uint64 private _initializedAtHeight;
-    uint16 internal _migrationSkippedCount;
-    uint16 internal _v1ValidatorCount;
+    uint8 internal _migrationSkippedCount;
+    uint8 internal _v1ValidatorCount;
 
     IValidatorConfig public immutable v1 =
         IValidatorConfig(0xCccCcCCC00000000000000000000000000000000);
@@ -396,7 +396,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
                 revert EmptyV1ValidatorSet();
             }
             _owner = v1.owner();
-            _v1ValidatorCount = uint16(v1Validators.length);
+            _v1ValidatorCount = uint8(v1Validators.length);
             v1Count = _v1ValidatorCount;
         } else {
             v1Count = _v1ValidatorCount;

@@ -37,8 +37,8 @@ struct Config {
     init_at_height: u64,
     /// Number of V1 validators skipped during migration (bad pubkey, duplicate, etc).
     /// Packed alongside `is_init` and `init_at_height` since all are migration lifecycle state.
-    migration_skipped_count: u16,
-    v1_validator_count: u16,
+    migration_skipped_count: u8,
+    v1_validator_count: u8,
 }
 
 impl Config {
@@ -891,7 +891,7 @@ impl ValidatorConfigV2 {
             if v1_count == 0 {
                 Err(ValidatorConfigV2Error::empty_v1_validator_set())?
             }
-            config.v1_validator_count = v1_count as u16;
+            config.v1_validator_count = v1_count as u8;
             self.config.write(Config {
                 owner: config.owner,
                 is_init: false,
