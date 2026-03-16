@@ -38,10 +38,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_commonware_node_config::{
-    SigningKey, SigningShare,
-    validator::{self, ADD_VALIDATOR_NAMESPACE},
-};
+use tempo_commonware_node_config::{SigningKey, SigningShare};
 use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
     PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
@@ -1013,18 +1010,20 @@ fn initialize_validator_config_v2(
                 let pubkey: B256 = public_key.encode().as_ref().try_into().unwrap();
                 let addr = validator.addr;
 
-                let config = validator::ValidatorConfig {
+                let config = tempo_validator_config::ValidatorConfig {
                     chain_id,
                     validator_address,
                     public_key: pubkey,
                     ingress: addr,
                     egress: addr.ip(),
-                    fee_recipient: validator_address,
                 };
 
-                let message = config.message_hash();
+                let message = config.add_validator_message_hash(validator_address);
                 let private_key = validator.signing_key.clone().into_inner();
-                let signature = private_key.sign(ADD_VALIDATOR_NAMESPACE, message.as_slice());
+                let signature = private_key.sign(
+                    tempo_precompiles::validator_config_v2::VALIDATOR_NS_ADD,
+                    message.as_slice(),
+                );
 
                 v2.add_validator(
                     admin,

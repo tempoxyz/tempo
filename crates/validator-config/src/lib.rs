@@ -21,13 +21,12 @@ pub struct ValidatorConfig {
     pub public_key: B256,
     pub ingress: SocketAddr,
     pub egress: IpAddr,
-    pub fee_recipient: Address,
 }
 
 impl ValidatorConfig {
-    /// Returns the keccak256 hash of the message preimage:
-    /// `keccak256(chainId || contractAddr || validatorAddr || ingress || egress)`.
-    pub fn message_hash(&self) -> B256 {
+    /// Returns the base hasher with the common preimage fields:
+    /// `chainId || contractAddr || validatorAddr || len(ingress) || ingress || len(egress) || egress`.
+    fn base_hasher(&self) -> Keccak256 {
         let ingress = self.ingress.to_string();
         let ingress_length = u8::try_from(ingress.len()).expect("ingress length must fit u8");
 
@@ -42,16 +41,29 @@ impl ValidatorConfig {
         hasher.update(ingress.as_bytes());
         hasher.update([egress_length]);
         hasher.update(egress.as_bytes());
-        hasher.update(self.fee_recipient.as_slice());
+        hasher
+    }
+
+    /// Returns the message hash for `addValidator`
+    pub fn add_validator_message_hash(&self, fee_recipient: Address) -> B256 {
+        let mut hasher = self.base_hasher();
+        hasher.update(fee_recipient.as_slice());
         hasher.finalize()
+    }
+
+    /// Returns the message hash for `rotateValidator`
+    pub fn rotate_validator_message_hash(&self) -> B256 {
+        self.base_hasher().finalize()
     }
 
     /// Verifies that `signature` is a valid `addValidator` ed25519 signature.
     pub fn check_add_validator_signature(
         &self,
+        fee_recipient: Address,
         signature: &[u8],
     ) -> Result<(), ValidatorConfigError> {
-        self.check_signature(VALIDATOR_NS_ADD, signature)
+        let message = self.add_validator_message_hash(fee_recipient);
+        self.check_signature(VALIDATOR_NS_ADD, &message, signature)
     }
 
     /// Verifies that `signature` is a valid `rotateValidator` ed25519 signature.
@@ -59,19 +71,20 @@ impl ValidatorConfig {
         &self,
         signature: &[u8],
     ) -> Result<(), ValidatorConfigError> {
-        self.check_signature(VALIDATOR_NS_ROTATE, signature)
+        let message = self.rotate_validator_message_hash();
+        self.check_signature(VALIDATOR_NS_ROTATE, &message, signature)
     }
 
     fn check_signature(
         &self,
         namespace: &[u8],
+        message: &B256,
         signature: &[u8],
     ) -> Result<(), ValidatorConfigError> {
         let public_key = ed25519::PublicKey::decode(self.public_key.as_slice())
             .map_err(|_| ValidatorConfigError::InvalidPublicKey)?;
         let sig = ed25519::Signature::decode(signature)
             .map_err(|_| ValidatorConfigError::InvalidSignature)?;
-        let message = self.message_hash();
         if !public_key.verify(namespace, message.as_slice(), &sig) {
             return Err(ValidatorConfigError::SignatureVerificationFailed);
         }

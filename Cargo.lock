@@ -12624,6 +12624,7 @@ dependencies = [
  "tempo-precompiles",
  "tempo-primitives",
  "tempo-revm",
+ "tempo-validator-config",
  "tokio",
 ]
 
