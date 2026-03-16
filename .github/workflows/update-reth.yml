@@ -2,7 +2,7 @@
 #
 # If an existing `reth-main-update-deps` branch with an open PR exists,
 # checks it out directly and picks up where it left off (bump, compile fix,
-# test fix, CI fix).  Otherwise starts fresh from `reth-main`.
+# test fix, CI fix).  Otherwise starts fresh from `main`.
 
 name: Update reth deps
 
@@ -54,7 +54,7 @@ jobs:
             echo "Branch reth-main-update-deps does not exist — starting fresh"
           fi
 
-          EXISTING_PR=$(gh pr list --head reth-main-update-deps --base reth-main --state open --json number --jq '.[0].number // empty')
+          EXISTING_PR=$(gh pr list --head reth-main-update-deps --base main --state open --json number --jq '.[0].number // empty')
           if [ -n "$EXISTING_PR" ]; then
             echo "existing_pr=$EXISTING_PR" >> "$GITHUB_OUTPUT"
             echo "Found existing PR #$EXISTING_PR"
@@ -66,15 +66,15 @@ jobs:
           if [ "${{ steps.detect.outputs.branch_exists }}" = "true" ]; then
             echo "Continuing on existing reth-main-update-deps branch"
             git checkout reth-main-update-deps
-          else
-            echo "Creating reth-main-update-deps from reth-main"
-            if git rev-parse --verify origin/reth-main >/dev/null 2>&1; then
-              git checkout reth-main
+            # Merge latest main into existing branch
+            if git merge origin/main --no-edit; then
+              echo "Merged main cleanly into existing branch"
             else
-              echo "reth-main not found, creating from main"
-              git checkout -b reth-main origin/main
+              echo "Merge conflicts detected, will resolve in merge step"
             fi
-            git checkout -b reth-main-update-deps
+          else
+            echo "Creating reth-main-update-deps from main"
+            git checkout -b reth-main-update-deps origin/main
           fi
 
       # ── toolchain (matches test.yml) ───────────────────────────
@@ -125,25 +125,26 @@ jobs:
           WRAPPER
           chmod +x /usr/local/bin/amp-run
 
-      # ── merge latest main ────────────────────
-      - name: Merge latest main
+      # ── resolve merge conflicts (if any from checkout step) ──
+      - name: Resolve merge conflicts
         env:
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
         run: |
-          if git merge origin/main --no-edit; then
-            echo "Merged main cleanly"
-          else
-            echo "Merge conflicts detected, using Amp to resolve..."
-            CONFLICTED=$(git diff --name-only --diff-filter=U)
-            AMP_PROMPT="The branch has merge conflicts after merging origin/main. \
-            Please resolve all merge conflicts in the following files. Keep the reth-main branch's \
-            intent (reth deps pointing at branch = \"main\") while incorporating changes from main. \
-            Conflicted files: ${CONFLICTED}"
-
-            amp-run --dangerously-allow-all -x "$AMP_PROMPT"
-            git add -A
-            git commit --no-edit
+          CONFLICTED=$(git diff --name-only --diff-filter=U)
+          if [ -z "$CONFLICTED" ]; then
+            echo "No merge conflicts to resolve"
+            exit 0
           fi
+
+          echo "Merge conflicts detected, using Amp to resolve..."
+          AMP_PROMPT="The branch has merge conflicts after merging origin/main. \
+          Please resolve all merge conflicts in the following files. Keep the intent of the \
+          reth update branch (reth deps pointing at branch = \"main\") while incorporating \
+          changes from main. Conflicted files: ${CONFLICTED}"
+
+          amp-run --dangerously-allow-all -x "$AMP_PROMPT"
+          git add -A
+          git commit --no-edit
 
       # ── cargo update ───────────────────────────────────────────
       - name: Update reth crates in lockfile
@@ -314,10 +315,8 @@ jobs:
           fi
 
       # ── push ───────────────────────────────────────────────────
-      - name: Push branches
+      - name: Push branch
         run: |
-          # Ensure reth-main exists on remote (needed as PR base)
-          git push -u origin reth-main 2>/dev/null || true
           git push --force-with-lease origin reth-main-update-deps
 
       # ── create / update PR ─────────────────────────────────────
@@ -355,9 +354,9 @@ jobs:
           } > /tmp/pr-body.txt
 
           # Skip PR if there are no commits between the branches
-          COMMITS_AHEAD=$(git rev-list --count origin/reth-main..reth-main-update-deps 2>/dev/null || echo "0")
+          COMMITS_AHEAD=$(git rev-list --count origin/main..reth-main-update-deps 2>/dev/null || echo "0")
           if [ "$COMMITS_AHEAD" = "0" ]; then
-            echo "No commits ahead of reth-main — nothing to PR"
+            echo "No commits ahead of main — nothing to PR"
             exit 0
           fi
 
@@ -370,7 +369,7 @@ jobs:
           else
             echo "Creating new PR"
             gh pr create \
-              --base reth-main \
+              --base main \
               --head reth-main-update-deps \
               --title "$TITLE" \
               --body-file /tmp/pr-body.txt \
