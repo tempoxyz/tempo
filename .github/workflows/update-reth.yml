@@ -1,8 +1,8 @@
 # Nightly workflow to update reth dependencies from upstream main branch.
 #
-# If an existing `reth-main-update-deps` branch with an open PR exists,
-# checks it out directly and picks up where it left off (bump, compile fix,
-# test fix, CI fix).  Otherwise starts fresh from `main`.
+# If an existing `reth-bump` branch exists, rebases it onto main and picks
+# up where it left off (rev bump, compile fix, test fix, CI fix).
+# Otherwise starts fresh from `main`.
 
 name: Update reth deps
 
@@ -46,15 +46,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.DEREK_PAT }}
         run: |
-          if git rev-parse --verify origin/reth-main-update-deps >/dev/null 2>&1; then
+          if git rev-parse --verify origin/reth-bump >/dev/null 2>&1; then
             echo "branch_exists=true" >> "$GITHUB_OUTPUT"
-            echo "Branch reth-main-update-deps exists — will continue on it"
+            echo "Branch reth-bump exists — will continue on it"
           else
             echo "branch_exists=false" >> "$GITHUB_OUTPUT"
-            echo "Branch reth-main-update-deps does not exist — starting fresh"
+            echo "Branch reth-bump does not exist — starting fresh"
           fi
 
-          EXISTING_PR=$(gh pr list --head reth-main-update-deps --base main --state open --json number --jq '.[0].number // empty')
+          EXISTING_PR=$(gh pr list --head reth-bump --base main --state open --json number --jq '.[0].number // empty')
           if [ -n "$EXISTING_PR" ]; then
             echo "existing_pr=$EXISTING_PR" >> "$GITHUB_OUTPUT"
             echo "Found existing PR #$EXISTING_PR"
@@ -62,19 +62,35 @@ jobs:
 
       # ── checkout or create update branch ────────────────────────
       - name: Checkout or create update branch
+        env:
+          AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
         run: |
           if [ "${{ steps.detect.outputs.branch_exists }}" = "true" ]; then
-            echo "Continuing on existing reth-main-update-deps branch"
-            git checkout reth-main-update-deps
-            # Merge latest main into existing branch
-            if git merge origin/main --no-edit; then
-              echo "Merged main cleanly into existing branch"
+            echo "Continuing on existing reth-bump branch, rebasing onto main"
+            git checkout reth-bump
+
+            if git rebase origin/main; then
+              echo "Rebased cleanly onto main"
             else
-              echo "Merge conflicts detected, will resolve in merge step"
+              echo "Rebase conflicts detected, using Amp to resolve..."
+              while [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; do
+                CONFLICTED=$(git diff --name-only --diff-filter=U)
+                AMP_PROMPT="A git rebase onto origin/main hit conflicts. \
+                Please resolve all merge conflicts in the following files. Keep the reth-bump branch's \
+                reth rev pins and source fixes while incorporating changes from main. \
+                Conflicted files: ${CONFLICTED}"
+
+                amp-run --dangerously-allow-all -x "$AMP_PROMPT"
+                git add -A
+                if ! git rebase --continue; then
+                  echo "More conflicts in next commit, continuing..."
+                fi
+              done
+              echo "Rebase completed with Amp conflict resolution"
             fi
           else
-            echo "Creating reth-main-update-deps from main"
-            git checkout -b reth-main-update-deps origin/main
+            echo "Creating reth-bump from main"
+            git checkout -b reth-bump origin/main
           fi
 
       # ── toolchain (matches test.yml) ───────────────────────────
@@ -124,27 +140,6 @@ jobs:
           fi
           WRAPPER
           chmod +x /usr/local/bin/amp-run
-
-      # ── resolve merge conflicts (if any from checkout step) ──
-      - name: Resolve merge conflicts
-        env:
-          AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
-        run: |
-          CONFLICTED=$(git diff --name-only --diff-filter=U)
-          if [ -z "$CONFLICTED" ]; then
-            echo "No merge conflicts to resolve"
-            exit 0
-          fi
-
-          echo "Merge conflicts detected, using Amp to resolve..."
-          AMP_PROMPT="The branch has merge conflicts after merging origin/main. \
-          Please resolve all merge conflicts in the following files. Keep the update branch's \
-          reth rev pins as-is while incorporating changes from main. \
-          Conflicted files: ${CONFLICTED}"
-
-          amp-run --dangerously-allow-all -x "$AMP_PROMPT"
-          git add -A
-          git commit --no-edit
 
       # ── update reth rev ─────────────────────────────────────────
       - name: Update reth rev in Cargo.toml
@@ -321,7 +316,7 @@ jobs:
       # ── push ───────────────────────────────────────────────────
       - name: Push branch
         run: |
-          git push --force-with-lease origin reth-main-update-deps
+          git push --force-with-lease origin reth-bump
 
       # ── create / update PR ─────────────────────────────────────
       - name: Create or update PR
@@ -358,7 +353,7 @@ jobs:
           } > /tmp/pr-body.txt
 
           # Skip PR if there are no commits between the branches
-          COMMITS_AHEAD=$(git rev-list --count origin/main..reth-main-update-deps 2>/dev/null || echo "0")
+          COMMITS_AHEAD=$(git rev-list --count origin/main..reth-bump 2>/dev/null || echo "0")
           if [ "$COMMITS_AHEAD" = "0" ]; then
             echo "No commits ahead of main — nothing to PR"
             exit 0
@@ -374,7 +369,7 @@ jobs:
             echo "Creating new PR"
             gh pr create \
               --base main \
-              --head reth-main-update-deps \
+              --head reth-bump \
               --title "$TITLE" \
               --body-file /tmp/pr-body.txt \
               --label A-dependencies
@@ -386,7 +381,7 @@ jobs:
           GH_TOKEN: ${{ secrets.DEREK_PAT }}
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
         run: |
-          PR_BRANCH="reth-main-update-deps"
+          PR_BRANCH="reth-bump"
 
           CI_TIMEOUT_MINUTES=30
           MAX_CI_FIX_ATTEMPTS=10
