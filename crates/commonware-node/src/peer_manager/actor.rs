@@ -14,7 +14,7 @@ use commonware_utils::{Acknowledgement, ordered};
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::{StreamExt as _, channel::mpsc};
 use prometheus_client::metrics::gauge::Gauge;
-use reth_ethereum::network::NetworkInfo;
+use reth_ethereum::{chainspec::EthChainSpec, network::NetworkInfo};
 use reth_provider::{BlockIdReader as _, HeaderProvider as _};
 use tempo_chainspec::hardfork::TempoHardforks as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -178,13 +178,13 @@ where
             );
         }
 
-        let maybe_latest_finalized_header = read_highest_finalized_header(&self.execution_node);
+        let maybe_latest_finalized_header = self.read_highest_finalized_header();
         let reference_timestamp = match &block {
             Some(block) => maybe_latest_finalized_header.ok().map_or_else(
                 || block.timestamp(),
                 |header| header.timestamp().max(block.timestamp()),
             ),
-            None => read_highest_finalized_header(&self.execution_node)
+            None => maybe_latest_finalized_header
                 .wrap_err("could not determine a timestamp to determine peer behavior")?
                 .timestamp(),
         };
@@ -354,6 +354,30 @@ where
             ),
         );
     }
+    #[instrument(skip_all, fields(height), err)]
+    fn read_highest_finalized_header(&self) -> eyre::Result<TempoHeader> {
+        let highest_finalized = match self.execution_node.provider.finalized_block_hash() {
+            Ok(Some(highest_finalized)) => Ok(highest_finalized),
+            Ok(None) if self.last_finalized_height == Height::zero() => {
+                Ok(self.execution_node.chain_spec().genesis_hash())
+            }
+            Ok(None) => Err(eyre::eyre!(
+                "execution layer has no record of any finalization hashes"
+            )),
+            Err(err) => Err(eyre::Report::new(err)),
+        }
+        .wrap_err("failed reading latest finalizhed hash from execution layer")?;
+        self.execution_node
+            .provider
+            .header_by_hash_or_number(highest_finalized.into())
+            .map_err(eyre::Report::new)
+            .and_then(|h| {
+                h.ok_or_eyre(
+                    "execution layer did not have the header for the advertised finalized hash",
+                )
+            })
+            .wrap_err_with(|| format!("failed reading header for hash `{highest_finalized}`"))
+    }
 }
 
 #[derive(Debug)]
@@ -370,25 +394,6 @@ fn read_header_at_height(execution_node: &TempoFullNode, height: u64) -> eyre::R
         .map_err(eyre::Report::new)
         .and_then(|h| h.ok_or_eyre("execution layer did not have a header at the requested height"))
         .wrap_err_with(|| format!("failed reading header at height `{height}`"))
-}
-
-#[instrument(skip_all, fields(height), err)]
-fn read_highest_finalized_header(execution_node: &TempoFullNode) -> eyre::Result<TempoHeader> {
-    let highest_finalized = execution_node
-        .provider
-        .finalized_block_hash()
-        .map_err(eyre::Report::new)
-        .and_then(|h| h.ok_or_eyre("execution layer has no record of any finalization hashes"))?;
-    execution_node
-        .provider
-        .header_by_hash_or_number(highest_finalized.into())
-        .map_err(eyre::Report::new)
-        .and_then(|h| {
-            h.ok_or_eyre(
-                "execution layer did not have the header for the advertised finalized hash",
-            )
-        })
-        .wrap_err_with(|| format!("failed reading header for hash `{highest_finalized}`"))
 }
 
 async fn read_peer_set_if_boundary(
