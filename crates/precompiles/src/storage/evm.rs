@@ -271,11 +271,14 @@ pub fn deduct_gas(gas: &mut u64, additional_cost: u64) -> Result<(), TempoPrecom
         .ok_or(TempoPrecompileError::OutOfGas)?;
     Ok(())
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::{address, b256, bytes};
+    use alloy::primitives::{B256, address, b256, bytes, keccak256};
     use alloy_evm::{EvmEnv, EvmFactory, EvmInternals, revm::context::Host};
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
     use revm::{
         database::{CacheDB, EmptyDB},
         interpreter::StateLoad,
@@ -558,6 +561,82 @@ mod tests {
         // Verify they are independent
         assert_eq!(provider.sload(address, key)?, persistent_value);
         assert_eq!(provider.tload(address, key)?, transient_value);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_keccak256_gas() -> eyre::Result<()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
+        let ctx = evm.ctx_mut();
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
+
+        // 1 word: KECCAK256(30) + KECCAK256WORD(6) * ceil(11/32) = 36
+        let data = b"hello world";
+        assert_eq!(provider.keccak256(data)?, keccak256(data));
+        assert_eq!(provider.gas_used(), 36);
+
+        // 2 words: 30 + 6*2 = 42, cumulative = 78
+        provider.keccak256(&[0u8; 64])?;
+        assert_eq!(provider.gas_used(), 78);
+        std::mem::drop(provider);
+
+        // OOG: 30 gas is not enough (needs 36 for 1 word)
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+        let mut provider =
+            EvmPrecompileStorageProvider::new_with_gas_limit(evm_internals, &ctx.cfg, 30);
+        assert!(matches!(
+            provider.keccak256(b"hello"),
+            Err(TempoPrecompileError::OutOfGas)
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_recover_signer_gas() -> eyre::Result<()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
+        let ctx = evm.ctx_mut();
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
+
+        // Invalid v → None, gas still charged
+        assert!(
+            provider
+                .recover_signer(B256::ZERO, 0, B256::ZERO, B256::ZERO)?
+                .is_none()
+        );
+        assert_eq!(provider.gas_used(), crate::ECRECOVER_GAS);
+
+        // Valid signature → correct recovery
+        let signer = PrivateKeySigner::random();
+        let digest = keccak256(b"test message");
+        let sig = signer.sign_hash_sync(&digest).unwrap();
+        let v = sig.v() as u8 + 27;
+        let r: B256 = sig.r().into();
+        let s: B256 = sig.s().into();
+        assert_eq!(
+            provider.recover_signer(digest, v, r, s)?,
+            Some(signer.address())
+        );
+        assert_eq!(provider.gas_used(), crate::ECRECOVER_GAS * 2);
+        std::mem::drop(provider);
+
+        // OOG: 100 gas is not enough (needs 3000)
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+        let mut provider =
+            EvmPrecompileStorageProvider::new_with_gas_limit(evm_internals, &ctx.cfg, 100);
+        assert!(matches!(
+            provider.recover_signer(digest, v, r, s),
+            Err(TempoPrecompileError::OutOfGas)
+        ));
 
         Ok(())
     }

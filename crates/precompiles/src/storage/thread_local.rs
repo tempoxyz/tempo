@@ -1,4 +1,4 @@
-use alloy::primitives::{Address, LogData, U256};
+use alloy::primitives::{Address, B256, LogData, U256};
 use alloy_evm::{Database, EvmInternals};
 use revm::{
     context::{Block, CfgEnv, JournalTr, Transaction, journaled_state::JournalCheckpoint},
@@ -153,6 +153,23 @@ impl StorageCtx {
 
     pub fn deduct_gas(&mut self, gas: u64) -> Result<()> {
         Self::try_with_storage(|s| s.deduct_gas(gas))
+    }
+
+    /// Computes keccak256 and charges the appropriate gas.
+    ///
+    /// Prefer this over naked `keccak256` to ensure gas is accounted for.
+    pub fn keccak256(&self, data: &[u8]) -> Result<B256> {
+        Self::try_with_storage(|s| s.keccak256(data))
+    }
+
+    /// Recovers the signer address from an ECDSA signature and charges ecrecover gas.
+    /// As per [TIP-1004], it only accepts `v` values of `27` or `28` (no `0`/`1` normalization).
+    ///
+    /// Returns `Ok(None)` on invalid signatures; callers map to domain-specific errors.
+    ///
+    /// [TIP-1004]: <https://github.com/tempoxyz/tempo/blob/main/tips/tip-1004.md#signature-validation>
+    pub fn recover_signer(&self, digest: B256, v: u8, r: B256, s: B256) -> Result<Option<Address>> {
+        Self::try_with_storage(|storage| storage.recover_signer(digest, v, r, s))
     }
 
     pub fn refund_gas(&mut self, gas: i64) {
