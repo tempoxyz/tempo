@@ -1,5 +1,6 @@
 mod dex;
 mod erc20;
+mod mpp;
 
 use alloy_consensus::Transaction;
 use itertools::Itertools;
@@ -49,7 +50,6 @@ use std::{
         Arc, OnceLock,
         atomic::{AtomicUsize, Ordering},
     },
-    thread,
     time::Duration,
 };
 use tempo_contracts::precompiles::{
@@ -145,6 +145,15 @@ pub struct MaxTpsArgs {
     /// A weight that determines the likelihood of generating an ERC-20 transfer transaction.
     #[arg(long, default_value_t = 0.0)]
     erc20_weight: f64,
+
+    /// A weight that determines the likelihood of generating an MPP channel open+close
+    /// transaction. Requires `--mpp-contract-address`.
+    #[arg(long, default_value_t = 0.0)]
+    mpp_weight: f64,
+
+    /// Address of a deployed TempoStreamChannel contract. Required when `--mpp-weight` > 0.
+    #[arg(long, default_value = "0x33b901018174ddabe4841042ab76ba85d4e24f25")]
+    mpp_contract_address: Option<Address>,
 
     /// Send transfers to existing signer accounts instead of random new addresses.
     ///
@@ -283,6 +292,12 @@ impl MaxTpsArgs {
         self,
         signer_provider_manager: SignerProviderManager<F>,
     ) -> eyre::Result<()> {
+        // Validate required addresses before sending any transactions
+        eyre::ensure!(
+            self.mpp_weight == 0.0 || self.mpp_contract_address.is_some(),
+            "--mpp-contract-address is required when --mpp-weight > 0"
+        );
+
         let signer_providers = signer_provider_manager.signer_providers();
 
         if self.clear_txpool {
@@ -341,16 +356,24 @@ impl MaxTpsArgs {
         .await
         .context("Failed to set default fee token")?;
 
-        // Setup DEX
-        let user_tokens = 2;
-        info!(user_tokens, "Setting up DEX");
-        let (quote_token, user_tokens) = dex::setup(
-            signer_providers,
-            user_tokens,
-            self.max_concurrent_requests,
-            self.max_concurrent_transactions,
-        )
-        .await?;
+        // Setup DEX tokens, pairs, and liquidity only if any DEX transaction type has non-zero
+        // weight. Otherwise, use the fee token for TIP-20 transfers directly.
+        let (quote_token, user_tokens) = if self.place_order_weight > 0.0 || self.swap_weight > 0.0
+        {
+            let user_tokens = 2;
+            info!(user_tokens, "Setting up DEX");
+            let (quote_token, user_tokens) = dex::setup(
+                signer_providers,
+                user_tokens,
+                self.max_concurrent_requests,
+                self.max_concurrent_transactions,
+            )
+            .await?;
+            (Some(quote_token), user_tokens)
+        } else {
+            info!(fee_token = %self.fee_token, "Using fee token for TIP-20 transfers");
+            (None, vec![self.fee_token])
+        };
 
         let erc20_tokens = if self.erc20_weight > 0.0 {
             let num_erc20_tokens = 1;
@@ -366,12 +389,28 @@ impl MaxTpsArgs {
             Vec::new()
         };
 
+        let mpp_contract_address = if self.mpp_weight > 0.0 {
+            let addr = self.mpp_contract_address.expect("validated above");
+            mpp::setup(
+                signer_providers,
+                addr,
+                self.fee_token,
+                self.max_concurrent_requests,
+                self.max_concurrent_transactions,
+            )
+            .await?;
+            Some(addr)
+        } else {
+            None
+        };
+
         // Generate and send transactions
         let total_txs = self.tps * self.duration;
         let tip20_weight = (self.tip20_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let place_order_weight = (self.place_order_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let swap_weight = (self.swap_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let erc20_weight = (self.erc20_weight * Self::WEIGHT_PRECISION).trunc() as u64;
+        let mpp_weight = (self.mpp_weight * Self::WEIGHT_PRECISION).trunc() as u64;
 
         let recipients = if self.existing_recipients {
             let addrs: Vec<Address> = signer_providers
@@ -394,14 +433,19 @@ impl MaxTpsArgs {
             None
         };
 
+        let chain_id = provider.get_chain_id().await?;
+
         let gen_input = GenerateTransactionsInput {
             tip20_weight,
             place_order_weight,
             swap_weight,
             erc20_weight,
+            mpp_weight,
             quote_token,
             user_tokens,
             erc20_tokens,
+            mpp_contract_address,
+            chain_id,
             recipients,
             expiry_secs,
         };
@@ -421,10 +465,17 @@ impl MaxTpsArgs {
 
         let rate_limiter =
             RateLimiter::direct(Quota::per_second(NonZeroU32::new(self.tps as u32).unwrap()));
+        let start_block_number = provider.get_block_number().await?;
 
         let mut pending_txs =
             generate_transactions(signer_provider_manager.clone(), gen_input, counters.clone())
+                // Take exactly the required number of transactions to not over-send
+                .take(target_count)
+                // Stop when duration exceeded, no matter if we sent all transactions or not
+                .take_until(sleep(Duration::from_secs(self.duration)))
+                // Keep a buffer of pre-generated transactions to send as fast as possible
                 .buffer_unordered(self.tps as usize)
+                // Filter only successfully generated transactions
                 .filter_map(|result| async {
                     match result {
                         Ok(bytes) => Some(bytes),
@@ -436,9 +487,11 @@ impl MaxTpsArgs {
                 })
                 .boxed()
                 .ratelimit_stream(&rate_limiter)
+                // Pair each transaction with a random provider to send it
                 .zip(stream::repeat_with(|| {
                     signer_provider_manager.random_unsigned_provider()
                 }))
+                // Prepare transaction sending futures
                 .map(|(bytes, provider)| async move {
                     tokio::time::timeout(
                         Duration::from_secs(1),
@@ -446,6 +499,7 @@ impl MaxTpsArgs {
                     )
                     .await
                 })
+                // Send transactions in parallel with up to the specified concurrency limit
                 .buffer_unordered(self.max_concurrent_requests)
                 .filter_map({
                     let counters = counters.clone();
@@ -474,7 +528,6 @@ impl MaxTpsArgs {
                         }
                     }
                 })
-                .take_until(sleep(Duration::from_secs(self.duration)))
                 .collect::<VecDeque<_>>()
                 .await;
 
@@ -485,31 +538,13 @@ impl MaxTpsArgs {
             swaps = counters.swaps.load(Ordering::Relaxed),
             orders = counters.orders.load(Ordering::Relaxed),
             erc20_transfers = counters.erc20_transfers.load(Ordering::Relaxed),
+            mpp_open_close = counters.mpp_open_close.load(Ordering::Relaxed),
             success = counters.success.load(Ordering::Relaxed),
             failed = counters.failed.load(Ordering::Relaxed),
             "Finished sending transactions"
         );
 
         let end_block_number = provider.get_block_number().await?;
-
-        info!("Retrieving first block number from sent transactions");
-        let start_block_number = loop {
-            if let Some(first_tx) = pending_txs.pop_front() {
-                debug!(hash = %first_tx.tx_hash(), "Retrieving transaction receipt for first block number");
-                if let Ok(first_tx_receipt) = first_tx
-                    .with_timeout(Some(Duration::from_secs(5)))
-                    .get_receipt()
-                    .await
-                {
-                    break first_tx_receipt.block_number;
-                }
-            } else {
-                break None;
-            }
-        };
-        let Some(start_block_number) = start_block_number else {
-            eyre::bail!("Failed to retrieve start block number")
-        };
 
         // Collect a sample of receipts and print the stats
         let sample_size = pending_txs.len().min(self.sample_size);
@@ -592,6 +627,7 @@ struct TransactionCounters {
     swaps: Arc<AtomicUsize>,
     orders: Arc<AtomicUsize>,
     erc20_transfers: Arc<AtomicUsize>,
+    mpp_open_close: Arc<AtomicUsize>,
     /// Sending counters
     sent: Arc<AtomicUsize>,
     success: Arc<AtomicUsize>,
@@ -604,9 +640,12 @@ struct GenerateTransactionsInput {
     place_order_weight: u64,
     swap_weight: u64,
     erc20_weight: u64,
-    quote_token: Address,
+    mpp_weight: u64,
+    quote_token: Option<Address>,
     user_tokens: Vec<Address>,
     erc20_tokens: Vec<Address>,
+    mpp_contract_address: Option<Address>,
+    chain_id: u64,
     /// When set, transfers go to these existing addresses instead of `Address::random()`.
     recipients: Option<Vec<Address>>,
     /// When `Some`, sets `valid_before` on each transaction right before signing
@@ -625,16 +664,25 @@ fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
         place_order_weight,
         swap_weight,
         erc20_weight,
+        mpp_weight,
         quote_token,
         user_tokens,
         erc20_tokens,
+        mpp_contract_address,
+        chain_id,
         recipients,
         expiry_secs,
     } = input;
 
-    const TX_TYPES: usize = 4;
+    const TX_TYPES: usize = 5;
     // Weights for random sampling for each transaction type
-    let tx_weights: [u64; TX_TYPES] = [tip20_weight, swap_weight, place_order_weight, erc20_weight];
+    let tx_weights: [u64; TX_TYPES] = [
+        tip20_weight,
+        swap_weight,
+        place_order_weight,
+        erc20_weight,
+        mpp_weight,
+    ];
     // Cached gas estimates for each transaction type
     let gas_estimates: [Arc<OnceLock<(u128, u128, u64)>>; TX_TYPES] = Default::default();
     // Global tx counter used to bump priority fee, ensuring unique tx hashes
@@ -684,6 +732,8 @@ fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                         IStablecoinDEXInstance::new(STABLECOIN_DEX_ADDRESS, provider.clone());
 
                     // Swap minimum possible amount
+                    let quote_token =
+                        quote_token.expect("quote_token must be set when swap_weight > 0");
                     exchange
                         .quoteSwapExactAmountIn(token, quote_token, 1)
                         .into_transaction_request()
@@ -694,9 +744,8 @@ fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                         IStablecoinDEXInstance::new(STABLECOIN_DEX_ADDRESS, provider.clone());
 
                     // Place an order at a random tick that's a multiple of `TICK_SPACING`
-                    let tick =
-                        rand::random_range(MIN_TICK / TICK_SPACING..=MAX_TICK / TICK_SPACING)
-                            * TICK_SPACING;
+                    let tick = random_range(MIN_TICK / TICK_SPACING..=MAX_TICK / TICK_SPACING)
+                        * TICK_SPACING;
                     exchange
                         .place(token, MIN_ORDER_AMOUNT, true, tick)
                         .into_transaction_request()
@@ -710,6 +759,26 @@ fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                     token
                         .transfer(recipient, U256::ONE)
                         .into_transaction_request()
+                }
+                4 => {
+                    counters.mpp_open_close.fetch_add(1, Ordering::Relaxed);
+                    let contract = mpp_contract_address
+                        .expect("mpp_channel_address must be set when mpp_weight > 0");
+
+                    // Single Tempo tx with two calls: open a channel, then close it.
+                    // Signer is both payer and payee, so close succeeds immediately.
+                    let salt = B256::random();
+                    let payer = signer.address();
+                    let channel_id = mpp::compute_channel_id(
+                        payer,
+                        payer,
+                        token,
+                        salt,
+                        Address::ZERO,
+                        contract,
+                        chain_id,
+                    );
+                    mpp::build_open_and_close(contract, payer, token, salt, channel_id)
                 }
                 _ => unreachable!("Only {TX_TYPES} transaction types are supported"),
             };
@@ -875,6 +944,7 @@ struct BenchmarkMetadata {
     place_order_weight: f64,
     swap_weight: f64,
     erc20_weight: f64,
+    mpp_weight: f64,
 }
 
 #[derive(Serialize)]
@@ -904,6 +974,7 @@ pub async fn generate_report(
             .get_block_receipts(number.into())
             .await?
             .ok_or_eyre("Receipts for block {number} not found")?;
+
         let timestamp = block.header.timestamp_millis();
 
         let latency_ms = last_block_timestamp.map(|last| timestamp - last);
@@ -946,6 +1017,7 @@ pub async fn generate_report(
         place_order_weight: args.place_order_weight,
         swap_weight: args.swap_weight,
         erc20_weight: args.erc20_weight,
+        mpp_weight: args.mpp_weight,
     };
 
     let report = BenchmarkReport {
@@ -975,7 +1047,7 @@ async fn monitor_tps(counters: TransactionCounters, target_count: usize, token: 
                 last_count = current_count;
 
                 info!(tps, total = current_count, "Status");
-                thread::sleep(Duration::from_secs(1));
+                tokio::time::sleep(Duration::from_secs(1)).await;
 
                 if current_count == target_count {
                     break;
