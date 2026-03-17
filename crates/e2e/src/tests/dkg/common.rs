@@ -11,6 +11,21 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 
 use crate::{CONSENSUS_NODE_PREFIX, TestingNode};
 
+/// Returns the target epoch to wait for depending on `event_height`.
+///
+/// If `event_height` is less than a boundary height, then the next epoch is
+/// returned. Otherwise, the one *after* the next is returned.
+pub(crate) fn target_epoch(epoch_length: u64, event_height: u64) -> Epoch {
+    let strat = FixedEpocher::new(NZU64!(epoch_length));
+    let event_height = Height::new(event_height);
+    let info = strat.containing(event_height).unwrap();
+    if info.last() == event_height {
+        info.epoch().next().next()
+    } else {
+        info.epoch().next()
+    }
+}
+
 /// Reads the DKG outcome from a block, returns None if block doesn't exist or has no outcome.
 pub(crate) fn read_outcome_from_validator(
     validator: &TestingNode<Context>,
@@ -88,7 +103,11 @@ pub(crate) fn count_validators_at_epoch(context: &Context, target_epoch: u64) ->
 }
 
 /// Waits until at least `min_validators` have reached the target epoch.
-pub(crate) async fn wait_for_epoch(context: &Context, target_epoch: u64, min_validators: u32) {
+pub(crate) async fn wait_for_validators_to_reach_epoch(
+    context: &Context,
+    target_epoch: u64,
+    min_validators: u32,
+) {
     tracing::info!(target_epoch, min_validators, "Waiting for epoch");
 
     loop {
@@ -102,6 +121,7 @@ pub(crate) async fn wait_for_epoch(context: &Context, target_epoch: u64, min_val
 }
 
 /// Asserts that no DKG ceremony failures have occurred.
+#[track_caller]
 pub(crate) fn assert_no_dkg_failures(context: &Context) {
     let metrics = context.encode();
 
@@ -117,6 +137,7 @@ pub(crate) fn assert_no_dkg_failures(context: &Context) {
 }
 
 /// Asserts that at least one validator has skipped rounds (indicating sync occurred).
+#[track_caller]
 pub(crate) fn assert_skipped_rounds(context: &Context) {
     let metrics = context.encode();
 

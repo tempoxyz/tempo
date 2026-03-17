@@ -105,28 +105,17 @@ impl TempoGenesisInfo {
         self.epoch_length
     }
 
-    pub fn t0_time(&self) -> Option<u64> {
-        self.t0_time
-    }
-
-    pub fn t1_time(&self) -> Option<u64> {
-        self.t1_time
-    }
-
-    pub fn t1a_time(&self) -> Option<u64> {
-        self.t1a_time
-    }
-
-    pub fn t1b_time(&self) -> Option<u64> {
-        self.t1b_time
-    }
-
-    pub fn t1c_time(&self) -> Option<u64> {
-        self.t1c_time
-    }
-
-    pub fn t2_time(&self) -> Option<u64> {
-        self.t2_time
+    /// Returns the activation timestamp for a given hardfork, or `None` if not scheduled.
+    pub fn fork_time(&self, fork: TempoHardfork) -> Option<u64> {
+        match fork {
+            TempoHardfork::Genesis => Some(0),
+            TempoHardfork::T0 => self.t0_time,
+            TempoHardfork::T1 => self.t1_time,
+            TempoHardfork::T1A => self.t1a_time,
+            TempoHardfork::T1B => self.t1b_time,
+            TempoHardfork::T1C => self.t1c_time,
+            TempoHardfork::T2 => self.t2_time,
+        }
     }
 }
 
@@ -215,30 +204,15 @@ impl TempoChainSpec {
     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
     pub fn from_genesis(genesis: Genesis) -> Self {
         // Extract Tempo genesis info from extra_fields
-        let info @ TempoGenesisInfo {
-            t0_time,
-            t1_time,
-            t1a_time,
-            t1b_time,
-            t1c_time,
-            t2_time,
-            ..
-        } = TempoGenesisInfo::extract_from(&genesis);
+        let info = TempoGenesisInfo::extract_from(&genesis);
 
         // Create base chainspec from genesis (already has ordered Ethereum hardforks)
         let mut base_spec = ChainSpec::from_genesis(genesis);
 
-        let tempo_forks = vec![
-            (TempoHardfork::Genesis, Some(0)),
-            (TempoHardfork::T0, t0_time),
-            (TempoHardfork::T1, t1_time),
-            (TempoHardfork::T1A, t1a_time),
-            (TempoHardfork::T1B, t1b_time),
-            (TempoHardfork::T1C, t1c_time),
-            (TempoHardfork::T2, t2_time),
-        ]
-        .into_iter()
-        .filter_map(|(fork, time)| time.map(|time| (fork, ForkCondition::Timestamp(time))));
+        let tempo_forks = TempoHardfork::VARIANTS.iter().filter_map(|&fork| {
+            info.fork_time(fork)
+                .map(|time| (fork, ForkCondition::Timestamp(time)))
+        });
         base_spec.hardforks.extend(tempo_forks);
 
         Self {
@@ -445,188 +419,128 @@ mod tests {
     }
 
     #[test]
-    fn test_tempo_hardfork_at() {
-        let mainnet_chainspec = super::TempoChainSpecParser::parse("mainnet")
-            .expect("the mainnet chainspec must always be well formed");
-
-        // Before T1 activation (1770908400 = Feb 12th 2026 16:00 CET)
-        assert_eq!(mainnet_chainspec.tempo_hardfork_at(0), TempoHardfork::T0);
-        assert_eq!(mainnet_chainspec.tempo_hardfork_at(1000), TempoHardfork::T0);
-        assert_eq!(
-            mainnet_chainspec.tempo_hardfork_at(1770908399),
-            TempoHardfork::T0
-        );
-
-        // At and after T1/T1A activation (both activate at 1770908400)
-        assert!(mainnet_chainspec.is_t1_active_at_timestamp(1770908400));
-        assert!(mainnet_chainspec.is_t1a_active_at_timestamp(1770908400));
-        assert_eq!(
-            mainnet_chainspec.tempo_hardfork_at(1770908400),
-            TempoHardfork::T1A
-        );
-        assert_eq!(
-            mainnet_chainspec.tempo_hardfork_at(1770908401),
-            TempoHardfork::T1A
-        );
-
-        // Before T1B activation (1771858800 = Feb 23rd 2026 16:00 CET)
-        assert!(!mainnet_chainspec.is_t1b_active_at_timestamp(1771858799));
-        assert_eq!(
-            mainnet_chainspec.tempo_hardfork_at(1771858799),
-            TempoHardfork::T1A
-        );
-
-        // At and after T1B activation
-        assert!(mainnet_chainspec.is_t1b_active_at_timestamp(1771858800));
-        assert_eq!(
-            mainnet_chainspec.tempo_hardfork_at(1771858800),
-            TempoHardfork::T1B
-        );
-
-        // Before T1C activation (1773327600 = Mar 12th 2026 16:00 CET)
-        assert!(!mainnet_chainspec.is_t1c_active_at_timestamp(1773327599));
-        assert_eq!(
-            mainnet_chainspec.tempo_hardfork_at(1773327599),
-            TempoHardfork::T1B
-        );
-
-        // At and after T1C activation
-        assert!(mainnet_chainspec.is_t1c_active_at_timestamp(1773327600));
-        assert_eq!(
-            mainnet_chainspec.tempo_hardfork_at(1773327600),
-            TempoHardfork::T1C
-        );
-
-        // T1C stays active on mainnet
-        assert!(mainnet_chainspec.is_t1c_active_at_timestamp(u64::MAX));
-        // T2 not yet scheduled on mainnet
-        assert!(!mainnet_chainspec.is_t2_active_at_timestamp(u64::MAX));
-        assert_eq!(
-            mainnet_chainspec.tempo_hardfork_at(u64::MAX),
-            TempoHardfork::T1C
-        );
-
-        let moderato_genesis = super::TempoChainSpecParser::parse("moderato")
-            .expect("the moderato chainspec must always be well formed");
-
-        // Before T0/T1 activation (1770303600 = Feb 5th 2026 16:00 CET)
-        assert_eq!(
-            moderato_genesis.tempo_hardfork_at(0),
-            TempoHardfork::Genesis
-        );
-        assert_eq!(
-            moderato_genesis.tempo_hardfork_at(1770303599),
-            TempoHardfork::Genesis
-        );
-
-        // At and after T0/T1 activation
-        assert_eq!(
-            moderato_genesis.tempo_hardfork_at(1770303600),
-            TempoHardfork::T1
-        );
-        assert_eq!(
-            moderato_genesis.tempo_hardfork_at(1770303601),
-            TempoHardfork::T1
-        );
-
-        // Before T1A/T1B activation (1771858800 = Feb 23rd 2026 16:00 CET)
-        assert_eq!(
-            moderato_genesis.tempo_hardfork_at(1771858799),
-            TempoHardfork::T1
-        );
-
-        // At and after T1A/T1B activation (both activate at 1771858800)
-        assert!(moderato_genesis.is_t1a_active_at_timestamp(1771858800));
-        assert!(moderato_genesis.is_t1b_active_at_timestamp(1771858800));
-        assert_eq!(
-            moderato_genesis.tempo_hardfork_at(1771858800),
-            TempoHardfork::T1B
-        );
-
-        // Before T1C activation (1773068400 = Mar 9th 2026 16:00 CET)
-        assert!(!moderato_genesis.is_t1c_active_at_timestamp(1773068399));
-        assert_eq!(
-            moderato_genesis.tempo_hardfork_at(1773068399),
-            TempoHardfork::T1B
-        );
-
-        // At and after T1C activation
-        assert!(moderato_genesis.is_t1c_active_at_timestamp(1773068400));
-        assert_eq!(
-            moderato_genesis.tempo_hardfork_at(1773068400),
-            TempoHardfork::T1C
-        );
-
-        // T1C stays active on moderato
-        assert!(moderato_genesis.is_t1c_active_at_timestamp(u64::MAX));
-        // T2 not yet scheduled on moderato
-        assert!(!moderato_genesis.is_t2_active_at_timestamp(u64::MAX));
-        assert_eq!(
-            moderato_genesis.tempo_hardfork_at(u64::MAX),
-            TempoHardfork::T1C
-        );
-
-        let testnet_chainspec = super::TempoChainSpecParser::parse("testnet")
-            .expect("the testnet chainspec must always be well formed");
-
-        // Should always return Genesis (no hardfork timestamps on andantino)
-        assert_eq!(
-            testnet_chainspec.tempo_hardfork_at(0),
-            TempoHardfork::Genesis
-        );
-        assert_eq!(
-            testnet_chainspec.tempo_hardfork_at(1000),
-            TempoHardfork::Genesis
-        );
-        assert_eq!(
-            testnet_chainspec.tempo_hardfork_at(u64::MAX),
-            TempoHardfork::Genesis
-        );
-
-        // Dev chainspec should return T2 (all hardforks active at 0)
-        let dev_chainspec = super::TempoChainSpecParser::parse("dev")
-            .expect("the dev chainspec must always be well formed");
-        assert_eq!(dev_chainspec.tempo_hardfork_at(0), TempoHardfork::T2);
-        assert_eq!(dev_chainspec.tempo_hardfork_at(1000), TempoHardfork::T2);
-    }
-
-    #[test]
     fn test_from_genesis_with_hardforks_at_zero() {
         use alloy_genesis::Genesis;
 
-        let genesis: Genesis = serde_json::from_str(
-            r#"{
-                "config": {
-                    "chainId": 1234,
-                    "t0Time": 0,
-                    "t1Time": 0,
-                    "t1aTime": 0,
-                    "t1bTime": 0,
-                    "t1cTime": 0,
-                    "t2Time": 0
-                },
-                "alloc": {}
-            }"#,
-        )
-        .unwrap();
-
+        // Build genesis config with every post-Genesis fork at timestamp 0
+        let mut config = serde_json::Map::new();
+        config.insert("chainId".into(), 1234.into());
+        for &fork in TempoHardfork::VARIANTS {
+            if fork != TempoHardfork::Genesis {
+                let key = format!("{}Time", fork.name().to_lowercase());
+                config.insert(key, 0.into());
+            }
+        }
+        let json = serde_json::json!({ "config": config, "alloc": {} });
+        let genesis: Genesis = serde_json::from_value(json).unwrap();
         let chainspec = super::TempoChainSpec::from_genesis(genesis);
 
-        assert!(chainspec.is_t0_active_at_timestamp(0));
-        assert!(chainspec.is_t0_active_at_timestamp(1000));
-        assert!(chainspec.is_t1_active_at_timestamp(0));
-        assert!(chainspec.is_t1_active_at_timestamp(1000));
-        assert!(chainspec.is_t1a_active_at_timestamp(0));
-        assert!(chainspec.is_t1a_active_at_timestamp(1000));
-        assert!(chainspec.is_t1b_active_at_timestamp(0));
-        assert!(chainspec.is_t1b_active_at_timestamp(1000));
-        assert!(chainspec.is_t1c_active_at_timestamp(0));
-        assert!(chainspec.is_t1c_active_at_timestamp(1000));
-        assert!(chainspec.is_t2_active_at_timestamp(0));
-        assert!(chainspec.is_t2_active_at_timestamp(1000));
+        // Every fork should be active at any timestamp
+        for &fork in TempoHardfork::VARIANTS {
+            assert!(
+                chainspec.tempo_fork_activation(fork).active_at_timestamp(0),
+                "{fork:?} should be active at timestamp 0"
+            );
+            assert!(
+                chainspec
+                    .tempo_fork_activation(fork)
+                    .active_at_timestamp(1000),
+                "{fork:?} should be active at timestamp 1000"
+            );
+        }
 
-        assert_eq!(chainspec.tempo_hardfork_at(0), TempoHardfork::T2);
-        assert_eq!(chainspec.tempo_hardfork_at(1000), TempoHardfork::T2);
-        assert_eq!(chainspec.tempo_hardfork_at(u64::MAX), TempoHardfork::T2);
+        // tempo_hardfork_at should return the latest fork
+        let latest = *TempoHardfork::VARIANTS.last().unwrap();
+        assert_eq!(chainspec.tempo_hardfork_at(0), latest);
+        assert_eq!(chainspec.tempo_hardfork_at(1000), latest);
+        assert_eq!(chainspec.tempo_hardfork_at(u64::MAX), latest);
+    }
+
+    mod tempo_hardfork_at {
+        use super::*;
+
+        #[test]
+        fn mainnet() {
+            let cs = super::super::TempoChainSpecParser::parse("mainnet")
+                .expect("the mainnet chainspec must always be well formed");
+
+            // Before T1 activation (1770908400 = Feb 12th 2026 16:00 CET)
+            assert_eq!(cs.tempo_hardfork_at(0), TempoHardfork::T0);
+            assert_eq!(cs.tempo_hardfork_at(1000), TempoHardfork::T0);
+            assert_eq!(cs.tempo_hardfork_at(1770908399), TempoHardfork::T0);
+
+            // At and after T1/T1A activation (both activate at 1770908400)
+            assert!(cs.is_t1_active_at_timestamp(1770908400));
+            assert!(cs.is_t1a_active_at_timestamp(1770908400));
+            assert_eq!(cs.tempo_hardfork_at(1770908400), TempoHardfork::T1A);
+            assert_eq!(cs.tempo_hardfork_at(1770908401), TempoHardfork::T1A);
+
+            // Before T1B activation (1771858800 = Feb 23rd 2026 16:00 CET)
+            assert!(!cs.is_t1b_active_at_timestamp(1771858799));
+            assert_eq!(cs.tempo_hardfork_at(1771858799), TempoHardfork::T1A);
+
+            // At and after T1B activation
+            assert!(cs.is_t1b_active_at_timestamp(1771858800));
+            assert_eq!(cs.tempo_hardfork_at(1771858800), TempoHardfork::T1B);
+
+            // Before T1C activation (1773327600 = Mar 12th 2026 16:00 CET)
+            assert!(!cs.is_t1c_active_at_timestamp(1773327599));
+            assert_eq!(cs.tempo_hardfork_at(1773327599), TempoHardfork::T1B);
+
+            // At and after T1C activation
+            assert!(cs.is_t1c_active_at_timestamp(1773327600));
+            assert_eq!(cs.tempo_hardfork_at(1773327600), TempoHardfork::T1C);
+
+            // T1C stays active on mainnet; T2 not yet scheduled
+            assert!(cs.is_t1c_active_at_timestamp(u64::MAX));
+            assert!(!cs.is_t2_active_at_timestamp(u64::MAX));
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T1C);
+        }
+
+        #[test]
+        fn moderato() {
+            let cs = super::super::TempoChainSpecParser::parse("moderato")
+                .expect("the moderato chainspec must always be well formed");
+
+            // Before T0/T1 activation (1770303600 = Feb 5th 2026 16:00 CET)
+            assert_eq!(cs.tempo_hardfork_at(0), TempoHardfork::Genesis);
+            assert_eq!(cs.tempo_hardfork_at(1770303599), TempoHardfork::Genesis);
+
+            // At and after T0/T1 activation
+            assert_eq!(cs.tempo_hardfork_at(1770303600), TempoHardfork::T1);
+            assert_eq!(cs.tempo_hardfork_at(1770303601), TempoHardfork::T1);
+
+            // Before T1A/T1B activation (1771858800 = Feb 23rd 2026 16:00 CET)
+            assert_eq!(cs.tempo_hardfork_at(1771858799), TempoHardfork::T1);
+
+            // At and after T1A/T1B activation (both activate at 1771858800)
+            assert!(cs.is_t1a_active_at_timestamp(1771858800));
+            assert!(cs.is_t1b_active_at_timestamp(1771858800));
+            assert_eq!(cs.tempo_hardfork_at(1771858800), TempoHardfork::T1B);
+
+            // Before T1C activation (1773068400 = Mar 9th 2026 16:00 CET)
+            assert!(!cs.is_t1c_active_at_timestamp(1773068399));
+            assert_eq!(cs.tempo_hardfork_at(1773068399), TempoHardfork::T1B);
+
+            // At and after T1C activation
+            assert!(cs.is_t1c_active_at_timestamp(1773068400));
+            assert_eq!(cs.tempo_hardfork_at(1773068400), TempoHardfork::T1C);
+
+            // T1C stays active on moderato; T2 not yet scheduled
+            assert!(cs.is_t1c_active_at_timestamp(u64::MAX));
+            assert!(!cs.is_t2_active_at_timestamp(u64::MAX));
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T1C);
+        }
+
+        #[test]
+        fn testnet() {
+            let cs = super::super::TempoChainSpecParser::parse("testnet")
+                .expect("the testnet chainspec must always be well formed");
+
+            // No hardfork timestamps on andantino — always Genesis
+            assert_eq!(cs.tempo_hardfork_at(0), TempoHardfork::Genesis);
+            assert_eq!(cs.tempo_hardfork_at(1000), TempoHardfork::Genesis);
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::Genesis);
+        }
     }
 }

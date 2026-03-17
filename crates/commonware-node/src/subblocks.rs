@@ -304,6 +304,9 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
             .epoch();
 
         // Can't proceed without knowing a validator set for the current epoch.
+        //
+        // TODO(hamdi): When finalizing a boundary block, the scheme for the next epoch is not yet registered meaning
+        // we skip the subblock building task. This issue is scoped to the boundary and will be fixed.
         let Some(scheme) = self.scheme_provider.scoped(epoch_of_next_block) else {
             debug!(%epoch_of_next_block, "scheme not found for epoch");
             return;

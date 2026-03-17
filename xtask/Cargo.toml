@@ -15,6 +15,7 @@ tempo-chainspec.workspace = true
 tempo-contracts.workspace = true
 tempo-primitives.workspace = true
 tempo-commonware-node-config.workspace = true
+tempo-validator-config.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true
 tempo-evm.workspace = true
 tempo-precompiles.workspace = true

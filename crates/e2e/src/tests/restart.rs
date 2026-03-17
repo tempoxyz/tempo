@@ -159,9 +159,9 @@ async fn ensure_no_progress(context: &Context, tries: u32) {
                 continue;
             }
             let mut parts = line.split_whitespace();
-            let metrics = parts.next().unwrap();
+            let metric = parts.next().unwrap();
             let value = parts.next().unwrap();
-            if metrics.ends_with("_marshal_processed_height") {
+            if metric.ends_with("_marshal_processed_height") {
                 let value = value.parse::<u64>().unwrap();
                 if Some(value) > height {
                     height.replace(value);
@@ -180,9 +180,9 @@ async fn ensure_no_progress(context: &Context, tries: u32) {
                 continue;
             }
             let mut parts = line.split_whitespace();
-            let metrics = parts.next().unwrap();
+            let metric = parts.next().unwrap();
             let value = parts.next().unwrap();
-            if metrics.ends_with("_marshal_processed_height") {
+            if metric.ends_with("_marshal_processed_height") {
                 let value = value.parse::<u64>().unwrap();
                 if Some(value) > height {
                     height.replace(value);

@@ -44,12 +44,17 @@ pub struct TempoPooledTransaction {
     /// `Some(expiry)` for keychain transactions where expiry < u64::MAX (finite expiry).
     /// `None` for non-keychain transactions or keys that never expire.
     key_expiry: OnceLock<Option<u64>>,
+    /// Resolved fee token cached at validation time.
+    ///
+    /// Used by `keychain_subject()` so pool maintenance matches against the same token
+    /// that was validated without requiring state access.
+    resolved_fee_token: OnceLock<Address>,
 }
 
 impl TempoPooledTransaction {
     /// Create new instance of [Self] from the given consensus transactions and the encoded size.
     pub fn new(transaction: Recovered<TempoTxEnvelope>) -> Self {
-        let is_payment = transaction.is_payment();
+        let is_payment = transaction.is_payment_v2();
         let is_expiring_nonce = transaction
             .as_aa()
             .map(|tx| tx.tx().is_expiring_nonce_tx())
@@ -70,6 +75,7 @@ impl TempoPooledTransaction {
             nonce_key_slot: OnceLock::new(),
             tx_env: OnceLock::new(),
             key_expiry: OnceLock::new(),
+            resolved_fee_token: OnceLock::new(),
         }
     }
 
@@ -105,7 +111,7 @@ impl TempoPooledTransaction {
 
     /// Returns whether this is a payment transaction.
     ///
-    /// Based on classifier v1: payment if tx.to has TIP20 reserved prefix.
+    /// Uses strict classification: TIP-20 prefix AND recognized calldata.
     pub fn is_payment(&self) -> bool {
         self.is_payment
     }
@@ -137,7 +143,11 @@ impl TempoPooledTransaction {
         let aa_tx = self.inner().as_aa()?;
         let keychain_sig = aa_tx.signature().as_keychain()?;
         let key_id = keychain_sig.key_id(&aa_tx.signature_hash()).ok()?;
-        let fee_token = self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN);
+        let fee_token = self
+            .resolved_fee_token
+            .get()
+            .copied()
+            .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN));
         Some(KeychainSubject {
             account: keychain_sig.user_address,
             key_id,
@@ -198,6 +208,11 @@ impl TempoPooledTransaction {
     /// Returns `None` if not a keychain tx, key never expires, or not yet validated.
     pub fn key_expiry(&self) -> Option<u64> {
         self.key_expiry.get().copied().flatten()
+    }
+
+    /// Caches the resolved fee token determined during validation.
+    pub fn set_resolved_fee_token(&self, fee_token: Address) {
+        let _ = self.resolved_fee_token.set(fee_token);
     }
 
     /// Returns the expiring nonce hash for AA expiring nonce transactions.
@@ -476,6 +491,10 @@ impl PoolTransaction for TempoPooledTransaction {
         self.inner.transaction.clone()
     }
 
+    fn consensus_ref(&self) -> Recovered<&Self::Consensus> {
+        self.inner.transaction.as_recovered_ref()
+    }
+
     fn into_consensus(self) -> Recovered<Self::Consensus> {
         self.inner.transaction
     }
@@ -622,7 +641,9 @@ mod tests {
     use crate::test_utils::TxBuilder;
     use alloy_consensus::TxEip1559;
     use alloy_primitives::{Address, Signature, TxKind, address};
-    use tempo_precompiles::nonce::NonceManager;
+    use alloy_sol_types::SolCall;
+    use tempo_contracts::precompiles::ITIP20;
+    use tempo_precompiles::{PATH_USD_ADDRESS, nonce::NonceManager};
     use tempo_primitives::transaction::{
         TempoTransaction,
         tempo_transaction::Call,
@@ -632,7 +653,38 @@ mod tests {
 
     #[test]
     fn test_payment_classification_positive() {
-        // Test that TIP20 address prefix is correctly classified as payment
+        // Test that TIP20 address prefix with valid calldata is classified as payment
+        let calldata = ITIP20::transferCall {
+            to: Address::random(),
+            amount: U256::random(),
+        }
+        .abi_encode();
+
+        let tx = TxEip1559 {
+            to: TxKind::Call(PATH_USD_ADDRESS),
+            gas_limit: 21000,
+            input: Bytes::from(calldata),
+            ..Default::default()
+        };
+
+        let envelope = TempoTxEnvelope::Eip1559(alloy_consensus::Signed::new_unchecked(
+            tx,
+            Signature::test_signature(),
+            B256::ZERO,
+        ));
+
+        let recovered = Recovered::new_unchecked(
+            envelope,
+            address!("0000000000000000000000000000000000000001"),
+        );
+
+        let pooled_tx = TempoPooledTransaction::new(recovered);
+        assert!(pooled_tx.is_payment());
+    }
+
+    #[test]
+    fn test_payment_classification_tip20_prefix_without_valid_calldata() {
+        // TIP20 prefix but no valid calldata should NOT be classified as payment in the pool
         let payment_addr = address!("20c0000000000000000000000000000000000001");
         let tx = TxEip1559 {
             to: TxKind::Call(payment_addr),
@@ -652,7 +704,7 @@ mod tests {
         );
 
         let pooled_tx = TempoPooledTransaction::new(recovered);
-        assert!(pooled_tx.is_payment());
+        assert!(!pooled_tx.is_payment());
     }
 
     #[test]
@@ -1047,7 +1099,8 @@ impl RevokedKeys {
 #[derive(Debug, Clone, Default)]
 pub struct SpendingLimitUpdates {
     /// Map from account to list of (key_id, token) pairs that had limit changes.
-    by_account: AddressMap<Vec<(Address, Address)>>,
+    /// `None` token acts as a wildcard matching any fee token for that key_id.
+    by_account: AddressMap<Vec<(Address, Option<Address>)>>,
 }
 
 impl SpendingLimitUpdates {
@@ -1056,8 +1109,8 @@ impl SpendingLimitUpdates {
         Self::default()
     }
 
-    /// Inserts a spending limit update.
-    pub fn insert(&mut self, account: Address, key_id: Address, token: Address) {
+    /// Inserts a spending limit update. `None` token matches any fee token.
+    pub fn insert(&mut self, account: Address, key_id: Address, token: Option<Address>) {
         self.by_account
             .entry(account)
             .or_default()
@@ -1075,11 +1128,16 @@ impl SpendingLimitUpdates {
     }
 
     /// Returns true if the given (account, key_id, token) combination is in the index.
+    ///
+    /// A `None` entry matches any token for that key_id. This is used for included
+    /// block txs whose fee token could not be resolved without state access.
     pub fn contains(&self, account: Address, key_id: Address, token: Address) -> bool {
         self.by_account
             .get(&account)
-            .is_some_and(|pairs: &Vec<(Address, Address)>| {
-                pairs.iter().any(|&(k, t)| k == key_id && t == token)
+            .is_some_and(|pairs: &Vec<(Address, Option<Address>)>| {
+                pairs
+                    .iter()
+                    .any(|&(k, t)| k == key_id && t.is_none_or(|t| t == token))
             })
     }
 }
