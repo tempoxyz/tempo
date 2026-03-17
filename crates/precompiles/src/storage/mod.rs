@@ -25,7 +25,7 @@ use revm::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 
-use crate::error::Result;
+use crate::error::{Result, TempoPrecompileError};
 
 /// Low-level storage provider for interacting with the EVM.
 ///
@@ -116,7 +116,12 @@ pub trait PrecompileStorageProvider {
     ///
     /// Implementations should use this over naked `keccak256` call to ensure gas is accounted for.
     fn keccak256(&mut self, data: &[u8]) -> Result<B256> {
-        let price = KECCAK256 + KECCAK256WORD * data.len().div_ceil(32) as u64;
+        let num_words = u64::try_from(data.len().div_ceil(32))
+            .map_err(|_| TempoPrecompileError::OutOfGas)?;
+        let price = KECCAK256WORD
+            .checked_mul(num_words)
+            .and_then(|w| w.checked_add(KECCAK256))
+            .ok_or(TempoPrecompileError::OutOfGas)?;
         self.deduct_gas(price)?;
         Ok(keccak256(data))
     }
