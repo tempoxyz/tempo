@@ -152,7 +152,7 @@ pub struct MaxTpsArgs {
     mpp_weight: f64,
 
     /// Address of a deployed TempoStreamChannel contract. Resolved automatically from chain ID
-    /// if not provided (mainnet: 0x33b9...4f25, testnet: 0xe1c4...a336).
+    /// if not provided.
     #[arg(long)]
     mpp_contract_address: Option<Address>,
 
