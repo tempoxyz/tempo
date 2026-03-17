@@ -7,7 +7,7 @@ use commonware_codec::{Encode as _, EncodeSize, Read, ReadExt as _, Write};
 use commonware_consensus::{
     Heightable as _,
     marshal::{self, Update},
-    types::{Epoch, EpochPhase, Epocher as _, FixedEpocher, Height, HeightDelta},
+    types::{Epoch, EpochPhase, Epocher as _, FixedEpocher, Height},
 };
 use commonware_cryptography::{
     Signer as _,
