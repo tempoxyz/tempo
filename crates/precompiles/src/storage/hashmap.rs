@@ -1,10 +1,16 @@
 use alloy::primitives::{Address, LogData, U256};
-use revm::state::{AccountInfo, Bytecode};
+use revm::{
+    context::journaled_state::JournalCheckpoint,
+    state::{AccountInfo, Bytecode},
+};
 use std::collections::HashMap;
 use tempo_chainspec::hardfork::TempoHardfork;
 
 use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
 
+/// In-memory [`PrecompileStorageProvider`] for unit tests.
+///
+/// Stores all state in `HashMap`s, avoiding the need for a real EVM context.
 pub struct HashMapStorageProvider {
     internals: HashMap<(Address, U256), U256>,
     transient: HashMap<(Address, U256), U256>,
@@ -13,8 +19,18 @@ pub struct HashMapStorageProvider {
     chain_id: u64,
     timestamp: U256,
     beneficiary: Address,
+    block_number: u64,
     spec: TempoHardfork,
     is_static: bool,
+    snapshots: Vec<Snapshot>,
+}
+
+/// Snapshot of mutable state for checkpoint/revert support.
+///
+/// PERF: naive cloning strategy due to its limited usage.
+struct Snapshot {
+    internals: HashMap<(Address, U256), U256>,
+    events: HashMap<Address, Vec<LogData>>,
 }
 
 impl HashMapStorageProvider {
@@ -28,6 +44,7 @@ impl HashMapStorageProvider {
             transient: HashMap::new(),
             accounts: HashMap::new(),
             events: HashMap::new(),
+            snapshots: Vec::new(),
             chain_id,
             #[expect(clippy::disallowed_methods)]
             timestamp: U256::from(
@@ -37,6 +54,7 @@ impl HashMapStorageProvider {
                     .as_secs(),
             ),
             beneficiary: Address::ZERO,
+            block_number: 0,
             spec,
             is_static: false,
         }
@@ -59,6 +77,10 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
 
     fn beneficiary(&self) -> Address {
         self.beneficiary
+    }
+
+    fn block_number(&self) -> u64 {
+        self.block_number
     }
 
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
@@ -142,6 +164,30 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
     fn is_static(&self) -> bool {
         self.is_static
     }
+
+    fn checkpoint(&mut self) -> JournalCheckpoint {
+        let idx = self.snapshots.len();
+        self.snapshots.push(Snapshot {
+            internals: self.internals.clone(),
+            events: self.events.clone(),
+        });
+        JournalCheckpoint {
+            log_i: 0,
+            journal_i: idx,
+            selfdestructed_i: 0,
+        }
+    }
+
+    fn checkpoint_commit(&mut self) {
+        self.snapshots.pop();
+    }
+
+    fn checkpoint_revert(&mut self, checkpoint: JournalCheckpoint) {
+        if let Some(snapshot) = self.snapshots.drain(checkpoint.journal_i..).next() {
+            self.internals = snapshot.internals;
+            self.events = snapshot.events;
+        }
+    }
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -166,6 +212,10 @@ impl HashMapStorageProvider {
 
     pub fn set_beneficiary(&mut self, beneficiary: Address) {
         self.beneficiary = beneficiary;
+    }
+
+    pub fn set_block_number(&mut self, block_number: u64) {
+        self.block_number = block_number;
     }
 
     pub fn set_spec(&mut self, spec: TempoHardfork) {

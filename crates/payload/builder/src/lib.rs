@@ -5,10 +5,11 @@
 
 mod metrics;
 
-use crate::metrics::TempoPayloadBuilderMetrics;
+use crate::metrics::{InstrumentedFinishProvider, TempoPayloadBuilderMetrics};
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy};
 use alloy_primitives::{Address, U256};
 use alloy_rlp::{Decodable, Encodable};
+use either::Either;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
     is_better_payload,
@@ -22,8 +23,9 @@ use reth_evm::{
     block::{BlockExecutionError, BlockValidationError},
     execute::{BlockBuilder, BlockBuilderOutcome},
 };
+use reth_execution_types::BlockExecutionOutput;
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
-use reth_payload_primitives::PayloadBuilderAttributes;
+use reth_payload_primitives::{BuiltPayload, BuiltPayloadExecutedBlock, PayloadBuilderAttributes};
 use reth_primitives_traits::{Recovered, transaction::error::InvalidTransactionError};
 use reth_revm::{
     State,
@@ -45,9 +47,9 @@ use std::{
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_consensus::TEMPO_SHARED_GAS_DIVISOR;
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
-use tempo_payload_types::TempoPayloadBuilderAttributes;
+use tempo_payload_types::{TempoBuiltPayload, TempoPayloadBuilderAttributes};
 use tempo_primitives::{
-    RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoPrimitives, TempoTxEnvelope,
+    RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoTxEnvelope,
     subblock::PartialValidatorKey,
     transaction::{
         calc_gas_balance_spending,
@@ -58,7 +60,7 @@ use tempo_transaction_pool::{
     TempoTransactionPool,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
-use tracing::{Level, debug, error, info, instrument, trace, warn};
+use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 
 /// Returns true if a subblock has any expired transactions for the given timestamp.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
@@ -159,7 +161,7 @@ where
         StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + Clone + 'static,
 {
     type Attributes = TempoPayloadBuilderAttributes;
-    type BuiltPayload = EthBuiltPayload<TempoPrimitives>;
+    type BuiltPayload = TempoBuiltPayload;
 
     fn try_build(
         &self,
@@ -213,10 +215,10 @@ where
     )]
     fn build_payload<Txs>(
         &self,
-        args: BuildArguments<TempoPayloadBuilderAttributes, EthBuiltPayload<TempoPrimitives>>,
+        args: BuildArguments<TempoPayloadBuilderAttributes, TempoBuiltPayload>,
         best_txs: impl FnOnce(BestTransactionsAttributes) -> Txs,
         empty: bool,
-    ) -> Result<BuildOutcome<EthBuiltPayload<TempoPrimitives>>, PayloadBuilderError>
+    ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError>
     where
         Txs: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
     {
@@ -238,6 +240,8 @@ where
         self.metrics.block_time_millis.record(block_time_millis);
         self.metrics.block_time_millis_last.set(block_time_millis);
 
+        let state_setup_start = Instant::now();
+        let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
         let state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
         let state_provider: Box<dyn StateProvider> = if self.state_provider_metrics {
             Box::new(InstrumentedStateProvider::new(state_provider, "builder"))
@@ -253,6 +257,10 @@ where
             })
             .with_bundle_update()
             .build();
+        drop(_state_setup_span);
+        self.metrics
+            .state_setup_duration_seconds
+            .record(state_setup_start.elapsed());
 
         let chain_spec = self.provider.chain_spec();
         let is_osaka = self
@@ -297,6 +305,7 @@ where
             // which leaves the only reason for transactions to get invalidated by expiry of
             // `valid_before` field.
             if has_expired_transactions(subblock, attributes.timestamp()) {
+                self.metrics.inc_subblocks_expired();
                 return false;
             }
 
@@ -358,6 +367,7 @@ where
             .record(prepare_system_txs_elapsed);
 
         let base_fee = builder.evm_mut().block().basefee;
+        let pool_fetch_start = Instant::now();
         let mut best_txs = best_txs(BestTransactionsAttributes::new(
             base_fee,
             builder
@@ -366,8 +376,12 @@ where
                 .blob_gasprice()
                 .map(|gasprice| gasprice as u64),
         ));
+        self.metrics
+            .pool_fetch_duration_seconds
+            .record(pool_fetch_start.elapsed());
 
         let execution_start = Instant::now();
+        let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
         while let Some(pool_tx) = best_txs.next() {
             // Ensure we still have capacity for this transaction within the non-shared gas limit.
             // The remaining `shared_gas_limit` is reserved for validator subblocks and must not
@@ -382,6 +396,8 @@ where
                         non_shared_gas_limit - cumulative_gas_used,
                     ),
                 );
+                self.metrics
+                    .inc_pool_tx_skipped("exceeds_non_shared_gas_limit");
                 continue;
             }
 
@@ -396,6 +412,8 @@ where
                         TempoPoolTransactionError::ExceedsNonPaymentLimit,
                     )),
                 );
+                self.metrics
+                    .inc_pool_tx_skipped("exceeds_general_gas_limit");
                 continue;
             }
 
@@ -425,6 +443,7 @@ where
                         limit: MAX_RLP_BLOCK_SIZE,
                     },
                 );
+                self.metrics.inc_pool_tx_skipped("oversized_block");
                 continue;
             }
 
@@ -435,7 +454,7 @@ where
                 .unwrap_or_default();
 
             let tx_with_env = pool_tx.transaction.clone().into_with_tx_env();
-            let execution_start = Instant::now();
+            let tx_execution_start = Instant::now();
             let gas_used = match builder.execute_transaction(tx_with_env) {
                 Ok(gas_used) => gas_used,
                 Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
@@ -445,6 +464,7 @@ where
                     if error.is_nonce_too_low() {
                         // if the nonce is too low, we can skip this transaction
                         trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
+                        self.metrics.inc_pool_tx_skipped("nonce_too_low");
                     } else {
                         // if the transaction is invalid, we can skip it and all of its
                         // descendants
@@ -455,13 +475,14 @@ where
                                 InvalidTransactionError::TxTypeNotSupported,
                             ),
                         );
+                        self.metrics.inc_pool_tx_skipped("invalid_tx");
                     }
                     continue;
                 }
                 // this is an error that we should treat as fatal for this attempt
                 Err(err) => return Err(PayloadBuilderError::evm(err)),
             };
-            let elapsed = execution_start.elapsed();
+            let elapsed = tx_execution_start.elapsed();
             self.metrics
                 .transaction_execution_duration_seconds
                 .record(elapsed);
@@ -475,6 +496,7 @@ where
             }
             block_size_used += tx_rlp_length;
         }
+        drop(_block_fill_span);
         let total_normal_transaction_execution_elapsed = execution_start.elapsed();
         self.metrics
             .total_normal_transaction_execution_duration_seconds
@@ -501,10 +523,15 @@ where
         }
 
         let subblocks_start = Instant::now();
+        let _subblock_txs_span =
+            debug_span!(target: "payload_builder", "execute_subblock_txs").entered();
         let subblocks_count = subblocks.len() as f64;
         let mut subblock_transactions = 0f64;
         // Apply subblock transactions
         for subblock in &subblocks {
+            let subblock_start = Instant::now();
+            let mut subblock_tx_count = 0f64;
+
             for tx in subblock.transactions_recovered() {
                 if let Err(err) = builder.execute_transaction(tx.cloned()) {
                     if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
@@ -517,16 +544,25 @@ where
                         );
                         self.highest_invalid_subblock
                             .store(builder.evm().block().number.to(), Ordering::Relaxed);
-
+                        self.metrics.inc_build_failure("subblock_invalid_tx");
                         return Err(PayloadBuilderError::evm(err));
                     } else {
                         return Err(PayloadBuilderError::evm(err));
                     }
                 }
 
-                subblock_transactions += 1.0;
+                subblock_tx_count += 1.0;
             }
+
+            self.metrics
+                .subblock_execution_duration_seconds
+                .record(subblock_start.elapsed());
+            self.metrics
+                .subblock_transaction_count
+                .record(subblock_tx_count);
+            subblock_transactions += subblock_tx_count;
         }
+        drop(_subblock_txs_span);
         let total_subblock_transaction_execution_elapsed = subblocks_start.elapsed();
         self.metrics
             .total_subblock_transaction_execution_duration_seconds
@@ -542,11 +578,14 @@ where
 
         // Apply system transactions
         let system_txs_execution_start = Instant::now();
+        let _system_txs_span =
+            debug_span!(target: "payload_builder", "execute_system_txs").entered();
         for system_tx in system_txs {
             builder
                 .execute_transaction(system_tx)
                 .map_err(PayloadBuilderError::evm)?;
         }
+        drop(_system_txs_span);
         let system_txs_execution_elapsed = system_txs_execution_start.elapsed();
         self.metrics
             .system_transactions_execution_duration_seconds
@@ -558,11 +597,18 @@ where
             .record(total_transaction_execution_elapsed);
 
         let builder_finish_start = Instant::now();
+        let _finish_span = debug_span!(target: "payload_builder", "finish_block").entered();
+        let instrumented_provider = InstrumentedFinishProvider {
+            inner: &*state_provider,
+            metrics: self.metrics.clone(),
+        };
         let BlockBuilderOutcome {
             execution_result,
             block,
-            ..
-        } = builder.finish(&state_provider)?;
+            hashed_state,
+            trie_updates,
+        } = builder.finish(instrumented_provider)?;
+        drop(_finish_span);
         let builder_finish_elapsed = builder_finish_start.elapsed();
         self.metrics
             .payload_finalization_duration_seconds
@@ -582,7 +628,7 @@ where
 
         let requests = chain_spec
             .is_prague_active_at_timestamp(attributes.timestamp())
-            .then_some(execution_result.requests);
+            .then(|| execution_result.requests.clone());
 
         let sealed_block = Arc::new(block.sealed_block().clone());
         let rlp_length = sealed_block.rlp_length();
@@ -624,8 +670,22 @@ where
             "Built payload"
         );
 
-        let payload =
+        let eth_payload =
             EthBuiltPayload::new(attributes.payload_id(), sealed_block, total_fees, requests);
+
+        let execution_output = BlockExecutionOutput {
+            result: execution_result,
+            state: db.take_bundle(),
+        };
+
+        let executed_block = BuiltPayloadExecutedBlock {
+            recovered_block: Arc::new(block),
+            execution_output: Arc::new(execution_output),
+            hashed_state: Either::Left(Arc::new(hashed_state)),
+            trie_updates: Either::Left(Arc::new(trie_updates)),
+        };
+
+        let payload = TempoBuiltPayload::new(eth_payload, Some(executed_block));
 
         drop(db);
         Ok(BuildOutcome::Better {
@@ -636,7 +696,7 @@ where
 }
 
 pub fn is_more_subblocks(
-    best_payload: Option<&EthBuiltPayload<TempoPrimitives>>,
+    best_payload: Option<&TempoBuiltPayload>,
     subblocks: &[RecoveredSubBlock],
 ) -> bool {
     let Some(best_payload) = best_payload else {
@@ -715,7 +775,7 @@ mod tests {
         }
     }
 
-    fn payload_with_metadata(count: usize) -> EthBuiltPayload<TempoPrimitives> {
+    fn payload_with_metadata(count: usize) -> TempoBuiltPayload {
         let metadata: Vec<_> = (0..count).map(|_| SubBlockMetadata::random()).collect();
         let input: Bytes = alloy_rlp::encode(&metadata).into();
         let tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
@@ -739,7 +799,8 @@ mod tests {
             },
         };
         let sealed = Arc::new(SealedBlock::seal_slow(block));
-        EthBuiltPayload::new(PayloadId::default(), sealed, U256::ZERO, None)
+        let eth = EthBuiltPayload::new(PayloadId::default(), sealed, U256::ZERO, None);
+        TempoBuiltPayload::new(eth, None)
     }
 
     #[test]

@@ -12,9 +12,6 @@ import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 /// @dev Tests invariants TEMPO-FAC1 through TEMPO-FAC12 as documented in README.md
 contract TIP20FactoryInvariantTest is InvariantBaseTest {
 
-    /// @dev Log file path for recording actions
-    string private constant LOG_FILE = "tip20_factory.log";
-
     /// @dev Ghost variables for tracking operations
     uint256 private _totalTokensCreated;
     uint256 private _totalReservedAttempts;
@@ -30,6 +27,7 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
     mapping(address => bool) private _isCreatedToken;
     mapping(bytes32 => address) private _saltToToken;
     mapping(address => bytes32) private _tokenToSalt;
+    mapping(address => address) private _tokenToSender;
 
     /// @dev Track salts used by each sender
     mapping(address => bytes32[]) private _senderSalts;
@@ -41,9 +39,7 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
         targetContract(address(this));
 
         _setupInvariantBase();
-        _actors = _buildActors(10);
-
-        _initLogFile(LOG_FILE, "TIP20Factory Invariant Test Log");
+        (_actors,) = _buildActors(10);
 
         // One-time constant checks (immutable after deployment)
         // TEMPO-FAC8: isTIP20 consistency for system contracts
@@ -80,16 +76,6 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
             // TEMPO-FAC5: Reserved address range is enforced
             if (bytes4(reason) == ITIP20Factory.AddressReserved.selector) {
                 _totalReservedAttempts++;
-                if (_loggingEnabled) {
-                    _log(
-                        string.concat(
-                            "CREATE_TOKEN_RESERVED: ",
-                            _getActorIndex(actor),
-                            " salt=",
-                            vm.toString(salt)
-                        )
-                    );
-                }
                 return;
             }
             revert("Unknown error in getTokenAddress");
@@ -105,16 +91,6 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                 vm.stopPrank();
                 if (bytes4(reason) == ITIP20Factory.TokenAlreadyExists.selector) {
                     _totalDuplicateAttempts++;
-                    if (_loggingEnabled) {
-                        _log(
-                            string.concat(
-                                "CREATE_TOKEN_EXISTS: ",
-                                _getActorIndex(actor),
-                                " at ",
-                                vm.toString(predictedAddr)
-                            )
-                        );
-                    }
                     return;
                 }
                 _assertKnownError(reason);
@@ -160,19 +136,6 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                 keccak256(bytes("USD")),
                 "TEMPO-FAC6: Token currency mismatch"
             );
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "CREATE_TOKEN: ",
-                        _getActorIndex(actor),
-                        " created ",
-                        symbol,
-                        " at ",
-                        vm.toString(tokenAddr)
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownError(reason);
@@ -212,13 +175,6 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                 "TEMPO-FAC4: Expected InvalidQuoteToken error"
             );
             _totalInvalidQuoteAttempts++;
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "CREATE_TOKEN_INVALID_QUOTE: ", _getActorIndex(actor), " with invalid quote"
-                    )
-                );
-            }
         }
     }
 
@@ -263,14 +219,6 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                     keccak256(bytes(currency)),
                     "TEMPO-FAC7: Currency mismatch"
                 );
-
-                if (_loggingEnabled) {
-                    _log(
-                        string.concat(
-                            "CREATE_TOKEN_NON_USD: ", _getActorIndex(actor), " currency=", currency
-                        )
-                    );
-                }
             }
         } catch (bytes memory reason) {
             vm.stopPrank();
@@ -349,15 +297,6 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                 "TEMPO-FAC7: Should revert with InvalidQuoteToken or TokenAlreadyExists"
             );
             _totalUsdWithNonUsdQuoteRejected++;
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "CREATE_USD_WITH_NON_USD_QUOTE: ",
-                        _getActorIndex(actor),
-                        " correctly rejected"
-                    )
-                );
-            }
         }
     }
 
@@ -387,15 +326,6 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                 "TEMPO-FAC5: createToken should revert with AddressReserved"
             );
             _totalReservedCreateAttempts++;
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "CREATE_TOKEN_RESERVED_CREATE: ",
-                        _getActorIndex(actor),
-                        " correctly rejected"
-                    )
-                );
-            }
         }
     }
 
@@ -506,6 +436,24 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                 "TEMPO-FAC11: Token address has incorrect prefix"
             );
 
+            // TEMPO-FAC12 (reverse): Given a token address, verify the salt/sender that produced it
+            {
+                address sender = _tokenToSender[tokenAddr];
+                bytes32 salt = _tokenToSalt[tokenAddr];
+                assertTrue(sender != address(0), "TEMPO-FAC12: Missing sender ghost state");
+                assertEq(
+                    factory.getTokenAddress(sender, salt),
+                    tokenAddr,
+                    "TEMPO-FAC12: Reverse invariant - token address does not match (sender, salt)"
+                );
+                bytes32 uniqueKey = keccak256(abi.encode(sender, salt));
+                assertEq(
+                    _saltToToken[uniqueKey],
+                    tokenAddr,
+                    "TEMPO-FAC12: Ghost maps inconsistent (forward vs reverse)"
+                );
+            }
+
             // TEMPO-FAC12: USD tokens must have USD quote tokens
             if (keccak256(bytes(token.currency())) == usdHash) {
                 ITIP20 quote = token.quoteToken();
@@ -518,37 +466,6 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                 }
             }
         }
-    }
-
-    /// @notice Called after each invariant run to log final state
-    function afterInvariant() public {
-        if (!_loggingEnabled) return;
-
-        _log("");
-        _log("--------------------------------------------------------------------------------");
-        _log("                              Final State Summary");
-        _log("--------------------------------------------------------------------------------");
-        _log(string.concat("Tokens created: ", vm.toString(_totalTokensCreated)));
-        _log(
-            string.concat(
-                "Reserved attempts (getTokenAddress): ", vm.toString(_totalReservedAttempts)
-            )
-        );
-        _log(
-            string.concat(
-                "Reserved attempts (createToken): ", vm.toString(_totalReservedCreateAttempts)
-            )
-        );
-        _log(string.concat("Duplicate attempts: ", vm.toString(_totalDuplicateAttempts)));
-        _log(string.concat("Invalid quote attempts: ", vm.toString(_totalInvalidQuoteAttempts)));
-        _log(string.concat("Non-USD currency created: ", vm.toString(_totalNonUsdCurrencyCreated)));
-        _log(
-            string.concat(
-                "USD with non-USD quote rejected: ", vm.toString(_totalUsdWithNonUsdQuoteRejected)
-            )
-        );
-        _log(string.concat("isTIP20 checks: ", vm.toString(_totalIsTIP20Checks)));
-        _log("--------------------------------------------------------------------------------");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -583,6 +500,7 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
         _isCreatedToken[tokenAddr] = true;
         _saltToToken[uniqueKey] = tokenAddr;
         _tokenToSalt[tokenAddr] = salt;
+        _tokenToSender[tokenAddr] = actor;
         _senderSalts[actor].push(salt);
     }
 

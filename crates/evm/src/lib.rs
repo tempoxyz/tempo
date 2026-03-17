@@ -9,24 +9,27 @@ use alloy_primitives::Address;
 use alloy_rlp::Decodable;
 pub use assemble::TempoBlockAssembler;
 mod block;
+pub use block::TempoReceiptBuilder;
 mod context;
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
 #[cfg(feature = "engine")]
 mod engine;
+#[cfg(feature = "engine")]
+use rayon as _;
 mod error;
 pub use error::TempoEvmError;
 pub mod evm;
 use std::{borrow::Cow, sync::Arc};
 
 use alloy_evm::{
-    self, Database, EvmEnv,
+    self, EvmEnv,
     block::{BlockExecutorFactory, BlockExecutorFor},
     eth::{EthBlockExecutionCtx, NextEvmEnvAttributes},
-    revm::{Inspector, database::State},
+    revm::Inspector,
 };
 pub use evm::TempoEvmFactory;
 use reth_chainspec::EthChainSpec;
-use reth_evm::{self, ConfigureEvm, EvmEnvFor};
+use reth_evm::{self, ConfigureEvm, EvmEnvFor, block::StateDB};
 use reth_primitives_traits::{SealedBlock, SealedHeader};
 use tempo_primitives::{
     Block, SubBlockMetadata, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
@@ -55,17 +58,13 @@ pub struct TempoEvmConfig {
 
 impl TempoEvmConfig {
     /// Create a new [`TempoEvmConfig`] with the given chain spec and EVM factory.
-    pub fn new(chain_spec: Arc<TempoChainSpec>, evm_factory: TempoEvmFactory) -> Self {
-        let inner = EthEvmConfig::new_with_evm_factory(chain_spec.clone(), evm_factory);
+    pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
+        let inner =
+            EthEvmConfig::new_with_evm_factory(chain_spec.clone(), TempoEvmFactory::default());
         Self {
             inner,
             block_assembler: TempoBlockAssembler::new(chain_spec),
         }
-    }
-
-    /// Create a new [`TempoEvmConfig`] with the given chain spec and default EVM factory.
-    pub fn new_with_default_factory(chain_spec: Arc<TempoChainSpec>) -> Self {
-        Self::new(chain_spec, TempoEvmFactory::default())
     }
 
     /// Returns the chain spec
@@ -76,6 +75,11 @@ impl TempoEvmConfig {
     /// Returns the inner EVM config
     pub const fn inner(&self) -> &EthEvmConfig<TempoChainSpec, TempoEvmFactory> {
         &self.inner
+    }
+
+    /// Returns the mainnet EVM config.
+    pub fn mainnet() -> Self {
+        Self::new(Arc::new(TempoChainSpec::mainnet()))
     }
 }
 
@@ -91,12 +95,12 @@ impl BlockExecutorFactory for TempoEvmConfig {
 
     fn create_executor<'a, DB, I>(
         &'a self,
-        evm: TempoEvm<&'a mut State<DB>, I>,
+        evm: TempoEvm<DB, I>,
         ctx: Self::ExecutionCtx<'a>,
     ) -> impl BlockExecutorFor<'a, Self, DB, I>
     where
-        DB: Database + 'a,
-        I: Inspector<TempoContext<&'a mut State<DB>>> + 'a,
+        DB: StateDB + 'a,
+        I: Inspector<TempoContext<DB>> + 'a,
     {
         TempoBlockExecutor::new(evm, ctx, self.chain_spec())
     }
@@ -206,7 +210,11 @@ impl ConfigureEvm for TempoEvmConfig {
                 parent_beacon_block_root: block.header().parent_beacon_block_root(),
                 // no ommers in tempo
                 ommers: &[],
-                withdrawals: block.body().withdrawals.as_ref().map(Cow::Borrowed),
+                withdrawals: block
+                    .body()
+                    .withdrawals
+                    .as_ref()
+                    .map(|w| Cow::Borrowed(w.as_slice())),
                 extra_data: block.extra_data().clone(),
                 tx_count_hint: Some(block.body().transactions.len()),
             },
@@ -229,7 +237,10 @@ impl ConfigureEvm for TempoEvmConfig {
                 parent_hash: parent.hash(),
                 parent_beacon_block_root: attributes.parent_beacon_block_root,
                 ommers: &[],
-                withdrawals: attributes.inner.withdrawals.map(Cow::Owned),
+                withdrawals: attributes
+                    .inner
+                    .withdrawals
+                    .map(|w| Cow::Owned(w.into_inner())),
                 extra_data: attributes.inner.extra_data,
                 tx_count_hint: None,
             },
@@ -260,7 +271,7 @@ mod tests {
 
     #[test]
     fn test_evm_config_can_query_tempo_hardforks() {
-        let evm_config = TempoEvmConfig::new_with_default_factory(test_chainspec());
+        let evm_config = TempoEvmConfig::new(test_chainspec());
         let activation = evm_config
             .chain_spec()
             .tempo_fork_activation(TempoHardfork::Genesis);
@@ -269,7 +280,7 @@ mod tests {
 
     #[test]
     fn test_evm_env() {
-        let evm_config = TempoEvmConfig::new_with_default_factory(test_chainspec());
+        let evm_config = TempoEvmConfig::new(test_chainspec());
 
         let header = TempoHeader {
             inner: alloy_consensus::Header {
@@ -303,14 +314,16 @@ mod tests {
         assert_eq!(evm_env.block_env.timestamp_millis_part, 500);
     }
 
-    /// Test that evm_env sets 30M gas limit cap for T1 hardfork as per TIP-1000.
+    /// Test that evm_env sets 30M gas limit cap for T1 hardfork as per [TIP-1000].
+    ///
+    /// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
     #[test]
     fn test_evm_env_t1_gas_cap() {
         use tempo_chainspec::spec::DEV;
 
         // DEV chainspec has T1 activated at timestamp 0
         let chainspec = DEV.clone();
-        let evm_config = TempoEvmConfig::new_with_default_factory(chainspec.clone());
+        let evm_config = TempoEvmConfig::new(chainspec.clone());
 
         let header = TempoHeader {
             inner: alloy_consensus::Header {
@@ -340,7 +353,7 @@ mod tests {
 
     #[test]
     fn test_next_evm_env() {
-        let evm_config = TempoEvmConfig::new_with_default_factory(test_chainspec());
+        let evm_config = TempoEvmConfig::new(test_chainspec());
 
         let parent = TempoHeader {
             inner: alloy_consensus::Header {
@@ -393,7 +406,7 @@ mod tests {
     #[test]
     fn test_context_for_block() {
         let chainspec = test_chainspec();
-        let evm_config = TempoEvmConfig::new_with_default_factory(chainspec.clone());
+        let evm_config = TempoEvmConfig::new(chainspec.clone());
 
         // Create subblock metadata
         let validator_key = B256::repeat_byte(0x01);
@@ -466,7 +479,7 @@ mod tests {
 
     #[test]
     fn test_context_for_block_no_subblock_metadata() {
-        let evm_config = TempoEvmConfig::new_with_default_factory(test_chainspec());
+        let evm_config = TempoEvmConfig::new(test_chainspec());
 
         // Create a block without subblock metadata system tx
         let regular_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
@@ -515,7 +528,7 @@ mod tests {
 
     #[test]
     fn test_context_for_next_block() {
-        let evm_config = TempoEvmConfig::new_with_default_factory(test_chainspec());
+        let evm_config = TempoEvmConfig::new(test_chainspec());
 
         let parent_header = TempoHeader {
             inner: alloy_consensus::Header {

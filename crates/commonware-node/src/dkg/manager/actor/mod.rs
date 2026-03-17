@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, net::SocketAddr, num::NonZeroU32, task::Poll, time::Duration};
+use std::{collections::BTreeMap, num::NonZeroU32, task::Poll};
 
 use alloy_consensus::BlockHeader as _;
 use bytes::{Buf, BufMut};
@@ -6,7 +6,6 @@ use commonware_codec::{Encode as _, EncodeSize, Read, ReadExt as _, Write};
 use commonware_consensus::{
     Heightable as _,
     marshal::{self, Update},
-    simplex::scheme::bls12381_threshold::vrf::Scheme,
     types::{Epoch, EpochPhase, Epocher as _, FixedEpocher, Height},
 };
 use commonware_cryptography::{
@@ -20,7 +19,7 @@ use commonware_cryptography::{
 };
 use commonware_math::algebra::Random as _;
 use commonware_p2p::{
-    AddressableManager, Receiver, Recipients, Sender,
+    Receiver, Recipients, Sender,
     utils::mux::{self, MuxHandle},
 };
 use commonware_parallel::Sequential;
@@ -33,7 +32,6 @@ use futures::{
 };
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand_core::CryptoRngCore;
-use reth_ethereum::network::NetworkInfo;
 use reth_provider::{BlockNumReader, HeaderProvider};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::TempoFullNode;
@@ -41,15 +39,17 @@ use tracing::{Level, Span, debug, info, info_span, instrument, warn, warn_span};
 
 use crate::{
     consensus::{Digest, block::Block},
-    dkg::manager::{
-        Command,
-        ingress::{GetDkgOutcome, VerifyDealerLog},
-        validators::{self, DecodedValidator},
-    },
+    validators::read_validator_config_with_retry,
 };
 
 mod state;
 use state::State;
+
+use super::{
+    Command,
+    ingress::{GetDkgOutcome, VerifyDealerLog},
+    validators,
+};
 
 /// Wire message type for DKG protocol communication.
 pub(crate) enum Message {
@@ -104,13 +104,12 @@ impl Read for Message {
     }
 }
 
-pub(crate) struct Actor<TContext, TPeerManager>
+pub(crate) struct Actor<TContext>
 where
     TContext: Clock + commonware_runtime::Metrics + commonware_runtime::Storage,
-    TPeerManager: AddressableManager,
 {
     /// The actor configuration passed in when constructing the actor.
-    config: super::Config<TPeerManager>,
+    config: super::Config,
 
     /// The runtime context passed in when constructing the actor.
     context: ContextCell<TContext>,
@@ -123,14 +122,17 @@ where
     metrics: Metrics,
 }
 
-impl<TContext, TPeerManager> Actor<TContext, TPeerManager>
+impl<TContext> Actor<TContext>
 where
-    TContext:
-        Clock + CryptoRngCore + commonware_runtime::Metrics + Spawner + commonware_runtime::Storage,
-    TPeerManager: AddressableManager<PublicKey = PublicKey> + Sync,
+    TContext: commonware_runtime::BufferPooler
+        + Clock
+        + CryptoRngCore
+        + commonware_runtime::Metrics
+        + Spawner
+        + commonware_runtime::Storage,
 {
     pub(super) async fn new(
-        config: super::Config<TPeerManager>,
+        config: super::Config,
         context: TContext,
         mailbox: mpsc::UnboundedReceiver<super::ingress::Message>,
     ) -> eyre::Result<Self> {
@@ -225,8 +227,8 @@ where
 
         self.metrics.reset();
 
-        self.metrics.dealers.set(state.dealers.len() as i64);
-        self.metrics.players.set(state.players.len() as i64);
+        self.metrics.dealers.set(state.dealers().len() as i64);
+        self.metrics.players.set(state.players().len() as i64);
         self.metrics.syncing_players.set(state.syncers.len() as i64);
 
         if let Some(previous) = state.epoch.previous() {
@@ -235,13 +237,6 @@ where
                 format!("unable to prune storage before up until epoch `{previous}`",)
             })?;
         }
-
-        let all_peers = state.construct_merged_peer_set();
-        self.metrics.peers.set(all_peers.len() as i64);
-        self.config
-            .peer_manager
-            .track(state.epoch.get(), all_peers)
-            .await;
 
         self.enter_epoch(&state)
             .wrap_err("could not instruct epoch manager to enter a new epoch")?;
@@ -284,8 +279,8 @@ where
         info_span!("run_dkg_loop", epoch = %state.epoch).in_scope(|| {
             info!(
                 me = %self.config.me.public_key(),
-                dealers = ?state.dealers,
-                players = ?state.players,
+                dealers = ?state.dealers(),
+                players = ?state.players(),
                 syncers = ?state.syncers,
                 as_dealer = dealer_state.is_some(),
                 as_player = player_state.is_some(),
@@ -372,7 +367,7 @@ where
                                             ));
 
                                             if let Err(err) = storage
-                                                .append_state(new_state)
+                                                .set_state(new_state)
                                                 .await
                                                 .wrap_err("failed appending new state to journal")
                                             {
@@ -499,7 +494,7 @@ where
         }
         let res = SignedDealerLog::<MinSig, PrivateKey>::read_cfg(
             &mut &bytes[..],
-            &NZU32!(state.players.len() as u32),
+            &NZU32!(round.players().len() as u32),
         )
         .wrap_err("failed reading dealer log from header")
         .and_then(|log| {
@@ -703,8 +698,13 @@ where
         let all_validators = read_validator_config_with_retry(
             &self.context,
             &self.config.execution_node,
-            round.epoch(),
-            &self.config.epoch_strategy,
+            crate::validators::ReadTarget::Exact {
+                height: self
+                    .config
+                    .epoch_strategy
+                    .last(round.epoch())
+                    .expect("epoch strategy is valid for all epochs"),
+            },
             &self.metrics.attempts_to_read_validator_contract,
         )
         .await;
@@ -720,31 +720,41 @@ where
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect::<BTreeMap<_, _>>();
 
-            if let Some(player_state) = player_state.take() {
+            let player_outcome = player_state.take().and_then(|player| {
                 info!("we were a player in the ceremony; finalizing share");
-                // NOTE: this method will panic if the player lost state. There
-                // is a strong assumption that if the player ACKed shares (so
-                // that they are not revealed), that it must have the shares
-                // available. Upon restart, the shares must be replayed against
-                // the player state.
-                match player_state.finalize(logs, &Sequential) {
+                match player.finalize(logs.clone(), &Sequential) {
                     Ok((new_output, new_share)) => {
                         info!("local DKG ceremony was a success");
-                        (new_output, Some(new_share))
+                        Some((new_output, state::ShareState::Plaintext(Some(new_share))))
+                    }
+                    Err(
+                        reason
+                        @ commonware_cryptography::bls12381::dkg::Error::MissingPlayerDealing,
+                    ) => {
+                        warn!(
+                            reason = %eyre::Report::new(reason),
+                            "missing critical DKG state to reconstruct a share in this epoch; has \
+                            consensus state been deleted or a node with the same identity started \
+                            without consensus state? Finalizing the current round as an observer \
+                            and will not have a share in the next epoch"
+                        );
+                        None
                     }
                     Err(error) => {
                         warn!(
                             error = %eyre::Report::new(error),
                             "local DKG ceremony was a failure",
                         );
-                        (state.output.clone(), state.share.clone())
+                        Some((state.output.clone(), state.share.clone()))
                     }
                 }
-            } else {
+            });
+
+            player_outcome.unwrap_or_else(move || {
                 match observe::<_, _, N3f1>(round.info().clone(), logs, &Sequential) {
                     Ok(output) => {
                         info!("local DKG ceremony was a success");
-                        (output, None)
+                        (output, state::ShareState::Plaintext(None))
                     }
                     Err(error) => {
                         warn!(
@@ -754,7 +764,7 @@ where
                         (state.output.clone(), state.share.clone())
                     }
                 }
-            }
+            })
         };
 
         if local_output != onchain_outcome.output {
@@ -770,7 +780,7 @@ where
                 other nodes are blocking us it might be time to delete this node \
                 and spin up a new identity",
             );
-            share.take();
+            share = state::ShareState::Plaintext(None);
         }
 
         // Because we use cached data we, need to check for DKG success here:
@@ -787,13 +797,12 @@ where
             seed: Summary::random(&mut self.context),
             output: onchain_outcome.output.clone(),
             share,
-            dealers: pubkeys_to_addrs(onchain_outcome.players().clone(), &all_validators),
-            players: pubkeys_to_addrs(onchain_outcome.next_players, &all_validators),
-            syncers: ordered::Map::from_iter_dedup(
+            players: onchain_outcome.next_players,
+            syncers: ordered::Set::from_iter_dedup(
                 all_validators
                     .iter_pairs()
                     .filter(|(_, v)| v.active)
-                    .map(|(k, v)| (k.clone(), v.inbound)),
+                    .map(|(k, _)| k.clone()),
             ),
             is_full_dkg: onchain_outcome.is_next_full_dkg,
         }))
@@ -848,8 +857,13 @@ where
         let all_validators = read_validator_config_with_retry(
             &self.context,
             &self.config.execution_node,
-            round.epoch(),
-            &self.config.epoch_strategy,
+            crate::validators::ReadTarget::Exact {
+                height: self
+                    .config
+                    .epoch_strategy
+                    .last(round.epoch())
+                    .expect("epoch strategy is valid for all epochs"),
+            },
             &self.metrics.attempts_to_read_validator_contract,
         )
         .await;
@@ -858,14 +872,13 @@ where
             epoch: onchain_outcome.epoch,
             seed: Summary::random(&mut self.context),
             output: onchain_outcome.output.clone(),
-            share: None,
-            dealers: pubkeys_to_addrs(onchain_outcome.players().clone(), &all_validators),
-            players: pubkeys_to_addrs(onchain_outcome.next_players, &all_validators),
-            syncers: ordered::Map::from_iter_dedup(
+            share: state::ShareState::Plaintext(None),
+            players: onchain_outcome.next_players,
+            syncers: ordered::Set::from_iter_dedup(
                 all_validators
                     .iter_pairs()
                     .filter(|(_, v)| v.active)
-                    .map(|(k, v)| (k.clone(), v.inbound)),
+                    .map(|(k, _)| k.clone()),
             ),
             is_full_dkg: onchain_outcome.is_next_full_dkg,
         }))
@@ -1102,34 +1115,52 @@ where
                         .expect("did not return a player instance even though we created it for this round already")
             );
 
-            let (output, share) = if let Some(player_state) = player_state {
-                match player_state.finalize(logs, &Sequential) {
-                    Ok((new_output, share)) => {
-                        info!("DKG ceremony was a success");
-                        (new_output, Some(share))
+            let (output, share) = {
+                let player_outcome = player_state.and_then(|player| {
+                    info!("we were a player in the ceremony; finalizing share");
+                    match player.finalize(logs.clone(), &Sequential) {
+                        Ok((new_output, new_share)) => {
+                            info!("local DKG ceremony was a success");
+                            Some((new_output, state::ShareState::Plaintext(Some(new_share))))
+                        }
+                        Err(
+                            reason
+                            @ commonware_cryptography::bls12381::dkg::Error::MissingPlayerDealing,
+                        ) => {
+                            warn!(
+                                reason = %eyre::Report::new(reason),
+                                "missing critical DKG state to reconstruct a share in this epoch; has \
+                                consensus state been deleted or a node with the same identity started \
+                                without consensus state? Finalizing the current round as an observer \
+                                and will not have a share in the next epoch"
+                            );
+                            None
+                        }
+                        Err(error) => {
+                            warn!(
+                                error = %eyre::Report::new(error),
+                                "local DKG ceremony was a failure",
+                            );
+                            Some((state.output.clone(), state.share.clone()))
+                        }
                     }
-                    Err(error) => {
-                        warn!(
-                            error = %eyre::Report::new(error),
-                            "DKG ceremony was a failure",
-                        );
-                        (state.output.clone(), state.share.clone())
+                });
+
+                player_outcome.unwrap_or_else(move || {
+                    match observe::<_, _, N3f1>(round.info().clone(), logs, &Sequential) {
+                        Ok(output) => {
+                            info!("local DKG ceremony was a success");
+                            (output, state::ShareState::Plaintext(None))
+                        }
+                        Err(error) => {
+                            warn!(
+                                error = %eyre::Report::new(error),
+                                "local DKG ceremony was a failure",
+                            );
+                            (state.output.clone(), state.share.clone())
+                        }
                     }
-                }
-            } else {
-                match observe::<_, _, N3f1>(round.info().clone(), logs, &Sequential) {
-                    Ok(output) => {
-                        info!("DKG ceremony was a success");
-                        (output, None)
-                    }
-                    Err(error) => {
-                        warn!(
-                            error = %eyre::Report::new(error),
-                            "DKG ceremony was a failure",
-                        );
-                        (state.output.clone(), state.share.clone())
-                    }
-                }
+                })
             };
 
             storage.cache_dkg_outcome(state.epoch, request.digest, output.clone(), share);
@@ -1152,7 +1183,7 @@ where
             .send(OnchainDkgOutcome {
                 epoch: next_epoch,
                 output,
-                next_players: state.syncers.keys().clone(),
+                next_players: state.syncers.clone(),
                 is_next_full_dkg,
             })
             .is_err()
@@ -1170,8 +1201,8 @@ where
             .enter(
                 state.epoch,
                 state.output.public().clone(),
-                state.share.clone(),
-                state.dealers.keys().clone(),
+                state.share.clone().into_inner(),
+                state.dealers().clone(),
             )
             .wrap_err("could not instruct epoch manager to enter epoch")
     }
@@ -1247,12 +1278,11 @@ where
             .wrap_err("the boundary header did not contain the on-chain DKG outcome")?;
 
     let all_validators = validators::read_from_contract_at_height(0, node, newest_height)
-        .await
         .wrap_err_with(|| {
             format!("failed reading validator config from block height `{newest_height}`")
         })?;
 
-    let share = 'verify_initial_share: {
+    let share = state::ShareState::Plaintext('verify_initial_share: {
         let Some(share) = share else {
             break 'verify_initial_share None;
         };
@@ -1271,7 +1301,7 @@ where
             break 'verify_initial_share None;
         }
         Some(share)
-    };
+    });
 
     info!(%newest_height, "setting sync floor");
     marshal.set_floor(newest_height).await;
@@ -1281,13 +1311,12 @@ where
         seed: Summary::random(context),
         output: onchain_outcome.output.clone(),
         share,
-        dealers: pubkeys_to_addrs(onchain_outcome.players().clone(), &all_validators),
-        players: pubkeys_to_addrs(onchain_outcome.next_players, &all_validators),
-        syncers: ordered::Map::from_iter_dedup(
+        players: onchain_outcome.next_players,
+        syncers: ordered::Set::from_iter_dedup(
             all_validators
                 .iter_pairs()
                 .filter(|(_, v)| v.active)
-                .map(|(k, v)| (k.clone(), v.inbound)),
+                .map(|(k, _)| k.clone()),
         ),
         is_full_dkg: onchain_outcome.is_next_full_dkg,
     })
@@ -1295,8 +1324,6 @@ where
 
 #[derive(Clone)]
 struct Metrics {
-    peers: Gauge,
-
     shares_distributed: Gauge,
     shares_received: Gauge,
     acks_received: Gauge,
@@ -1328,13 +1355,6 @@ impl Metrics {
             "syncing_players",
             "how many syncing players were registered; these will become players in the next ceremony",
             syncing_players.clone(),
-        );
-
-        let peers = Gauge::default();
-        context.register(
-            "peers",
-            "how many peers are registered overall for the latest epoch",
-            peers.clone(),
         );
 
         let failures = Counter::default();
@@ -1434,7 +1454,6 @@ impl Metrics {
         );
 
         Self {
-            peers,
             syncing_players,
             shares_distributed,
             shares_received,
@@ -1463,79 +1482,14 @@ impl Metrics {
     }
 }
 
-/// Attempts to read the validator config from the smart contract until it becomes available.
-async fn read_validator_config_with_retry<C: commonware_runtime::Clock>(
-    context: &C,
-    node: &TempoFullNode,
-    epoch: Epoch,
-    epoch_strategy: &FixedEpocher,
-    metric: &Counter,
-) -> ordered::Map<PublicKey, DecodedValidator> {
-    let mut attempts = 0;
-    const MIN_RETRY: Duration = Duration::from_secs(1);
-    const MAX_RETRY: Duration = Duration::from_secs(30);
-
-    let last = epoch_strategy
-        .last(epoch)
-        .expect("epoch strategy is valid for all epochs");
-    loop {
-        metric.inc();
-        attempts += 1;
-        if let Ok(validators) = validators::read_from_contract_at_height(attempts, node, last).await
-        {
-            break validators;
-        }
-        let retry_after = MIN_RETRY.saturating_mul(attempts).min(MAX_RETRY);
-        let is_syncing = node.network.is_syncing();
-        let best_block = node.provider.best_block_number();
-        let target_block = last.get();
-        let blocks_behind = best_block
-            .as_ref()
-            .ok()
-            .map(|best| target_block.saturating_sub(*best));
-        tracing::warn_span!("read_validator_config_with_retry").in_scope(|| {
-            warn!(
-                attempts,
-                retry_after = %tempo_telemetry_util::display_duration(retry_after),
-                is_syncing,
-                best_block = %tempo_telemetry_util::display_result(&best_block),
-                target_block,
-                blocks_behind = %tempo_telemetry_util::display_option(&blocks_behind),
-                "reading validator config from contract failed; will retry",
-            );
-        });
-        context.sleep(retry_after).await;
-    }
-}
-
-fn pubkeys_to_addrs(
-    keys: ordered::Set<PublicKey>,
-    validators: &ordered::Map<PublicKey, DecodedValidator>,
-) -> ordered::Map<PublicKey, SocketAddr> {
-    ordered::Map::from_iter_dedup(keys.into_iter().map(|key| {
-        (
-            key.clone(),
-            validators
-                .get_value(&key)
-                .expect(
-                    "all DKG participants must have an entry in the \
-                        unfiltered, contract validator set; if one does not, \
-                        then it was wrongly included in the ceremony or the \
-                        contract was bad",
-                )
-                .outbound,
-        )
-    }))
-}
-
-/// A wrapper around [`marshal::ingress::mailbox::AncestorStream`] wrapped in
+/// A wrapper around [`marshal::ancestry::AncestorStream`] wrapped in
 /// an option to make it easier to work with select macros.
 ///
 /// Invariants: if the inner stream is set, then the matching original request
 /// is also set.
 struct AncestorStream {
     pending_request: Option<(Span, GetDkgOutcome)>,
-    inner: Option<marshal::ingress::mailbox::AncestorStream<Scheme<PublicKey, MinSig>, Block>>,
+    inner: Option<marshal::ancestry::AncestorStream<crate::alias::marshal::Mailbox, Block>>,
 }
 
 impl AncestorStream {
@@ -1554,7 +1508,7 @@ impl AncestorStream {
     fn set(
         &mut self,
         pending_request: (Span, GetDkgOutcome),
-        stream: marshal::ingress::mailbox::AncestorStream<Scheme<PublicKey, MinSig>, Block>,
+        stream: marshal::ancestry::AncestorStream<crate::alias::marshal::Mailbox, Block>,
     ) {
         self.pending_request.replace(pending_request);
         self.inner.replace(stream);

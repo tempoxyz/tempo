@@ -12,7 +12,7 @@ workspace = true
 
 [dependencies]
 tempo-chainspec.workspace = true
-tempo-primitives.workspace = true
+tempo-primitives = { workspace = true, features = ["reth"] }
 
 reth-chainspec.workspace = true
 reth-consensus.workspace = true

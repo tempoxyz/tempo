@@ -167,7 +167,8 @@ impl<T: std::fmt::Display, E: std::error::Error> std::fmt::Display for DisplayRe
     }
 }
 
-/// Formats an [`Option`] using [`std::fmt::Display`], showing either the value or `<not set>`.
+/// Formats an [`Option`] using [`std::fmt::Display`], showing either the value
+/// or `<not set>`.
 ///
 /// On `Some`, displays the value using its [`std::fmt::Display`] implementation.
 /// On `None`, displays `<not set>` to indicate the value is absent.

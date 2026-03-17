@@ -18,6 +18,7 @@ import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 ///      TEMPO-1015-6: Built-in Policy Compatibility - compound policies can reference policies 0/1
 ///      TEMPO-1015-7: distributeReward requires both sender AND recipient authorization
 ///      TEMPO-1015-8: claimRewards uses correct directional authorization
+/// forge-config: default.hardfork = "tempo:T2"
 contract TIP1015InvariantTest is InvariantBaseTest {
 
     /*//////////////////////////////////////////////////////////////
@@ -32,8 +33,6 @@ contract TIP1015InvariantTest is InvariantBaseTest {
     /*//////////////////////////////////////////////////////////////
                               STATE
     //////////////////////////////////////////////////////////////*/
-
-    string private constant LOG_FILE = "tip1015.log";
 
     uint64[] private _simplePolicies;
     uint64[] private _compoundPolicies;
@@ -67,7 +66,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         targetContract(address(this));
         _setupInvariantBase();
 
-        _actors = _buildActors(NUM_ACTORS);
+        (_actors,) = _buildActors(NUM_ACTORS);
 
         vm.startPrank(admin);
 
@@ -133,8 +132,6 @@ contract TIP1015InvariantTest is InvariantBaseTest {
             _dexApproved[_actors[i]][address(initialToken)] = true;
             _dexApproved[_actors[i]][address(pathUSD)] = true;
         }
-
-        _initLogFile(LOG_FILE, "TIP-1015 Compound Policy Invariant Test Log");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -155,19 +152,6 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
         _simplePolicies.push(pid);
         _policyTypes[pid] = ptype;
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "CREATE_SIMPLE_POLICY: ",
-                    _getActorIndex(actor),
-                    " created policy ",
-                    vm.toString(pid),
-                    " type=",
-                    isWhitelist ? "WHITELIST" : "BLACKLIST"
-                )
-            );
-        }
     }
 
     function createCompoundPolicy(
@@ -209,21 +193,6 @@ contract TIP1015InvariantTest is InvariantBaseTest {
             assertEq(storedS, sPid, "Sender policy mismatch");
             assertEq(storedR, rPid, "Recipient policy mismatch");
             assertEq(storedM, mPid, "MintRecipient policy mismatch");
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "CREATE_COMPOUND_POLICY: compound=",
-                        vm.toString(compoundPid),
-                        " sender=",
-                        vm.toString(sPid),
-                        " recipient=",
-                        vm.toString(rPid),
-                        " mint=",
-                        vm.toString(mPid)
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownRegistryRevert(reason);
@@ -250,21 +219,6 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         _compoundRecipientPolicy[compoundPid] = rPid;
         _compoundMintPolicy[compoundPid] = mPid;
         _totalCompoundPoliciesCreated++;
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "CREATE_COMPOUND_WITH_BUILTINS: compound=",
-                    vm.toString(compoundPid),
-                    " sender=",
-                    vm.toString(sPid),
-                    " recipient=",
-                    vm.toString(rPid),
-                    " mint=",
-                    vm.toString(mPid)
-                )
-            );
-        }
     }
 
     function tryCreateCompoundWithCompound(uint256 seed) external {
@@ -310,18 +264,6 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         assertEq(
             errorSelector, ITIP403Registry.PolicyNotSimple.selector, "TEMPO-1015-1: Wrong error"
         );
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "TRY_CREATE_COMPOUND_WITH_COMPOUND: position=",
-                    vm.toString(position),
-                    " compoundRef=",
-                    vm.toString(compoundRef),
-                    " (correctly reverted)"
-                )
-            );
-        }
     }
 
     function tryCreateCompoundWithNonExistent(uint256 seed) external {
@@ -368,18 +310,6 @@ contract TIP1015InvariantTest is InvariantBaseTest {
             ITIP403Registry.PolicyNotFound.selector,
             "TEMPO-1015-3: Wrong error selector"
         );
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "TRY_CREATE_COMPOUND_WITH_NONEXISTENT: position=",
-                    vm.toString(position),
-                    " nonExistent=",
-                    vm.toString(nonExistent),
-                    " (correctly reverted)"
-                )
-            );
-        }
     }
 
     function modifySimplePolicy(uint256 policySeed, uint256 accountSeed, bool add) external {
@@ -404,19 +334,6 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         if (!_policyAccountTracked[pid][account]) {
             _policyAccountTracked[pid][account] = true;
             _policyAccounts[pid].push(account);
-        }
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "MODIFY_SIMPLE_POLICY: policy=",
-                    vm.toString(pid),
-                    " account=",
-                    _getActorIndex(account),
-                    " add=",
-                    add ? "true" : "false"
-                )
-            );
         }
     }
 
@@ -445,14 +362,6 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         assertTrue(
             blacklistReverted, "TEMPO-1015-2: modifyPolicyBlacklist should revert for compound"
         );
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "TRY_MODIFY_COMPOUND_POLICY: policy=", vm.toString(pid), " (correctly reverted)"
-                )
-            );
-        }
     }
 
     function checkSimplePolicyEquivalence(uint256 policySeed, uint256 accountSeed) external view {
@@ -539,17 +448,6 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
         _compoundTokens.push(token);
         _tokenPolicy[address(token)] = pid;
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "CREATE_TOKEN_WITH_COMPOUND: token=",
-                    vm.toString(address(token)),
-                    " policy=",
-                    vm.toString(pid)
-                )
-            );
-        }
     }
 
     /// @notice Opt an actor into rewards - critical for testing reward distribution/claim flows
@@ -600,17 +498,6 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
         if (authorized) {
             token.mint(recipient, amount);
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "MINT: recipient=",
-                        _getActorIndex(recipient),
-                        " amount=",
-                        vm.toString(amount),
-                        " (authorized)"
-                    )
-                );
-            }
         } else {
             bool reverted;
             bytes4 errorSelector;
@@ -624,16 +511,6 @@ contract TIP1015InvariantTest is InvariantBaseTest {
             assertEq(
                 errorSelector, ITIP20.PolicyForbids.selector, "Wrong error for unauthorized mint"
             );
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "MINT: recipient=",
-                        _getActorIndex(recipient),
-                        " (unauthorized, correctly reverted)"
-                    )
-                );
-            }
         }
 
         vm.stopPrank();
@@ -796,41 +673,15 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
         vm.prank(sender);
         if (senderAuth && contractRecipientAuth) {
-            try token.distributeReward(amount) {
-                if (_loggingEnabled) {
-                    _log(
-                        string.concat(
-                            "DISTRIBUTE_REWARD: sender=",
-                            _getActorIndex(sender),
-                            " amount=",
-                            vm.toString(amount),
-                            " (authorized)"
-                        )
-                    );
-                }
-            } catch {
+            try token.distributeReward(amount) { }
+                catch {
                 // Can fail for other reasons (e.g., zero optedInSupply race)
             }
         } else {
             try token.distributeReward(amount) {
                 revert("TEMPO-1015-7: distributeReward should revert for unauthorized");
-            } catch (bytes memory reason) {
-                // May revert for other reasons too, only check if it's PolicyForbids
-                if (bytes4(reason) == ITIP20.PolicyForbids.selector) {
-                    if (_loggingEnabled) {
-                        _log(
-                            string.concat(
-                                "DISTRIBUTE_REWARD: sender=",
-                                _getActorIndex(sender),
-                                " senderAuth=",
-                                senderAuth ? "true" : "false",
-                                " contractRecipientAuth=",
-                                contractRecipientAuth ? "true" : "false",
-                                " (correctly reverted)"
-                            )
-                        );
-                    }
-                }
+            } catch {
+                // May revert for PolicyForbids or other reasons - both acceptable
             }
         }
 
@@ -902,37 +753,15 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
         vm.prank(claimer);
         if (contractSenderAuth && claimerRecipientAuth) {
-            try token.claimRewards() {
-                if (_loggingEnabled) {
-                    _log(
-                        string.concat(
-                            "CLAIM_REWARDS: claimer=", _getActorIndex(claimer), " (authorized)"
-                        )
-                    );
-                }
-            } catch {
+            try token.claimRewards() { }
+                catch {
                 // Can fail for other reasons
             }
         } else {
             try token.claimRewards() {
                 revert("TEMPO-1015-8: claimRewards should revert for unauthorized");
-            } catch (bytes memory reason) {
-                // May revert for other reasons too, only check if it's PolicyForbids
-                if (bytes4(reason) == ITIP20.PolicyForbids.selector) {
-                    if (_loggingEnabled) {
-                        _log(
-                            string.concat(
-                                "CLAIM_REWARDS: claimer=",
-                                _getActorIndex(claimer),
-                                " contractSenderAuth=",
-                                contractSenderAuth ? "true" : "false",
-                                " claimerRecipientAuth=",
-                                claimerRecipientAuth ? "true" : "false",
-                                " (correctly reverted)"
-                            )
-                        );
-                    }
-                }
+            } catch {
+                // May revert for PolicyForbids or other reasons - both acceptable
             }
         }
 
@@ -1061,6 +890,29 @@ contract TIP1015InvariantTest is InvariantBaseTest {
             registry.modifyPolicyBlacklist(policyId, account, !authorize);
         }
         vm.stopPrank();
+    }
+
+    /// @notice Handler: isAuthorized must revert with PolicyNotFound for non-existent policies
+    /// @dev Tests TEMPO-REG20 (T2-specific: isAuthorized reverts instead of returning false)
+    function checkIsAuthorizedRevertsNonExistentPolicy(
+        uint64 policyId,
+        uint256 actorSeed
+    )
+        external
+    {
+        uint64 counter = registry.policyIdCounter();
+        uint64 nonExistentId = counter + uint64(bound(policyId, 0, 1000));
+        address account = _actors[bound(actorSeed, 0, _actors.length - 1)];
+
+        try registry.isAuthorized(nonExistentId, account) {
+            revert("TEMPO-REG20: Non-existent policy should revert with PolicyNotFound");
+        } catch (bytes memory reason) {
+            assertEq(
+                bytes4(reason),
+                ITIP403Registry.PolicyNotFound.selector,
+                "TEMPO-REG20: Should revert with PolicyNotFound"
+            );
+        }
     }
 
     /*//////////////////////////////////////////////////////////////

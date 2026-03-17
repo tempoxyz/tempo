@@ -1,6 +1,6 @@
 [package]
 name = "tempo-precompiles"
-description = "TODO:"
+description = "Tempo EVM precompile implementations for TIP-20 tokens, stablecoin DEX, fee manager, validator config, account keychain, and nonce management"
 
 version.workspace = true
 edition.workspace = true
@@ -18,6 +18,9 @@ tempo-precompiles-macros.workspace = true
 alloy = { workspace = true, features = ["sol-types", "consensus"] }
 alloy-evm.workspace = true
 revm.workspace = true
+
+commonware-cryptography.workspace = true
+commonware-codec.workspace = true
 
 tracing.workspace = true
 thiserror.workspace = true

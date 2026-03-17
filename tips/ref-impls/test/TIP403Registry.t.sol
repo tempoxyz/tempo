@@ -5,6 +5,7 @@ import { TIP403Registry } from "../src/TIP403Registry.sol";
 import { ITIP403Registry } from "../src/interfaces/ITIP403Registry.sol";
 import { BaseTest } from "./BaseTest.t.sol";
 
+/// forge-config: default.hardfork = "tempo:T2"
 contract TIP403RegistryTest is BaseTest {
 
     address public david = address(0x500);
@@ -240,12 +241,10 @@ contract TIP403RegistryTest is BaseTest {
     }
 
     function test_ModifyPolicyWhitelist_PolicyNotFound() public {
-        // For non-existent policies, isAuthorized returns false (default blacklist behavior)
-        // So modifyPolicyWhitelist will fail with Unauthorized
         try registry.modifyPolicyWhitelist(999, alice, true) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP403Registry.Unauthorized.selector));
+            assertEq(err, abi.encodeWithSelector(ITIP403Registry.PolicyNotFound.selector));
         }
     }
 
@@ -308,13 +307,10 @@ contract TIP403RegistryTest is BaseTest {
     }
 
     function test_ModifyPolicyBlacklist_PolicyNotFound() public {
-        // For non-existent policies, admin is address(0)
-        // So modifyPolicyBlacklist will fail with Unauthorized
-        vm.prank(alice);
         try registry.modifyPolicyBlacklist(999, alice, true) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP403Registry.Unauthorized.selector));
+            assertEq(err, abi.encodeWithSelector(ITIP403Registry.PolicyNotFound.selector));
         }
     }
 
@@ -670,9 +666,12 @@ contract TIP403RegistryTest is BaseTest {
                            EDGE CASES AND ERROR TESTS
     //////////////////////////////////////////////////////////////*/
 
-    function test_IsAuthorized_NonExistentPolicy() public view {
-        // Non-existent policies should return false like blacklist
-        assertFalse(registry.isAuthorized(999, alice));
+    function test_IsAuthorized_NonExistentPolicy() public {
+        try registry.isAuthorized(999, alice) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP403Registry.PolicyNotFound.selector));
+        }
     }
 
     function test_PolicyData_RevertsForNonExistentPolicy() public {
@@ -815,12 +814,14 @@ contract TIP403RegistryTest is BaseTest {
         assertFalse(registry.isAuthorized(policyId, address(0)));
     }
 
-    function test_MaxUint64_Handling() public view {
-        // Test with maximum uint64 values
+    function test_MaxUint64_Handling() public {
         uint64 maxPolicyId = type(uint64).max;
 
-        // Non-existent policies return false like a blacklist
-        assertFalse(registry.isAuthorized(maxPolicyId, alice));
+        try registry.isAuthorized(maxPolicyId, alice) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP403Registry.PolicyNotFound.selector));
+        }
     }
 
     function test_ComplexAdminChain() public {

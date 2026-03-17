@@ -37,7 +37,7 @@ use reth_transaction_pool::{TransactionValidationTaskExecutor, blobstore::InMemo
 use std::{default::Default, sync::Arc};
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_consensus::TempoConsensus;
-use tempo_evm::{TempoEvmConfig, evm::TempoEvmFactory};
+use tempo_evm::TempoEvmConfig;
 use tempo_payload_builder::TempoPayloadBuilder;
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
@@ -341,7 +341,7 @@ where
     type EVM = TempoEvmConfig;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
-        let evm_config = TempoEvmConfig::new(ctx.chain_spec(), TempoEvmFactory::default());
+        let evm_config = TempoEvmConfig::new(ctx.chain_spec());
         Ok(evm_config)
     }
 }
@@ -414,31 +414,35 @@ impl Default for TempoPoolBuilder {
     }
 }
 
-impl<Node> PoolBuilder<Node> for TempoPoolBuilder
+impl<Node> PoolBuilder<Node, TempoEvmConfig> for TempoPoolBuilder
 where
     Node: FullNodeTypes<Types = TempoNode>,
 {
     type Pool = TempoTransactionPool<Node::Provider>;
 
-    async fn build_pool(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Pool> {
+    async fn build_pool(
+        self,
+        ctx: &BuilderContext<Node>,
+        evm_config: TempoEvmConfig,
+    ) -> eyre::Result<Self::Pool> {
         let mut pool_config = ctx.pool_config();
         pool_config.max_inflight_delegated_slot_limit = pool_config.max_account_slots;
 
         // this store is effectively a noop
         let blob_store = InMemoryBlobStore::default();
-        let validator = TransactionValidationTaskExecutor::eth_builder(ctx.provider().clone())
-            .with_head_timestamp(ctx.head().timestamp)
-            .with_max_tx_input_bytes(ctx.config().txpool.max_tx_input_bytes)
-            .with_local_transactions_config(pool_config.local_transactions_config.clone())
-            .set_tx_fee_cap(ctx.config().rpc.rpc_tx_fee_cap)
-            .with_max_tx_gas_limit(ctx.config().txpool.max_tx_gas_limit)
-            .set_block_gas_limit(ctx.chain_spec().inner.genesis().gas_limit)
-            .disable_balance_check()
-            .with_minimum_priority_fee(ctx.config().txpool.minimum_priority_fee)
-            .with_additional_tasks(ctx.config().txpool.additional_validation_tasks)
-            .with_custom_tx_type(TempoTxType::AA as u8)
-            .no_eip4844()
-            .build_with_tasks(ctx.task_executor().clone(), blob_store.clone());
+        let validator =
+            TransactionValidationTaskExecutor::eth_builder(ctx.provider().clone(), evm_config)
+                .with_max_tx_input_bytes(ctx.config().txpool.max_tx_input_bytes)
+                .with_local_transactions_config(pool_config.local_transactions_config.clone())
+                .set_tx_fee_cap(ctx.config().rpc.rpc_tx_fee_cap)
+                .with_max_tx_gas_limit(ctx.config().txpool.max_tx_gas_limit)
+                .set_block_gas_limit(ctx.chain_spec().inner.genesis().gas_limit)
+                .disable_balance_check()
+                .with_minimum_priority_fee(ctx.config().txpool.minimum_priority_fee)
+                .with_additional_tasks(ctx.config().txpool.additional_validation_tasks)
+                .with_custom_tx_type(TempoTxType::AA as u8)
+                .no_eip4844()
+                .build_with_tasks(ctx.task_executor().clone(), blob_store.clone());
 
         let aa_2d_config = AA2dPoolConfig {
             price_bump_config: pool_config.price_bumps,
@@ -468,7 +472,7 @@ where
 
         // Spawn unified Tempo pool maintenance task
         // This consolidates: expired AA txs, 2D nonce updates, AMM cache, and keychain revocations
-        ctx.task_executor().spawn_critical(
+        ctx.task_executor().spawn_critical_task(
             "txpool maintenance - tempo pool",
             tempo_transaction_pool::maintain::maintain_tempo_pool(transaction_pool.clone()),
         );

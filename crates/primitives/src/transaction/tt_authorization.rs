@@ -1,8 +1,13 @@
+use alloc::vec::Vec;
 use alloy_eips::eip7702::{Authorization, RecoveredAuthority, RecoveredAuthorization};
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::{BufMut, Decodable, Encodable, Header, Result as RlpResult, length_of_length};
 use core::ops::Deref;
 use revm::context::transaction::AuthorizationTr;
+
+#[cfg(not(feature = "std"))]
+use once_cell::race::OnceBox as OnceLock;
+#[cfg(feature = "std")]
 use std::sync::OnceLock;
 
 use crate::TempoSignature;
@@ -215,7 +220,12 @@ impl RecoveredTempoAuthorization {
     pub fn new_unchecked(signed: TempoSignedAuthorization, authority: RecoveredAuthority) -> Self {
         Self {
             signed,
-            authority: authority.into(),
+            authority: {
+                let value = OnceLock::new();
+                #[allow(clippy::useless_conversion)]
+                let _ = value.set(authority.into());
+                value
+            },
         }
     }
 
@@ -258,10 +268,12 @@ impl RecoveredTempoAuthorization {
     ///
     /// Recovers the authority on first access and caches the result.
     pub fn authority_status(&self) -> &RecoveredAuthority {
+        #[allow(clippy::useless_conversion)]
         self.authority.get_or_init(|| {
             self.signed
                 .recover_authority()
                 .map_or(RecoveredAuthority::Invalid, RecoveredAuthority::Valid)
+                .into()
         })
     }
 
