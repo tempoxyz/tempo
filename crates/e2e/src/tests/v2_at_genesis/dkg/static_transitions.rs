@@ -4,7 +4,7 @@
 //! at genesis.
 use commonware_macros::test_traced;
 
-use crate::{Setup, run};
+use crate::{Setup, run, tests::v2_at_genesis::assert_no_v1};
 
 #[test_traced]
 fn single_validator_can_transition_once() {
@@ -93,11 +93,14 @@ impl AssertStaticTransitions {
 
         let setup = Setup::new()
             .how_many_signers(how_many)
-            .epoch_length(epoch_length);
+            .epoch_length(epoch_length)
+            .t2_time(0);
 
         let mut epoch_reached = false;
         let mut dkg_successful = false;
         let _first = run(setup, move |metric, value| {
+            assert_no_v1(metric, value);
+
             if metric.ends_with("_dkg_manager_ceremony_failures_total") {
                 let value = value.parse::<u64>().unwrap();
                 assert_eq!(0, value);

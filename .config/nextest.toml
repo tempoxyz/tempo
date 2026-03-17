@@ -14,7 +14,6 @@ filter = """
     test(subblocks_are_included)
   )
 """
-failure-output = "immediate"
 threads-required = "num-test-threads"
 priority = -100
 
@@ -25,7 +24,7 @@ priority = -100
 # so on a 32-vCPU runner (-j 32) at most 4 e2e tests run concurrently.
 [[profile.ci.overrides]]
 filter = "package(tempo-e2e)"
-failure-output = "never"
+failure-output = "final"
 threads-required = 8
 
 # tempo-node integration tests (pool, block_building, etc.) also launch full

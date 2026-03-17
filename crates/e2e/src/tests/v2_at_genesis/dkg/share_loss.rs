@@ -23,6 +23,7 @@ fn validator_lost_share_but_gets_share_in_next_epoch() {
         let setup = Setup::new()
             .seed(seed)
             .epoch_length(epoch_length)
+            .t2_time(0)
             .connect_execution_layer_nodes(true);
 
         let (mut validators, _execution_runtime) =
