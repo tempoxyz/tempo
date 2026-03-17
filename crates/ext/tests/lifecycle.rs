@@ -1034,11 +1034,27 @@ fn corrupt_registry_blocks_update_all() {
     let _lock = lock();
     let fix = Fixture::new();
 
+    // Place a no-op `tempoup` on PATH so `run_tempoup` succeeds before
+    // the launcher reaches `Registry::load()`.
+    let stub_dir = fix.home.join("stub_bin");
+    fs::create_dir_all(&stub_dir).unwrap();
+    let stub = stub_dir.join("tempoup");
+    fs::write(&stub, "#!/bin/sh\nexit 0\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let orig_path = env::var("PATH").unwrap_or_default();
+    unsafe { env::set_var("PATH", format!("{}:{orig_path}", stub_dir.display())) };
+
     fs::write(fix.home.join("extensions.json"), "<<<").unwrap();
 
     let err = fix.run(&["tempo", "update"]).unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("registry corrupt"), "got: {msg}");
+
+    unsafe { env::set_var("PATH", &orig_path) };
 }
 
 #[test]
