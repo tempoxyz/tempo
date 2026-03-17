@@ -152,7 +152,7 @@ pub struct MaxTpsArgs {
     mpp_weight: f64,
 
     /// Address of a deployed TempoStreamChannel contract. Required when `--mpp-weight` > 0.
-    #[arg(long)]
+    #[arg(long, default_value = "0x33b901018174ddabe4841042ab76ba85d4e24f25")]
     mpp_contract_address: Option<Address>,
 
     /// Send transfers to existing signer accounts instead of random new addresses.
