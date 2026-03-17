@@ -130,12 +130,17 @@ configure_shell() {
         shell_configs+=("$HOME/.profile")
     fi
 
-    # Deduplicate
-    local -A seen
+    # Deduplicate (bash 3 compatible)
     local unique_configs=()
     for cfg in "${shell_configs[@]}"; do
-        if [[ -z "${seen[$cfg]:-}" ]]; then
-            seen[$cfg]=1
+        local already_seen=0
+        for existing in "${unique_configs[@]}"; do
+            if [[ "$existing" == "$cfg" ]]; then
+                already_seen=1
+                break
+            fi
+        done
+        if [[ "$already_seen" -eq 0 ]]; then
             unique_configs+=("$cfg")
         fi
     done
