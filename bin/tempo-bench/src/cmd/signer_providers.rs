@@ -114,6 +114,15 @@ impl<F: TxFiller<TempoNetwork> + 'static> SignerProviderManager<F> {
             .clone()
     }
 
+    /// Returns unsigned providers paired with their target URLs.
+    pub fn unsigned_providers_with_urls(&self) -> Vec<(&Url, &BenchProvider<F>)> {
+        self.0
+            .target_urls
+            .iter()
+            .zip(self.0.unsigned_providers.iter())
+            .collect()
+    }
+
     /// Returns a random signer.
     pub fn random_signer(&self) -> &Secp256k1Signer {
         self.0.signers.choose(&mut rand::rng()).unwrap()

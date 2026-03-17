@@ -1,0 +1,20 @@
+# Spikey load: 5 minutes
+# Sustained baseline with periodic burst spikes every 30 seconds
+phases:
+  - name: warm-up
+    target_tps: 3000
+    duration: 30
+    ramp: true
+
+  - name: spikey-sustained
+    target_tps: 3000
+    duration: 240
+    burst:
+      tps: 20000       # spike to 20k
+      duration: 5       # each burst lasts 5s
+      interval: 30      # every 30s
+
+  - name: cooldown
+    target_tps: 0
+    duration: 30
+    ramp: true

@@ -1,0 +1,48 @@
+# Full stress cycle: ~58 minutes
+# Warm up → sustain → spike → crash → recover → sustain → cool down
+phases:
+  - name: warm-up
+    target_tps: 2000
+    duration: 120
+    ramp: true
+
+  - name: sustain-low
+    target_tps: 2000
+    duration: 600
+
+  - name: ramp-up
+    target_tps: 10000
+    duration: 180
+    ramp: true
+
+  - name: sustain-high
+    target_tps: 10000
+    duration: 900
+
+  - name: spike
+    target_tps: 25000
+    duration: 30
+    ramp: true
+
+  - name: crash-down
+    target_tps: 1000
+    duration: 30
+    ramp: true
+
+  - name: sustain-low-recovery
+    target_tps: 1000
+    duration: 600
+
+  - name: ramp-back
+    target_tps: 10000
+    duration: 300
+    ramp: true
+
+  - name: sustain-final
+    target_tps: 10000
+    duration: 600
+
+  - name: cooldown
+    target_tps: 0
+    duration: 120
+    ramp: true

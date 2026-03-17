@@ -1,12 +1,13 @@
 mod dex;
 mod erc20;
 mod mpp;
+pub(crate) mod scenario;
 
 use alloy_consensus::Transaction;
 use itertools::Itertools;
 use reth_tracing::{
     RethTracer, Tracer,
-    tracing::{debug, error, info},
+    tracing::{debug, error, info, warn},
 };
 use tempo_alloy::{
     TempoNetwork, fillers::ExpiringNonceFiller, provider::ext::TempoProviderBuilderExt,
@@ -35,7 +36,6 @@ use futures::{
     future::BoxFuture,
     stream::{self},
 };
-use governor::{Quota, RateLimiter, state::StreamRateLimitExt};
 use indicatif::{ProgressBar, ProgressIterator};
 use rand::{random_range, seq::IndexedRandom};
 use rlimit::Resource;
@@ -44,13 +44,14 @@ use std::{
     collections::VecDeque,
     fs::File,
     io::BufWriter,
-    num::{NonZeroU32, NonZeroU64},
+    num::NonZeroU64,
+    path::PathBuf,
     str::FromStr,
     sync::{
         Arc, OnceLock,
         atomic::{AtomicUsize, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tempo_contracts::precompiles::{
     IFeeManager::IFeeManagerInstance,
@@ -65,22 +66,33 @@ use tempo_precompiles::{
     tip_fee_manager::DEFAULT_FEE_TOKEN,
     tip20::ISSUER_ROLE,
 };
-use tokio::{
-    select,
-    time::{interval, sleep},
-};
+use tokio::{select, time::interval};
 use tokio_util::sync::CancellationToken;
 
 use crate::cmd::signer_providers::SignerProviderManager;
 
+use self::scenario::{LoadProfile, Scenario};
+
 /// Run maximum TPS throughput benchmarking
 #[derive(Parser, Debug)]
 pub struct MaxTpsArgs {
-    /// Target transactions per second
-    #[arg(short, long)]
-    tps: u64,
+    /// Predefined stress test scenario. Sets a load profile plus defaults for accounts,
+    /// weights, and concurrency. Mutually exclusive with `--profile`.
+    #[arg(long, value_enum, conflicts_with = "profile")]
+    scenario: Option<Scenario>,
 
-    /// Test duration in seconds
+    /// Custom load profile (YAML file defining phases with TPS ramps).
+    /// Mutually exclusive with `--scenario`.
+    #[arg(long, conflicts_with = "scenario")]
+    profile: Option<PathBuf>,
+
+    /// Target TPS. When used with `--scenario`/`--profile`, creates a single constant-TPS
+    /// phase that overrides the profile. When used alone (no scenario/profile), also
+    /// requires `--duration`.
+    #[arg(short, long)]
+    tps: Option<u64>,
+
+    /// Test duration in seconds. Used with `--tps` to create a simple constant-TPS profile.
     #[arg(short, long, default_value_t = 30)]
     duration: u64,
 
@@ -204,8 +216,117 @@ pub struct MaxTpsArgs {
 impl MaxTpsArgs {
     const WEIGHT_PRECISION: f64 = 1000.0;
 
-    pub async fn run(self) -> eyre::Result<()> {
+    /// Apply scenario overrides to fields that were left at their CLI defaults.
+    fn apply_scenario_overrides(&mut self) {
+        let Some(scenario) = self.scenario else {
+            return;
+        };
+
+        let o = scenario.overrides();
+
+        if self.accounts.get() == 100
+            && let Some(v) = o.accounts
+        {
+            self.accounts = NonZeroU64::new(v).unwrap_or(self.accounts);
+        }
+        if self.max_concurrent_requests == 100
+            && let Some(v) = o.max_concurrent_requests
+        {
+            self.max_concurrent_requests = v;
+        }
+        if self.tip20_weight == 1.0
+            && let Some(v) = o.tip20_weight
+        {
+            self.tip20_weight = v;
+        }
+        if self.erc20_weight == 0.0
+            && let Some(v) = o.erc20_weight
+        {
+            self.erc20_weight = v;
+        }
+        if self.mpp_weight == 0.0
+            && let Some(v) = o.mpp_weight
+        {
+            self.mpp_weight = v;
+        }
+        if self.place_order_weight == 0.0
+            && let Some(v) = o.place_order_weight
+        {
+            self.place_order_weight = v;
+        }
+        if self.swap_weight == 0.0
+            && let Some(v) = o.swap_weight
+        {
+            self.swap_weight = v;
+        }
+        if !self.existing_recipients
+            && let Some(v) = o.existing_recipients
+        {
+            self.existing_recipients = v;
+        }
+        if self.benchmark_mode.is_none() {
+            self.benchmark_mode = o.benchmark_mode;
+        }
+    }
+
+    /// Resolve the load profile from CLI args.
+    ///
+    /// Priority: `--tps` override > `--profile` file > `--scenario` preset > bare `--tps --duration`.
+    fn resolve_profile(&self) -> eyre::Result<LoadProfile> {
+        // If --tps is given, it always creates a simple constant profile
+        if let Some(tps) = self.tps {
+            eyre::ensure!(tps > 0, "--tps must be > 0");
+            return Ok(LoadProfile {
+                phases: vec![scenario::Phase {
+                    name: "constant".into(),
+                    target_tps: tps,
+                    duration: Duration::from_secs(self.duration),
+                    ramp: false,
+                    burst: None,
+                }],
+            });
+        }
+
+        // --profile <file>
+        if let Some(ref path) = self.profile {
+            return LoadProfile::from_file(path);
+        }
+
+        // --scenario <name>
+        if let Some(scenario) = self.scenario {
+            return Ok(scenario.profile());
+        }
+
+        eyre::bail!("one of --tps, --scenario, or --profile is required")
+    }
+
+    pub async fn run(mut self) -> eyre::Result<()> {
         RethTracer::new().init()?;
+
+        self.apply_scenario_overrides();
+        let profile = self.resolve_profile()?;
+
+        info!(
+            phases = profile.phases.len(),
+            total_duration_secs = profile.total_duration().as_secs(),
+            expected_txs = profile.expected_total_txs(),
+            max_tps = profile.max_tps(),
+            tip20 = self.tip20_weight,
+            erc20 = self.erc20_weight,
+            mpp = self.mpp_weight,
+            existing_recipients = self.existing_recipients,
+            "Load profile resolved"
+        );
+        for (i, phase) in profile.phases.iter().enumerate() {
+            info!(
+                phase = i,
+                name = %phase.name,
+                target_tps = phase.target_tps,
+                duration_secs = phase.duration.as_secs(),
+                ramp = phase.ramp,
+                "  Phase"
+            );
+        }
 
         let accounts = self.accounts.get();
 
@@ -241,7 +362,8 @@ impl MaxTpsArgs {
                 }),
                 signer_provider_factory,
             );
-            self.run_with_manager(signer_provider_manager).await
+            self.run_with_manager(signer_provider_manager, profile)
+                .await
         } else if self.use_standard_nonces {
             info!(
                 accounts = self.accounts,
@@ -261,7 +383,8 @@ impl MaxTpsArgs {
                 }),
                 signer_provider_factory,
             );
-            self.run_with_manager(signer_provider_manager).await
+            self.run_with_manager(signer_provider_manager, profile)
+                .await
         } else {
             // Default: Use expiring nonces (TIP-1009)
             // Use the default 25-second expiry window (protocol max is 30s).
@@ -284,13 +407,15 @@ impl MaxTpsArgs {
                 }),
                 signer_provider_factory,
             );
-            self.run_with_manager(signer_provider_manager).await
+            self.run_with_manager(signer_provider_manager, profile)
+                .await
         }
     }
 
     async fn run_with_manager<F: TxFiller<TempoNetwork> + 'static>(
         self,
         signer_provider_manager: SignerProviderManager<F>,
+        profile: LoadProfile,
     ) -> eyre::Result<()> {
         // Validate required addresses before sending any transactions
         eyre::ensure!(
@@ -404,8 +529,6 @@ impl MaxTpsArgs {
             None
         };
 
-        // Generate and send transactions
-        let total_txs = self.tps * self.duration;
         let tip20_weight = (self.tip20_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let place_order_weight = (self.place_order_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let swap_weight = (self.swap_weight * Self::WEIGHT_PRECISION).trunc() as u64;
@@ -450,32 +573,38 @@ impl MaxTpsArgs {
             expiry_secs,
         };
 
-        info!(total_txs, "Generating and sending transactions");
+        let total_duration = profile.total_duration();
+        let expected_txs = profile.expected_total_txs();
+        let pregen_buffer = (profile.max_tps() as usize).clamp(100, 5_000);
+
+        let providers_with_urls = signer_provider_manager.unsigned_providers_with_urls();
+        let num_urls = providers_with_urls.len();
+
+        info!(
+            expected_txs,
+            pregen_buffer,
+            num_urls,
+            per_url_concurrency = self.max_concurrent_requests,
+            total_duration_secs = total_duration.as_secs(),
+            "Generating and sending transactions"
+        );
 
         let counters = TransactionCounters::default();
-        let target_count = total_txs as usize;
         let cancel_token = CancellationToken::new();
 
         // Start TPS monitor
-        tokio::spawn(monitor_tps(
+        tokio::spawn(monitor_tps_profiled(
             counters.clone(),
-            target_count,
+            profile.clone(),
             cancel_token.clone(),
         ));
 
-        let rate_limiter =
-            RateLimiter::direct(Quota::per_second(NonZeroU32::new(self.tps as u32).unwrap()));
         let start_block_number = provider.get_block_number().await?;
 
-        let mut pending_txs =
+        // Pre-generate a buffer of signed transaction bytes from the infinite generator stream
+        let mut tx_stream =
             generate_transactions(signer_provider_manager.clone(), gen_input, counters.clone())
-                // Take exactly the required number of transactions to not over-send
-                .take(target_count)
-                // Stop when duration exceeded, no matter if we sent all transactions or not
-                .take_until(sleep(Duration::from_secs(self.duration)))
-                // Keep a buffer of pre-generated transactions to send as fast as possible
-                .buffer_unordered(self.tps as usize)
-                // Filter only successfully generated transactions
+                .buffer_unordered(pregen_buffer)
                 .filter_map(|result| async {
                     match result {
                         Ok(bytes) => Some(bytes),
@@ -485,51 +614,133 @@ impl MaxTpsArgs {
                         }
                     }
                 })
-                .boxed()
-                .ratelimit_stream(&rate_limiter)
-                // Pair each transaction with a random provider to send it
-                .zip(stream::repeat_with(|| {
-                    signer_provider_manager.random_unsigned_provider()
-                }))
-                // Prepare transaction sending futures
-                .map(|(bytes, provider)| async move {
-                    tokio::time::timeout(
-                        Duration::from_secs(1),
-                        provider.send_raw_transaction(&bytes),
-                    )
-                    .await
-                })
-                // Send transactions in parallel with up to the specified concurrency limit
-                .buffer_unordered(self.max_concurrent_requests)
-                .filter_map({
-                    let counters = counters.clone();
-                    move |result| {
-                        let counters = counters.clone();
-                        async move {
-                            match result {
-                                Ok(Ok(pending_tx)) => {
-                                    counters.sent.fetch_add(1, Ordering::Relaxed);
-                                    counters.success.fetch_add(1, Ordering::Relaxed);
-                                    Some(pending_tx)
-                                }
-                                Ok(Err(err)) => {
-                                    counters.sent.fetch_add(1, Ordering::Relaxed);
-                                    counters.failed.fetch_add(1, Ordering::Relaxed);
-                                    debug!(?err, "Failed to send transaction");
-                                    None
-                                }
-                                Err(_) => {
-                                    counters.sent.fetch_add(1, Ordering::Relaxed);
-                                    counters.failed.fetch_add(1, Ordering::Relaxed);
-                                    debug!("Transaction sending timed out");
-                                    None
-                                }
-                            }
-                        }
+                .boxed();
+
+        // Credit-based pacer: dispatches transactions according to the load profile
+        let start = Instant::now();
+        let mut credit = 0.0f64;
+        let mut last_elapsed = Duration::ZERO;
+        let mut last_phase: Option<String> = None;
+        let mut pending_txs: VecDeque<PendingTransactionBuilder<TempoNetwork>> = VecDeque::new();
+        let tick = Duration::from_millis(50);
+
+        // Per-URL in-flight tracking with round-robin distribution
+        let mut in_flight_per_url = vec![0usize; num_urls];
+        let mut rr_index = 0usize;
+
+        // Channel for collecting send results
+        let (result_tx, mut result_rx) =
+            tokio::sync::mpsc::channel::<SendResult>(self.max_concurrent_requests * num_urls * 2);
+
+        loop {
+            let elapsed = start.elapsed();
+            if elapsed >= total_duration {
+                break;
+            }
+
+            // Log phase transitions
+            if let Some(current_phase) = profile.phase_at(elapsed) {
+                let current = current_phase.to_string();
+                if last_phase.as_deref() != Some(current_phase) {
+                    let current_tps = profile.tps_at(elapsed);
+                    let total_in_flight: usize = in_flight_per_url.iter().sum();
+                    info!(
+                        phase = %current,
+                        target_tps = current_tps as u64,
+                        total_in_flight,
+                        elapsed_secs = elapsed.as_secs(),
+                        "Phase transition"
+                    );
+                    last_phase = Some(current);
+                }
+            }
+
+            // Refill credit based on elapsed time
+            credit += profile.tx_budget_between(last_elapsed, elapsed);
+            last_elapsed = elapsed;
+
+            // Drain completed send results
+            while let Ok(result) = result_rx.try_recv() {
+                match result {
+                    SendResult::Success(url_idx, pending_tx) => {
+                        in_flight_per_url[url_idx] -= 1;
+                        counters.sent.fetch_add(1, Ordering::Relaxed);
+                        counters.success.fetch_add(1, Ordering::Relaxed);
+                        pending_txs.push_back(pending_tx);
                     }
-                })
-                .collect::<VecDeque<_>>()
-                .await;
+                    SendResult::Failed(url_idx) => {
+                        in_flight_per_url[url_idx] -= 1;
+                        counters.sent.fetch_add(1, Ordering::Relaxed);
+                        counters.failed.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+
+            // Dispatch transactions up to available credit and per-URL concurrency
+            let total_capacity: usize = in_flight_per_url
+                .iter()
+                .map(|&f| self.max_concurrent_requests.saturating_sub(f))
+                .sum();
+            let to_send = (credit.floor() as usize).min(total_capacity);
+
+            for _ in 0..to_send {
+                // Find next URL with available capacity via round-robin
+                let mut found = false;
+                for _ in 0..num_urls {
+                    let idx = rr_index % num_urls;
+                    rr_index += 1;
+                    if in_flight_per_url[idx] < self.max_concurrent_requests {
+                        // Pull a pre-generated tx from the buffer
+                        let Some(bytes) = tx_stream.next().await else {
+                            warn!("Transaction generator exhausted");
+                            break;
+                        };
+
+                        credit -= 1.0;
+                        in_flight_per_url[idx] += 1;
+
+                        let provider = providers_with_urls[idx].1.clone();
+                        let result_tx = result_tx.clone();
+                        tokio::spawn(async move {
+                            let result = tokio::time::timeout(
+                                Duration::from_secs(1),
+                                provider.send_raw_transaction(&bytes),
+                            )
+                            .await;
+
+                            let send_result = match result {
+                                Ok(Ok(pending_tx)) => SendResult::Success(idx, pending_tx),
+                                _ => SendResult::Failed(idx),
+                            };
+                            let _ = result_tx.send(send_result).await;
+                        });
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    break;
+                }
+            }
+
+            tokio::time::sleep(tick).await;
+        }
+
+        // Drain remaining in-flight results
+        drop(result_tx);
+        while let Some(result) = result_rx.recv().await {
+            match result {
+                SendResult::Success(_, pending_tx) => {
+                    counters.sent.fetch_add(1, Ordering::Relaxed);
+                    counters.success.fetch_add(1, Ordering::Relaxed);
+                    pending_txs.push_back(pending_tx);
+                }
+                SendResult::Failed(_) => {
+                    counters.sent.fetch_add(1, Ordering::Relaxed);
+                    counters.failed.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
 
         cancel_token.cancel();
 
@@ -586,10 +797,24 @@ impl MaxTpsArgs {
             "Collected a sample of receipts"
         );
 
-        generate_report(provider, start_block_number, end_block_number, &self).await?;
+        generate_report(
+            provider,
+            start_block_number,
+            end_block_number,
+            &self,
+            &profile,
+        )
+        .await?;
 
         Ok(())
     }
+}
+
+/// Result of a single transaction send attempt.
+/// The `usize` is the URL index for per-URL in-flight tracking.
+enum SendResult {
+    Success(usize, PendingTransactionBuilder<TempoNetwork>),
+    Failed(usize),
 }
 
 #[derive(Debug, Clone)]
@@ -926,9 +1151,18 @@ struct BenchmarkedBlock {
 }
 
 #[derive(Serialize)]
-struct BenchmarkMetadata {
+struct ProfilePhaseMetadata {
+    name: String,
     target_tps: u64,
-    run_duration_secs: u64,
+    duration_secs: u64,
+    ramp: bool,
+}
+
+#[derive(Serialize)]
+struct BenchmarkMetadata {
+    max_tps: u64,
+    expected_total_txs: u64,
+    total_duration_secs: u64,
     accounts: u64,
     chain_id: u64,
     total_connections: usize,
@@ -945,6 +1179,7 @@ struct BenchmarkMetadata {
     swap_weight: f64,
     erc20_weight: f64,
     mpp_weight: f64,
+    phases: Vec<ProfilePhaseMetadata>,
 }
 
 #[derive(Serialize)]
@@ -958,6 +1193,7 @@ pub async fn generate_report(
     start_block: BlockNumber,
     end_block: BlockNumber,
     args: &MaxTpsArgs,
+    profile: &LoadProfile,
 ) -> eyre::Result<()> {
     info!(start_block, end_block, "Generating report");
 
@@ -1002,9 +1238,21 @@ pub async fn generate_report(
         last_block_timestamp = Some(timestamp);
     }
 
+    let phases = profile
+        .phases
+        .iter()
+        .map(|p| ProfilePhaseMetadata {
+            name: p.name.clone(),
+            target_tps: p.target_tps,
+            duration_secs: p.duration.as_secs(),
+            ramp: p.ramp,
+        })
+        .collect();
+
     let metadata = BenchmarkMetadata {
-        target_tps: args.tps,
-        run_duration_secs: args.duration,
+        max_tps: profile.max_tps(),
+        expected_total_txs: profile.expected_total_txs(),
+        total_duration_secs: profile.total_duration().as_secs(),
         accounts: args.accounts.get(),
         chain_id: provider.get_chain_id().await?,
         total_connections: args.max_concurrent_requests,
@@ -1018,6 +1266,7 @@ pub async fn generate_report(
         swap_weight: args.swap_weight,
         erc20_weight: args.erc20_weight,
         mpp_weight: args.mpp_weight,
+        phases,
     };
 
     let report = BenchmarkReport {
@@ -1035,21 +1284,36 @@ pub async fn generate_report(
     Ok(())
 }
 
-async fn monitor_tps(counters: TransactionCounters, target_count: usize, token: CancellationToken) {
+async fn monitor_tps_profiled(
+    counters: TransactionCounters,
+    profile: LoadProfile,
+    token: CancellationToken,
+) {
     let mut last_count = 0;
     let mut ticker = interval(Duration::from_secs(1));
+    let start = Instant::now();
 
     loop {
         select! {
             _ = ticker.tick() => {
+                let elapsed = start.elapsed();
                 let current_count = counters.sent.load(Ordering::Relaxed);
-                let tps = current_count - last_count;
+                let actual_tps = current_count - last_count;
                 last_count = current_count;
 
-                info!(tps, total = current_count, "Status");
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                let target_tps = profile.tps_at(elapsed) as u64;
+                let phase = profile.phase_at(elapsed).unwrap_or("done");
 
-                if current_count == target_count {
+                info!(
+                    actual_tps,
+                    target_tps,
+                    total = current_count,
+                    phase,
+                    elapsed_secs = elapsed.as_secs(),
+                    "Status"
+                );
+
+                if elapsed >= profile.total_duration() {
                     break;
                 }
             }

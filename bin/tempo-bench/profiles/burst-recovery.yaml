@@ -1,0 +1,41 @@
+# Burst and recovery: 10 minutes
+# Repeated burst/recover cycles to test txpool elasticity
+phases:
+  - name: baseline
+    target_tps: 3000
+    duration: 60
+
+  - name: burst-1
+    target_tps: 15000
+    duration: 30
+    ramp: true
+
+  - name: recover-1
+    target_tps: 3000
+    duration: 60
+    ramp: true
+
+  - name: burst-2
+    target_tps: 20000
+    duration: 30
+    ramp: true
+
+  - name: recover-2
+    target_tps: 3000
+    duration: 60
+    ramp: true
+
+  - name: burst-3
+    target_tps: 25000
+    duration: 30
+    ramp: true
+
+  - name: recover-3
+    target_tps: 3000
+    duration: 120
+    ramp: true
+
+  - name: cooldown
+    target_tps: 0
+    duration: 60
+    ramp: true
