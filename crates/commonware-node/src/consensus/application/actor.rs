@@ -195,7 +195,7 @@ struct Inner<TState> {
 
     execution_node: TempoFullNode,
     executor: crate::executor::Mailbox,
-    subblocks: subblocks::Mailbox,
+    subblocks: Option<subblocks::Mailbox>,
     scheme_provider: SchemeProvider,
 
     state: TState,
@@ -346,27 +346,6 @@ impl Inner<Init> {
         {
             let mut lock = self.state.latest_proposed_block.write().await;
             *lock = Some((round, proposal.clone()));
-        }
-
-        // Make sure reth sees the new payload so that in the next round we can
-        // verify blocks on top of it.
-        let is_good = verify_block(
-            context,
-            round.epoch(),
-            &self.epoch_strategy,
-            self.execution_node
-                .add_ons_handle
-                .beacon_engine_handle
-                .clone(),
-            &proposal,
-            parent_digest,
-            &self.scheme_provider,
-        )
-        .await
-        .wrap_err("failed verifying block against execution layer")?;
-
-        if !is_good {
-            eyre::bail!("validation reported that that just-proposed block is invalid");
         }
 
         Ok(())
@@ -557,7 +536,8 @@ impl Inner<Init> {
             extra_data,
             move || {
                 self.subblocks
-                    .get_subblocks(parent.block_hash())
+                    .as_ref()
+                    .and_then(|s| s.get_subblocks(parent.block_hash()).ok())
                     .unwrap_or_default()
             },
         );

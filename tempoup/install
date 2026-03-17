@@ -2,9 +2,11 @@
 set -e
 
 # Tempoup bootstrap installer
-# Downloads tempoup script and installs to /usr/local/bin
+# Downloads tempoup and tempo to ~/.tempo/bin
 
-BIN_DIR="${TEMPO_BIN_DIR:-/usr/local/bin}"
+TEMPO_DIR="${TEMPO_DIR:-$HOME/.tempo}"
+BIN_DIR="${TEMPO_BIN_DIR:-$TEMPO_DIR/bin}"
+ENV_FILE="$TEMPO_DIR/env"
 TEMPOUP_URL="https://raw.githubusercontent.com/tempoxyz/tempo/main/tempoup/tempoup"
 
 # Color output
@@ -40,6 +42,9 @@ main() {
     echo "Installing tempoup..."
     echo ""
 
+    # Ensure BIN_DIR exists
+    mkdir -p "$BIN_DIR"
+
     # Download tempoup script to a temp file
     local tmp_file
     tmp_file="$(mktemp 2>/dev/null || mktemp -t tempoup)"
@@ -59,20 +64,112 @@ main() {
     install_bin "$tmp_file" "$BIN_DIR/tempoup"
     info "Tempoup installed to $BIN_DIR/tempoup"
 
-    # Warn if BIN_DIR is not in PATH
-    if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
-        echo ""
-        warn "$BIN_DIR is not in your PATH"
-        echo "  Add it to your shell config:"
-        echo "    export PATH=\"$BIN_DIR:\$PATH\""
-        echo ""
-    fi
+    # Create env file that can be sourced to set PATH (POSIX shells)
+    cat > "$ENV_FILE" <<'ENVEOF'
+# tempo shell setup
+export PATH="$HOME/.tempo/bin:$PATH"
+ENVEOF
+
+    # Create env file for fish shell
+    cat > "$ENV_FILE.fish" <<'ENVEOF'
+# tempo shell setup
+fish_add_path -g $HOME/.tempo/bin
+ENVEOF
+
+    # Add BIN_DIR to PATH for current session
+    export PATH="$BIN_DIR:$PATH"
+
+    # Configure shell profiles
+    configure_shell
 
     # Run tempoup to install tempo binary
     info "Running tempoup to install tempo..."
     echo ""
 
     TEMPO_BIN_DIR="$BIN_DIR" "$BIN_DIR/tempoup"
+
+    echo ""
+    local user_shell
+    user_shell="$(basename "$SHELL")"
+    if [[ "$user_shell" == "fish" ]]; then
+        info "To get started, either restart your shell or run:"
+        echo ""
+        echo "  source $ENV_FILE.fish"
+    else
+        info "To get started, either restart your shell or run:"
+        echo ""
+        echo "  source $ENV_FILE"
+    fi
+    echo ""
+}
+
+# Add sourcing of env file to shell config files
+configure_shell() {
+    local source_line=". \"$ENV_FILE\""
+
+    local shell_configs=()
+
+    # Detect POSIX shell configs to modify
+    if [[ -n "${ZDOTDIR:-}" ]]; then
+        shell_configs+=("$ZDOTDIR/.zshenv")
+    fi
+
+    if [[ -f "$HOME/.zshenv" ]] || [[ "$(basename "$SHELL")" == "zsh" ]]; then
+        shell_configs+=("$HOME/.zshenv")
+    fi
+
+    if [[ -f "$HOME/.bashrc" ]] || [[ "$(basename "$SHELL")" == "bash" ]]; then
+        shell_configs+=("$HOME/.bashrc")
+    fi
+
+    if [[ -f "$HOME/.bash_profile" ]]; then
+        shell_configs+=("$HOME/.bash_profile")
+    fi
+
+    if [[ -f "$HOME/.profile" ]]; then
+        shell_configs+=("$HOME/.profile")
+    fi
+
+    # Deduplicate
+    local -A seen
+    local unique_configs=()
+    for cfg in "${shell_configs[@]}"; do
+        if [[ -z "${seen[$cfg]:-}" ]]; then
+            seen[$cfg]=1
+            unique_configs+=("$cfg")
+        fi
+    done
+
+    local modified=0
+
+    # Configure POSIX shells
+    for cfg in "${unique_configs[@]}"; do
+        if [[ -f "$cfg" ]] && grep -qF "$ENV_FILE" "$cfg" 2>/dev/null; then
+            continue
+        fi
+
+        echo >> "$cfg"
+        echo "# Added by tempoup installer" >> "$cfg"
+        echo "$source_line" >> "$cfg"
+        info "Added tempo to PATH in $cfg"
+        modified=1
+    done
+
+    # Configure fish shell
+    local fish_config="${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d/tempo.fish"
+    if [[ -d "$(dirname "$fish_config")" ]] || [[ "$(basename "$SHELL")" == "fish" ]]; then
+        if [[ ! -f "$fish_config" ]] || ! grep -qF "$ENV_FILE.fish" "$fish_config" 2>/dev/null; then
+            mkdir -p "$(dirname "$fish_config")"
+            echo "# Added by tempoup installer" > "$fish_config"
+            echo "source $ENV_FILE.fish" >> "$fish_config"
+            info "Added tempo to PATH in $fish_config"
+            modified=1
+        fi
+    fi
+
+    if [[ $modified -eq 0 ]]; then
+        info "Tempo is already in your shell config"
+    fi
 }
 
 main

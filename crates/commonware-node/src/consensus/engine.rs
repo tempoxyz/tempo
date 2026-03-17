@@ -94,6 +94,7 @@ pub struct Builder<TBlocker, TPeerManager> {
     pub time_to_build_subblock: Duration,
     pub subblock_broadcast_interval: Duration,
     pub fcu_heartbeat_interval: Duration,
+    pub with_subblocks: bool,
 
     pub feed_state: crate::feed::FeedStateHandle,
 }
@@ -311,15 +312,17 @@ where
             priority_responses: false,
         };
 
-        let subblocks = subblocks::Actor::new(subblocks::Config {
-            context: context.clone(),
-            signer: self.signer.clone(),
-            scheme_provider: scheme_provider.clone(),
-            node: execution_node.clone(),
-            fee_recipient: self.fee_recipient,
-            time_to_build_subblock: self.time_to_build_subblock,
-            subblock_broadcast_interval: self.subblock_broadcast_interval,
-            epoch_strategy: epoch_strategy.clone(),
+        let subblocks = self.with_subblocks.then(|| {
+            subblocks::Actor::new(subblocks::Config {
+                context: context.clone(),
+                signer: self.signer.clone(),
+                scheme_provider: scheme_provider.clone(),
+                node: execution_node.clone(),
+                fee_recipient: self.fee_recipient,
+                time_to_build_subblock: self.time_to_build_subblock,
+                subblock_broadcast_interval: self.subblock_broadcast_interval,
+                epoch_strategy: epoch_strategy.clone(),
+            })
         });
 
         let (feed, feed_mailbox) = crate::feed::init(
@@ -350,7 +353,7 @@ where
             executor: executor_mailbox.clone(),
             payload_resolve_time: self.payload_interrupt_time,
             payload_return_time: self.new_payload_wait_time,
-            subblocks: subblocks.mailbox(),
+            subblocks: subblocks.as_ref().map(|s| s.mailbox()),
             scheme_provider: scheme_provider.clone(),
             epoch_strategy: epoch_strategy.clone(),
         })
@@ -367,7 +370,7 @@ where
                 time_for_peer_response: self.time_for_peer_response,
                 time_to_propose: self.time_to_propose,
                 mailbox_size: self.mailbox_size,
-                subblocks: subblocks.mailbox(),
+                subblocks: subblocks.as_ref().map(|s| s.mailbox()),
                 marshal: marshal_mailbox.clone(),
                 feed: feed_mailbox.clone(),
                 scheme_provider: scheme_provider.clone(),
@@ -476,7 +479,7 @@ where
 
     feed: crate::feed::Actor<TContext>,
 
-    subblocks: subblocks::Actor<TContext>,
+    subblocks: Option<subblocks::Actor<TContext>>,
 }
 
 impl<TContext, TBlocker, TPeerManager> Engine<TContext, TBlocker, TPeerManager>
@@ -606,13 +609,9 @@ where
 
         let feed = self.feed.start();
 
-        let subblocks = self
-            .context
-            .spawn(|_| self.subblocks.run(subblocks_channel));
-
         let dkg_manager = self.dkg_manager.start(dkg_channel);
 
-        try_join_all(vec![
+        let mut tasks = vec![
             application,
             broadcast,
             epoch_manager,
@@ -621,12 +620,19 @@ where
             marshal,
             dkg_manager,
             peer_manager,
-            subblocks,
-        ])
-        .await
-        .map(|_| ())
-        // TODO: look into adding error context so that we know which
-        // component failed.
-        .wrap_err("one of the consensus engine's actors failed")
+        ];
+
+        if let Some(subblocks) = self.subblocks {
+            tasks.push(self.context.spawn(|_| subblocks.run(subblocks_channel)));
+        } else {
+            drop(subblocks_channel);
+        }
+
+        try_join_all(tasks)
+            .await
+            .map(|_| ())
+            // TODO: look into adding error context so that we know which
+            // component failed.
+            .wrap_err("one of the consensus engine's actors failed")
     }
 }

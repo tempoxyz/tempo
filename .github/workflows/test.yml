@@ -84,12 +84,16 @@ jobs:
           fi
 
   test:
-    name: test
+    name: test (${{ matrix.partition }}/2)
     needs: check-precompiles
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 30
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [1, 2]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -105,24 +109,24 @@ jobs:
       # Build and run tests WITH coverage (only when precompiles changed)
       - name: Build and compile tests with coverage
         if: needs.check-precompiles.outputs.coverage == 'true'
-        run: cargo nextest run --profile ci --no-run
+        run: cargo nextest run --profile ci -E 'not package(tempo-e2e)' --partition count:${{ matrix.partition }}/2 --no-run
         env:
           RUSTFLAGS: -C instrument-coverage
       - name: Run tests with coverage
         if: needs.check-precompiles.outputs.coverage == 'true'
         run: |
           mkdir -p coverage
-          cargo nextest run --profile ci 
+          cargo nextest run --profile ci -E 'not package(tempo-e2e)' --partition count:${{ matrix.partition }}/2
         env:
           RUSTFLAGS: -C instrument-coverage
           LLVM_PROFILE_FILE: ${{ github.workspace }}/coverage/cargo-%p-%m.profraw
       # Build and run tests WITHOUT coverage (when precompiles not changed)
       - name: Build and compile tests
         if: needs.check-precompiles.outputs.coverage != 'true'
-        run: cargo nextest run --profile ci --no-run
+        run: cargo nextest run --profile ci -E 'not package(tempo-e2e)' --partition count:${{ matrix.partition }}/2 --no-run
       - name: Run tests
         if: needs.check-precompiles.outputs.coverage != 'true'
-        run: cargo nextest run  --profile ci
+        run: cargo nextest run --profile ci -E 'not package(tempo-e2e)' --partition count:${{ matrix.partition }}/2
       - name: Generate precompiles coverage profdata
         if: needs.check-precompiles.outputs.coverage == 'true'
         run: |
@@ -136,11 +140,36 @@ jobs:
         if: needs.check-precompiles.outputs.coverage == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: cargo-test-coverage
+          name: cargo-test-coverage-${{ matrix.partition }}
           path: |
             coverage/cargo-test.profdata
             coverage/precompiles-bin/
           retention-days: 1
+
+  e2e:
+    name: e2e (${{ matrix.partition }}/2)
+    runs-on: depot-ubuntu-latest-32
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [1, 2]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
+      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      - uses: taiki-e/install-action@3f67faa728964808f52294a9cd15561b15550b28 # v2.67.19
+        with:
+          tool: nextest@0.9.124
+      - name: Build e2e tests
+        run: cargo nextest run --profile ci -E 'package(tempo-e2e)' --partition count:${{ matrix.partition }}/2 --no-run
+      - name: Run e2e tests
+        run: cargo nextest run --profile ci -E 'package(tempo-e2e)' --partition count:${{ matrix.partition }}/2
 
   cli:
     name: CLI smoke tests
@@ -188,6 +217,7 @@ jobs:
     needs:
       - check-precompiles
       - test
+      - e2e
       - cli
       - msrv
       - genesis

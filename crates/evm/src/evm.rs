@@ -3,7 +3,7 @@ use alloy_evm::{
     precompiles::PrecompilesMap,
     revm::{
         Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm,
-        context::result::{EVMError, ResultAndState},
+        context::result::{EVMError, ResultAndState, ResultGas},
         inspector::NoOpInspector,
     },
 };
@@ -171,17 +171,13 @@ where
             };
 
             // system transactions should not consume any gas
-            let ExecutionResult::Success {
-                gas_used,
-                gas_refunded,
-                ..
-            } = &mut result.result
-            else {
-                return Err(TempoInvalidTransaction::SystemTransactionFailed(result.result).into());
+            let ExecutionResult::Success { gas, .. } = &mut result.result else {
+                return Err(
+                    TempoInvalidTransaction::SystemTransactionFailed(result.result.into()).into(),
+                );
             };
 
-            *gas_used = 0;
-            *gas_refunded = 0;
+            *gas = ResultGas::default().with_limit(tx.inner.gas_limit);
 
             Ok(result)
         } else if self.inspect {
