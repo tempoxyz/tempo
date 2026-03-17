@@ -138,47 +138,51 @@ jobs:
 
           echo "Merge conflicts detected, using Amp to resolve..."
           AMP_PROMPT="The branch has merge conflicts after merging origin/main. \
-          Please resolve all merge conflicts in the following files. Keep the intent of the \
-          reth update branch (reth deps pointing at branch = \"main\") while incorporating \
-          changes from main. Conflicted files: ${CONFLICTED}"
+          Please resolve all merge conflicts in the following files. Keep the update branch's \
+          reth rev pins as-is while incorporating changes from main. \
+          Conflicted files: ${CONFLICTED}"
 
           amp-run --dangerously-allow-all -x "$AMP_PROMPT"
           git add -A
           git commit --no-edit
 
-      # ── cargo update ───────────────────────────────────────────
-      - name: Update reth crates in lockfile
+      # ── update reth rev ─────────────────────────────────────────
+      - name: Update reth rev in Cargo.toml
         id: update
+        env:
+          GH_TOKEN: ${{ secrets.DEREK_PAT }}
         run: |
-          # Capture old reth revision via cargo metadata
-          OLD_REV=$(cargo metadata --format-version 1 2>/dev/null \
-            | jq -r '.packages[] | select(.name == "reth-engine-tree") | .source' \
-            | sed 's/.*#//')
+          # Current rev from Cargo.toml
+          OLD_REV=$(grep -m1 'paradigmxyz/reth' Cargo.toml | sed 's/.*rev = "\([^"]*\)".*/\1/')
+          echo "Current reth rev: $OLD_REV"
 
-          LOCK_BEFORE=$(sha256sum Cargo.lock | cut -d' ' -f1)
-          cargo update -p reth-engine-tree
-          LOCK_AFTER=$(sha256sum Cargo.lock | cut -d' ' -f1)
+          # Latest commit on reth main
+          NEW_REV=$(gh api repos/paradigmxyz/reth/commits/main --jq '.sha' | head -c 7)
+          echo "Latest reth main: $NEW_REV"
 
-          if [ "$LOCK_BEFORE" = "$LOCK_AFTER" ]; then
+          if [ "$OLD_REV" = "$NEW_REV" ]; then
             echo "bumped=false" >> "$GITHUB_OUTPUT"
-            echo "No reth dependency changes detected."
-          else
-            echo "bumped=true" >> "$GITHUB_OUTPUT"
-
-            # Capture new reth revision
-            NEW_REV=$(cargo metadata --format-version 1 2>/dev/null \
-              | jq -r '.packages[] | select(.name == "reth-engine-tree") | .source' \
-              | sed 's/.*#//')
-            echo "old_rev=$OLD_REV" >> "$GITHUB_OUTPUT"
-            echo "new_rev=$NEW_REV" >> "$GITHUB_OUTPUT"
+            echo "Already on latest reth rev."
+            exit 0
           fi
 
-      # ── commit lockfile bump if changed ─────────────────────────
-      - name: Commit lockfile update
+          echo "bumped=true" >> "$GITHUB_OUTPUT"
+          echo "old_rev=$OLD_REV" >> "$GITHUB_OUTPUT"
+          echo "new_rev=$NEW_REV" >> "$GITHUB_OUTPUT"
+
+          # Update all reth rev references in Cargo.toml files
+          find . -name 'Cargo.toml' -exec sed -i "s|paradigmxyz/reth\", rev = \"${OLD_REV}\"|paradigmxyz/reth\", rev = \"${NEW_REV}\"|g" {} +
+          echo "Updated reth rev: $OLD_REV -> $NEW_REV"
+
+          # Regenerate lockfile
+          cargo update
+
+      # ── commit rev bump if changed ──────────────────────────────
+      - name: Commit reth rev bump
         if: steps.update.outputs.bumped == 'true'
         run: |
-          git add Cargo.lock
-          git commit -m "chore(deps): update reth dependencies from main ($(date -u +%Y-%m-%d))"
+          git add -A
+          git commit -m "chore(deps): bump reth rev to ${{ steps.update.outputs.new_rev }} ($(date -u +%Y-%m-%d))"
 
       # ── cargo check + Amp fix loop ────────────────────────────
       - name: Fix compilation errors
@@ -203,8 +207,8 @@ jobs:
 
           Run \`cargo check --workspace\` to see the errors, then fix the Rust source code and repeat \
           until cargo check passes. You may also bump non-reth dependency versions in Cargo.toml files \
-          if needed (e.g. revm, alloy), but do NOT modify the reth git source specifications (URL, branch, \
-          or rev) in any Cargo.toml — those must stay pointing at branch = \"main\".
+          if needed (e.g. revm, alloy), but do NOT modify the reth rev or git source specifications \
+          in any Cargo.toml — those have already been updated by the workflow.
 
           IMPORTANT: Do NOT suppress warnings with #[allow(...)]. Instead, migrate the code \
           to use the new non-deprecated APIs. Look at the upstream reth source code to understand \
@@ -266,8 +270,8 @@ jobs:
           then fix the Rust source code and repeat until test binaries compile successfully. \
           Also run \`cargo check --workspace\` after fixes to catch compilation regressions. \
           You may also bump non-reth dependency versions in Cargo.toml files if needed (e.g. revm, alloy), \
-          but do NOT modify the reth git source specifications (URL, branch, or rev) in any Cargo.toml — \
-          those must stay pointing at branch = \"main\".
+          but do NOT modify the reth rev or git source specifications in any Cargo.toml — \
+          those have already been updated by the workflow.
 
           IMPORTANT: Do NOT suppress warnings with #[allow(...)]. Instead, migrate the code \
           to use the new non-deprecated APIs. Look at the upstream reth source code to understand \
@@ -479,8 +483,8 @@ jobs:
             {
               echo "The CI checks on this PR are failing. Please fix the issues."
               echo "You may also bump non-reth dependency versions in Cargo.toml files if needed (e.g. revm, alloy),"
-              echo "but do NOT modify the reth git source specifications (URL, branch, or rev) in any Cargo.toml —"
-              echo "those must stay pointing at branch = \"main\"."
+              echo "but do NOT modify the reth rev or git source specifications in any Cargo.toml —"
+              echo "those have already been updated by the workflow."
               echo ""
               echo "IMPORTANT: Do NOT suppress warnings with #[allow(...)]. Instead, migrate the code"
               echo "to use the new non-deprecated APIs. Look at the upstream reth source code to understand"
