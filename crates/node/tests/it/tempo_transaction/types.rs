@@ -26,6 +26,12 @@ pub(crate) trait TestEnv: Sized {
     /// Currently active hardfork
     fn hardfork(&self) -> TempoHardfork;
 
+    /// Whether this environment still runs legacy mempool behavior for keychain
+    /// spending-limit checks that surface as builder exclusion instead of RPC rejection.
+    fn uses_legacy_keyauth_pool_validation(&self) -> bool {
+        false
+    }
+
     /// Fund `addr` with fee tokens so it can transact.
     /// Returns the funded amount.
     async fn fund_account(&mut self, addr: Address) -> eyre::Result<U256>;
@@ -320,7 +326,7 @@ impl RawSendTestCase {
         // 1. key_setup
         match &self.key_setup {
             KeySetup::ZeroPubKey => outcome = ExpectedOutcome::Revert,
-            KeySetup::DuplicateAuth => outcome = ExpectedOutcome::ExcludedByBuilder,
+            KeySetup::DuplicateAuth => outcome = ExpectedOutcome::Rejection,
             KeySetup::AccessKey {
                 expiry: KeyExpiry::Past,
                 ..
@@ -413,7 +419,7 @@ impl RawSendTestCase {
         }
         match self.expected {
             ExpectedOutcome::Success => {}
-            ExpectedOutcome::Rejection => flags.push("reject"),
+            ExpectedOutcome::Rejection => flags.push("rejected"),
             ExpectedOutcome::Revert => flags.push("revert"),
             ExpectedOutcome::ExcludedByBuilder => flags.push("excluded"),
         }

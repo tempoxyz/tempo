@@ -45,6 +45,11 @@ pub(super) async fn run_raw_send_matrix<E: TestEnv>(env: &mut E) -> eyre::Result
     let transfer_over = spending_limit + U256::from(1u64);
     let transfer_under = spending_limit / U256::from(2);
     let transfer_small = U256::from(50_000u64);
+    let keyauth_expected = if env.uses_legacy_keyauth_pool_validation() {
+        ExpectedOutcome::ExcludedByBuilder
+    } else {
+        ExpectedOutcome::Rejection
+    };
 
     let matrix = vec![
         // --- core key type × fee_payer × access_key ---
@@ -71,7 +76,9 @@ pub(super) async fn run_raw_send_matrix<E: TestEnv>(env: &mut E) -> eyre::Result
         RawSendTestCase::new(KeyType::Secp256k1).test_action(TestAction::Empty),
         RawSendTestCase::new(KeyType::Secp256k1).test_action(TestAction::InvalidCreate),
         RawSendTestCase::new(KeyType::Secp256k1).key_setup(KeySetup::ZeroPubKey),
-        RawSendTestCase::new(KeyType::Secp256k1).key_setup(KeySetup::DuplicateAuth),
+        RawSendTestCase::new(KeyType::Secp256k1)
+            .key_setup(KeySetup::DuplicateAuth)
+            .expected(keyauth_expected),
         RawSendTestCase::new(KeyType::P256).key_setup(KeySetup::UnauthorizedAuthorize),
         RawSendTestCase::new(KeyType::Secp256k1)
             .key_setup(access_key())
@@ -119,7 +126,7 @@ pub(super) async fn run_raw_send_matrix<E: TestEnv>(env: &mut E) -> eyre::Result
                 expiry: KeyExpiry::None,
             })
             .test_action(TestAction::Transfer(transfer_small))
-            .expected(ExpectedOutcome::ExcludedByBuilder),
+            .expected(keyauth_expected),
         // --- expiry ---
         RawSendTestCase::new(KeyType::P256).key_setup(KeySetup::AccessKey {
             limits: SpendingLimits::Default,
