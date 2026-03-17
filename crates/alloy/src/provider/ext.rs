@@ -114,7 +114,7 @@ impl TempoProviderBuilderExt
         JoinFill<Identity, TempoFillers<Random2DNonceFiller>>,
         TempoNetwork,
     > {
-        ProviderBuilder::default().filler(TempoFillers::default())
+        self.filler(TempoFillers::default())
     }
 
     fn with_expiring_nonces(
@@ -124,14 +124,14 @@ impl TempoProviderBuilderExt
         JoinFill<Identity, TempoFillers<ExpiringNonceFiller>>,
         TempoNetwork,
     > {
-        ProviderBuilder::default().filler(TempoFillers::default())
+        self.filler(TempoFillers::default())
     }
 
     fn with_nonce_key_filler(
         self,
     ) -> ProviderBuilder<Identity, JoinFill<Identity, TempoFillers<NonceKeyFiller>>, TempoNetwork>
     {
-        ProviderBuilder::default().filler(TempoFillers::default())
+        self.filler(TempoFillers::default())
     }
 }
 
