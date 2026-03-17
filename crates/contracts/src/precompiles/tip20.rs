@@ -1,6 +1,33 @@
 pub use IRolesAuth::{IRolesAuthErrors as RolesAuthError, IRolesAuthEvents as RolesAuthEvent};
 pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
 use alloy_primitives::{Address, U256};
+use alloy_sol_types::{SolCall, SolType};
+
+/// USD currency string constant.
+pub const USD_CURRENCY: &str = "USD";
+
+/// Full list of ISO 4217 currency codes.
+pub const ISO4217_CODES: &[&str] = &[
+    "AED", "AFN", "ALL", "AMD", "ANG", "AOA", "ARS", "AUD", "AWG", "AZN", "BAM", "BBD", "BDT",
+    "BGN", "BHD", "BIF", "BMD", "BND", "BOB", "BOV", "BRL", "BSD", "BTN", "BWP", "BYN", "BZD",
+    "CAD", "CDF", "CHE", "CHF", "CHW", "CLP", "CLF", "CNY", "COP", "COU", "CRC", "CUP", "CVE",
+    "CZK", "DJF", "DKK", "DOP", "DZD", "EGP", "ERN", "ETB", "EUR", "FJD", "FKP", "GBP", "GEL",
+    "GHS", "GIP", "GMD", "GNF", "GTQ", "GYD", "HKD", "HNL", "HRK", "HTG", "HUF", "IDR", "ILS",
+    "INR", "IQD", "IRR", "ISK", "JMD", "JOD", "JPY", "KES", "KGS", "KHR", "KMF", "KPW", "KRW",
+    "KWD", "KYD", "KZT", "LAK", "LBP", "LKR", "LRD", "LSL", "LYD", "MAD", "MDL", "MGA", "MKD",
+    "MMK", "MNT", "MOP", "MRU", "MUR", "MVR", "MWK", "MXN", "MXV", "MYR", "MZN", "NAD", "NGN",
+    "NIO", "NOK", "NPR", "NZD", "OMR", "PAB", "PEN", "PGK", "PHP", "PKR", "PLN", "PYG", "QAR",
+    "RON", "RSD", "RUB", "RWF", "SAR", "SBD", "SCR", "SDG", "SEK", "SGD", "SHP", "SLE", "SOS",
+    "SRD", "SSP", "STN", "SVC", "SYP", "SZL", "THB", "TJS", "TMT", "TND", "TOP", "TRY", "TTD",
+    "TWD", "TZS", "UAH", "UGX", "USD", "USN", "UYI", "UYU", "UYW", "UZS", "VED", "VES", "VND",
+    "VUV", "WST", "XAF", "XAG", "XAU", "XBA", "XBB", "XBC", "XBD", "XCD", "XDR", "XOF", "XPD",
+    "XPF", "XPT", "XSU", "XTS", "XUA", "XXX", "YER", "ZAR", "ZMW", "ZWL",
+];
+
+/// Returns `true` if the given code is a recognized ISO 4217 currency code.
+pub fn is_iso4217_currency(code: &str) -> bool {
+    ISO4217_CODES.binary_search(&code).is_ok()
+}
 
 crate::sol! {
     #[derive(Debug, PartialEq, Eq)]
@@ -145,6 +172,37 @@ crate::sol! {
     }
 }
 
+impl ITIP20::ITIP20Calls {
+    /// Returns `true` if `input` matches one of the recognized [TIP-20 payment] selectors:
+    /// - `transfer` / `transferWithMemo`
+    /// - `transferFrom` / `transferFromWithMemo`
+    /// - `mint` / `mintWithMemo`
+    /// - `burn` / `burnWithMemo`
+    ///
+    /// # NOTES
+    /// - Only validates calldata; the caller must check the TIP-20 address prefix on `to`.
+    /// - Only selector and exact ABI-encoded length match, no decoding (better performance).
+    ///
+    /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
+    pub fn is_payment(input: &[u8]) -> bool {
+        fn is_call<C: SolCall>(input: &[u8]) -> bool {
+            input.first_chunk::<4>() == Some(&C::SELECTOR)
+                && input.len()
+                    == 4 + <C::Parameters<'_> as SolType>::ENCODED_SIZE.unwrap_or_default()
+        }
+
+        is_call::<ITIP20::transferCall>(input)
+            || is_call::<ITIP20::transferWithMemoCall>(input)
+            || is_call::<ITIP20::transferFromCall>(input)
+            || is_call::<ITIP20::transferFromWithMemoCall>(input)
+            || is_call::<ITIP20::approveCall>(input)
+            || is_call::<ITIP20::mintCall>(input)
+            || is_call::<ITIP20::mintWithMemoCall>(input)
+            || is_call::<ITIP20::burnCall>(input)
+            || is_call::<ITIP20::burnWithMemoCall>(input)
+    }
+}
+
 impl RolesAuthError {
     /// Creates an error for unauthorized access.
     pub const fn unauthorized() -> Self {
@@ -260,5 +318,58 @@ impl TIP20Error {
     /// Error when permit signature is invalid
     pub const fn invalid_signature() -> Self {
         Self::InvalidSignature(ITIP20::InvalidSignature {})
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use alloc::vec::Vec;
+    use alloy_primitives::{Address, B256, U256};
+
+    #[rustfmt::skip]
+    /// Returns valid ABI-encoded calldata for every recognized TIP-20 payment selector.
+    fn payment_calldatas() -> [Vec<u8>; 9] {
+        let (to, from, amount, memo) = (Address::random(), Address::random(), U256::random(), B256::random());
+
+        [
+            ITIP20::transferCall { to, amount }.abi_encode(),
+            ITIP20::transferWithMemoCall { to, amount, memo }.abi_encode(),
+            ITIP20::transferFromCall { from, to, amount }.abi_encode(),
+            ITIP20::transferFromWithMemoCall { from, to, amount, memo }.abi_encode(),
+            ITIP20::approveCall { spender: to, amount }.abi_encode(),
+            ITIP20::mintCall { to, amount }.abi_encode(),
+            ITIP20::mintWithMemoCall { to, amount, memo }.abi_encode(),
+            ITIP20::burnCall { amount }.abi_encode(),
+            ITIP20::burnWithMemoCall { amount, memo }.abi_encode(),
+        ]
+    }
+
+    #[rustfmt::skip]
+    /// Returns ABI-encoded calldata for TIP-20 selectors NOT recognized as payments.
+    fn non_payment_calldatas() -> [Vec<u8>; 3] {
+        let mut data = ITIP20::transferCall { to: Address::random(), amount: U256::random() }.abi_encode();
+        data[..4].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+
+        [
+            // non-payment TIP20 calls with known selectors
+            ITIP20::claimRewardsCall {}.abi_encode(),
+            ITIP20::permitCall {
+                owner: Address::random(), spender: Address::random(), value: U256::random(), deadline: U256::random(),
+                v: u8::MAX, r: B256::random(), s: B256::random() }.abi_encode(),
+            // non-payment TIP20 calls with unknown selectors
+            data,
+        ]
+    }
+
+    #[test]
+    fn test_is_payment() {
+        for calldata in payment_calldatas() {
+            assert!(ITIP20::ITIP20Calls::is_payment(&calldata))
+        }
+
+        for calldata in non_payment_calldatas() {
+            assert!(!ITIP20::ITIP20Calls::is_payment(&calldata))
+        }
     }
 }

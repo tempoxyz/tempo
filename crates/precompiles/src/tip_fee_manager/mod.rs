@@ -43,15 +43,6 @@ pub struct TipFeeManager {
     /// T1C+: Tracks liquidity reserved for a pending fee swap during `collect_fee_pre_tx`.
     /// Checked by `burn` and `rebalance_swap` to prevent withdrawals that would violate the reservation.
     pending_fee_swap_reservation: Mapping<B256, u128>,
-
-    // WARNING(rusowsky): transient storage slots must always be placed at the very end until the `contract`
-    // macro is refactored and has 2 independent layouts (persistent and transient).
-    // If new (persistent) storage fields need to be added to the precompile, they must go above this one.
-    /// T2+: The fee token used for the current transaction ([TIP-1007]).
-    /// Set by the handler before execution, read via `getFeeToken()`.
-    ///
-    /// [TIP-1007]: <https://docs.tempo.xyz/protocol/tips/tip-1007>
-    tx_fee_token: Address,
 }
 
 impl TipFeeManager {
@@ -281,16 +272,6 @@ impl TipFeeManager {
         ))?;
 
         Ok(())
-    }
-
-    /// Returns the fee token for the current transaction from transient storage (T2+).
-    pub fn get_fee_token(&self) -> Result<Address> {
-        self.tx_fee_token.t_read()
-    }
-
-    /// Stores the fee token for the current transaction in transient storage.
-    pub fn set_fee_token(&mut self, token: Address) -> Result<()> {
-        self.tx_fee_token.t_write(token)
     }
 
     /// Reads the stored fee token preference for a user.

@@ -21,8 +21,7 @@ alloy-genesis.workspace = true
 alloy-primitives.workspace = true
 
 commonware-codec.workspace = true
-# fuzz features provides access to dkg fixtures
-commonware-consensus = { workspace = true, features = ["fuzz"] }
+commonware-consensus.workspace = true
 commonware-cryptography.workspace = true
 commonware-math.workspace = true
 commonware-p2p.workspace = true
@@ -32,6 +31,7 @@ commonware-utils.workspace = true
 itertools.workspace = true
 
 eyre.workspace = true
+reth-chainspec.workspace = true
 reth-db.workspace = true
 reth-ethereum = { workspace = true, features = [
   "node",
