@@ -5,7 +5,7 @@ The goal is to define a specification that is clear, descriptive, and acts as th
 
 - **Spec ID**: TIP-XXX  
 - **Authors/Owners**: <name/handle>  
-- **Status**: Draft | In Review | Approved | In Progress | Devnet | QA/Integration | Testnet | Mainnet | Deprecated
+- **Status**: Draft | In Review | Ready for Consideration | Approved | Scheduled | Testnet | Mainnet
 - **Related Specs**: <links or IDs>  
 
 ---
@@ -18,6 +18,10 @@ Short 2–4 sentence high level summary
 ## Motivation
 
 Explain what problem this solves/functionality this introduces, and any alternatives considered (if applicable). Add context or links to other specs/resources that serve as prerequisites to this spec.
+
+## Assumptions
+
+List the explicit assumptions this spec depends on (for example: upstream invariants, trust boundaries, deployment ordering, and backward compatibility expectations). Call out what happens if an assumption is violated.
 
 ---
 
@@ -35,5 +39,3 @@ Where a feature involves multiple processes, state diagrams / flowcharts should 
 # Invariants
 
 This section should describe invariants that must always hold, and outline the critical cases that the test suite must cover. 
-
-
