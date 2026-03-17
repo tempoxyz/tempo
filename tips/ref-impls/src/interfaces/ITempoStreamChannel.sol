@@ -8,14 +8,14 @@ pragma solidity >=0.8.20 <0.9.0;
 interface ITempoStreamChannel {
 
     struct Channel {
+        bool finalized;
+        uint64 closeRequestedAt;
         address payer;
         address payee;
         address token;
         address authorizedSigner;
         uint128 deposit;
         uint128 settled;
-        uint64 closeRequestedAt;
-        bool finalized;
     }
 
     function CLOSE_GRACE_PERIOD() external view returns (uint64);
@@ -128,6 +128,8 @@ interface ITempoStreamChannel {
     error TransferFailed();
     error CloseNotReady();
     error InvalidPayee();
+    error InvalidToken();
+    error ZeroDeposit();
     error DepositOverflow();
 
 }
