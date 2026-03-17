@@ -5,7 +5,9 @@
 
 use std::{net::SocketAddr, time::Duration};
 
-use super::dkg::common::{assert_no_dkg_failures, wait_for_epoch, wait_for_outcome};
+use super::dkg::common::{
+    assert_no_dkg_failures, wait_for_outcome, wait_for_validators_to_reach_epoch,
+};
 use crate::{CONSENSUS_NODE_PREFIX, Setup, setup_validators};
 use alloy::transports::http::reqwest::Url;
 use alloy_primitives::hex;
@@ -33,7 +35,10 @@ async fn consensus_subscribe_and_query_finalization() {
     let _ = tempo_eyre::install();
 
     let initial_height = 3;
-    let setup = Setup::new().how_many_signers(1).epoch_length(100);
+    let setup = Setup::new()
+        .how_many_signers(1)
+        .t2_time(0)
+        .epoch_length(100);
     let cfg = deterministic::Config::default().with_seed(setup.seed);
 
     let (addr_tx, addr_rx) = oneshot::channel::<(SocketAddr, SocketAddr)>();
@@ -200,7 +205,9 @@ fn get_identity_transition_proof_after_full_dkg() {
             first_full_dkg_epoch - 1
         );
 
-        wait_for_epoch(&context, first_full_dkg_epoch + 1, how_many_signers).await;
+        // Wait for full DKG to complete
+        wait_for_validators_to_reach_epoch(&context, first_full_dkg_epoch + 1, how_many_signers)
+            .await;
         assert_no_dkg_failures(&context);
 
         let outcome_after_first =
@@ -230,7 +237,8 @@ fn get_identity_transition_proof_after_full_dkg() {
             second_full_dkg_epoch - 1
         );
 
-        wait_for_epoch(&context, second_full_dkg_epoch + 1, how_many_signers).await;
+        wait_for_validators_to_reach_epoch(&context, second_full_dkg_epoch + 1, how_many_signers)
+            .await;
         assert_no_dkg_failures(&context);
 
         let outcome_after_second =

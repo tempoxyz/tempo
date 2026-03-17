@@ -174,6 +174,7 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         JournalCheckpoint {
             log_i: 0,
             journal_i: idx,
+            selfdestructed_i: 0,
         }
     }
 

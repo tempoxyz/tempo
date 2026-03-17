@@ -14,6 +14,12 @@ use crate::{
 };
 use alloy::primitives::{Address, U256};
 
+/// Built-in policy ID that always rejects authorization.
+pub const REJECT_ALL_POLICY_ID: u64 = 0;
+
+/// Built-in policy ID that always allows authorization.
+pub const ALLOW_ALL_POLICY_ID: u64 = 1;
+
 /// Registry for [TIP-403] transfer policies. TIP20 tokens reference an ID from this registry
 /// to police transfers between sender and receiver addresses.
 ///
@@ -24,7 +30,8 @@ use alloy::primitives::{Address, U256};
 #[contract(addr = TIP403_REGISTRY_ADDRESS)]
 pub struct TIP403Registry {
     /// Monotonically increasing counter for policy IDs. Starts at `2` because IDs `0`
-    /// (always-reject) and `1` (always-allow) are reserved special policies.
+    /// ([`REJECT_ALL_POLICY_ID`]) and `1` ([`ALLOW_ALL_POLICY_ID`]) are reserved special
+    /// policies.
     policy_id_counter: u64,
     /// Maps a policy ID to its [`PolicyRecord`], which stores the base [`PolicyData`]
     /// (type + admin) and, for compound policies, the [`CompoundPolicyData`] sub-policy
@@ -141,7 +148,7 @@ impl TIP403Registry {
 
     // View functions
     pub fn policy_id_counter(&self) -> Result<u64> {
-        // Initialize policy ID counter to 2 if it's 0 (skip special policies)
+        // Initialize policy ID counter to 2 if it's 0 (skip built-in policy IDs)
         self.policy_id_counter.read().map(|counter| counter.max(2))
     }
 
@@ -494,11 +501,16 @@ impl TIP403Registry {
         self.is_simple(policy_id, user, &data)
     }
 
-    /// Returns authorization result for built-in policies (0 = reject, 1 = allow).
+    /// Returns authorization result for built-in policies
+    /// ([`REJECT_ALL_POLICY_ID`] / [`ALLOW_ALL_POLICY_ID`]).
     /// Returns None for user-created policies.
     #[inline]
     fn builtin_authorization(&self, policy_id: u64) -> Option<bool> {
-        (policy_id < 2).then_some(policy_id == 1)
+        match policy_id {
+            ALLOW_ALL_POLICY_ID => Some(true),
+            REJECT_ALL_POLICY_ID => Some(false),
+            _ => None,
+        }
     }
 
     /// Authorization for simple (non-compound) policies only.

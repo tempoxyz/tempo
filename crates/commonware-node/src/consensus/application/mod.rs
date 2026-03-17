@@ -53,7 +53,7 @@ pub(super) struct Config<TContext> {
     pub(super) execution_node: TempoFullNode,
 
     /// A handle to the subblocks service to get subblocks for proposals.
-    pub(crate) subblocks: subblocks::Mailbox,
+    pub(crate) subblocks: Option<subblocks::Mailbox>,
 
     /// The minimum amount of time to wait before resolving a new payload from the builder.
     pub(super) payload_resolve_time: Duration,
