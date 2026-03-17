@@ -1,10 +1,30 @@
 use super::*;
 use alloy::{
-    primitives::keccak256,
+    primitives::{address, keccak256},
     sol,
     sol_types::{SolCall, SolValue},
 };
 use tempo_alloy::{primitives::transaction::Call, rpc::TempoTransactionRequest};
+
+/// Mainnet (presto) MPP contract address.
+pub(super) const MAINNET_MPP_CONTRACT_ADDRESS: Address =
+    address!("0x33b901018174ddabe4841042ab76ba85d4e24f25");
+/// Testnet (moderato) MPP contract address.
+pub(super) const TESTNET_MPP_CONTRACT_ADDRESS: Address =
+    address!("0xe1c4d3dce17bc111181ddf716f75bae49e61a336");
+
+/// Resolves the MPP contract address from the chain ID.
+pub(super) fn resolve_contract_address(chain_id: u64) -> eyre::Result<Address> {
+    match chain_id {
+        // Presto (mainnet)
+        4217 => Ok(MAINNET_MPP_CONTRACT_ADDRESS),
+        // Moderato (testnet)
+        42431 => Ok(TESTNET_MPP_CONTRACT_ADDRESS),
+        other => eyre::bail!(
+            "unknown chain ID {other} for MPP contract address, use --mpp-contract-address to specify it explicitly"
+        ),
+    }
+}
 
 sol! {
     #[sol(rpc)]
