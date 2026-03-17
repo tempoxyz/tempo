@@ -130,14 +130,17 @@ configure_shell() {
         shell_configs+=("$HOME/.profile")
     fi
 
-    # Deduplicate
-    local -A seen
+    # Deduplicate (bash 3 compatible)
     local unique_configs=()
+    local seen=""
     for cfg in "${shell_configs[@]}"; do
-        if [[ -z "${seen[$cfg]:-}" ]]; then
-            seen[$cfg]=1
-            unique_configs+=("$cfg")
-        fi
+        case "$seen" in
+            *"|$cfg|"*) ;;
+            *)
+                seen="$seen|$cfg|"
+                unique_configs+=("$cfg")
+                ;;
+        esac
     done
 
     local modified=0

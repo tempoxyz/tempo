@@ -1,3 +1,5 @@
+//! ABI dispatch for the [`TipFeeManager`] precompile.
+
 use crate::{
     Precompile, dispatch_call, input_cost, metadata, mutate, mutate_void,
     storage::Handler,
@@ -11,7 +13,7 @@ use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_contracts::precompiles::{IFeeManager::IFeeManagerCalls, ITIPFeeAMM::ITIPFeeAMMCalls};
 
-/// Combined enum for dispatching to either IFeeManager or ITIPFeeAMM
+/// Unified calldata discriminant for both `IFeeManager` and `ITIPFeeAMM` selectors.
 enum TipFeeManagerCall {
     FeeManager(IFeeManagerCalls),
     Amm(ITIPFeeAMMCalls),

@@ -1089,7 +1089,11 @@ where
                         storage.get_notarized_reduced_block(&round.epoch(), &digest)
                     {
                         logs.extend(block.log.clone());
-                        height = block.height;
+                        height = if let Some(height) = block.height.previous() {
+                            height
+                        } else {
+                            break 'ensure_enough_logs;
+                        };
                         digest = block.parent;
                     } else {
                         return Ok(Some((digest, request)));
