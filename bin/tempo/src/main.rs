@@ -31,6 +31,8 @@ static MALLOC_CONF: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0";
 
 mod defaults;
 mod init_state;
+#[cfg(all(feature = "jemalloc-prof", unix))]
+mod jemalloc_debug;
 mod tempo_cmd;
 
 use clap::{CommandFactory, FromArgMatches};
@@ -81,6 +83,14 @@ struct TempoArgs {
 
     #[command(flatten)]
     pub node_args: TempoNodeArgs,
+
+    /// Start a jemalloc pprof debug server early, before storage healing.
+    ///
+    /// This makes heap profiling available during startup phases that happen
+    /// before the main metrics endpoint is ready.
+    #[arg(long = "debug.pprof-addr", value_name = "ADDR", help_heading = "Debug")]
+    #[cfg(all(feature = "jemalloc-prof", unix))]
+    pub debug_pprof_addr: Option<std::net::SocketAddr>,
 
     #[command(flatten)]
     #[cfg(feature = "pyroscope")]
@@ -380,6 +390,15 @@ fn main() -> eyre::Result<()> {
         |spec: Arc<TempoChainSpec>| (TempoEvmConfig::new(spec.clone()), TempoConsensus::new(spec));
 
     cli.run_with_components::<TempoNode>(components, async move |builder, args| {
+        // Start early jemalloc debug server before node launch so that heap
+        // profiling is available during storage healing and other early phases.
+        #[cfg(all(feature = "jemalloc-prof", unix))]
+        if let Some(addr) = args.debug_pprof_addr {
+            jemalloc_debug::start(addr)
+                .await
+                .wrap_err("failed to start early jemalloc debug server")?;
+        }
+
         let faucet_args = args.faucet_args.clone();
         let validator_key = args
             .consensus

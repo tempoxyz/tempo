@@ -70,6 +70,8 @@ jiff.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
+axum = { workspace = true, optional = true }
+jemalloc_pprof = { workspace = true, optional = true }
 pyroscope = { workspace = true, optional = true }
 pyroscope_pprofrs = { workspace = true, optional = true }
 
@@ -113,6 +115,8 @@ jemalloc-prof = [
 	"reth-ethereum-cli/jemalloc-prof",
 	"tempo-node/jemalloc-prof",
 	"reth-ethereum/jemalloc-prof",
+	"dep:axum",
+	"dep:jemalloc_pprof",
 ]
 jemalloc-symbols = [
 	"jemalloc-prof",

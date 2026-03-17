@@ -225,6 +225,7 @@ governor = "0.10.4"
 indexmap = "2.13.0"
 indicatif = "0.18"
 itertools = "0.14.0"
+jemalloc_pprof = { version = "0.8", default-features = false }
 jiff = { version = "0.2.18", default-features = false }
 jsonrpsee = { version = "0.26.0", features = ["server", "client", "macros"] }
 metrics = "0.24.3"
