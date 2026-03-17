@@ -179,9 +179,8 @@ fn run_tempoup(bin_dir: &Path) -> Result<bool, LauncherError> {
                 tracing::error!("failed to install tempoup");
                 return Ok(false);
             }
-            Command::new("tempoup")
-                .env("TEMPO_BIN_DIR", bin_dir)
-                .status()?
+
+            return Ok(true);
         }
         Err(err) => return Err(LauncherError::Io(err)),
     };
@@ -329,11 +328,7 @@ impl Launcher {
     fn handle_update_all(&self, dry_run: bool) -> Result<i32, LauncherError> {
         let installer = Installer::from_env(self.exe_dir.as_deref())?;
 
-        // 1. Load the registry first so a corrupt file is detected
-        // before any side effects (e.g., running tempoup).
-        let registry = Registry::load().map_err(LauncherError::Registry)?;
-
-        // 2. Update tempo itself via tempoup.
+        // 1. Update tempo itself via tempoup.
         if dry_run {
             println!("dry-run: update tempo via tempoup");
         } else {
@@ -343,7 +338,8 @@ impl Launcher {
             }
         }
 
-        // 3. Update all installed extensions (skip pinned ones).
+        // 2. Update all installed extensions (skip pinned ones).
+        let registry = Registry::load().map_err(LauncherError::Registry)?;
         let extensions: Vec<(String, String, bool)> = registry
             .extensions
             .iter()
