@@ -469,7 +469,13 @@ impl MaxTpsArgs {
 
         let mut pending_txs =
             generate_transactions(signer_provider_manager.clone(), gen_input, counters.clone())
+                // Take exactly the required number of transactions to not over-send
+                .take(target_count)
+                // Stop when duration exceeded, no matter if we sent all transactions or not
+                .take_until(sleep(Duration::from_secs(self.duration)))
+                // Keep a buffer of pre-generated transactions to send as fast as possible
                 .buffer_unordered(self.tps as usize)
+                // Filter only successfully generated transactions
                 .filter_map(|result| async {
                     match result {
                         Ok(bytes) => Some(bytes),
@@ -481,9 +487,11 @@ impl MaxTpsArgs {
                 })
                 .boxed()
                 .ratelimit_stream(&rate_limiter)
+                // Pair each transaction with a random provider to send it
                 .zip(stream::repeat_with(|| {
                     signer_provider_manager.random_unsigned_provider()
                 }))
+                // Prepare transaction sending futures
                 .map(|(bytes, provider)| async move {
                     tokio::time::timeout(
                         Duration::from_secs(1),
@@ -491,6 +499,7 @@ impl MaxTpsArgs {
                     )
                     .await
                 })
+                // Send transactions in parallel with up to the specified concurrency limit
                 .buffer_unordered(self.max_concurrent_requests)
                 .filter_map({
                     let counters = counters.clone();
@@ -519,7 +528,6 @@ impl MaxTpsArgs {
                         }
                     }
                 })
-                .take_until(sleep(Duration::from_secs(self.duration)))
                 .collect::<VecDeque<_>>()
                 .await;
 
