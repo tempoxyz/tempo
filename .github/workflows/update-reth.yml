@@ -1,8 +1,8 @@
 # Nightly workflow to update reth dependencies from upstream main branch.
 #
-# If an existing `reth-bump` branch exists, rebases it onto main and picks
-# up where it left off (rev bump, compile fix, test fix, CI fix).
-# Otherwise starts fresh from `main`.
+# Ensures `reth-bump` exists and is rebased onto latest main, then creates
+# a working branch `reth-bump-update` for the actual rev bump + fixes.
+# Opens a PR targeting `reth-bump`.
 
 name: Update reth deps
 
@@ -40,57 +40,38 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.DEREK_PAT }}
 
-      # ── detect existing branch and PR ────────────────────────
-      - name: Detect existing branch and PR
+      # ── ensure reth-bump branch exists and is up-to-date ─────
+      - name: Setup reth-bump base branch
+        run: |
+          if git rev-parse --verify origin/reth-bump >/dev/null 2>&1; then
+            echo "reth-bump exists, rebasing onto main"
+            git checkout reth-bump
+            git rebase origin/main
+          else
+            echo "Creating reth-bump from main"
+            git checkout -b reth-bump origin/main
+          fi
+          git push --force-with-lease origin reth-bump
+
+      # ── detect or create working branch ─────────────────────────
+      - name: Setup working branch
         id: detect
         env:
           GH_TOKEN: ${{ secrets.DEREK_PAT }}
         run: |
-          if git rev-parse --verify origin/reth-bump >/dev/null 2>&1; then
-            echo "branch_exists=true" >> "$GITHUB_OUTPUT"
-            echo "Branch reth-bump exists — will continue on it"
-          else
-            echo "branch_exists=false" >> "$GITHUB_OUTPUT"
-            echo "Branch reth-bump does not exist — starting fresh"
-          fi
-
-          EXISTING_PR=$(gh pr list --head reth-bump --base main --state open --json number --jq '.[0].number // empty')
+          EXISTING_PR=$(gh pr list --head reth-bump-update --base reth-bump --state open --json number --jq '.[0].number // empty')
           if [ -n "$EXISTING_PR" ]; then
             echo "existing_pr=$EXISTING_PR" >> "$GITHUB_OUTPUT"
             echo "Found existing PR #$EXISTING_PR"
           fi
 
-      # ── checkout or create update branch ────────────────────────
-      - name: Checkout or create update branch
-        env:
-          AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
-        run: |
-          if [ "${{ steps.detect.outputs.branch_exists }}" = "true" ]; then
-            echo "Continuing on existing reth-bump branch, rebasing onto main"
-            git checkout reth-bump
-
-            if git rebase origin/main; then
-              echo "Rebased cleanly onto main"
-            else
-              echo "Rebase conflicts detected, using Amp to resolve..."
-              while [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; do
-                CONFLICTED=$(git diff --name-only --diff-filter=U)
-                AMP_PROMPT="A git rebase onto origin/main hit conflicts. \
-                Please resolve all merge conflicts in the following files. Keep the reth-bump branch's \
-                reth rev pins and source fixes while incorporating changes from main. \
-                Conflicted files: ${CONFLICTED}"
-
-                amp-run --dangerously-allow-all -x "$AMP_PROMPT"
-                git add -A
-                if ! git rebase --continue; then
-                  echo "More conflicts in next commit, continuing..."
-                fi
-              done
-              echo "Rebase completed with Amp conflict resolution"
-            fi
+          if git rev-parse --verify origin/reth-bump-update >/dev/null 2>&1; then
+            echo "Continuing on existing reth-bump-update branch"
+            git checkout reth-bump-update
+            git rebase reth-bump
           else
-            echo "Creating reth-bump from main"
-            git checkout -b reth-bump origin/main
+            echo "Creating reth-bump-update from reth-bump"
+            git checkout -b reth-bump-update reth-bump
           fi
 
       # ── toolchain (matches test.yml) ───────────────────────────
@@ -314,9 +295,9 @@ jobs:
           fi
 
       # ── push ───────────────────────────────────────────────────
-      - name: Push branch
+      - name: Push working branch
         run: |
-          git push --force-with-lease origin reth-bump
+          git push --force-with-lease origin reth-bump-update
 
       # ── create / update PR ─────────────────────────────────────
       - name: Create or update PR
@@ -353,9 +334,9 @@ jobs:
           } > /tmp/pr-body.txt
 
           # Skip PR if there are no commits between the branches
-          COMMITS_AHEAD=$(git rev-list --count origin/main..reth-bump 2>/dev/null || echo "0")
+          COMMITS_AHEAD=$(git rev-list --count reth-bump..reth-bump-update 2>/dev/null || echo "0")
           if [ "$COMMITS_AHEAD" = "0" ]; then
-            echo "No commits ahead of main — nothing to PR"
+            echo "No commits ahead of reth-bump — nothing to PR"
             exit 0
           fi
 
@@ -368,8 +349,8 @@ jobs:
           else
             echo "Creating new PR"
             gh pr create \
-              --base main \
-              --head reth-bump \
+              --base reth-bump \
+              --head reth-bump-update \
               --title "$TITLE" \
               --body-file /tmp/pr-body.txt \
               --label A-dependencies
@@ -381,7 +362,7 @@ jobs:
           GH_TOKEN: ${{ secrets.DEREK_PAT }}
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
         run: |
-          PR_BRANCH="reth-bump"
+          PR_BRANCH="reth-bump-update"
 
           CI_TIMEOUT_MINUTES=30
           MAX_CI_FIX_ATTEMPTS=10
