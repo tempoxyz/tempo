@@ -174,14 +174,14 @@ fn run_tempoup(bin_dir: &Path) -> Result<bool, LauncherError> {
             let install_status = Command::new("sh")
                 .arg("-c")
                 .arg("curl -fsSL https://tempo.xyz/install | bash")
+                .env("TEMPO_BIN_DIR", bin_dir)
                 .status()?;
             if !install_status.success() {
                 tracing::error!("failed to install tempoup");
                 return Ok(false);
             }
-            Command::new("tempoup")
-                .env("TEMPO_BIN_DIR", bin_dir)
-                .status()?
+
+            return Ok(true);
         }
         Err(err) => return Err(LauncherError::Io(err)),
     };
