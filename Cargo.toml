@@ -1,5 +1,5 @@
 [workspace.package]
-version = "1.4.0"
+version = "1.4.2"
 edition = "2024"
 rust-version = "1.93.0"
 license = "MIT OR Apache-2.0"
@@ -14,6 +14,7 @@ members = [
   "crates/chainspec",
   "crates/commonware-node",
   "crates/commonware-node-config",
+  "crates/validator-config",
   "crates/dkg-onchain-artifacts",
   "crates/consensus",
   "crates/eyre",
@@ -117,6 +118,7 @@ tempo-primitives = { path = "crates/primitives", default-features = false }
 tempo-contracts = { path = "crates/contracts", default-features = false }
 tempo-telemetry-util = { path = "crates/telemetry-util", default-features = false }
 tempo-transaction-pool = { path = "crates/transaction-pool", default-features = false }
+tempo-validator-config = { path = "crates/validator-config", default-features = false }
 
 reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "9060c50" }
 reth-chainspec = { git = "https://github.com/paradigmxyz/reth", rev = "9060c50" }
