@@ -43,6 +43,7 @@ main() {
     echo ""
 
     # Ensure BIN_DIR exists
+    mkdir -p "$TEMPO_DIR"
     mkdir -p "$BIN_DIR"
 
     # Download tempoup script to a temp file
