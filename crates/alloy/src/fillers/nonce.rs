@@ -150,8 +150,8 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for E
             builder.set_nonce_key(TEMPO_EXPIRING_NONCE_KEY);
             // Nonce must be 0 for expiring nonce transactions
             builder.set_nonce(0);
-            // Set valid_before to current time + expiry window
-            builder.set_valid_before(Self::current_timestamp() + self.expiry_secs);
+            // Set valid_before to current time + expiry window (saturating to avoid overflow)
+            builder.set_valid_before(Self::current_timestamp().saturating_add(self.expiry_secs));
         }
     }
 
@@ -273,7 +273,11 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for N
 
 #[cfg(test)]
 mod tests {
-    use crate::{TempoNetwork, fillers::Random2DNonceFiller, rpc::TempoTransactionRequest};
+    use crate::{
+        TempoNetwork,
+        fillers::{ExpiringNonceFiller, Random2DNonceFiller},
+        rpc::TempoTransactionRequest,
+    };
     use alloy_network::TransactionBuilder;
     use alloy_primitives::ruint::aliases::U256;
     use alloy_provider::{ProviderBuilder, mock::Asserter};
@@ -310,5 +314,23 @@ mod tests {
         assert!(filled_request.nonce().is_none());
 
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_expiring_nonce_filler_valid_before_saturates_on_overflow() {
+        let filler = ExpiringNonceFiller::with_expiry_secs(u64::MAX);
+        let provider = ProviderBuilder::<_, _, TempoNetwork>::default()
+            .filler(filler)
+            .connect_mocked_client(Asserter::default());
+
+        let filled_request = provider
+            .fill(TempoTransactionRequest::default())
+            .await
+            .expect("fill should succeed")
+            .try_into_request()
+            .expect("builder should convert to request");
+        assert_eq!(filled_request.nonce_key, Some(tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY));
+        assert_eq!(filled_request.nonce(), Some(0));
+        assert_eq!(filled_request.valid_before, Some(u64::MAX));
     }
 }
