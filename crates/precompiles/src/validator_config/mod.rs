@@ -1,3 +1,8 @@
+//! Validator Config (V1) precompile – manages the on-chain [consensus] validator set.
+//! Will be migrated to Validator Config V2 post T2 hardfork
+//!
+//! [consensus]: <https://docs.tempo.xyz/protocol/blockspace/consensus>
+
 pub mod dispatch;
 
 use tempo_contracts::precompiles::VALIDATOR_CONFIG_ADDRESS;
@@ -12,15 +17,18 @@ use crate::{
 use alloy::primitives::{Address, B256};
 use tracing::trace;
 
-/// Validator information
+/// On-chain record for a single consensus validator.
 #[derive(Debug, Storable)]
 struct Validator {
+    /// Ed25519 public key (zero ⇒ validator does not exist).
     public_key: B256,
+    /// Whether the validator participates in consensus.
     active: bool,
+    /// Position in the `validators_array` vector.
     index: u64,
+    /// Ethereum address that identifies this validator.
     validator_address: Address,
-    /// Address where other validators can connect to this validator.
-    /// Format: `<hostname|ip>:<port>`
+    /// Address where other validators can connect to this validator. Format: `<hostname|ip>:<port>`
     inbound_address: String,
     /// IP address for firewall whitelisting by other validators.
     /// Format: `<ip>:<port>` - must be an IP address, not a hostname.
@@ -33,15 +41,18 @@ struct Validator {
 /// storage handlers which provide an ergonomic way to interact with the EVM state.
 #[contract(addr = VALIDATOR_CONFIG_ADDRESS)]
 pub struct ValidatorConfig {
+    /// Contract admin who can add/update/deactivate validators.
     owner: Address,
+    /// Ordered list of validator addresses (append-only).
     validators_array: Vec<Address>,
+    /// Validator address → full [`Validator`] record.
     validators: Mapping<Address, Validator>,
-    /// The epoch at which a fresh DKG ceremony will be triggered
+    /// The epoch at which a fresh DKG ceremony will be triggered.
     next_dkg_ceremony: u64,
 }
 
 impl ValidatorConfig {
-    /// Initialize the precompile with an owner
+    /// Initializes the validator config (V1) precompile with an owner.
     pub fn initialize(&mut self, owner: Address) -> Result<()> {
         trace!(address=%self.address, %owner, "Initializing validator config precompile");
 
@@ -50,12 +61,12 @@ impl ValidatorConfig {
         self.owner.write(owner)
     }
 
-    /// Internal helper to get owner
+    /// Returns the current contract owner address.
     pub fn owner(&self) -> Result<Address> {
         self.owner.read()
     }
 
-    /// Check if caller is the owner
+    /// Returns `Ok(())` if `caller` is the owner, otherwise reverts with `unauthorized`.
     pub fn check_owner(&self, caller: Address) -> Result<()> {
         if self.owner()? != caller {
             return Err(ValidatorConfigError::unauthorized())?;
@@ -64,7 +75,10 @@ impl ValidatorConfig {
         Ok(())
     }
 
-    /// Change the owner (owner only)
+    /// Transfers contract ownership to `newOwner`. Owner-only.
+    ///
+    /// # Errors
+    /// - `unauthorized` — if `sender` is not the contract owner
     pub fn change_owner(
         &mut self,
         sender: Address,
@@ -74,12 +88,15 @@ impl ValidatorConfig {
         self.owner.write(call.newOwner)
     }
 
-    /// Get the current validator count
+    /// Returns the total number of registered validators.
     pub fn validator_count(&self) -> Result<u64> {
         self.validators_array.len().map(|c| c as u64)
     }
 
-    /// Get validator address at a specific index in the validators array
+    /// Returns the validator address stored at `index` in the ordered array.
+    ///
+    /// # Errors
+    /// - `Panic(ArrayOutOfBounds)` — if `index` is out of range
     pub fn validators_array(&self, index: u64) -> Result<Address> {
         match self.validators_array.at(index as usize)? {
             Some(elem) => elem.read(),
@@ -87,7 +104,7 @@ impl ValidatorConfig {
         }
     }
 
-    /// Get validator information by address
+    /// Returns the full [`IValidatorConfig::Validator`] record for the given address.
     pub fn validators(&self, validator: Address) -> Result<IValidatorConfig::Validator> {
         let validator_info = self.validators[validator].read()?;
         Ok(IValidatorConfig::Validator {
@@ -107,7 +124,7 @@ impl ValidatorConfig {
         Ok(!validator.public_key.is_zero())
     }
 
-    /// Get all validators (view function)
+    /// Returns all registered validators in index order.
     pub fn get_validators(&self) -> Result<Vec<IValidatorConfig::Validator>> {
         let count = self.validators_array.len()?;
         let mut validators = Vec::with_capacity(count);
@@ -138,7 +155,17 @@ impl ValidatorConfig {
         Ok(validators)
     }
 
-    /// Add a new validator (owner only)
+    /// Registers a new validator with the given key, addresses, and status. Owner-only.
+    ///
+    /// Validates the public key, checks for duplicates, and ensures both inbound and outbound
+    /// addresses are valid `<ip>:<port>` pairs before appending to the registry.
+    ///
+    /// # Errors
+    /// - `invalid_public_key` — if `publicKey` is zero (sentinel for non-existence)
+    /// - `unauthorized` — if `sender` is not the contract owner
+    /// - `validator_already_exists` — if a validator with `newValidatorAddress` already exists
+    /// - `not_host_port` — if `inboundAddress` is not a valid `<ip>:<port>`
+    /// - `not_ip_port` — if `outboundAddress` is not a valid `<ip>:<port>`
     pub fn add_validator(
         &mut self,
         sender: Address,
@@ -208,7 +235,10 @@ impl ValidatorConfig {
         self.validators_array.push(call.newValidatorAddress)
     }
 
-    /// Update validator information (and optionally rotate to new address)
+    /// Updates validator information and optionally rotates to a new address.
+    ///
+    /// If `newValidatorAddress` differs from `sender`, the old record is cleared and the array
+    /// entry is updated to point at the new address.
     ///
     /// # Security Note
     ///
@@ -219,6 +249,13 @@ impl ValidatorConfig {
     /// the original key stored in the boundary header cannot be mapped to the modified registry).
     /// By setting validator addresses to non-user-controllable addresses in the genesis config,
     /// only the contract owner (admin) can effectively call this function.
+    ///
+    /// # Errors
+    /// - `invalid_public_key` — if `publicKey` is zero (sentinel for non-existence)
+    /// - `validator_not_found` — if `sender` is not a registered validator
+    /// - `validator_already_exists` — if rotating to an address that already has a validator
+    /// - `not_host_port` — if `inboundAddress` is not a valid `<ip>:<port>`
+    /// - `not_ip_port` — if `outboundAddress` is not a valid `<ip>:<port>`
     pub fn update_validator(
         &mut self,
         sender: Address,
@@ -294,8 +331,13 @@ impl ValidatorConfig {
         self.validators[call.newValidatorAddress].write(updated_validator)
     }
 
-    /// Change validator active status (owner only) - by address
-    /// Deprecated: Use change_validator_status_by_index to prevent front-running attacks
+    /// Sets a validator's active flag by address. Owner-only.
+    ///
+    /// Deprecated: prefer [`Self::change_validator_status_by_index`] to prevent front-running.
+    ///
+    /// # Errors
+    /// - `unauthorized` — if `sender` is not the contract owner
+    /// - `validator_not_found` — if no validator exists at `call.validator`
     pub fn change_validator_status(
         &mut self,
         sender: Address,
@@ -312,8 +354,13 @@ impl ValidatorConfig {
         self.validators[call.validator].write(validator)
     }
 
-    /// Change validator active status by index (owner only) - T1+
-    /// Added in T1 to prevent front-running attacks where a validator changes its address
+    /// Sets a validator's active flag by array index. Owner-only, T1+.
+    ///
+    /// Added in T1 to prevent front-running attacks where a validator rotates its address.
+    ///
+    /// # Errors
+    /// - `unauthorized` — if `sender` is not the contract owner
+    /// - `validator_not_found` — if `call.index` is out of bounds
     pub fn change_validator_status_by_index(
         &mut self,
         sender: Address,
@@ -332,21 +379,24 @@ impl ValidatorConfig {
         self.validators[validator_address].write(validator)
     }
 
-    /// Get the epoch at which a fresh DKG ceremony will be triggered.
+    /// Returns the epoch at which a fresh DKG ceremony will be triggered.
     ///
     /// The fresh DKG ceremony runs in epoch N, and epoch N+1 uses the new DKG polynomial.
     pub fn get_next_full_dkg_ceremony(&self) -> Result<u64> {
         self.next_dkg_ceremony.read()
     }
 
-    /// Get the epoch at which a fresh DKG ceremony will be triggered (public getter)
+    /// Alias for [`Self::get_next_full_dkg_ceremony`].
     pub fn next_dkg_ceremony(&self) -> Result<u64> {
         self.next_dkg_ceremony.read()
     }
 
-    /// Set the epoch at which a fresh DKG ceremony will be triggered (owner only).
+    /// Sets the epoch at which a fresh DKG ceremony will be triggered. Owner-only.
     ///
     /// Epoch N runs the ceremony, and epoch N+1 uses the new DKG polynomial.
+    ///
+    /// # Errors
+    /// - `unauthorized` — if `sender` is not the contract owner
     pub fn set_next_full_dkg_ceremony(
         &mut self,
         sender: Address,

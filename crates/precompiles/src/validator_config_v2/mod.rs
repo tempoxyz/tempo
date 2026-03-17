@@ -1,3 +1,8 @@
+//! Validator Config V2 precompile – index-canonical, on-chain, [consensus] validator registry with
+//! signature-gated operations, IP uniqueness enforcement, and migration support from V1.
+//!
+//! [consensus]: <https://docs.tempo.xyz/protocol/blockspace/consensus>
+
 pub mod dispatch;
 
 pub use tempo_contracts::precompiles::{IValidatorConfigV2, ValidatorConfigV2Error};
@@ -32,8 +37,11 @@ enum SignatureKind {
 /// Contract-level configuration: ownership, initialization state, and migration bookkeeping.
 #[derive(Debug, Storable)]
 struct Config {
+    /// Contract admin address.
     owner: Address,
+    /// `true` once the contract is fully initialized (post-migration or direct init).
     is_init: bool,
+    /// Block height at which initialization completed.
     init_at_height: u64,
     /// Number of V1 validators skipped during migration (bad pubkey, duplicate, etc).
     /// Packed alongside `is_init` and `init_at_height` since all are migration lifecycle state.
@@ -163,7 +171,7 @@ pub struct ValidatorConfigV2 {
 }
 
 impl ValidatorConfigV2 {
-    /// Bootstraps storage layout and sets the contract owner. Must be called exactly once.
+    /// Initializes the validator config V2 precompile.
     ///
     /// The contract is fully operational immediately: `is_init` is set to `true` and all mutating
     /// functions (`add_validator`, `rotate_validator`, etc.) are unlocked.
