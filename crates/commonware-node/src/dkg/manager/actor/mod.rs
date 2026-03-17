@@ -1282,6 +1282,14 @@ where
     )
     .wrap_err("the boundary header did not contain the on-chain DKG outcome")?;
 
+    // NOTE: On init this is intended to fail fast: if a consensus state exists
+    // (such that there is a mismatch between CL and EL finalized block
+    // requiring a backfill and hence a retry), then
+    // `read_initial_state_and_set_floor` is never called.
+    //
+    // If a consensus state does not exist, then either EL has access to the
+    // state at the boundary or it does not. There is no mechanism that would
+    // allow it to get the block.
     let syncers = read_syncers_if_v2_not_initialized(
         1,
         node,
