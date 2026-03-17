@@ -1,6 +1,7 @@
 mod dex;
 mod erc20;
 mod mpp;
+pub(crate) mod scenario;
 
 use alloy_consensus::Transaction;
 use itertools::Itertools;
@@ -73,12 +74,20 @@ use tokio_util::sync::CancellationToken;
 
 use crate::cmd::signer_providers::SignerProviderManager;
 
+use self::scenario::Scenario;
+
 /// Run maximum TPS throughput benchmarking
 #[derive(Parser, Debug)]
 pub struct MaxTpsArgs {
-    /// Target transactions per second
+    /// Predefined stress test scenario. Overrides default values for TPS, duration,
+    /// weights, and other parameters. Any explicitly passed flags take precedence.
+    #[arg(long, value_enum)]
+    scenario: Option<Scenario>,
+
+    /// Target transactions per second.
+    /// Required unless `--scenario` is set.
     #[arg(short, long)]
-    tps: u64,
+    tps: Option<u64>,
 
     /// Test duration in seconds
     #[arg(short, long, default_value_t = 30)]
@@ -204,8 +213,94 @@ pub struct MaxTpsArgs {
 impl MaxTpsArgs {
     const WEIGHT_PRECISION: f64 = 1000.0;
 
-    pub async fn run(self) -> eyre::Result<()> {
+    /// Apply scenario overrides to fields that were left at their CLI defaults.
+    ///
+    /// Scenario values are used as defaults — any explicitly passed flag wins.
+    /// We detect "explicitly passed" by checking whether the current value differs
+    /// from the clap default. This is imperfect (a user could pass the default value),
+    /// but good enough for practical use.
+    fn apply_scenario(&mut self) {
+        let Some(scenario) = self.scenario else {
+            return;
+        };
+
+        let o = scenario.overrides();
+
+        // tps is Option — scenario fills it if the user didn't
+        if self.tps.is_none() {
+            self.tps = o.tps;
+        }
+
+        // For fields with clap defaults, only override if still at default
+        if self.duration == 30
+            && let Some(v) = o.duration
+        {
+            self.duration = v;
+        }
+        if self.accounts.get() == 100
+            && let Some(v) = o.accounts
+        {
+            self.accounts = NonZeroU64::new(v).unwrap_or(self.accounts);
+        }
+        if self.max_concurrent_requests == 100
+            && let Some(v) = o.max_concurrent_requests
+        {
+            self.max_concurrent_requests = v;
+        }
+        if self.tip20_weight == 1.0
+            && let Some(v) = o.tip20_weight
+        {
+            self.tip20_weight = v;
+        }
+        if self.erc20_weight == 0.0
+            && let Some(v) = o.erc20_weight
+        {
+            self.erc20_weight = v;
+        }
+        if self.mpp_weight == 0.0
+            && let Some(v) = o.mpp_weight
+        {
+            self.mpp_weight = v;
+        }
+        if self.place_order_weight == 0.0
+            && let Some(v) = o.place_order_weight
+        {
+            self.place_order_weight = v;
+        }
+        if self.swap_weight == 0.0
+            && let Some(v) = o.swap_weight
+        {
+            self.swap_weight = v;
+        }
+        if !self.existing_recipients
+            && let Some(v) = o.existing_recipients
+        {
+            self.existing_recipients = v;
+        }
+        if self.benchmark_mode.is_none() {
+            self.benchmark_mode = o.benchmark_mode;
+        }
+    }
+
+    pub async fn run(mut self) -> eyre::Result<()> {
         RethTracer::new().init()?;
+
+        self.apply_scenario();
+
+        // Resolve tps early and store it back so run_with_manager can access it
+        let tps = self
+            .tps
+            .ok_or_eyre("--tps is required (or use --scenario to set it)")?;
+        eyre::ensure!(tps > 0, "--tps must be > 0");
+        eyre::ensure!(u32::try_from(tps).is_ok(), "--tps must be <= {}", u32::MAX);
+        self.tps = Some(tps);
+
+        if let Some(ref scenario) = self.scenario {
+            info!(%scenario, tps, duration = self.duration, accounts = %self.accounts,
+                tip20 = self.tip20_weight, erc20 = self.erc20_weight, mpp = self.mpp_weight,
+                existing_recipients = self.existing_recipients,
+                "Running scenario");
+        }
 
         let accounts = self.accounts.get();
 
@@ -292,6 +387,9 @@ impl MaxTpsArgs {
         self,
         signer_provider_manager: SignerProviderManager<F>,
     ) -> eyre::Result<()> {
+        // tps was validated and stored in run() before calling this method
+        let tps = self.tps.expect("tps resolved in run()");
+
         // Validate required addresses before sending any transactions
         eyre::ensure!(
             self.mpp_weight == 0.0 || self.mpp_contract_address.is_some(),
@@ -405,7 +503,7 @@ impl MaxTpsArgs {
         };
 
         // Generate and send transactions
-        let total_txs = self.tps * self.duration;
+        let total_txs = tps * self.duration;
         let tip20_weight = (self.tip20_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let place_order_weight = (self.place_order_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let swap_weight = (self.swap_weight * Self::WEIGHT_PRECISION).trunc() as u64;
@@ -464,7 +562,7 @@ impl MaxTpsArgs {
         ));
 
         let rate_limiter =
-            RateLimiter::direct(Quota::per_second(NonZeroU32::new(self.tps as u32).unwrap()));
+            RateLimiter::direct(Quota::per_second(NonZeroU32::new(tps as u32).unwrap()));
         let start_block_number = provider.get_block_number().await?;
 
         let mut pending_txs =
@@ -474,7 +572,7 @@ impl MaxTpsArgs {
                 // Stop when duration exceeded, no matter if we sent all transactions or not
                 .take_until(sleep(Duration::from_secs(self.duration)))
                 // Keep a buffer of pre-generated transactions to send as fast as possible
-                .buffer_unordered(self.tps as usize)
+                .buffer_unordered(tps as usize)
                 // Filter only successfully generated transactions
                 .filter_map(|result| async {
                     match result {
@@ -1003,7 +1101,7 @@ pub async fn generate_report(
     }
 
     let metadata = BenchmarkMetadata {
-        target_tps: args.tps,
+        target_tps: args.tps.unwrap_or(0),
         run_duration_secs: args.duration,
         accounts: args.accounts.get(),
         chain_id: provider.get_chain_id().await?,

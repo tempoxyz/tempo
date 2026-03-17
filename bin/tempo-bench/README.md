@@ -152,12 +152,6 @@ Run benchmark on MacOS:
 tempo-bench run-max-tps --duration 15 --tps 20000 --disable-thread-pinning
 ```
 
-Run benchmark with less workers than the default:
-
-```bash
-tempo-bench run-max-tps --duration 15 --tps 20 -w 1
-```
-
 Run benchmark with more accounts than the default:
 
 ```bash
@@ -170,7 +164,31 @@ Run benchmark against more than one node:
 tempo-bench run-max-tps --duration 15 --tps 20000 --target-urls http://node-1:8545 --target-urls http://node-2:8545
 ```
 
-The benchmark will continuously output performance metrics including transaction generation rates, network throughput, queue lengths, and response times. As the total transaction count increases, the rate limiter will automatically scale up according to your configured thresholds.
+### Scenarios
+
+Use `--scenario` to run predefined stress tests. Scenario defaults can be overridden
+by passing individual flags (e.g. `--scenario sustained-max --duration 60`).
+
+| Scenario | TPS | Duration | Description |
+|---|---|---|---|
+| `sustained-max` | 10k | 5 min | Sustained load. Tests txpool backlog and drain. |
+| `mixed-workload` | 5k | 5 min | 80% TIP-20 / 15% MPP / 5% ERC-20. Realistic traffic. |
+| `burst-spike` | 10k | 30s | Short burst. Tests txpool elasticity and recovery. |
+| `fat-batch` | 100 | 2 min | Low TPS placeholder for future fat-batch txs (~30M gas). |
+| `state-heavy` | 5k | 2 min | Random new recipients (cold SSTOREs). Forces disk I/O. |
+| `txpool-flood` | 50k | 60s | Massive ingress flood. Tests memory limits and OOM resilience. |
+| `conflicting` | 5k | 2 min | Existing recipients from signer set. Placeholder for hot-spot mode. |
+| `rpc-saturation` | 10k | 5 min | High concurrency (500). Use multiple `--target-urls`. |
+
+```bash
+# Run sustained max scenario on mainnet RPC
+tempo-bench run-max-tps --scenario sustained-max --target-urls https://rpc.tempo.xyz --faucet
+
+# Run mixed workload with custom duration
+tempo-bench run-max-tps --scenario mixed-workload --duration 60 --target-urls https://rpc.tempo.xyz --faucet
+```
+
+The benchmark will continuously output performance metrics including transaction generation rates, network throughput, queue lengths, and response times.
 
 ## Quick Start
 
