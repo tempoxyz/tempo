@@ -1,133 +1,169 @@
-use alloy_primitives::Address;
+use std::{
+    collections::HashMap,
+    net::{IpAddr, SocketAddr},
+};
+
+use alloy_consensus::BlockHeader;
+use alloy_primitives::{Address, B256};
 use commonware_codec::DecodeExt as _;
-use commonware_consensus::types::Height;
 use commonware_cryptography::ed25519::PublicKey;
-use commonware_utils::ordered;
+use commonware_p2p::Ingress;
+use commonware_utils::{TryFromIterator, ordered};
 use eyre::{OptionExt as _, WrapErr as _};
-use futures::StreamExt as _;
-use prometheus_client::metrics::counter::Counter;
-use reth_ethereum::{
-    evm::revm::{State, database::StateProviderDatabase},
-    network::NetworkInfo,
-};
-use reth_node_builder::{Block as _, ConfigureEvm as _};
-use reth_provider::{
-    BlockHashReader as _, BlockIdReader as _, BlockNumReader as _, BlockReader as _, BlockSource,
-    CanonStateSubscriptions as _, StateProviderFactory as _,
-};
-use std::{collections::HashMap, net::SocketAddr, time::Duration};
+use reth_ethereum::evm::revm::{State, database::StateProviderDatabase};
+use reth_node_builder::ConfigureEvm as _;
+use reth_provider::{HeaderProvider as _, StateProviderFactory as _};
+use tempo_chainspec::hardfork::TempoHardforks as _;
 use tempo_node::TempoFullNode;
 use tempo_precompiles::{
     storage::StorageCtx,
     validator_config::{IValidatorConfig, ValidatorConfig},
+    validator_config_v2::{IValidatorConfigV2, ValidatorConfigV2},
 };
 
-use tracing::{Level, debug, info, instrument, warn};
+use tracing::{Level, instrument, warn};
 
-pub(crate) enum ReadTarget {
-    AtLeast { height: Height },
-    Exact { height: Height },
-}
+use crate::utils::public_key_to_b256;
 
-/// Attempts to read the validator config from the smart contract, retrying
-/// until the required block height is available.
-pub(crate) async fn read_validator_config_with_retry(
-    context: &impl commonware_runtime::Clock,
+/// Returns all active validators read from block state at block `hash`.
+///
+/// The returned validators are those that are marked active according to
+/// block state, and those that are `known`. This accounts for those validators
+/// that are actively participating in consensus (including DKG) but might
+/// be marked inactive on chain.
+///
+/// This function reads the `header` corresponding to `hash` from `node` and
+/// checks if the T2 hardfork is active at `header.timestamp` and if the
+/// Validator Config V2 is initialized.
+///
+/// If T2 is active and the contract is initialized, it will read the entries
+/// from the Validator Config V2 contract.
+///
+/// Otherwise, it will read the entries from the V1 contract.
+pub(crate) fn read_active_and_known_peers_at_block_hash(
     node: &TempoFullNode,
-    target: ReadTarget,
-    total_attempts: &Counter,
-) -> ordered::Map<PublicKey, DecodedValidator> {
-    let mut attempts = 0;
-    const MIN_RETRY: Duration = Duration::from_secs(1);
-    const MAX_RETRY: Duration = Duration::from_secs(30);
-
-    let mut canon_events = node.provider.canonical_state_stream();
-
-    'read_contract: loop {
-        total_attempts.inc();
-        attempts += 1;
-
-        let target_height = match target {
-            ReadTarget::Exact { height } => height,
-            ReadTarget::AtLeast { height } => node
-                .provider
-                .best_block_number()
-                .ok()
-                .map(Height::new)
-                .filter(|best| best >= &height)
-                .unwrap_or(height),
-        };
-
-        if let Ok(validators) = read_from_contract_at_height(attempts, node, target_height) {
-            break 'read_contract validators;
-        }
-
-        let retry_after = MIN_RETRY.saturating_mul(attempts).min(MAX_RETRY);
-        let is_syncing = node.network.is_syncing();
-        let best_block = node.provider.best_block_number();
-        let blocks_behind = best_block
-            .as_ref()
-            .ok()
-            .map(|best| target_height.get().saturating_sub(*best));
-        tracing::warn_span!("read_validator_config_with_retry").in_scope(|| {
-            warn!(
-                attempts,
-                retry_after = %tempo_telemetry_util::display_duration(retry_after),
-                is_syncing,
-                best_block = %tempo_telemetry_util::display_result(&best_block),
-                %target_height,
-                blocks_behind = %tempo_telemetry_util::display_option(&blocks_behind),
-                "reading validator config from contract failed; will retry",
-            );
-        });
-        tokio::select! {
-            _ = canon_events.next() => {
-                tracing::info_span!("read_validator_config_with_retry").in_scope(|| {
-                    debug!("woke from canonical state notification");
-                });
-            }
-            _ = context.sleep(retry_after) => {
-                tracing::info_span!("read_validator_config_with_retry").in_scope(|| {
-                    debug!("woke from retry timeout");
-                });
-            }
-        }
+    known: &ordered::Set<PublicKey>,
+    hash: B256,
+) -> eyre::Result<ordered::Map<PublicKey, commonware_p2p::Address>> {
+    if can_use_v2_at_block_hash(node, hash, None)
+        .wrap_err("failed to determine validator config v2 status")?
+    {
+        read_active_and_known_peers_at_block_hash_v2(node, known, hash)
+            .wrap_err("failed reading peers from validator config v2")
+    } else {
+        read_active_and_known_peers_at_block_hash_v1(node, known, hash)
+            .wrap_err("failed reading peers from validator config v1")
     }
 }
 
-/// Reads state from the ValidatorConfig precompile at a given block height.
-pub(crate) fn read_validator_config_at_height<T>(
+/// Returns all validator config v1 entries at block `hash`.
+///
+/// Reads the validator config v1 contract at the block state identified by
+/// `hash` and retains all validators for which `$entry.active = true` or
+/// for which `$entry.publicKey` is in `known`.
+pub(crate) fn read_active_and_known_peers_at_block_hash_v1(
     node: &TempoFullNode,
-    height: Height,
-    read_fn: impl FnOnce(&ValidatorConfig) -> eyre::Result<T>,
-) -> eyre::Result<T> {
-    // Try mapping the block height to a hash tracked by reth.
-    //
-    // First check the canonical chain, then fallback to pending block state.
-    //
-    // Necessary because the DKG and application actors process finalized block concurrently.
-    let block_hash = if let Some(hash) = node
-        .provider
-        .block_hash(height.get())
-        .wrap_err_with(|| format!("failed reading block hash at height `{height}`"))?
-    {
-        hash
-    } else if let Some(pending) = node
-        .provider
-        .pending_block_num_hash()
-        .wrap_err("failed reading pending block state")?
-        && pending.number == height.get()
-    {
-        pending.hash
-    } else {
-        return Err(eyre::eyre!("block not found at height `{height}`"));
-    };
+    known: &ordered::Set<PublicKey>,
+    hash: B256,
+) -> eyre::Result<ordered::Map<PublicKey, commonware_p2p::Address>> {
+    read_validator_config_at_block_hash(node, hash, |config: &ValidatorConfig| {
+        let mut all = HashMap::new();
+        for raw in config
+            .get_validators()
+            .wrap_err("failed to query contract for validator config")?
+        {
+            if let Ok(decoded) = DecodedValidatorV1::decode_from_contract(raw)
+                && let Some(dupe) = all.insert(decoded.public_key.clone(), decoded)
+            {
+                warn!(
+                    duplicate = %dupe.public_key,
+                    "found duplicate public keys",
+                );
+            }
+        }
+        all.retain(|k, v| v.active || known.position(k).is_some());
+        Ok(
+            ordered::Map::try_from_iter(all.into_iter().map(|(k, v)| (k, v.to_address())))
+                .expect("hashmaps don't contain duplicates"),
+        )
+    })
+    .map(|(_height, _hash, value)| value)
+}
 
-    let block = node
+/// Returns active validator config v2 entries at block `hash`.
+///
+/// This returns both the validators that are `active` as per the contract, and
+/// those that are `known`.
+pub(crate) fn read_active_and_known_peers_at_block_hash_v2(
+    node: &TempoFullNode,
+    known: &ordered::Set<PublicKey>,
+    hash: B256,
+) -> eyre::Result<ordered::Map<PublicKey, commonware_p2p::Address>> {
+    read_validator_config_at_block_hash(node, hash, |config: &ValidatorConfigV2| {
+        let mut all = HashMap::new();
+        for raw in config
+            .get_active_validators()
+            .wrap_err("failed getting active validator set")?
+        {
+            if let Ok(decoded) = DecodedValidatorV2::decode_from_contract(raw)
+                && all
+                    .insert(decoded.public_key.clone(), decoded.to_address())
+                    .is_some()
+            {
+                warn!(
+                    duplicate = %decoded.public_key,
+                    "found duplicate public keys",
+                );
+            }
+        }
+        for member in known {
+            if !all.contains_key(member) {
+                let decoded = config
+                    .validator_by_public_key(public_key_to_b256(member))
+                    .map_err(eyre::Report::new)
+                    .and_then(DecodedValidatorV2::decode_from_contract)
+                    .expect(
+                        "invariant: known peers must have an entry in the \
+                        smart contract and be well formed",
+                    );
+                all.insert(decoded.public_key.clone(), decoded.to_address());
+            }
+        }
+        Ok(ordered::Map::try_from_iter(all).expect("hashmaps don't contain duplicates"))
+    })
+    .map(|(_height, _hash, value)| value)
+}
+
+fn v2_initialization_height_at_block_hash(node: &TempoFullNode, hash: B256) -> eyre::Result<u64> {
+    read_validator_config_at_block_hash(node, hash, |config: &ValidatorConfigV2| {
+        config
+            .get_initialized_at_height()
+            .map_err(eyre::Report::new)
+    })
+    .map(|(_, _, activation_height)| activation_height)
+}
+
+fn is_v2_initialized_at_block_hash(node: &TempoFullNode, hash: B256) -> eyre::Result<bool> {
+    read_validator_config_at_block_hash(node, hash, |config: &ValidatorConfigV2| {
+        config.is_initialized().map_err(eyre::Report::new)
+    })
+    .map(|(_, _, activated)| activated)
+}
+
+/// Reads the validator state at the given block hash.
+pub(crate) fn read_validator_config_at_block_hash<C, T>(
+    node: &TempoFullNode,
+    block_hash: B256,
+    read_fn: impl FnOnce(&C) -> eyre::Result<T>,
+) -> eyre::Result<(u64, B256, T)>
+where
+    C: Default,
+{
+    let header = node
         .provider
-        .find_block_by_hash(block_hash, BlockSource::Any)
-        .map_err(Into::<eyre::Report>::into)
-        .and_then(|maybe| maybe.ok_or_eyre("execution layer returned empty block"))
+        .header(block_hash)
+        .map_err(eyre::Report::new)
+        .and_then(|maybe| maybe.ok_or_eyre("execution layer returned empty header"))
         .wrap_err_with(|| format!("failed reading block with hash `{block_hash}`"))?;
 
     let db = State::builder()
@@ -142,67 +178,65 @@ pub(crate) fn read_validator_config_at_height<T>(
 
     let mut evm = node
         .evm_config
-        .evm_for_block(db, block.header())
+        .evm_for_block(db, &header)
         .wrap_err("failed instantiating evm for block")?;
 
     let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(
+    let res = StorageCtx::enter_evm(
         &mut ctx.journaled_state,
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
-        || read_fn(&ValidatorConfig::new()),
-    )
+        || read_fn(&C::default()),
+    )?;
+    Ok((header.number(), block_hash, res))
 }
 
-/// Reads the validator config from the boundary block of `epoch`.
+/// Returns if the validator config v2 can be used exactly at `hash` and the
+/// timestamp of the corresponding `header`.
 ///
-/// If `epoch` is not set, reads the genesis block.
+/// If `latest` is set, then the function will look at the timestamp of `hash`
+/// to determine hardfork activation, but `latest` to determine contract
+/// initialization. This is an optimization that makes use of the fact that
+/// the initialization height is stored in the contract.
 ///
-/// Note that this returns all validators, active and inactive.
-#[instrument(
-    skip_all,
-    fields(
-        attempt = _attempt,
-        %height,
-    ),
-    err
-)]
-pub(crate) fn read_from_contract_at_height(
-    _attempt: u32,
+/// Validators can be read from the V2 contract if the following conditions hold:
+///
+/// 1. `timestamp(hash) >= T2`.
+/// 2. `initialization_height(<state>) <= number(hash)`.
+/// 3. `is_init(<state>) == true`.
+///
+/// `<state>` is read at either `hash` or `latest` if set.
+///
+/// This makes use of the following assumption:
+///
+/// If `initialization_height > 0`, then `is_init == true` always (invariant of
+/// the smart contract).
+///
+/// If `initialization_height == 0`, then `is_init` is used to determine if
+/// the contract was initialized at genesis or not.
+pub(crate) fn can_use_v2_at_block_hash(
     node: &TempoFullNode,
-    height: Height,
-) -> eyre::Result<ordered::Map<PublicKey, DecodedValidator>> {
-    let raw_validators = read_validator_config_at_height(node, height, |config| {
-        config
-            .get_validators()
-            .wrap_err("failed to query contract for validator config")
-    })?;
-
-    info!(?raw_validators, "read validators from contract",);
-
-    Ok(decode_from_contract(raw_validators))
-}
-
-#[instrument(skip_all, fields(validators_to_decode = contract_vals.len()))]
-fn decode_from_contract(
-    contract_vals: Vec<IValidatorConfig::Validator>,
-) -> ordered::Map<PublicKey, DecodedValidator> {
-    let mut decoded = HashMap::new();
-    for val in contract_vals.into_iter() {
-        // NOTE: not reporting errors because `decode_from_contract` emits
-        // events on success and error
-        if let Ok(val) = DecodedValidator::decode_from_contract(val)
-            && let Some(old) = decoded.insert(val.public_key.clone(), val)
-        {
-            warn!(
-                %old,
-                new = %decoded.get(&old.public_key).expect("just inserted it"),
-                "replaced peer because public keys were duplicated",
-            );
-        }
-    }
-    ordered::Map::from_iter_dedup(decoded)
+    hash: B256,
+    latest: Option<B256>,
+) -> eyre::Result<bool> {
+    let header = node
+        .provider
+        .header(hash)
+        .map_err(eyre::Report::new)
+        .and_then(|maybe| maybe.ok_or_eyre("hash not known"))
+        .wrap_err_with(|| {
+            format!("failed reading header for block hash `{hash}` from execution layer")
+        })?;
+    let state_hash = latest.unwrap_or(hash);
+    Ok(node
+        .chain_spec()
+        .is_t2_active_at_timestamp(header.timestamp())
+        && is_v2_initialized_at_block_hash(node, state_hash)
+            .wrap_err("failed reading validator config v2 initialization flag")?
+        && v2_initialization_height_at_block_hash(node, state_hash)
+            .wrap_err("failed reading validator config v2 initialization height")?
+            <= header.number())
 }
 
 /// A ContractValidator is a peer read from the validator config smart const.
@@ -212,7 +246,7 @@ fn decode_from_contract(
 /// `<host>` is either an IPv4 or IPV6 address, or a fully qualified domain name.
 /// `<ip>` is an IPv4 or IPv6 address.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DecodedValidator {
+pub(crate) struct DecodedValidatorV1 {
     pub(crate) active: bool,
     /// The `publicKey` field of the contract. Used by other validators to
     /// identify a peer by verifying the signatures of its p2p messages and
@@ -237,13 +271,13 @@ pub(crate) struct DecodedValidator {
     pub(crate) address: Address,
 }
 
-impl DecodedValidator {
+impl DecodedValidatorV1 {
     /// Attempts to decode a single validator from the values read in the smart contract.
     ///
     /// This function does not perform hostname lookup on either of the addresses.
     /// Instead, only the shape of the addresses are checked for whether they are
     /// socket addresses (IP:PORT pairs), or fully qualified domain names.
-    #[instrument(ret(Display, level = Level::INFO), err(level = Level::WARN))]
+    #[instrument(ret(Display, level = Level::DEBUG), err(level = Level::WARN))]
     fn decode_from_contract(
         IValidatorConfig::Validator {
             active,
@@ -271,13 +305,87 @@ impl DecodedValidator {
             address: validatorAddress,
         })
     }
+
+    fn to_address(&self) -> commonware_p2p::Address {
+        // NOTE: commonware takes egress as socket address but only uses the IP part.
+        // So setting port to 0 is ok.
+        commonware_p2p::Address::Asymmetric {
+            ingress: Ingress::Socket(self.inbound),
+            egress: self.outbound,
+        }
+    }
 }
 
-impl std::fmt::Display for DecodedValidator {
+impl std::fmt::Display for DecodedValidatorV1 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!(
             "public key = `{}`, inbound = `{}`, outbound = `{}`, index = `{}`, address = `{}`",
             self.public_key, self.inbound, self.outbound, self.index, self.address
+        ))
+    }
+}
+
+/// An entry in the validator config v2 contract with all its fields decoded
+/// into Rust types.
+pub(crate) struct DecodedValidatorV2 {
+    public_key: PublicKey,
+    ingress: SocketAddr,
+    egress: IpAddr,
+    added_at_height: u64,
+    deleted_at_height: u64,
+    index: u64,
+    address: Address,
+}
+
+impl DecodedValidatorV2 {
+    #[instrument(ret(Display, level = Level::DEBUG), err(level = Level::WARN))]
+    pub(crate) fn decode_from_contract(
+        IValidatorConfigV2::Validator {
+            publicKey,
+            validatorAddress: address,
+            ingress,
+            egress,
+            index,
+            addedAtHeight: added_at_height,
+            deactivatedAtHeight: deleted_at_height,
+            ..
+        }: IValidatorConfigV2::Validator,
+    ) -> eyre::Result<Self> {
+        let public_key = PublicKey::decode(publicKey.as_ref())
+            .wrap_err("failed decoding publicKey field as ed25519 public key")?;
+        let ingress = ingress.parse().wrap_err("ingress was not valid")?;
+        let egress = egress.parse().wrap_err("egress was not valid")?;
+        Ok(Self {
+            public_key,
+            ingress,
+            egress,
+            added_at_height,
+            deleted_at_height,
+            index,
+            address,
+        })
+    }
+
+    fn to_address(&self) -> commonware_p2p::Address {
+        // NOTE: commonware takes egress as socket address but only uses the IP part.
+        // So setting port to 0 is ok.
+        commonware_p2p::Address::Asymmetric {
+            ingress: Ingress::Socket(self.ingress),
+            egress: SocketAddr::from((self.egress, 0)),
+        }
+    }
+}
+impl std::fmt::Display for DecodedValidatorV2 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!(
+            "public key = `{}`, ingress = `{}`, egress = `{}`, added_at_height: `{}`, deleted_at_height = `{}`, index = `{}`, address = `{}`",
+            self.public_key,
+            self.ingress,
+            self.egress,
+            self.added_at_height,
+            self.deleted_at_height,
+            self.index,
+            self.address
         ))
     }
 }
