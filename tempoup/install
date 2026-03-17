@@ -89,9 +89,17 @@ ENVEOF
     TEMPO_BIN_DIR="$BIN_DIR" "$BIN_DIR/tempoup"
 
     echo ""
-    info "To get started, either restart your shell or run:"
-    echo ""
-    echo "  source $ENV_FILE"
+    local user_shell
+    user_shell="$(basename "$SHELL")"
+    if [[ "$user_shell" == "fish" ]]; then
+        info "To get started, either restart your shell or run:"
+        echo ""
+        echo "  source $ENV_FILE.fish"
+    else
+        info "To get started, either restart your shell or run:"
+        echo ""
+        echo "  source $ENV_FILE"
+    fi
     echo ""
 }
 
