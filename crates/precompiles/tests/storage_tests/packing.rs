@@ -988,13 +988,13 @@ fn test_t2_multi_slot_packed_preserves_neighbor_slots() -> eyre::Result<()> {
 
         // Roundtrip: read back and verify all fields are correct
         let loaded = PackedThreeSlot::handle(base_slot, LayoutCtx::FULL, address).read()?;
-        assert_eq!(loaded.value, updated.value);
-        assert_eq!(loaded.timestamp, updated.timestamp);
-        assert_eq!(loaded.start_time, updated.start_time);
-        assert_eq!(loaded.end_time, updated.end_time);
-        assert_eq!(loaded.nonce, updated.nonce);
-        assert_eq!(loaded.owner, updated.owner);
-        assert_eq!(loaded.active, updated.active);
+        assert_eq!(loaded.value, U256::from(0xDEAD_u64));
+        assert_eq!(loaded.timestamp, 0xAAAAAAAAAAAAAAAA);
+        assert_eq!(loaded.start_time, 0xBBBBBBBBBBBBBBBB);
+        assert_eq!(loaded.end_time, 0xCCCCCCCCCCCCCCCC);
+        assert_eq!(loaded.nonce, 0xDDDDDDDDDDDDDDDD);
+        assert_eq!(loaded.owner, Address::from([0xBB; 20]));
+        assert_eq!(loaded.active, false);
 
         Ok(())
     })
