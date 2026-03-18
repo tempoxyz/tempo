@@ -16,7 +16,10 @@ use futures::future::join_all;
 use rand_08::Rng;
 use tracing::debug;
 
-use crate::{CONSENSUS_NODE_PREFIX, Setup, connect_execution_peers, setup_validators};
+use crate::{
+    CONSENSUS_NODE_PREFIX, Setup, connect_execution_peers, connect_execution_to_peers,
+    setup_validators,
+};
 
 /// Test configuration for restart scenarios
 #[derive(Clone)]
@@ -93,6 +96,10 @@ fn run_restart_test(
 
         debug!("target height reached, restarting stopped validator");
         validators[idx].start(&context).await;
+        if connect_execution_runtimes {
+            connect_execution_to_peers(&validators[idx], &validators).await;
+        }
+
         debug!(
             public_key = %validators[idx].public_key(),
             "restarted validator",

@@ -15,7 +15,7 @@ use super::common::{
     assert_no_dkg_failures, assert_skipped_rounds, wait_for_outcome,
     wait_for_validators_to_reach_epoch,
 };
-use crate::{Setup, connect_execution_peers, setup_validators};
+use crate::{Setup, connect_execution_peers, connect_execution_to_peers, setup_validators};
 
 /// Tests that a late-joining validator can sync and participate after a full DKG ceremony.
 ///
@@ -92,6 +92,8 @@ fn validator_can_fast_sync_after_full_dkg() {
 
         // start late validator
         late_validator.start(&context).await;
+        connect_execution_to_peers(&late_validator, &validators).await;
+
         info!(id = late_validator.uid, "started late validator",);
         assert_eq!(
             late_validator

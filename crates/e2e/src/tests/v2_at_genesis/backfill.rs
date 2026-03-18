@@ -80,7 +80,9 @@ impl AssertJoinsLate {
             // Start all nodes except the last one
             let mut last = nodes.pop().unwrap();
             join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
-            connect_execution_peers(&nodes).await;
+            if should_pipeline_sync {
+                connect_execution_peers(&nodes).await;
+            }
 
             // Wait for chain to advance before starting the last node
             while nodes[0].execution_provider().last_block_number().unwrap() < blocks_before_join {
@@ -88,7 +90,9 @@ impl AssertJoinsLate {
             }
 
             last.start(&context).await;
-            connect_execution_to_peers(&last, &nodes).await;
+            if should_pipeline_sync {
+                connect_execution_to_peers(&last, &nodes).await;
+            }
 
             assert_eq!(last.execution_provider().last_block_number().unwrap(), 0);
 

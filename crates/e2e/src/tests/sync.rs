@@ -16,7 +16,10 @@ use futures::future::join_all;
 use reth_ethereum::provider::BlockNumReader as _;
 use tracing::info;
 
-use crate::{CONSENSUS_NODE_PREFIX, Setup, connect_execution_peers, setup_validators};
+use crate::{
+    CONSENSUS_NODE_PREFIX, Setup, connect_execution_peers, connect_execution_to_peers,
+    setup_validators,
+};
 
 #[test_traced]
 fn joins_from_snapshot() {
@@ -121,6 +124,7 @@ fn joins_from_snapshot() {
         receiver.network_address = donor.network_address;
         receiver.chain_address = donor.chain_address;
         receiver.start(&context).await;
+        connect_execution_to_peers(&receiver, &validators).await;
 
         info!(
             uid = %receiver.uid,
@@ -277,6 +281,7 @@ fn can_restart_after_joining_from_snapshot() {
         receiver.network_address = donor.network_address;
         receiver.chain_address = donor.chain_address;
         receiver.start(&context).await;
+        connect_execution_to_peers(&receiver, &validators).await;
 
         info!(
             uid = %receiver.uid,
@@ -337,6 +342,7 @@ fn can_restart_after_joining_from_snapshot() {
             .unwrap();
 
         receiver.start(&context).await;
+        connect_execution_to_peers(&receiver, &validators).await;
 
         info!(
             network_head,

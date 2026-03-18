@@ -1013,7 +1013,7 @@ impl ExecutionNode {
         let other_record = other.node.network.local_node_record();
         let mut events = self.node.network.event_listener();
 
-        // Remove the peer if pressent so this does not hang when waiting for a session
+        // Remove the peer if present so this does not hang when waiting for a session
         self.node
             .network
             .remove_peer(other_record.id, PeerKind::Basic);

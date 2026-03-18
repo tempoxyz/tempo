@@ -16,7 +16,10 @@ use futures::future::join_all;
 use rand_08::Rng;
 use tracing::debug;
 
-use crate::{CONSENSUS_NODE_PREFIX, Setup, connect_execution_peers, setup_validators};
+use crate::{
+    CONSENSUS_NODE_PREFIX, Setup, connect_execution_peers, connect_execution_to_peers,
+    setup_validators,
+};
 
 #[test_traced("WARN")]
 fn committee_of_one() {
@@ -94,6 +97,10 @@ impl SimpleRestart {
             ensure_no_progress(&context, 5).await;
 
             validators[0].start(&context).await;
+            if connect_execution_layer {
+                connect_execution_to_peers(&validators[0], &validators).await;
+            }
+
             debug!(
                 public_key = %validators[0].public_key(),
                 "restarted validator",
@@ -291,6 +298,10 @@ impl RestartSetup {
 
         debug!("target height reached, restarting stopped validator");
         validators[idx].start(&context).await;
+        if connect_execution_layer {
+            connect_execution_to_peers(&validators[idx], &validators).await;
+        }
+
         debug!(
             public_key = %validators[idx].public_key(),
             "restarted validator",
