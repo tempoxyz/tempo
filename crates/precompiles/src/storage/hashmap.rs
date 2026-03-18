@@ -191,11 +191,21 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         }
     }
 
-    fn checkpoint_commit(&mut self) {
+    fn checkpoint_commit(&mut self, checkpoint: JournalCheckpoint) {
+        assert_eq!(
+            checkpoint.journal_i,
+            self.snapshots.len() - 1,
+            "out-of-order checkpoint commit (expected top of stack)"
+        );
         self.snapshots.pop();
     }
 
     fn checkpoint_revert(&mut self, checkpoint: JournalCheckpoint) {
+        assert_eq!(
+            checkpoint.journal_i,
+            self.snapshots.len() - 1,
+            "out-of-order checkpoint revert (expected top of stack)"
+        );
         if let Some(snapshot) = self.snapshots.drain(checkpoint.journal_i..).next() {
             self.internals = snapshot.internals;
             self.events = snapshot.events;

@@ -30,7 +30,7 @@ use crate::{
 };
 use alloy::{
     hex,
-    primitives::{Address, B256, Signature, U256, keccak256, uint},
+    primitives::{Address, B256, U256, keccak256, uint},
     sol_types::SolValue,
 };
 use std::sync::LazyLock;
@@ -593,7 +593,7 @@ impl TIP20Token {
     /// Returns the EIP-712 domain separator, computed dynamically from the token name and chain ID.
     pub fn domain_separator(&self) -> Result<B256> {
         let name = self.name()?;
-        let name_hash = keccak256(name.as_bytes());
+        let name_hash = self.storage.keccak256(name.as_bytes())?;
         let chain_id = U256::from(self.storage.chain_id());
 
         let encoded = (
@@ -605,7 +605,7 @@ impl TIP20Token {
         )
             .abi_encode();
 
-        Ok(keccak256(encoded))
+        self.storage.keccak256(&encoded)
     }
 
     /// Sets allowance via a signed [EIP-2612] permit. Validates the ECDSA signature, checks the
@@ -624,8 +624,8 @@ impl TIP20Token {
 
         // 2. Construct EIP-712 struct hash
         let nonce = self.permit_nonces[call.owner].read()?;
-        let struct_hash = keccak256(
-            (
+        let struct_hash = self.storage.keccak256(
+            &(
                 *PERMIT_TYPEHASH,
                 call.owner,
                 call.spender,
@@ -634,29 +634,26 @@ impl TIP20Token {
                 call.deadline,
             )
                 .abi_encode(),
-        );
+        )?;
 
         // 3. Construct EIP-712 digest
         let domain_separator = self.domain_separator()?;
-        let digest = keccak256(
-            [
+        let digest = self.storage.keccak256(
+            &[
                 &[0x19, 0x01],
                 domain_separator.as_slice(),
                 struct_hash.as_slice(),
             ]
             .concat(),
-        );
+        )?;
 
         // 4. Validate ECDSA signature
         // Only v=27/28 is accepted; v=0/1 is intentionally NOT normalized (see TIP-1004 spec).
-        if call.v != 27 && call.v != 28 {
-            return Err(TIP20Error::invalid_signature().into());
-        }
-        let parity = call.v == 28;
-        let sig = Signature::from_scalars_and_parity(call.r, call.s, parity);
-        let recovered = alloy::consensus::crypto::secp256k1::recover_signer(&sig, digest)
-            .map_err(|_| TIP20Error::invalid_signature())?;
-        if recovered.is_zero() || recovered != call.owner {
+        let recovered = self
+            .storage
+            .recover_signer(digest, call.v, call.r, call.s)?
+            .ok_or(TIP20Error::invalid_signature())?;
+        if recovered != call.owner {
             return Err(TIP20Error::invalid_signature().into());
         }
 
