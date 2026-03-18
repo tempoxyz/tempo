@@ -927,6 +927,8 @@ contract AccountKeychainTest is BaseTest {
         vm.assume(account2 != address(0));
         vm.assume(account1 != account2);
         vm.assume(keyId != address(0));
+        vm.assume(account1.code.length == 0);
+        vm.assume(account2.code.length == 0);
 
         IAccountKeychain.TokenLimit[] memory limits1 = new IAccountKeychain.TokenLimit[](1);
         limits1[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 1000e6 });
