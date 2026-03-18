@@ -60,7 +60,7 @@ pub struct Order {
 }
 
 impl Order {
-    /// Creates a new order with `prev` and `next` initialized to 0.
+    /// Creates a new [`Order`] with `prev` and `next` initialized to 0.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         order_id: u128,
@@ -109,15 +109,12 @@ impl Order {
         Self::new(order_id, maker, book_key, amount, tick, false, false, 0)
     }
 
-    /// Creates a new flip order.
-    ///
-    /// Note: `prev` and `next` are initialized to 0.
-    /// The orderbook will set these when inserting the order into the linked list.
+    /// Creates a new flip order with `prev` and `next` initialized to 0.
+    /// The orderbook sets linked-list pointers when inserting.
     ///
     /// # Errors
-    /// Returns an error if flip_tick constraint is violated:
-    /// - For bids: flip_tick must be > tick
-    /// - For asks: flip_tick must be < tick
+    /// - `InvalidBidFlipTick` — `is_bid` is true and `flip_tick <= tick`
+    /// - `InvalidAskFlipTick` — `is_bid` is false and `flip_tick >= tick`
     pub fn new_flip(
         order_id: u128,
         maker: Address,
@@ -224,10 +221,10 @@ impl Order {
         self.remaining == 0
     }
 
-    /// Fills the order by the specified amount.
+    /// Fills the order by the specified amount, reducing `remaining` accordingly.
     ///
     /// # Errors
-    /// Returns an error if fill_amount exceeds remaining amount
+    /// - `FillAmountExceedsRemaining` — `fill_amount` is greater than `remaining`
     pub fn fill(&mut self, fill_amount: u128) -> Result<(), OrderError> {
         if fill_amount > self.remaining {
             return Err(OrderError::FillAmountExceedsRemaining {
@@ -249,7 +246,8 @@ impl Order {
     /// - Linked list pointers are reset to 0 (will be set by orderbook on insertion)
     ///
     /// # Errors
-    /// Returns an error if called on a non-flip order or if the order is not fully filled
+    /// - `NotAFlipOrder` — called on a non-flip order
+    /// - `OrderNotFullyFilled` — `remaining` is not zero
     pub fn create_flipped_order(&self, new_order_id: u128) -> Result<Self, OrderError> {
         // Check if this is a flip order
         if !self.is_flip {

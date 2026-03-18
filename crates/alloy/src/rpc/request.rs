@@ -665,6 +665,7 @@ mod tests {
     #[test]
     #[cfg(feature = "tempo-compat")]
     fn test_aa_roundtrip_via_tx_env() {
+        use reth_evm::EvmEnv;
         use reth_rpc_convert::TryIntoTxEnv;
 
         let calls = vec![
@@ -692,10 +693,7 @@ mod tests {
 
         let req = TempoTransactionRequest::from(tx);
 
-        let evm_env = reth_evm::EvmEnv::<
-            reth_evm::revm::primitives::hardfork::SpecId,
-            tempo_evm::TempoBlockEnv,
-        >::default();
+        let evm_env = EvmEnv::default();
         let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
         let aa_calls = tx_env.tempo_tx_env.expect("tempo_tx_env").aa_calls;
 

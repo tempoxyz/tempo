@@ -223,12 +223,37 @@ fn main() -> eyre::Result<()> {
             .try_to_config()
             .wrap_err("failed to parse telemetry config")?
     {
+        let consensus_pubkey = node_cmd
+            .ext
+            .consensus
+            .public_key()
+            .wrap_err("failed parsing consensus key")?
+            .map(|k| k.to_string());
+
+        if let Some(pubkey) = &consensus_pubkey {
+            // VictoriaMetrics does not support merging `extra_fields` query args like `extra_labels` for
+            // metrics. A workaround for now is to directly hook into the `OTEL_RESOURCE_ATTRIBUTES` env var
+            // used at startup to capture contextual information.
+            let current = std::env::var("OTEL_RESOURCE_ATTRIBUTES").unwrap_or_default();
+            let new_attrs = if current.is_empty() {
+                format!("consensus_pubkey={pubkey}")
+            } else {
+                format!("{current},consensus_pubkey={pubkey}")
+            };
+
+            // SAFETY: called at startup before the OTEL SDK is initialised
+            unsafe {
+                std::env::set_var("OTEL_RESOURCE_ATTRIBUTES", &new_attrs);
+            }
+        }
+
         // Set Reth logs OTLP. Consensus logs are exported as well via the same tracing system.
         cli.traces.logs_otlp = Some(config.logs_otlp_url.clone());
         cli.traces.logs_otlp_filter = config
             .logs_otlp_filter
             .parse()
             .wrap_err("invalid default logs filter")?;
+
         telemetry_config.replace(config);
     }
 
@@ -298,10 +323,17 @@ fn main() -> eyre::Result<()> {
 
                 // Start the unified metrics exporter if configured
                 if let Some(config) = telemetry_config {
+                    let consensus_pubkey = args
+                        .consensus
+                        .public_key()
+                        .wrap_err("failed parsing consensus key")?
+                        .map(|k| k.to_string());
+
                     let prometheus_config = PrometheusMetricsConfig {
                         endpoint: config.metrics_prometheus_url,
                         interval: config.metrics_prometheus_interval,
                         auth_header: config.metrics_auth_header,
+                        consensus_pubkey,
                     };
 
                     install_prometheus_metrics(

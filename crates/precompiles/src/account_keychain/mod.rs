@@ -1,3 +1,11 @@
+//! [Account keychain] precompile for managing session keys and spending limits.
+//!
+//! Each account can authorize secondary keys (session keys) with per-token spending caps,
+//! signature type constraints, and expiry. The main key (address zero) retains full control
+//! and is the only key allowed to authorize, revoke, or update other keys.
+//!
+//! [Account keychain]: <https://docs.tempo.xyz/protocol/transactions/AccountKeychain>
+
 pub mod dispatch;
 
 use __packing_authorized_key::{
@@ -126,13 +134,21 @@ impl AccountKeychain {
         keccak256(data)
     }
 
-    /// Initializes the account keychain contract.
+    /// Initializes the account keychain precompile.
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
     }
 
-    /// Authorize a new key for an account
-    /// This can only be called by the account itself (using main key)
+    /// Registers a new access key with signature type, expiry, and optional per-token spending
+    /// limits. Only callable with the account's main key (not a session key).
+    ///
+    /// # Errors
+    /// - `UnauthorizedCaller` — only the main key can authorize or revoke keys
+    /// - `ZeroPublicKey` — `keyId` cannot be the zero address
+    /// - `ExpiryInPast` — expiry must be in the future (enforced since T0)
+    /// - `KeyAlreadyExists` — a key with this ID is already registered
+    /// - `KeyAlreadyRevoked` — revoked keys cannot be re-authorized
+    /// - `InvalidSignatureType` — must be Secp256k1, P256, or WebAuthn
     pub fn authorize_key(&mut self, msg_sender: Address, call: authorizeKeyCall) -> Result<()> {
         // Check that the transaction key for this transaction is zero (main key)
         let transaction_key = self.transaction_key.t_read()?;
@@ -203,11 +219,12 @@ impl AccountKeychain {
         ))
     }
 
-    /// Revoke an authorized key
+    /// Permanently revokes an access key. Once revoked, a key ID can never be re-authorized for
+    /// this account, preventing replay of old `KeyAuthorization` signatures.
     ///
-    /// This marks the key as revoked by setting is_revoked to true and expiry to 0.
-    /// Once revoked, a key_id can never be re-authorized for this account, preventing
-    /// replay attacks where old KeyAuthorization signatures could be reused.
+    /// # Errors
+    /// - `UnauthorizedCaller` — only the main key can authorize or revoke keys
+    /// - `KeyNotFound` — no key registered with this ID
     pub fn revoke_key(&mut self, msg_sender: Address, call: revokeKeyCall) -> Result<()> {
         let transaction_key = self.transaction_key.t_read()?;
 
@@ -242,10 +259,14 @@ impl AccountKeychain {
         ))
     }
 
-    /// Update spending limit for a key-token pair
+    /// Updates the spending limit for a key-token pair. Can also convert an unlimited key into a
+    /// limited one. Delegates to `load_active_key` for existence/revocation checks.
     ///
-    /// This can be used to add limits to an unlimited key (converting it to limited)
-    /// or to update existing limits.
+    /// # Errors
+    /// - `UnauthorizedCaller` — the transaction was signed by a session key, not the main key
+    /// - `KeyAlreadyRevoked` — the target key has been permanently revoked
+    /// - `KeyNotFound` — no key is registered under the given `keyId`
+    /// - `KeyExpired` — the key's expiry is at or before the current block timestamp
     pub fn update_spending_limit(
         &mut self,
         msg_sender: Address,
@@ -286,7 +307,7 @@ impl AccountKeychain {
         ))
     }
 
-    /// Get key information
+    /// Returns key info for the given account-key pair, or a blank entry if inexistent or revoked.
     pub fn get_key(&self, call: getKeyCall) -> Result<KeyInfo> {
         let key = self.keys[call.account][call.keyId].read()?;
 
@@ -318,7 +339,8 @@ impl AccountKeychain {
         })
     }
 
-    /// Get remaining spending limit
+    /// Returns the remaining spending limit for a key-token pair, or a blank entry if inexistent
+    /// or revoked (T2+).
     pub fn get_remaining_limit(&self, call: getRemainingLimitCall) -> Result<U256> {
         // T2+: return zero if key doesn't exist or has been revoked
         if self.storage.spec().is_t2() {
@@ -332,7 +354,7 @@ impl AccountKeychain {
         self.spending_limits[limit_key][call.token].read()
     }
 
-    /// Get the transaction key used in the current transaction
+    /// Returns the access key used to authorize the current transaction (`Address::ZERO` = root key).
     pub fn get_transaction_key(
         &self,
         _call: getTransactionKeyCall,
@@ -385,17 +407,20 @@ impl AccountKeychain {
         Ok(key)
     }
 
-    /// Validate keychain authorization (existence, revocation, expiry, and optionally signature type)
-    ///
-    /// This consolidates all validation checks into one method.
-    /// Returns Ok(()) if the key is valid and authorized, Err otherwise.
+    /// Validate keychain authorization (existence, revocation, expiry, and optionally signature type).
     ///
     /// # Arguments
     /// * `account` - The account that owns the key
     /// * `key_id` - The key identifier to validate
     /// * `current_timestamp` - Current block timestamp for expiry check
-    /// * `expected_sig_type` - The signature type from the actual signature (0=Secp256k1, 1=P256, 2=WebAuthn).
-    ///   Pass `None` to skip signature type validation (for backward compatibility with pre-T1 blocks).
+    /// * `expected_sig_type` - The signature type from the actual signature (0=Secp256k1, 1=P256,
+    ///   2=WebAuthn). Pass `None` to skip validation (for backward compatibility pre-T1).
+    ///
+    /// # Errors
+    /// - `KeyAlreadyRevoked` — the key has been permanently revoked
+    /// - `KeyNotFound` — no key is registered under the given `key_id`
+    /// - `KeyExpired` — `current_timestamp` is at or past the key's expiry
+    /// - `SignatureTypeMismatch` — the key's stored type differs from `expected_sig_type`
     pub fn validate_keychain_authorization(
         &self,
         account: Address,
@@ -424,7 +449,12 @@ impl AccountKeychain {
         Ok(())
     }
 
-    /// Verify and update spending for a token transfer
+    /// Deducts `amount` from the key's remaining spending limit for `token`, failing if exceeded.
+    ///
+    /// # Errors
+    /// - `KeyAlreadyRevoked` — the key has been permanently revoked
+    /// - `KeyNotFound` — no key is registered under the given `key_id`
+    /// - `SpendingLimitExceeded` — `amount` exceeds the key's remaining limit for `token`
     pub fn verify_and_update_spending(
         &mut self,
         account: Address,
@@ -498,20 +528,16 @@ impl AccountKeychain {
         self.spending_limits[limit_key][token].write(new_remaining)
     }
 
-    /// Authorize a token transfer with access key spending limits
+    /// Authorize a token transfer with access key spending limits.
     ///
     /// This method checks if the transaction is using an access key, and if so,
     /// verifies and updates the spending limits for that key.
     /// Should be called before executing a transfer.
     ///
-    /// # Arguments
-    /// * `account` - The account performing the transfer
-    /// * `token` - The token being transferred
-    /// * `amount` - The amount being transferred
-    ///
-    /// # Returns
-    /// Ok(()) if authorized (either using main key or access key with sufficient limits)
-    /// Err if unauthorized or spending limit exceeded
+    /// # Errors
+    /// - `KeyAlreadyRevoked` — the session key has been permanently revoked
+    /// - `KeyNotFound` — no key is registered for the current transaction key
+    /// - `SpendingLimitExceeded` — `amount` exceeds the key's remaining limit for `token`
     pub fn authorize_transfer(
         &mut self,
         account: Address,
@@ -536,21 +562,16 @@ impl AccountKeychain {
         self.verify_and_update_spending(account, transaction_key, token, amount)
     }
 
-    /// Authorize a token approval with access key spending limits
+    /// Authorize a token approval with access key spending limits.
     ///
     /// This method checks if the transaction is using an access key, and if so,
     /// verifies and updates the spending limits for that key.
     /// Should be called before executing an approval.
     ///
-    /// # Arguments
-    /// * `account` - The account performing the approval
-    /// * `token` - The token being approved
-    /// * `old_approval` - The current approval amount
-    /// * `new_approval` - The new approval amount being set
-    ///
-    /// # Returns
-    /// Ok(()) if authorized (either using main key or access key with sufficient limits)
-    /// Err if unauthorized or spending limit exceeded
+    /// # Errors
+    /// - `KeyAlreadyRevoked` — the session key has been permanently revoked
+    /// - `KeyNotFound` — no key is registered for the current transaction key
+    /// - `SpendingLimitExceeded` — the approval increase exceeds the remaining limit for `token`
     pub fn authorize_approve(
         &mut self,
         account: Address,

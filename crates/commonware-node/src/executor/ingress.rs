@@ -1,5 +1,5 @@
 use commonware_consensus::{Reporter, marshal::Update, types::Height};
-use eyre::WrapErr as _;
+use eyre::{WrapErr as _, eyre};
 use futures::{
     SinkExt as _,
     channel::{mpsc, oneshot},
@@ -31,6 +31,19 @@ impl Mailbox {
 
         Ok(rx)
     }
+
+    pub(crate) async fn subscribe_finalized(&self, height: Height) -> eyre::Result<()> {
+        let (response, rx) = oneshot::channel();
+        self.inner
+            .unbounded_send(Message::in_current_span(SubscribeFinalized {
+                height,
+                response,
+            }))
+            .wrap_err(
+                "failed sending subscribe finalized request to agent, this means it exited",
+            )?;
+        rx.await.map_err(|_| eyre!("actor dropped response"))
+    }
 }
 
 #[derive(Debug)]
@@ -54,6 +67,8 @@ pub(super) enum Command {
     CanonicalizeHead(CanonicalizeHead),
     /// Requests the agent to forward a finalization event to the execution layer.
     Finalize(Box<Update<Block>>),
+    /// Returns once the executor actor has finalized the block at `height`.
+    SubscribeFinalized(SubscribeFinalized),
 }
 
 #[derive(Debug)]
@@ -61,6 +76,12 @@ pub(super) struct CanonicalizeHead {
     pub(super) height: Height,
     pub(super) digest: Digest,
     pub(super) ack: oneshot::Sender<()>,
+}
+
+#[derive(Debug)]
+pub(super) struct SubscribeFinalized {
+    pub(super) height: Height,
+    pub(super) response: oneshot::Sender<()>,
 }
 
 impl From<CanonicalizeHead> for Command {
@@ -72,6 +93,12 @@ impl From<CanonicalizeHead> for Command {
 impl From<Update<Block>> for Command {
     fn from(value: Update<Block>) -> Self {
         Self::Finalize(value.into())
+    }
+}
+
+impl From<SubscribeFinalized> for Command {
+    fn from(value: SubscribeFinalized) -> Self {
+        Self::SubscribeFinalized(value)
     }
 }
 
