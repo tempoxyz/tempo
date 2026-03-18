@@ -10,7 +10,7 @@ use commonware_cryptography::{
         dkg::Output,
         primitives::{
             sharing::{ModeVersion, Sharing},
-            variant::MinSig,
+            variant::{MinSig, Variant},
         },
     },
     ed25519::PublicKey,
@@ -58,6 +58,10 @@ impl OnchainDkgOutcome {
 
     pub fn sharing(&self) -> &Sharing<MinSig> {
         self.output.public()
+    }
+
+    pub fn network_identity(&self) -> &<MinSig as Variant>::Public {
+        self.sharing().public()
     }
 }
 

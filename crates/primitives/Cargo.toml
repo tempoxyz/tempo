@@ -11,6 +11,8 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+tempo-contracts.workspace = true
+
 # Reth
 reth-db-api = { workspace = true, optional = true }
 reth-ethereum-primitives = { workspace = true, optional = true }
@@ -33,7 +35,7 @@ alloy-network = { workspace = true, optional = true }
 # Utils
 arbitrary = { workspace = true, features = ["derive"], optional = true }
 derive_more.workspace = true
-modular-bitfield = { version = "0.11.2", optional = true }
+modular-bitfield = { version = "0.13.1", optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 once_cell = { version = "1.21", default-features = false }
@@ -55,6 +57,7 @@ alloy-primitives = { workspace = true, features = [
 	"rand",
 ] }
 alloy-signer.workspace = true
+alloy-sol-types.workspace = true
 alloy-signer-local.workspace = true
 rand.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
@@ -77,9 +80,10 @@ std = [
 	"revm/std",
 	"serde/std",
 	"serde_json/std",
-	"sha2/std"
+	"sha2/std",
+	"alloy-sol-types/std",
 ]
-reth = ["dep:reth-ethereum-primitives", "dep:reth-primitives-traits"]
+reth = ["dep:reth-ethereum-primitives", "dep:reth-primitives-traits", "serde"]
 serde = [
 	"dep:alloy-serde",
 	"alloy-consensus/serde",
@@ -92,6 +96,7 @@ serde = [
 	"p256/serde",
 	"tracing-subscriber/serde",
 	"revm/serde",
+	"tempo-contracts/serde"
 ]
 reth-codec = [
 	"reth",
@@ -126,6 +131,7 @@ arbitrary = [
 	"alloy-rpc-types-eth?/arbitrary",
 	"reth-db-api?/arbitrary",
 	"revm/arbitrary",
+	"alloy-sol-types/arbitrary",
 ]
 rpc = [
 	"reth",

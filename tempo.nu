@@ -117,7 +117,7 @@ def load-bloat-into-node [tempo_bin: string, genesis_path: string, datadir: stri
     run-external $tempo_bin "init" "--chain" $genesis_path "--datadir" $datadir
 
     print $"Loading state bloat into ($datadir | path basename)..."
-    run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis_path "--datadir" $datadir $bloat_file
+    run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis_path "--datadir" $datadir $bloat_file | complete
 }
 
 # ============================================================================
@@ -1199,7 +1199,7 @@ def "main bench-init" [
 
     if $bloat > 0 {
         print $"Loading state bloat into ($datadir)..."
-        run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis_path "--datadir" $datadir $bloat_file
+        run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis_path "--datadir" $datadir $bloat_file | complete
     }
 
     # Save genesis + bloat to volume meta dir (survives schelk recover)
@@ -1449,7 +1449,7 @@ def "main bench" [
 
             if $bloat > 0 {
                 print $"Loading state bloat into ($datadir)..."
-                run-external $baseline_tempo "init-from-binary-dump" "--chain" $genesis_path "--datadir" $datadir $bloat_file
+                run-external $baseline_tempo "init-from-binary-dump" "--chain" $genesis_path "--datadir" $datadir $bloat_file | complete
             }
 
             # Save genesis + bloat to volume meta dir (survives schelk recover)

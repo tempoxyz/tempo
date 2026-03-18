@@ -1,3 +1,5 @@
+//! ABI dispatch for the [`AccountKeychain`] precompile.
+
 use super::AccountKeychain;
 use crate::{Precompile, dispatch_call, input_cost, mutate_void, view};
 use alloy::{primitives::Address, sol_types::SolInterface};

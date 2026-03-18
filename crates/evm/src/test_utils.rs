@@ -3,8 +3,9 @@ use std::{collections::HashMap, sync::Arc};
 use alloy_evm::{Database, EvmEnv};
 use alloy_primitives::{Address, B256, Bytes};
 use reth_chainspec::EthChainSpec;
-use reth_revm::{State, context::BlockEnv};
-use revm::{database::EmptyDB, inspector::NoOpInspector};
+use reth_evm::block::StateDB;
+use reth_revm::context::BlockEnv;
+use revm::inspector::NoOpInspector;
 use tempo_chainspec::{TempoChainSpec, spec::MODERATO};
 use tempo_revm::TempoBlockEnv;
 
@@ -118,11 +119,11 @@ impl TestExecutorBuilder {
         self
     }
 
-    pub(crate) fn build<'a>(
+    pub(crate) fn build<'a, DB: StateDB>(
         self,
-        db: &'a mut State<EmptyDB>,
+        db: DB,
         chainspec: &'a Arc<TempoChainSpec>,
-    ) -> TempoBlockExecutor<'a, EmptyDB, NoOpInspector> {
+    ) -> TempoBlockExecutor<'a, DB, NoOpInspector> {
         let evm = TempoEvm::new(
             db,
             EvmEnv {

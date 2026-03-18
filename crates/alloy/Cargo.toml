@@ -37,6 +37,7 @@ reth-rpc-eth-types = { workspace = true, optional = true }
 dashmap.workspace = true
 derive_more.workspace = true
 futures.workspace = true
+async-trait.workspace = true
 serde.workspace = true
 tracing.workspace = true
 

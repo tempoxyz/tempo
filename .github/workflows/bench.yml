@@ -7,7 +7,7 @@
 
 on:
   issue_comment:
-    types: [created, edited]
+    types: [created]
   workflow_dispatch:
     inputs:
       preset:
@@ -253,7 +253,7 @@ jobs:
     needs: tempo-bench-ack
     name: tempo-bench
     runs-on: [self-hosted, Linux, X64, bare-metal]
-    timeout-minutes: 120
+    timeout-minutes: 300
     env:
       BENCH_PR: ${{ needs.tempo-bench-ack.outputs.pr }}
       BENCH_ACTOR: ${{ needs.tempo-bench-ack.outputs.actor }}
