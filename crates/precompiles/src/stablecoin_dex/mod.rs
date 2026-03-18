@@ -1237,7 +1237,11 @@ impl StablecoinDEX {
         let book = self.books[order.book_key()].read()?;
         let registry = TIP403Registry::new();
 
-        let escrow_token = if order.is_bid() { book.quote } else { book.base };
+        let escrow_token = if order.is_bid() {
+            book.quote
+        } else {
+            book.base
+        };
         let escrow_policy_id = TIP20Token::from_address(escrow_token)?.transfer_policy_id()?;
         let sender_authorized =
             match registry.is_authorized_as(escrow_policy_id, order.maker(), AuthRole::sender()) {
@@ -1251,13 +1255,14 @@ impl StablecoinDEX {
         }
 
         if self.storage.spec().is_t2() {
-            let payout_token = if order.is_bid() { book.base } else { book.quote };
+            let payout_token = if order.is_bid() {
+                book.base
+            } else {
+                book.quote
+            };
             let payout_policy_id = TIP20Token::from_address(payout_token)?.transfer_policy_id()?;
-            match registry.is_authorized_as(
-                payout_policy_id,
-                order.maker(),
-                AuthRole::recipient(),
-            ) {
+            match registry.is_authorized_as(payout_policy_id, order.maker(), AuthRole::recipient())
+            {
                 Ok(authorized) => Ok(authorized),
                 Err(e) if is_policy_lookup_error(&e) => Ok(false),
                 Err(e) => Err(e),
