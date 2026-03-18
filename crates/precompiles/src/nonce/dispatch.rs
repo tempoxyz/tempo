@@ -1,3 +1,5 @@
+//! ABI dispatch for the [`NonceManager`] precompile.
+
 use crate::{Precompile, dispatch_call, input_cost, nonce::NonceManager, view};
 use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::{PrecompileError, PrecompileResult};

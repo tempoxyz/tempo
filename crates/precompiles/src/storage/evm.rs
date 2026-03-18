@@ -23,7 +23,7 @@ pub struct EvmPrecompileStorageProvider<'a> {
 }
 
 impl<'a> EvmPrecompileStorageProvider<'a> {
-    /// Create a new storage provider with a specific gas limit.
+    /// Creates a new storage provider with the given gas limit, hardfork, and static flag.
     pub fn new(
         internals: EvmInternals<'a>,
         gas_limit: u64,
@@ -42,12 +42,12 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         }
     }
 
-    /// Create a new storage provider with maximum gas limit and non static context
+    /// Creates a new storage provider with maximum gas limit and non-static context.
     pub fn new_max_gas(internals: EvmInternals<'a>, cfg: &CfgEnv<TempoHardfork>) -> Self {
         Self::new(internals, u64::MAX, cfg.spec, false, cfg.gas_params.clone())
     }
 
-    /// Create a new storage provider with a specific gas limit.
+    /// Creates a new storage provider with the given gas limit, deriving spec from `cfg`.
     pub fn new_with_gas_limit(
         internals: EvmInternals<'a>,
         cfg: &CfgEnv<TempoHardfork>,
