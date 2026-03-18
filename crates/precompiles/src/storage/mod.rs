@@ -116,8 +116,8 @@ pub trait PrecompileStorageProvider {
     ///
     /// Implementations should use this over naked `keccak256` call to ensure gas is accounted for.
     fn keccak256(&mut self, data: &[u8]) -> Result<B256> {
-        let num_words = u64::try_from(data.len().div_ceil(32))
-            .map_err(|_| TempoPrecompileError::OutOfGas)?;
+        let num_words =
+            u64::try_from(data.len().div_ceil(32)).map_err(|_| TempoPrecompileError::OutOfGas)?;
         let price = KECCAK256WORD
             .checked_mul(num_words)
             .and_then(|w| w.checked_add(KECCAK256))
