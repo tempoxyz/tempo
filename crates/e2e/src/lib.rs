@@ -390,15 +390,12 @@ pub async fn connect_execution_to_peers<TClock: commonware_runtime::Clock>(
     node: &TestingNode<TClock>,
     nodes: &[TestingNode<TClock>],
 ) {
-    for i in 0..nodes.len() {
-        if node.public_key() == nodes[i].public_key() {
+    for other in nodes {
+        if node.public_key() == other.public_key() {
             continue;
         }
 
-        if let (Some(a), Some(b)) = (
-            node.execution_node.as_ref(),
-            nodes[i].execution_node.as_ref(),
-        ) {
+        if let (Some(a), Some(b)) = (node.execution_node.as_ref(), other.execution_node.as_ref()) {
             a.connect_peer(b).await;
         }
     }
