@@ -635,8 +635,7 @@ impl EthPoolTransaction for TempoPooledTransaction {
 mod tests {
     use super::*;
     use crate::test_utils::TxBuilder;
-    use alloy_consensus::{Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy};
-    use alloy_primitives::{Address, Signature, TxKind, address};
+    use alloy_primitives::{Address, Signature, address};
     use tempo_contracts::precompiles::tip20::test_utils::{
         non_payment_calldatas, payment_calldatas,
     };
@@ -644,6 +643,7 @@ mod tests {
     use tempo_primitives::transaction::{
         TempoTransaction,
         tempo_transaction::Call,
+        test_utils::envelopes_for,
         tt_signature::{PrimitiveSignature, TempoSignature},
         tt_signed::AASigned,
     };
@@ -652,50 +652,8 @@ mod tests {
 
     /// Builds one [`TempoPooledTransaction`] per tx type targeting `to` with `input`.
     fn pooled_txs_for(to: Address, input: Bytes) -> [TempoPooledTransaction; 5] {
-        let aa = TempoTransaction {
-            calls: vec![Call {
-                to: TxKind::Call(to),
-                input: input.clone(),
-                value: U256::ZERO,
-            }],
-            ..Default::default()
-        };
-        let envelopes = [
-            TempoTxEnvelope::Legacy(Signed::new_unhashed(
-                TxLegacy {
-                    to: TxKind::Call(to),
-                    input: input.clone(),
-                    ..Default::default()
-                },
-                Signature::test_signature(),
-            )),
-            TempoTxEnvelope::Eip2930(Signed::new_unhashed(
-                TxEip2930 {
-                    to: TxKind::Call(to),
-                    input: input.clone(),
-                    ..Default::default()
-                },
-                Signature::test_signature(),
-            )),
-            TempoTxEnvelope::Eip1559(Signed::new_unhashed(
-                TxEip1559 {
-                    to: TxKind::Call(to),
-                    input: input.clone(),
-                    ..Default::default()
-                },
-                Signature::test_signature(),
-            )),
-            TempoTxEnvelope::Eip7702(Signed::new_unhashed(
-                TxEip7702 {
-                    to,
-                    input,
-                    ..Default::default()
-                },
-                Signature::test_signature(),
-            )),
-            TempoTxEnvelope::AA(aa.into_signed(Signature::test_signature().into())),
-        ];
-        envelopes.map(|env| TempoPooledTransaction::new(Recovered::new_unchecked(env, SENDER)))
+        envelopes_for(to, input)
+            .map(|env| TempoPooledTransaction::new(Recovered::new_unchecked(env, SENDER)))
     }
 
     #[test]

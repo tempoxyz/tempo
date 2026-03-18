@@ -650,69 +650,57 @@ mod codec {
     }
 }
 
+/// Test utilities for building [`TempoTxEnvelope`] instances across all tx types.
+#[rustfmt::skip]
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_utils {
+    use super::*;
+    use crate::transaction::{TempoTransaction, tempo_transaction::Call};
+    use alloc::vec;
+    use alloy_consensus::{TxEip1559, TxEip2930, TxEip7702};
+    use alloy_primitives::{Bytes, Signature, TxKind, U256};
+
+    /// Builds a single AA [`TempoTxEnvelope`] with one call and an optional fee token.
+    pub fn create_aa_envelope(call: Call, fee_token: Option<Address>) -> TempoTxEnvelope {
+        let tx = TempoTransaction { fee_token, calls: vec![call], ..Default::default() };
+        TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()))
+    }
+
+    /// Builds one [`TempoTxEnvelope`] per tx type (Legacy, Eip2930, Eip1559, Eip7702, AA).
+    pub fn envelopes_for(to: Address, input: Bytes) -> [TempoTxEnvelope; 5] {
+        let call = Call { to: TxKind::Call(to), input: input.clone(), value: U256::ZERO };
+        [
+            TempoTxEnvelope::Legacy(Signed::new_unhashed(
+                TxLegacy { to: TxKind::Call(to), input: input.clone(), ..Default::default() },
+                Signature::test_signature(),
+            )),
+            TempoTxEnvelope::Eip2930(Signed::new_unhashed(
+                TxEip2930 { to: TxKind::Call(to), input: input.clone(), ..Default::default() },
+                Signature::test_signature(),
+            )),
+            TempoTxEnvelope::Eip1559(Signed::new_unhashed(
+                TxEip1559 { to: TxKind::Call(to), input: input.clone(), ..Default::default() },
+                Signature::test_signature(),
+            )),
+            TempoTxEnvelope::Eip7702(Signed::new_unhashed(
+                TxEip7702 { to, input, ..Default::default() },
+                Signature::test_signature(),
+            )),
+            create_aa_envelope(call, None),
+        ]
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{test_utils::*, *};
     use crate::transaction::{Call, TempoTransaction};
-    use alloy_consensus::{TxEip1559, TxEip2930, TxEip7702};
     use alloy_primitives::{Bytes, Signature, TxKind, U256, address};
     use tempo_contracts::precompiles::tip20::test_utils::{
         non_payment_calldatas, payment_calldatas,
     };
 
     const PAYMENT_TKN: Address = address!("20c0000000000000000000000000000000000001");
-
-    fn create_aa_envelope(call: Call) -> TempoTxEnvelope {
-        let tx = TempoTransaction {
-            fee_token: Some(PAYMENT_TKN),
-            calls: vec![call],
-            ..Default::default()
-        };
-        TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()))
-    }
-
-    /// Builds one [`TempoTxEnvelope`] per tx type (Legacy, Eip2930, Eip1559, Eip7702, AA).
-    fn envelopes_for(to: Address, input: Bytes) -> [TempoTxEnvelope; 5] {
-        [
-            TempoTxEnvelope::Legacy(Signed::new_unhashed(
-                TxLegacy {
-                    to: TxKind::Call(to),
-                    input: input.clone(),
-                    ..Default::default()
-                },
-                Signature::test_signature(),
-            )),
-            TempoTxEnvelope::Eip2930(Signed::new_unhashed(
-                TxEip2930 {
-                    to: TxKind::Call(to),
-                    input: input.clone(),
-                    ..Default::default()
-                },
-                Signature::test_signature(),
-            )),
-            TempoTxEnvelope::Eip1559(Signed::new_unhashed(
-                TxEip1559 {
-                    to: TxKind::Call(to),
-                    input: input.clone(),
-                    ..Default::default()
-                },
-                Signature::test_signature(),
-            )),
-            TempoTxEnvelope::Eip7702(Signed::new_unhashed(
-                TxEip7702 {
-                    to,
-                    input: input.clone(),
-                    ..Default::default()
-                },
-                Signature::test_signature(),
-            )),
-            create_aa_envelope(Call {
-                to: TxKind::Call(to),
-                value: U256::ZERO,
-                input,
-            }),
-        ]
-    }
 
     #[test]
     fn test_non_fee_token_access() {
@@ -761,7 +749,7 @@ mod tests {
             value: U256::ZERO,
             input: Bytes::new(),
         };
-        let envelope = create_aa_envelope(call);
+        let envelope = create_aa_envelope(call, Some(PAYMENT_TKN));
         assert!(!envelope.is_payment_v1());
     }
 
@@ -955,11 +943,14 @@ mod tests {
         assert!(system_tx.subblock_proposer().is_none());
 
         // AA-specific methods
-        let aa_envelope = create_aa_envelope(Call {
-            to: TxKind::Call(PAYMENT_TKN),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        });
+        let aa_envelope = create_aa_envelope(
+            Call {
+                to: TxKind::Call(PAYMENT_TKN),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            },
+            Some(PAYMENT_TKN),
+        );
         assert!(aa_envelope.is_aa());
         assert!(aa_envelope.as_aa().is_some());
         assert_eq!(aa_envelope.fee_token(), Some(PAYMENT_TKN));

@@ -13,6 +13,8 @@ pub use tt_signature::{
 };
 
 pub use alloy_eips::eip7702::Authorization;
+#[cfg(any(test, feature = "test-utils"))]
+pub use envelope::test_utils;
 pub use envelope::{TIP20_PAYMENT_PREFIX, TempoTxEnvelope, TempoTxType, TempoTypedTransaction};
 pub use key_authorization::{
     KeyAuthorization, KeyAuthorizationChainIdError, SignedKeyAuthorization, TokenLimit,

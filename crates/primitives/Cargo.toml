@@ -141,3 +141,4 @@ rpc = [
 	"dep:reth-rpc-convert",
 	"dep:alloy-network",
 ]
+test-utils = ["tempo-contracts/test-utils", "alloy-primitives/rand"]

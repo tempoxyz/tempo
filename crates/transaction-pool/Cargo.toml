@@ -66,5 +66,6 @@ alloy-consensus.workspace = true
 alloy-signer.workspace = true
 alloy-signer-local.workspace = true
 tempo-contracts = { workspace = true, features = ["test-utils"] }
+tempo-primitives = { workspace = true, features = ["test-utils"] }
 tokio.workspace = true
 test-case.workspace = true
