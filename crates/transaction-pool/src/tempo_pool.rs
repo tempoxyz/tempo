@@ -242,12 +242,14 @@ where
             // from state for affected (account, key_id, fee_token) combos and evict if
             // the pending tx's fee cost now exceeds the remaining limit.
             if !updates.spending_limit_spends.is_empty()
-                // NOTE: sponsored txs don't consume the sender's key limits.
+                // Sponsored txs (fee payer != sender) don't consume sender spending limits.
+                // Use recovered fee payer instead of signature presence so self-sponsored
+                // fee payer signatures are treated as sender-paid.
                 && tx
                     .transaction
                     .inner()
-                    .as_aa()
-                    .is_none_or(|aa| aa.tx().fee_payer_signature.is_none())
+                    .fee_payer(tx.transaction.sender())
+                    .map_or(true, |fee_payer| fee_payer == tx.transaction.sender())
                 && let Some(ref mut provider) = state_provider
                 && let Some(ref subject) = keychain_subject
                 && subject.matches_spending_limit_update(&updates.spending_limit_spends)
