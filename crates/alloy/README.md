@@ -50,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
  
     let token = ITIP20::new( 
         address!("0x20c0000000000000000000000000000000000001"), // AlphaUSD 
-        provider, 
+        &provider, 
     ); 
  
     let receipt = token 
