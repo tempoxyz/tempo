@@ -42,7 +42,7 @@ serde.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-alloy = { workspace = true, features = ["providers", "rpc-types-eth", "sol-types"] }
+alloy = { workspace = true, features = ["providers", "rpc-types-eth", "sol-types", "reqwest", "reqwest-rustls-tls"] }
 eyre.workspace = true
 test-case.workspace = true
 tokio.workspace = true
