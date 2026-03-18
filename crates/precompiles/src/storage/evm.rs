@@ -22,7 +22,7 @@ pub struct EvmPrecompileStorageProvider<'a> {
     gas_params: GasParams,
     /// Debug-only LIFO checkpoint validator. See [`Self::assert_lifo`].
     #[cfg(debug_assertions)]
-    checkpoint_stack: Vec<usize>,
+    checkpoint_stack: Vec<(usize, usize)>,
 }
 
 impl<'a> EvmPrecompileStorageProvider<'a> {
@@ -272,13 +272,13 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 /// LIFO checkpoint validation (debug builds only).
 ///
 /// Since `EvmInternals` doesn't expose revm's journal depth, we mirror it by
-/// recording each checkpoint's `journal_i` on creation and asserting that
-/// commits/reverts always resolve the most recent checkpoint first.
+/// recording each checkpoint's (`journal_i`, `log_i`) on creation and asserting
+/// that commits/reverts always resolve the most recent checkpoint first.
 #[cfg(debug_assertions)]
 impl EvmPrecompileStorageProvider<'_> {
     /// Records a newly created checkpoint for later LIFO validation.
     fn track_checkpoint(&mut self, cp: &JournalCheckpoint) {
-        self.checkpoint_stack.push(cp.journal_i);
+        self.checkpoint_stack.push((cp.journal_i, cp.log_i));
     }
 
     /// Panics if `cp` is not the most recently created checkpoint.
@@ -289,7 +289,8 @@ impl EvmPrecompileStorageProvider<'_> {
             .unwrap_or_else(|| panic!("checkpoint_{op}: no active checkpoint"));
 
         assert_eq!(
-            cp.journal_i, top,
+            (cp.journal_i, cp.log_i),
+            top,
             "out-of-order checkpoint {op} (expected top of stack)"
         );
     }
