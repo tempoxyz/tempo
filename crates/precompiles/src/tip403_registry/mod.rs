@@ -689,6 +689,19 @@ impl AuthRole {
     }
 }
 
+/// Returns `true` if the error indicates a failed policy lookup — the policy type is invalid
+/// or the policy doesn't exist.
+pub fn is_policy_lookup_error(e: &TempoPrecompileError) -> bool {
+    if StorageCtx.spec().is_t2() {
+        // T2+: typed TIP403 errors
+        *e == TIP403RegistryError::invalid_policy_type().into()
+            || *e == TIP403RegistryError::policy_not_found().into()
+    } else {
+        // Pre-T2: legacy Panic(UnderOverflow) sentinel
+        *e == TempoPrecompileError::under_overflow()
+    }
+}
+
 /// Extension trait for [`PolicyType`] validation.
 trait PolicyTypeExt {
     /// Validates that this is a simple policy type and returns its `u8` discriminant.
