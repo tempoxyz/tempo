@@ -94,14 +94,15 @@ impl TempoTxEnv {
     /// Resolves fee payer from the signature.
     pub fn fee_payer(&self) -> Result<Address, TempoInvalidTransaction> {
         if let Some(fee_payer) = self.fee_payer {
-            let fee_payer = fee_payer.ok_or(TempoInvalidTransaction::InvalidFeePayerSignature)?;
-            if fee_payer == self.caller() {
-                return Err(TempoInvalidTransaction::SelfSponsoredFeePayer);
-            }
-            Ok(fee_payer)
+            fee_payer.ok_or(TempoInvalidTransaction::InvalidFeePayerSignature)
         } else {
             Ok(self.caller())
         }
+    }
+
+    /// Returns true if transaction carries a fee payer signature.
+    pub fn has_fee_payer_signature(&self) -> bool {
+        self.fee_payer.is_some()
     }
 
     /// Returns true if the transaction is a subblock transaction.
@@ -586,7 +587,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fee_payer_cannot_resolve_to_sender() {
+    fn test_fee_payer_resolving_to_sender_is_allowed_in_tx_env() {
         let caller = Address::repeat_byte(0xAB);
         let tx_env = super::TempoTxEnv {
             inner: TxEnv {
@@ -597,10 +598,22 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(matches!(
-            tx_env.fee_payer(),
-            Err(TempoInvalidTransaction::SelfSponsoredFeePayer)
-        ));
+        assert_eq!(tx_env.fee_payer(), Ok(caller));
+    }
+
+    #[test]
+    fn test_has_fee_payer_signature() {
+        let without_sig = super::TempoTxEnv {
+            fee_payer: None,
+            ..Default::default()
+        };
+        assert!(!without_sig.has_fee_payer_signature());
+
+        let with_sig = super::TempoTxEnv {
+            fee_payer: Some(Some(Address::repeat_byte(0xAB))),
+            ..Default::default()
+        };
+        assert!(with_sig.has_fee_payer_signature());
     }
 
     #[test]
