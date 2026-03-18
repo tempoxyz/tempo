@@ -23,6 +23,8 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     address private _owner;
     bool private _initialized;
     uint64 private _initializedAtHeight;
+    uint8 internal _migrationSkippedCount;
+    uint8 internal _v1ValidatorCount;
 
     IValidatorConfig public immutable v1 =
         IValidatorConfig(0xCccCcCCC00000000000000000000000000000000);
@@ -39,12 +41,10 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     /// @dev 1-indexed: 0 means not found. Stored value is arrayIndex + 1.
     mapping(bytes32 => uint64) internal pubkeyToIndex;
 
-    uint64 internal nextNetworkIdentityRotationEpoch;
+    uint64 internal _nextNetworkIdentityRotationEpoch;
 
     /// @dev Tracks active ingress socket addresses by their keccak256 hash
     mapping(bytes32 => bool) internal activeIngressHashes;
-
-    uint64 internal migrationSkippedCount;
 
     // =========================================================================
     // Modifiers
@@ -151,8 +151,8 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
     /// @inheritdoc IValidatorConfigV2
     function setNetworkIdentityRotationEpoch(uint64 epoch) external onlyInitialized onlyOwner {
-        uint64 previousEpoch = nextNetworkIdentityRotationEpoch;
-        nextNetworkIdentityRotationEpoch = epoch;
+        uint64 previousEpoch = _nextNetworkIdentityRotationEpoch;
+        _nextNetworkIdentityRotationEpoch = epoch;
         emit NetworkIdentityRotationEpochSet(previousEpoch, epoch);
     }
 
@@ -366,7 +366,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
     /// @inheritdoc IValidatorConfigV2
     function getNextNetworkIdentityRotationEpoch() external view returns (uint64) {
-        return nextNetworkIdentityRotationEpoch;
+        return _nextNetworkIdentityRotationEpoch;
     }
 
     /// @inheritdoc IValidatorConfigV2
@@ -390,25 +390,30 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         }
 
         IValidatorConfig.Validator[] memory v1Validators = v1.getValidators();
-        uint64 v1Count = uint64(v1Validators.length);
-        uint64 totalProcessed = uint64(validatorsArray.length) + migrationSkippedCount;
-
-        if (idx >= v1Count || idx + totalProcessed + 1 != v1Count) {
-            revert InvalidMigrationIndex();
-        }
-
+        uint64 v1Count;
         if (validatorsArray.length == 0 && _owner == address(0)) {
+            if (v1Validators.length == 0) {
+                revert EmptyV1ValidatorSet();
+            }
             _owner = v1.owner();
+            _v1ValidatorCount = uint8(v1Validators.length);
+            v1Count = _v1ValidatorCount;
+        } else {
+            v1Count = _v1ValidatorCount;
         }
 
         if (msg.sender != _owner) {
             revert Unauthorized();
         }
 
+        if (idx + uint64(validatorsArray.length) + _migrationSkippedCount + 1 != v1Count) {
+            revert InvalidMigrationIndex();
+        }
+
         IValidatorConfig.Validator memory v1Val = v1Validators[idx];
 
         if (v1Val.publicKey == bytes32(0) || v1Val.validatorAddress == address(0)) {
-            migrationSkippedCount++;
+            _migrationSkippedCount++;
             emit SkippedValidatorMigration(idx, v1Val.validatorAddress, v1Val.publicKey);
             return;
         }
@@ -416,7 +421,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         string memory egress = _extractIpFromSocket(v1Val.outboundAddress);
 
         if (pubkeyToIndex[v1Val.publicKey] != 0) {
-            migrationSkippedCount++;
+            _migrationSkippedCount++;
             emit SkippedValidatorMigration(idx, v1Val.validatorAddress, v1Val.publicKey);
             return;
         }
@@ -430,7 +435,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         bytes32 ingressHash = _getIngressHash(v1Val.inboundAddress);
 
         if (nowActive && activeIngressHashes[ingressHash]) {
-            migrationSkippedCount++;
+            _migrationSkippedCount++;
             emit SkippedValidatorMigration(idx, v1Val.validatorAddress, v1Val.publicKey);
             return;
         }
@@ -452,12 +457,14 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             revert AlreadyInitialized();
         }
 
-        IValidatorConfig.Validator[] memory v1Validators = v1.getValidators();
-        if (validatorsArray.length + migrationSkippedCount < v1Validators.length) {
+        if (
+            _v1ValidatorCount == 0
+                || validatorsArray.length + _migrationSkippedCount < _v1ValidatorCount
+        ) {
             revert MigrationNotComplete();
         }
 
-        nextNetworkIdentityRotationEpoch = v1.getNextFullDkgCeremony();
+        _nextNetworkIdentityRotationEpoch = v1.getNextFullDkgCeremony();
 
         _initialized = true;
         _initializedAtHeight = uint64(block.number);

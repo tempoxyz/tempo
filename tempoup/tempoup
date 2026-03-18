@@ -93,7 +93,7 @@ compute_sha256() {
 
 # Check if command exists
 check_cmd() {
-    command -v "$1" &>/dev/null
+    command -v "$1" >/dev/null 2>&1
 }
 
 # Check if tempoup installer is up to date

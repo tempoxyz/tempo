@@ -1,7 +1,7 @@
-//! Testnet RPC transaction checks.
+//! Remote RPC transaction checks (testnet & devnet).
 //!
 //! These tests target a live RPC endpoint and cover the same core transaction
-//! matrices as the local integration tests, using the testnet faucet for funding.
+//! matrices as the local integration tests, using the faucet for funding.
 use alloy::{
     consensus::BlockHeader,
     primitives::{Address, B256, Bytes, U256},
@@ -18,22 +18,18 @@ use tempo_primitives::{TempoTxEnvelope, transaction::tempo_transaction::Call};
 
 use super::helpers::*;
 
-/// Testnet RPC url (unpermissioned).
-const TESTNET_RPC_URL: &str = "https://rpc.moderato.tempo.xyz";
-
-/// Maximum number of 1-second poll iterations when waiting for testnet RPC state to settle.
+/// Maximum number of 1-second poll iterations when waiting for RPC state to settle.
 const RPC_POLL_RETRIES: usize = 30;
 
-pub(super) struct Testnet {
+pub(super) struct RpcEnv {
     provider: alloy::providers::RootProvider,
     chain_id: u64,
     hardfork: TempoHardfork,
 }
 
-impl Testnet {
-    pub(super) async fn new() -> eyre::Result<Self> {
+impl RpcEnv {
+    async fn connect(rpc_url: &str) -> eyre::Result<Self> {
         reth_tracing::init_test_tracing();
-        let rpc_url = std::env::var("TEMPO_TESTNET_RPC_URL").unwrap_or(TESTNET_RPC_URL.to_string());
         let provider = alloy::providers::RootProvider::new_http(rpc_url.parse()?);
         let chain_id = provider.get_chain_id().await?;
 
@@ -56,9 +52,23 @@ impl Testnet {
             hardfork,
         })
     }
+
+    pub(super) async fn testnet() -> eyre::Result<Option<Self>> {
+        match std::env::var("TEMPO_TESTNET_RPC_URL") {
+            Ok(url) => Self::connect(&url).await.map(Some),
+            Err(_) => Ok(None),
+        }
+    }
+
+    pub(super) async fn devnet() -> eyre::Result<Option<Self>> {
+        match std::env::var("TEMPO_DEVNET_RPC_URL") {
+            Ok(url) => Self::connect(&url).await.map(Some),
+            Err(_) => Ok(None),
+        }
+    }
 }
 
-impl super::types::TestEnv for Testnet {
+impl super::types::TestEnv for RpcEnv {
     type P = alloy::providers::RootProvider;
 
     fn provider(&self) -> &Self::P {
@@ -71,10 +81,6 @@ impl super::types::TestEnv for Testnet {
 
     fn hardfork(&self) -> TempoHardfork {
         self.hardfork
-    }
-
-    fn uses_legacy_keyauth_pool_validation(&self) -> bool {
-        true
     }
 
     async fn fund_account(&mut self, addr: Address) -> eyre::Result<U256> {
@@ -114,67 +120,6 @@ impl super::types::TestEnv for Testnet {
             .ok_or_else(|| eyre::eyre!("Receipt missing status field for {tx_hash}"))?;
         assert_eq!(status, "0x1", "Receipt status mismatch for {tx_hash}");
         Ok(receipt)
-    }
-
-    async fn submit_tx_excluded_by_builder(
-        &mut self,
-        encoded: Vec<u8>,
-        tx_hash: B256,
-    ) -> eyre::Result<()> {
-        // Pool validation may now reject txs that were previously only excluded
-        // by the builder (e.g. duplicate key_authorization). A pool rejection is
-        // a stricter form of exclusion, so treat it as success.
-        let send_result = self
-            .provider
-            .raw_request::<_, B256>("eth_sendRawTransaction".into(), [encoded])
-            .await;
-        if let Err(e) = send_result {
-            let err = e.to_string();
-            assert!(
-                err.contains("already exists") || err.contains("spending limit exceeded"),
-                "Expected pool validation rejection, got: {e}"
-            );
-            return Ok(());
-        }
-
-        // Verify the tx is known to the RPC (confirms it entered the mempool).
-        let tx_obj: Option<serde_json::Value> = self
-            .provider
-            .raw_request("eth_getTransactionByHash".into(), [tx_hash])
-            .await?;
-        assert!(
-            tx_obj.is_some(),
-            "Transaction {tx_hash} should be known to RPC after submission"
-        );
-
-        // Record the starting block to prove liveness (blocks are advancing).
-        let start_block: u64 = self.provider.get_block_number().await?;
-
-        // Poll — tx should never be included
-        for _ in 0..RPC_POLL_RETRIES {
-            let receipt: Option<serde_json::Value> = self
-                .provider
-                .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
-                .await?;
-            if let Some(receipt) = receipt {
-                let status = receipt["status"].as_str().unwrap_or("?");
-                panic!(
-                    "Transaction {tx_hash} was mined (status={status}), \
-                     expected exclusion by builder"
-                );
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        }
-
-        // Confirm blocks actually advanced (liveness check).
-        let end_block: u64 = self.provider.get_block_number().await?;
-        assert!(
-            end_block > start_block,
-            "Blocks did not advance during polling ({start_block} → {end_block}); \
-             testnet may be stalled"
-        );
-
-        Ok(())
     }
 
     async fn bump_protocol_nonce(

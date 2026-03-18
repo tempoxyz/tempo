@@ -45,11 +45,7 @@ pub(super) async fn run_raw_send_matrix<E: TestEnv>(env: &mut E) -> eyre::Result
     let transfer_over = spending_limit + U256::from(1u64);
     let transfer_under = spending_limit / U256::from(2);
     let transfer_small = U256::from(50_000u64);
-    let keyauth_expected = if env.uses_legacy_keyauth_pool_validation() {
-        ExpectedOutcome::ExcludedByBuilder
-    } else {
-        ExpectedOutcome::Rejection
-    };
+    let keyauth_expected = ExpectedOutcome::Rejection;
 
     let matrix = vec![
         // --- core key type × fee_payer × access_key ---
@@ -626,10 +622,6 @@ async fn submit_expecting<E: TestEnv>(
                 .map(|s| s == "0x1")
                 .unwrap_or(false);
             assert!(!status, "Transaction should revert (status 0x0)");
-        }
-        ExpectedOutcome::ExcludedByBuilder => {
-            env.submit_tx_excluded_by_builder(envelope.encoded_2718(), tx_hash)
-                .await?;
         }
     }
     Ok(tx_hash)

@@ -1,3 +1,5 @@
+//! ABI dispatch for the [`ValidatorConfig`] (V1) precompile.
+
 use super::ValidatorConfig;
 use crate::{
     Precompile, dispatch_call, error::TempoPrecompileError, input_cost, mutate_void,
