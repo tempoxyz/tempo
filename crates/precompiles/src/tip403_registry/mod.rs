@@ -193,13 +193,25 @@ impl TIP403Registry {
         &self,
         call: ITIP403Registry::policyDataCall,
     ) -> Result<ITIP403Registry::policyDataReturn> {
-        // Check if policy exists before reading the data (spec: pre-T2)
-        if !self.storage.spec().is_t2()
-            && !self.policy_exists(ITIP403Registry::policyExistsCall {
+        if self.storage.spec().is_t2() {
+            // Built-in policies are virtual (not stored), and match the `PolicyType`:
+            //  - 0: REJECT_ALL_POLICY_ID → WHITELIST
+            //  - 1: ALLOW_ALL_POLICY_ID  → BLACKLIST
+            if self.builtin_authorization(call.policyId).is_some() {
+                return Ok(ITIP403Registry::policyDataReturn {
+                    policyType: (call.policyId as u8)
+                        .try_into()
+                        .map_err(|_| TIP403RegistryError::invalid_policy_type())?,
+                    admin: Address::ZERO,
+                });
+            }
+        } else {
+            // Check if policy exists before reading the data (spec: pre-T2)
+            if !self.policy_exists(ITIP403Registry::policyExistsCall {
                 policyId: call.policyId,
-            })?
-        {
-            return Err(TIP403RegistryError::policy_not_found().into());
+            })? {
+                return Err(TIP403RegistryError::policy_not_found().into());
+            }
         }
 
         // Get policy data and verify that the policy id exists (spec: +T2)
@@ -879,6 +891,30 @@ mod tests {
                 result.unwrap_err(),
                 TempoPrecompileError::TIP403RegistryError(TIP403RegistryError::PolicyNotFound(_))
             ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_policy_data_returns_correct_type_for_builtin_policies() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        StorageCtx::enter(&mut storage, || {
+            let registry = TIP403Registry::new();
+
+            // reject-all → WHITELIST (empty whitelist rejects everyone)
+            let data = registry.policy_data(ITIP403Registry::policyDataCall {
+                policyId: REJECT_ALL_POLICY_ID,
+            })?;
+            assert_eq!(data.policyType, ITIP403Registry::PolicyType::WHITELIST);
+            assert_eq!(data.admin, Address::ZERO);
+
+            // allow-all → BLACKLIST (empty blacklist allows everyone)
+            let data = registry.policy_data(ITIP403Registry::policyDataCall {
+                policyId: ALLOW_ALL_POLICY_ID,
+            })?;
+            assert_eq!(data.policyType, ITIP403Registry::PolicyType::BLACKLIST);
+            assert_eq!(data.admin, Address::ZERO);
 
             Ok(())
         })
