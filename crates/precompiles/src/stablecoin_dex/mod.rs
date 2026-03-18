@@ -92,7 +92,7 @@ impl StablecoinDEX {
 
     /// Validates that a trading pair exists or creates the pair
     fn validate_or_create_pair(&mut self, book: &Orderbook, token: Address) -> Result<()> {
-        if book.base.is_zero() {
+        if !book.is_initialized() {
             self.create_pair(token)?;
         }
         Ok(())
@@ -766,6 +766,12 @@ impl StablecoinDEX {
     }
 
     /// Fill an order and delete from storage. Returns the next best order and price level.
+    ///
+    /// NOTE: Maker transfer policy authorization is intentionally NOT checked here.
+    /// Fills must never fail due to unexecutable orders from blacklisted makers, as that
+    /// would force takers to pay gas eating through stale liquidity. Instead, anyone can
+    /// call [`cancel_stale_order`](Self::cancel_stale_order) to remove orders from
+    /// blacklisted makers before they are filled.
     fn fill_order(
         &mut self,
         book_key: B256,

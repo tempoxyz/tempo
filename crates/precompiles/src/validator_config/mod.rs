@@ -231,7 +231,7 @@ impl ValidatorConfig {
         };
         self.validators[call.newValidatorAddress].write(validator)?;
 
-        // Add the validator public key to the validators array
+        // Add the validator address to the validators array
         self.validators_array.push(call.newValidatorAddress)
     }
 

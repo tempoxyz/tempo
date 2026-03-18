@@ -162,7 +162,7 @@ impl TIP20Token {
         self.roles[account][role].write(false)
     }
 
-    /// If sloads 0, will be equal to DEFAULT_ADMIN_ROLE
+    /// Returns the admin role for `role`. An unset entry reads as zero, which is `DEFAULT_ADMIN_ROLE`.
     fn get_role_admin_internal(&self, role: B256) -> Result<B256> {
         self.role_admins[role].read()
     }

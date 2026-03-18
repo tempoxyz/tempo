@@ -260,7 +260,7 @@ where
             // Prevents mass eviction because it only:
             // - evicts when NO validator token has enough liquidity
             // - considers active validators (protects from permissionless `setValidatorToken`)
-            if has_active_validator_token_changes && let Some(ref provider) = state_provider {
+            if has_active_validator_token_changes && let Some(ref mut provider) = state_provider {
                 let user_token = tx
                     .transaction
                     .inner()
@@ -268,7 +268,7 @@ where
                     .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN);
                 let cost = tx.transaction.fee_token_cost();
 
-                match amm_cache.has_enough_liquidity(user_token, cost, &**provider) {
+                match amm_cache.has_enough_liquidity(user_token, cost, provider) {
                     Ok(true) => {}
                     Ok(false) => {
                         to_remove.push(*tx.hash());
@@ -1148,13 +1148,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transaction::KeychainSubject;
-    use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
+    use crate::{test_utils::MockProviderStorageExt, transaction::KeychainSubject};
+    use reth_provider::test_utils::MockEthProvider;
     use reth_storage_api::StateProviderFactory;
-    use tempo_precompiles::{
-        ACCOUNT_KEYCHAIN_ADDRESS,
-        account_keychain::{AccountKeychain, AuthorizedKey},
-    };
+    use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_precompiles::account_keychain::{AccountKeychain, AuthorizedKey};
 
     fn provider_with_spending_limit(
         account: Address,
@@ -1166,28 +1164,21 @@ mod tests {
             tempo_chainspec::spec::MODERATO.clone(),
         ));
 
-        let keychain = AccountKeychain::new();
-
         // Write AuthorizedKey with enforce_limits=true
-        let key_slot = keychain.keys[account][key_id].base_slot();
-        let authorized_key = AuthorizedKey {
-            signature_type: 0,
-            expiry: u64::MAX,
-            enforce_limits: true,
-            is_revoked: false,
-        }
-        .encode_to_slot();
-
-        let limit_key = AccountKeychain::spending_limit_key(account, key_id);
-        let limit_slot = keychain.spending_limits[limit_key][fee_token].slot();
-
-        provider.add_account(
-            ACCOUNT_KEYCHAIN_ADDRESS,
-            ExtendedAccount::new(0, alloy_primitives::U256::ZERO).extend_storage([
-                (key_slot.into(), authorized_key),
-                (limit_slot.into(), remaining_limit),
-            ]),
-        );
+        provider
+            .setup_storage(TempoHardfork::default(), || {
+                let mut keychain = AccountKeychain::new();
+                keychain.keys[account][key_id].write(AuthorizedKey {
+                    signature_type: 0,
+                    expiry: u64::MAX,
+                    enforce_limits: true,
+                    is_revoked: false,
+                })?;
+                let limit_key = AccountKeychain::spending_limit_key(account, key_id);
+                keychain.spending_limits[limit_key][fee_token].write(remaining_limit)?;
+                Ok::<(), tempo_precompiles::error::TempoPrecompileError>(())
+            })
+            .unwrap();
 
         provider.latest().unwrap()
     }
@@ -1257,23 +1248,19 @@ mod tests {
         let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
             tempo_chainspec::spec::MODERATO.clone(),
         ));
-        let key_slot = AccountKeychain::new().keys[account][key_id].base_slot();
-        let authorized_key = AuthorizedKey {
-            signature_type: 0,
-            expiry: u64::MAX,
-            enforce_limits: true,
-            is_revoked: false,
-        }
-        .encode_to_slot();
-        provider.add_account(
-            ACCOUNT_KEYCHAIN_ADDRESS,
-            ExtendedAccount::new(0, alloy_primitives::U256::ZERO)
-                .extend_storage([(key_slot.into(), authorized_key)]),
-        );
-        let mut state = provider.latest().unwrap();
+        provider
+            .setup_storage(TempoHardfork::default(), || {
+                AccountKeychain::new().keys[account][key_id].write(AuthorizedKey {
+                    signature_type: 0,
+                    expiry: u64::MAX,
+                    enforce_limits: true,
+                    is_revoked: false,
+                })
+            })
+            .unwrap();
 
         assert!(exceeds_spending_limit(
-            &mut state,
+            &mut provider.latest().unwrap(),
             &subject,
             alloy_primitives::U256::from(1)
         ));
@@ -1294,23 +1281,19 @@ mod tests {
         let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
             tempo_chainspec::spec::MODERATO.clone(),
         ));
-        let key_slot = AccountKeychain::new().keys[account][key_id].base_slot();
-        let authorized_key = AuthorizedKey {
-            signature_type: 0,
-            expiry: u64::MAX,
-            enforce_limits: false,
-            is_revoked: false,
-        }
-        .encode_to_slot();
-        provider.add_account(
-            ACCOUNT_KEYCHAIN_ADDRESS,
-            ExtendedAccount::new(0, alloy_primitives::U256::ZERO)
-                .extend_storage([(key_slot.into(), authorized_key)]),
-        );
-        let mut state = provider.latest().unwrap();
+        provider
+            .setup_storage(TempoHardfork::default(), || {
+                AccountKeychain::new().keys[account][key_id].write(AuthorizedKey {
+                    signature_type: 0,
+                    expiry: u64::MAX,
+                    enforce_limits: false,
+                    is_revoked: false,
+                })
+            })
+            .unwrap();
 
         assert!(!exceeds_spending_limit(
-            &mut state,
+            &mut provider.latest().unwrap(),
             &subject,
             alloy_primitives::U256::from(1)
         ));

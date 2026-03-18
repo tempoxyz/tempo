@@ -19,7 +19,7 @@ use crate::{
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
 };
-use alloy::primitives::{Address, U256};
+use alloy::primitives::Address;
 
 /// Built-in policy ID that always rejects authorization.
 pub const REJECT_ALL_POLICY_ID: u64 = 0;
@@ -99,35 +99,7 @@ pub struct PolicyData {
     pub admin: Address,
 }
 
-// NOTE(rusowsky): can be removed once revm uses precompiles rather than directly
-// interacting with storage slots.
 impl PolicyData {
-    /// Decodes a [`PolicyData`] from a raw EVM storage slot word.
-    pub fn decode_from_slot(slot_value: U256) -> Self {
-        use crate::storage::{LayoutCtx, Storable, packing::PackedSlot};
-
-        // NOTE: fine to expect, as `StorageOps` on `PackedSlot` are infallible
-        Self::load(&PackedSlot(slot_value), U256::ZERO, LayoutCtx::FULL)
-            .expect("unable to decode PoliciData from slot")
-    }
-
-    /// Encodes this [`PolicyData`] into a single EVM storage slot word.
-    pub fn encode_to_slot(&self) -> U256 {
-        use crate::storage::packing::insert_into_word;
-        use __packing_policy_data::{ADMIN_LOC as A_LOC, POLICY_TYPE_LOC as PT_LOC};
-
-        let encoded = insert_into_word(
-            U256::ZERO,
-            &self.policy_type,
-            PT_LOC.offset_bytes,
-            PT_LOC.size,
-        )
-        .expect("unable to insert 'policy_type'");
-
-        insert_into_word(encoded, &self.admin, A_LOC.offset_bytes, A_LOC.size)
-            .expect("unable to insert 'admin'")
-    }
-
     /// Decodes the raw `policy_type` u8 to a `PolicyType` enum.
     fn policy_type(&self) -> Result<PolicyType> {
         let is_t2 = StorageCtx.spec().is_t2();
@@ -161,7 +133,7 @@ impl TIP403Registry {
 
     /// Returns the next policy ID to be assigned (always ≥ 2, since IDs 0 and 1 are reserved).
     pub fn policy_id_counter(&self) -> Result<u64> {
-        // Initialize policy ID counter to 2 if it's 0 (skip built-in policy IDs)
+        // Skips the built-in policy IDs, when initializing the counter for the first time.
         self.policy_id_counter.read().map(|counter| counter.max(2))
     }
 
@@ -312,7 +284,7 @@ impl TIP403Registry {
         self.set_policy_data(new_policy_id, PolicyData { policy_type, admin })?;
 
         // Set initial accounts - only emit events for valid policy types
-        // Pre-T1 with invalid types: accounts are added but no events emitted (matches original)
+        // Pre-T2 with invalid types: accounts are added but no events emitted (matches original)
         for account in call.accounts.iter() {
             self.set_policy_set(new_policy_id, *account, true)?;
 
@@ -338,7 +310,7 @@ impl TIP403Registry {
                     ))?;
                 }
                 ITIP403Registry::PolicyType::COMPOUND | ITIP403Registry::PolicyType::__Invalid => {
-                    // T1+: unreachable since `validate_simple_policy_type` already rejected
+                    // T2+: unreachable since `ensure_is_simple` already rejected
                     return Err(TIP403RegistryError::incompatible_policy_type().into());
                 }
             }
@@ -692,7 +664,7 @@ trait PolicyTypeExt {
 impl PolicyTypeExt for PolicyType {
     /// Validates and returns the policy type to store, handling backward compatibility.
     ///
-    /// Pre-T1: Converts `COMPOUND` and `__Invalid` to 255 to match original ABI decoding behavior.
+    /// Pre-T2: Converts `COMPOUND` and `__Invalid` to 255 to match original ABI decoding behavior.
     /// T2+: Only allows `WHITELIST` and `BLACKLIST`.
     fn ensure_is_simple(&self) -> Result<u8> {
         match self {
@@ -2064,31 +2036,6 @@ mod tests {
 
             Ok(())
         })
-    }
-
-    #[test]
-    fn test_policy_data_encode_to_slot_returns_correct_value() -> eyre::Result<()> {
-        let admin = Address::random();
-        let policy_data = PolicyData {
-            policy_type: 0, // WHITELIST
-            admin,
-        };
-
-        let encoded = policy_data.encode_to_slot();
-
-        // Decode it back and verify
-        let decoded = PolicyData::decode_from_slot(encoded);
-        assert_eq!(decoded.policy_type, policy_data.policy_type);
-        assert_eq!(decoded.admin, policy_data.admin);
-
-        // Verify encoded is NOT default (all zeros)
-        assert_ne!(
-            encoded,
-            U256::ZERO,
-            "encode_to_slot should return non-default value for valid policy data"
-        );
-
-        Ok(())
     }
 
     #[test]
