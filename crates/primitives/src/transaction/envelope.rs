@@ -1002,8 +1002,10 @@ mod tests {
 
     #[test]
     fn test_payment_v2_aa_rejects_key_authorization() {
-        use crate::transaction::key_authorization::{KeyAuthorization, SignedKeyAuthorization};
-        use crate::transaction::tt_signature::PrimitiveSignature;
+        use crate::transaction::{
+            key_authorization::{KeyAuthorization, SignedKeyAuthorization},
+            tt_signature::PrimitiveSignature,
+        };
 
         let calldata = ITIP20::transferCall {
             to: Address::random(),
