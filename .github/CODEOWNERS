@@ -1,3 +1,8 @@
+* @0xKitsune @klkvr @mattsse @Zygimantass
+
+.github/ @0xKitsune @Zygimantass
+tempoup/ @0xKitsune @Zygimantass
+
 bin/tempo @0xKitsune @klkvr @Zygimantass @SuperFluffy 
 bin/tempo-bench @shekhirin
 bin/tempo-sidecar @Zygimantass
@@ -10,8 +15,10 @@ crates/commonware-node/ @joshieDo @SuperFluffy @hamdiallam
 crates/commonware-node-config/ @joshieDo @SuperFluffy @hamdiallam
 crates/consensus/ @joshieDo @SuperFluffy @hamdiallam
 crates/contracts/ @0xKitsune @fgimenez @klkvr @mattsse @legion2002 @howydev
+crates/dkg-onchain-artifacts/ @joshieDo @SuperFluffy @hamdiallam
 crates/e2e/ @joshieDo @SuperFluffy @hamdiallam
 crates/evm/ @0xKitsune @klkvr @mattsse
+crates/ext/ @mattsse @0xKitsune
 crates/eyre/ @SuperFluffy
 crates/faucet/ @klkvr @mattsse
 crates/node/ @0xKitsune @klkvr @mattsse
@@ -22,4 +29,5 @@ crates/primitives/ @klkvr @mattsse
 crates/revm/ @klkvr @mattsse @rakita @0xKitsune
 crates/telemetry-util/ @SuperFluffy
 crates/transaction-pool/ @0xKitsune @klkvr @mattsse
-tips/ @legion2002 @howydev @0xKitsune @danrobinson @dankrad
+crates/validator-config/ @joshieDo @SuperFluffy @hamdiallam
+tips/ @legion2002 @howydev @0xKitsune @danrobinson @dankrad @jenpaff @samszcun @horsefacts
