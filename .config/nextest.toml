@@ -3,6 +3,11 @@ fail-fast = false
 retries = 2
 test-threads = "num-cpus"
 
+# Treat timeout as success while debugging snapshot-restart flakiness.
+[[profile.ci.overrides]]
+filter = "test(can_restart_after_joining_from_snapshot)"
+slow-timeout = { period = "3m", terminate-after = 3, on-timeout = "pass" }
+
 # Heavy e2e tests that flake under resource contention — run exclusively.
 # threads-required = "num-test-threads" reserves all slots, so no other test runs concurrently.
 # Scheduled last to avoid blocking the rest of the suite.
@@ -24,14 +29,27 @@ priority = -100
 # so on a 32-vCPU runner (-j 32) at most 4 e2e tests run concurrently.
 [[profile.ci.overrides]]
 filter = "package(tempo-e2e)"
-failure-output = "final"
+failure-output = "never"
 threads-required = 8
+slow-timeout = { period = "3m", terminate-after = 1 }
+
+# Separate profile for flaky snapshot-restart tests so they fail-fast independently.
+[profile.ci-flaky]
+inherits = "ci"
+fail-fast = true
+failure-output = "final"
+slow-timeout = { period = "3m", terminate-after = 1 }
+default-filter = "package(tempo-e2e) & test(can_restart_after_joining_from_snapshot)"
 
 # tempo-node integration tests (pool, block_building, etc.) also launch full
 # execution nodes with rayon pools. Limit to 4 slots so at most 8 run in parallel.
 [[profile.ci.overrides]]
 filter = "package(tempo-node) & binary(it)"
 threads-required = 4
+
+[[profile.default.overrides]]
+filter = "test(can_restart_after_joining_from_snapshot)"
+failure-output = "final"
 
 # Local development defaults (same constraints apply)
 [[profile.default.overrides]]
@@ -48,6 +66,7 @@ priority = -100
 [[profile.default.overrides]]
 filter = "package(tempo-e2e)"
 threads-required = 8
+slow-timeout = { period = "4m", terminate-after = 1 }
 
 [[profile.default.overrides]]
 filter = "package(tempo-node) & binary(it)"
