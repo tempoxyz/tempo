@@ -2177,7 +2177,8 @@ pub(super) async fn run_send_negative_scenario<E: TestEnv>(env: &mut E) -> eyre:
     Ok(())
 }
 
-/// Fee payer signature negative cases: wrong signer, missing sig, placeholder sig.
+/// Fee payer signature negative cases: wrong signer, missing sig, placeholder sig,
+/// and self-sponsored fee payer.
 pub(super) async fn run_fee_payer_negative_scenario<E: TestEnv>(env: &mut E) -> eyre::Result<()> {
     println!("\n=== Fee payer negative scenario ===\n");
 
@@ -2232,6 +2233,32 @@ pub(super) async fn run_fee_payer_negative_scenario<E: TestEnv>(env: &mut E) -> 
         let envelope: TempoTxEnvelope = tx.into_signed(sig).into();
         env.submit_tx_expecting_rejection(envelope.encoded_2718(), None)
             .await?;
+    }
+
+    // Case 3: Self-sponsored fee payer (fee payer resolves to sender)
+    {
+        println!("  Case 3: Self-sponsored fee payer signature");
+        let mut tx = create_basic_aa_tx(
+            chain_id,
+            0,
+            vec![Call {
+                to: Address::random().into(),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            2_000_000,
+        );
+
+        // Intentionally sign fee payer payload with the sender key, making fee payer == sender.
+        sign_fee_payer(&mut tx, user_addr, &user_signer)?;
+
+        let sig = sign_aa_tx_secp256k1(&tx, &user_signer)?;
+        let envelope: TempoTxEnvelope = tx.into_signed(sig).into();
+        env.submit_tx_expecting_rejection(
+            envelope.encoded_2718(),
+            Some("fee payer cannot resolve to sender"),
+        )
+        .await?;
     }
 
     println!("✓ Fee payer negative scenario passed");
