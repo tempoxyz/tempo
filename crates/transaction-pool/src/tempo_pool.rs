@@ -1131,6 +1131,8 @@ fn get_sender_policy_ids(
             ids.push(compound.sender_policy_id);
         }
 
+        // Cache even though compound sub-policy references are immutable: avoids
+        // redundant SLOADs when multiple transactions share the same fee token.
         cache.insert(fee_token, ids.clone());
         Some(ids)
     })
