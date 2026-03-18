@@ -149,7 +149,7 @@ impl PolicyData {
     }
 
     /// Returns `true` if the policy data indicates a compound policy
-    fn is_compound(&self) -> bool {
+    pub fn is_compound(&self) -> bool {
         self.policy_type == PolicyType::COMPOUND as u8
     }
 
