@@ -111,66 +111,82 @@ impl StorageCtx {
         result.unwrap()
     }
 
+    /// Returns the chain ID.
     pub fn chain_id(&self) -> u64 {
         Self::with_storage(|s| s.chain_id())
     }
 
+    /// Returns the current block timestamp.
     pub fn timestamp(&self) -> U256 {
         Self::with_storage(|s| s.timestamp())
     }
 
+    /// Returns the current block beneficiary (coinbase).
     pub fn beneficiary(&self) -> Address {
         Self::with_storage(|s| s.beneficiary())
     }
 
+    /// Returns the current block number.
     pub fn block_number(&self) -> u64 {
         Self::with_storage(|s| s.block_number())
     }
 
+    /// Sets the bytecode at the given address.
     pub fn set_code(&mut self, address: Address, code: Bytecode) -> Result<()> {
         Self::try_with_storage(|s| s.set_code(address, code))
     }
 
+    /// Performs an SLOAD operation (persistent storage read).
     pub fn sload(&self, address: Address, key: U256) -> Result<U256> {
         Self::try_with_storage(|s| s.sload(address, key))
     }
 
+    /// Performs a TLOAD operation (transient storage read).
     pub fn tload(&self, address: Address, key: U256) -> Result<U256> {
         Self::try_with_storage(|s| s.tload(address, key))
     }
 
+    /// Performs an SSTORE operation (persistent storage write).
     pub fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<()> {
         Self::try_with_storage(|s| s.sstore(address, key, value))
     }
 
+    /// Performs a TSTORE operation (transient storage write).
     pub fn tstore(&mut self, address: Address, key: U256, value: U256) -> Result<()> {
         Self::try_with_storage(|s| s.tstore(address, key, value))
     }
 
+    /// Emits an event from the given contract address.
     pub fn emit_event(&mut self, address: Address, event: LogData) -> Result<()> {
         Self::try_with_storage(|s| s.emit_event(address, event))
     }
 
+    /// Deducts gas from the remaining gas and returns an error if insufficient.
     pub fn deduct_gas(&mut self, gas: u64) -> Result<()> {
         Self::try_with_storage(|s| s.deduct_gas(gas))
     }
 
+    /// Adds refund to the gas refund counter.
     pub fn refund_gas(&mut self, gas: i64) {
         Self::with_storage(|s| s.refund_gas(gas))
     }
 
+    /// Returns the gas used so far.
     pub fn gas_used(&self) -> u64 {
         Self::with_storage(|s| s.gas_used())
     }
 
+    /// Returns the gas refunded so far.
     pub fn gas_refunded(&self) -> i64 {
         Self::with_storage(|s| s.gas_refunded())
     }
 
+    /// Returns the currently active hardfork.
     pub fn spec(&self) -> TempoHardfork {
         Self::with_storage(|s| s.spec())
     }
 
+    /// Returns whether the current call context is static.
     pub fn is_static(&self) -> bool {
         Self::with_storage(|s| s.is_static())
     }

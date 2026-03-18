@@ -496,6 +496,10 @@ impl Inner<Init> {
             );
             info!(
                 %outcome.epoch,
+                outcome.network_identity = %outcome.network_identity(),
+                outcome.dealers = ?outcome.dealers(),
+                outcome.players = ?outcome.players(),
+                outcome.next_players = ?outcome.next_players(),
                 "received DKG outcome; will include in payload builder attributes",
             );
             outcome.encode().into()
@@ -827,7 +831,7 @@ async fn verify_block<TContext: Pacer>(
         PayloadStatusEnum::Syncing => {
             bail!(
                 "failed validating block because payload is still syncing, \
-                this means the parent block was available to the consensus
+                this means the parent block was available to the consensus \
                 layer but not the execution layer"
             )
         }
