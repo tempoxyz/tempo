@@ -128,27 +128,31 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.DEREK_PAT }}
         run: |
-          # Current rev from Cargo.toml
-          OLD_REV=$(grep -m1 'paradigmxyz/reth' Cargo.toml | sed 's/.*rev = "\([^"]*\)".*/\1/')
-          echo "Current reth rev: $OLD_REV"
+          # Base rev from reth-bump branch (what we're upgrading FROM)
+          BASE_REV=$(git show reth-bump:Cargo.toml | grep -m1 'paradigmxyz/reth' | sed 's/.*rev = "\([^"]*\)".*/\1/')
+          echo "Base reth rev (on reth-bump): $BASE_REV"
+
+          # Current rev on working branch (may already have a previous bump)
+          CURRENT_REV=$(grep -m1 'paradigmxyz/reth' Cargo.toml | sed 's/.*rev = "\([^"]*\)".*/\1/')
+          echo "Current reth rev (on working branch): $CURRENT_REV"
 
           # Latest commit on reth main
           NEW_REV=$(gh api repos/paradigmxyz/reth/commits/main --jq '.sha' | head -c 7)
           echo "Latest reth main: $NEW_REV"
 
-          if [ "$OLD_REV" = "$NEW_REV" ]; then
+          if [ "$CURRENT_REV" = "$NEW_REV" ]; then
             echo "bumped=false" >> "$GITHUB_OUTPUT"
             echo "Already on latest reth rev."
             exit 0
           fi
 
           echo "bumped=true" >> "$GITHUB_OUTPUT"
-          echo "old_rev=$OLD_REV" >> "$GITHUB_OUTPUT"
+          echo "old_rev=$BASE_REV" >> "$GITHUB_OUTPUT"
           echo "new_rev=$NEW_REV" >> "$GITHUB_OUTPUT"
 
           # Update all reth rev references in Cargo.toml files
-          find . -name 'Cargo.toml' -exec sed -i "s|paradigmxyz/reth\", rev = \"${OLD_REV}\"|paradigmxyz/reth\", rev = \"${NEW_REV}\"|g" {} +
-          echo "Updated reth rev: $OLD_REV -> $NEW_REV"
+          find . -name 'Cargo.toml' -exec sed -i "s|paradigmxyz/reth\", rev = \"${CURRENT_REV}\"|paradigmxyz/reth\", rev = \"${NEW_REV}\"|g" {} +
+          echo "Updated reth rev: $CURRENT_REV -> $NEW_REV"
 
           # Regenerate lockfile
           cargo update
