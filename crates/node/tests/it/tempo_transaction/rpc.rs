@@ -287,11 +287,19 @@ async fn wait_for_receipt(
     tx_hash: B256,
 ) -> eyre::Result<serde_json::Value> {
     for _ in 0..RPC_POLL_RETRIES {
-        let receipt: Option<serde_json::Value> = provider
-            .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
-            .await?;
-        if let Some(receipt) = receipt {
-            return Ok(receipt);
+        match provider
+            .raw_request::<_, Option<serde_json::Value>>(
+                "eth_getTransactionReceipt".into(),
+                [tx_hash],
+            )
+            .await
+        {
+            Ok(Some(receipt)) => return Ok(receipt),
+            Ok(None) => {}
+            // Remote endpoints occasionally return transient Cloudflare 403 pages.
+            // Retry instead of failing the whole matrix immediately.
+            Err(err) if err.to_string().contains("HTTP error 403") => {}
+            Err(err) => return Err(err.into()),
         }
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
