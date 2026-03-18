@@ -994,7 +994,7 @@ fn test_t2_multi_slot_packed_preserves_neighbor_slots() -> eyre::Result<()> {
         assert_eq!(loaded.end_time, 0xCCCCCCCCCCCCCCCC);
         assert_eq!(loaded.nonce, 0xDDDDDDDDDDDDDDDD);
         assert_eq!(loaded.owner, Address::from([0xBB; 20]));
-        assert_eq!(loaded.active, false);
+        assert!(!loaded.active);
 
         Ok(())
     })
