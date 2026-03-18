@@ -111,7 +111,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         uint64 expiry = _generateExpiry(uint256(keccak256(abi.encode(account, keyId))));
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
 
-        vm.startPrank(account);
+        vm.startPrank(account, account);
         keychain.authorizeKey(
             keyId, IAccountKeychain.SignatureType.Secp256k1, expiry, false, limits
         );
@@ -239,7 +239,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             limits = new IAccountKeychain.TokenLimit[](0);
         }
 
-        vm.startPrank(account);
+        vm.startPrank(account, account);
         try keychain.authorizeKey(keyId, sigType, expiry, enforceLimits, limits) {
             vm.stopPrank();
 
@@ -285,7 +285,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             return;
         }
 
-        vm.startPrank(account);
+        vm.startPrank(account, account);
         try keychain.revokeKey(keyId) {
             vm.stopPrank();
 
@@ -363,7 +363,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             }
             // Create and immediately revoke the key
             _createKeyInternal(account, keyId);
-            vm.prank(account);
+            vm.prank(account, account);
             keychain.revokeKey(keyId);
             _totalKeysRevoked++;
             _ghostKeyExists[account][keyId] = false;
@@ -377,7 +377,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
 
-        vm.startPrank(account);
+        vm.startPrank(account, account);
         try keychain.authorizeKey(
             keyId,
             IAccountKeychain.SignatureType.Secp256k1,
@@ -424,7 +424,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         bool hadLimitsBefore = _ghostKeyEnforceLimits[account][keyId];
 
-        vm.startPrank(account);
+        vm.startPrank(account, account);
         try keychain.updateSpendingLimit(keyId, token, newLimit) {
             vm.stopPrank();
 
@@ -454,7 +454,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
 
-        vm.startPrank(account);
+        vm.startPrank(account, account);
         try keychain.authorizeKey(
             address(0), // Zero key ID
             IAccountKeychain.SignatureType.Secp256k1,
@@ -486,7 +486,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
 
-        vm.startPrank(account);
+        vm.startPrank(account, account);
         try keychain.authorizeKey(
             keyId,
             IAccountKeychain.SignatureType.P256,
@@ -520,7 +520,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         // Both never-existed and already-revoked keys should return KeyNotFound
         bool wasRevoked = _ghostKeyRevoked[account][keyId];
 
-        vm.startPrank(account);
+        vm.startPrank(account, account);
         try keychain.revokeKey(keyId) {
             vm.stopPrank();
             revert("TEMPO-KEY9: Revoking non-existent/revoked key should fail");
@@ -565,7 +565,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         IAccountKeychain.TokenLimit[] memory limits1 = new IAccountKeychain.TokenLimit[](1);
         limits1[0] = IAccountKeychain.TokenLimit({ token: address(_tokens[0]), amount: 1000e6 });
 
-        vm.prank(account1);
+        vm.prank(account1, account1);
         keychain.authorizeKey(
             keyId,
             IAccountKeychain.SignatureType.P256,
@@ -590,7 +590,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         IAccountKeychain.TokenLimit[] memory limits2 = new IAccountKeychain.TokenLimit[](1);
         limits2[0] = IAccountKeychain.TokenLimit({ token: address(_tokens[0]), amount: 2000e6 });
 
-        vm.prank(account2);
+        vm.prank(account2, account2);
         keychain.authorizeKey(
             keyId,
             IAccountKeychain.SignatureType.Secp256k1,
@@ -679,7 +679,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
 
-        vm.startPrank(account);
+        vm.startPrank(account, account);
         try keychain.authorizeKey(
             keyId, IAccountKeychain.SignatureType.Secp256k1, expiry, false, limits
         ) {
@@ -701,7 +701,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             // TEMPO-KEY17: timestamp >= expiry means equality counts as expired
             vm.warp(expiry);
 
-            vm.startPrank(account);
+            vm.startPrank(account, account);
             try keychain.updateSpendingLimit(keyId, address(_tokens[0]), 1000e6) {
                 vm.stopPrank();
                 revert("TEMPO-KEY17: Operation at expiry timestamp should fail with KeyExpired");
@@ -752,7 +752,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         vm.warp(warpTo);
 
         // TEMPO-KEY18: Operations on expired keys should fail with KeyExpired
-        vm.startPrank(account);
+        vm.startPrank(account, account);
         try keychain.updateSpendingLimit(keyId, address(_tokens[0]), 1000e6) {
             vm.stopPrank();
             revert("TEMPO-KEY18: Operation on expired key should fail");
@@ -798,7 +798,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             limits
         );
 
-        vm.startPrank(account);
+        vm.startPrank(account, account);
         (bool success, bytes memory returnData) = address(keychain).call(callData);
         vm.stopPrank();
 
