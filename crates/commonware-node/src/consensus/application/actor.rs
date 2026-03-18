@@ -348,27 +348,6 @@ impl Inner<Init> {
             *lock = Some((round, proposal.clone()));
         }
 
-        // Make sure reth sees the new payload so that in the next round we can
-        // verify blocks on top of it.
-        let is_good = verify_block(
-            context,
-            round.epoch(),
-            &self.epoch_strategy,
-            self.execution_node
-                .add_ons_handle
-                .beacon_engine_handle
-                .clone(),
-            &proposal,
-            parent_digest,
-            &self.scheme_provider,
-        )
-        .await
-        .wrap_err("failed verifying block against execution layer")?;
-
-        if !is_good {
-            eyre::bail!("validation reported that that just-proposed block is invalid");
-        }
-
         Ok(())
     }
 
@@ -517,6 +496,10 @@ impl Inner<Init> {
             );
             info!(
                 %outcome.epoch,
+                outcome.network_identity = %outcome.network_identity(),
+                outcome.dealers = ?outcome.dealers(),
+                outcome.players = ?outcome.players(),
+                outcome.next_players = ?outcome.next_players(),
                 "received DKG outcome; will include in payload builder attributes",
             );
             outcome.encode().into()
@@ -848,7 +831,7 @@ async fn verify_block<TContext: Pacer>(
         PayloadStatusEnum::Syncing => {
             bail!(
                 "failed validating block because payload is still syncing, \
-                this means the parent block was available to the consensus
+                this means the parent block was available to the consensus \
                 layer but not the execution layer"
             )
         }

@@ -128,6 +128,7 @@ fn init_download_urls() {
             Cow::Borrowed("https://snapshots.tempoxyz.dev/42429 (andantino)"),
         ],
         default_base_url: Cow::Borrowed(DEFAULT_DOWNLOAD_URL),
+        default_chain_aware_base_url: None,
         long_help: None,
     };
 

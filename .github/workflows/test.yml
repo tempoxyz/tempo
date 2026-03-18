@@ -147,7 +147,7 @@ jobs:
           retention-days: 1
 
   e2e:
-    name: e2e (${{ matrix.partition }}/2)
+    name: e2e (${{ matrix.partition }}/3)
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 30
     permissions:
@@ -155,7 +155,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        partition: [1, 2]
+        partition: [1, 2, 3]
+    env:
+      # Set to 8 MiB because some tests run into stack overflows with jemalloc
+      RUST_MIN_STACK: 8388608
     steps:
       - uses: actions/checkout@v6
         with:
@@ -167,9 +170,9 @@ jobs:
         with:
           tool: nextest@0.9.124
       - name: Build e2e tests
-        run: cargo nextest run --profile ci -E 'package(tempo-e2e)' --partition count:${{ matrix.partition }}/2 --no-run
+        run: cargo nextest run --profile ci -E 'package(tempo-e2e)' --partition count:${{ matrix.partition }}/3 --no-run
       - name: Run e2e tests
-        run: cargo nextest run --profile ci -E 'package(tempo-e2e)' --partition count:${{ matrix.partition }}/2
+        run: cargo nextest run --profile ci -E 'package(tempo-e2e)' --partition count:${{ matrix.partition }}/3
 
   cli:
     name: CLI smoke tests
