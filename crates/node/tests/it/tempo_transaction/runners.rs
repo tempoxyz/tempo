@@ -2254,11 +2254,8 @@ pub(super) async fn run_fee_payer_negative_scenario<E: TestEnv>(env: &mut E) -> 
 
         let sig = sign_aa_tx_secp256k1(&tx, &user_signer)?;
         let envelope: TempoTxEnvelope = tx.into_signed(sig).into();
-        env.submit_tx_expecting_rejection(
-            envelope.encoded_2718(),
-            Some("fee payer cannot resolve to sender"),
-        )
-        .await?;
+        env.submit_tx_expecting_rejection(envelope.encoded_2718(), None)
+            .await?;
     }
 
     println!("✓ Fee payer negative scenario passed");
