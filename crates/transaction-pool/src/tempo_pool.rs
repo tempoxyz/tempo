@@ -300,11 +300,9 @@ where
                         continue;
                     }
 
-                    // Get the token's policy IDs (includes sub-policy IDs for compound)
                     let token_policies =
-                        get_transfer_policy_ids(provider, fee_token, &mut policy_cache);
+                        get_sender_policy_ids(provider, fee_token, &mut policy_cache);
 
-                    // If the blacklist policy matches any of the token's policy IDs, evict
                     if token_policies
                         .as_ref()
                         .is_some_and(|ids| ids.contains(&blacklist_policy_id))
@@ -334,11 +332,9 @@ where
                         continue;
                     }
 
-                    // Get the token's policy IDs (includes sub-policy IDs for compound)
                     let token_policies =
-                        get_transfer_policy_ids(provider, fee_token, &mut policy_cache);
+                        get_sender_policy_ids(provider, fee_token, &mut policy_cache);
 
-                    // If the whitelist policy matches any of the token's policy IDs, evict
                     if token_policies
                         .as_ref()
                         .is_some_and(|ids| ids.contains(&whitelist_policy_id))
@@ -1099,12 +1095,14 @@ pub(crate) fn exceeds_spending_limit(
         .unwrap_or_default()
 }
 
-/// Reads all policy IDs associated with a TIP-20 token's transfer policy.
+/// Returns the set of policy IDs that can affect fee_payer authorization for a token.
 ///
-/// For simple policies, returns `[policy_id]`.
-/// For compound policies (TIP-1015), returns the compound ID plus its sub-policy IDs
-/// so that eviction checks match events emitted with sub-policy IDs.
-fn get_transfer_policy_ids(
+/// For simple policies the set contains just the policy ID. For compound policies
+/// (TIP-1015) it contains both the compound root and the sender sub-policy, since
+/// fee transfer authorization checks `fee_payer` via `AuthRole::Sender`.
+/// `recipient_policy_id` and `mint_recipient_policy_id` are excluded — they govern
+/// other roles and cannot invalidate a fee_payer's transactions.
+fn get_sender_policy_ids(
     provider: &mut impl StateProvider,
     fee_token: Address,
     cache: &mut AddressMap<Vec<u64>>,
@@ -1123,21 +1121,14 @@ fn get_transfer_policy_ids(
 
         let mut ids = vec![policy_id];
 
-        // Resolve compound policies to include sub-policy IDs
+        // For compound policies, include only the sender sub-policy ID.
         let registry = TIP403Registry::new();
         if let Ok(data) = registry.policy_records[policy_id].base.read()
             && data.is_compound()
             && let Ok(compound) = registry.policy_records[policy_id].compound.read()
+            && compound.sender_policy_id != 0
         {
-            for sub_id in [
-                compound.sender_policy_id,
-                compound.recipient_policy_id,
-                compound.mint_recipient_policy_id,
-            ] {
-                if sub_id != 0 && !ids.contains(&sub_id) {
-                    ids.push(sub_id);
-                }
-            }
+            ids.push(compound.sender_policy_id);
         }
 
         cache.insert(fee_token, ids.clone());
@@ -1277,21 +1268,130 @@ mod tests {
         let mut state = provider.latest().unwrap();
         let mut cache: AddressMap<Vec<u64>> = AddressMap::default();
 
-        let policy_ids = get_transfer_policy_ids(&mut state, fee_token, &mut cache);
+        let ids = get_sender_policy_ids(&mut state, fee_token, &mut cache)
+            .expect("should resolve policy IDs");
 
-        // Must contain the compound ID and both sub-policy IDs
-        let ids = policy_ids.expect("should resolve policy IDs");
         assert!(
             ids.contains(&compound_policy_id),
             "should contain compound policy ID"
         );
         assert!(
             ids.contains(&sender_sub_policy),
-            "sub-policy event (id={sender_sub_policy}) should match token with compound policy (id={compound_policy_id})"
+            "should contain sender sub-policy"
         );
+    }
+
+    /// fee_payer is only checked against sender sub-policy at execution time,
+    /// so sender_policy_ids must NOT contain recipient_sub_policy.
+    #[test]
+    fn compound_policy_sender_ids_exclude_recipient_sub_policy() {
+        let fee_token = address!("20C0000000000000000000000000000000000001");
+        let compound_policy_id: u64 = 5;
+        let sender_sub_policy: u64 = 3;
+        let recipient_sub_policy: u64 = 4;
+
+        let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
+            tempo_chainspec::spec::MODERATO.clone(),
+        ));
+
+        let transfer_policy_id_packed =
+            U256::from(compound_policy_id) << (tip20_slots::TRANSFER_POLICY_ID_OFFSET * 8);
+        provider.add_account(
+            fee_token,
+            ExtendedAccount::new(0, U256::ZERO).extend_storage([(
+                tip20_slots::TRANSFER_POLICY_ID.into(),
+                transfer_policy_id_packed,
+            )]),
+        );
+
+        let registry = TIP403Registry::new();
+        let policy_data = PolicyData {
+            policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
+            admin: Address::ZERO,
+        };
+        let base_slot = registry.policy_records[compound_policy_id].base.base_slot();
+        let compound_slot = registry.policy_records[compound_policy_id]
+            .compound
+            .base_slot();
+        let compound_encoded =
+            U256::from(sender_sub_policy) | (U256::from(recipient_sub_policy) << 64);
+
+        provider.add_account(
+            TIP403_REGISTRY_ADDRESS,
+            ExtendedAccount::new(0, U256::ZERO).extend_storage([
+                (base_slot.into(), policy_data.encode_to_slot()),
+                (compound_slot.into(), compound_encoded),
+            ]),
+        );
+
+        let mut state = provider.latest().unwrap();
+        let mut cache: AddressMap<Vec<u64>> = AddressMap::default();
+
+        let ids = get_sender_policy_ids(&mut state, fee_token, &mut cache)
+            .expect("should resolve policy IDs");
+
+        assert!(ids.contains(&compound_policy_id));
+        assert!(ids.contains(&sender_sub_policy));
         assert!(
-            ids.contains(&recipient_sub_policy),
-            "sub-policy event (id={recipient_sub_policy}) should match token with compound policy (id={compound_policy_id})"
+            !ids.contains(&recipient_sub_policy),
+            "sender policy IDs should not contain recipient_sub_policy"
+        );
+    }
+
+    /// mint_recipient_policy_id is never consulted for fee transfers,
+    /// so it must be excluded from sender policy IDs.
+    #[test]
+    fn compound_policy_excludes_mint_recipient() {
+        let fee_token = address!("20C0000000000000000000000000000000000001");
+        let compound_policy_id: u64 = 5;
+        let sender_sub: u64 = 3;
+        let recipient_sub: u64 = 4;
+        let mint_recipient_sub: u64 = 6;
+
+        let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
+            tempo_chainspec::spec::MODERATO.clone(),
+        ));
+
+        let transfer_policy_id_packed =
+            U256::from(compound_policy_id) << (tip20_slots::TRANSFER_POLICY_ID_OFFSET * 8);
+        provider.add_account(
+            fee_token,
+            ExtendedAccount::new(0, U256::ZERO).extend_storage([(
+                tip20_slots::TRANSFER_POLICY_ID.into(),
+                transfer_policy_id_packed,
+            )]),
+        );
+
+        let registry = TIP403Registry::new();
+        let policy_data = PolicyData {
+            policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
+            admin: Address::ZERO,
+        };
+        let base_slot = registry.policy_records[compound_policy_id].base.base_slot();
+        let compound_slot = registry.policy_records[compound_policy_id]
+            .compound
+            .base_slot();
+        let compound_encoded = U256::from(sender_sub)
+            | (U256::from(recipient_sub) << 64)
+            | (U256::from(mint_recipient_sub) << 128);
+
+        provider.add_account(
+            TIP403_REGISTRY_ADDRESS,
+            ExtendedAccount::new(0, U256::ZERO).extend_storage([
+                (base_slot.into(), policy_data.encode_to_slot()),
+                (compound_slot.into(), compound_encoded),
+            ]),
+        );
+
+        let mut state = provider.latest().unwrap();
+        let mut cache: AddressMap<Vec<u64>> = AddressMap::default();
+
+        let ids = get_sender_policy_ids(&mut state, fee_token, &mut cache)
+            .expect("should resolve policy IDs");
+
+        assert!(
+            !ids.contains(&mint_recipient_sub),
+            "mint_recipient must be excluded from sender policy IDs"
         );
     }
 
