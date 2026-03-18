@@ -9,7 +9,7 @@ use futures::future::join_all;
 
 use crate::{CONSENSUS_NODE_PREFIX, Setup, setup_validators};
 
-#[test_traced("WARN")]
+#[test_traced]
 fn validator_lost_share_but_gets_share_in_next_epoch() {
     let _ = tempo_eyre::install();
 
@@ -19,8 +19,11 @@ fn validator_lost_share_but_gets_share_in_next_epoch() {
     let executor = Runner::from(cfg);
 
     executor.start(|mut context| async move {
-        let epoch_length = 30;
-        let setup = Setup::new().seed(seed).epoch_length(epoch_length);
+        let epoch_length = 20;
+        let setup = Setup::new()
+            .seed(seed)
+            .epoch_length(epoch_length)
+            .connect_execution_layer_nodes(true);
 
         let (mut validators, _execution_runtime) =
             setup_validators(&mut context, setup.clone()).await;
@@ -54,7 +57,7 @@ fn validator_lost_share_but_gets_share_in_next_epoch() {
                 let metric = parts.next().unwrap();
                 let value = parts.next().unwrap();
 
-                if metrics.ends_with("_peers_blocked") {
+                if metric.ends_with("_peers_blocked") {
                     let value = value.parse::<u64>().unwrap();
                     assert_eq!(value, 0);
                 }
@@ -70,7 +73,6 @@ fn validator_lost_share_but_gets_share_in_next_epoch() {
                     && metric.ends_with("_epoch_manager_how_often_verifier_total")
                 {
                     let value = value.parse::<u64>().unwrap();
-                    tracing::warn!(metric, value,);
                     node_forgot_share = value > 0;
                 }
 
@@ -80,7 +82,6 @@ fn validator_lost_share_but_gets_share_in_next_epoch() {
                     && metric.ends_with("_epoch_manager_how_often_signer_total")
                 {
                     let value = value.parse::<u64>().unwrap();
-                    tracing::warn!(metric, value,);
                     if value > 0 {
                         break 'acquire_share;
                     }

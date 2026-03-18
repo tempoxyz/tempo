@@ -21,7 +21,7 @@ pub enum TempoInvalidTransaction {
 
     /// System transaction execution failed.
     #[error("system transaction execution failed, result: {_0:?}")]
-    SystemTransactionFailed(ExecutionResult<TempoHaltReason>),
+    SystemTransactionFailed(Box<ExecutionResult<TempoHaltReason>>),
 
     /// Fee payer signature recovery failed.
     ///

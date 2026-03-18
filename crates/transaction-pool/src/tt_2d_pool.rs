@@ -1157,7 +1157,7 @@ impl AA2dPool {
     #[expect(clippy::type_complexity)]
     pub(crate) fn on_state_updates(
         &mut self,
-        state: &HashMap<Address, BundleAccount>,
+        state: &AddressMap<BundleAccount>,
     ) -> (
         Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
         Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
