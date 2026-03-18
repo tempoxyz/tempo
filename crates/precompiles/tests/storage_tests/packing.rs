@@ -858,3 +858,128 @@ fn test_t2_struct_store_preserves_neighbor_slots() -> eyre::Result<()> {
         Ok(())
     })
 }
+
+/// On T2, storing a multi-slot struct with packed fields in *different* slots
+/// skips the SLOAD for each new packed slot (the "else if IS_PACKABLE" branch).
+///
+/// `Rule3TestPartial { a: u128, b: u128, c: u8 }` packs `a` and `b` in slot 0,
+/// then `c` starts a new slot 1. The T2 optimisation should skip the SLOAD for
+/// both slot 0 (first-field branch) *and* slot 1 (new-slot-but-packable branch).
+#[test]
+fn test_t2_store_multi_slot_packed_skips_sload() -> eyre::Result<()> {
+    let garbage = U256::MAX;
+    let base_slot = U256::from(50);
+    let address = Address::random();
+
+    let value = Rule3TestPartial {
+        a: 0x1111_2222_3333_4444_5555_6666_7777_8888,
+        b: 0xAAAA_BBBB_CCCC_DDDD_EEEE_FFFF_0000_1111,
+        c: 0x42,
+    };
+
+    // -- Pre-T2: SLOADs are performed for each packed slot --
+    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
+    StorageCtx::enter(&mut storage, || {
+        // Pre-fill both slots with garbage
+        U256::handle(base_slot, LayoutCtx::FULL, address).write(garbage)?;
+        U256::handle(base_slot + U256::from(1), LayoutCtx::FULL, address).write(garbage)?;
+        StorageCtx.reset_counters();
+
+        Rule3TestPartial::handle(base_slot, LayoutCtx::FULL, address).write(value.clone())?;
+
+        // Pre-T2: 2 SLOADs (one per packed slot), 2 SSTOREs
+        assert_eq!(StorageCtx.counter_sload(), 2, "pre-T2 should SLOAD both packed slots");
+        assert_eq!(StorageCtx.counter_sstore(), 2);
+
+        // Slot 1 unused bytes (31 bytes unused) should retain garbage from the SLOAD
+        let slot1 = U256::handle(base_slot + U256::from(1), LayoutCtx::FULL, address).read()?;
+        assert_ne!(slot1, U256::from(0x42u8), "pre-T2 should preserve garbage in unused bytes");
+
+        Ok::<(), error::TempoPrecompileError>(())
+    })?;
+
+    // -- T2: SLOADs are skipped for both packed slots --
+    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+    StorageCtx::enter(&mut storage, || {
+        // Pre-fill both slots with garbage
+        U256::handle(base_slot, LayoutCtx::FULL, address).write(garbage)?;
+        U256::handle(base_slot + U256::from(1), LayoutCtx::FULL, address).write(garbage)?;
+        StorageCtx.reset_counters();
+
+        Rule3TestPartial::handle(base_slot, LayoutCtx::FULL, address).write(value.clone())?;
+
+        // T2: 0 SLOADs (elided for both slots), 2 SSTOREs
+        assert_eq!(StorageCtx.counter_sload(), 0, "T2 should elide SLOADs for all packed slots");
+        assert_eq!(StorageCtx.counter_sstore(), 2);
+
+        // Slot 1 unused bytes should be zero — proves SLOAD was skipped
+        let slot1 = U256::handle(base_slot + U256::from(1), LayoutCtx::FULL, address).read()?;
+        assert_eq!(slot1, U256::from(0x42u8), "T2 should zero unused bytes in new packed slot");
+
+        Ok(())
+    })
+}
+
+/// Verifies that on T2, the SLOAD elision on non-first packed slots doesn't corrupt
+/// neighbor slots. Uses `PackedThreeSlot` which spans 3 slots with packing on slots 1 and 2.
+#[test]
+fn test_t2_multi_slot_packed_preserves_neighbor_slots() -> eyre::Result<()> {
+    let address = Address::random();
+    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+
+    StorageCtx::enter(&mut storage, || {
+        let base_slot = U256::from(200);
+
+        let original = PackedThreeSlot {
+            value: U256::from(0xDEAD_u64),
+            timestamp: 0x1111111111111111,
+            start_time: 0x2222222222222222,
+            end_time: 0x3333333333333333,
+            nonce: 0x4444444444444444,
+            owner: Address::from([0xAA; 20]),
+            active: true,
+        };
+        PackedThreeSlot::handle(base_slot, LayoutCtx::FULL, address).write(original.clone())?;
+
+        // Snapshot all three slot values
+        let slot0 = U256::handle(base_slot, LayoutCtx::FULL, address).read()?;
+        let slot1 = U256::handle(base_slot + U256::from(1), LayoutCtx::FULL, address).read()?;
+        let slot2 = U256::handle(base_slot + U256::from(2), LayoutCtx::FULL, address).read()?;
+
+        // Overwrite with different packed fields in slots 1 and 2
+        let updated = PackedThreeSlot {
+            value: U256::from(0xDEAD_u64), // slot 0, same
+            timestamp: 0xAAAAAAAAAAAAAAAA,  // slot 1, different
+            start_time: 0xBBBBBBBBBBBBBBBB, // slot 1, different
+            end_time: 0xCCCCCCCCCCCCCCCC,  // slot 1, different
+            nonce: 0xDDDDDDDDDDDDDDDD,     // slot 1, different
+            owner: Address::from([0xBB; 20]), // slot 2, different
+            active: false,                   // slot 2, different
+        };
+        PackedThreeSlot::handle(base_slot, LayoutCtx::FULL, address).write(updated.clone())?;
+
+        // Slot 0 should be unchanged (non-packable U256, direct store)
+        let slot0_after = U256::handle(base_slot, LayoutCtx::FULL, address).read()?;
+        assert_eq!(slot0_after, slot0, "slot 0 should be unchanged");
+
+        // Slots 1 and 2 should be updated (not equal to original snapshots)
+        let slot1_after =
+            U256::handle(base_slot + U256::from(1), LayoutCtx::FULL, address).read()?;
+        let slot2_after =
+            U256::handle(base_slot + U256::from(2), LayoutCtx::FULL, address).read()?;
+        assert_ne!(slot1_after, slot1, "slot 1 should be updated");
+        assert_ne!(slot2_after, slot2, "slot 2 should be updated");
+
+        // Roundtrip: read back and verify all fields are correct
+        let loaded = PackedThreeSlot::handle(base_slot, LayoutCtx::FULL, address).read()?;
+        assert_eq!(loaded.value, updated.value);
+        assert_eq!(loaded.timestamp, updated.timestamp);
+        assert_eq!(loaded.start_time, updated.start_time);
+        assert_eq!(loaded.end_time, updated.end_time);
+        assert_eq!(loaded.nonce, updated.nonce);
+        assert_eq!(loaded.owner, updated.owner);
+        assert_eq!(loaded.active, updated.active);
+
+        Ok(())
+    })
+}
