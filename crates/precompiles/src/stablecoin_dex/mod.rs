@@ -197,7 +197,14 @@ impl StablecoinDEX {
         token: Address,
         amount: u128,
     ) -> Result<()> {
-        TIP20Token::from_address(token)?.ensure_transfer_authorized(user, self.address)?;
+        // Ensure that the token can be transfered
+        let tip20 = TIP20Token::from_address(token)?;
+        tip20.ensure_transfer_authorized(user, self.address)?;
+
+        // Ensure that the token is not paused (spec: T2+)
+        if self.storage.spec().is_t2() {
+            tip20.check_not_paused()?;
+        }
 
         let user_balance = self.balance_of(user, token)?;
         if user_balance >= amount {
@@ -4943,6 +4950,56 @@ mod tests {
                         |e| e.topics()[0] != IStablecoinDEX::OrderPlaced::SIGNATURE_HASH
                     )
                 );
+
+                Ok::<_, eyre::Report>(())
+            })?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_swap_paused_token_allowed_pre_t2_blocked_on_t2() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T1C, TempoHardfork::T2] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || {
+                let mut exchange = StablecoinDEX::new();
+                exchange.initialize()?;
+
+                let (alice, bob, admin) = (Address::random(), Address::random(), Address::random());
+                let amount_in = 500_000u128;
+                let tick = 10;
+
+                let (base_token, quote_token) =
+                    setup_test_tokens(admin, alice, exchange.address, 200_000_000u128)?;
+                exchange.create_pair(base_token)?;
+
+                // Alice places an ask order so Bob can swap base→quote
+                exchange.place(alice, base_token, MIN_ORDER_AMOUNT, true, tick)?;
+
+                // Give Bob internal DEX balance in the base token
+                exchange.set_balance(bob, base_token, amount_in)?;
+
+                // Pause the base token
+                let mut base_tip20 = TIP20Token::from_address(base_token)?;
+                base_tip20.grant_role_internal(admin, *crate::tip20::PAUSE_ROLE)?;
+                base_tip20.pause(admin, ITIP20::pauseCall {})?;
+
+                let result =
+                    exchange.swap_exact_amount_in(bob, base_token, quote_token, amount_in, 0);
+
+                if spec.is_t2() {
+                    // T2+: swap must be blocked
+                    assert!(result.is_err(), "swap should fail on {spec:?} when paused");
+                    assert!(matches!(
+                        result.unwrap_err(),
+                        TempoPrecompileError::TIP20(TIP20Error::ContractPaused(_))
+                    ));
+                    assert_eq!(exchange.balance_of(bob, base_token)?, amount_in);
+                } else {
+                    // Pre-T2: swap succeeds (no pause check)
+                    assert!(result.is_ok(), "swap should succeed on {spec:?} pre-T2");
+                    assert_eq!(exchange.balance_of(bob, base_token)?, 0);
+                }
 
                 Ok::<_, eyre::Report>(())
             })?;
