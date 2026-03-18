@@ -89,6 +89,9 @@ pub struct TempoGenesisInfo {
     /// Activation timestamp for T2 hardfork.
     #[serde(skip_serializing_if = "Option::is_none")]
     t2_time: Option<u64>,
+    /// Activation timestamp for T3 hardfork.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    t3_time: Option<u64>,
 }
 
 impl TempoGenesisInfo {
@@ -115,6 +118,7 @@ impl TempoGenesisInfo {
             TempoHardfork::T1B => self.t1b_time,
             TempoHardfork::T1C => self.t1c_time,
             TempoHardfork::T2 => self.t2_time,
+            TempoHardfork::T3 => self.t3_time,
         }
     }
 }
@@ -491,9 +495,10 @@ mod tests {
             assert!(cs.is_t1c_active_at_timestamp(1773327600));
             assert_eq!(cs.tempo_hardfork_at(1773327600), TempoHardfork::T1C);
 
-            // T1C stays active on mainnet; T2 not yet scheduled
+            // T1C stays active on mainnet; T2/T3 not yet scheduled
             assert!(cs.is_t1c_active_at_timestamp(u64::MAX));
             assert!(!cs.is_t2_active_at_timestamp(u64::MAX));
+            assert!(!cs.is_t3_active_at_timestamp(u64::MAX));
             assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T1C);
         }
 
@@ -526,9 +531,10 @@ mod tests {
             assert!(cs.is_t1c_active_at_timestamp(1773068400));
             assert_eq!(cs.tempo_hardfork_at(1773068400), TempoHardfork::T1C);
 
-            // T1C stays active on moderato; T2 not yet scheduled
+            // T1C stays active on moderato; T2/T3 not yet scheduled
             assert!(cs.is_t1c_active_at_timestamp(u64::MAX));
             assert!(!cs.is_t2_active_at_timestamp(u64::MAX));
+            assert!(!cs.is_t3_active_at_timestamp(u64::MAX));
             assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T1C);
         }
 

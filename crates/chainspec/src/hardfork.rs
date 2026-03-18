@@ -182,6 +182,8 @@ tempo_hardfork! (
         ///
         /// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
         T2,
+        /// T3 hardfork
+        T3,
     }
 );
 
@@ -195,7 +197,7 @@ impl TempoHardfork {
     /// Economic conversion: ceil(basefee × gas_used / 10^12) = cost in microdollars (TIP-20 tokens)
     pub const fn base_fee(&self) -> u64 {
         match self {
-            Self::T1 | Self::T1A | Self::T1B | Self::T1C | Self::T2 => {
+            Self::T1 | Self::T1A | Self::T1B | Self::T1C | Self::T2 | Self::T3 => {
                 crate::spec::TEMPO_T1_BASE_FEE
             }
             Self::T0 | Self::Genesis => crate::spec::TEMPO_T0_BASE_FEE,
@@ -207,7 +209,7 @@ impl TempoHardfork {
     /// - T1+: 30M gas (fixed)
     pub const fn general_gas_limit(&self) -> Option<u64> {
         match self {
-            Self::T1 | Self::T1A | Self::T1B | Self::T1C | Self::T2 => {
+            Self::T1 | Self::T1A | Self::T1B | Self::T1C | Self::T2 | Self::T3 => {
                 Some(crate::spec::TEMPO_T1_GENERAL_GAS_LIMIT)
             }
             Self::T0 | Self::Genesis => None,
@@ -221,7 +223,7 @@ impl TempoHardfork {
     /// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
     pub const fn tx_gas_limit_cap(&self) -> Option<u64> {
         match self {
-            Self::T1A | Self::T1B | Self::T1C | Self::T2 => {
+            Self::T1A | Self::T1B | Self::T1C | Self::T2 | Self::T3 => {
                 Some(crate::spec::TEMPO_T1_TX_GAS_LIMIT_CAP)
             }
             Self::T0 | Self::Genesis | Self::T1 => Some(MAX_TX_GAS_LIMIT_OSAKA),
@@ -234,7 +236,7 @@ impl TempoHardfork {
             Self::Genesis | Self::T0 | Self::T1 | Self::T1A | Self::T1B | Self::T1C => {
                 crate::spec::TEMPO_T1_EXISTING_NONCE_KEY_GAS
             }
-            Self::T2 => crate::spec::TEMPO_T2_EXISTING_NONCE_KEY_GAS,
+            Self::T2 | Self::T3 => crate::spec::TEMPO_T2_EXISTING_NONCE_KEY_GAS,
         }
     }
 
@@ -244,7 +246,7 @@ impl TempoHardfork {
             Self::Genesis | Self::T0 | Self::T1 | Self::T1A | Self::T1B | Self::T1C => {
                 crate::spec::TEMPO_T1_NEW_NONCE_KEY_GAS
             }
-            Self::T2 => crate::spec::TEMPO_T2_NEW_NONCE_KEY_GAS,
+            Self::T2 | Self::T3 => crate::spec::TEMPO_T2_NEW_NONCE_KEY_GAS,
         }
     }
 }
