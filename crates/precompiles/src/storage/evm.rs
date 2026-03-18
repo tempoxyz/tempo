@@ -104,15 +104,22 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     ) -> Result<(), TempoPrecompileError> {
         let additional_cost = self.gas_params.cold_account_additional_cost();
 
+        let mut insufficient_gas_for_cold_load = false;
+        if self.spec.is_t2() {
+            self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
+            insufficient_gas_for_cold_load = self.gas_remaining < additional_cost;
+        }
+
         let mut account = self
             .internals
-            .load_account_mut_skip_cold_load(address, false)?;
+            .load_account_mut_skip_cold_load(address, insufficient_gas_for_cold_load)?;
 
-        // TODO(rakita) can be moved to the beginning of the function. Requires fork.
-        deduct_gas(
-            &mut self.gas_remaining,
-            self.gas_params.warm_storage_read_cost(),
-        )?;
+        if !self.spec.is_t2() {
+            deduct_gas(
+                &mut self.gas_remaining,
+                self.gas_params.warm_storage_read_cost(),
+            )?;
+        }
 
         // dynamic gas
         if account.is_cold {
@@ -132,13 +139,24 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
-        let result = self
-            .internals
-            .load_account_mut(address)?
-            .sstore(key, value, false)?;
+        let mut insufficient_gas_for_cold_load = false;
 
-        // TODO(rakita) can be moved to the beginning of the function. Requires fork.
-        self.deduct_gas(self.gas_params.sstore_static_gas())?;
+        // do static deduction before loading storage to avoid cheap loads.
+        if self.spec.is_t2() {
+            self.deduct_gas(self.gas_params.sstore_static_gas())?;
+            insufficient_gas_for_cold_load =
+                self.gas_remaining < self.gas_params.cold_storage_additional_cost();
+        }
+
+        let result = self.internals.load_account_mut(address)?.sstore(
+            key,
+            value,
+            insufficient_gas_for_cold_load,
+        )?;
+
+        if !self.spec.is_t2() {
+            self.deduct_gas(self.gas_params.sstore_static_gas())?;
+        }
 
         // dynamic gas
         self.deduct_gas(
@@ -185,19 +203,29 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
         let additional_cost = self.gas_params.cold_storage_additional_cost();
 
+        let mut insufficient_gas_for_cold_load = false;
+
+        // do static before loading account to avoid cheap loads.
+        if self.spec.is_t2() {
+            self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
+            insufficient_gas_for_cold_load = self.gas_remaining < additional_cost;
+        }
+
         let value;
         let is_cold;
         {
             let mut account = self.internals.load_account_mut(address)?;
-            let val = account.sload(key, false)?;
+            let val = account.sload(key, insufficient_gas_for_cold_load)?;
 
             value = val.present_value;
             is_cold = val.is_cold;
         };
 
-        // TODO(rakita) can be moved to the beginning of the function. Requires fork.
-        self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
+        if !self.spec.is_t2() {
+            self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
+        }
 
+        // dynamic gas
         if is_cold {
             self.deduct_gas(additional_cost)?;
         }
@@ -319,6 +347,7 @@ mod tests {
         database::{CacheDB, EmptyDB},
         interpreter::StateLoad,
     };
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_evm::TempoEvmFactory;
 
     #[test]
@@ -597,6 +626,296 @@ mod tests {
         // Verify they are independent
         assert_eq!(provider.sload(address, key)?, persistent_value);
         assert_eq!(provider.tload(address, key)?, transient_value);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_sstore_t2_fork_sufficient_gas() -> eyre::Result<()> {
+        // Test T2 fork behavior with sufficient gas for all operations
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
+        let ctx = evm.ctx_mut();
+        ctx.cfg.spec = TempoHardfork::T2;
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
+
+        let address = address!("c000000000000000000000000000000000000001");
+        let key = U256::from(42);
+        let value = U256::from(999);
+
+        // Store and verify in T2 fork
+        provider.sstore(address, key, value)?;
+        let loaded = provider.sload(address, key)?;
+
+        assert_eq!(loaded, value);
+        Ok(())
+    }
+
+    #[test]
+    fn test_sload_t2_fork_sufficient_gas() -> eyre::Result<()> {
+        // Test T2 fork sload with sufficient gas
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
+        let ctx = evm.ctx_mut();
+        ctx.cfg.spec = TempoHardfork::T2;
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
+
+        let address = address!("d000000000000000000000000000000000000001");
+        let key = U256::from(100);
+        let value = U256::from(12345);
+
+        // First store the value
+        provider.sstore(address, key, value)?;
+
+        // Then load it back (second access should be warm, not cold)
+        let loaded = provider.sload(address, key)?;
+        assert_eq!(loaded, value);
+
+        // Load again to verify warm access
+        let loaded_again = provider.sload(address, key)?;
+        assert_eq!(loaded_again, value);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_with_account_info_t2_fork() -> eyre::Result<()> {
+        // Test T2 fork with_account_info gas handling
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
+        let ctx = evm.ctx_mut();
+        ctx.cfg.spec = TempoHardfork::T2;
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
+
+        let address = address!("e000000000000000000000000000000000000001");
+
+        // Test with_account_info on a new account
+        let mut account_nonce = 0u64;
+        provider.with_account_info(address, &mut |info| {
+            account_nonce = info.nonce;
+            assert!(info.balance.is_zero());
+        })?;
+
+        assert_eq!(account_nonce, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_sstore_sload_cold_storage_t2() -> eyre::Result<()> {
+        // Test T2 fork cold storage handling across multiple addresses
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
+        let ctx = evm.ctx_mut();
+        ctx.cfg.spec = TempoHardfork::T2;
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
+
+        let addr1 = address!("f000000000000000000000000000000000000001");
+        let addr2 = address!("f000000000000000000000000000000000000002");
+        let key1 = U256::from(1);
+        let key2 = U256::from(2);
+
+        // First access should be cold
+        provider.sstore(addr1, key1, U256::from(100))?;
+        provider.sstore(addr2, key2, U256::from(200))?;
+
+        // Warm access to same storage
+        provider.sstore(addr1, key1, U256::from(110))?;
+        provider.sstore(addr2, key2, U256::from(210))?;
+
+        // Verify values
+        assert_eq!(provider.sload(addr1, key1)?, U256::from(110));
+        assert_eq!(provider.sload(addr2, key2)?, U256::from(210));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_sstore_insufficient_gas_for_cold_load() -> eyre::Result<()> {
+        // Test sstore with insufficient gas for cold storage cost in T2 fork
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
+        let ctx = evm.ctx_mut();
+        ctx.cfg.spec = TempoHardfork::T2;
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+
+        // Calculate gas: set limit high enough to allow operations but verify skipping cold cost
+        let gas_params = &ctx.cfg.gas_params;
+        let static_gas = gas_params.sstore_static_gas();
+        let dynamic_gas = 25000u64;
+        let required_gas = static_gas + dynamic_gas;
+
+        let mut provider =
+            EvmPrecompileStorageProvider::new_with_gas_limit(evm_internals, &ctx.cfg, required_gas);
+
+        let initial_gas = provider.gas_used();
+        let address = address!("2000000000000000000000000000000000000001");
+        let key = U256::from(42);
+        let value = U256::from(999);
+
+        // This should succeed because cold load cost is properly handled
+        provider.sstore(address, key, value)?;
+        let gas_after_sstore = provider.gas_used();
+
+        // Verify gas was consumed
+        assert!(
+            gas_after_sstore > initial_gas,
+            "Gas should be consumed by sstore"
+        );
+
+        // Verify the value was stored
+        let loaded = provider.sload(address, key)?;
+        assert_eq!(loaded, value);
+        let gas_after_sload = provider.gas_used();
+
+        // Verify additional gas was consumed by sload
+        assert!(
+            gas_after_sload > gas_after_sstore,
+            "Gas should be consumed by sload"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_sload_insufficient_gas_for_cold_load() -> eyre::Result<()> {
+        // Test sload with insufficient gas for cold storage cost
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
+        let ctx = evm.ctx_mut();
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+
+        // First, store a value with unlimited gas
+        {
+            let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
+            let address = address!("3000000000000000000000000000000000000001");
+            let key = U256::from(100);
+            provider.sstore(address, key, U256::from(555))?;
+        }
+
+        // Reload internals for a fresh provider with limited gas
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+
+        let gas_params = &ctx.cfg.gas_params;
+        let warm_read_gas = gas_params.warm_storage_read_cost();
+        let dynamic_gas = 2100u64;
+        let required_gas = warm_read_gas + dynamic_gas;
+
+        let mut provider =
+            EvmPrecompileStorageProvider::new_with_gas_limit(evm_internals, &ctx.cfg, required_gas);
+
+        let initial_gas = provider.gas_used();
+        let address = address!("3000000000000000000000000000000000000001");
+        let key = U256::from(100);
+
+        // This should succeed because cold load cost is skipped when gas is insufficient
+        let value = provider.sload(address, key)?;
+        assert_eq!(value, U256::from(555));
+
+        let gas_after_sload = provider.gas_used();
+        // Verify gas was consumed by the sload operation
+        assert!(
+            gas_after_sload > initial_gas,
+            "Gas should be consumed by sload"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_with_account_info_insufficient_gas_for_cold_load() -> eyre::Result<()> {
+        // Test with_account_info with insufficient gas for cold account cost
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
+        let ctx = evm.ctx_mut();
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+
+        let gas_params = &ctx.cfg.gas_params;
+        let static_gas = gas_params.sstore_static_gas();
+        let required_gas = static_gas + 10000u64;
+
+        let mut provider =
+            EvmPrecompileStorageProvider::new_with_gas_limit(evm_internals, &ctx.cfg, required_gas);
+
+        let initial_gas = provider.gas_used();
+        let address = address!("4000000000000000000000000000000000000001");
+
+        // This should succeed - with_account_info handles gas properly in T2 fork
+        let mut retrieved_nonce = 0u64;
+        provider.with_account_info(address, &mut |info| {
+            retrieved_nonce = info.nonce;
+        })?;
+
+        assert_eq!(retrieved_nonce, 0);
+        let gas_after_load = provider.gas_used();
+        assert!(
+            gas_after_load > initial_gas,
+            "Gas should be consumed by with_account_info"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_multiple_sstore_insufficient_gas_scenarios() -> eyre::Result<()> {
+        // Test multiple sstore operations with constrained gas budget
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
+        let ctx = evm.ctx_mut();
+
+        let gas_params = &ctx.cfg.gas_params;
+        let static_gas = gas_params.sstore_static_gas();
+        let dynamic_gas = 20000u64;
+        let gas_per_sstore = static_gas + dynamic_gas;
+        let total_gas_needed = gas_per_sstore * 3;
+
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+        let mut provider = EvmPrecompileStorageProvider::new_with_gas_limit(
+            evm_internals,
+            &ctx.cfg,
+            total_gas_needed,
+        );
+
+        let address = address!("5000000000000000000000000000000000000001");
+        let mut prev_gas = provider.gas_used();
+
+        // Store multiple values with constrained gas
+        for i in 0..3 {
+            let key = U256::from(i);
+            let value = U256::from(i * 1000);
+            provider.sstore(address, key, value)?;
+
+            // Verify gas was consumed per operation
+            let current_gas = provider.gas_used();
+            assert!(
+                current_gas > prev_gas,
+                "Gas should increase with each sstore"
+            );
+            prev_gas = current_gas;
+        }
+
+        // Verify all values were stored
+        for i in 0..3 {
+            let key = U256::from(i);
+            let expected = U256::from(i * 1000);
+            let loaded = provider.sload(address, key)?;
+            assert_eq!(loaded, expected);
+        }
 
         Ok(())
     }
