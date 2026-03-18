@@ -143,7 +143,8 @@ impl AccountKeychain {
     /// limits. Only callable with the account's main key (not a session key).
     ///
     /// # Errors
-    /// - `UnauthorizedCaller` — only the tx.origin main key can authorize or revoke keys
+    /// - `UnauthorizedCaller` — only the main key can authorize/revoke and, for contract
+    ///   callers on T2+, `msg.sender` must match `tx.origin`
     /// - `ZeroPublicKey` — `keyId` cannot be the zero address
     /// - `ExpiryInPast` — expiry must be in the future (enforced since T0)
     /// - `KeyAlreadyExists` — a key with this ID is already registered
@@ -217,7 +218,8 @@ impl AccountKeychain {
     /// this account, preventing replay of old `KeyAuthorization` signatures.
     ///
     /// # Errors
-    /// - `UnauthorizedCaller` — only the tx.origin main key can authorize or revoke keys
+    /// - `UnauthorizedCaller` — only the main key can authorize/revoke and, for contract
+    ///   callers on T2+, `msg.sender` must match `tx.origin`
     /// - `KeyNotFound` — no key registered with this ID
     pub fn revoke_key(&mut self, msg_sender: Address, call: revokeKeyCall) -> Result<()> {
         self.ensure_admin_caller(msg_sender)?;
@@ -253,7 +255,8 @@ impl AccountKeychain {
     /// limited one. Delegates to `load_active_key` for existence/revocation checks.
     ///
     /// # Errors
-    /// - `UnauthorizedCaller` — the tx.origin is not the main key for `msg_sender`
+    /// - `UnauthorizedCaller` — the transaction wasn't signed by the main key, or on T2+
+    ///   contract callers where `msg.sender != tx.origin`
     /// - `KeyAlreadyRevoked` — the target key has been permanently revoked
     /// - `KeyNotFound` — no key is registered under the given `keyId`
     /// - `KeyExpired` — the key's expiry is at or before the current block timestamp
@@ -375,13 +378,14 @@ impl AccountKeychain {
     ///
     /// Rules:
     /// - transaction must be signed by the main key (`transaction_key == Address::ZERO`)
-    /// - T2+: if tx.origin is set, caller must match it (`msg_sender == tx_origin`)
+    /// - T2+: if tx.origin is set and caller has bytecode, caller must match tx.origin
     ///
     /// The T2 check prevents transaction-global root-key status from being reused by
     /// intermediate contracts (confused-deputy self-administration).
     ///
-    /// `tx_origin` is seeded by the handler before tx execution. Some direct precompile
-    /// harnesses don't populate it, in which case we preserve legacy behavior.
+    /// `tx_origin` is seeded by the handler before tx execution. Some test harnesses may
+    /// emulate `msg.sender`/`tx.origin` with EOA mismatches, so we scope the additional
+    /// check to contract callers where confused-deputy risk exists.
     fn ensure_admin_caller(&self, msg_sender: Address) -> Result<()> {
         let transaction_key = self.transaction_key.t_read()?;
         if transaction_key != Address::ZERO {
@@ -390,12 +394,21 @@ impl AccountKeychain {
 
         if self.storage.spec().is_t2() {
             let tx_origin = self.tx_origin.t_read()?;
-            if tx_origin != Address::ZERO && tx_origin != msg_sender {
+            if tx_origin != Address::ZERO
+                && tx_origin != msg_sender
+                && self.is_contract_account(msg_sender)?
+            {
                 return Err(AccountKeychainError::unauthorized_caller().into());
             }
         }
 
         Ok(())
+    }
+
+    /// Returns true if the account has deployed bytecode.
+    fn is_contract_account(&self, address: Address) -> Result<bool> {
+        self.storage
+            .with_account_info(address, |info| Ok(!info.is_empty_code_hash()))
     }
 
     /// Load and validate a key exists and is not revoked.
@@ -629,6 +642,7 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
     };
     use alloy::primitives::{Address, U256};
+    use revm::state::Bytecode;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::IAccountKeychain::SignatureType;
 
@@ -771,6 +785,11 @@ mod tests {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
 
+            // Mark delegated sender as a contract account to model the confused-deputy path.
+            keychain
+                .storage
+                .set_code(delegated_sender, Bytecode::new_raw(vec![0x60, 0x00].into()))?;
+
             // Setup a key for delegated_sender under a direct-root call.
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(delegated_sender)?;
@@ -820,6 +839,59 @@ mod tests {
             );
             assert!(update_result.is_err());
             assert_unauthorized_error(update_result.unwrap_err());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_admin_operations_allow_eoa_mismatch_on_t2() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let account = Address::random();
+        let other_origin = Address::random();
+        let key_id = Address::random();
+        let token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            // Setup under matching tx.origin first.
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
+            keychain.authorize_key(
+                account,
+                authorizeKeyCall {
+                    keyId: key_id,
+                    signatureType: SignatureType::Secp256k1,
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![TokenLimit {
+                        token,
+                        amount: U256::from(100),
+                    }],
+                },
+            )?;
+
+            // EOA caller with mismatched tx.origin should preserve legacy behavior.
+            keychain.set_tx_origin(other_origin)?;
+            keychain.update_spending_limit(
+                account,
+                updateSpendingLimitCall {
+                    keyId: key_id,
+                    token,
+                    newLimit: U256::from(200),
+                },
+            )?;
+
+            assert_eq!(
+                keychain.get_remaining_limit(getRemainingLimitCall {
+                    account,
+                    keyId: key_id,
+                    token,
+                })?,
+                U256::from(200)
+            );
 
             Ok(())
         })
