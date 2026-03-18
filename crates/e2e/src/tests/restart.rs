@@ -26,8 +26,8 @@ use crate::{
 struct RestartSetup {
     // Setup for the nodes to launch.
     node_setup: Setup,
-    // Connect EL ppers
-    connect_execution_runtimes: bool,
+    /// Whether to connect the execution layer.
+    connect_execution_layer: bool,
     /// Height at which to shutdown a validator
     shutdown_height: u64,
     /// Height at which to restart the validator
@@ -44,7 +44,7 @@ struct RestartSetup {
 fn run_restart_test(
     RestartSetup {
         node_setup,
-        connect_execution_runtimes,
+        connect_execution_layer,
         shutdown_height,
         restart_height,
         final_height,
@@ -60,7 +60,7 @@ fn run_restart_test(
             setup_validators(&mut context, node_setup.clone()).await;
 
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
-        if connect_execution_runtimes {
+        if connect_execution_layer {
             connect_execution_peers(&validators).await;
         }
 
@@ -96,7 +96,7 @@ fn run_restart_test(
 
         debug!("target height reached, restarting stopped validator");
         validators[idx].start(&context).await;
-        if connect_execution_runtimes {
+        if connect_execution_layer {
             connect_execution_to_peers(&validators[idx], &validators).await;
         }
 
@@ -271,7 +271,7 @@ fn validator_catches_up_to_network_during_epoch() {
 
     let setup = RestartSetup {
         node_setup: Setup::new().epoch_length(100),
-        connect_execution_runtimes: false,
+        connect_execution_layer: false,
         shutdown_height: 5,
         restart_height: 10,
         final_height: 15,
@@ -288,7 +288,7 @@ fn validator_catches_up_with_gap_of_one_epoch() {
     let epoch_length = 30;
     let setup = RestartSetup {
         node_setup: Setup::new().epoch_length(epoch_length),
-        connect_execution_runtimes: false,
+        connect_execution_layer: false,
         shutdown_height: epoch_length + 1,
         restart_height: 2 * epoch_length + 1,
         final_height: 3 * epoch_length + 1,
@@ -305,7 +305,7 @@ fn validator_catches_up_with_gap_of_three_epochs() {
     let epoch_length = 30;
     let setup = RestartSetup {
         node_setup: Setup::new().epoch_length(epoch_length),
-        connect_execution_runtimes: true,
+        connect_execution_layer: true,
         shutdown_height: epoch_length + 1,
         restart_height: 4 * epoch_length + 1,
         final_height: 5 * epoch_length + 1,

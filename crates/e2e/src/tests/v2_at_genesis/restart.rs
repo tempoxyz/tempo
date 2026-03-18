@@ -153,11 +153,11 @@ fn validator_catches_up_with_gap_of_three_epochs() {
     let epoch_length = 30;
     RestartSetup {
         epoch_length,
+        connect_execution_layer: true,
         shutdown_height: epoch_length + 1,
         restart_height: 4 * epoch_length + 1,
         final_height: 5 * epoch_length + 1,
         assert_skips: true,
-        connect_execution_layer: true,
     }
     .run();
 }
@@ -227,6 +227,8 @@ fn node_recovers_after_finalizing_boundary_four_validators() {
 struct RestartSetup {
     // The epoch length to use.
     epoch_length: u64,
+    /// Whether to connect the execution layer.
+    connect_execution_layer: bool,
     /// Height at which to shutdown a validator
     shutdown_height: u64,
     /// Height at which to restart the validator
@@ -235,8 +237,6 @@ struct RestartSetup {
     final_height: u64,
     /// Whether to assert that DKG rounds were skipped
     assert_skips: bool,
-    /// Whether to connect the execution layer.
-    connect_execution_layer: bool,
 }
 
 impl RestartSetup {
@@ -258,66 +258,66 @@ impl RestartSetup {
         let executor = Runner::from(cfg);
 
         executor.start(|mut context| async move {
-        let (mut validators, _execution_runtime) =
-            setup_validators(&mut context, setup.clone()).await;
+            let (mut validators, _execution_runtime) =
+                setup_validators(&mut context, setup.clone()).await;
 
-        join_all(validators.iter_mut().map(|v| v.start(&context))).await;
-        if connect_execution_layer {
-            connect_execution_peers(&validators).await;
-        }
+            join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+            if connect_execution_layer {
+                connect_execution_peers(&validators).await;
+            }
 
-        debug!(
-            height = shutdown_height,
-            "waiting for network to reach target height before stopping a validator",
-        );
-        wait_for_height(
-            &context,
-            setup.how_many_signers,
-            shutdown_height,
-            false,
-        )
-        .await;
+            debug!(
+                height = shutdown_height,
+                "waiting for network to reach target height before stopping a validator",
+            );
+            wait_for_height(
+                &context,
+                setup.how_many_signers,
+                shutdown_height,
+                false,
+            )
+            .await;
 
-        // Randomly select a validator to kill
-        let idx = context.gen_range(0..validators.len());
-        validators[idx].stop().await;
+            // Randomly select a validator to kill
+            let idx = context.gen_range(0..validators.len());
+            validators[idx].stop().await;
 
-        debug!(public_key = %validators[idx].public_key(), "stopped a random validator");
+            debug!(public_key = %validators[idx].public_key(), "stopped a random validator");
 
-        debug!(
-            height = restart_height,
-            "waiting for remaining validators to reach target height before restarting validator",
-        );
-        wait_for_height(
-            &context,
-            setup.how_many_signers - 1,
-            restart_height,
-            false,
-        )
-        .await;
+            debug!(
+                height = restart_height,
+                "waiting for remaining validators to reach target height before restarting validator",
+            );
+            wait_for_height(
+                &context,
+                setup.how_many_signers - 1,
+                restart_height,
+                false,
+            )
+            .await;
 
-        debug!("target height reached, restarting stopped validator");
-        validators[idx].start(&context).await;
-        if connect_execution_layer {
-            connect_execution_to_peers(&validators[idx], &validators).await;
-        }
+            debug!("target height reached, restarting stopped validator");
+            validators[idx].start(&context).await;
+            if connect_execution_layer {
+                connect_execution_to_peers(&validators[idx], &validators).await;
+            }
 
-        debug!(
-            public_key = %validators[idx].public_key(),
-            "restarted validator",
-        );
+            debug!(
+                public_key = %validators[idx].public_key(),
+                "restarted validator",
+            );
 
-        debug!(
-            height = final_height,
-            "waiting for reconstituted validators to reach target height to reach test success",
-        );
-        wait_for_height(
-            &context,
-            setup.how_many_signers,
-            final_height,
-            assert_skips,
-        )
-        .await;
+            debug!(
+                height = final_height,
+                "waiting for reconstituted validators to reach target height to reach test success",
+            );
+            wait_for_height(
+                &context,
+                setup.how_many_signers,
+                final_height,
+                assert_skips,
+            )
+            .await;
     })
     }
 }

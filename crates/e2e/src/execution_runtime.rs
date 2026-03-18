@@ -1011,13 +1011,19 @@ impl ExecutionNode {
     pub async fn connect_peer(&self, other: &Self) {
         let self_record = self.node.network.local_node_record();
         let other_record = other.node.network.local_node_record();
-        let mut events = self.node.network.event_listener();
 
-        // Remove the peer if present so this does not hang when waiting for a session
-        self.node
+        // Skip if already connected
+        if let Ok(Some(_)) = self.node.network.get_peer_by_id(other_record.id).await {
+            return;
+        }
+
+        // Remove any stale peer entries on the other side if present.
+        other
+            .node
             .network
-            .remove_peer(other_record.id, PeerKind::Basic);
+            .remove_peer(self_record.id, PeerKind::Basic);
 
+        let mut events = self.node.network.event_listener();
         self.node.network.connect_peer_kind(
             other_record.id,
             PeerKind::Basic,
@@ -1025,6 +1031,7 @@ impl ExecutionNode {
             None,
         );
 
+        // Wait for the active session
         'wait_for_session: loop {
             match events.next().await {
                 Some(NetworkEvent::ActivePeerSession { info, .. })
