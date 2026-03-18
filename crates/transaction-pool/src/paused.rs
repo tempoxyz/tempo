@@ -235,9 +235,10 @@ impl PausedFeeTokenPool {
                     false
                 };
 
-                !subject.matches_revoked(revoked_keys)
-                    && !(matches_limit_update && sender_paid)
-                    && !(matches_limit_spend && sender_paid)
+                let invalidated = subject.matches_revoked(revoked_keys)
+                    || (sender_paid && (matches_limit_update || matches_limit_spend));
+
+                !invalidated
             });
             count += before - meta.entries.len();
         }
