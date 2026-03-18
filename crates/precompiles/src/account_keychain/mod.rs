@@ -143,20 +143,14 @@ impl AccountKeychain {
     /// limits. Only callable with the account's main key (not a session key).
     ///
     /// # Errors
-    /// - `UnauthorizedCaller` — only the main key can authorize or revoke keys
+    /// - `UnauthorizedCaller` — only the tx.origin main key can authorize or revoke keys
     /// - `ZeroPublicKey` — `keyId` cannot be the zero address
     /// - `ExpiryInPast` — expiry must be in the future (enforced since T0)
     /// - `KeyAlreadyExists` — a key with this ID is already registered
     /// - `KeyAlreadyRevoked` — revoked keys cannot be re-authorized
     /// - `InvalidSignatureType` — must be Secp256k1, P256, or WebAuthn
     pub fn authorize_key(&mut self, msg_sender: Address, call: authorizeKeyCall) -> Result<()> {
-        // Check that the transaction key for this transaction is zero (main key)
-        let transaction_key = self.transaction_key.t_read()?;
-
-        // If transaction_key is not zero, it means a secondary key is being used
-        if transaction_key != Address::ZERO {
-            return Err(AccountKeychainError::unauthorized_caller().into());
-        }
+        self.ensure_admin_caller(msg_sender)?;
 
         // Validate inputs
         if call.keyId == Address::ZERO {
@@ -223,14 +217,10 @@ impl AccountKeychain {
     /// this account, preventing replay of old `KeyAuthorization` signatures.
     ///
     /// # Errors
-    /// - `UnauthorizedCaller` — only the main key can authorize or revoke keys
+    /// - `UnauthorizedCaller` — only the tx.origin main key can authorize or revoke keys
     /// - `KeyNotFound` — no key registered with this ID
     pub fn revoke_key(&mut self, msg_sender: Address, call: revokeKeyCall) -> Result<()> {
-        let transaction_key = self.transaction_key.t_read()?;
-
-        if transaction_key != Address::ZERO {
-            return Err(AccountKeychainError::unauthorized_caller().into());
-        }
+        self.ensure_admin_caller(msg_sender)?;
 
         let key = self.keys[msg_sender][call.keyId].read()?;
 
@@ -263,7 +253,7 @@ impl AccountKeychain {
     /// limited one. Delegates to `load_active_key` for existence/revocation checks.
     ///
     /// # Errors
-    /// - `UnauthorizedCaller` — the transaction was signed by a session key, not the main key
+    /// - `UnauthorizedCaller` — the tx.origin is not the main key for `msg_sender`
     /// - `KeyAlreadyRevoked` — the target key has been permanently revoked
     /// - `KeyNotFound` — no key is registered under the given `keyId`
     /// - `KeyExpired` — the key's expiry is at or before the current block timestamp
@@ -272,11 +262,7 @@ impl AccountKeychain {
         msg_sender: Address,
         call: updateSpendingLimitCall,
     ) -> Result<()> {
-        let transaction_key = self.transaction_key.t_read()?;
-
-        if transaction_key != Address::ZERO {
-            return Err(AccountKeychainError::unauthorized_caller().into());
-        }
+        self.ensure_admin_caller(msg_sender)?;
 
         // Verify key exists, hasn't been revoked, and hasn't expired
         let mut key = self.load_active_key(msg_sender, call.keyId)?;
@@ -383,6 +369,30 @@ impl AccountKeychain {
     /// Uses transient storage, so it's automatically cleared after the transaction.
     pub fn set_tx_origin(&mut self, origin: Address) -> Result<()> {
         self.tx_origin.t_write(origin)
+    }
+
+    /// Ensures admin operations are authorized for this caller.
+    ///
+    /// Rules:
+    /// - transaction must be signed by the main key (`transaction_key == Address::ZERO`)
+    /// - T2+: caller must be the transaction origin (`msg_sender == tx_origin`)
+    ///
+    /// The T2 check prevents transaction-global root-key status from being reused by
+    /// intermediate contracts (confused-deputy self-administration).
+    fn ensure_admin_caller(&self, msg_sender: Address) -> Result<()> {
+        let transaction_key = self.transaction_key.t_read()?;
+        if transaction_key != Address::ZERO {
+            return Err(AccountKeychainError::unauthorized_caller().into());
+        }
+
+        if self.storage.spec().is_t2() {
+            let tx_origin = self.tx_origin.t_read()?;
+            if tx_origin != msg_sender {
+                return Err(AccountKeychainError::unauthorized_caller().into());
+            }
+        }
+
+        Ok(())
     }
 
     /// Load and validate a key exists and is not revoked.
@@ -746,6 +756,73 @@ mod tests {
     }
 
     #[test]
+    fn test_admin_operations_require_tx_origin_on_t2() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let tx_origin = Address::random();
+        let delegated_sender = Address::random();
+        let existing_key = Address::random();
+        let token = Address::random();
+        let other = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            // Setup a key for delegated_sender under a direct-root call.
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(delegated_sender)?;
+            keychain.authorize_key(
+                delegated_sender,
+                authorizeKeyCall {
+                    keyId: existing_key,
+                    signatureType: SignatureType::Secp256k1,
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![],
+                },
+            )?;
+
+            // Simulate a contract-mediated call where tx.origin != msg.sender.
+            keychain.set_tx_origin(tx_origin)?;
+
+            let auth_result = keychain.authorize_key(
+                delegated_sender,
+                authorizeKeyCall {
+                    keyId: other,
+                    signatureType: SignatureType::P256,
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![],
+                },
+            );
+            assert!(auth_result.is_err());
+            assert_unauthorized_error(auth_result.unwrap_err());
+
+            let revoke_result = keychain.revoke_key(
+                delegated_sender,
+                revokeKeyCall {
+                    keyId: existing_key,
+                },
+            );
+            assert!(revoke_result.is_err());
+            assert_unauthorized_error(revoke_result.unwrap_err());
+
+            let update_result = keychain.update_spending_limit(
+                delegated_sender,
+                updateSpendingLimitCall {
+                    keyId: existing_key,
+                    token,
+                    newLimit: U256::from(1000),
+                },
+            );
+            assert!(update_result.is_err());
+            assert_unauthorized_error(update_result.unwrap_err());
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_replay_protection_revoked_key_cannot_be_reauthorized() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
         let account = Address::random();
@@ -757,6 +834,7 @@ mod tests {
 
             // Use main key for all operations
             keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
 
             // Step 1: Authorize a key with a spending limit
             let auth_call = authorizeKeyCall {
