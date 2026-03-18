@@ -225,17 +225,17 @@ impl TempoPooledTransaction {
 #[derive(Debug, Error)]
 pub enum TempoPoolTransactionError {
     #[error(
-        "Transaction exceeds non payment gas limit, please see https://docs.tempo.xyz/errors/tx/ExceedsNonPaymentLimit for more"
+        "Transaction exceeds non payment gas limit, please see https://docs.tempo.xyz/protocol/blockspace/payment-lane-specification for more"
     )]
     ExceedsNonPaymentLimit,
 
     #[error(
-        "Invalid fee token: {0}, please see https://docs.tempo.xyz/errors/tx/InvalidFeeToken for more"
+        "Invalid fee token: {0}, please see https://docs.tempo.xyz/protocol/fees/spec-fee for more"
     )]
     InvalidFeeToken(Address),
 
     #[error(
-        "Fee token {0} is paused, please see https://docs.tempo.xyz/errors/tx/PausedFeeToken for more"
+        "Fee token {0} is paused, please see https://docs.tempo.xyz/protocol/fees/spec-fee for more"
     )]
     PausedFeeToken(Address),
 
@@ -259,7 +259,7 @@ pub enum TempoPoolTransactionError {
     },
 
     #[error(
-        "Keychain signature validation failed: {0}, please see https://docs.tempo.xyz/errors/tx/Keychain for more"
+        "Keychain signature validation failed: {0}, please see https://docs.tempo.xyz/protocol/transactions/AccountKeychain for more"
     )]
     Keychain(&'static str),
 
