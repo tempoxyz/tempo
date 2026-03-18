@@ -51,8 +51,8 @@ pub trait PrecompileStorageProvider {
     /// Returns the current block number.
     fn block_number(&self) -> u64;
 
-    /// Sets the bytecode at the given address.
-    fn set_code(&mut self, address: Address, code: Bytecode) -> Result<()>;
+    /// Creates a new account at the given address with the given code.
+    fn create_account(&mut self, address: Address, code: Bytecode) -> Result<()>;
 
     /// Executes a closure with access to the account info for the given address.
     fn with_account_info(

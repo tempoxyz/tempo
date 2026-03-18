@@ -166,7 +166,7 @@ pub(crate) fn gen_constructor(
             #[inline(always)]
             fn __initialize(&mut self) -> crate::error::Result<()> {
                 let bytecode = ::revm::state::Bytecode::new_legacy(::alloy::primitives::Bytes::from_static(&[0xef]));
-                self.storage.set_code(self.address, bytecode)?;
+                self.storage.create_account(self.address, bytecode)?;
 
                 Ok(())
             }

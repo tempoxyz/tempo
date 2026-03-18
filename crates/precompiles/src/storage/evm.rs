@@ -2,7 +2,7 @@ use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::{EvmInternals, EvmInternalsError};
 use revm::{
     context::{Block, CfgEnv, journaled_state::JournalCheckpoint},
-    context_interface::cfg::{GasParams, gas},
+    context_interface::cfg::{GasId, GasParams, gas},
     state::{AccountInfo, Bytecode},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -86,12 +86,25 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     }
 
     #[inline]
-    fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
+    fn create_account(
+        &mut self,
+        address: Address,
+        code: Bytecode,
+    ) -> Result<(), TempoPrecompileError> {
+        if self.spec.is_t2() {
+            self.deduct_gas(self.gas_params.get(GasId::create()) as u64)?;
+        }
+
         self.deduct_gas(self.gas_params.code_deposit_cost(code.len()))?;
 
-        self.internals
-            .load_account_mut(address)?
-            .set_code_and_hash_slow(code);
+        let mut account = self.internals.load_account_mut(address)?;
+
+        if self.spec.is_t2() {
+            // returns false only if nonce is at max value. Unrealistic to happen.
+            account.bump_nonce();
+        }
+
+        account.set_code_and_hash_slow(code);
 
         Ok(())
     }
@@ -356,7 +369,7 @@ mod tests {
 
         let addr = Address::random();
         let code = Bytecode::new_raw(vec![0xff].into());
-        provider.set_code(addr, code.clone())?;
+        provider.create_account(addr, code.clone())?;
         drop(provider);
 
         let Some(StateLoad { data, is_cold: _ }) = evm.load_account_code(addr) else {
