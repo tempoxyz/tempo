@@ -103,13 +103,13 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
         let fee_payer = if self.fee_payer_signature.is_some() {
             // Try to recover the fee payer address from the signature.
             // If recovery fails (e.g. dummy signature during gas estimation / fill),
-            // fall back to the caller address so gas estimation still works.
+            // keep it unresolved so estimation/fill can continue with sender-paid semantics.
             let recovered = self
                 .clone()
                 .build_aa()
                 .ok()
                 .and_then(|tx| tx.recover_fee_payer(caller_addr).ok());
-            Some(Some(recovered.unwrap_or(caller_addr)))
+            Some(recovered)
         } else {
             None
         };
@@ -360,7 +360,7 @@ impl FromConsensusHeader<TempoHeader> for TempoHeaderResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{TxKind, address};
+    use alloy_primitives::{TxKind, U256, address};
     use alloy_rpc_types_eth::TransactionRequest;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
@@ -527,6 +527,40 @@ mod tests {
             tx_env.fee_payer,
             Some(Some(sponsor.address())),
             "fee_payer should recover sponsor address"
+        );
+    }
+
+    #[test]
+    fn test_estimate_gas_invalid_fee_payer_signature_keeps_unresolved_fee_payer() {
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let target = address!("0x2222222222222222222222222222222222222222");
+
+        let req = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(sender),
+                to: Some(TxKind::Call(target)),
+                nonce: Some(0),
+                gas: Some(100_000),
+                max_fee_per_gas: Some(1_000_000_000),
+                max_priority_fee_per_gas: Some(1_000_000),
+                chain_id: Some(4217),
+                ..Default::default()
+            },
+            fee_payer_signature: Some(Signature::new(U256::ZERO, U256::ZERO, false)),
+            ..Default::default()
+        };
+
+        let evm_env = EvmEnv::default();
+        let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
+
+        assert!(
+            tx_env.tempo_tx_env.is_some(),
+            "fee_payer_signature alone must produce an AA tx env"
+        );
+        assert_eq!(
+            tx_env.fee_payer,
+            Some(None),
+            "invalid fee_payer_signature should remain unresolved"
         );
     }
 
