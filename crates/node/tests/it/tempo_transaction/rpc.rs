@@ -83,10 +83,6 @@ impl super::types::TestEnv for RpcEnv {
         self.hardfork
     }
 
-    fn uses_legacy_keyauth_pool_validation(&self) -> bool {
-        false
-    }
-
     async fn fund_account(&mut self, addr: Address) -> eyre::Result<U256> {
         let tx_hashes: Vec<B256> = self
             .provider
@@ -124,67 +120,6 @@ impl super::types::TestEnv for RpcEnv {
             .ok_or_else(|| eyre::eyre!("Receipt missing status field for {tx_hash}"))?;
         assert_eq!(status, "0x1", "Receipt status mismatch for {tx_hash}");
         Ok(receipt)
-    }
-
-    async fn submit_tx_excluded_by_builder(
-        &mut self,
-        encoded: Vec<u8>,
-        tx_hash: B256,
-    ) -> eyre::Result<()> {
-        // Pool validation may now reject txs that were previously only excluded
-        // by the builder (e.g. duplicate key_authorization). A pool rejection is
-        // a stricter form of exclusion, so treat it as success.
-        let send_result = self
-            .provider
-            .raw_request::<_, B256>("eth_sendRawTransaction".into(), [encoded])
-            .await;
-        if let Err(e) = send_result {
-            let err = e.to_string();
-            assert!(
-                err.contains("already exists") || err.contains("spending limit exceeded"),
-                "Expected pool validation rejection, got: {e}"
-            );
-            return Ok(());
-        }
-
-        // Verify the tx is known to the RPC (confirms it entered the mempool).
-        let tx_obj: Option<serde_json::Value> = self
-            .provider
-            .raw_request("eth_getTransactionByHash".into(), [tx_hash])
-            .await?;
-        assert!(
-            tx_obj.is_some(),
-            "Transaction {tx_hash} should be known to RPC after submission"
-        );
-
-        // Record the starting block to prove liveness (blocks are advancing).
-        let start_block: u64 = self.provider.get_block_number().await?;
-
-        // Poll — tx should never be included
-        for _ in 0..RPC_POLL_RETRIES {
-            let receipt: Option<serde_json::Value> = self
-                .provider
-                .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
-                .await?;
-            if let Some(receipt) = receipt {
-                let status = receipt["status"].as_str().unwrap_or("?");
-                panic!(
-                    "Transaction {tx_hash} was mined (status={status}), \
-                     expected exclusion by builder"
-                );
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        }
-
-        // Confirm blocks actually advanced (liveness check).
-        let end_block: u64 = self.provider.get_block_number().await?;
-        assert!(
-            end_block > start_block,
-            "Blocks did not advance during polling ({start_block} → {end_block}); \
-             testnet may be stalled"
-        );
-
-        Ok(())
     }
 
     async fn bump_protocol_nonce(

@@ -26,12 +26,6 @@ pub(crate) trait TestEnv: Sized {
     /// Currently active hardfork
     fn hardfork(&self) -> TempoHardfork;
 
-    /// Whether this environment still runs legacy mempool behavior for keychain
-    /// spending-limit checks that surface as builder exclusion instead of RPC rejection.
-    fn uses_legacy_keyauth_pool_validation(&self) -> bool {
-        false
-    }
-
     /// Fund `addr` with fee tokens so it can transact.
     /// Returns the funded amount.
     async fn fund_account(&mut self, addr: Address) -> eyre::Result<U256>;
@@ -65,14 +59,6 @@ pub(crate) trait TestEnv: Sized {
         }
         Ok(())
     }
-
-    /// Submit a transaction that enters the pool but is excluded by the block
-    /// builder (execution simulation fails). Asserts no receipt exists after mining.
-    async fn submit_tx_excluded_by_builder(
-        &mut self,
-        encoded: Vec<u8>,
-        tx_hash: B256,
-    ) -> eyre::Result<()>;
 
     /// Submit a signed, encoded transaction and wait until it is mined.
     /// Returns the receipt JSON WITHOUT asserting status (caller checks).
@@ -421,7 +407,6 @@ impl RawSendTestCase {
             ExpectedOutcome::Success => {}
             ExpectedOutcome::Rejection => flags.push("rejected"),
             ExpectedOutcome::Revert => flags.push("revert"),
-            ExpectedOutcome::ExcludedByBuilder => flags.push("excluded"),
         }
         flags
     }
@@ -570,9 +555,6 @@ pub(crate) enum ExpectedOutcome {
     Rejection,
     /// Mined but reverted (status 0x0). Nonce still bumps.
     Revert,
-    /// Enters pool but excluded by block builder (execution simulation fails).
-    /// Tx is never mined — no receipt exists.
-    ExcludedByBuilder,
 }
 
 /// Test case definition for fill tests and E2E matrix
