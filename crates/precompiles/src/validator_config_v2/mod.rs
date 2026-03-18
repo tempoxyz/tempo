@@ -45,7 +45,10 @@ struct Config {
     init_at_height: u64,
     /// Number of V1 validators skipped during migration (bad pubkey, duplicate, etc).
     /// Packed alongside `is_init` and `init_at_height` since all are migration lifecycle state.
-    migration_skipped_count: u16,
+    migration_skipped_count: u8,
+    /// Snapshotted V1 validator count, captured on the first `migrateValidator` call.
+    /// Used for index validation so V1 mutations cannot break migration ordering.
+    v1_validator_count: u8,
 }
 
 impl Config {
@@ -55,6 +58,7 @@ impl Config {
             is_init,
             init_at_height,
             migration_skipped_count: 0,
+            v1_validator_count: 0,
         }
     }
 
@@ -891,12 +895,19 @@ impl ValidatorConfigV2 {
         let mut config = self.config.read()?.require_not_init()?;
 
         if config.owner.is_zero() {
-            config.owner = v1().owner()?;
+            let v1 = v1();
+            config.owner = v1.owner()?;
+            let v1_count = v1.validator_count()?;
+            if v1_count == 0 {
+                Err(ValidatorConfigV2Error::empty_v1_validator_set())?
+            }
+            config.v1_validator_count = v1_count as u8;
             self.config.write(Config {
                 owner: config.owner,
                 is_init: false,
                 init_at_height: 0,
                 migration_skipped_count: 0,
+                v1_validator_count: config.v1_validator_count,
             })?;
         }
 
@@ -929,7 +940,7 @@ impl ValidatorConfigV2 {
         let block_height = self.storage.block_number();
 
         let v1 = v1();
-        let v1_count = v1.validator_count()?;
+        let v1_count = u64::from(config.v1_validator_count);
         let migrated = self.validator_count()?;
         let skipped = config.migration_skipped_count;
 
@@ -1025,16 +1036,17 @@ impl ValidatorConfigV2 {
     /// - `MigrationNotComplete` — `validator_count + skipped < v1.validator_count`
     pub fn initialize_if_migrated(&mut self, sender: Address) -> Result<()> {
         let mut config = self.require_migration_owner(sender)?;
-        let v1 = v1();
 
         // NOTE: this count comparison is sufficient because `add_validator` and
         // `rotate_validator` are blocked until the contract is initialized.
-        if self.validator_count()? + u64::from(config.migration_skipped_count)
-            < v1.validator_count()?
+        if config.v1_validator_count == 0
+            || self.validator_count()? + u64::from(config.migration_skipped_count)
+                < u64::from(config.v1_validator_count)
         {
             Err(ValidatorConfigV2Error::migration_not_complete())?
         }
 
+        let v1 = v1();
         let v1_next_dkg = v1.get_next_full_dkg_ceremony()?;
         self.next_network_identity_rotation_epoch
             .write(v1_next_dkg)?;

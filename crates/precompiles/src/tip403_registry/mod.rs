@@ -142,6 +142,12 @@ impl PolicyData {
         }
     }
 
+    /// Returns `true` if the policy type is a simple policy (WHITELIST or BLACKLIST).
+    fn is_simple(&self) -> bool {
+        self.policy_type == PolicyType::WHITELIST as u8
+            || self.policy_type == PolicyType::BLACKLIST as u8
+    }
+
     /// Returns `true` if the policy data indicates a compound policy
     fn is_compound(&self) -> bool {
         self.policy_type == PolicyType::COMPOUND as u8
@@ -615,9 +621,9 @@ impl TIP403Registry {
             return Err(TIP403RegistryError::policy_not_found().into());
         }
 
-        // Check if policy is simple (not compound)
+        // Check if policy is simple (WHITELIST or BLACKLIST only)
         let data = self.get_policy_data(policy_id)?;
-        if data.is_compound() {
+        if !data.is_simple() {
             return Err(TIP403RegistryError::policy_not_simple().into());
         }
 
@@ -680,6 +686,19 @@ impl AuthRole {
     /// Hardfork-aware: returns `MintRecipient` for T2+, `Transfer` for pre-T2.
     pub fn mint_recipient() -> Self {
         Self::transfer_or(Self::MintRecipient)
+    }
+}
+
+/// Returns `true` if the error indicates a failed policy lookup — the policy type is invalid
+/// or the policy doesn't exist.
+pub fn is_policy_lookup_error(e: &TempoPrecompileError) -> bool {
+    if StorageCtx.spec().is_t2() {
+        // T2+: typed TIP403 errors
+        *e == TIP403RegistryError::invalid_policy_type().into()
+            || *e == TIP403RegistryError::policy_not_found().into()
+    } else {
+        // Pre-T2: legacy Panic(UnderOverflow) sentinel
+        *e == TempoPrecompileError::under_overflow()
     }
 }
 
@@ -1715,6 +1734,55 @@ mod tests {
                 result.unwrap_err(),
                 TIP403RegistryError::invalid_policy_type().into()
             );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t2_compound_policy_rejects_legacy_invalid_255_policy() -> eyre::Result<()> {
+        // Create a policy with invalid type on pre-T1 (stored as 255)
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
+        let admin = Address::random();
+        let creator = Address::random();
+
+        let invalid_policy_id = StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+            registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::__Invalid,
+                },
+            )
+        })?;
+
+        // Upgrade to T2 and create a valid simple policy
+        let mut storage = storage.with_spec(TempoHardfork::T2);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            let valid_policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                },
+            )?;
+
+            // Attempting to create a compound policy referencing the legacy 255 policy should fail
+            let result = registry.create_compound_policy(
+                creator,
+                ITIP403Registry::createCompoundPolicyCall {
+                    senderPolicyId: invalid_policy_id,
+                    recipientPolicyId: valid_policy_id,
+                    mintRecipientPolicyId: valid_policy_id,
+                },
+            );
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP403RegistryError(TIP403RegistryError::PolicyNotSimple(_))
+            ));
 
             Ok(())
         })
