@@ -59,6 +59,7 @@ rustls.workspace = true
 reth-db-api.workspace = true
 reth-ethereum = { workspace = true, features = ["full", "cli"] }
 reth-ethereum-cli.workspace = true
+reth-network-peers.workspace = true
 reth-node-builder.workspace = true
 reth-primitives-traits.workspace = true
 reth-provider.workspace = true

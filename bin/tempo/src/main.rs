@@ -39,6 +39,7 @@ use eyre::WrapErr as _;
 use futures::{FutureExt as _, future::FusedFuture as _};
 use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands, evm::revm::primitives::B256};
 use reth_ethereum_cli::Cli;
+use reth_network_peers::TrustedPeer;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
 use reth_rpc_server_types::DefaultRpcModuleValidator;
 use std::{sync::Arc, thread};
@@ -426,6 +427,15 @@ fn main() -> eyre::Result<()> {
                     .network
                     .discovery
                     .enable_discv5_discovery = true;
+
+                // Add bootnodes as trusted peers so they are always maintained.
+                // If --trusted-peers was provided on the CLI, use those instead.
+                if builder.config().network.trusted_peers.is_empty() {
+                    if let Some(bootnodes) = builder.config().chain.bootnodes() {
+                        builder.config_mut().network.trusted_peers =
+                            bootnodes.into_iter().map(TrustedPeer::from).collect();
+                    }
+                }
 
                 // Resolve the follow URL:
                 // --follow or --follow=auto -> use chain-specific default
