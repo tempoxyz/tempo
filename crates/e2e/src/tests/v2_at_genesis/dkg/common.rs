@@ -53,8 +53,14 @@ pub(crate) async fn wait_for_outcome(
 
     tracing::info!(epoch, %height, "Waiting for DKG outcome");
 
+    let mut waited_secs = 0u64;
     loop {
+        assert!(
+            waited_secs < 120,
+            "timed out after {waited_secs}s waiting for DKG outcome at epoch {epoch} (height {height})",
+        );
         context.sleep(Duration::from_secs(1)).await;
+        waited_secs += 1;
 
         if let Some(outcome) = read_outcome_from_validator(&validators[0], height) {
             tracing::info!(

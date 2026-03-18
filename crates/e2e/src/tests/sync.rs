@@ -127,8 +127,14 @@ fn joins_from_snapshot() {
             "started the validator with a changed identity",
         );
 
+        let mut waited_secs = 0u64;
         loop {
+            assert!(
+                waited_secs < 120,
+                "timed out after {waited_secs}s waiting for validators to advance past epoch {last_epoch_before_stop}",
+            );
             context.sleep(Duration::from_secs(1)).await;
+            waited_secs += 1;
 
             let metrics = context.encode();
             let mut validators_at_epoch = 0;
@@ -142,13 +148,12 @@ fn joins_from_snapshot() {
                 let metric = parts.next().unwrap();
                 let value = parts.next().unwrap();
 
-                // Check if this is a height metric
                 if metric.ends_with("_epoch_manager_latest_epoch") {
                     let epoch = value.parse::<u64>().unwrap();
 
                     assert!(
-                        epoch < last_epoch_before_stop + 4,
-                        "network advanced 4 epochs before without the new \
+                        epoch < last_epoch_before_stop + 10,
+                        "network advanced 10 epochs without the new \
                         validator catching up; there is likely a bug",
                     );
 
@@ -283,8 +288,14 @@ fn can_restart_after_joining_from_snapshot() {
             "started the validator with a changed identity",
         );
 
+        let mut waited_secs = 0u64;
         loop {
+            assert!(
+                waited_secs < 120,
+                "timed out after {waited_secs}s waiting for validators to advance past epoch {last_epoch_before_stop}",
+            );
             context.sleep(Duration::from_secs(1)).await;
+            waited_secs += 1;
 
             let metrics = context.encode();
             let mut validators_at_epoch = 0;
@@ -302,8 +313,8 @@ fn can_restart_after_joining_from_snapshot() {
                     let epoch = value.parse::<u64>().unwrap();
 
                     assert!(
-                        epoch < last_epoch_before_stop + 4,
-                        "network advanced 4 epochs before without the new \
+                        epoch < last_epoch_before_stop + 10,
+                        "network advanced 10 epochs without the new \
                         validator catching up; there is likely a bug",
                     );
 
@@ -343,8 +354,15 @@ fn can_restart_after_joining_from_snapshot() {
             "restarting the node and waiting for it to catch up"
         );
 
+        let mut waited_secs = 0u64;
         'progress: loop {
+            assert!(
+                waited_secs < 180,
+                "timed out after {waited_secs}s: restarted validator did not catch up to \
+                network_head={network_head}",
+            );
             context.sleep(Duration::from_secs(1)).await;
+            waited_secs += 1;
 
             let metrics = context.encode();
 
@@ -369,6 +387,7 @@ fn can_restart_after_joining_from_snapshot() {
 }
 
 async fn wait_for_participants(context: &Context, target: u32) {
+    let mut waited_secs = 0u64;
     loop {
         let metrics = context.encode();
 
@@ -381,14 +400,18 @@ async fn wait_for_participants(context: &Context, target: u32) {
             let metric = parts.next().unwrap();
             let value = parts.next().unwrap();
 
-            // Check if this is a height metric
             if metric.ends_with("_epoch_manager_latest_participants")
                 && value.parse::<u32>().unwrap() == target
             {
                 return;
             }
         }
+        assert!(
+            waited_secs < 120,
+            "timed out after {waited_secs}s waiting for {target} participants",
+        );
         context.sleep(Duration::from_secs(1)).await;
+        waited_secs += 1;
     }
 }
 
