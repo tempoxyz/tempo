@@ -2238,6 +2238,10 @@ pub(super) async fn run_fee_payer_negative_scenario<E: TestEnv>(env: &mut E) -> 
     // Case 3: Self-sponsored fee payer (fee payer resolves to sender)
     {
         println!("  Case 3: Self-sponsored fee payer signature");
+        // Fund sender so rejection reason is self-sponsored fee payer,
+        // not insufficient sender balance.
+        let _ = env.fund_account(user_addr).await?;
+
         let mut tx = create_basic_aa_tx(
             chain_id,
             0,
@@ -2254,8 +2258,11 @@ pub(super) async fn run_fee_payer_negative_scenario<E: TestEnv>(env: &mut E) -> 
 
         let sig = sign_aa_tx_secp256k1(&tx, &user_signer)?;
         let envelope: TempoTxEnvelope = tx.into_signed(sig).into();
-        env.submit_tx_expecting_rejection(envelope.encoded_2718(), None)
-            .await?;
+        env.submit_tx_expecting_rejection(
+            envelope.encoded_2718(),
+            Some("fee payer cannot resolve to sender"),
+        )
+        .await?;
     }
 
     println!("✓ Fee payer negative scenario passed");
