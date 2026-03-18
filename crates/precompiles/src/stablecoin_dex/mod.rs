@@ -197,7 +197,7 @@ impl StablecoinDEX {
         token: Address,
         amount: u128,
     ) -> Result<()> {
-        // Ensure that the token can be transfered
+        // Ensure that the token can be transferred
         let tip20 = TIP20Token::from_address(token)?;
         tip20.ensure_transfer_authorized(user, self.address)?;
 
