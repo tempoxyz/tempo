@@ -914,7 +914,7 @@ fn test_t2_store_multi_slot_packed_skips_sload() -> eyre::Result<()> {
         U256::handle(base_slot + U256::from(1), LayoutCtx::FULL, address).write(garbage)?;
         StorageCtx.reset_counters();
 
-        Rule3TestPartial::handle(base_slot, LayoutCtx::FULL, address).write(value.clone())?;
+        Rule3TestPartial::handle(base_slot, LayoutCtx::FULL, address).write(value)?;
 
         // T2: 0 SLOADs (elided for both slots), 2 SSTOREs
         assert_eq!(
@@ -955,7 +955,7 @@ fn test_t2_multi_slot_packed_preserves_neighbor_slots() -> eyre::Result<()> {
             owner: Address::from([0xAA; 20]),
             active: true,
         };
-        PackedThreeSlot::handle(base_slot, LayoutCtx::FULL, address).write(original.clone())?;
+        PackedThreeSlot::handle(base_slot, LayoutCtx::FULL, address).write(original)?;
 
         // Snapshot all three slot values
         let slot0 = U256::handle(base_slot, LayoutCtx::FULL, address).read()?;
@@ -972,7 +972,7 @@ fn test_t2_multi_slot_packed_preserves_neighbor_slots() -> eyre::Result<()> {
             owner: Address::from([0xBB; 20]), // slot 2, different
             active: false,                    // slot 2, different
         };
-        PackedThreeSlot::handle(base_slot, LayoutCtx::FULL, address).write(updated.clone())?;
+        PackedThreeSlot::handle(base_slot, LayoutCtx::FULL, address).write(updated)?;
 
         // Slot 0 should be unchanged (non-packable U256, direct store)
         let slot0_after = U256::handle(base_slot, LayoutCtx::FULL, address).read()?;
