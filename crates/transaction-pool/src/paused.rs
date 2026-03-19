@@ -226,13 +226,14 @@ impl PausedFeeTokenPool {
                         .transaction
                         .matches_authorized_inline_key(authorized_keys);
                 };
-                !entry
+                let invalidated = entry
                     .tx
                     .transaction
                     .matches_authorized_inline_key(authorized_keys)
-                    && !subject.matches_revoked(revoked_keys)
-                    && !subject.matches_spending_limit_update(spending_limit_updates)
-                    && !subject.matches_spending_limit_update(spending_limit_spends)
+                    || subject.matches_revoked(revoked_keys)
+                    || subject.matches_spending_limit_update(spending_limit_updates)
+                    || subject.matches_spending_limit_update(spending_limit_spends);
+                !invalidated
             });
             count += before - meta.entries.len();
         }
