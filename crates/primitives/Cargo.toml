@@ -82,6 +82,7 @@ std = [
 	"serde_json/std",
 	"sha2/std",
 	"alloy-sol-types/std",
+	"tempo-contracts/std",
 ]
 reth = ["dep:reth-ethereum-primitives", "dep:reth-primitives-traits", "serde"]
 serde = [
