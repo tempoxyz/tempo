@@ -34,8 +34,11 @@ use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
 };
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS, account_keychain::AccountKeychain,
-    error::Result as TempoPrecompileResult, nonce::NonceManager, storage::Handler,
+    TIP_FEE_MANAGER_ADDRESS,
+    account_keychain::AccountKeychain,
+    error::Result as TempoPrecompileResult,
+    nonce::NonceManager,
+    storage::Handler,
     tip20::TIP20Token,
     tip403_registry::{REJECT_ALL_POLICY_ID, TIP403Registry},
 };
