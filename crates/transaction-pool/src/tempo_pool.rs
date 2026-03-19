@@ -379,10 +379,9 @@ where
                 // token's recipient policy.
                 let recipient_evicted = !sender_evicted
                     && !fee_manager_unwhitelisted.is_empty()
-                    && get_recipient_policy_ids(provider, fee_token)
-                        .is_some_and(|ids| {
-                            fee_manager_unwhitelisted.iter().any(|p| ids.contains(p))
-                        });
+                    && get_recipient_policy_ids(provider, fee_token).is_some_and(|ids| {
+                        fee_manager_unwhitelisted.iter().any(|p| ids.contains(p))
+                    });
 
                 if sender_evicted || recipient_evicted {
                     to_remove.push(*tx.hash());
@@ -1518,8 +1517,8 @@ mod tests {
         );
 
         let mut state = provider.latest().unwrap();
-        let ids = get_recipient_policy_ids(&mut state, fee_token)
-            .expect("should resolve policy IDs");
+        let ids =
+            get_recipient_policy_ids(&mut state, fee_token).expect("should resolve policy IDs");
 
         assert!(
             ids.contains(&compound_policy_id),
@@ -1569,8 +1568,8 @@ mod tests {
         );
 
         let mut state = provider.latest().unwrap();
-        let ids = get_recipient_policy_ids(&mut state, fee_token)
-            .expect("should resolve policy IDs");
+        let ids =
+            get_recipient_policy_ids(&mut state, fee_token).expect("should resolve policy IDs");
 
         assert_eq!(ids, vec![simple_policy_id]);
     }
