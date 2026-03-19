@@ -171,19 +171,15 @@ impl ValidatorIdentityArgs {
 
 /// Shared arguments for commands that update the validator config contract.
 #[derive(Debug, clap::Args)]
+#[command(group = clap::ArgGroup::new("sig_source").required(true).args(["signature", "signing_key"]))]
 pub(crate) struct ValidatorTransactionArgs {
-    /// The ed25519 signature proving validator key ownership and validity over
-    /// the validator identity.
-    ///
-    /// If omitted, `--signing-key` must be provided to compute the signature
-    /// automatically.
-    #[arg(long, value_name = "SIGNATURE", required_unless_present = "signing_key", conflicts_with = "signing_key")]
+    /// A pre-computed ed25519 signature over the validator identity.
+    #[arg(long, value_name = "SIGNATURE")]
     signature: Option<Bytes>,
 
-    /// Path to the ed25519 signing key file. When provided, the signature is
-    /// computed automatically so a separate `create-*-signature` step is not
-    /// needed.
-    #[arg(long, value_name = "FILE", conflicts_with = "signature")]
+    /// Path to the ed25519 signing key file. The signature is computed
+    /// automatically so a separate `create-*-signature` step is not needed.
+    #[arg(long, value_name = "FILE")]
     signing_key: Option<PathBuf>,
 
     /// Path to the file holding the Ethereum private key.
