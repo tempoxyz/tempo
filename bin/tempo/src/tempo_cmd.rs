@@ -385,7 +385,9 @@ fn resolve_signature(
             let sig = private_key.sign(namespace, message.as_slice());
             Ok(sig.encode().into())
         }
-        (None, None) => Err(eyre!("either --signature or --signing-key must be provided")),
+        (None, None) => Err(eyre!(
+            "either --signature or --signing-key must be provided"
+        )),
     }
 }
 
