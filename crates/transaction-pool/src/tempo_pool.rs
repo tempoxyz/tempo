@@ -36,7 +36,8 @@ use tempo_chainspec::{
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS, account_keychain::AccountKeychain,
     error::Result as TempoPrecompileResult, nonce::NonceManager, storage::Handler,
-    tip20::TIP20Token, tip403_registry::TIP403Registry,
+    tip20::TIP20Token,
+    tip403_registry::{REJECT_ALL_POLICY_ID, TIP403Registry},
 };
 use tempo_primitives::Block;
 use tempo_revm::TempoStateAccess;
@@ -1160,7 +1161,7 @@ fn get_sender_policy_ids(
         let policy_id = TIP20Token::from_address(fee_token)
             .and_then(|t| t.transfer_policy_id())
             .ok()
-            .filter(|&id| id != 0)?; // sload maps unset slots to 0; treat as None
+            .filter(|&id| id != REJECT_ALL_POLICY_ID)?;
 
         let mut ids = vec![policy_id];
 
@@ -1169,7 +1170,7 @@ fn get_sender_policy_ids(
         if let Ok(data) = registry.policy_records[policy_id].base.read()
             && data.is_compound()
             && let Ok(compound) = registry.policy_records[policy_id].compound.read()
-            && compound.sender_policy_id != 0
+            && compound.sender_policy_id != REJECT_ALL_POLICY_ID
         {
             ids.push(compound.sender_policy_id);
         }
@@ -1199,7 +1200,7 @@ fn get_recipient_policy_ids(
         let policy_id = TIP20Token::from_address(fee_token)
             .and_then(|t| t.transfer_policy_id())
             .ok()
-            .filter(|&id| id != 0)?;
+            .filter(|&id| id != REJECT_ALL_POLICY_ID)?;
 
         let mut ids = vec![policy_id];
 
@@ -1207,7 +1208,7 @@ fn get_recipient_policy_ids(
         if let Ok(data) = registry.policy_records[policy_id].base.read()
             && data.is_compound()
             && let Ok(compound) = registry.policy_records[policy_id].compound.read()
-            && compound.recipient_policy_id != 0
+            && compound.recipient_policy_id != REJECT_ALL_POLICY_ID
         {
             ids.push(compound.recipient_policy_id);
         }
