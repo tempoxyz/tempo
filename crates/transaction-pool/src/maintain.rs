@@ -568,6 +568,18 @@ where
                         evict_invalidated_from_pool(&pool, &mut state, &metrics, &updates);
                         evict_invalidated_from_paused_pool(&mut state, &updates);
 
+                        // Handle pause/unpause events from the reorg segment.
+                        handle_pause_events(
+                            &pool, &mut state, &metrics, &updates,
+                        );
+
+                        // Remove included expiring nonce txs from the new chain.
+                        pool.remove_included_expiring_nonce_txs(
+                            new.blocks_iter()
+                                .flat_map(|block| block.body().transactions())
+                                .map(|tx| tx.tx_hash()),
+                        );
+
                         continue;
                     }
                     CanonStateNotification::Commit { new } => new,
@@ -652,112 +664,7 @@ where
 
                 // 3. Handle fee token pause/unpause events
                 let pause_start = Instant::now();
-
-                // Collect pause tokens that need pool scanning.
-                // For pause events, we need to scan the pool. For unpause events, we
-                // only need to check the paused_pool (O(1) lookup by token).
-                let pause_tokens: Vec<Address> = updates
-                    .pause_events
-                    .iter()
-                    .filter_map(|(token, is_paused)| is_paused.then_some(*token))
-                    .collect();
-
-                // Process pause events: fetch pool transactions once for all pause tokens.
-                // This avoids the O(pause_events * pool_size) cost of fetching per event.
-                if !pause_tokens.is_empty() {
-                    let all_txs = pool.all_transactions();
-
-                    // Group transactions by fee token for efficient batch processing.
-                    // This single pass over all transactions handles all pause events.
-                    let mut by_token: AddressMap<Vec<TxHash>> = AddressMap::default();
-                    for tx in all_txs.pending.iter().chain(all_txs.queued.iter()) {
-                        if let Some(fee_token) = tx.transaction.inner().fee_token() {
-                            by_token.entry(fee_token).or_default().push(*tx.hash());
-                        }
-                    }
-
-                    // Process each pause token
-                    for token in pause_tokens {
-                        let Some(hashes_to_pause) = by_token.remove(&token) else {
-                            // No transactions use this fee token - skip
-                            continue;
-                        };
-
-                        let removed_txs = pool.remove_transactions(hashes_to_pause);
-                        let count = removed_txs.len();
-
-                        if count > 0 {
-                            // Clean up expiry tracking for paused txs
-                            for tx in &removed_txs {
-                                state.untrack_expiry(tx.hash());
-                            }
-
-                            let entries: Vec<_> = removed_txs
-                                .into_iter()
-                                .map(|tx| {
-                                    let valid_before = tx
-                                        .transaction
-                                        .inner()
-                                        .as_aa()
-                                        .and_then(|aa| aa.tx().valid_before);
-                                    PausedEntry { tx, valid_before }
-                                })
-                                .collect();
-
-                            let cap_evicted = state.paused_pool.insert_batch(token, entries);
-                            metrics.transactions_paused.increment(count as u64);
-                            if cap_evicted > 0 {
-                                metrics.paused_pool_cap_evicted.increment(cap_evicted as u64);
-                                debug!(
-                                    target: "txpool",
-                                    cap_evicted,
-                                    "Evicted oldest paused transactions due to global cap"
-                                );
-                            }
-                            debug!(
-                                target: "txpool",
-                                %token,
-                                count,
-                                "Moved transactions to paused pool (fee token paused)"
-                            );
-                        }
-                    }
-                }
-
-                // Process unpause events: O(1) lookup per token in paused_pool
-                for (token, is_paused) in &updates.pause_events {
-                    if *is_paused {
-                        continue; // Already handled above
-                    }
-
-                    // Unpause: drain from paused pool and re-add to main pool
-                    let paused_entries = state.paused_pool.drain_token(token);
-                    if !paused_entries.is_empty() {
-                        let count = paused_entries.len();
-                        metrics.transactions_unpaused.increment(count as u64);
-                        let pool_clone = pool.clone();
-                        let token = *token;
-                        tokio::spawn(async move {
-                            let txs: Vec<_> = paused_entries
-                                .into_iter()
-                                .map(|e| e.tx.transaction.clone())
-                                .collect();
-
-                            let results = pool_clone
-                                .add_external_transactions(txs)
-                                .await;
-
-                            let success = results.iter().filter(|r| r.is_ok()).count();
-                            debug!(
-                                target: "txpool",
-                                %token,
-                                total = count,
-                                success,
-                                "Restored transactions from paused pool (fee token unpaused)"
-                            );
-                        });
-                    }
-                }
+                handle_pause_events(&pool, &mut state, &metrics, &updates);
 
                 // 4. Evict expired transactions from the paused pool
                 let paused_expired = state.paused_pool.evict_expired(tip_timestamp);
@@ -922,6 +829,123 @@ fn evict_invalidated_from_paused_pool(state: &mut TempoPoolState, updates: &Temp
             &updates.spending_limit_changes,
             &updates.spending_limit_spends,
         );
+    }
+}
+
+/// Handles fee token pause/unpause events.
+///
+/// For pause events: removes matching transactions from the main pool, cleans up
+/// expiry tracking, and moves them to the paused pool.
+/// For unpause events: drains transactions from the paused pool and re-adds them
+/// to the main pool asynchronously.
+fn handle_pause_events<Client>(
+    pool: &TempoTransactionPool<Client>,
+    state: &mut TempoPoolState,
+    metrics: &TempoPoolMaintenanceMetrics,
+    updates: &TempoPoolUpdates,
+) where
+    Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
+{
+    if updates.pause_events.is_empty() {
+        return;
+    }
+
+    // Collect pause tokens that need pool scanning.
+    let pause_tokens: Vec<Address> = updates
+        .pause_events
+        .iter()
+        .filter_map(|(token, is_paused)| is_paused.then_some(*token))
+        .collect();
+
+    // Process pause events: fetch pool transactions once for all pause tokens.
+    if !pause_tokens.is_empty() {
+        let all_txs = pool.all_transactions();
+
+        // Group transactions by fee token for efficient batch processing.
+        let mut by_token: AddressMap<Vec<TxHash>> = AddressMap::default();
+        for tx in all_txs.pending.iter().chain(all_txs.queued.iter()) {
+            if let Some(fee_token) = tx.transaction.inner().fee_token() {
+                by_token.entry(fee_token).or_default().push(*tx.hash());
+            }
+        }
+
+        for token in pause_tokens {
+            let Some(hashes_to_pause) = by_token.remove(&token) else {
+                continue;
+            };
+
+            let removed_txs = pool.remove_transactions(hashes_to_pause);
+            let count = removed_txs.len();
+
+            if count > 0 {
+                for tx in &removed_txs {
+                    state.untrack_expiry(tx.hash());
+                }
+
+                let entries: Vec<_> = removed_txs
+                    .into_iter()
+                    .map(|tx| {
+                        let valid_before = tx
+                            .transaction
+                            .inner()
+                            .as_aa()
+                            .and_then(|aa| aa.tx().valid_before);
+                        PausedEntry { tx, valid_before }
+                    })
+                    .collect();
+
+                let cap_evicted = state.paused_pool.insert_batch(token, entries);
+                metrics.transactions_paused.increment(count as u64);
+                if cap_evicted > 0 {
+                    metrics
+                        .paused_pool_cap_evicted
+                        .increment(cap_evicted as u64);
+                    debug!(
+                        target: "txpool",
+                        cap_evicted,
+                        "Evicted oldest paused transactions due to global cap"
+                    );
+                }
+                debug!(
+                    target: "txpool",
+                    %token,
+                    count,
+                    "Moved transactions to paused pool (fee token paused)"
+                );
+            }
+        }
+    }
+
+    // Process unpause events: O(1) lookup per token in paused_pool
+    for (token, is_paused) in &updates.pause_events {
+        if *is_paused {
+            continue;
+        }
+
+        let paused_entries = state.paused_pool.drain_token(token);
+        if !paused_entries.is_empty() {
+            let count = paused_entries.len();
+            metrics.transactions_unpaused.increment(count as u64);
+            let pool_clone = pool.clone();
+            let token = *token;
+            tokio::spawn(async move {
+                let txs: Vec<_> = paused_entries
+                    .into_iter()
+                    .map(|e| e.tx.transaction.clone())
+                    .collect();
+
+                let results = pool_clone.add_external_transactions(txs).await;
+
+                let success = results.iter().filter(|r| r.is_ok()).count();
+                debug!(
+                    target: "txpool",
+                    %token,
+                    total = count,
+                    success,
+                    "Restored transactions from paused pool (fee token unpaused)"
+                );
+            });
+        }
     }
 }
 
