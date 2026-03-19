@@ -198,13 +198,7 @@ impl StablecoinDEX {
         amount: u128,
     ) -> Result<()> {
         // Ensure that the token can be transferred
-        let tip20 = TIP20Token::from_address(token)?;
-        tip20.ensure_transfer_authorized(user, self.address)?;
-
-        // Ensure that the token is not paused (spec: T2+)
-        if self.storage.spec().is_t2() {
-            tip20.check_not_paused()?;
-        }
+        TIP20Token::from_address(token)?.ensure_transfer_authorized(user, self.address)?;
 
         let user_balance = self.balance_of(user, token)?;
         if user_balance >= amount {
@@ -1380,7 +1374,12 @@ impl StablecoinDEX {
         self.validate_and_build_route(&trade_path)
     }
 
-    /// Validates that all pairs in the path exist and returns book keys with direction info
+    /// Validates that all pairs in the path exist and returns book keys with direction info.
+    ///
+    /// # Errors
+    /// - `InvalidToken` — a token address does not have a valid TIP-20 prefix
+    /// - `PairDoesNotExist` — no orderbook exists for a hop in the route
+    /// - `Paused` — a token in the route is paused (T2+)
     fn validate_and_build_route(&self, path: &[Address]) -> Result<Vec<(B256, bool)>> {
         let mut route = Vec::new();
 
@@ -1390,6 +1389,13 @@ impl StablecoinDEX {
 
             let (base, quote) = {
                 let token_in_tip20 = TIP20Token::from_address(token_in)?;
+
+                // Ensure that the token is not paused (spec: T2+)
+                // Necessary because TIP20 transfer checks don't cover internal DEX balance updates
+                if self.storage.spec().is_t2() {
+                    token_in_tip20.check_not_paused()?;
+                }
+
                 if token_in_tip20.quote_token()? == token_out {
                     (token_in, token_out)
                 } else {
@@ -1518,6 +1524,7 @@ mod tests {
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
+        tip20::PAUSE_ROLE,
         tip403_registry::{ITIP403Registry, TIP403Registry},
     };
 
@@ -4970,35 +4977,111 @@ mod tests {
                 let tick = 10;
 
                 let (base_token, quote_token) =
-                    setup_test_tokens(admin, alice, exchange.address, 200_000_000u128)?;
+                    setup_test_tokens(admin, alice, exchange.address, 500_000_000u128)?;
                 exchange.create_pair(base_token)?;
 
-                // Alice places an ask order so Bob can swap base→quote
-                exchange.place(alice, base_token, MIN_ORDER_AMOUNT, true, tick)?;
+                // Alice places orders so Bob can swap base→quote (enough for both swaps)
+                exchange.place(alice, base_token, MIN_ORDER_AMOUNT * 2, true, tick)?;
 
-                // Give Bob internal DEX balance in the base token
-                exchange.set_balance(bob, base_token, amount_in)?;
+                // Give Bob internal DEX balance (enough for both swaps)
+                exchange.set_balance(bob, base_token, amount_in * 2)?;
 
                 // Pause the base token
                 let mut base_tip20 = TIP20Token::from_address(base_token)?;
-                base_tip20.grant_role_internal(admin, *crate::tip20::PAUSE_ROLE)?;
+                base_tip20.grant_role_internal(admin, *PAUSE_ROLE)?;
                 base_tip20.pause(admin, ITIP20::pauseCall {})?;
 
-                let result =
+                let res_in =
                     exchange.swap_exact_amount_in(bob, base_token, quote_token, amount_in, 0);
+                let res_out = exchange.swap_exact_amount_out(
+                    bob,
+                    base_token,
+                    quote_token,
+                    amount_in,
+                    u128::MAX,
+                );
 
                 if spec.is_t2() {
-                    // T2+: swap must be blocked
-                    assert!(result.is_err(), "swap should fail on {spec:?} when paused");
-                    assert!(matches!(
-                        result.unwrap_err(),
-                        TempoPrecompileError::TIP20(TIP20Error::ContractPaused(_))
-                    ));
-                    assert_eq!(exchange.balance_of(bob, base_token)?, amount_in);
+                    assert_eq!(res_in, res_out);
+                    assert_eq!(res_in.unwrap_err(), TIP20Error::contract_paused().into());
                 } else {
-                    // Pre-T2: swap succeeds (no pause check)
-                    assert!(result.is_ok(), "swap should succeed on {spec:?} pre-T2");
-                    assert_eq!(exchange.balance_of(bob, base_token)?, 0);
+                    assert!(res_in.is_ok());
+                    assert!(res_out.is_ok());
+                }
+
+                Ok::<_, eyre::Report>(())
+            })?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_swap_paused_intermediate_token_allowed_pre_t2_blocked_on_t2() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T1C, TempoHardfork::T2] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || {
+                let mut exchange = StablecoinDEX::new();
+                exchange.initialize()?;
+
+                let admin = Address::random();
+                let alice = Address::random();
+                let bob = Address::random();
+
+                let amount = MIN_ORDER_AMOUNT * 10;
+                let amount_u256 = U256::from(amount);
+
+                // Setup: pathUSD <- USDC, pathUSD <- EURC
+                let path_usd = TIP20Setup::path_usd(admin)
+                    .with_issuer(admin)
+                    .with_mint(alice, amount_u256)
+                    .with_approval(alice, exchange.address, amount_u256)
+                    .apply()?;
+
+                let usdc = TIP20Setup::create("USDC", "USDC", admin)
+                    .with_issuer(admin)
+                    .with_mint(alice, amount_u256)
+                    .with_approval(alice, exchange.address, amount_u256)
+                    .with_mint(bob, amount_u256)
+                    .with_approval(bob, exchange.address, amount_u256)
+                    .apply()?;
+
+                let eurc = TIP20Setup::create("EURC", "EURC", admin)
+                    .with_issuer(admin)
+                    .with_mint(alice, amount_u256)
+                    .with_approval(alice, exchange.address, amount_u256)
+                    .apply()?;
+
+                // Alice provides liquidity on both books
+                exchange.place(alice, usdc.address(), MIN_ORDER_AMOUNT * 5, true, 0)?;
+                exchange.place(alice, eurc.address(), MIN_ORDER_AMOUNT * 5, false, 0)?;
+
+                // Pause pathUSD (the intermediate token)
+                let mut path_usd_tip20 = TIP20Token::from_address(path_usd.address())?;
+                path_usd_tip20.grant_role_internal(admin, *PAUSE_ROLE)?;
+                path_usd_tip20.pause(admin, ITIP20::pauseCall {})?;
+
+                // Bob tries multi-hop swap: USDC -> pathUSD -> EURC
+                let res_in = exchange.swap_exact_amount_in(
+                    bob,
+                    usdc.address(),
+                    eurc.address(),
+                    MIN_ORDER_AMOUNT,
+                    0,
+                );
+                let res_out = exchange.swap_exact_amount_out(
+                    bob,
+                    usdc.address(),
+                    eurc.address(),
+                    MIN_ORDER_AMOUNT,
+                    u128::MAX,
+                );
+
+                if spec.is_t2() {
+                    assert_eq!(res_in, res_out);
+                    assert_eq!(res_in.unwrap_err(), TIP20Error::contract_paused().into());
+                } else {
+                    assert!(res_in.is_ok());
+                    assert!(res_out.is_ok());
                 }
 
                 Ok::<_, eyre::Report>(())
