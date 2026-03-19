@@ -80,7 +80,30 @@ jobs:
           if git rev-parse --verify origin/reth-bump-update >/dev/null 2>&1; then
             echo "Continuing on existing reth-bump-update branch"
             git checkout reth-bump-update
-            git rebase reth-bump
+            if ! git rebase reth-bump; then
+              echo "Rebase conflicts detected, resolving..."
+              # Conflicts are expected in Cargo.toml/Cargo.lock from old rev bumps.
+              # Accept the base (reth-bump) version for those since we're about to
+              # bump to a new rev anyway. Keep source fixes from our side.
+              while [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; do
+                CONFLICTED=$(git diff --name-only --diff-filter=U)
+                for f in $CONFLICTED; do
+                  case "$f" in
+                    Cargo.toml|Cargo.lock)
+                      echo "  Accepting reth-bump version for $f"
+                      git checkout --theirs "$f"
+                      ;;
+                    *)
+                      echo "  Accepting our version for $f"
+                      git checkout --ours "$f"
+                      ;;
+                  esac
+                  git add "$f"
+                done
+                GIT_EDITOR=true git rebase --continue || true
+              done
+              echo "Rebase completed with conflict resolution"
+            fi
           else
             echo "Creating reth-bump-update from reth-bump"
             git checkout -b reth-bump-update reth-bump
