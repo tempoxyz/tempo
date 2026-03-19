@@ -11908,6 +11908,7 @@ dependencies = [
  "alloy-hardforks",
  "alloy-primitives",
  "eyre",
+ "once_cell",
  "paste",
  "reth-chainspec",
  "reth-cli",
