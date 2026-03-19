@@ -696,6 +696,14 @@ where
         let cfg = &evm.inner.ctx.cfg;
         let journal = &mut evm.inner.ctx.journaled_state;
 
+        // Keep tx.origin seeding here for downstream custom handlers that override
+        // `inspect_run` and call directly into validation/setup paths.
+        StorageCtx::enter_evm(journal, block, cfg, tx, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.set_tx_origin(tx.caller())
+        })
+        .map_err(|e| EVMError::Custom(e.to_string()))?;
+
         // Validate fee token has TIP20 prefix before loading balance.
         // This prevents panics in get_token_balance for invalid fee tokens.
         // Note: Full fee token validation (currency check) happens in load_fee_fields,

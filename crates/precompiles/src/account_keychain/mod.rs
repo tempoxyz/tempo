@@ -378,7 +378,7 @@ impl AccountKeychain {
     ///
     /// Rules:
     /// - transaction must be signed by the main key (`transaction_key == Address::ZERO`)
-    /// - T2+: if tx.origin is set, caller must match tx.origin
+    /// - T2+: caller must match tx.origin
     ///
     /// # Errors
     /// - `UnauthorizedCaller` when called via an access key
@@ -388,7 +388,9 @@ impl AccountKeychain {
     /// The T2 check prevents transaction-global root-key status from being reused by
     /// intermediate contracts (confused-deputy self-administration).
     ///
-    /// `tx_origin` is seeded by the handler before tx execution.
+    /// `tx_origin` is seeded by the handler before validation/execution on in-repo flows.
+    /// The zero-origin fallback here exists for out-of-tree integrations that bypass
+    /// handler setup.
     fn ensure_admin_caller(&self, msg_sender: Address) -> Result<()> {
         if !self.transaction_key.t_read()?.is_zero() {
             return Err(AccountKeychainError::unauthorized_caller().into());
@@ -832,6 +834,121 @@ mod tests {
             );
             assert!(update_result.is_err());
             assert_unauthorized_error(update_result.unwrap_err());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_admin_operations_allow_contract_origin_on_t2() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let contract_sender = Address::random();
+        let key_id = Address::random();
+        let token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            keychain
+                .storage
+                .set_code(contract_sender, Bytecode::new_raw(vec![0x60, 0x00].into()))?;
+
+            // On T2, contract callers are allowed for admin operations only when
+            // `msg.sender == tx.origin`.
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(contract_sender)?;
+
+            keychain.authorize_key(
+                contract_sender,
+                authorizeKeyCall {
+                    keyId: key_id,
+                    signatureType: SignatureType::Secp256k1,
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![TokenLimit {
+                        token,
+                        amount: U256::from(100),
+                    }],
+                },
+            )?;
+
+            keychain.update_spending_limit(
+                contract_sender,
+                updateSpendingLimitCall {
+                    keyId: key_id,
+                    token,
+                    newLimit: U256::from(200),
+                },
+            )?;
+
+            assert_eq!(
+                keychain.get_remaining_limit(getRemainingLimitCall {
+                    account: contract_sender,
+                    keyId: key_id,
+                    token,
+                })?,
+                U256::from(200)
+            );
+
+            keychain.revoke_key(contract_sender, revokeKeyCall { keyId: key_id })?;
+
+            let key_info = keychain.get_key(getKeyCall {
+                account: contract_sender,
+                keyId: key_id,
+            })?;
+            assert!(key_info.isRevoked);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_admin_operations_allow_origin_mismatch_pre_t2() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
+        let msg_sender = Address::random();
+        let other_origin = Address::random();
+        let key_id = Address::random();
+        let token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            // Pre-T2, admin operations do not enforce msg.sender == tx.origin.
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(other_origin)?;
+
+            keychain.authorize_key(
+                msg_sender,
+                authorizeKeyCall {
+                    keyId: key_id,
+                    signatureType: SignatureType::Secp256k1,
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![TokenLimit {
+                        token,
+                        amount: U256::from(100),
+                    }],
+                },
+            )?;
+
+            keychain.update_spending_limit(
+                msg_sender,
+                updateSpendingLimitCall {
+                    keyId: key_id,
+                    token,
+                    newLimit: U256::from(200),
+                },
+            )?;
+
+            keychain.revoke_key(msg_sender, revokeKeyCall { keyId: key_id })?;
+
+            let key_info = keychain.get_key(getKeyCall {
+                account: msg_sender,
+                keyId: key_id,
+            })?;
+            assert!(key_info.isRevoked);
 
             Ok(())
         })
