@@ -77,14 +77,10 @@ jobs:
             echo "Found existing PR #$EXISTING_PR"
           fi
 
-          if git rev-parse --verify origin/reth-bump-update >/dev/null 2>&1; then
-            echo "Continuing on existing reth-bump-update branch"
-            git checkout reth-bump-update
-            git rebase reth-bump
-          else
-            echo "Creating reth-bump-update from reth-bump"
-            git checkout -b reth-bump-update reth-bump
-          fi
+          # Always start fresh from reth-bump — old bump commits are
+          # superseded by the new rev bump and would conflict on rebase.
+          echo "Creating reth-bump-update from reth-bump"
+          git checkout -B reth-bump-update reth-bump
 
       # ── toolchain (matches test.yml) ───────────────────────────
       - uses: dtolnay/rust-toolchain@stable
