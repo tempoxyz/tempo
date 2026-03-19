@@ -1,9 +1,9 @@
 //! ABI dispatch for the [`TIP403Registry`] precompile.
 
 use crate::{
-    Precompile, dispatch_call, input_cost, mutate, mutate_void,
+    dispatch_call, input_cost, mutate, mutate_void,
     tip403_registry::{AuthRole, TIP403Registry},
-    unknown_selector, view,
+    unknown_selector, view, Precompile,
 };
 use alloy::{
     primitives::Address,
@@ -11,8 +11,8 @@ use alloy::{
 };
 use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_contracts::precompiles::ITIP403Registry::{
-    ITIP403RegistryCalls, compoundPolicyDataCall, createCompoundPolicyCall,
-    isAuthorizedMintRecipientCall, isAuthorizedRecipientCall, isAuthorizedSenderCall,
+    compoundPolicyDataCall, createCompoundPolicyCall, isAuthorizedMintRecipientCall,
+    isAuthorizedRecipientCall, isAuthorizedSenderCall, ITIP403RegistryCalls,
 };
 
 impl Precompile for TIP403Registry {
@@ -112,7 +112,7 @@ impl Precompile for TIP403Registry {
 mod tests {
     use super::*;
     use crate::{
-        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        storage::{hashmap::HashMapStorageProvider, StorageCtx},
         test_util::{assert_full_coverage, check_selector_coverage},
         tip403_registry::ITIP403Registry,
     };

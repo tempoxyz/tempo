@@ -12,12 +12,12 @@ pub use tempo_contracts::precompiles::{
     ITIP403Registry::{self, PolicyType},
     TIP403RegistryError, TIP403RegistryEvent,
 };
-use tempo_precompiles_macros::{Storable, contract};
+use tempo_precompiles_macros::{contract, Storable};
 
 use crate::{
-    TIP403_REGISTRY_ADDRESS,
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
+    TIP403_REGISTRY_ADDRESS,
 };
 use alloy::primitives::{Address, U256};
 
@@ -104,7 +104,7 @@ pub struct PolicyData {
 impl PolicyData {
     /// Decodes a [`PolicyData`] from a raw EVM storage slot word.
     pub fn decode_from_slot(slot_value: U256) -> Self {
-        use crate::storage::{LayoutCtx, Storable, packing::PackedSlot};
+        use crate::storage::{packing::PackedSlot, LayoutCtx, Storable};
 
         // NOTE: fine to expect, as `StorageOps` on `PackedSlot` are infallible
         Self::load(&PackedSlot(slot_value), U256::ZERO, LayoutCtx::FULL)
@@ -744,7 +744,7 @@ mod tests {
     use super::*;
     use crate::{
         error::TempoPrecompileError,
-        storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
+        storage::{hashmap::HashMapStorageProvider, ContractStorage, StorageCtx},
     };
     use alloy::{
         primitives::{Address, Log},
@@ -897,27 +897,35 @@ mod tests {
     }
 
     #[test]
-    fn test_policy_data_returns_correct_type_for_builtin_policies() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
-        StorageCtx::enter(&mut storage, || {
-            let registry = TIP403Registry::new();
+    fn test_policy_data_builtin_policies_boundary() -> eyre::Result<()> {
+        for (hardfork, expect_allow_all_type) in [
+            // Pre-T2: reads uninitialized storage → both builtins decode as WHITELIST
+            (TempoHardfork::T1C, ITIP403Registry::PolicyType::WHITELIST),
+            // T2: virtual builtins return correct types
+            (TempoHardfork::T2, ITIP403Registry::PolicyType::BLACKLIST),
+        ] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
+            StorageCtx::enter(&mut storage, || {
+                let registry = TIP403Registry::new();
 
-            // reject-all → WHITELIST (empty whitelist rejects everyone)
-            let data = registry.policy_data(ITIP403Registry::policyDataCall {
-                policyId: REJECT_ALL_POLICY_ID,
+                // reject-all → WHITELIST on every fork (coincides with default storage)
+                let reject = registry.policy_data(ITIP403Registry::policyDataCall {
+                    policyId: REJECT_ALL_POLICY_ID,
+                })?;
+                assert_eq!(reject.policyType, ITIP403Registry::PolicyType::WHITELIST);
+                assert_eq!(reject.admin, Address::ZERO);
+
+                // allow-all → WHITELIST pre-T2 (wrong), BLACKLIST from T2 (correct)
+                let allow = registry.policy_data(ITIP403Registry::policyDataCall {
+                    policyId: ALLOW_ALL_POLICY_ID,
+                })?;
+                assert_eq!(allow.policyType, expect_allow_all_type);
+                assert_eq!(allow.admin, Address::ZERO);
+
+                Ok::<_, TempoPrecompileError>(())
             })?;
-            assert_eq!(data.policyType, ITIP403Registry::PolicyType::WHITELIST);
-            assert_eq!(data.admin, Address::ZERO);
-
-            // allow-all → BLACKLIST (empty blacklist allows everyone)
-            let data = registry.policy_data(ITIP403Registry::policyDataCall {
-                policyId: ALLOW_ALL_POLICY_ID,
-            })?;
-            assert_eq!(data.policyType, ITIP403Registry::PolicyType::BLACKLIST);
-            assert_eq!(data.admin, Address::ZERO);
-
-            Ok(())
-        })
+        }
+        Ok(())
     }
 
     #[test]
