@@ -378,37 +378,30 @@ impl AccountKeychain {
     ///
     /// Rules:
     /// - transaction must be signed by the main key (`transaction_key == Address::ZERO`)
-    /// - T2+: if tx.origin is set and caller has bytecode, caller must match tx.origin
+    /// - T2+: if tx.origin is set, caller must match tx.origin
+    ///
+    /// # Errors
+    /// - `UnauthorizedCaller` when called via an access key
+    /// - `UnauthorizedCaller` on T2+ when `msg.sender != tx.origin`
+    /// - storage read errors from transient key/origin or account metadata lookups
     ///
     /// The T2 check prevents transaction-global root-key status from being reused by
     /// intermediate contracts (confused-deputy self-administration).
     ///
-    /// `tx_origin` is seeded by the handler before tx execution. Some test harnesses may
-    /// emulate `msg.sender`/`tx.origin` with EOA mismatches, so we scope the additional
-    /// check to contract callers where confused-deputy risk exists.
+    /// `tx_origin` is seeded by the handler before tx execution.
     fn ensure_admin_caller(&self, msg_sender: Address) -> Result<()> {
-        let transaction_key = self.transaction_key.t_read()?;
-        if transaction_key != Address::ZERO {
+        if !self.transaction_key.t_read()?.is_zero() {
             return Err(AccountKeychainError::unauthorized_caller().into());
         }
 
         if self.storage.spec().is_t2() {
             let tx_origin = self.tx_origin.t_read()?;
-            if tx_origin != Address::ZERO
-                && tx_origin != msg_sender
-                && self.is_contract_account(msg_sender)?
-            {
+            if tx_origin != Address::ZERO && tx_origin != msg_sender {
                 return Err(AccountKeychainError::unauthorized_caller().into());
             }
         }
 
         Ok(())
-    }
-
-    /// Returns true if the account has deployed bytecode.
-    fn is_contract_account(&self, address: Address) -> Result<bool> {
-        self.storage
-            .with_account_info(address, |info| Ok(!info.is_empty_code_hash()))
     }
 
     /// Load and validate a key exists and is not revoked.
@@ -845,7 +838,7 @@ mod tests {
     }
 
     #[test]
-    fn test_admin_operations_allow_eoa_mismatch_on_t2() -> eyre::Result<()> {
+    fn test_admin_operations_reject_eoa_mismatch_on_t2() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
         let account = Address::random();
         let other_origin = Address::random();
@@ -873,25 +866,18 @@ mod tests {
                 },
             )?;
 
-            // EOA caller with mismatched tx.origin should preserve legacy behavior.
+            // On T2+, admin ops require `msg.sender == tx.origin`.
             keychain.set_tx_origin(other_origin)?;
-            keychain.update_spending_limit(
+            let result = keychain.update_spending_limit(
                 account,
                 updateSpendingLimitCall {
                     keyId: key_id,
                     token,
                     newLimit: U256::from(200),
                 },
-            )?;
-
-            assert_eq!(
-                keychain.get_remaining_limit(getRemainingLimitCall {
-                    account,
-                    keyId: key_id,
-                    token,
-                })?,
-                U256::from(200)
             );
+            assert!(result.is_err());
+            assert_unauthorized_error(result.unwrap_err());
 
             Ok(())
         })

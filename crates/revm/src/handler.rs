@@ -214,6 +214,27 @@ impl<DB, I> TempoEvmHandler<DB, I> {
 }
 
 impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
+    fn seed_tx_origin(
+        &self,
+        evm: &mut TempoEvm<DB, I>,
+    ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
+        let ctx = evm.ctx_mut();
+
+        // Seed tx.origin in keychain transient storage for both regular execution and
+        // RPC simulations (`eth_call` / `eth_estimateGas`) that go through handler execution.
+        StorageCtx::enter_evm(
+            &mut ctx.journaled_state,
+            &ctx.block,
+            &ctx.cfg,
+            &ctx.tx,
+            || {
+                let mut keychain = AccountKeychain::new();
+                keychain.set_tx_origin(ctx.tx.caller())
+            },
+        )
+        .map_err(|e| EVMError::Custom(e.to_string()))
+    }
+
     /// Loads the fee token and fee payer from the transaction environment.
     ///
     /// Resolves and validates the fee fields used by Tempo's fee system:
@@ -561,6 +582,7 @@ where
         &mut self,
         evm: &mut Self::Evm,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
+        self.seed_tx_origin(evm)?;
         self.load_fee_fields(evm)?;
 
         // Standard handler flow - execution() handles single vs multi-call dispatch
@@ -673,14 +695,6 @@ where
         let tx = &evm.inner.ctx.tx;
         let cfg = &evm.inner.ctx.cfg;
         let journal = &mut evm.inner.ctx.journaled_state;
-
-        // Set tx.origin in the keychain's transient storage for spending limit checks.
-        // This must be done for ALL transactions so precompiles can access it.
-        StorageCtx::enter_evm(journal, block, cfg, tx, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.set_tx_origin(tx.caller())
-        })
-        .map_err(|e| EVMError::Custom(e.to_string()))?;
 
         // Validate fee token has TIP20 prefix before loading balance.
         // This prevents panics in get_token_balance for invalid fee tokens.
@@ -1669,6 +1683,7 @@ where
         &mut self,
         evm: &mut Self::Evm,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
+        self.seed_tx_origin(evm)?;
         self.load_fee_fields(evm)?;
 
         match self.inspect_run_without_catch_error(evm) {
