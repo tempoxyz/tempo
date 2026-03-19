@@ -11832,6 +11832,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "tracy-client",
  "url",
 ]
 
