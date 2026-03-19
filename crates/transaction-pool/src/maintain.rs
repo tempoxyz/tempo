@@ -193,6 +193,77 @@ impl TempoPoolUpdates {
         updates
     }
 
+    /// Constructs pool updates for a reorg by combining events from the new canonical
+    /// segment with inverse events from the reverted (old) segment.
+    ///
+    /// When a reorg reverts the old chain, "positive" state changes in the old chain
+    /// (token unpauses, blacklist removals, whitelist additions) are also reverted.
+    /// Since these reversions don't produce events in the new chain, we must synthesize
+    /// inverse events so the pool correctly reflects the canonical tip's state.
+    ///
+    /// For pause events specifically, this computes the net pause state per token across
+    /// both segments. For example:
+    /// - Old chain unpaused token X (no corresponding event in new) -> synthetic pause for X
+    /// - Old chain paused token X (no corresponding event in new) -> synthetic unpause for X
+    pub fn from_reorg(old: &Chain<TempoPrimitives>, new: &Chain<TempoPrimitives>) -> Self {
+        let mut updates = Self::from_chain(new);
+        let old_updates = Self::from_chain(old);
+
+        // Collect tokens already present in new's events to avoid duplicates.
+        let new_pause_tokens: HashSet<Address> = updates
+            .pause_events
+            .iter()
+            .map(|(token, _)| *token)
+            .collect();
+
+        // For each pause event in old, if the token isn't already handled by new's events,
+        // generate an inverse event: reverted pause -> unpause, reverted unpause -> pause.
+        // We use the last event per token in old (net effect) since multiple events
+        // for the same token in a segment cancel out.
+        let mut old_net_pause: AddressMap<bool> = AddressMap::default();
+        for (token, is_paused) in &old_updates.pause_events {
+            old_net_pause.insert(*token, *is_paused);
+        }
+        for (token, was_paused) in old_net_pause {
+            if !new_pause_tokens.contains(&token) {
+                // Invert: if old paused it, the reorg unpauses; if old unpaused, reorg re-pauses
+                updates.pause_events.push((token, !was_paused));
+            }
+        }
+
+        // Blacklist removals in old, reverted, account is still blacklisted.
+        // Generate synthetic blacklist additions for removals in old that aren't
+        // re-added in new.
+        for log in old
+            .execution_outcome()
+            .receipts()
+            .iter()
+            .flatten()
+            .flat_map(|receipt| &receipt.logs)
+        {
+            if log.address == TIP403_REGISTRY_ADDRESS {
+                // Old had a blacklist removal (restricted=false) -- revert means still blacklisted
+                if let Ok(event) = ITIP403Registry::BlacklistUpdated::decode_log(log)
+                    && !event.restricted
+                {
+                    updates
+                        .blacklist_additions
+                        .push((event.policyId, event.account));
+                }
+                // Old had a whitelist addition (allowed=true) -- revert means not whitelisted
+                else if let Ok(event) = ITIP403Registry::WhitelistUpdated::decode_log(log)
+                    && event.allowed
+                {
+                    updates
+                        .whitelist_removals
+                        .push((event.policyId, event.account));
+                }
+            }
+        }
+
+        updates
+    }
+
     /// Returns true if there are any invalidation events that require scanning the pool.
     pub fn has_invalidation_events(&self) -> bool {
         !self.revoked_keys.is_empty()
@@ -509,7 +580,7 @@ where
                     CanonStateNotification::Reorg { old, new } => {
                         // Handle reorg: identify orphaned AA 2D txs and affected nonce slots
                         let (orphaned_txs, affected_seq_ids) =
-                            handle_reorg(old, new.clone(), |hash| pool.contains(hash));
+                            handle_reorg(old.clone(), new.clone(), |hash| pool.contains(hash));
 
                         // Reset nonce state for affected 2D nonce slots from the new tip's state.
                         // Necessary because state diffs only contain slots that changed in the new chain.
@@ -559,6 +630,27 @@ where
                         if let Err(err) = amm_cache.repopulate(pool.client()) {
                             error!(target: "txpool", ?err, "AMM liquidity cache repopulate after reorg failed");
                         }
+
+                        // Extract invalidation events from the new canonical segment,
+                        // including synthetic inverse events for reverted state changes
+                        // in the old segment (e.g., reverted unpauses, blacklist removals).
+                        let updates = TempoPoolUpdates::from_reorg(&old, &new);
+
+                        // Order matches the commit path: pause first (so affected txs are
+                        // parked rather than permanently evicted), then evict from paused
+                        // pool, then evict from main pool.
+                        handle_pause_events(
+                            &pool, &mut state, &metrics, &updates,
+                        );
+                        evict_invalidated_from_paused_pool(&mut state, &updates);
+                        evict_invalidated_from_pool(&pool, &mut state, &metrics, &updates);
+
+                        // Remove included expiring nonce txs from the new chain.
+                        pool.remove_included_expiring_nonce_txs(
+                            new.blocks_iter()
+                                .flat_map(|block| block.body().transactions())
+                                .map(|tx| tx.tx_hash()),
+                        );
 
                         continue;
                     }
@@ -644,112 +736,7 @@ where
 
                 // 3. Handle fee token pause/unpause events
                 let pause_start = Instant::now();
-
-                // Collect pause tokens that need pool scanning.
-                // For pause events, we need to scan the pool. For unpause events, we
-                // only need to check the paused_pool (O(1) lookup by token).
-                let pause_tokens: Vec<Address> = updates
-                    .pause_events
-                    .iter()
-                    .filter_map(|(token, is_paused)| is_paused.then_some(*token))
-                    .collect();
-
-                // Process pause events: fetch pool transactions once for all pause tokens.
-                // This avoids the O(pause_events * pool_size) cost of fetching per event.
-                if !pause_tokens.is_empty() {
-                    let all_txs = pool.all_transactions();
-
-                    // Group transactions by fee token for efficient batch processing.
-                    // This single pass over all transactions handles all pause events.
-                    let mut by_token: AddressMap<Vec<TxHash>> = AddressMap::default();
-                    for tx in all_txs.pending.iter().chain(all_txs.queued.iter()) {
-                        if let Some(fee_token) = tx.transaction.inner().fee_token() {
-                            by_token.entry(fee_token).or_default().push(*tx.hash());
-                        }
-                    }
-
-                    // Process each pause token
-                    for token in pause_tokens {
-                        let Some(hashes_to_pause) = by_token.remove(&token) else {
-                            // No transactions use this fee token - skip
-                            continue;
-                        };
-
-                        let removed_txs = pool.remove_transactions(hashes_to_pause);
-                        let count = removed_txs.len();
-
-                        if count > 0 {
-                            // Clean up expiry tracking for paused txs
-                            for tx in &removed_txs {
-                                state.untrack_expiry(tx.hash());
-                            }
-
-                            let entries: Vec<_> = removed_txs
-                                .into_iter()
-                                .map(|tx| {
-                                    let valid_before = tx
-                                        .transaction
-                                        .inner()
-                                        .as_aa()
-                                        .and_then(|aa| aa.tx().valid_before);
-                                    PausedEntry { tx, valid_before }
-                                })
-                                .collect();
-
-                            let cap_evicted = state.paused_pool.insert_batch(token, entries);
-                            metrics.transactions_paused.increment(count as u64);
-                            if cap_evicted > 0 {
-                                metrics.paused_pool_cap_evicted.increment(cap_evicted as u64);
-                                debug!(
-                                    target: "txpool",
-                                    cap_evicted,
-                                    "Evicted oldest paused transactions due to global cap"
-                                );
-                            }
-                            debug!(
-                                target: "txpool",
-                                %token,
-                                count,
-                                "Moved transactions to paused pool (fee token paused)"
-                            );
-                        }
-                    }
-                }
-
-                // Process unpause events: O(1) lookup per token in paused_pool
-                for (token, is_paused) in &updates.pause_events {
-                    if *is_paused {
-                        continue; // Already handled above
-                    }
-
-                    // Unpause: drain from paused pool and re-add to main pool
-                    let paused_entries = state.paused_pool.drain_token(token);
-                    if !paused_entries.is_empty() {
-                        let count = paused_entries.len();
-                        metrics.transactions_unpaused.increment(count as u64);
-                        let pool_clone = pool.clone();
-                        let token = *token;
-                        tokio::spawn(async move {
-                            let txs: Vec<_> = paused_entries
-                                .into_iter()
-                                .map(|e| e.tx.transaction.clone())
-                                .collect();
-
-                            let results = pool_clone
-                                .add_external_transactions(txs)
-                                .await;
-
-                            let success = results.iter().filter(|r| r.is_ok()).count();
-                            debug!(
-                                target: "txpool",
-                                %token,
-                                total = count,
-                                success,
-                                "Restored transactions from paused pool (fee token unpaused)"
-                            );
-                        });
-                    }
-                }
+                handle_pause_events(&pool, &mut state, &metrics, &updates);
 
                 // 4. Evict expired transactions from the paused pool
                 let paused_expired = state.paused_pool.evict_expired(tip_timestamp);
@@ -765,16 +752,7 @@ where
                 }
 
                 // 5. Evict revoked keys and spending limit updates from paused pool
-                if !updates.revoked_keys.is_empty()
-                    || !updates.spending_limit_changes.is_empty()
-                    || !updates.spending_limit_spends.is_empty()
-                {
-                    state.paused_pool.evict_invalidated(
-                        &updates.revoked_keys,
-                        &updates.spending_limit_changes,
-                        &updates.spending_limit_spends,
-                    );
-                }
+                evict_invalidated_from_paused_pool(&mut state, &updates);
                 metrics.pause_events_duration_seconds.record(pause_start.elapsed());
 
                 // 6. Update 2D nonce pool
@@ -805,28 +783,7 @@ where
                 // This checks revoked keys, spending limit changes, validator token changes,
                 // blacklist additions, and whitelist removals together to avoid scanning
                 // all transactions multiple times per block.
-                if updates.has_invalidation_events() {
-                    let invalidation_start = Instant::now();
-                    debug!(
-                        target: "txpool",
-                        revoked_keys = updates.revoked_keys.len(),
-                        spending_limit_changes = updates.spending_limit_changes.len(),
-                        spending_limit_spends = updates.spending_limit_spends.len(),
-                        validator_token_changes = updates.validator_token_changes.len(),
-                        user_token_changes = updates.user_token_changes.len(),
-                        blacklist_additions = updates.blacklist_additions.len(),
-                        whitelist_removals = updates.whitelist_removals.len(),
-                        "Processing transaction invalidation events"
-                    );
-                    let evicted = pool.evict_invalidated_transactions(&updates);
-                    for hash in &evicted {
-                        state.untrack_expiry(hash);
-                    }
-                    metrics.transactions_invalidated.increment(evicted.len() as u64);
-                    metrics
-                        .invalidation_eviction_duration_seconds
-                        .record(invalidation_start.elapsed());
-                }
+                evict_invalidated_from_pool(&pool, &mut state, &metrics, &updates);
 
                 // 10. Evict stale pending transactions (must happen after AA pool promotions in step 6)
                 // Only runs once per interval (~30 min) to avoid overhead on every block.
@@ -888,6 +845,175 @@ where
     }
 
     count
+}
+
+/// Evicts invalidated transactions from the main pool in a single scan.
+///
+/// Checks revoked keys, spending limit changes, validator token changes,
+/// blacklist additions, and whitelist removals.
+fn evict_invalidated_from_pool<Client>(
+    pool: &TempoTransactionPool<Client>,
+    state: &mut TempoPoolState,
+    metrics: &TempoPoolMaintenanceMetrics,
+    updates: &TempoPoolUpdates,
+) where
+    Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
+{
+    if !updates.has_invalidation_events() {
+        return;
+    }
+
+    let invalidation_start = Instant::now();
+    debug!(
+        target: "txpool",
+        revoked_keys = updates.revoked_keys.len(),
+        spending_limit_changes = updates.spending_limit_changes.len(),
+        spending_limit_spends = updates.spending_limit_spends.len(),
+        validator_token_changes = updates.validator_token_changes.len(),
+        user_token_changes = updates.user_token_changes.len(),
+        blacklist_additions = updates.blacklist_additions.len(),
+        whitelist_removals = updates.whitelist_removals.len(),
+        "Processing transaction invalidation events"
+    );
+    let evicted = pool.evict_invalidated_transactions(updates);
+    for hash in &evicted {
+        state.untrack_expiry(hash);
+    }
+    metrics
+        .transactions_invalidated
+        .increment(evicted.len() as u64);
+    metrics
+        .invalidation_eviction_duration_seconds
+        .record(invalidation_start.elapsed());
+}
+
+/// Evicts invalidated transactions from the paused pool.
+///
+/// Removes paused transactions whose keychain keys were revoked or whose
+/// spending limits changed.
+fn evict_invalidated_from_paused_pool(state: &mut TempoPoolState, updates: &TempoPoolUpdates) {
+    if !updates.revoked_keys.is_empty() || !updates.spending_limit_changes.is_empty() {
+        state
+            .paused_pool
+            .evict_invalidated(&updates.revoked_keys, &updates.spending_limit_changes);
+    }
+}
+
+/// Handles fee token pause/unpause events.
+///
+/// For pause events: removes matching transactions from the main pool, cleans up
+/// expiry tracking, and moves them to the paused pool.
+/// For unpause events: drains transactions from the paused pool and re-adds them
+/// to the main pool asynchronously.
+fn handle_pause_events<Client>(
+    pool: &TempoTransactionPool<Client>,
+    state: &mut TempoPoolState,
+    metrics: &TempoPoolMaintenanceMetrics,
+    updates: &TempoPoolUpdates,
+) where
+    Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
+{
+    if updates.pause_events.is_empty() {
+        return;
+    }
+
+    // Collect pause tokens that need pool scanning.
+    let pause_tokens: Vec<Address> = updates
+        .pause_events
+        .iter()
+        .filter_map(|(token, is_paused)| is_paused.then_some(*token))
+        .collect();
+
+    // Process pause events: fetch pool transactions once for all pause tokens.
+    if !pause_tokens.is_empty() {
+        let all_txs = pool.all_transactions();
+
+        // Group transactions by fee token for efficient batch processing.
+        let mut by_token: AddressMap<Vec<TxHash>> = AddressMap::default();
+        for tx in all_txs.pending.iter().chain(all_txs.queued.iter()) {
+            if let Some(fee_token) = tx.transaction.inner().fee_token() {
+                by_token.entry(fee_token).or_default().push(*tx.hash());
+            }
+        }
+
+        for token in pause_tokens {
+            let Some(hashes_to_pause) = by_token.remove(&token) else {
+                continue;
+            };
+
+            let removed_txs = pool.remove_transactions(hashes_to_pause);
+            let count = removed_txs.len();
+
+            if count > 0 {
+                for tx in &removed_txs {
+                    state.untrack_expiry(tx.hash());
+                }
+
+                let entries: Vec<_> = removed_txs
+                    .into_iter()
+                    .map(|tx| {
+                        let valid_before = tx
+                            .transaction
+                            .inner()
+                            .as_aa()
+                            .and_then(|aa| aa.tx().valid_before);
+                        PausedEntry { tx, valid_before }
+                    })
+                    .collect();
+
+                let cap_evicted = state.paused_pool.insert_batch(token, entries);
+                metrics.transactions_paused.increment(count as u64);
+                if cap_evicted > 0 {
+                    metrics
+                        .paused_pool_cap_evicted
+                        .increment(cap_evicted as u64);
+                    debug!(
+                        target: "txpool",
+                        cap_evicted,
+                        "Evicted oldest paused transactions due to global cap"
+                    );
+                }
+                debug!(
+                    target: "txpool",
+                    %token,
+                    count,
+                    "Moved transactions to paused pool (fee token paused)"
+                );
+            }
+        }
+    }
+
+    // Process unpause events: O(1) lookup per token in paused_pool
+    for (token, is_paused) in &updates.pause_events {
+        if *is_paused {
+            continue;
+        }
+
+        let paused_entries = state.paused_pool.drain_token(token);
+        if !paused_entries.is_empty() {
+            let count = paused_entries.len();
+            metrics.transactions_unpaused.increment(count as u64);
+            let pool_clone = pool.clone();
+            let token = *token;
+            tokio::spawn(async move {
+                let txs: Vec<_> = paused_entries
+                    .into_iter()
+                    .map(|e| e.tx.transaction.clone())
+                    .collect();
+
+                let results = pool_clone.add_external_transactions(txs).await;
+
+                let success = results.iter().filter(|r| r.is_ok()).count();
+                debug!(
+                    target: "txpool",
+                    %token,
+                    total = count,
+                    success,
+                    "Restored transactions from paused pool (fee token unpaused)"
+                );
+            });
+        }
+    }
 }
 
 /// Handles a reorg event by identifying orphaned AA 2D transactions from the old chain
@@ -1447,6 +1573,155 @@ mod tests {
                 Some(Address::random()),
             );
             assert!(updates.has_invalidation_events());
+        }
+    }
+
+    mod from_reorg_tests {
+        use super::*;
+        use alloy_primitives::Log;
+        use alloy_sol_types::SolEvent;
+        use reth_provider::{Chain, ExecutionOutcome};
+        use tempo_primitives::{TempoReceipt, TempoTxType};
+
+        /// Creates a chain with a single block containing the given receipt logs.
+        fn create_chain_with_logs(logs: Vec<Log>) -> Arc<Chain<TempoPrimitives>> {
+            let receipt = TempoReceipt {
+                tx_type: TempoTxType::Legacy,
+                success: true,
+                cumulative_gas_used: 0,
+                logs,
+            };
+            let block = create_block_with_txs(1, vec![], vec![]);
+            let execution_outcome = ExecutionOutcome {
+                receipts: vec![vec![receipt]],
+                first_block: 1,
+                ..Default::default()
+            };
+            Arc::new(Chain::new(
+                vec![block],
+                execution_outcome,
+                Default::default(),
+            ))
+        }
+
+        fn pause_log(token: Address, is_paused: bool) -> Log {
+            let event = ITIP20::PauseStateUpdate {
+                updater: Address::ZERO,
+                isPaused: is_paused,
+            };
+            let log_data = event.encode_log_data();
+            Log::new(token, log_data.topics().to_vec(), log_data.data.clone()).unwrap()
+        }
+
+        fn blacklist_log(policy_id: u64, account: Address, restricted: bool) -> Log {
+            let event = ITIP403Registry::BlacklistUpdated {
+                policyId: policy_id,
+                updater: Address::ZERO,
+                account,
+                restricted,
+            };
+            let log_data = event.encode_log_data();
+            Log::new(
+                TIP403_REGISTRY_ADDRESS,
+                log_data.topics().to_vec(),
+                log_data.data.clone(),
+            )
+            .unwrap()
+        }
+
+        fn whitelist_log(policy_id: u64, account: Address, allowed: bool) -> Log {
+            let event = ITIP403Registry::WhitelistUpdated {
+                policyId: policy_id,
+                updater: Address::ZERO,
+                account,
+                allowed,
+            };
+            let log_data = event.encode_log_data();
+            Log::new(
+                TIP403_REGISTRY_ADDRESS,
+                log_data.topics().to_vec(),
+                log_data.data.clone(),
+            )
+            .unwrap()
+        }
+
+        /// Reverted unpause in old chain produces synthetic pause event in reorg updates.
+        #[test]
+        fn reverted_unpause_generates_synthetic_pause() {
+            let token = tempo_precompiles::DEFAULT_FEE_TOKEN;
+            let old = create_chain_with_logs(vec![pause_log(token, false)]);
+            let new = create_chain_with_logs(vec![]);
+
+            let updates = TempoPoolUpdates::from_reorg(&old, &new);
+
+            assert_eq!(updates.pause_events.len(), 1);
+            assert_eq!(updates.pause_events[0], (token, true));
+        }
+
+        /// Reverted pause in old chain produces synthetic unpause event in reorg updates.
+        #[test]
+        fn reverted_pause_generates_synthetic_unpause() {
+            let token = tempo_precompiles::DEFAULT_FEE_TOKEN;
+            let old = create_chain_with_logs(vec![pause_log(token, true)]);
+            let new = create_chain_with_logs(vec![]);
+
+            let updates = TempoPoolUpdates::from_reorg(&old, &new);
+
+            assert_eq!(updates.pause_events.len(), 1);
+            assert_eq!(updates.pause_events[0], (token, false));
+        }
+
+        /// When new chain has its own pause event for same token, no synthetic event.
+        #[test]
+        fn no_synthetic_when_new_handles_same_token() {
+            let token = tempo_precompiles::DEFAULT_FEE_TOKEN;
+            let old = create_chain_with_logs(vec![pause_log(token, false)]);
+            let new = create_chain_with_logs(vec![pause_log(token, true)]);
+
+            let updates = TempoPoolUpdates::from_reorg(&old, &new);
+
+            // Only the event from new, no synthetic duplicate
+            assert_eq!(updates.pause_events.len(), 1);
+            assert_eq!(updates.pause_events[0], (token, true));
+        }
+
+        /// Reverted blacklist removal produces synthetic blacklist addition.
+        #[test]
+        fn reverted_blacklist_removal_generates_addition() {
+            let account = Address::random();
+            let policy_id = 42;
+            let old = create_chain_with_logs(vec![blacklist_log(policy_id, account, false)]);
+            let new = create_chain_with_logs(vec![]);
+
+            let updates = TempoPoolUpdates::from_reorg(&old, &new);
+
+            assert!(updates.blacklist_additions.contains(&(policy_id, account)),);
+        }
+
+        /// Reverted whitelist addition produces synthetic whitelist removal.
+        #[test]
+        fn reverted_whitelist_addition_generates_removal() {
+            let account = Address::random();
+            let policy_id = 7;
+            let old = create_chain_with_logs(vec![whitelist_log(policy_id, account, true)]);
+            let new = create_chain_with_logs(vec![]);
+
+            let updates = TempoPoolUpdates::from_reorg(&old, &new);
+
+            assert!(updates.whitelist_removals.contains(&(policy_id, account)),);
+        }
+
+        /// No synthetic events when old chain has no relevant events.
+        #[test]
+        fn empty_old_chain_produces_no_synthetic_events() {
+            let old = create_chain_with_logs(vec![]);
+            let new = create_chain_with_logs(vec![]);
+
+            let updates = TempoPoolUpdates::from_reorg(&old, &new);
+
+            assert!(updates.pause_events.is_empty());
+            assert!(updates.blacklist_additions.is_empty());
+            assert!(updates.whitelist_removals.is_empty());
         }
     }
 }

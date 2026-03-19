@@ -193,22 +193,19 @@ impl PausedFeeTokenPool {
 
     /// Removes transactions matching invalidation criteria from the paused pool.
     ///
-    /// This handles revoked keys, spending limit updates, and spending limit spends
-    /// in a single pass. The `spending_limit_spends` parameter captures (account, key_id,
-    /// fee_token) combos from keychain txs that were included in the block and decremented
-    /// limits via `verify_and_update_spending()`.
-    /// Uses account-keyed indexes for O(1) account lookup per transaction.
+    /// Handles revoked keys and spending limit updates (explicit `SpendingLimitUpdated`
+    /// events). Does NOT handle `spending_limit_spends` because:
+    /// - The paused pool lacks state access for `exceeds_spending_limit` checks
+    /// - Sponsored transactions would be incorrectly evicted (no sponsor exemption)
+    /// - Limits are re-checked on unpause via full validation in `add_external_transactions`
+    ///
     /// Returns the number of transactions removed.
     pub fn evict_invalidated(
         &mut self,
         revoked_keys: &RevokedKeys,
         spending_limit_updates: &SpendingLimitUpdates,
-        spending_limit_spends: &SpendingLimitUpdates,
     ) -> usize {
-        if revoked_keys.is_empty()
-            && spending_limit_updates.is_empty()
-            && spending_limit_spends.is_empty()
-        {
+        if revoked_keys.is_empty() && spending_limit_updates.is_empty() {
             return 0;
         }
 
@@ -221,7 +218,6 @@ impl PausedFeeTokenPool {
                 };
                 !subject.matches_revoked(revoked_keys)
                     && !subject.matches_spending_limit_update(spending_limit_updates)
-                    && !subject.matches_spending_limit_update(spending_limit_spends)
             });
             count += before - meta.entries.len();
         }
@@ -343,8 +339,12 @@ mod tests {
         assert_eq!(pool.len(), PAUSED_POOL_GLOBAL_CAP);
     }
 
+    /// Spending limit spends should NOT evict from the paused pool because:
+    /// 1. The paused pool can't do the `exceeds_spending_limit` state read
+    /// 2. The paused pool can't check the sponsor exemption
+    /// 3. Limits are re-checked on unpause when txs are re-added via full validation
     #[test]
-    fn test_evict_invalidated_with_spending_limit_spends() {
+    fn test_spending_limit_spends_do_not_evict_from_paused_pool() {
         let mut pool = PausedFeeTokenPool::new();
         let user_address = Address::random();
         let fee_token = Address::random();
@@ -360,36 +360,27 @@ mod tests {
             reth_transaction_pool::TransactionOrigin::External,
         ));
 
-        // Also add a non-keychain tx that should NOT be evicted
-        let other_tx = create_valid_tx(Address::random());
-
         pool.insert_batch(
             fee_token,
-            vec![
-                PausedEntry {
-                    tx,
-                    valid_before: None,
-                },
-                PausedEntry {
-                    tx: other_tx,
-                    valid_before: None,
-                },
-            ],
+            vec![PausedEntry {
+                tx,
+                valid_before: None,
+            }],
         );
-        assert_eq!(pool.len(), 2);
+        assert_eq!(pool.len(), 1);
 
         // Build spending_limit_spends matching the keychain tx
         let mut spends = SpendingLimitUpdates::new();
         spends.insert(user_address, key_id, Some(fee_token));
 
-        let evicted =
-            pool.evict_invalidated(&RevokedKeys::new(), &SpendingLimitUpdates::new(), &spends);
+        // Spending limit spends should not cause eviction from paused pool
+        let evicted = pool.evict_invalidated(&RevokedKeys::new(), &SpendingLimitUpdates::new());
 
         assert_eq!(
-            evicted, 1,
-            "Should evict the keychain tx matching the spend"
+            evicted, 0,
+            "No eviction expected from spending limit spends"
         );
-        assert_eq!(pool.len(), 1, "Non-keychain tx should remain");
+        assert_eq!(pool.len(), 1, "Keychain tx should remain in paused pool");
     }
 
     #[test]
