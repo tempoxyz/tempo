@@ -38,6 +38,7 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
                     general_gas_limit,
                     shared_gas_limit,
                     validator_set: _,
+                    consensus_context,
                     subblock_fee_recipients: _,
                 },
             parent,
@@ -72,6 +73,7 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
             general_gas_limit,
             timestamp_millis_part,
             shared_gas_limit,
+            consensus_context,
         }))
     }
 }
@@ -153,6 +155,7 @@ mod tests {
             general_gas_limit,
             timestamp_millis_part: 0,
             shared_gas_limit,
+            ..Default::default()
         };
         let parent = SealedHeader::seal_slow(parent_header);
 
@@ -168,6 +171,7 @@ mod tests {
             general_gas_limit,
             shared_gas_limit,
             validator_set: None,
+            consensus_context: None,
             subblock_fee_recipients: HashMap::new(),
         };
 

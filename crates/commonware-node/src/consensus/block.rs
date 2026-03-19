@@ -6,9 +6,13 @@
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::B256;
 use bytes::{Buf, BufMut};
-use commonware_codec::{EncodeSize, Read, Write};
-use commonware_consensus::{Heightable, types::Height};
-use commonware_cryptography::{Committable, Digestible};
+use commonware_codec::{EncodeSize, Read, ReadExt as _, Write};
+use commonware_consensus::{
+    Heightable,
+    simplex::types::Context,
+    types::{Epoch, Height, Round, View},
+};
+use commonware_cryptography::{Committable, Digestible, ed25519::PublicKey};
 use reth_node_core::primitives::SealedBlock;
 
 use crate::consensus::Digest;
@@ -130,6 +134,29 @@ impl Heightable for Block {
 impl commonware_consensus::Block for Block {
     fn parent(&self) -> Digest {
         self.parent_digest()
+    }
+}
+
+impl commonware_consensus::CertifiableBlock for Block {
+    type Context = Context<Digest, PublicKey>;
+
+    fn context(&self) -> Self::Context {
+        let context = self.consensus_context.unwrap_or_default();
+        let leader = PublicKey::read(&mut context.leader.as_ref())
+            .expect("valid ed25519 public key in consensus context");
+
+        // Default context is a zero'd out sentinel. Also ensure the parent digest is empty
+        let parent_digest = if self.consensus_context.is_some() {
+            self.parent_digest()
+        } else {
+            Digest(B256::ZERO)
+        };
+
+        Context {
+            leader,
+            round: Round::new(Epoch::new(context.epoch), View::new(context.view)),
+            parent: (View::new(context.parent_view), parent_digest),
+        }
     }
 }
 

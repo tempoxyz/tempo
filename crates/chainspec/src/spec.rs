@@ -224,6 +224,7 @@ impl TempoChainSpec {
                 general_gas_limit: 0,
                 timestamp_millis_part: inner.timestamp % 1000,
                 shared_gas_limit: 0,
+                consensus_context: None,
                 inner,
             }),
             info,
@@ -251,8 +252,9 @@ impl From<ChainSpec> for TempoChainSpec {
             inner: spec.map_header(|inner| TempoHeader {
                 general_gas_limit: 0,
                 timestamp_millis_part: inner.timestamp % 1000,
-                inner,
                 shared_gas_limit: 0,
+                consensus_context: None,
+                inner,
             }),
             info: TempoGenesisInfo::default(),
             default_follow_url: None,

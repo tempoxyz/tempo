@@ -8,7 +8,7 @@ use std::{
     convert::Infallible,
     sync::{Arc, atomic, atomic::Ordering},
 };
-use tempo_primitives::RecoveredSubBlock;
+use tempo_primitives::{RecoveredSubBlock, TempoConsensusContext};
 
 /// A handle for a payload interrupt flag.
 ///
@@ -43,6 +43,8 @@ pub struct TempoPayloadBuilderAttributes {
     /// This is empty when no DKG data is available (e.g., when the DKG manager
     /// hasn't produced ceremony outcomes yet, or when DKG operations fail).
     extra_data: Bytes,
+    /// Consensus metadata applicable for this block
+    consensus_context: Option<TempoConsensusContext>,
     #[debug(skip)]
     subblocks: Arc<dyn Fn() -> Vec<RecoveredSubBlock> + Send + Sync + 'static>,
 }
@@ -55,6 +57,7 @@ impl TempoPayloadBuilderAttributes {
         suggested_fee_recipient: Address,
         timestamp_millis: u64,
         extra_data: Bytes,
+        consensus_context: Option<TempoConsensusContext>,
         subblocks: impl Fn() -> Vec<RecoveredSubBlock> + Send + Sync + 'static,
     ) -> Self {
         let (seconds, millis) = (timestamp_millis / 1000, timestamp_millis % 1000);
@@ -71,6 +74,7 @@ impl TempoPayloadBuilderAttributes {
             interrupt: InterruptHandle::default(),
             timestamp_millis_part: millis,
             extra_data,
+            consensus_context,
             subblocks: Arc::new(subblocks),
         }
     }
@@ -104,6 +108,11 @@ impl TempoPayloadBuilderAttributes {
             .saturating_add(self.timestamp_millis_part)
     }
 
+    /// Returns the consensus context
+    pub fn consensus_context(&self) -> Option<TempoConsensusContext> {
+        self.consensus_context
+    }
+
     /// Returns the subblocks.
     pub fn subblocks(&self) -> Vec<RecoveredSubBlock> {
         (self.subblocks)()
@@ -120,6 +129,7 @@ impl From<EthPayloadBuilderAttributes> for TempoPayloadBuilderAttributes {
             interrupt: InterruptHandle::default(),
             timestamp_millis_part: 0,
             extra_data: Bytes::default(),
+            consensus_context: None,
             subblocks: Arc::new(Vec::new),
         }
     }
@@ -146,6 +156,7 @@ impl PayloadBuilderAttributes for TempoPayloadBuilderAttributes {
             interrupt: InterruptHandle::default(),
             timestamp_millis_part,
             extra_data: Bytes::default(),
+            consensus_context: None,
             subblocks: Arc::new(Vec::new),
         })
     }
@@ -230,6 +241,7 @@ mod tests {
                 Address::random(),
                 1000,
                 Bytes::default(),
+                None,
                 Vec::new,
             )
         }
@@ -291,6 +303,7 @@ mod tests {
             recipient,
             timestamp_millis,
             extra_data.clone(),
+            None,
             Vec::new,
         );
         assert_eq!(attrs.extra_data(), &extra_data);
@@ -312,6 +325,7 @@ mod tests {
             recipient,
             timestamp_millis + 500, // 1.5 seconds + 500ms
             Bytes::default(),
+            None,
             Vec::new,
         );
         assert_eq!(attrs2.extra_data(), &Bytes::default());
