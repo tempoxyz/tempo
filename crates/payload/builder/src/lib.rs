@@ -625,6 +625,21 @@ where
         let gas_used = block.gas_used();
         self.metrics.gas_used.record(gas_used as f64);
         self.metrics.gas_used_last.set(gas_used as f64);
+        self.metrics
+            .general_gas_used_last
+            .set(non_payment_gas_used as f64);
+        self.metrics
+            .payment_gas_used_last
+            .set(cumulative_gas_used as f64 - non_payment_gas_used as f64);
+        self.metrics
+            .general_gas_limit_last
+            .set(general_gas_limit as f64);
+        self.metrics
+            .payment_gas_limit_last
+            .set(non_shared_gas_limit as f64 - general_gas_limit as f64);
+        self.metrics
+            .shared_gas_limit_last
+            .set(shared_gas_limit as f64);
 
         let requests = chain_spec
             .is_prague_active_at_timestamp(attributes.timestamp())
