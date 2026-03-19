@@ -298,7 +298,9 @@ async fn wait_for_receipt(
             Ok(None) => {}
             // Remote endpoints occasionally return transient Cloudflare 403 pages.
             // Retry instead of failing the whole matrix immediately.
-            Err(err) if err.to_string().contains("HTTP error 403") => {}
+            Err(alloy::transports::RpcError::Transport(
+                alloy::transports::TransportErrorKind::HttpError(ref e),
+            )) if e.status == 403 => {}
             Err(err) => return Err(err.into()),
         }
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
