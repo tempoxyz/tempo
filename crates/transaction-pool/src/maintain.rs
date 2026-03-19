@@ -635,13 +635,15 @@ where
                         // including synthetic inverse events for reverted state changes
                         // in the old segment (e.g., reverted unpauses, blacklist removals).
                         let updates = TempoPoolUpdates::from_reorg(&old, &new);
-                        evict_invalidated_from_pool(&pool, &mut state, &metrics, &updates);
-                        evict_invalidated_from_paused_pool(&mut state, &updates);
 
-                        // Handle pause/unpause events from the reorg segment.
+                        // Order matches the commit path: pause first (so affected txs are
+                        // parked rather than permanently evicted), then evict from paused
+                        // pool, then evict from main pool.
                         handle_pause_events(
                             &pool, &mut state, &metrics, &updates,
                         );
+                        evict_invalidated_from_paused_pool(&mut state, &updates);
+                        evict_invalidated_from_pool(&pool, &mut state, &metrics, &updates);
 
                         // Remove included expiring nonce txs from the new chain.
                         pool.remove_included_expiring_nonce_txs(
