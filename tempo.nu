@@ -257,7 +257,7 @@ const TEMPO_HARDFORKS = ["T0" "T1" "T1A" "T1B" "T1C" "T2"]
 # Forks up to and including the given fork are active at genesis (time=0).
 # Forks after are disabled (time=max u64).
 # Returns a list of CLI flag strings, e.g. ["--t0-time" "0" "--t1-time" "0" "--t1a-time" "18446744073709551615" ...]
-def hardfork-to-genesis-args [fork: string] -> list<string> {
+def hardfork-to-genesis-args [fork: string] {
     let fork_upper = ($fork | str upcase)
     let idx = ($TEMPO_HARDFORKS | enumerate | where item == $fork_upper)
     if ($idx | length) == 0 {
@@ -1709,8 +1709,8 @@ def "main bench" [
                 and $marker != null
                 and ($marker.bloat_mib | into int) == $bloat
                 and ($marker.accounts | into int) == $genesis_accounts
-                and ($marker | get -i baseline_hardfork | default "") == ($baseline_hardfork | str upcase)
-                and ($marker | get -i feature_hardfork | default "") == ($feature_hardfork | str upcase)
+                and ($marker | get -o baseline_hardfork | default "") == ($baseline_hardfork | str upcase)
+                and ($marker | get -o feature_hardfork | default "") == ($feature_hardfork | str upcase)
                 and ($"($baseline_datadir)/db" | path exists)
                 and ($"($feature_datadir)/db" | path exists)
                 and ($"($baseline_datadir).virgin" | path exists)
