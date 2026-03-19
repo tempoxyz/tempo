@@ -1018,7 +1018,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
             _ghostV2ToV1Index[v2Idx] = idx;
             if (v1Vals[idx].active) {
                 _ghostActiveIngressIpHashes[keccak256(bytes(v2.ingress))] = true;
-            } else { }
+            }
 
             _ghostTotalCount++;
             if (_ghostNextMigrationIndex == 0) {
@@ -1347,6 +1347,12 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
             try validatorConfigV2.validatorByAddress(addr) returns (
                 IValidatorConfigV2.Validator memory lookedUp
             ) {
+                assertEq(
+                    lookedUp.validatorAddress,
+                    addr,
+                    "TEMPO-VALV2-18: Address lookup must preserve address"
+                );
+
                 if (hasActive) {
                     // Lookup must return the active entry
                     assertEq(
@@ -1358,6 +1364,16 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
                         lookedUp.publicKey,
                         vals[activeIdx].publicKey,
                         "TEMPO-VALV2-18: Address lookup must preserve public key"
+                    );
+                    assertEq(
+                        lookedUp.deactivatedAtHeight,
+                        0,
+                        "TEMPO-VALV2-18: Active validator lookup must not return deactivated entry"
+                    );
+                } else {
+                    assertTrue(
+                        lookedUp.deactivatedAtHeight != 0,
+                        "TEMPO-VALV2-18: If no active validator exists, lookup must not return an active one"
                     );
                 }
             } catch {
@@ -1459,10 +1475,11 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
     /// @notice Runs after invariant campaign to exercise edge cases unreachable during fuzzing.
     /// @dev Covers:
-    ///   - _deactivateValidator with zero validators (all deactivated)
     ///   - _addValidator dupIP mode with no active validators
+    ///   - ValidatorAlreadyDeactivated revert on already-deactivated validator
     function afterInvariant() public {
-        // Deactivate all active validators
+        // Deactivate all active validators, track first deactivated index
+        uint64 firstDeactivatedIdx = type(uint64).max;
         for (uint256 i = 0; i < _ghostTotalCount; i++) {
             // forge-lint: disable-next-line(unsafe-typecast)
             uint64 idx = uint64(i);
@@ -1473,6 +1490,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
                     _ghostDeactivatedAtHeight[idx] = uint64(block.number);
                     delete _ghostAddressInUse[_ghostAddress[idx]];
                     delete _ghostActiveIngressIpHashes[keccak256(bytes(_ghostIngress[idx]))];
+                    if (firstDeactivatedIdx == type(uint64).max) firstDeactivatedIdx = idx;
                 } catch {
                     vm.stopPrank();
                 }
@@ -1484,9 +1502,16 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         // callerSeed % 100 < 75 → caller = owner
         this.handler_addValidator(300, 0, 42, 99);
 
-        // Exercise: _deactivateValidator with _ghostTotalCount still > 0 but all deactivated
-        // This hits the _deactivate:catch path (ValidatorAlreadyDeactivated)
-        this.handler_deactivateValidator(0, 0);
+        // Exercise: ValidatorAlreadyDeactivated revert by directly calling the contract
+        // on a known-deactivated index (handler would early-return via _selectActiveValidator)
+        if (firstDeactivatedIdx != type(uint64).max) {
+            vm.prank(_ghostOwner);
+            try validatorConfigV2.deactivateValidator(firstDeactivatedIdx) {
+                assertTrue(false, "expected ValidatorAlreadyDeactivated revert");
+            } catch (bytes memory reason) {
+                _assertKnownV2Error(reason);
+            }
+        }
     }
 
     /// @notice Regression test for fuzz sequence: migrate one validator then rotate it.
