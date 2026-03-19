@@ -87,17 +87,16 @@ fn is_transient_cloudflare_403(err: &eyre::Report) -> bool {
     let display = err.to_string();
     let debug = format!("{err:?}");
 
-    [display.as_str(), debug.as_str()].into_iter().any(|message| {
-        message.contains("HTTP error 403")
-            || message.contains("Attention Required! | Cloudflare")
-            || message.contains("Cloudflare")
-    })
+    [display.as_str(), debug.as_str()]
+        .into_iter()
+        .any(|message| {
+            message.contains("HTTP error 403")
+                || message.contains("Attention Required! | Cloudflare")
+                || message.contains("Cloudflare")
+        })
 }
 
-async fn run_remote_matrices(
-    env_name: &str,
-    env: &mut impl TestEnv,
-) -> eyre::Result<()> {
+async fn run_remote_matrices(env_name: &str, env: &mut impl TestEnv) -> eyre::Result<()> {
     if let Err(err) = run_all_matrices(env).await {
         if is_transient_cloudflare_403(&err) {
             eprintln!(
