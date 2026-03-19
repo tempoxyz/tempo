@@ -193,13 +193,25 @@ impl TIP403Registry {
         &self,
         call: ITIP403Registry::policyDataCall,
     ) -> Result<ITIP403Registry::policyDataReturn> {
-        // Check if policy exists before reading the data (spec: pre-T2)
-        if !self.storage.spec().is_t2()
-            && !self.policy_exists(ITIP403Registry::policyExistsCall {
+        if self.storage.spec().is_t2() {
+            // Built-in policies are virtual (not stored), and match the `PolicyType`:
+            //  - 0: REJECT_ALL_POLICY_ID → WHITELIST
+            //  - 1: ALLOW_ALL_POLICY_ID  → BLACKLIST
+            if self.builtin_authorization(call.policyId).is_some() {
+                return Ok(ITIP403Registry::policyDataReturn {
+                    policyType: (call.policyId as u8)
+                        .try_into()
+                        .map_err(|_| TIP403RegistryError::invalid_policy_type())?,
+                    admin: Address::ZERO,
+                });
+            }
+        } else {
+            // Check if policy exists before reading the data (spec: pre-T2)
+            if !self.policy_exists(ITIP403Registry::policyExistsCall {
                 policyId: call.policyId,
-            })?
-        {
-            return Err(TIP403RegistryError::policy_not_found().into());
+            })? {
+                return Err(TIP403RegistryError::policy_not_found().into());
+            }
         }
 
         // Get policy data and verify that the policy id exists (spec: +T2)
@@ -882,6 +894,38 @@ mod tests {
 
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_policy_data_builtin_policies_boundary() -> eyre::Result<()> {
+        for (hardfork, expect_allow_all_type) in [
+            // Pre-T2: reads uninitialized storage → both builtins decode as WHITELIST
+            (TempoHardfork::T1C, ITIP403Registry::PolicyType::WHITELIST),
+            // T2: virtual builtins return correct types
+            (TempoHardfork::T2, ITIP403Registry::PolicyType::BLACKLIST),
+        ] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
+            StorageCtx::enter(&mut storage, || {
+                let registry = TIP403Registry::new();
+
+                // reject-all → WHITELIST on every fork (coincides with default storage)
+                let reject = registry.policy_data(ITIP403Registry::policyDataCall {
+                    policyId: REJECT_ALL_POLICY_ID,
+                })?;
+                assert_eq!(reject.policyType, ITIP403Registry::PolicyType::WHITELIST);
+                assert_eq!(reject.admin, Address::ZERO);
+
+                // allow-all → WHITELIST pre-T2 (wrong), BLACKLIST from T2 (correct)
+                let allow = registry.policy_data(ITIP403Registry::policyDataCall {
+                    policyId: ALLOW_ALL_POLICY_ID,
+                })?;
+                assert_eq!(allow.policyType, expect_allow_all_type);
+                assert_eq!(allow.admin, Address::ZERO);
+
+                Ok::<_, TempoPrecompileError>(())
+            })?;
+        }
+        Ok(())
     }
 
     #[test]
