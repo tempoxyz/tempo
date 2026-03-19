@@ -1109,6 +1109,37 @@ where
     }
 }
 
+impl<Client> TransactionPoolExt for TempoTransactionPool<Client>
+where
+    Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
+{
+    type Block = Block;
+
+    fn set_block_info(&self, info: BlockInfo) {
+        self.protocol_pool.set_block_info(info)
+    }
+
+    fn on_canonical_state_change(&self, update: CanonicalStateUpdate<'_, Self::Block>) {
+        self.protocol_pool.on_canonical_state_change(update)
+    }
+
+    fn update_accounts(&self, accounts: Vec<ChangedAccount>) {
+        self.protocol_pool.update_accounts(accounts)
+    }
+
+    fn delete_blob(&self, tx: B256) {
+        self.protocol_pool.delete_blob(tx)
+    }
+
+    fn delete_blobs(&self, txs: Vec<B256>) {
+        self.protocol_pool.delete_blobs(txs)
+    }
+
+    fn cleanup_blobs(&self) {
+        self.protocol_pool.cleanup_blobs()
+    }
+}
+
 /// Checks whether a pending keychain tx exceeds its remaining spending limit.
 ///
 /// Re-reads the current remaining limit from state for the tx's (account, key_id,
@@ -1215,37 +1246,6 @@ fn get_recipient_policy_ids(
 
         Some(ids)
     })
-}
-
-impl<Client> TransactionPoolExt for TempoTransactionPool<Client>
-where
-    Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
-{
-    type Block = Block;
-
-    fn set_block_info(&self, info: BlockInfo) {
-        self.protocol_pool.set_block_info(info)
-    }
-
-    fn on_canonical_state_change(&self, update: CanonicalStateUpdate<'_, Self::Block>) {
-        self.protocol_pool.on_canonical_state_change(update)
-    }
-
-    fn update_accounts(&self, accounts: Vec<ChangedAccount>) {
-        self.protocol_pool.update_accounts(accounts)
-    }
-
-    fn delete_blob(&self, tx: B256) {
-        self.protocol_pool.delete_blob(tx)
-    }
-
-    fn delete_blobs(&self, txs: Vec<B256>) {
-        self.protocol_pool.delete_blobs(txs)
-    }
-
-    fn cleanup_blobs(&self) {
-        self.protocol_pool.cleanup_blobs()
-    }
 }
 
 #[cfg(test)]
