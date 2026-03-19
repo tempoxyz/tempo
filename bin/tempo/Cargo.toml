@@ -72,6 +72,7 @@ tokio-util.workspace = true
 tracing.workspace = true
 pyroscope = { workspace = true, optional = true }
 pyroscope_pprofrs = { workspace = true, optional = true }
+tracy-client = { workspace = true, optional = true }
 
 [[bin]]
 name = "tempo"
@@ -124,6 +125,8 @@ jemalloc-symbols = [
 tracy = [
 	"reth-ethereum-cli/tracy",
 	"tempo-node/tracy",
+	"dep:tracy-client",
+	"tracy-client/ondemand",
 ]
 tracy-allocator = [
 	"reth-cli-util/tracy-allocator",

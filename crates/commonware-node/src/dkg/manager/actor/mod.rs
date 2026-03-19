@@ -1422,7 +1422,7 @@ impl Metrics {
         let shares_received = Gauge::default();
         context.register(
             "ceremony_shares_received",
-            "the number of shares received by this node as a playr in the current ceremony",
+            "the number of shares received by this node as a player in the current ceremony",
             shares_received.clone(),
         );
 
