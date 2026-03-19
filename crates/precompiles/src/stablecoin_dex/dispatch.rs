@@ -1,6 +1,5 @@
-//! Stablecoin DEX precompile
-//!
-//! This module provides the precompile interface for the Stablecoin DEX.
+//! ABI dispatch for the [`StablecoinDEX`] precompile.
+
 use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_contracts::precompiles::IStablecoinDEX::IStablecoinDEXCalls;

@@ -36,6 +36,7 @@ use tempo_contracts::precompiles::{
     IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
 };
 use tempo_precompiles::{
+    ECRECOVER_GAS,
     account_keychain::{AccountKeychain, TokenLimit, authorizeKeyCall},
     error::TempoPrecompileError,
     nonce::{EXPIRING_NONCE_MAX_EXPIRY_SECS, INonce::getNonceCall, NonceManager},
@@ -59,9 +60,6 @@ use crate::{
 /// Additional gas for P256 signature verification
 /// P256 precompile cost (6900 from EIP-7951) + 1100 for 129 bytes extra signature size - ecrecover savings (3000)
 const P256_VERIFY_GAS: u64 = 5_000;
-
-/// Gas cost for ecrecover signature verification (used by KeyAuthorization)
-const ECRECOVER_GAS: u64 = 3_000;
 
 /// Additional gas for Keychain signatures (key validation overhead: COLD_SLOAD_COST + 900 processing)
 const KEYCHAIN_VALIDATION_GAS: u64 = COLD_SLOAD_COST + 900;
@@ -683,18 +681,6 @@ where
             keychain.set_tx_origin(tx.caller())
         })
         .map_err(|e| EVMError::Custom(e.to_string()))?;
-
-        // TIP-1007: Set the fee token in transient storage so contracts can read it
-        // via `IFeeManager.getFeeToken()` during execution.
-        // Skip in simulation contexts (eth_call) so getFeeToken() returns address(0)
-        // per the TIP-1007 spec.
-        if cfg.spec().is_t2() && !cfg.disable_fee_charge {
-            let fee_token = self.fee_token;
-            StorageCtx::enter_evm(journal, block, cfg, tx, || {
-                TipFeeManager::new().set_fee_token(fee_token)
-            })
-            .map_err(|e| EVMError::Custom(e.to_string()))?;
-        }
 
         // Validate fee token has TIP20 prefix before loading balance.
         // This prevents panics in get_token_balance for invalid fee tokens.

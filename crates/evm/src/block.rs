@@ -329,7 +329,7 @@ where
             match self.section {
                 BlockSection::StartOfBlock | BlockSection::NonShared => {
                     if gas_used > self.non_shared_gas_left
-                        || (!tx.is_payment() && gas_used > self.non_payment_gas_left)
+                        || (!tx.is_payment_v1() && gas_used > self.non_payment_gas_left)
                     {
                         // Assume that this transaction wants to make use of gas incentive section
                         //
@@ -425,7 +425,7 @@ where
         Ok(TempoTxResult {
             inner,
             next_section,
-            is_payment: recovered.tx().is_payment(),
+            is_payment: recovered.tx().is_payment_v1(),
             tx: matches!(next_section, BlockSection::SubBlock { .. })
                 .then(|| recovered.tx().clone()),
         })

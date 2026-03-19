@@ -1,3 +1,5 @@
+//! ABI dispatch for the [`ValidatorConfigV2`] precompile (T2+).
+
 use super::*;
 use crate::{Precompile, dispatch_call, input_cost, mutate, mutate_void, view};
 use alloy::{primitives::Address, sol_types::SolInterface};
