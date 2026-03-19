@@ -49,6 +49,10 @@ pub(crate) struct ExtArgs {
 
 /// Tempo-specific subcommands that extend the reth CLI.
 #[derive(Debug, Subcommand)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one-off commands; size doesn't matter"
+)]
 pub(crate) enum TempoSubcommand {
     /// Consensus-related commands.
     #[command(subcommand)]
