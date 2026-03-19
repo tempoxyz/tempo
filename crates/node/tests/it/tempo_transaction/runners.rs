@@ -5,7 +5,6 @@
 //! testnet RPC.
 
 use alloy::{
-    consensus::BlockHeader,
     primitives::{Address, B256, Bytes, U256},
     providers::Provider,
     rpc::types::TransactionRequest,
@@ -15,10 +14,6 @@ use alloy::{
 use alloy_eips::{Decodable2718, Encodable2718};
 use alloy_primitives::TxKind;
 use reth_primitives_traits::transaction::TxHashRef;
-use tempo_chainspec::{
-    hardfork::TempoHardforks,
-    spec::{ANDANTINO, DEV, MODERATO, PRESTO},
-};
 use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
 use tempo_node::rpc::TempoTransactionRequest;
 use tempo_primitives::{
@@ -31,25 +26,6 @@ use tempo_primitives::{
 };
 
 use super::{helpers::*, types::*};
-
-async fn is_t2_active_at_latest_block<E: TestEnv>(env: &E) -> eyre::Result<bool> {
-    let chain_spec = match env.chain_id() {
-        4217 => PRESTO.clone(),     // mainnet
-        42429 => ANDANTINO.clone(), // testnet
-        42431 => MODERATO.clone(),
-        _ => DEV.clone(),
-    };
-
-    let latest_block: alloy::rpc::types::Block = env
-        .provider()
-        .get_block_by_number(Default::default())
-        .await?
-        .ok_or_else(|| eyre::eyre!("latest block missing"))?;
-
-    Ok(chain_spec
-        .tempo_hardfork_at(latest_block.header.timestamp())
-        .is_t2())
-}
 
 // ===========================================================================
 // Matrix runners
@@ -2283,7 +2259,7 @@ pub(super) async fn run_fee_payer_negative_scenario<E: TestEnv>(env: &mut E) -> 
         let sig = sign_aa_tx_secp256k1(&tx, &user_signer)?;
         let envelope: TempoTxEnvelope = tx.into_signed(sig).into();
         let tx_hash = *envelope.tx_hash();
-        if is_t2_active_at_latest_block(env).await? {
+        if env.hardfork().is_t2() {
             env.submit_tx_expecting_rejection(
                 envelope.encoded_2718(),
                 Some("fee payer cannot resolve to sender"),
