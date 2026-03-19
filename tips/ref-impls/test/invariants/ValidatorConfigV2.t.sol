@@ -77,7 +77,9 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         (_actors,) = _buildActors(5);
         _potentialValidators = _buildAddressPool(500, VALIDATOR_POOL_OFFSET);
 
-        // Add V1 validators — migration and initialization driven by the fuzzer
+        // Add V1 validators — migration and initialization driven by the fuzzer.
+        // Mix active and inactive (indices 3, 7, 11 are deactivated after adding) to exercise
+        // VALV2-25 (activity preservation) during migration.
         for (uint256 i = 0; i < V1_SETUP_COUNT; i++) {
             address addr = address(uint160(0xA000 + i));
             // Seed V1 with valid Ed25519 pubkeys so migration does not skip fixtures.
@@ -88,6 +90,10 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
                 string(abi.encodePacked("10.0.0.", _uint8ToString(uint8(100 + i)), ":9000"));
             validatorConfig.addValidator(addr, pubKey, true, ingress, egress);
         }
+        // Deactivate selected validators to test migration activity preservation
+        validatorConfig.changeValidatorStatus(address(uint160(0xA003)), false);
+        validatorConfig.changeValidatorStatus(address(uint160(0xA007)), false);
+        validatorConfig.changeValidatorStatus(address(uint160(0xA00B)), false);
 
         // V2 owner starts as address(0) — auto-set from V1 on first migrateValidator call
         _ghostOwner = address(0);
@@ -163,13 +169,24 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     function _generateIngress(uint256 seed) internal pure returns (string memory) {
         uint8 lastOctet = uint8((seed % 254) + 1);
         uint16 port = uint16((seed >> 8) % 65_534) + 1;
-        if (seed % 3 == 0) {
+        uint256 mode = seed % 5;
+        if (mode == 0) {
+            // IPv4-mapped IPv6 (~20%)
             return string(
                 abi.encodePacked(
                     "[::ffff:192.168.1.", _uint8ToString(lastOctet), "]:", vm.toString(port)
                 )
             );
+        } else if (mode == 1) {
+            // Native IPv6 loopback (~20%)
+            return string(abi.encodePacked("[::1]:", vm.toString(port)));
+        } else if (mode == 2) {
+            // Native IPv6 documentation range (~20%)
+            return string(
+                abi.encodePacked("[2001:db8::", _uint8ToString(lastOctet), "]:", vm.toString(port))
+            );
         } else {
+            // IPv4 (~40%)
             return string(
                 abi.encodePacked("192.168.1.", _uint8ToString(lastOctet), ":", vm.toString(port))
             );
@@ -178,8 +195,13 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
     function _generateEgress(uint256 seed) internal pure returns (string memory) {
         uint8 lastOctet = uint8((seed % 254) + 1);
-        if (seed % 3 == 0) {
+        uint256 mode = seed % 5;
+        if (mode == 0) {
             return string(abi.encodePacked("::ffff:192.168.1.", _uint8ToString(lastOctet)));
+        } else if (mode == 1) {
+            return string(abi.encodePacked("::1"));
+        } else if (mode == 2) {
+            return string(abi.encodePacked("2001:db8::", _uint8ToString(lastOctet)));
         } else {
             return string(abi.encodePacked("192.168.1.", _uint8ToString(lastOctet)));
         }
@@ -320,6 +342,26 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     function handler_setNextDkgCeremony(uint256 callerSeed, uint64 epoch) external {
         if (!_ghostInitialized && callerSeed >> 248 != 0) return;
         _setNextDkgCeremony(callerSeed, epoch);
+    }
+
+    /// @notice Mostly post-init: setFeeRecipient (~1/256 pre-init calls verify NotInitialized guard)
+    function handler_setFeeRecipient(
+        uint256 callerSeed,
+        uint256 validatorSeed,
+        uint256 recipientSeed
+    )
+        external
+    {
+        if (!_ghostInitialized && callerSeed >> 248 != 0) return;
+        _setFeeRecipient(callerSeed, validatorSeed, recipientSeed);
+    }
+
+    /// @notice Advance block number to make height-based invariants meaningful.
+    /// @dev Without this, all ops run at the same block.number, making
+    ///      deactivatedAtHeight >= addedAtHeight trivially true.
+    function handler_advanceBlock(uint256 delta) external {
+        delta = bound(delta, 1, 100);
+        vm.roll(block.number + delta);
     }
 
     /// @notice Mostly pre-init: migrateValidator (~1/256 post-init calls verify AlreadyInitialized guard)
@@ -653,6 +695,47 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
             );
         } catch (bytes memory reason) {
             vm.stopPrank();
+            _assertKnownV2Error(reason);
+        }
+    }
+
+    /// @notice Handler for setting fee recipient (owner or validator)
+    /// @dev Tests TEMPO-VALV2-1 (dual-auth), TEMPO-VALV2-16 (data consistency for feeRecipient)
+    function _setFeeRecipient(
+        uint256 callerSeed,
+        uint256 validatorSeed,
+        uint256 recipientSeed
+    )
+        internal
+    {
+        (address validatorAddr, uint64 ghostIdx, bool found) = _selectActiveValidator(validatorSeed);
+        if (!found) return;
+
+        address caller = _selectPotentialValidator(callerSeed);
+        bool isAuthorized = (caller == _ghostOwner || caller == validatorAddr);
+
+        address newRecipient = _selectPotentialValidator(recipientSeed);
+
+        vm.startPrank(caller);
+        try validatorConfigV2.setFeeRecipient(ghostIdx, newRecipient) {
+            vm.stopPrank();
+            assertTrue(
+                _ghostInitialized,
+                "TEMPO-VALV2-5: setFeeRecipient must not succeed when not initialized"
+            );
+            assertTrue(isAuthorized, "TEMPO-VALV2-1: Third party should not set fee recipient");
+
+            IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByIndex(ghostIdx);
+            assertEq(
+                v.feeRecipient, newRecipient, "TEMPO-VALV2-16: Fee recipient should be updated"
+            );
+        } catch (bytes memory reason) {
+            vm.stopPrank();
+            if (bytes4(reason) == IValidatorConfigV2.NotInitialized.selector) {
+                assertFalse(
+                    _ghostInitialized, "TEMPO-VALV2-5: NotInitialized but ghost says initialized"
+                );
+            }
             _assertKnownV2Error(reason);
         }
     }
