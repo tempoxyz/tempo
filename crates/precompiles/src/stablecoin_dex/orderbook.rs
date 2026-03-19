@@ -9,9 +9,11 @@ use alloy::primitives::{Address, B256, U256, keccak256};
 use tempo_contracts::precompiles::StablecoinDEXError;
 use tempo_precompiles_macros::Storable;
 
-/// Constants from Solidity implementation
+/// Minimum allowed tick value (corresponds to `MIN_PRICE`).
 pub const MIN_TICK: i16 = -2000;
+/// Maximum allowed tick value (corresponds to `MAX_PRICE`).
 pub const MAX_TICK: i16 = 2000;
+/// Scaling factor for tick-to-price conversion. A tick of 0 maps to `PRICE_SCALE` (peg).
 pub const PRICE_SCALE: u32 = 100_000;
 
 /// Rounding direction for price conversions.
@@ -83,9 +85,9 @@ pub fn quote_to_base(quote_amount: u128, tick: i16, rounding: RoundingDirection)
     result.try_into().ok()
 }
 
-// PRICE_SCALE + MIN_TICK = 100_000 - 2000
+/// Lowest representable scaled price (`PRICE_SCALE + MIN_TICK`).
 pub(crate) const MIN_PRICE: u32 = 98_000;
-// PRICE_SCALE + MAX_TICK = 100_000 + 2000
+/// Highest representable scaled price (`PRICE_SCALE + MAX_TICK`).
 pub(crate) const MAX_PRICE: u32 = 102_000;
 
 /// Represents a price level in the orderbook with a doubly-linked list of orders
@@ -208,6 +210,7 @@ impl Orderbook {
 }
 
 impl OrderbookHandler {
+    /// Returns a reference to the tick level handler for the given tick and side.
     pub fn tick_level_handler(&self, tick: i16, is_bid: bool) -> &TickLevelHandler {
         if is_bid {
             &self.bids[tick]
@@ -216,6 +219,7 @@ impl OrderbookHandler {
         }
     }
 
+    /// Returns a mutable reference to the tick level handler for the given tick and side.
     pub fn tick_level_handler_mut(&mut self, tick: i16, is_bid: bool) -> &mut TickLevelHandler {
         if is_bid {
             &mut self.bids[tick]
@@ -232,7 +236,10 @@ impl OrderbookHandler {
         Ok(tick >> 8)
     }
 
-    /// Set bit in bitmap to mark tick as active
+    /// Sets the bitmap bit for `tick` to mark it as active on the given side.
+    ///
+    /// # Errors
+    /// - `InvalidTick` — tick is outside `[MIN_TICK, MAX_TICK]`
     pub fn set_tick_bit(&mut self, tick: i16, is_bid: bool) -> Result<()> {
         let word_index = self.calc_tick_word_idx(tick)?;
         let bitmap = if is_bid {
@@ -252,7 +259,10 @@ impl OrderbookHandler {
         bitmap.write(current_word | mask)
     }
 
-    /// Clear bit in bitmap to mark tick as inactive
+    /// Clears the bitmap bit for `tick` to mark it as inactive on the given side.
+    ///
+    /// # Errors
+    /// - `InvalidTick` — tick is outside `[MIN_TICK, MAX_TICK]`
     pub fn delete_tick_bit(&mut self, tick: i16, is_bid: bool) -> Result<()> {
         let word_index = self.calc_tick_word_idx(tick)?;
         let bitmap = if is_bid {
@@ -272,7 +282,10 @@ impl OrderbookHandler {
         bitmap.write(current_word & mask)
     }
 
-    /// Check if a tick is initialized (has orders)
+    /// Returns `true` if the given `tick` has active orders on the specified side.
+    ///
+    /// # Errors
+    /// - `InvalidTick` — tick is outside `[MIN_TICK, MAX_TICK]`
     pub fn is_tick_initialized(&self, tick: i16, is_bid: bool) -> Result<bool> {
         let word_index = self.calc_tick_word_idx(tick)?;
         let bitmap = if is_bid {
@@ -291,7 +304,7 @@ impl OrderbookHandler {
         Ok((word & mask) != U256::ZERO)
     }
 
-    /// Find next initialized ask tick higher than current tick
+    /// Finds the next initialized tick with liquidity. Searches downward for bids, upward for asks.
     pub fn next_initialized_tick(&self, tick: i16, is_bid: bool) -> Result<(i16, bool)> {
         if is_bid {
             self.next_initialized_bid_tick(tick)
@@ -428,7 +441,10 @@ pub fn tick_to_price(tick: i16) -> u32 {
     (PRICE_SCALE as i32 + tick as i32) as u32
 }
 
-/// Convert scaled price to relative tick
+/// Converts a scaled price back to a relative tick.
+///
+/// # Errors
+/// - `TickOutOfBounds` — price is outside `[MIN_PRICE, MAX_PRICE]`
 pub fn price_to_tick(price: u32) -> Result<i16> {
     if !(MIN_PRICE..=MAX_PRICE).contains(&price) {
         let invalid_tick = (price as i32 - PRICE_SCALE as i32) as i16;
@@ -437,7 +453,10 @@ pub fn price_to_tick(price: u32) -> Result<i16> {
     Ok((price as i32 - PRICE_SCALE as i32) as i16)
 }
 
-/// Validate that a tick is aligned to [`TICK_SPACING`].
+/// Validates that a tick is aligned to [`TICK_SPACING`].
+///
+/// # Errors
+/// - `InvalidTick` — tick is not a multiple of [`TICK_SPACING`]
 pub fn validate_tick_spacing(tick: i16) -> Result<()> {
     if tick % TICK_SPACING != 0 {
         return Err(StablecoinDEXError::invalid_tick().into());

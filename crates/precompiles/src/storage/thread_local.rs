@@ -1,4 +1,4 @@
-use alloy::primitives::{Address, LogData, U256};
+use alloy::primitives::{Address, B256, LogData, U256};
 use alloy_evm::{Database, EvmInternals};
 use revm::{
     context::{Block, CfgEnv, JournalTr, Transaction, journaled_state::JournalCheckpoint},
@@ -111,66 +111,77 @@ impl StorageCtx {
         result.unwrap()
     }
 
+    /// Returns the chain ID.
     pub fn chain_id(&self) -> u64 {
         Self::with_storage(|s| s.chain_id())
     }
 
+    /// Returns the current block timestamp.
     pub fn timestamp(&self) -> U256 {
         Self::with_storage(|s| s.timestamp())
     }
 
+    /// Returns the current block beneficiary (coinbase).
     pub fn beneficiary(&self) -> Address {
         Self::with_storage(|s| s.beneficiary())
     }
 
+    /// Returns the current block number.
     pub fn block_number(&self) -> u64 {
         Self::with_storage(|s| s.block_number())
     }
 
+    /// Sets the bytecode at the given address.
     pub fn set_code(&mut self, address: Address, code: Bytecode) -> Result<()> {
         Self::try_with_storage(|s| s.set_code(address, code))
     }
 
+    /// Performs an SLOAD operation (persistent storage read).
     pub fn sload(&self, address: Address, key: U256) -> Result<U256> {
         Self::try_with_storage(|s| s.sload(address, key))
     }
 
+    /// Performs a TLOAD operation (transient storage read).
     pub fn tload(&self, address: Address, key: U256) -> Result<U256> {
         Self::try_with_storage(|s| s.tload(address, key))
     }
 
+    /// Performs an SSTORE operation (persistent storage write).
     pub fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<()> {
         Self::try_with_storage(|s| s.sstore(address, key, value))
     }
 
+    /// Performs a TSTORE operation (transient storage write).
     pub fn tstore(&mut self, address: Address, key: U256, value: U256) -> Result<()> {
         Self::try_with_storage(|s| s.tstore(address, key, value))
     }
 
+    /// Emits an event from the given contract address.
     pub fn emit_event(&mut self, address: Address, event: LogData) -> Result<()> {
         Self::try_with_storage(|s| s.emit_event(address, event))
     }
 
-    pub fn deduct_gas(&mut self, gas: u64) -> Result<()> {
-        Self::try_with_storage(|s| s.deduct_gas(gas))
-    }
-
+    /// Adds refund to the gas refund counter.
     pub fn refund_gas(&mut self, gas: i64) {
         Self::with_storage(|s| s.refund_gas(gas))
     }
 
+    /// Returns the gas used so far.
     pub fn gas_used(&self) -> u64 {
         Self::with_storage(|s| s.gas_used())
     }
 
+    /// Returns the gas refunded so far.
     pub fn gas_refunded(&self) -> i64 {
         Self::with_storage(|s| s.gas_refunded())
     }
 
+    /// Returns the currently active hardfork.
     pub fn spec(&self) -> TempoHardfork {
         Self::with_storage(|s| s.spec())
     }
 
+    /// Returns whether the current call context is static.
     pub fn is_static(&self) -> bool {
         Self::with_storage(|s| s.is_static())
     }
@@ -195,6 +206,28 @@ impl StorageCtx {
         });
 
         CheckpointGuard { checkpoint }
+    }
+
+    /// Deducts gas from the remaining gas and returns an error if insufficient.
+    pub fn deduct_gas(&mut self, gas: u64) -> Result<()> {
+        Self::try_with_storage(|s| s.deduct_gas(gas))
+    }
+
+    /// Computes keccak256 and charges the appropriate gas.
+    ///
+    /// Prefer this over naked `keccak256` to ensure gas is accounted for.
+    pub fn keccak256(&self, data: &[u8]) -> Result<B256> {
+        Self::try_with_storage(|s| s.keccak256(data))
+    }
+
+    /// Recovers the signer address from an ECDSA signature and charges ecrecover gas.
+    /// As per [TIP-1004], it only accepts `v` values of `27` or `28` (no `0`/`1` normalization).
+    ///
+    /// Returns `Ok(None)` on invalid signatures; callers map to domain-specific errors.
+    ///
+    /// [TIP-1004]: <https://github.com/tempoxyz/tempo/blob/main/tips/tip-1004.md#signature-validation>
+    pub fn recover_signer(&self, digest: B256, v: u8, r: B256, s: B256) -> Result<Option<Address>> {
+        Self::try_with_storage(|storage| storage.recover_signer(digest, v, r, s))
     }
 }
 
@@ -221,8 +254,8 @@ pub struct CheckpointGuard {
 impl CheckpointGuard {
     /// Commits all state changes since the checkpoint.
     pub fn commit(mut self) {
-        if self.checkpoint.take().is_some() {
-            StorageCtx::with_storage(|s| s.checkpoint_commit());
+        if let Some(cp) = self.checkpoint.take() {
+            StorageCtx::with_storage(|s| s.checkpoint_commit(cp));
         }
     }
 }
@@ -360,6 +393,12 @@ unsafe fn extend_lifetime_mut<'b, T: ?Sized>(r: &mut T) -> &'b mut T {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy::primitives::U256;
+    use tempo_chainspec::hardfork::TempoHardfork;
+
+    fn t1c_storage() -> HashMapStorageProvider {
+        HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C)
+    }
 
     #[test]
     #[should_panic(expected = "already borrowed")]
@@ -371,6 +410,98 @@ mod tests {
                 // re-entrant call should panic
                 StorageCtx::with_storage(|_| ())
             })
+        });
+    }
+
+    #[test]
+    fn test_checkpoint_commit_and_revert() {
+        let mut storage = t1c_storage();
+        let addr = Address::ZERO;
+        let key = U256::from(1);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut ctx = StorageCtx;
+
+            // commit persists state
+            ctx.sstore(addr, key, U256::from(42)).unwrap();
+            let guard = ctx.checkpoint();
+            ctx.sstore(addr, key, U256::from(99)).unwrap();
+            guard.commit();
+            assert_eq!(ctx.sload(addr, key).unwrap(), U256::from(99));
+
+            // drop reverts state
+            {
+                let _guard = ctx.checkpoint();
+                ctx.sstore(addr, key, U256::from(1)).unwrap();
+            }
+            assert_eq!(ctx.sload(addr, key).unwrap(), U256::from(99));
+        });
+    }
+
+    #[test]
+    fn test_nested_checkpoints_lifo() {
+        let mut storage = t1c_storage();
+        let addr = Address::ZERO;
+        let key = U256::from(1);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut ctx = StorageCtx;
+            ctx.sstore(addr, key, U256::from(10)).unwrap();
+
+            // both committed in LIFO order
+            let outer = ctx.checkpoint();
+            ctx.sstore(addr, key, U256::from(20)).unwrap();
+            let inner = ctx.checkpoint();
+            ctx.sstore(addr, key, U256::from(30)).unwrap();
+            inner.commit();
+            outer.commit();
+            assert_eq!(ctx.sload(addr, key).unwrap(), U256::from(30));
+
+            // inner reverts, outer commits
+            let outer = ctx.checkpoint();
+            ctx.sstore(addr, key, U256::from(40)).unwrap();
+            {
+                let _inner = ctx.checkpoint();
+                ctx.sstore(addr, key, U256::from(50)).unwrap();
+            }
+            outer.commit();
+            assert_eq!(ctx.sload(addr, key).unwrap(), U256::from(40));
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "out-of-order")]
+    fn test_nested_checkpoints_out_of_order_commit_panics() {
+        let mut storage = t1c_storage();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut ctx = StorageCtx;
+
+            let outer = ctx.checkpoint();
+            let _inner = ctx.checkpoint();
+
+            // Wrong order: committing outer while inner is still active
+            outer.commit();
+        });
+    }
+
+    #[test]
+    fn test_checkpoint_noop_pre_t1c() {
+        let mut storage = HashMapStorageProvider::new(1); // default = T0
+        let addr = Address::ZERO;
+        let key = U256::from(1);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut ctx = StorageCtx;
+
+            ctx.sstore(addr, key, U256::from(42)).unwrap();
+            {
+                let _guard = ctx.checkpoint(); // no-op pre-T1C
+                ctx.sstore(addr, key, U256::from(99)).unwrap();
+                // drop does nothing — no checkpoint was created
+            }
+            // state is NOT reverted because checkpoints are disabled pre-T1C
+            assert_eq!(ctx.sload(addr, key).unwrap(), U256::from(99));
         });
     }
 }
