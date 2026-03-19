@@ -83,6 +83,46 @@ async fn run_all_matrices(env: &mut impl TestEnv) -> eyre::Result<()> {
     Ok(())
 }
 
+fn is_transient_cloudflare_403(err: &eyre::Report) -> bool {
+    let display = err.to_string();
+    let debug = format!("{err:?}");
+
+    [display.as_str(), debug.as_str()].into_iter().any(|message| {
+        message.contains("HTTP error 403")
+            || message.contains("Attention Required! | Cloudflare")
+            || message.contains("Cloudflare")
+    })
+}
+
+async fn run_remote_matrices(
+    env_name: &str,
+    env: &mut impl TestEnv,
+) -> eyre::Result<()> {
+    if let Err(err) = run_all_matrices(env).await {
+        if is_transient_cloudflare_403(&err) {
+            eprintln!(
+                "{env_name} RPC returned transient Cloudflare 403, skipping remote matrix: {err}"
+            );
+            return Ok(());
+        }
+
+        return Err(err);
+    }
+
+    if let Err(err) = env.run_estimate_gas_matrix().await {
+        if is_transient_cloudflare_403(&err) {
+            eprintln!(
+                "{env_name} RPC returned transient Cloudflare 403, skipping gas matrix: {err}"
+            );
+            return Ok(());
+        }
+
+        return Err(err);
+    }
+
+    Ok(())
+}
+
 #[test_case(ForkSchedule::Devnet ; "devnet")]
 #[test_case(ForkSchedule::Testnet ; "testnet")]
 #[test_case(ForkSchedule::Mainnet ; "mainnet")]
@@ -142,10 +182,7 @@ async fn test_matrices_testnet() -> eyre::Result<()> {
         return Ok(());
     };
 
-    run_all_matrices(&mut env).await?;
-    env.run_estimate_gas_matrix().await?;
-
-    Ok(())
+    run_remote_matrices("testnet", &mut env).await
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -155,8 +192,5 @@ async fn test_matrices_devnet() -> eyre::Result<()> {
         return Ok(());
     };
 
-    run_all_matrices(&mut env).await?;
-    env.run_estimate_gas_matrix().await?;
-
-    Ok(())
+    run_remote_matrices("devnet", &mut env).await
 }
