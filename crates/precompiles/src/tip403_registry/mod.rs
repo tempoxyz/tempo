@@ -149,7 +149,7 @@ impl PolicyData {
     }
 
     /// Returns `true` if the policy data indicates a compound policy
-    fn is_compound(&self) -> bool {
+    pub fn is_compound(&self) -> bool {
         self.policy_type == PolicyType::COMPOUND as u8
     }
 
@@ -686,6 +686,19 @@ impl AuthRole {
     /// Hardfork-aware: returns `MintRecipient` for T2+, `Transfer` for pre-T2.
     pub fn mint_recipient() -> Self {
         Self::transfer_or(Self::MintRecipient)
+    }
+}
+
+/// Returns `true` if the error indicates a failed policy lookup — the policy type is invalid
+/// or the policy doesn't exist.
+pub fn is_policy_lookup_error(e: &TempoPrecompileError) -> bool {
+    if StorageCtx.spec().is_t2() {
+        // T2+: typed TIP403 errors
+        *e == TIP403RegistryError::invalid_policy_type().into()
+            || *e == TIP403RegistryError::policy_not_found().into()
+    } else {
+        // Pre-T2: legacy Panic(UnderOverflow) sentinel
+        *e == TempoPrecompileError::under_overflow()
     }
 }
 
