@@ -227,10 +227,10 @@ mod tests {
             let result = vc.call(&calldata, owner)?;
             assert!(!result.reverted);
 
-            let validators = vc.get_validators()?;
-            assert_eq!(validators.len(), 1);
-            assert_eq!(validators[0].validatorAddress, validator_addr);
-            assert_eq!(validators[0].publicKey, public_key);
+            assert_eq!(vc.validator_count()?, 1);
+            let v = vc.validator_by_index(0)?;
+            assert_eq!(v.validatorAddress, validator_addr);
+            assert_eq!(v.publicKey, public_key);
 
             Ok(())
         })
