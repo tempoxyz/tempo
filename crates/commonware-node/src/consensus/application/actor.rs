@@ -84,7 +84,8 @@ where
                 fee_recipient: config.fee_recipient,
                 epoch_strategy: config.epoch_strategy,
 
-                new_payload_wait_time: config.new_payload_wait_time,
+                payload_resolve_time: config.payload_resolve_time,
+                payload_return_time: config.payload_return_time,
 
                 my_mailbox,
                 marshal: config.marshal,
@@ -185,7 +186,8 @@ where
 struct Inner<TState> {
     fee_recipient: alloy_primitives::Address,
     epoch_strategy: FixedEpocher,
-    new_payload_wait_time: Duration,
+    payload_resolve_time: Duration,
+    payload_return_time: Duration,
 
     my_mailbox: Mailbox,
 
@@ -193,7 +195,7 @@ struct Inner<TState> {
 
     execution_node: TempoFullNode,
     executor: crate::executor::Mailbox,
-    subblocks: subblocks::Mailbox,
+    subblocks: Option<subblocks::Mailbox>,
     scheme_provider: SchemeProvider,
 
     state: TState,
@@ -346,27 +348,6 @@ impl Inner<Init> {
             *lock = Some((round, proposal.clone()));
         }
 
-        // Make sure reth sees the new payload so that in the next round we can
-        // verify blocks on top of it.
-        let is_good = verify_block(
-            context,
-            round.epoch(),
-            &self.epoch_strategy,
-            self.execution_node
-                .add_ons_handle
-                .beacon_engine_handle
-                .clone(),
-            &proposal,
-            parent_digest,
-            &self.scheme_provider,
-        )
-        .await
-        .wrap_err("failed verifying block against execution layer")?;
-
-        if !is_good {
-            eyre::bail!("validation reported that that just-proposed block is invalid");
-        }
-
         Ok(())
     }
 
@@ -515,6 +496,10 @@ impl Inner<Init> {
             );
             info!(
                 %outcome.epoch,
+                outcome.network_identity = %outcome.network_identity(),
+                outcome.dealers = ?outcome.dealers(),
+                outcome.players = ?outcome.players(),
+                outcome.next_players = ?outcome.next_players(),
                 "received DKG outcome; will include in payload builder attributes",
             );
             outcome.encode().into()
@@ -555,7 +540,8 @@ impl Inner<Init> {
             extra_data,
             move || {
                 self.subblocks
-                    .get_subblocks(parent.block_hash())
+                    .as_ref()
+                    .and_then(|s| s.get_subblocks(parent.block_hash()).ok())
                     .unwrap_or_default()
             },
         );
@@ -573,10 +559,23 @@ impl Inner<Init> {
             .wrap_err("failed requesting new payload from the execution layer")?;
 
         debug!(
-            timeout_ms = self.new_payload_wait_time.as_millis(),
-            "sleeping for payload builder timeout"
+            resolve_time_ms = self.payload_resolve_time.as_millis(),
+            return_time_ms = self.payload_return_time.as_millis(),
+            "sleeping before payload builder resolving"
         );
-        context.sleep(self.new_payload_wait_time).await;
+
+        // Start the timer for `self.payload_return_time`
+        //
+        // This guarantees that we will not propose the block too early, and waits for at least `self.payload_return_time`,
+        // plus whatever time is needed to finish building the block.
+        let payload_return_time = context.current() + self.payload_return_time;
+
+        // Give payload builder at least `self.payload_resolve_time` until we interrupt it.
+        //
+        // The interrupt doesn't mean we'll immediately get the payload back,
+        // but only signals the builder to stop executing transactions,
+        // and start calculating the state root and sealing the block.
+        context.sleep(self.payload_resolve_time).await;
 
         interrupt_handle.interrupt();
 
@@ -592,6 +591,9 @@ impl Inner<Init> {
             .ok_or_eyre("no payload found under provided id")
             .and_then(|rsp| rsp.map_err(Into::<eyre::Report>::into))
             .wrap_err_with(|| format!("failed getting payload for payload ID `{payload_id}`"))?;
+
+        // Keep waiting for `self.payload_return_time`, if there's anything left after building the block.
+        context.sleep_until(payload_return_time).await;
 
         Ok(Block::from_execution_block(payload.block().clone()))
     }
@@ -705,7 +707,8 @@ impl Inner<Uninit> {
         let initialized = Inner {
             fee_recipient: self.fee_recipient,
             epoch_strategy: self.epoch_strategy,
-            new_payload_wait_time: self.new_payload_wait_time,
+            payload_resolve_time: self.payload_resolve_time,
+            payload_return_time: self.payload_return_time,
             my_mailbox: self.my_mailbox,
             marshal: self.marshal,
             execution_node: self.execution_node,
@@ -828,7 +831,7 @@ async fn verify_block<TContext: Pacer>(
         PayloadStatusEnum::Syncing => {
             bail!(
                 "failed validating block because payload is still syncing, \
-                this means the parent block was available to the consensus
+                this means the parent block was available to the consensus \
                 layer but not the execution layer"
             )
         }

@@ -28,6 +28,9 @@ alloy-hardforks.workspace = true
 eyre = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
+paste.workspace = true
+
+[dev-dependencies]
 
 [features]
 default = ["std", "serde", "cli"]

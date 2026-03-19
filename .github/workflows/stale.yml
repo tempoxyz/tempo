@@ -1,0 +1,24 @@
+name: Close Stale PRs
+
+on:
+  schedule:
+    - cron: "0 0 * * *" # daily at midnight UTC
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/stale@5bef64f19d7facfb25b37b414482c7164d639639 # v9
+        with:
+          days-before-pr-stale: 7
+          days-before-pr-close: 3
+          stale-pr-message: "This PR has been marked stale due to 7 days of inactivity."
+          close-pr-message: "Closed due to inactivity. Reopen if still needed."
+          stale-pr-label: stale
+          exempt-draft-pr: false
+          days-before-issue-stale: -1
+          days-before-issue-close: -1

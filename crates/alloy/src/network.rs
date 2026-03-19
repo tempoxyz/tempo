@@ -167,6 +167,7 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
             || self.key_id.is_some()
             || self.valid_before.is_some()
             || self.valid_after.is_some()
+            || self.fee_payer_signature.is_some()
         {
             TempoTxType::AA
         } else {
@@ -541,6 +542,15 @@ mod tests {
     fn output_tx_type_key_id_is_aa() {
         let req = TempoTransactionRequest {
             key_id: Some(Address::ZERO),
+            ..Default::default()
+        };
+        assert_eq!(req.output_tx_type(), TempoTxType::AA);
+    }
+
+    #[test]
+    fn output_tx_type_fee_payer_signature_is_aa() {
+        let req = TempoTransactionRequest {
+            fee_payer_signature: Some(Signature::new(U256::ZERO, U256::ZERO, false)),
             ..Default::default()
         };
         assert_eq!(req.output_tx_type(), TempoTxType::AA);

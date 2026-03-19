@@ -15,8 +15,10 @@ workspace = true
 alloy-contract = { workspace = true, optional = true }
 alloy-primitives.workspace = true
 alloy-sol-types = { workspace = true, features = ["json"] }
+serde = { workspace = true, optional = true }
 
 [dev-dependencies]
+alloy-primitives = { workspace = true, features = ["rand"] }
 alloy-provider = { workspace = true, features = ["reqwest", "reqwest-rustls-tls"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
@@ -24,3 +26,4 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 default = ["std", "rpc"]
 std = ["alloy-primitives/std", "alloy-sol-types/std"]
 rpc = ["dep:alloy-contract"]
+serde = ["dep:serde", "alloy-primitives/serde"]
