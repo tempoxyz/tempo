@@ -155,6 +155,18 @@ impl TempoPooledTransaction {
         })
     }
 
+    /// Returns true if this transaction carries an inline key authorization that matches a
+    /// newly authorized key.
+    ///
+    /// This covers root-signed inline key-auth transactions that do not have keychain signatures,
+    /// so `keychain_subject()` would be `None`.
+    pub fn matches_authorized_inline_key(&self, authorized_keys: &AuthorizedKeys) -> bool {
+        self.inner()
+            .as_aa()
+            .and_then(|aa| aa.tx().key_authorization.as_ref())
+            .is_some_and(|auth| authorized_keys.contains(self.sender(), auth.key_id))
+    }
+
     /// Returns the unique identifier for this AA transaction.
     pub(crate) fn aa_transaction_id(&self) -> Option<AA2dTransactionId> {
         let nonce_key = self.nonce_key()?;
@@ -979,6 +991,76 @@ mod tests {
     }
 
     #[test]
+    fn authorized_keys_index_contains_inserted_key() {
+        let mut authorized = AuthorizedKeys::new();
+        let account = Address::random();
+        let key_id = Address::random();
+
+        assert!(authorized.is_empty());
+        authorized.insert(account, key_id);
+
+        assert!(!authorized.is_empty());
+        assert_eq!(authorized.len(), 1);
+        assert!(authorized.contains(account, key_id));
+    }
+
+    #[test]
+    fn keychain_subject_matches_authorized() {
+        let account = Address::random();
+        let key_id = Address::random();
+        let subject = KeychainSubject {
+            account,
+            key_id,
+            fee_token: Address::random(),
+        };
+
+        let mut authorized = AuthorizedKeys::new();
+        assert!(!subject.matches_authorized(&authorized));
+
+        authorized.insert(account, key_id);
+        assert!(subject.matches_authorized(&authorized));
+    }
+
+    #[test]
+    fn matches_authorized_inline_key_for_root_signed_tx() {
+        let user_address = Address::random();
+        let key_id = Address::random();
+
+        let mut tx = TxBuilder::aa(user_address).build();
+        if let Some(aa) = tx.inner().as_aa() {
+            let mut inner = aa.tx().clone();
+            inner.key_authorization = Some(
+                tempo_primitives::transaction::KeyAuthorization {
+                    chain_id: 42431,
+                    key_type: tempo_primitives::transaction::SignatureType::Secp256k1,
+                    key_id,
+                    expiry: None,
+                    limits: None,
+                }
+                .into_signed(
+                    tempo_primitives::transaction::PrimitiveSignature::Secp256k1(
+                        Signature::test_signature(),
+                    ),
+                ),
+            );
+            let recovered = Recovered::new_unchecked(
+                tempo_primitives::TempoTxEnvelope::AA(tempo_primitives::AASigned::new_unhashed(
+                    inner,
+                    aa.signature().clone(),
+                )),
+                user_address,
+            );
+            tx = TempoPooledTransaction::new(recovered);
+        }
+
+        let mut authorized = AuthorizedKeys::new();
+        assert!(!tx.matches_authorized_inline_key(&authorized));
+
+        authorized.insert(user_address, key_id);
+        assert!(tx.matches_authorized_inline_key(&authorized));
+    }
+
+    #[test]
     fn test_pool_transaction_into_consensus() {
         let sender = Address::random();
         let tx = TxBuilder::aa(sender).build();
@@ -1092,6 +1174,45 @@ impl RevokedKeys {
     }
 }
 
+/// Index of newly authorized keychain keys, keyed by account for efficient lookup.
+///
+/// Used to evict pending inline key-authorization transactions that become deterministically
+/// invalid once a matching `KeyAuthorized` event is mined.
+#[derive(Debug, Clone, Default)]
+pub struct AuthorizedKeys {
+    /// Map from account to list of newly authorized key_ids.
+    by_account: AddressMap<Vec<Address>>,
+}
+
+impl AuthorizedKeys {
+    /// Creates a new empty index.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Inserts an authorized key.
+    pub fn insert(&mut self, account: Address, key_id: Address) {
+        self.by_account.entry(account).or_default().push(key_id);
+    }
+
+    /// Returns true if the index is empty.
+    pub fn is_empty(&self) -> bool {
+        self.by_account.is_empty()
+    }
+
+    /// Returns the total number of authorized keys.
+    pub fn len(&self) -> usize {
+        self.by_account.values().map(Vec::len).sum()
+    }
+
+    /// Returns true if the given (account, key_id) combination is in the index.
+    pub fn contains(&self, account: Address, key_id: Address) -> bool {
+        self.by_account
+            .get(&account)
+            .is_some_and(|key_ids| key_ids.contains(&key_id))
+    }
+}
+
 /// Index of spending limit updates, keyed by account for efficient lookup.
 ///
 /// Uses account as the primary key with a list of (key_id, token) pairs,
@@ -1163,6 +1284,11 @@ impl KeychainSubject {
     /// the typically small list of key_ids for that account.
     pub fn matches_revoked(&self, revoked_keys: &RevokedKeys) -> bool {
         revoked_keys.contains(self.account, self.key_id)
+    }
+
+    /// Returns true if this subject matches any of the newly authorized keys.
+    pub fn matches_authorized(&self, authorized_keys: &AuthorizedKeys) -> bool {
+        authorized_keys.contains(self.account, self.key_id)
     }
 
     /// Returns true if this subject is affected by any of the spending limit updates.

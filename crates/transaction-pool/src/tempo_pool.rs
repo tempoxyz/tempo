@@ -149,6 +149,8 @@ where
     /// Evicts transactions that are no longer valid due to on-chain events.
     ///
     /// This performs a single scan of all pooled transactions and checks for:
+    /// 0. **Newly authorized keychain keys**: Pending inline key-authorizations for keys that
+    ///    were just authorized on-chain (duplicates become deterministically invalid)
     /// 1. **Revoked keychain keys**: AA transactions signed with keys that have been revoked
     /// 2. **Spending limit updates**: AA transactions signed with keys whose spending limit
     ///    changed for a token matching the transaction's fee token
@@ -202,6 +204,7 @@ where
         };
 
         let mut to_remove = Vec::new();
+        let mut authorized_count = 0;
         let mut revoked_count = 0;
         let mut spending_limit_count = 0;
         let mut spending_limit_spend_count = 0;
@@ -214,6 +217,19 @@ where
         for tx in all_txs.pending.iter().chain(all_txs.queued.iter()) {
             // Extract keychain subject once per transaction (if applicable)
             let keychain_subject = tx.transaction.keychain_subject();
+
+            // Check 0: Newly authorized keychain keys.
+            // Once a KeyAuthorized event is mined, pending inline key-authorizations for the same
+            // (account, key_id) become deterministically invalid (`access key already exists`).
+            if !updates.authorized_keys.is_empty()
+                && tx
+                    .transaction
+                    .matches_authorized_inline_key(&updates.authorized_keys)
+            {
+                to_remove.push(*tx.hash());
+                authorized_count += 1;
+                continue;
+            }
 
             // Check 1: Revoked keychain keys
             if !updates.revoked_keys.is_empty()
@@ -366,6 +382,7 @@ where
             tracing::debug!(
                 target: "txpool",
                 total = to_remove.len(),
+                authorized_count,
                 revoked_count,
                 spending_limit_count,
                 spending_limit_spend_count,
