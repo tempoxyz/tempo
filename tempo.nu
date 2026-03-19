@@ -272,20 +272,6 @@ def hardfork-to-genesis-args [fork: string] {
     } | flatten
 }
 
-# Recover a specific subdir within the bench datadir (cp-based).
-# Used when running dual datadirs for cross-hardfork comparisons.
-def bench-recover-subdir [datadir: string, subdir: string] {
-    let target = $"($datadir)/($subdir)"
-    let virgin = $"($datadir)/($subdir).virgin"
-    if not ($virgin | path exists) {
-        print $"Error: virgin snapshot ($virgin) does not exist"
-        exit 1
-    }
-    print $"Recovering ($subdir) from virgin snapshot..."
-    if ($target | path exists) { rm -rf $target }
-    cp -a $virgin $target
-}
-
 # Resolve a git ref to a full commit SHA
 def resolve-git-ref [ref: string] {
     git rev-parse $ref | str trim
@@ -1713,8 +1699,6 @@ def "main bench" [
                 and ($marker | get -o feature_hardfork | default "") == ($feature_hardfork | str upcase)
                 and ($"($baseline_datadir)/db" | path exists)
                 and ($"($feature_datadir)/db" | path exists)
-                and ($"($baseline_datadir).virgin" | path exists)
-                and ($"($feature_datadir).virgin" | path exists)
                 and ($"($meta_dir)/genesis-baseline.json" | path exists)
                 and ($"($meta_dir)/genesis-feature.json" | path exists)
             )
@@ -1794,12 +1778,6 @@ def "main bench" [
                         print $"Loading state bloat into ($side.name)..."
                         run-external $side.tempo "init-from-binary-dump" "--chain" $side.genesis "--datadir" $side.dd $bloat_file | complete
                     }
-
-                    # Create virgin snapshot (cp-based, inside the schelk volume)
-                    let virgin = $"($side.dd).virgin"
-                    if ($virgin | path exists) { rm -rf $virgin }
-                    print $"Creating virgin snapshot: ($virgin)"
-                    cp -a $side.dd $virgin
                 }
 
                 # Save genesis files to meta dir
@@ -1810,7 +1788,7 @@ def "main bench" [
                     cp $bloat_file $"($meta_dir)/state_bloat.bin"
                 }
 
-                # Promote entire volume (includes both virgin snapshots)
+                # Promote entire volume (snapshots both baseline-db and feature-db)
                 bench-promote $datadir
                 bench-mount
 
@@ -1949,14 +1927,10 @@ def "main bench" [
         }
 
         for run in $runs {
-            if $dual_hardfork {
-                # Schelk recover restores the whole volume (including both .virgin dirs),
-                # then cp the appropriate virgin snapshot into the active subdir
-                bench-recover $datadir
-                bench-recover-subdir $datadir (if ($run.label | str starts-with "baseline") { "baseline-db" } else { "feature-db" })
-            } else {
-                bench-recover $datadir
-            }
+            # bench-recover restores the entire schelk volume to the promoted
+            # virgin state. In dual-hardfork mode this resets both baseline-db
+            # and feature-db subdirs at once.
+            bench-recover $datadir
             run-bench-single $run.tempo $baseline_bench_bin $run.genesis $run.datadir $run.label $results_dir $tps $duration $accounts $max_concurrent_requests $weights $preset $bench_args $loud $node_args $bloat $run.git_ref $benchmark_id $reference_epoch $samply $samply_args_list $tracy $tracy_filter $tracy_seconds $tracy_offset $tracing_otlp
         }
 
