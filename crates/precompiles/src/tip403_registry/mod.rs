@@ -12,12 +12,12 @@ pub use tempo_contracts::precompiles::{
     ITIP403Registry::{self, PolicyType},
     TIP403RegistryError, TIP403RegistryEvent,
 };
-use tempo_precompiles_macros::{contract, Storable};
+use tempo_precompiles_macros::{Storable, contract};
 
 use crate::{
+    TIP403_REGISTRY_ADDRESS,
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
-    TIP403_REGISTRY_ADDRESS,
 };
 use alloy::primitives::{Address, U256};
 
@@ -104,7 +104,7 @@ pub struct PolicyData {
 impl PolicyData {
     /// Decodes a [`PolicyData`] from a raw EVM storage slot word.
     pub fn decode_from_slot(slot_value: U256) -> Self {
-        use crate::storage::{packing::PackedSlot, LayoutCtx, Storable};
+        use crate::storage::{LayoutCtx, Storable, packing::PackedSlot};
 
         // NOTE: fine to expect, as `StorageOps` on `PackedSlot` are infallible
         Self::load(&PackedSlot(slot_value), U256::ZERO, LayoutCtx::FULL)
@@ -744,7 +744,7 @@ mod tests {
     use super::*;
     use crate::{
         error::TempoPrecompileError,
-        storage::{hashmap::HashMapStorageProvider, ContractStorage, StorageCtx},
+        storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
     };
     use alloy::{
         primitives::{Address, Log},
