@@ -132,7 +132,7 @@ def load-bloat-into-node [tempo_bin: string, genesis_path: string, datadir: stri
     run-external $tempo_bin "init" "--chain" $genesis_path "--datadir" $datadir
 
     print $"Loading state bloat into ($datadir | path basename)..."
-    run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis_path "--datadir" $datadir $bloat_file | complete
+    run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis_path "--datadir" $datadir $bloat_file
 }
 
 # ============================================================================
@@ -462,6 +462,7 @@ def run-bench-single [
     sleep 2sec
     let rpc_timeout = if $bloat > 0 { 600 } else { 120 }
     wait-for-rpc "http://localhost:8545" $rpc_timeout
+    wait-for-tip-timestamp "http://localhost:8545"
 
     # Start tracy-capture after RPC is ready (node must be running for connection)
     # If tracy-offset > 0, delay the capture start in a background job so tempo-bench isn't blocked
@@ -1382,7 +1383,7 @@ def "main bench-init" [
 
     if $bloat > 0 {
         print $"Loading state bloat into ($datadir)..."
-        run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis_path "--datadir" $datadir $bloat_file | complete
+        run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis_path "--datadir" $datadir $bloat_file
     }
 
     # Save genesis + bloat to volume meta dir (survives schelk recover)
@@ -1677,7 +1678,7 @@ def "main bench" [
 
             if $bloat > 0 {
                 print $"Loading state bloat into ($datadir)..."
-                run-external $baseline_tempo "init-from-binary-dump" "--chain" $genesis_path "--datadir" $datadir $bloat_file | complete
+                run-external $baseline_tempo "init-from-binary-dump" "--chain" $genesis_path "--datadir" $datadir $bloat_file
             }
 
             # Save genesis + bloat to volume meta dir (survives schelk recover)
@@ -1824,6 +1825,7 @@ def "main bench" [
     for url in $rpc_urls {
         wait-for-rpc $url $rpc_timeout
     }
+    wait-for-tip-timestamp ($rpc_urls | first)
     print "All nodes ready!"
 
     # Run tempo-bench
@@ -1916,6 +1918,37 @@ def wait-for-rpc [url: string, max_attempts: int = 120] {
         } else {
             if ($attempt mod 10) == 0 {
                 print $"  Still waiting for ($url)... \(($attempt)s\)"
+            }
+        }
+        sleep 1sec
+    }
+}
+
+# Wait for the node's latest block timestamp to be within 5s of wall clock.
+# After snapshot recovery the tip timestamp can lag by 10-20s, causing
+# expiring nonce transactions to be rejected (valid_before > tip_ts + 30s).
+def wait-for-tip-timestamp [url: string, max_attempts: int = 60] {
+    let max_drift = 5
+    mut attempt = 0
+
+    loop {
+        $attempt = $attempt + 1
+        if $attempt > $max_attempts {
+            print $"  Timeout waiting for tip timestamp to catch up at ($url)"
+            exit 1
+        }
+        let result = (do { curl -sf $url -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["latest",false],"id":1}' } | complete)
+        if $result.exit_code == 0 {
+            let block = ($result.stdout | from json | get result)
+            let tip_ts = ($block.timestamp | str replace "0x" "" | into int --radix 16)
+            let now = (date now | into int) // 1_000_000_000
+            let drift = $now - $tip_ts
+            if $drift <= $max_drift {
+                print $"  ($url) tip timestamp synced, drift=($drift)s"
+                break
+            }
+            if ($attempt mod 5) == 0 {
+                print $"  ($url) waiting for tip timestamp to catch up, drift=($drift)s..."
             }
         }
         sleep 1sec
