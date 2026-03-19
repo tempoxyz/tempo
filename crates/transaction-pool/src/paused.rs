@@ -5,7 +5,9 @@
 //! When the token is unpaused, transactions are moved back to the main pool
 //! and re-validated.
 
-use crate::{RevokedKeys, SpendingLimitUpdates, transaction::TempoPooledTransaction};
+use crate::{
+    AuthorizedKeys, RevokedKeys, SpendingLimitUpdates, transaction::TempoPooledTransaction,
+};
 use alloy_primitives::{Address, TxHash, map::HashMap};
 use reth_transaction_pool::ValidPoolTransaction;
 use std::{sync::Arc, time::Instant};
@@ -201,11 +203,13 @@ impl PausedFeeTokenPool {
     /// Returns the number of transactions removed.
     pub fn evict_invalidated(
         &mut self,
+        authorized_keys: &AuthorizedKeys,
         revoked_keys: &RevokedKeys,
         spending_limit_updates: &SpendingLimitUpdates,
         spending_limit_spends: &SpendingLimitUpdates,
     ) -> usize {
-        if revoked_keys.is_empty()
+        if authorized_keys.is_empty()
+            && revoked_keys.is_empty()
             && spending_limit_updates.is_empty()
             && spending_limit_spends.is_empty()
         {
@@ -219,7 +223,14 @@ impl PausedFeeTokenPool {
                 let Some(subject) = entry.tx.transaction.keychain_subject() else {
                     return true;
                 };
-                !subject.matches_revoked(revoked_keys)
+                let inline_key_auth = entry
+                    .tx
+                    .transaction
+                    .inner()
+                    .as_aa()
+                    .is_some_and(|aa| aa.tx().key_authorization.is_some());
+                !(inline_key_auth && subject.matches_authorized(authorized_keys))
+                    && !subject.matches_revoked(revoked_keys)
                     && !subject.matches_spending_limit_update(spending_limit_updates)
                     && !subject.matches_spending_limit_update(spending_limit_spends)
             });
@@ -382,14 +393,101 @@ mod tests {
         let mut spends = SpendingLimitUpdates::new();
         spends.insert(user_address, key_id, Some(fee_token));
 
-        let evicted =
-            pool.evict_invalidated(&RevokedKeys::new(), &SpendingLimitUpdates::new(), &spends);
+        let evicted = pool.evict_invalidated(
+            &AuthorizedKeys::new(),
+            &RevokedKeys::new(),
+            &SpendingLimitUpdates::new(),
+            &spends,
+        );
 
         assert_eq!(
             evicted, 1,
             "Should evict the keychain tx matching the spend"
         );
         assert_eq!(pool.len(), 1, "Non-keychain tx should remain");
+    }
+
+    #[test]
+    fn test_evict_invalidated_with_authorized_keys_inline_key_auth_only() {
+        let mut pool = PausedFeeTokenPool::new();
+        let user_address = Address::random();
+        let fee_token = Address::random();
+
+        let access_key_signer = alloy_signer_local::PrivateKeySigner::random();
+        let key_id = alloy_signer::Signer::address(&access_key_signer);
+
+        // This tx uses keychain signature only (no inline key_authorization) and should remain.
+        let keychain_only = Arc::new(wrap_valid_tx(
+            TxBuilder::aa(user_address)
+                .fee_token(fee_token)
+                .build_keychain(user_address, &access_key_signer),
+            reth_transaction_pool::TransactionOrigin::External,
+        ));
+
+        // This tx includes inline key_authorization and should be evicted on KeyAuthorized.
+        let mut inline_key_auth_tx = TxBuilder::aa(user_address)
+            .fee_token(fee_token)
+            .build_keychain(user_address, &access_key_signer);
+        if let Some(aa) = inline_key_auth_tx.inner().as_aa() {
+            use tempo_primitives::transaction::{
+                KeyAuthorization, PrimitiveSignature, SignatureType,
+            };
+
+            let auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id,
+                expiry: None,
+                limits: None,
+            }
+            .into_signed(PrimitiveSignature::Secp256k1(
+                alloy_primitives::Signature::test_signature(),
+            ));
+
+            let mut inner = aa.tx().clone();
+            inner.key_authorization = Some(auth);
+
+            let recovered = reth_primitives_traits::Recovered::new_unchecked(
+                tempo_primitives::TempoTxEnvelope::AA(tempo_primitives::AASigned::new_unhashed(
+                    inner,
+                    aa.signature().clone(),
+                )),
+                user_address,
+            );
+            inline_key_auth_tx = TempoPooledTransaction::new(recovered);
+        }
+
+        let inline_key_auth = Arc::new(wrap_valid_tx(
+            inline_key_auth_tx,
+            reth_transaction_pool::TransactionOrigin::External,
+        ));
+
+        pool.insert_batch(
+            fee_token,
+            vec![
+                PausedEntry {
+                    tx: keychain_only,
+                    valid_before: None,
+                },
+                PausedEntry {
+                    tx: inline_key_auth,
+                    valid_before: None,
+                },
+            ],
+        );
+
+        let mut authorized = AuthorizedKeys::new();
+        authorized.insert(user_address, key_id);
+
+        let evicted = pool.evict_invalidated(
+            &authorized,
+            &RevokedKeys::new(),
+            &SpendingLimitUpdates::new(),
+            &SpendingLimitUpdates::new(),
+        );
+
+        assert_eq!(evicted, 1, "Only inline key-auth tx should be evicted");
+        assert_eq!(pool.len(), 1, "Keychain-only tx should remain");
     }
 
     #[test]
