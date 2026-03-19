@@ -2182,6 +2182,13 @@ pub(super) async fn run_send_negative_scenario<E: TestEnv>(env: &mut E) -> eyre:
 pub(super) async fn run_fee_payer_negative_scenario<E: TestEnv>(env: &mut E) -> eyre::Result<()> {
     println!("\n=== Fee payer negative scenario ===\n");
 
+    // Fee-payer negative checks rely on T1C+ validation behavior. Shared RPCs
+    // can be behind rollout, so skip this scenario on pre-T1C networks.
+    if !env.hardfork().is_t1c() {
+        eprintln!("SKIPPED: fee_payer_negative_scenario requires T1C+");
+        return Ok(());
+    }
+
     let chain_id = env.chain_id();
     let user_signer = PrivateKeySigner::random();
     let user_addr = user_signer.address();
