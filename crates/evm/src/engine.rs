@@ -151,6 +151,7 @@ mod tests {
             general_gas_limit: 10_000_000,
             timestamp_millis_part: 500,
             shared_gas_limit: 3_000_000,
+            ..Default::default()
         };
 
         let body = BlockBody {

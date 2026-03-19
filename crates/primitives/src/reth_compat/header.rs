@@ -1,5 +1,11 @@
-use crate::TempoHeader;
+use crate::{TempoConsensusContext, TempoHeader};
 use alloy_primitives::{B256, BlockNumber, U256};
+
+impl reth_primitives_traits::InMemorySize for TempoConsensusContext {
+    fn size(&self) -> usize {
+        self.epoch.size() + self.view.size() + self.proposer.size() + self.parent_view.size()
+    }
+}
 
 impl reth_primitives_traits::InMemorySize for TempoHeader {
     fn size(&self) -> usize {
@@ -8,11 +14,13 @@ impl reth_primitives_traits::InMemorySize for TempoHeader {
             general_gas_limit,
             timestamp_millis_part,
             shared_gas_limit,
+            consensus_context,
         } = self;
         inner.size()
             + general_gas_limit.size()
             + timestamp_millis_part.size()
             + shared_gas_limit.size()
+            + consensus_context.as_ref().map_or(0, |f| f.size())
     }
 }
 

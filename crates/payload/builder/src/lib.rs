@@ -367,6 +367,7 @@ where
                     general_gas_limit,
                     shared_gas_limit,
                     timestamp_millis_part: attributes.timestamp_millis_part(),
+                    consensus_context: attributes.consensus_context(),
                     subblock_fee_recipients,
                 },
             )
@@ -994,8 +995,14 @@ mod tests {
         // Test that extra_data in attributes can be accessed correctly
         let extra_data = Bytes::from(vec![42, 43, 44, 45, 46]);
 
-        let attrs =
-            TempoPayloadAttributes::new(Address::ZERO, None, 1000, extra_data.clone(), Vec::new);
+        let attrs = TempoPayloadAttributes::new(
+            Address::default(),
+            None,
+            1000,
+            extra_data.clone(),
+            None,
+            Vec::new,
+        );
 
         assert_eq!(attrs.extra_data(), &extra_data);
 

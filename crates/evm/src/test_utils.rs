@@ -152,6 +152,7 @@ impl TestExecutorBuilder {
             general_gas_limit: self.general_gas_limit,
             shared_gas_limit: self.shared_gas_limit,
             validator_set: self.validator_set,
+            consensus_context: None,
             subblock_fee_recipients: self.subblock_fee_recipients,
         };
 

@@ -228,6 +228,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
             // Not available when we only have a block body.
             validator_set: None,
+            consensus_context: block.header().consensus_context,
             subblock_fee_recipients,
         })
     }
@@ -254,6 +255,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
             // Fine to not validate during block building.
             validator_set: None,
+            consensus_context: attributes.consensus_context,
             subblock_fee_recipients: attributes.subblock_fee_recipients,
         })
     }
@@ -299,6 +301,7 @@ mod tests {
             general_gas_limit: 10_000_000,
             timestamp_millis_part: 500,
             shared_gas_limit: 3_000_000,
+            ..Default::default()
         };
 
         let result = evm_config.evm_env(&header);
@@ -341,6 +344,7 @@ mod tests {
             general_gas_limit: 10_000_000,
             timestamp_millis_part: 0,
             shared_gas_limit: 3_000_000,
+            ..Default::default()
         };
 
         // Verify we're in T1
@@ -371,6 +375,7 @@ mod tests {
             general_gas_limit: 10_000_000,
             timestamp_millis_part: 0,
             shared_gas_limit: 3_000_000,
+            ..Default::default()
         };
 
         let attributes = TempoNextBlockEnvAttributes {
@@ -386,6 +391,7 @@ mod tests {
             general_gas_limit: 10_000_000,
             shared_gas_limit: 3_000_000,
             timestamp_millis_part: 750,
+            consensus_context: None,
             subblock_fee_recipients: HashMap::new(),
         };
 
@@ -453,6 +459,7 @@ mod tests {
             general_gas_limit: 10_000_000,
             timestamp_millis_part: 500,
             shared_gas_limit: 3_000_000,
+            ..Default::default()
         };
 
         let body = BlockBody {
@@ -510,6 +517,7 @@ mod tests {
             general_gas_limit: 10_000_000,
             timestamp_millis_part: 500,
             shared_gas_limit: 3_000_000,
+            ..Default::default()
         };
 
         let body = BlockBody {
@@ -545,6 +553,7 @@ mod tests {
             general_gas_limit: 10_000_000,
             timestamp_millis_part: 0,
             shared_gas_limit: 3_000_000,
+            ..Default::default()
         };
         let parent = SealedHeader::seal_slow(parent_header);
 
@@ -566,6 +575,7 @@ mod tests {
             general_gas_limit: 12_000_000,
             shared_gas_limit: 4_000_000,
             timestamp_millis_part: 999,
+            consensus_context: None,
             subblock_fee_recipients: subblock_fee_recipients.clone(),
         };
 

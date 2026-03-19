@@ -5,7 +5,7 @@ use reth_ethereum_engine_primitives::EthPayloadAttributes;
 use reth_node_api::PayloadAttributes;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, atomic, atomic::Ordering};
-use tempo_primitives::RecoveredSubBlock;
+use tempo_primitives::{RecoveredSubBlock, TempoConsensusContext};
 
 /// A handle for a payload interrupt flag.
 ///
@@ -54,6 +54,8 @@ pub struct TempoPayloadAttributes {
     /// validator config contract. When `None`, `suggested_fee_recipient` from
     /// the inner attributes is used as-is.
     proposer_public_key: Option<B256>,
+    /// Consensus view for this block
+    consensus_context: Option<TempoConsensusContext>,
     /// Subblocks closure.
     #[debug(skip)]
     #[serde(skip, default = "default_subblocks")]
@@ -73,6 +75,7 @@ impl TempoPayloadAttributes {
         proposer_public_key: Option<B256>,
         timestamp_millis: u64,
         extra_data: Bytes,
+        consensus_context: Option<TempoConsensusContext>,
         subblocks: impl Fn() -> Vec<RecoveredSubBlock> + Send + Sync + 'static,
     ) -> Self {
         let (seconds, millis) = (timestamp_millis / 1000, timestamp_millis % 1000);
@@ -88,6 +91,7 @@ impl TempoPayloadAttributes {
             timestamp_millis_part: millis,
             extra_data,
             proposer_public_key,
+            consensus_context,
             subblocks: Arc::new(subblocks),
         }
     }
@@ -126,6 +130,11 @@ impl TempoPayloadAttributes {
             .saturating_add(self.timestamp_millis_part)
     }
 
+    /// Returns the consensus context
+    pub fn consensus_context(&self) -> Option<TempoConsensusContext> {
+        self.consensus_context
+    }
+
     /// Returns the subblocks.
     pub fn subblocks(&self) -> Vec<RecoveredSubBlock> {
         (self.subblocks)()
@@ -143,6 +152,7 @@ impl From<EthPayloadAttributes> for TempoPayloadAttributes {
             timestamp_millis_part: 0,
             extra_data: Bytes::default(),
             proposer_public_key: None,
+            consensus_context: None,
             subblocks: Arc::new(Vec::new),
         }
     }
@@ -200,7 +210,14 @@ mod tests {
 
     impl TestExt for TempoPayloadAttributes {
         fn random() -> Self {
-            Self::new(Address::random(), None, 1000, Bytes::default(), Vec::new)
+            Self::new(
+                Address::random(),
+                None,
+                1000,
+                Bytes::default(),
+                None,
+                Vec::new,
+            )
         }
 
         fn with_timestamp(mut self, millis: u64) -> Self {
@@ -258,6 +275,7 @@ mod tests {
             None,
             timestamp_millis,
             extra_data.clone(),
+            None,
             Vec::new,
         );
         assert_eq!(attrs.extra_data(), &extra_data);
@@ -280,6 +298,7 @@ mod tests {
             None,
             timestamp_millis + 500, // 1.5 seconds + 500ms
             Bytes::default(),
+            None,
             Vec::new,
         );
         assert_eq!(attrs2.extra_data(), &Bytes::default());

@@ -22,11 +22,11 @@ impl Mailbox {
 }
 
 /// Messages forwarded from consensus to application.
-// TODO: add trace spans into all of these messages.
+/// TODO: add trace spans into all of these messages.
 pub(super) enum Message {
     Broadcast(Broadcast),
     Genesis(Genesis),
-    Propose(Propose),
+    Propose(Box<Propose>),
     Verify(Box<Verify>),
 }
 
@@ -45,11 +45,12 @@ pub(super) struct Propose {
     pub(super) parent: (View, Digest),
     pub(super) response: oneshot::Sender<Digest>,
     pub(super) round: Round,
+    pub(super) leader: PublicKey,
 }
 
 impl From<Propose> for Message {
     fn from(value: Propose) -> Self {
-        Self::Propose(value)
+        Self::Propose(Box::new(value))
     }
 }
 
@@ -110,6 +111,7 @@ impl Automaton for Mailbox {
                     parent: context.parent,
                     response: tx,
                     round: context.round,
+                    leader: context.leader,
                 }
                 .into(),
             )
