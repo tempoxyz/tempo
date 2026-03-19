@@ -13,14 +13,21 @@ use reth_node_api::{
     AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodePrimitives, NodeTypes,
     PayloadAttributesBuilder, PayloadTypes,
 };
+use reth_engine_tree::tree::{
+    BasicEngineValidator, SharedPayloadCaches,
+    precompile_cache::PrecompileCacheMap,
+    PayloadExecutionCache, SharedPreservedSparseTrie,
+};
+use reth_ethereum::chainspec::EthChainSpec;
 use reth_node_builder::{
     BuilderContext, DebugNode, Node, NodeAdapter,
     components::{
         BasicPayloadServiceBuilder, ComponentsBuilder, ConsensusBuilder, ExecutorBuilder,
         PayloadBuilderBuilder, PoolBuilder, TxPoolBuilder, spawn_maintenance_tasks,
     },
+    invalid_block_hook::InvalidBlockHookExt,
     rpc::{
-        BasicEngineValidatorBuilder, EngineValidatorAddOn, EngineValidatorBuilder, EthApiBuilder,
+        EngineValidatorAddOn, EngineValidatorBuilder, EthApiBuilder,
         NoopEngineApiBuilder, PayloadValidatorBuilder, RethRpcAddOns, RpcAddOns,
     },
 };
@@ -35,7 +42,7 @@ use reth_rpc_eth_api::{
 use reth_tracing::tracing::{debug, info};
 use reth_transaction_pool::{TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore};
 use std::{default::Default, sync::Arc};
-use tempo_chainspec::spec::TempoChainSpec;
+use tempo_chainspec::{hardfork::TempoHardfork, spec::TempoChainSpec};
 use tempo_consensus::TempoConsensus;
 use tempo_evm::TempoEvmConfig;
 use tempo_payload_builder::TempoPayloadBuilder;
@@ -84,6 +91,7 @@ impl TempoNodeArgs {
         TempoPayloadBuilderBuilder {
             state_provider_metrics: self.builder_state_provider_metrics,
             disable_state_cache: self.builder_disable_state_cache,
+            shared_caches: None,
         }
     }
 }
@@ -98,15 +106,20 @@ pub struct TempoNode {
     payload_builder_builder: TempoPayloadBuilderBuilder,
     /// Validator public key for `admin_validatorKey` RPC method.
     validator_key: Option<B256>,
+    /// Shared caches between the payload builder and engine validator.
+    shared_caches: SharedPayloadCaches<TempoHardfork>,
 }
 
 impl TempoNode {
     /// Create new instance of a Tempo node
     pub fn new(args: &TempoNodeArgs, validator_key: Option<B256>) -> Self {
+        let shared_caches = SharedPayloadCaches::default();
         Self {
             pool_builder: args.pool_builder(),
-            payload_builder_builder: args.payload_builder_builder(),
+            payload_builder_builder: args.payload_builder_builder()
+                .with_shared_caches(shared_caches.clone()),
             validator_key,
+            shared_caches,
         }
     }
 
@@ -157,7 +170,7 @@ pub struct TempoAddOns<
     N: FullNodeComponents,
     EthB: EthApiBuilder<N> = TempoEthApiBuilder,
     PVB = TempoEngineValidatorBuilder,
-    EVB = BasicEngineValidatorBuilder<PVB>,
+    EVB = TempoEngineValidatorBuilderWithCaches,
     RpcMiddleware = Identity,
 > {
     inner: RpcAddOns<N, EthB, PVB, NoopEngineApiBuilder, EVB, RpcMiddleware>,
@@ -169,13 +182,16 @@ where
     N: FullNodeTypes<Types = TempoNode>,
 {
     /// Creates a new instance from the inner `RpcAddOns`.
-    pub fn new(validator_key: Option<B256>) -> Self {
+    pub fn new(
+        validator_key: Option<B256>,
+        shared_caches: SharedPayloadCaches<TempoHardfork>,
+    ) -> Self {
         Self {
             inner: RpcAddOns::new(
                 TempoEthApiBuilder::new(validator_key),
                 TempoEngineValidatorBuilder,
                 NoopEngineApiBuilder::default(),
-                BasicEngineValidatorBuilder::default(),
+                TempoEngineValidatorBuilderWithCaches::new(shared_caches),
                 Identity::default(),
             ),
             validator_key,
@@ -266,11 +282,11 @@ where
     type AddOns = TempoAddOns<NodeAdapter<N>>;
 
     fn components_builder(&self) -> Self::ComponentsBuilder {
-        Self::components(self.pool_builder, self.payload_builder_builder)
+        Self::components(self.pool_builder, self.payload_builder_builder.clone())
     }
 
     fn add_ons(&self) -> Self::AddOns {
-        TempoAddOns::new(self.validator_key)
+        TempoAddOns::new(self.validator_key, self.shared_caches.clone())
     }
 }
 
@@ -375,6 +391,53 @@ where
 
     async fn build(self, _ctx: &AddOnsContext<'_, Node>) -> eyre::Result<Self::Validator> {
         Ok(TempoEngineValidator::new())
+    }
+}
+
+/// Engine validator builder that injects shared caches into `BasicEngineValidator`.
+#[derive(Debug, Clone)]
+pub struct TempoEngineValidatorBuilderWithCaches {
+    payload_validator_builder: TempoEngineValidatorBuilder,
+    shared_caches: SharedPayloadCaches<TempoHardfork>,
+}
+
+impl TempoEngineValidatorBuilderWithCaches {
+    /// Creates a new instance with the given shared caches.
+    pub fn new(shared_caches: SharedPayloadCaches<TempoHardfork>) -> Self {
+        Self {
+            payload_validator_builder: TempoEngineValidatorBuilder,
+            shared_caches,
+        }
+    }
+}
+
+impl<Node> EngineValidatorBuilder<Node> for TempoEngineValidatorBuilderWithCaches
+where
+    Node: FullNodeComponents<
+        Types = TempoNode,
+        Evm = TempoEvmConfig,
+    >,
+{
+    type EngineValidator = BasicEngineValidator<Node::Provider, Node::Evm, TempoEngineValidator>;
+
+    async fn build_tree_validator(
+        self,
+        ctx: &AddOnsContext<'_, Node>,
+        tree_config: reth_node_api::TreeConfig,
+    ) -> eyre::Result<Self::EngineValidator> {
+        let validator = self.payload_validator_builder.build(ctx).await?;
+        let data_dir = ctx.config.datadir.clone().resolve_datadir(ctx.config.chain.chain());
+        let invalid_block_hook = ctx.create_invalid_block_hook(&data_dir).await?;
+
+        Ok(BasicEngineValidator::new_with_shared_caches(
+            ctx.node.provider().clone(),
+            Arc::new(ctx.node.consensus().clone()),
+            ctx.node.evm_config().clone(),
+            validator,
+            tree_config,
+            invalid_block_hook,
+            self.shared_caches,
+        ))
     }
 }
 
@@ -484,13 +547,23 @@ where
     }
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 #[non_exhaustive]
 pub struct TempoPayloadBuilderBuilder {
     /// Enable state provider metrics for the payload builder.
     pub state_provider_metrics: bool,
     /// Disable state cache for the payload builder.
     pub disable_state_cache: bool,
+    /// Shared caches between the payload builder and engine validator.
+    pub shared_caches: Option<SharedPayloadCaches<TempoHardfork>>,
+}
+
+impl TempoPayloadBuilderBuilder {
+    /// Sets the shared caches for the payload builder.
+    pub fn with_shared_caches(mut self, shared_caches: SharedPayloadCaches<TempoHardfork>) -> Self {
+        self.shared_caches = Some(shared_caches);
+        self
+    }
 }
 
 impl<Node> PayloadBuilderBuilder<Node, TempoTransactionPool<Node::Provider>, TempoEvmConfig>
@@ -506,12 +579,25 @@ where
         pool: TempoTransactionPool<Node::Provider>,
         evm_config: TempoEvmConfig,
     ) -> eyre::Result<Self::PayloadBuilder> {
+        let (execution_cache, precompile_cache_map, sparse_trie) =
+            if let Some(caches) = self.shared_caches {
+                (caches.execution_cache, caches.precompile_cache_map, caches.sparse_trie)
+            } else {
+                (
+                    PayloadExecutionCache::default(),
+                    PrecompileCacheMap::default(),
+                    SharedPreservedSparseTrie::default(),
+                )
+            };
         Ok(TempoPayloadBuilder::new(
             pool,
             ctx.provider().clone(),
             evm_config,
             self.state_provider_metrics,
             self.disable_state_cache,
+            execution_cache,
+            precompile_cache_map,
+            sparse_trie,
         ))
     }
 }

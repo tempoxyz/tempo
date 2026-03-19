@@ -16,7 +16,12 @@ use reth_basic_payload_builder::{
 };
 use reth_chainspec::{ChainSpecProvider, EthChainSpec, EthereumHardforks};
 use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
-use reth_engine_tree::tree::instrumented_state::InstrumentedStateProvider;
+use reth_engine_tree::tree::{
+    cached_state::{CachedStateMetrics, CachedStateProvider, ExecutionCache},
+    instrumented_state::InstrumentedStateProvider,
+    precompile_cache::{CachedPrecompile, PrecompileCacheMap},
+    PayloadExecutionCache, SharedPreservedSparseTrie,
+};
 use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
     ConfigureEvm, Database, Evm, NextBlockEnvAttributes,
@@ -44,7 +49,7 @@ use std::{
     },
     time::Instant,
 };
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_chainspec::{TempoChainSpec, hardfork::{TempoHardfork, TempoHardforks}};
 use tempo_consensus::TEMPO_SHARED_GAS_DIVISOR;
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadBuilderAttributes};
@@ -70,6 +75,9 @@ fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> boo
     })
 }
 
+/// Default cross-block cache size (256 MB) used when no engine cache is available.
+const DEFAULT_CACHE_SIZE: u64 = 256 * 1024 * 1024;
+
 #[derive(Debug, Clone)]
 pub struct TempoPayloadBuilder<Provider> {
     pool: TempoTransactionPool<Provider>,
@@ -90,6 +98,12 @@ pub struct TempoPayloadBuilder<Provider> {
     state_provider_metrics: bool,
     /// Whether to disable state cache.
     disable_state_cache: bool,
+    /// Engine execution cache (Arc-backed, cheap to clone).
+    execution_cache: PayloadExecutionCache,
+    /// Engine precompile cache map (Arc-backed, cheap to clone).
+    precompile_cache_map: PrecompileCacheMap<TempoHardfork>,
+    /// Engine sparse trie (Arc-backed, cheap to clone).
+    sparse_trie: SharedPreservedSparseTrie,
 }
 
 impl<Provider> TempoPayloadBuilder<Provider> {
@@ -99,6 +113,9 @@ impl<Provider> TempoPayloadBuilder<Provider> {
         evm_config: TempoEvmConfig,
         state_provider_metrics: bool,
         disable_state_cache: bool,
+        execution_cache: PayloadExecutionCache,
+        precompile_cache_map: PrecompileCacheMap<TempoHardfork>,
+        sparse_trie: SharedPreservedSparseTrie,
     ) -> Self {
         Self {
             pool,
@@ -108,6 +125,9 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             highest_invalid_subblock: Default::default(),
             state_provider_metrics,
             disable_state_cache,
+            execution_cache,
+            precompile_cache_map,
+            sparse_trie,
         }
     }
 }
@@ -248,7 +268,22 @@ where
         } else {
             state_provider
         };
-        let state = StateProviderDatabase::new(&state_provider);
+
+        // Use engine execution cache if available for the parent block
+        let (caches, cache_metrics) =
+            if let Some(saved) = self.execution_cache.get_cache_for(parent_header.hash()) {
+                debug!("using engine execution cache for parent");
+                (saved.cache().clone(), saved.metrics().clone())
+            } else {
+                debug!("no engine execution cache available, using fresh cache");
+                (
+                    ExecutionCache::new(DEFAULT_CACHE_SIZE),
+                    CachedStateMetrics::zeroed(),
+                )
+            };
+        let cached_state =
+            CachedStateProvider::new(state_provider.as_ref(), caches, cache_metrics);
+        let state = StateProviderDatabase::new(&cached_state);
         let mut db = State::builder()
             .with_database(if self.disable_state_cache {
                 Box::new(state) as Box<dyn Database<Error = ProviderError>>
@@ -324,28 +359,46 @@ where
             })
             .collect();
 
+        let next_block_attrs = TempoNextBlockEnvAttributes {
+            inner: NextBlockEnvAttributes {
+                timestamp: attributes.timestamp(),
+                suggested_fee_recipient: attributes.suggested_fee_recipient(),
+                prev_randao: attributes.prev_randao(),
+                gas_limit: block_gas_limit,
+                parent_beacon_block_root: attributes.parent_beacon_block_root(),
+                withdrawals: Some(attributes.withdrawals().clone()),
+                extra_data: attributes.extra_data().clone(),
+            },
+            general_gas_limit,
+            shared_gas_limit,
+            timestamp_millis_part: attributes.timestamp_millis_part(),
+            subblock_fee_recipients,
+        };
+
+        // Get spec_id for precompile cache keying
+        let spec_id = *self
+            .evm_config
+            .next_evm_env(&parent_header, &next_block_attrs)
+            .map_err(PayloadBuilderError::other)?
+            .spec_id();
+
         let mut builder = self
             .evm_config
-            .builder_for_next_block(
-                &mut db,
-                &parent_header,
-                TempoNextBlockEnvAttributes {
-                    inner: NextBlockEnvAttributes {
-                        timestamp: attributes.timestamp(),
-                        suggested_fee_recipient: attributes.suggested_fee_recipient(),
-                        prev_randao: attributes.prev_randao(),
-                        gas_limit: block_gas_limit,
-                        parent_beacon_block_root: attributes.parent_beacon_block_root(),
-                        withdrawals: Some(attributes.withdrawals().clone()),
-                        extra_data: attributes.extra_data().clone(),
-                    },
-                    general_gas_limit,
-                    shared_gas_limit,
-                    timestamp_millis_part: attributes.timestamp_millis_part(),
-                    subblock_fee_recipients,
-                },
-            )
+            .builder_for_next_block(&mut db, &parent_header, next_block_attrs)
             .map_err(PayloadBuilderError::other)?;
+
+        // Wrap precompiles with caching
+        builder
+            .evm_mut()
+            .precompiles_mut()
+            .map_precompiles(|address, precompile| {
+                CachedPrecompile::wrap(
+                    precompile,
+                    self.precompile_cache_map.cache_for_address(*address),
+                    spec_id,
+                    None,
+                )
+            });
 
         builder.apply_pre_execution_changes().map_err(|err| {
             warn!(%err, "failed to apply pre-execution changes");
@@ -590,6 +643,9 @@ where
         self.metrics
             .total_transaction_execution_duration_seconds
             .record(total_transaction_execution_elapsed);
+
+        // Phase 2 stub: take the preserved sparse trie (not yet used for state root)
+        let _preserved = self.sparse_trie.take();
 
         let builder_finish_start = Instant::now();
         let _finish_span = debug_span!(target: "payload_builder", "finish_block").entered();
