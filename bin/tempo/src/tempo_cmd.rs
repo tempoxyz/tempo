@@ -169,10 +169,10 @@ impl ValidatorIdentityArgs {
     }
 }
 
-/// Shared arguments for commands that update the validator config contract.
+/// Either a pre-computed signature or a signing key to compute it from.
 #[derive(Debug, clap::Args)]
-#[command(group = clap::ArgGroup::new("sig_source").required(true).args(["signature", "signing_key"]))]
-pub(crate) struct ValidatorTransactionArgs {
+#[group(required = true, multiple = false)]
+pub(crate) struct SignatureArgs {
     /// A pre-computed ed25519 signature over the validator identity.
     #[arg(long, value_name = "SIGNATURE")]
     signature: Option<Bytes>,
@@ -181,6 +181,13 @@ pub(crate) struct ValidatorTransactionArgs {
     /// automatically so a separate `create-*-signature` step is not needed.
     #[arg(long, value_name = "FILE")]
     signing_key: Option<PathBuf>,
+}
+
+/// Shared arguments for commands that update the validator config contract.
+#[derive(Debug, clap::Args)]
+pub(crate) struct ValidatorTransactionArgs {
+    #[command(flatten)]
+    sig: SignatureArgs,
 
     /// Path to the file holding the Ethereum private key.
     #[arg(long, value_name = "FILE")]
@@ -234,8 +241,8 @@ impl AddValidator {
         let config = self.identity.to_config(chain_id);
 
         let signature = resolve_signature(
-            self.submit.signature,
-            self.submit.signing_key.as_deref(),
+            self.submit.sig.signature,
+            self.submit.sig.signing_key.as_deref(),
             VALIDATOR_NS_ADD,
             &config.add_validator_message_hash(self.fee_recipient),
         )?;
@@ -309,8 +316,8 @@ impl RotateValidator {
         let config = self.identity.to_config(chain_id);
 
         let signature = resolve_signature(
-            self.submit.signature,
-            self.submit.signing_key.as_deref(),
+            self.submit.sig.signature,
+            self.submit.sig.signing_key.as_deref(),
             VALIDATOR_NS_ROTATE,
             &config.rotate_validator_message_hash(),
         )?;
