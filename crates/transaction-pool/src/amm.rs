@@ -170,7 +170,7 @@ impl AmmLiquidityCache {
         }
     }
 
-    /// Processes a new block and record the validator's fee token used in the block.
+    /// Processes a new block and records the validator's fee token from on-chain state.
     pub fn on_new_block<P>(
         &self,
         header: &SealedHeader<impl BlockHeader>,
@@ -182,23 +182,12 @@ impl AmmLiquidityCache {
         let beneficiary = header.beneficiary();
         let validator_token_slot = TipFeeManager::new().validator_tokens[beneficiary].slot();
 
-        let cached_preference = self
-            .inner
-            .read()
-            .validator_preferences
-            .get(&beneficiary)
-            .copied();
-
-        let preference = if let Some(cached) = cached_preference {
-            cached
-        } else {
-            // If no cached preference, load from state
-            state
-                .state_by_block_hash(header.hash())?
-                .storage(TIP_FEE_MANAGER_ADDRESS, validator_token_slot.into())?
-                .unwrap_or_default()
-                .into_address()
-        };
+        // Always read from state at the block's hash to not miss preference updates.
+        let preference = state
+            .state_by_block_hash(header.hash())?
+            .storage(TIP_FEE_MANAGER_ADDRESS, validator_token_slot.into())?
+            .unwrap_or_default()
+            .into_address();
 
         // Get the actual fee token, accounting for defaults.
         let fee_token = if preference.is_zero() {
@@ -209,13 +198,11 @@ impl AmmLiquidityCache {
 
         let mut inner = self.inner.write();
 
-        // Track the new fee token preference, if any
-        if cached_preference.is_none() {
-            inner.validator_preferences.insert(beneficiary, preference);
-            inner
-                .slot_to_validator
-                .insert(validator_token_slot, beneficiary);
-        }
+        // Always update the cached preference with the state we just read.
+        inner.validator_preferences.insert(beneficiary, preference);
+        inner
+            .slot_to_validator
+            .insert(validator_token_slot, beneficiary);
 
         // Track the new observed fee token
         inner.last_seen_tokens.push_back(fee_token);
