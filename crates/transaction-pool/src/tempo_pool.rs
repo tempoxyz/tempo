@@ -186,7 +186,6 @@ where
         // For compound policies (TIP-1015), the cache stores all sub-policy IDs
         // so eviction matches events emitted with sub-policy IDs.
         let mut policy_cache: AddressMap<Vec<u64>> = AddressMap::default();
-        let mut recipient_policy_cache: AddressMap<Vec<u64>> = AddressMap::default();
 
         // Pre-collect policy IDs where TIP_FEE_MANAGER_ADDRESS (the fee recipient) was
         // blacklisted or un-whitelisted. This is constant across all txs so we compute
@@ -336,7 +335,7 @@ where
                 // transfer to TIP_FEE_MANAGER_ADDRESS would be rejected.
                 let recipient_evicted = !sender_evicted
                     && !fee_manager_blacklisted.is_empty()
-                    && get_recipient_policy_ids(provider, fee_token, &mut recipient_policy_cache)
+                    && get_recipient_policy_ids(provider, fee_token)
                         .is_some_and(|ids| fee_manager_blacklisted.iter().any(|p| ids.contains(p)));
 
                 if sender_evicted || recipient_evicted {
@@ -380,7 +379,7 @@ where
                 // token's recipient policy.
                 let recipient_evicted = !sender_evicted
                     && !fee_manager_unwhitelisted.is_empty()
-                    && get_recipient_policy_ids(provider, fee_token, &mut recipient_policy_cache)
+                    && get_recipient_policy_ids(provider, fee_token)
                         .is_some_and(|ids| {
                             fee_manager_unwhitelisted.iter().any(|p| ids.contains(p))
                         });
@@ -1189,15 +1188,13 @@ fn get_sender_policy_ids(
 /// sender and recipient, so the set contains just the policy ID. For compound policies
 /// (TIP-1015) it contains both the compound root and the recipient sub-policy, since
 /// fee transfer authorization checks the fee manager via `AuthRole::Recipient`.
+///
+/// Unlike `get_sender_policy_ids` this is uncached — it's only called on the rare path
+/// where the fee manager itself is blacklisted or un-whitelisted.
 fn get_recipient_policy_ids(
     provider: &mut impl StateProvider,
     fee_token: Address,
-    cache: &mut AddressMap<Vec<u64>>,
 ) -> Option<Vec<u64>> {
-    if let Some(cached) = cache.get(&fee_token) {
-        return Some(cached.clone());
-    }
-
     let spec = TempoHardfork::default();
     provider.with_read_only_storage_ctx(spec, || {
         let policy_id = TIP20Token::from_address(fee_token)
@@ -1207,7 +1204,6 @@ fn get_recipient_policy_ids(
 
         let mut ids = vec![policy_id];
 
-        // For compound policies, include only the recipient sub-policy ID.
         let registry = TIP403Registry::new();
         if let Ok(data) = registry.policy_records[policy_id].base.read()
             && data.is_compound()
@@ -1217,7 +1213,6 @@ fn get_recipient_policy_ids(
             ids.push(compound.recipient_policy_id);
         }
 
-        cache.insert(fee_token, ids.clone());
         Some(ids)
     })
 }
@@ -1523,9 +1518,7 @@ mod tests {
         );
 
         let mut state = provider.latest().unwrap();
-        let mut cache: AddressMap<Vec<u64>> = AddressMap::default();
-
-        let ids = get_recipient_policy_ids(&mut state, fee_token, &mut cache)
+        let ids = get_recipient_policy_ids(&mut state, fee_token)
             .expect("should resolve policy IDs");
 
         assert!(
@@ -1576,9 +1569,7 @@ mod tests {
         );
 
         let mut state = provider.latest().unwrap();
-        let mut cache: AddressMap<Vec<u64>> = AddressMap::default();
-
-        let ids = get_recipient_policy_ids(&mut state, fee_token, &mut cache)
+        let ids = get_recipient_policy_ids(&mut state, fee_token)
             .expect("should resolve policy IDs");
 
         assert_eq!(ids, vec![simple_policy_id]);
