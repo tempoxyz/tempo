@@ -46,5 +46,10 @@ pub(crate) fn all_invariants() -> Vec<Invariant> {
             description: "Flip tick constraints and remaining <= amount for all orders",
             check: flip_order::check_flip_orders,
         },
+        Invariant {
+            name: "cross_pair_isolation",
+            description: "Control pair remains untouched by operations on active pair",
+            check: cross_pair::check_cross_pair,
+        },
     ]
 }
