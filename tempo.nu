@@ -250,6 +250,28 @@ def write-bench-marker [bloat: int, accounts: int, datadir: string] {
 # Comparison mode helpers
 # ============================================================================
 
+# Ordered list of all Tempo hardforks (must match TempoHardfork enum in crates/chainspec)
+const TEMPO_HARDFORKS = ["T0" "T1" "T1A" "T1B" "T1C" "T2"]
+
+# Map a hardfork name to generate-genesis CLI args.
+# Forks up to and including the given fork are active at genesis (time=0).
+# Forks after are disabled (time=max u64).
+# Returns a list of CLI flag strings, e.g. ["--t0-time" "0" "--t1-time" "0" "--t1a-time" "18446744073709551615" ...]
+def hardfork-to-genesis-args [fork: string] {
+    let fork_upper = ($fork | str upcase)
+    let idx = ($TEMPO_HARDFORKS | enumerate | where item == $fork_upper)
+    if ($idx | length) == 0 {
+        print $"Error: unknown hardfork '($fork)'. Valid: ($TEMPO_HARDFORKS | str join ', ')"
+        exit 1
+    }
+    let cutoff = ($idx | get 0.index)
+    $TEMPO_HARDFORKS | enumerate | each { |it|
+        let flag = $"--($it.item | str downcase)-time"
+        let time = if $it.index <= $cutoff { "0" } else { "18446744073709551615" }
+        [$flag $time]
+    } | flatten
+}
+
 # Resolve a git ref to a full commit SHA
 def resolve-git-ref [ref: string] {
     git rev-parse $ref | str trim
@@ -1436,6 +1458,8 @@ def "main bench" [
     --tracy-seconds: int = 30                       # Tracy capture duration limit in seconds (0 = unlimited)
     --tracy-offset: int = 120                       # Seconds to wait before starting tracy capture (default: 120)
     --tracing-otlp: string = ""                     # OTLP endpoint for tracing (auto-derived from TEMPO_TELEMETRY_URL if not set)
+    --baseline-hardfork: string = ""                # Latest active hardfork for baseline (e.g. T1, T1C, T2)
+    --feature-hardfork: string = ""                 # Latest active hardfork for feature (e.g. T1, T1C, T2)
 ] {
     validate-mode $mode
 
@@ -1507,6 +1531,38 @@ def "main bench" [
         print "Error: --baseline and --feature must both be provided for comparison mode"
         exit 1
     }
+
+    # Reject --genesis in comparison mode (it's ambiguous — use --baseline-hardfork/--feature-hardfork instead)
+    if $genesis != "" and ($baseline != "" or $feature != "") {
+        print "Error: --genesis is not supported in comparison mode"
+        exit 1
+    }
+
+    # Validate hardfork flags (only valid in comparison mode)
+    if ($baseline_hardfork != "" or $feature_hardfork != "") and ($baseline == "" or $feature == "") {
+        print "Error: --baseline-hardfork and --feature-hardfork require comparison mode (--baseline + --feature)"
+        exit 1
+    }
+    if ($baseline_hardfork != "" or $feature_hardfork != "") and ($baseline_hardfork == "" or $feature_hardfork == "") {
+        print "Error: --baseline-hardfork and --feature-hardfork must both be provided"
+        exit 1
+    }
+    # Validate hardfork names
+    if $baseline_hardfork != "" {
+        let valid = ($TEMPO_HARDFORKS | any { |f| $f == ($baseline_hardfork | str upcase) })
+        if not $valid {
+            print $"Error: unknown baseline hardfork '($baseline_hardfork)'. Valid: ($TEMPO_HARDFORKS | str join ', ')"
+            exit 1
+        }
+    }
+    if $feature_hardfork != "" {
+        let valid = ($TEMPO_HARDFORKS | any { |f| $f == ($feature_hardfork | str upcase) })
+        if not $valid {
+            print $"Error: unknown feature hardfork '($feature_hardfork)'. Valid: ($TEMPO_HARDFORKS | str join ', ')"
+            exit 1
+        }
+    }
+    let dual_hardfork = $baseline_hardfork != "" and $feature_hardfork != ""
 
     if $baseline != "" and $feature != "" {
         # ================================================================
@@ -1600,7 +1656,6 @@ def "main bench" [
 
         # Determine paths (absolute for use inside worktree cd blocks)
         let abs_localnet = ($LOCALNET_DIR | path expand)
-        let genesis_path = $"($abs_localnet)/genesis.json"
         let bloat_file = $"($abs_localnet)/state_bloat.bin"
         let datadir = if $bench_datadir != "" {
             $bench_datadir
@@ -1615,87 +1670,224 @@ def "main bench" [
         # Mount schelk (or prepare for cp fallback)
         bench-mount
 
-        # Check if virgin snapshot matches requested config (skip expensive init)
-        let marker = (read-bench-marker)
-        let snapshot_ready = (
-            not $force
-            and $marker != null
-            and ($marker.bloat_mib | into int) == $bloat
-            and ($marker.accounts | into int) == $genesis_accounts
-            and ($"($datadir)/db" | path exists)
-            and ($"($meta_dir)/genesis.json" | path exists)
-        )
-
-        if $snapshot_ready {
-            # Copy genesis from volume to workspace (node needs --chain arg)
+        if $dual_hardfork {
+            # ============================================================
+            # Dual-hardfork mode: separate genesis + datadir per branch
+            # ============================================================
+            # Each branch gets its own genesis (with different fork activation
+            # times) and its own database subdirectory within the main datadir.
+            # Both subdirs are initialized and promoted as virgin snapshots
+            # inside the schelk volume, so `bench-recover` restores both at once.
             if not ($abs_localnet | path exists) { mkdir $abs_localnet }
-            cp $"($meta_dir)/genesis.json" $genesis_path
-            print $"Using cached virgin snapshot \(initialized ($marker.initialized_at)\)"
-        } else {
-            # Full init: generate genesis + bloat, init db, promote
 
-            # Generate genesis from baseline (if needed)
-            if not ($genesis_path | path exists) {
-                if not ($abs_localnet | path exists) { mkdir $abs_localnet }
-                print $"Generating genesis with ($genesis_accounts) accounts from baseline..."
+            let baseline_genesis_args = (hardfork-to-genesis-args $baseline_hardfork)
+            let feature_genesis_args = (hardfork-to-genesis-args $feature_hardfork)
+
+            let baseline_genesis_path = $"($abs_localnet)/genesis-baseline.json"
+            let feature_genesis_path = $"($abs_localnet)/genesis-feature.json"
+            let baseline_datadir = $"($datadir)/baseline-db"
+            let feature_datadir = $"($datadir)/feature-db"
+
+            # Check if dual-hardfork snapshot is cached
+            let marker = (read-bench-marker)
+            let snapshot_ready = (
+                not $force
+                and $marker != null
+                and ($marker.bloat_mib | into int) == $bloat
+                and ($marker.accounts | into int) == $genesis_accounts
+                and ($marker | get -o baseline_hardfork | default "") == ($baseline_hardfork | str upcase)
+                and ($marker | get -o feature_hardfork | default "") == ($feature_hardfork | str upcase)
+                and ($"($baseline_datadir)/db" | path exists)
+                and ($"($feature_datadir)/db" | path exists)
+                and ($"($meta_dir)/genesis-baseline.json" | path exists)
+                and ($"($meta_dir)/genesis-feature.json" | path exists)
+            )
+
+            if $snapshot_ready {
+                cp $"($meta_dir)/genesis-baseline.json" $baseline_genesis_path
+                cp $"($meta_dir)/genesis-feature.json" $feature_genesis_path
+                print $"Using cached dual-hardfork snapshot \(initialized ($marker.initialized_at)\)"
+            } else {
+                # Generate two genesis files with different hardfork schedules
+                print $"Generating baseline genesis \(latest fork: ($baseline_hardfork)\)..."
+                let baseline_genesis_dir = $"($abs_localnet)/genesis-baseline-dir"
+                if ($baseline_genesis_dir | path exists) { rm -rf $baseline_genesis_dir }
+                mkdir $baseline_genesis_dir
                 if $baseline == "local" {
-                    cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts --no-dkg-in-genesis
+                    cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $baseline_genesis_dir -a $genesis_accounts --no-dkg-in-genesis ...$baseline_genesis_args
                 } else {
                     do {
                         cd $baseline_wt
-                        cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts --no-dkg-in-genesis
+                        cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $baseline_genesis_dir -a $genesis_accounts --no-dkg-in-genesis ...$baseline_genesis_args
                     }
                 }
-            }
+                cp $"($baseline_genesis_dir)/genesis.json" $baseline_genesis_path
+                rm -rf $baseline_genesis_dir
 
-            # Generate bloat file from baseline (if needed)
-            if $bloat > 0 and not ($bloat_file | path exists) {
-                print $"Generating state bloat \(($bloat) MiB\) from baseline..."
-                let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-                if $baseline == "local" {
-                    cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+                print $"Generating feature genesis \(latest fork: ($feature_hardfork)\)..."
+                let feature_genesis_dir = $"($abs_localnet)/genesis-feature-dir"
+                if ($feature_genesis_dir | path exists) { rm -rf $feature_genesis_dir }
+                mkdir $feature_genesis_dir
+                if $feature == "local" {
+                    cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $feature_genesis_dir -a $genesis_accounts --no-dkg-in-genesis ...$feature_genesis_args
                 } else {
+                    # Use feature worktree for feature genesis so it picks up any
+                    # new hardfork-related genesis changes from the feature branch
                     do {
-                        cd $baseline_wt
+                        cd $feature_wt
+                        cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $feature_genesis_dir -a $genesis_accounts --no-dkg-in-genesis ...$feature_genesis_args
+                    }
+                }
+                cp $"($feature_genesis_dir)/genesis.json" $feature_genesis_path
+                rm -rf $feature_genesis_dir
+
+                # Generate bloat file (shared, fork-agnostic)
+                if $bloat > 0 and not ($bloat_file | path exists) {
+                    print $"Generating state bloat \(($bloat) MiB\)..."
+                    let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
+                    if $baseline == "local" {
                         cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+                    } else {
+                        do {
+                            cd $baseline_wt
+                            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+                        }
                     }
                 }
+
+                # Initialize both datadirs
+                for side in [
+                    { name: "baseline", genesis: $baseline_genesis_path, dd: $baseline_datadir, tempo: $baseline_tempo }
+                    { name: "feature", genesis: $feature_genesis_path, dd: $feature_datadir, tempo: $feature_tempo }
+                ] {
+                    # Clean existing data
+                    for subdir in [db static_files rocksdb consensus invalid_block_hooks] {
+                        let path = $"($side.dd)/($subdir)"
+                        if ($path | path exists) { rm -rf $path }
+                    }
+                    for file in [reth.toml jwt.hex] {
+                        let path = $"($side.dd)/($file)"
+                        if ($path | path exists) { rm $path }
+                    }
+
+                    print $"Initializing ($side.name) database at ($side.dd)..."
+                    mkdir $side.dd
+                    run-external $side.tempo "init" "--chain" $side.genesis "--datadir" $side.dd
+
+                    if $bloat > 0 {
+                        print $"Loading state bloat into ($side.name)..."
+                        run-external $side.tempo "init-from-binary-dump" "--chain" $side.genesis "--datadir" $side.dd $bloat_file | complete
+                    }
+                }
+
+                # Save genesis files to meta dir
+                mkdir $meta_dir
+                cp $baseline_genesis_path $"($meta_dir)/genesis-baseline.json"
+                cp $feature_genesis_path $"($meta_dir)/genesis-feature.json"
+                if $bloat > 0 and ($bloat_file | path exists) {
+                    cp $bloat_file $"($meta_dir)/state_bloat.bin"
+                }
+
+                # Promote entire volume (snapshots both baseline-db and feature-db)
+                bench-promote $datadir
+                bench-mount
+
+                # Write marker with hardfork info
+                let path = $"($env.HOME)/.tempo-bench-meta.json"
+                {
+                    bloat_mib: $bloat
+                    accounts: $genesis_accounts
+                    bench_datadir: $datadir
+                    baseline_hardfork: ($baseline_hardfork | str upcase)
+                    feature_hardfork: ($feature_hardfork | str upcase)
+                    initialized_at: (date now | format date "%Y-%m-%dT%H:%M:%SZ")
+                } | to json | save -f $path
+                print $"Bench marker written to ($path)"
+
+                print "Dual-hardfork databases initialized and promoted."
             }
+        } else {
+            # ============================================================
+            # Standard mode: single genesis + single datadir
+            # ============================================================
+            let genesis_path_std = $"($abs_localnet)/genesis.json"
 
-            # Clean database files (preserves mount point for schelk)
-            for subdir in [db static_files rocksdb consensus invalid_block_hooks] {
-                let path = $"($datadir)/($subdir)"
-                if ($path | path exists) { rm -rf $path }
+            let marker = (read-bench-marker)
+            let snapshot_ready = (
+                not $force
+                and $marker != null
+                and ($marker.bloat_mib | into int) == $bloat
+                and ($marker.accounts | into int) == $genesis_accounts
+                and ($"($datadir)/db" | path exists)
+                and ($"($meta_dir)/genesis.json" | path exists)
+            )
+
+            if $snapshot_ready {
+                if not ($abs_localnet | path exists) { mkdir $abs_localnet }
+                cp $"($meta_dir)/genesis.json" $genesis_path_std
+                print $"Using cached virgin snapshot \(initialized ($marker.initialized_at)\)"
+            } else {
+                # Full init: generate genesis + bloat, init db, promote
+                if not ($genesis_path_std | path exists) {
+                    if not ($abs_localnet | path exists) { mkdir $abs_localnet }
+                    print $"Generating genesis with ($genesis_accounts) accounts from baseline..."
+                    if $baseline == "local" {
+                        cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts --no-dkg-in-genesis
+                    } else {
+                        do {
+                            cd $baseline_wt
+                            cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts --no-dkg-in-genesis
+                        }
+                    }
+                }
+
+                if $bloat > 0 and not ($bloat_file | path exists) {
+                    print $"Generating state bloat \(($bloat) MiB\) from baseline..."
+                    let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
+                    if $baseline == "local" {
+                        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+                    } else {
+                        do {
+                            cd $baseline_wt
+                            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+                        }
+                    }
+                }
+
+                for subdir in [db static_files rocksdb consensus invalid_block_hooks] {
+                    let path = $"($datadir)/($subdir)"
+                    if ($path | path exists) { rm -rf $path }
+                }
+                for file in [reth.toml jwt.hex] {
+                    let path = $"($datadir)/($file)"
+                    if ($path | path exists) { rm $path }
+                }
+
+                print $"Initializing database at ($datadir)..."
+                run-external $baseline_tempo "init" "--chain" $genesis_path_std "--datadir" $datadir
+
+                if $bloat > 0 {
+                    print $"Loading state bloat into ($datadir)..."
+                    run-external $baseline_tempo "init-from-binary-dump" "--chain" $genesis_path_std "--datadir" $datadir $bloat_file | complete
+                }
+
+                mkdir $meta_dir
+                cp $genesis_path_std $"($meta_dir)/genesis.json"
+                if $bloat > 0 and ($bloat_file | path exists) {
+                    cp $bloat_file $"($meta_dir)/state_bloat.bin"
+                }
+
+                bench-promote $datadir
+                bench-mount
+
+                write-bench-marker $bloat $genesis_accounts $datadir
+
+                print "Database initialized and promoted to virgin baseline."
             }
-            for file in [reth.toml jwt.hex] {
-                let path = $"($datadir)/($file)"
-                if ($path | path exists) { rm $path }
-            }
-
-            print $"Initializing database at ($datadir)..."
-            run-external $baseline_tempo "init" "--chain" $genesis_path "--datadir" $datadir
-
-            if $bloat > 0 {
-                print $"Loading state bloat into ($datadir)..."
-                run-external $baseline_tempo "init-from-binary-dump" "--chain" $genesis_path "--datadir" $datadir $bloat_file | complete
-            }
-
-            # Save genesis + bloat to volume meta dir (survives schelk recover)
-            mkdir $meta_dir
-            cp $genesis_path $"($meta_dir)/genesis.json"
-            if $bloat > 0 and ($bloat_file | path exists) {
-                cp $bloat_file $"($meta_dir)/state_bloat.bin"
-            }
-
-            # Promote to virgin baseline
-            bench-promote $datadir
-            bench-mount
-
-            # Write marker
-            write-bench-marker $bloat $genesis_accounts $datadir
-
-            print "Database initialized and promoted to virgin baseline."
         }
+
+        # Resolve per-run genesis/datadir based on mode
+        let genesis_path = if $dual_hardfork { "" } else { $"($abs_localnet)/genesis.json" }
 
         # Start observability stack
         if not $no_infra {
@@ -1718,20 +1910,34 @@ def "main bench" [
         let reference_epoch = ((date now | into int) / 1_000_000_000 | into int)
         let samply_args_list = if $samply_args == "" { [] } else { $samply_args | split row " " }
 
-        let runs = [
-            { label: "baseline-1", tempo: $baseline_tempo, git_ref: $baseline_sha }
-            { label: "feature-1", tempo: $feature_tempo, git_ref: $feature_sha }
-            { label: "feature-2", tempo: $feature_tempo, git_ref: $feature_sha }
-            { label: "baseline-2", tempo: $baseline_tempo, git_ref: $baseline_sha }
-        ]
+        let runs = if $dual_hardfork {
+            [
+                { label: "baseline-1", tempo: $baseline_tempo, git_ref: $baseline_sha, genesis: $"($abs_localnet)/genesis-baseline.json", datadir: $"($datadir)/baseline-db" }
+                { label: "feature-1", tempo: $feature_tempo, git_ref: $feature_sha, genesis: $"($abs_localnet)/genesis-feature.json", datadir: $"($datadir)/feature-db" }
+                { label: "feature-2", tempo: $feature_tempo, git_ref: $feature_sha, genesis: $"($abs_localnet)/genesis-feature.json", datadir: $"($datadir)/feature-db" }
+                { label: "baseline-2", tempo: $baseline_tempo, git_ref: $baseline_sha, genesis: $"($abs_localnet)/genesis-baseline.json", datadir: $"($datadir)/baseline-db" }
+            ]
+        } else {
+            [
+                { label: "baseline-1", tempo: $baseline_tempo, git_ref: $baseline_sha, genesis: $genesis_path, datadir: $datadir }
+                { label: "feature-1", tempo: $feature_tempo, git_ref: $feature_sha, genesis: $genesis_path, datadir: $datadir }
+                { label: "feature-2", tempo: $feature_tempo, git_ref: $feature_sha, genesis: $genesis_path, datadir: $datadir }
+                { label: "baseline-2", tempo: $baseline_tempo, git_ref: $baseline_sha, genesis: $genesis_path, datadir: $datadir }
+            ]
+        }
 
         for run in $runs {
+            # bench-recover restores the entire schelk volume to the promoted
+            # virgin state. In dual-hardfork mode this resets both baseline-db
+            # and feature-db subdirs at once.
             bench-recover $datadir
-            run-bench-single $run.tempo $baseline_bench_bin $genesis_path $datadir $run.label $results_dir $tps $duration $accounts $max_concurrent_requests $weights $preset $bench_args $loud $node_args $bloat $run.git_ref $benchmark_id $reference_epoch $samply $samply_args_list $tracy $tracy_filter $tracy_seconds $tracy_offset $tracing_otlp
+            run-bench-single $run.tempo $baseline_bench_bin $run.genesis $run.datadir $run.label $results_dir $tps $duration $accounts $max_concurrent_requests $weights $preset $bench_args $loud $node_args $bloat $run.git_ref $benchmark_id $reference_epoch $samply $samply_args_list $tracy $tracy_filter $tracy_seconds $tracy_offset $tracing_otlp
         }
 
         # Generate summary report
-        generate-summary $results_dir $baseline $feature $bloat $preset $tps $duration --benchmark-id $benchmark_id --reference-epoch $reference_epoch
+        let baseline_label = if $dual_hardfork { $"($baseline) \(($baseline_hardfork | str upcase)\)" } else { $baseline }
+        let feature_label = if $dual_hardfork { $"($feature) \(($feature_hardfork | str upcase)\)" } else { $feature }
+        generate-summary $results_dir $baseline_label $feature_label $bloat $preset $tps $duration --benchmark-id $benchmark_id --reference-epoch $reference_epoch
 
         # Cleanup worktrees (only those we created)
         if $baseline != "local" or $feature != "local" {
