@@ -36,5 +36,10 @@ pub(crate) fn all_invariants() -> Vec<Invariant> {
             description: "Bitmap bit set iff tick has liquidity > 0 (TEMPO-DEX15)",
             check: bitmap::check_bitmap,
         },
+        Invariant {
+            name: "rounding_favors_protocol",
+            description: "round_up >= round_down and escrow(remaining) <= escrow(amount)",
+            check: rounding::check_rounding,
+        },
     ]
 }
