@@ -2,9 +2,9 @@
 use std::net::SocketAddr;
 
 use crate::{
-    generate_devnet::GenerateDevnet, generate_genesis::GenerateGenesis,
-    generate_localnet::GenerateLocalnet, generate_state_bloat::GenerateStateBloat,
-    get_dkg_outcome::GetDkgOutcome,
+    check_v1_migration::CheckV1Migration, generate_devnet::GenerateDevnet,
+    generate_genesis::GenerateGenesis, generate_localnet::GenerateLocalnet,
+    generate_state_bloat::GenerateStateBloat, get_dkg_outcome::GetDkgOutcome,
 };
 
 use alloy::signers::{local::MnemonicBuilder, utils::secret_key_to_address};
@@ -12,6 +12,7 @@ use clap::Parser as _;
 use commonware_codec::DecodeExt;
 use eyre::Context;
 
+mod check_v1_migration;
 mod generate_devnet;
 mod generate_genesis;
 mod generate_localnet;
@@ -23,6 +24,10 @@ mod get_dkg_outcome;
 async fn main() -> eyre::Result<()> {
     let args = Args::parse();
     match args.action {
+        Action::CheckV1Migration(args) => args
+            .run()
+            .await
+            .wrap_err("failed to check V1 migration"),
         Action::GetDkgOutcome(args) => args.run().await.wrap_err("failed to get DKG outcome"),
         Action::GenerateGenesis(args) => args.run().await.wrap_err("failed generating genesis"),
         Action::GenerateDevnet(args) => args
@@ -53,6 +58,7 @@ struct Args {
 
 #[derive(Debug, clap::Subcommand)]
 enum Action {
+    CheckV1Migration(CheckV1Migration),
     GetDkgOutcome(GetDkgOutcome),
     GenerateGenesis(GenerateGenesis),
     GenerateDevnet(GenerateDevnet),
