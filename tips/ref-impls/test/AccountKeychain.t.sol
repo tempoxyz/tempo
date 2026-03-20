@@ -10,6 +10,7 @@ import { BaseTest } from "./BaseTest.t.sol";
  * @dev These tests run against both the Solidity implementation (when !isTempo)
  *      and the Rust precompile (when isTempo).
  */
+/// forge-config: default.isolate = true
 contract AccountKeychainTest is BaseTest {
 
     // Using addresses for keyIds (derived from public keys)
