@@ -261,12 +261,6 @@ where
             if !updates.spending_limit_changes.is_empty()
                 && let Some(ref subject) = keychain_subject
                 && subject.matches_spending_limit_update(&updates.spending_limit_changes)
-                // Sponsored txs (fee payer != sender) don't consume sender spending limits.
-                && tx
-                    .transaction
-                    .inner()
-                    .fee_payer(tx.transaction.sender())
-                    .map_or(true, |fee_payer| fee_payer == tx.transaction.sender())
             {
                 to_remove.push(*tx.hash());
                 spending_limit_count += 1;
@@ -281,14 +275,6 @@ where
             if !updates.spending_limit_spends.is_empty()
                 && let Some(ref subject) = keychain_subject
                 && subject.matches_spending_limit_update(&updates.spending_limit_spends)
-                // Sponsored txs (fee payer != sender) don't consume sender spending limits.
-                // Keep this after the keychain-subject match to avoid unnecessary signature
-                // recovery for unrelated transactions.
-                && tx
-                    .transaction
-                    .inner()
-                    .fee_payer(tx.transaction.sender())
-                    .map_or(true, |fee_payer| fee_payer == tx.transaction.sender())
                 && let Some(ref mut provider) = state_provider
                 && exceeds_spending_limit(provider, subject, tx.transaction.fee_token_cost())
             {
