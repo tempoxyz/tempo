@@ -327,26 +327,25 @@ jobs:
           {
             echo "Automated nightly update of reth dependencies from \`paradigmxyz/reth\` main branch."
             echo ""
+
             if [ -n "$OLD_REV" ] && [ -n "$NEW_REV" ]; then
-              echo "**reth**: [\`${OLD_REV:0:7}...${NEW_REV:0:7}\`](https://github.com/paradigmxyz/reth/compare/${OLD_REV}...${NEW_REV})"
+              # Summarize upstream reth changes
+              echo "## Upstream reth changes"
+              echo ""
+              echo "[\`${OLD_REV:0:7}...${NEW_REV:0:7}\`](https://github.com/paradigmxyz/reth/compare/${OLD_REV}...${NEW_REV})"
               echo ""
 
-              # Summarize upstream reth changes
               RETH_LOG=$(gh api "repos/paradigmxyz/reth/compare/${OLD_REV}...${NEW_REV}" \
                 --jq '[.commits[] | "- " + (.commit.message | split("\n")[0])] | join("\n")' 2>/dev/null || true)
               if [ -n "$RETH_LOG" ]; then
-                echo "## Upstream reth changes"
-                echo ""
                 RETH_SUMMARY=$(echo "$RETH_LOG" | amp-run -x "Summarize these upstream reth commit messages into a concise markdown bullet list \
-                  grouped by area (e.g. engine, rpc, trie, db, perf, testing, etc). \
+                  grouped by area (e.g. Engine, RPC, Trie, DB, Perf, Bench, Testing). Use bold **Area** headers. \
                   Merge related commits into single bullets. Skip CI/doc-only changes unless significant. \
                   Do NOT include any preamble or explanation, just the grouped bullet list.")
                 echo "$RETH_SUMMARY"
                 echo ""
               fi
             fi
-            echo "**Workflow Run**: [link](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
-            echo ""
 
             # Summarize source migrations using Amp
             SOURCE_DIFF=$(git diff origin/main -- '*.rs' '*.toml' ':!Cargo.lock' 2>/dev/null || true)
@@ -357,7 +356,10 @@ jobs:
                 Each bullet should describe what was migrated and why (e.g. API rename, parameter change, removed method). \
                 Do NOT include any preamble or explanation, just the bullet list.")
               echo "$SUMMARY"
+              echo ""
             fi
+
+            echo "[GitHub Workflow](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
           } > /tmp/pr-body.txt
 
           # Skip PR if there are no commits between the branches
