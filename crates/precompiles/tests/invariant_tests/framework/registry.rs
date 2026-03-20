@@ -31,5 +31,10 @@ pub(crate) fn all_invariants() -> Vec<Invariant> {
             description: "best_bid/ask is the actual best tick with liquidity (TEMPO-DEX12/13)",
             check: best_tick::check_best_ticks,
         },
+        Invariant {
+            name: "bitmap_consistency",
+            description: "Bitmap bit set iff tick has liquidity > 0 (TEMPO-DEX15)",
+            check: bitmap::check_bitmap,
+        },
     ]
 }
