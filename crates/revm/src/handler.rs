@@ -232,6 +232,13 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
         let ctx = evm.ctx_mut();
 
         self.fee_payer = ctx.tx.fee_payer()?;
+        if ctx.cfg.spec.is_t2()
+            && ctx.tx.has_fee_payer_signature()
+            && self.fee_payer == ctx.tx.caller()
+        {
+            return Err(TempoInvalidTransaction::SelfSponsoredFeePayer.into());
+        }
+
         self.fee_token = ctx
             .journaled_state
             .get_fee_token(&ctx.tx, self.fee_payer, ctx.cfg.spec)
@@ -1823,6 +1830,79 @@ mod tests {
             ),
             "Should reject invalid fee token with InvalidFeeToken error"
         );
+    }
+
+    #[test]
+    fn test_self_sponsored_fee_payer_rejected_post_t2() {
+        let caller = Address::random();
+        let invalid_token = Address::random();
+
+        let mut handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::default();
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T2;
+
+        let tx_env = TempoTxEnv {
+            inner: revm::context::TxEnv {
+                caller,
+                ..Default::default()
+            },
+            fee_token: Some(invalid_token),
+            fee_payer: Some(Some(caller)),
+            ..Default::default()
+        };
+
+        let mut evm: TempoEvm<CacheDB<EmptyDB>, ()> = TempoEvm::new(
+            Context::mainnet()
+                .with_db(CacheDB::new(EmptyDB::default()))
+                .with_block(TempoBlockEnv::default())
+                .with_cfg(cfg)
+                .with_tx(tx_env),
+            (),
+        );
+
+        let result = handler.load_fee_fields(&mut evm);
+        assert!(matches!(
+            result,
+            Err(EVMError::Transaction(
+                TempoInvalidTransaction::SelfSponsoredFeePayer
+            ))
+        ));
+    }
+
+    #[test]
+    fn test_self_sponsored_fee_payer_not_rejected_pre_t2() {
+        let caller = Address::random();
+        let invalid_token = Address::random();
+
+        let mut handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::default();
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T1C;
+
+        let tx_env = TempoTxEnv {
+            inner: revm::context::TxEnv {
+                caller,
+                ..Default::default()
+            },
+            fee_token: Some(invalid_token),
+            fee_payer: Some(Some(caller)),
+            ..Default::default()
+        };
+
+        let mut evm: TempoEvm<CacheDB<EmptyDB>, ()> = TempoEvm::new(
+            Context::mainnet()
+                .with_db(CacheDB::new(EmptyDB::default()))
+                .with_block(TempoBlockEnv::default())
+                .with_cfg(cfg)
+                .with_tx(tx_env),
+            (),
+        );
+
+        let result = handler.load_fee_fields(&mut evm);
+        assert!(matches!(
+            result,
+            Err(EVMError::Transaction(TempoInvalidTransaction::InvalidFeeToken(addr)))
+                if addr == invalid_token
+        ));
     }
 
     #[test]

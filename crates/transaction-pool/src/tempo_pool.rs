@@ -273,15 +273,9 @@ where
             // from state for affected (account, key_id, fee_token) combos and evict if
             // the pending tx's fee cost now exceeds the remaining limit.
             if !updates.spending_limit_spends.is_empty()
-                // NOTE: sponsored txs don't consume the sender's key limits.
-                && tx
-                    .transaction
-                    .inner()
-                    .as_aa()
-                    .is_none_or(|aa| aa.tx().fee_payer_signature.is_none())
-                && let Some(ref mut provider) = state_provider
                 && let Some(ref subject) = keychain_subject
                 && subject.matches_spending_limit_update(&updates.spending_limit_spends)
+                && let Some(ref mut provider) = state_provider
                 && exceeds_spending_limit(provider, subject, tx.transaction.fee_token_cost())
             {
                 to_remove.push(*tx.hash());

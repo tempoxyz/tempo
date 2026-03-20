@@ -100,6 +100,11 @@ impl TempoTxEnv {
         }
     }
 
+    /// Returns true if transaction carries a fee payer signature.
+    pub fn has_fee_payer_signature(&self) -> bool {
+        self.fee_payer.is_some()
+    }
+
     /// Returns true if the transaction is a subblock transaction.
     pub fn is_subblock_transaction(&self) -> bool {
         self.tempo_tx_env
@@ -406,7 +411,7 @@ mod tests {
     use alloy_evm::FromRecoveredTx;
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
     use proptest::prelude::*;
-    use revm::context::{Transaction, result::InvalidTransaction};
+    use revm::context::{Transaction, TxEnv, result::InvalidTransaction};
     use tempo_primitives::transaction::{
         Call, calc_gas_balance_spending,
         tempo_transaction::TEMPO_EXPIRING_NONCE_KEY,
@@ -415,7 +420,7 @@ mod tests {
         validate_calls,
     };
 
-    use crate::TempoTxEnv;
+    use crate::{TempoInvalidTransaction, TempoTxEnv};
 
     fn create_call(to: TxKind) -> Call {
         Call {
@@ -551,6 +556,64 @@ mod tests {
         assert!(!tx_env.is_system_tx);
         assert!(tx_env.fee_payer.is_none());
         assert!(tx_env.tempo_tx_env.is_none());
+    }
+
+    #[test]
+    fn test_fee_payer_without_signature_uses_caller() {
+        let caller = Address::repeat_byte(0xAB);
+        let tx_env = super::TempoTxEnv {
+            inner: TxEnv {
+                caller,
+                ..Default::default()
+            },
+            fee_payer: None,
+            ..Default::default()
+        };
+
+        assert_eq!(tx_env.fee_payer(), Ok(caller));
+    }
+
+    #[test]
+    fn test_fee_payer_invalid_signature_rejected() {
+        let tx_env = super::TempoTxEnv {
+            fee_payer: Some(None),
+            ..Default::default()
+        };
+
+        assert!(matches!(
+            tx_env.fee_payer(),
+            Err(TempoInvalidTransaction::InvalidFeePayerSignature)
+        ));
+    }
+
+    #[test]
+    fn test_fee_payer_resolving_to_sender_is_allowed_in_tx_env() {
+        let caller = Address::repeat_byte(0xAB);
+        let tx_env = super::TempoTxEnv {
+            inner: TxEnv {
+                caller,
+                ..Default::default()
+            },
+            fee_payer: Some(Some(caller)),
+            ..Default::default()
+        };
+
+        assert_eq!(tx_env.fee_payer(), Ok(caller));
+    }
+
+    #[test]
+    fn test_has_fee_payer_signature() {
+        let without_sig = super::TempoTxEnv {
+            fee_payer: None,
+            ..Default::default()
+        };
+        assert!(!without_sig.has_fee_payer_signature());
+
+        let with_sig = super::TempoTxEnv {
+            fee_payer: Some(Some(Address::repeat_byte(0xAB))),
+            ..Default::default()
+        };
+        assert!(with_sig.has_fee_payer_signature());
     }
 
     #[test]
