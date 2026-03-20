@@ -169,8 +169,26 @@ fn init_txpool_defaults() {
         .expect("failed to initialize txpool defaults");
 }
 
+fn init_otlp_defaults() {
+    // Override the default OTLP max queue size (2048) to prevent trace/log dropping under load.
+    // See also reth-bench-compare which uses the same approach via env vars.
+    if std::env::var_os("OTEL_BSP_MAX_QUEUE_SIZE").is_none() {
+        // SAFETY: Must be called at startup before any other threads are spawned
+        unsafe {
+            std::env::set_var("OTEL_BSP_MAX_QUEUE_SIZE", "65536");
+        }
+    }
+    if std::env::var_os("OTEL_BLRP_MAX_QUEUE_SIZE").is_none() {
+        // SAFETY: Must be called at startup before any other threads are spawned
+        unsafe {
+            std::env::set_var("OTEL_BLRP_MAX_QUEUE_SIZE", "65536");
+        }
+    }
+}
+
 pub(crate) fn init_defaults() {
     init_download_urls();
     init_payload_builder_defaults();
     init_txpool_defaults();
+    init_otlp_defaults();
 }
