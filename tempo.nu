@@ -1979,7 +1979,7 @@ def "main bench" [
         }
 
         # Load the saved config and run B-F-F-B passes
-        let bench_cfg = (open $config_path | from json)
+        let bench_cfg = (open $config_path)
         for run in $runs {
             do-bench-run $bench_cfg $run.label
         }
@@ -2165,7 +2165,7 @@ def "main bench-run-single" [
     --config: string                                # Path to bench-config.json from bench --setup-only
     --label: string                                 # Run label: baseline-1, feature-1, feature-2, baseline-2
 ] {
-    let cfg = (open $config | from json)
+    let cfg = (open $config)
     do-bench-run $cfg $label
 }
 
@@ -2173,7 +2173,7 @@ def "main bench-run-single" [
 def "main bench-finalize" [
     --config: string                                # Path to bench-config.json from bench --setup-only
 ] {
-    let cfg = (open $config | from json)
+    let cfg = (open $config)
     do-bench-finalize $cfg
     print $"\nBenchmark finalized! Results: ($cfg.results_dir)/"
 }
