@@ -114,6 +114,7 @@ jemalloc = [
 	"reth-ethereum/jemalloc",
 	"reth-node-core/jemalloc",
 	"reth-node-metrics/jemalloc",
+	"reth-provider/jemalloc",
 ]
 jemalloc-prof = [
 	"reth-ethereum/jemalloc-prof",
