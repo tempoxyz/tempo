@@ -226,7 +226,9 @@ impl super::types::TestEnv for RpcEnv {
             .await;
 
         match result {
-            Ok(_) => panic!("Transaction should be rejected, but was accepted"),
+            Ok(_) => Err(eyre::eyre!(
+                "Transaction should be rejected, but was accepted"
+            )),
             Err(RpcError::Transport(_)) => {
                 // Transport error that persisted through all retries — not a
                 // real rejection, so we must not count it as a test pass.

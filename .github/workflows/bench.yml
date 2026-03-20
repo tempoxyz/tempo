@@ -64,6 +64,16 @@ on:
         required: false
         default: "120"
         type: string
+      baseline-hardfork:
+        description: "Latest active hardfork for baseline (e.g. T1, T1C, T2). Empty = all forks active"
+        required: false
+        default: ""
+        type: string
+      feature-hardfork:
+        description: "Latest active hardfork for feature (e.g. T1, T1C, T2). Empty = all forks active"
+        required: false
+        default: ""
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -98,6 +108,8 @@ jobs:
       tracy: ${{ steps.args.outputs.tracy }}
       tracy-seconds: ${{ steps.args.outputs.tracy-seconds }}
       tracy-offset: ${{ steps.args.outputs.tracy-offset }}
+      baseline-hardfork: ${{ steps.args.outputs.baseline-hardfork }}
+      feature-hardfork: ${{ steps.args.outputs.feature-hardfork }}
       comment-id: ${{ steps.ack.outputs.comment-id }}
     steps:
       - name: Check org membership
@@ -125,7 +137,7 @@ jobs:
         with:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |
-            let pr, actor, preset, duration, bloat, tps, baseline, feature, samply, tracy, tracySeconds, tracyOffset;
+            let pr, actor, preset, duration, bloat, tps, baseline, feature, samply, tracy, tracySeconds, tracyOffset, baselineHardfork, featureHardfork;
 
             if (context.eventName === 'workflow_dispatch') {
               actor = '${{ github.actor }}';
@@ -139,6 +151,8 @@ jobs:
               tracy = '${{ github.event.inputs.tracy }}' || 'off';
               tracySeconds = '${{ github.event.inputs.tracy-seconds }}' || '30';
               tracyOffset = '${{ github.event.inputs.tracy-offset }}' || '120';
+              baselineHardfork = '${{ github.event.inputs.baseline-hardfork }}' || '';
+              featureHardfork = '${{ github.event.inputs.feature-hardfork }}' || '';
 
               // Find PR for the selected branch
               const branch = '${{ github.ref_name }}';
@@ -160,9 +174,9 @@ jobs:
               const body = context.payload.comment.body.trim();
               const intArgs = new Set(['duration', 'bloat', 'tps', 'tracy-seconds', 'tracy-offset']);
               const refArgs = new Set(['baseline', 'feature']);
-              const stringArgs = new Set(['preset', 'tracy']);
+              const stringArgs = new Set(['preset', 'tracy', 'baseline-hardfork', 'feature-hardfork']);
               const boolArgs = new Set(['samply']);
-              const defaults = { preset: 'tip20', duration: '300', bloat: '1024', tps: '10000', baseline: '', feature: '', samply: 'false', tracy: 'off', 'tracy-seconds': '30', 'tracy-offset': '120' };
+              const defaults = { preset: 'tip20', duration: '300', bloat: '1024', tps: '10000', baseline: '', feature: '', samply: 'false', tracy: 'off', 'tracy-seconds': '30', 'tracy-offset': '120', 'baseline-hardfork': '', 'feature-hardfork': '' };
               const unknown = [];
               const invalid = [];
               const args = body.replace(/^(?:@decofe|derek) bench\s*/, '');
@@ -204,7 +218,7 @@ jobs:
               if (unknown.length) errors.push(`Unknown argument(s): \`${unknown.join('`, `')}\``);
               if (invalid.length) errors.push(`Invalid value(s): ${invalid.join(', ')}`);
               if (errors.length) {
-                const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N]\``;
+                const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-hardfork=FORK] [feature-hardfork=FORK]\``;
                 await github.rest.issues.createComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
@@ -224,11 +238,15 @@ jobs:
               tracy = defaults.tracy;
               tracySeconds = defaults['tracy-seconds'];
               tracyOffset = defaults['tracy-offset'];
+              baselineHardfork = defaults['baseline-hardfork'];
+              featureHardfork = defaults['feature-hardfork'];
             }
+
+            const usageStr = '**Usage:** `@decofe bench [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-hardfork=FORK] [feature-hardfork=FORK]`';
 
             // Validate tracy value
             if (!['off', 'on', 'full'].includes(tracy)) {
-              const msg = `❌ **Invalid bench command**\n\n\`tracy=${tracy}\` is not valid. Must be \`off\`, \`on\`, or \`full\`.\n\n**Usage:** \`@decofe bench [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N]\``;
+              const msg = `❌ **Invalid bench command**\n\n\`tracy=${tracy}\` is not valid. Must be \`off\`, \`on\`, or \`full\`.\n\n${usageStr}`;
               if (context.eventName === 'issue_comment') {
                 await github.rest.issues.createComment({
                   owner: context.repo.owner,
@@ -254,6 +272,27 @@ jobs:
               }
               core.setFailed(msg);
               return;
+            }
+
+            // Validate hardfork flags: must both be provided or both empty
+            const validForks = ['T0', 'T1', 'T1A', 'T1B', 'T1C', 'T2'];
+            if ((baselineHardfork && !featureHardfork) || (!baselineHardfork && featureHardfork)) {
+              const msg = '❌ **Invalid bench command**\n\n`baseline-hardfork` and `feature-hardfork` must both be provided.';
+              if (context.eventName === 'issue_comment') {
+                await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number, body: msg });
+              }
+              core.setFailed(msg);
+              return;
+            }
+            for (const [name, val] of [['baseline-hardfork', baselineHardfork], ['feature-hardfork', featureHardfork]]) {
+              if (val && !validForks.includes(val.toUpperCase())) {
+                const msg = `❌ **Invalid bench command**\n\n\`${name}=${val}\` is not valid. Must be one of: ${validForks.join(', ')}.\n\n${usageStr}`;
+                if (context.eventName === 'issue_comment') {
+                  await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number, body: msg });
+                }
+                core.setFailed(msg);
+                return;
+              }
             }
 
             // Resolve display names for baseline/feature
@@ -286,6 +325,8 @@ jobs:
             core.setOutput('tracy', tracy);
             core.setOutput('tracy-seconds', tracySeconds);
             core.setOutput('tracy-offset', tracyOffset);
+            core.setOutput('baseline-hardfork', baselineHardfork || '');
+            core.setOutput('feature-hardfork', featureHardfork || '');
 
       - name: Acknowledge request
         id: ack
@@ -318,7 +359,10 @@ jobs:
             const samplyNote = samply ? ', samply: `enabled`' : '';
             const tracy = '${{ steps.args.outputs.tracy }}';
             const tracyNote = tracy !== 'off' ? `, tracy: \`${tracy}\`` : '';
-            const config = `**Config:** preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} MiB\`, tps: \`${tps}\`, baseline: \`${baseline}\`, feature: \`${feature}\`${samplyNote}${tracyNote}`;
+            const bHf = '${{ steps.args.outputs.baseline-hardfork }}';
+            const fHf = '${{ steps.args.outputs.feature-hardfork }}';
+            const hfNote = bHf ? `, baseline-hardfork: \`${bHf}\`, feature-hardfork: \`${fHf}\`` : '';
+            const config = `**Config:** preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} MiB\`, tps: \`${tps}\`, baseline: \`${baseline}\`, feature: \`${feature}\`${samplyNote}${tracyNote}${hfNote}`;
 
             const { data: comment } = await github.rest.issues.createComment({
               owner: context.repo.owner,
@@ -344,6 +388,8 @@ jobs:
       BENCH_TRACY: ${{ needs.tempo-bench-ack.outputs.tracy }}
       BENCH_TRACY_SECONDS: ${{ needs.tempo-bench-ack.outputs.tracy-seconds }}
       BENCH_TRACY_OFFSET: ${{ needs.tempo-bench-ack.outputs.tracy-offset }}
+      BENCH_BASELINE_HARDFORK: ${{ needs.tempo-bench-ack.outputs.baseline-hardfork }}
+      BENCH_FEATURE_HARDFORK: ${{ needs.tempo-bench-ack.outputs.feature-hardfork }}
       BENCH_COMMENT_ID: ${{ needs.tempo-bench-ack.outputs.comment-id }}
       TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
       GRAFANA_TEMPO: ${{ secrets.GRAFANA_TEMPO }}
@@ -416,7 +462,10 @@ jobs:
             const samplyNote = samply ? ', samply: `enabled`' : '';
             const tracy = '${{ needs.tempo-bench-ack.outputs.tracy }}';
             const tracyNote = tracy !== 'off' ? `, tracy: \`${tracy}\`` : '';
-            core.exportVariable('BENCH_CONFIG', `**Config:** preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} MiB\`, tps: \`${tps}\`, baseline: \`${baseline}\`, feature: \`${feature}\`${samplyNote}${tracyNote}`);
+            const bHf2 = process.env.BENCH_BASELINE_HARDFORK || '';
+            const fHf2 = process.env.BENCH_FEATURE_HARDFORK || '';
+            const hfNote2 = bHf2 ? `, baseline-hardfork: \`${bHf2}\`, feature-hardfork: \`${fHf2}\`` : '';
+            core.exportVariable('BENCH_CONFIG', `**Config:** preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} MiB\`, tps: \`${tps}\`, baseline: \`${baseline}\`, feature: \`${feature}\`${samplyNote}${tracyNote}${hfNote2}`);
 
             const { buildBody } = require('./.github/scripts/bench-update-status.js');
             await github.rest.issues.updateComment({
@@ -523,7 +572,8 @@ jobs:
             --bench-datadir /reth-bench \
             --tune \
             $([ "$BENCH_SAMPLY" = "true" ] && echo "--samply" || true) \
-            $([ "$BENCH_TRACY" != "off" ] && echo "--tracy $BENCH_TRACY --tracy-seconds $BENCH_TRACY_SECONDS --tracy-offset $BENCH_TRACY_OFFSET" || true)
+            $([ "$BENCH_TRACY" != "off" ] && echo "--tracy $BENCH_TRACY --tracy-seconds $BENCH_TRACY_SECONDS --tracy-offset $BENCH_TRACY_OFFSET" || true) \
+            $([ -n "$BENCH_BASELINE_HARDFORK" ] && echo "--baseline-hardfork $BENCH_BASELINE_HARDFORK --feature-hardfork $BENCH_FEATURE_HARDFORK" || true)
 
       - name: Find results directory
         id: results-dir
