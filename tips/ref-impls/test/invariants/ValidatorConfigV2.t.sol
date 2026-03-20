@@ -1338,8 +1338,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
             uint256 activeIdx = 0;
             for (uint256 j = 0; j < vals.length; j++) {
                 if (vals[j].validatorAddress == addr && vals[j].deactivatedAtHeight == 0) {
-                    hasActive = true;
-                    activeIdx = j;
+                    (hasActive, activeIdx) = (true, j);
                     break;
                 }
             }
@@ -1459,15 +1458,15 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
             // If rotated, the original pubkey must exist in a deactivated snapshot.
             // Verify via pubkey lookup — the contract keeps all pubkeys forever.
-            IValidatorConfigV2.Validator memory looked =
+            IValidatorConfigV2.Validator memory snapshotVal =
                 validatorConfigV2.validatorByPublicKey(v1Vals[v1Idx].publicKey);
             assertEq(
-                looked.publicKey,
+                snapshotVal.publicKey,
                 v1Vals[v1Idx].publicKey,
                 "TEMPO-VALV2-24: Migrated pubkey must still exist in V2 (possibly as snapshot)"
             );
             assertTrue(
-                looked.deactivatedAtHeight != 0,
+                snapshotVal.deactivatedAtHeight != 0,
                 "TEMPO-VALV2-24: Rotated-out migrated pubkey must be in a deactivated snapshot"
             );
         }
@@ -1480,19 +1479,23 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     function afterInvariant() public {
         // Deactivate all active validators, track first deactivated index
         uint64 firstDeactivatedIdx = type(uint64).max;
-        for (uint256 i = 0; i < _ghostTotalCount; i++) {
-            // forge-lint: disable-next-line(unsafe-typecast)
-            uint64 idx = uint64(i);
-            if (_ghostDeactivatedAtHeight[idx] == 0) {
+        for (uint64 i = 0; i < _ghostTotalCount; i++) {
+            if (_ghostDeactivatedAtHeight[i] == 0) {
                 vm.startPrank(_ghostOwner);
-                try validatorConfigV2.deactivateValidator(idx) {
+                try validatorConfigV2.deactivateValidator(i) {
                     vm.stopPrank();
-                    _ghostDeactivatedAtHeight[idx] = uint64(block.number);
-                    delete _ghostAddressInUse[_ghostAddress[idx]];
-                    delete _ghostActiveIngressIpHashes[keccak256(bytes(_ghostIngress[idx]))];
-                    if (firstDeactivatedIdx == type(uint64).max) firstDeactivatedIdx = idx;
-                } catch {
+                    _ghostDeactivatedAtHeight[i] = uint64(block.number);
+                    delete _ghostAddressInUse[_ghostAddress[i]];
+                    delete _ghostActiveIngressIpHashes[keccak256(bytes(_ghostIngress[i]))];
+                    if (firstDeactivatedIdx == type(uint64).max) firstDeactivatedIdx = i;
+                } catch (bytes memory reason) {
                     vm.stopPrank();
+                    fail(
+                        string.concat(
+                            "TEMPO-VALV2-TEARDOWN: deactivateValidator reverted for active validator: ",
+                            vm.toString(reason)
+                        )
+                    );
                 }
             }
         }
