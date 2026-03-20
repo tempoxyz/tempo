@@ -283,7 +283,7 @@ impl ReferenceStateMachine for DexRefState {
                     state.partially_filled[0] = true;
                 }
                 for balance in &mut state.internal_balances {
-                    *balance = balance.saturating_add(MIN_ORDER_AMOUNT); 
+                    *balance = balance.saturating_add(MIN_ORDER_AMOUNT);
                 }
             }
             DexTransition::Withdraw {
