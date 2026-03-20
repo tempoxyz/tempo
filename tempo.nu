@@ -1460,6 +1460,7 @@ def "main bench" [
     --tracing-otlp: string = ""                     # OTLP endpoint for tracing (auto-derived from TEMPO_TELEMETRY_URL if not set)
     --baseline-hardfork: string = ""                # Latest active hardfork for baseline (e.g. T1, T1C, T2)
     --feature-hardfork: string = ""                 # Latest active hardfork for feature (e.g. T1, T1C, T2)
+    --setup-only                                    # Exit after setup (build + init), saving config for bench-run-single
 ] {
     validate-mode $mode
 
@@ -1926,6 +1927,57 @@ def "main bench" [
             ]
         }
 
+        # Save bench config for use by bench-run-single / bench-finalize
+        let abs_runs = ($runs | each { |r| {
+            label: $r.label
+            tempo: ($r.tempo | path expand)
+            git_ref: $r.git_ref
+            genesis: $r.genesis
+            datadir: $r.datadir
+        }})
+        let bench_config = {
+            results_dir: ($results_dir | path expand)
+            datadir: $datadir
+            benchmark_id: $benchmark_id
+            reference_epoch: $reference_epoch
+            preset: $preset
+            tps: $tps
+            duration: $duration
+            accounts: $accounts
+            max_concurrent_requests: $max_concurrent_requests
+            weights: $weights
+            bench_args: $bench_args
+            loud: $loud
+            node_args: $node_args
+            bloat: $bloat
+            samply: $samply
+            samply_args: $samply_args_list
+            tracy: $tracy
+            tracy_filter: $tracy_filter
+            tracy_seconds: $tracy_seconds
+            tracy_offset: $tracy_offset
+            tracing_otlp: $tracing_otlp
+            baseline_sha: $baseline_sha
+            feature_sha: $feature_sha
+            baseline: $baseline
+            feature: $feature
+            baseline_hardfork: $baseline_hardfork
+            feature_hardfork: $feature_hardfork
+            dual_hardfork: $dual_hardfork
+            runs: $abs_runs
+            baseline_bench_bin: ($baseline_bench_bin | path expand)
+            no_infra: $no_infra
+        }
+        let config_path = $"($results_dir)/bench-config.json"
+        $bench_config | to json | save -f $config_path
+        print $"BENCH_CONFIG_PATH=($config_path)"
+
+        if $setup_only {
+            print "Setup complete. Use 'bench-run-single' to run individual passes."
+            restore-system-tuning $tuning_state
+            return
+        }
+
         for run in $runs {
             # bench-recover restores the entire schelk volume to the promoted
             # virgin state. In dual-hardfork mode this resets both baseline-db
@@ -2091,6 +2143,71 @@ def "main bench" [
 
     restore-system-tuning $tuning_state
     print "Done."
+}
+
+# Run a single benchmark pass (used by CI to split B-F-F-B into separate steps)
+def "main bench-run-single" [
+    --config: string                                # Path to bench-config.json from bench --setup-only
+    --label: string                                 # Run label: baseline-1, feature-1, feature-2, baseline-2
+] {
+    let cfg = (open $config | from json)
+    let matched = ($cfg.runs | where label == $label)
+    if ($matched | length) == 0 {
+        print $"Error: unknown run label '($label)'. Valid: ($cfg.runs | get label | str join ', ')"
+        exit 1
+    }
+    let run = ($matched | first)
+
+    bench-recover $cfg.datadir
+    run-bench-single $run.tempo $cfg.baseline_bench_bin $run.genesis $run.datadir $run.label $cfg.results_dir $cfg.tps $cfg.duration $cfg.accounts $cfg.max_concurrent_requests $cfg.weights $cfg.preset $cfg.bench_args $cfg.loud $cfg.node_args $cfg.bloat $run.git_ref $cfg.benchmark_id $cfg.reference_epoch $cfg.samply $cfg.samply_args $cfg.tracy $cfg.tracy_filter $cfg.tracy_seconds $cfg.tracy_offset $cfg.tracing_otlp
+}
+
+# Generate summary report after all bench runs complete
+def "main bench-finalize" [
+    --config: string                                # Path to bench-config.json from bench --setup-only
+] {
+    let cfg = (open $config | from json)
+
+    let baseline_label = if $cfg.dual_hardfork { $"($cfg.baseline) \(($cfg.baseline_hardfork | str upcase)\)" } else { $cfg.baseline }
+    let feature_label = if $cfg.dual_hardfork { $"($cfg.feature) \(($cfg.feature_hardfork | str upcase)\)" } else { $cfg.feature }
+    generate-summary $cfg.results_dir $baseline_label $feature_label $cfg.bloat $cfg.preset $cfg.tps $cfg.duration --benchmark-id $cfg.benchmark_id --reference-epoch $cfg.reference_epoch
+
+    # Cleanup worktrees (only those we created)
+    let baseline_wt = $"($BENCH_WORKTREES_DIR)/baseline"
+    let feature_wt = $"($BENCH_WORKTREES_DIR)/feature"
+    if $cfg.baseline != "local" { try { git worktree remove --force $baseline_wt } catch { } }
+    if $cfg.feature != "local" { try { git worktree remove --force $feature_wt } catch { } }
+
+    # Stop observability stack if it was started
+    if not $cfg.no_infra {
+        docker compose -f $"($BENCH_DIR)/docker-compose.yml" down
+    }
+
+    # Upload samply profiles
+    if $cfg.samply {
+        print "\nUploading samply profiles to Firefox Profiler..."
+        for run in $cfg.runs {
+            let profile = $"($cfg.results_dir)/profile-($run.label).json.gz"
+            let url = (upload-samply-profile $profile)
+            if $url != null {
+                $url | save -f $"($cfg.results_dir)/profile-($run.label)-url.txt"
+            }
+        }
+    }
+
+    # Upload tracy profiles
+    if $cfg.tracy != "off" {
+        print "\nUploading tracy profiles to R2..."
+        for run in $cfg.runs {
+            let profile = $"($cfg.results_dir)/tracy-profile-($run.label).tracy"
+            let viewer_url = (upload-tracy-profile $profile $run.label $run.git_ref)
+            if $viewer_url != null {
+                $viewer_url | save -f $"($cfg.results_dir)/tracy-($run.label)-url.txt"
+            }
+        }
+    }
+
+    print $"\nBenchmark finalized! Results: ($cfg.results_dir)/"
 }
 
 # Wait for an RPC endpoint to be ready and chain advancing
