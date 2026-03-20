@@ -244,8 +244,8 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
     /// Must be called before `validate_against_state_and_deduct_caller`, which uses the
     /// loaded fee fields for balance checks.
     ///
-    /// Called by [`Handler::run`] and [`InspectorHandler::inspect_run`]. Exposed for consumers
-    /// like `FoundryHandler` that override `inspect_run` but still need Tempo fee setup.
+    /// Exposed for consumers like `FoundryHandler` that override the default run flow
+    /// but still need Tempo fee setup.
     pub fn load_fee_fields(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
@@ -582,7 +582,6 @@ where
         &mut self,
         evm: &mut Self::Evm,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
-        self.seed_tx_origin(evm)?;
         self.load_fee_fields(evm)?;
 
         // Standard handler flow - execution() handles single vs multi-call dispatch
@@ -691,18 +690,12 @@ where
         &self,
         evm: &mut Self::Evm,
     ) -> Result<(), Self::Error> {
+        self.seed_tx_origin(evm)?;
+
         let block = &evm.inner.ctx.block;
         let tx = &evm.inner.ctx.tx;
         let cfg = &evm.inner.ctx.cfg;
         let journal = &mut evm.inner.ctx.journaled_state;
-
-        // Keep tx.origin seeding here for downstream custom handlers that override
-        // `inspect_run` and call directly into validation/setup paths.
-        StorageCtx::enter_evm(journal, block, cfg, tx, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.set_tx_origin(tx.caller())
-        })
-        .map_err(|e| EVMError::Custom(e.to_string()))?;
 
         // Validate fee token has TIP20 prefix before loading balance.
         // This prevents panics in get_token_balance for invalid fee tokens.
@@ -1691,7 +1684,6 @@ where
         &mut self,
         evm: &mut Self::Evm,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
-        self.seed_tx_origin(evm)?;
         self.load_fee_fields(evm)?;
 
         match self.inspect_run_without_catch_error(evm) {
