@@ -1,0 +1,378 @@
+{
+  "uid": "tempo-dex-monitoring",
+  "title": "StablecoinDEX Monitoring",
+  "description": "Real-time orderbook health: spread, liquidity, slippage, and activity for all StablecoinDEX trading pairs.",
+  "tags": ["tempo", "dex"],
+  "editable": true,
+  "schemaVersion": 39,
+  "graphTooltip": 1,
+  "time": {
+    "from": "now-5m",
+    "to": "now"
+  },
+  "refresh": "5s",
+  "fiscalYearStartMonth": 0,
+  "id": null,
+  "links": [],
+  "templating": {
+    "list": [
+      {
+        "name": "chain_id",
+        "label": "Chain",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "Prometheus" },
+        "query": "label_values(tempo_dex_total_orders, chain_id)",
+        "refresh": 2,
+        "includeAll": false,
+        "current": {},
+        "sort": 1
+      },
+      {
+        "name": "base_name",
+        "label": "Pair",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "Prometheus" },
+        "query": "label_values({__name__=~\"tempo_dex_best.*\", chain_id=\"$chain_id\"}, base_name)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": {},
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "title": "",
+      "type": "text",
+      "gridPos": { "h": 3, "w": 24, "x": 0, "y": 0 },
+      "id": 10,
+      "options": {
+        "mode": "markdown",
+        "content": "### StablecoinDEX Health Monitor\nReal-time orderbook metrics from Tempo's on-chain DEX. **Spread** = price gap between buyers and sellers. **Liquidity** = volume available at best price. **Slippage** = price impact of a $1000 swap.\n\nBackground zones: \ud83d\udfe2 **Green** = healthy &nbsp; \ud83d\udfe1 **Yellow** = moderate risk &nbsp; \ud83d\udd34 **Red** = needs attention. Spread: <10 / 10-30 / >30 ticks. Slippage: <50 / 50-150 / >150 bps."
+      }
+    },
+    {
+      "title": "Spread — Price Efficiency",
+      "description": "Difference between best ask and best bid in ticks. Lower = tighter market. Green (<10) = healthy, Yellow (10-30) = moderate, Red (>30) = wide.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 3 },
+      "id": 1,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "scaleDistribution": { "type": "linear" },
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "line+area" }
+          },
+          "unit": "none",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "transparent", "value": null },
+              { "color": "rgba(50, 172, 45, 0.1)", "value": 0 },
+              { "color": "rgba(237, 129, 40, 0.15)", "value": 10 },
+              { "color": "rgba(245, 54, 54, 0.15)", "value": 30 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "tempo_dex_spread_ticks{chain_id=\"$chain_id\", base_name=~\"$base_name\"}",
+          "legendFormat": "{{base_name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Total Orders",
+      "description": "Total number of orders ever created across all pairs. Indicates overall DEX activity.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "gridPos": { "h": 8, "w": 4, "x": 16, "y": 3 },
+      "id": 2,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null }
+            ]
+          },
+          "unit": "short",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": ["lastNotNull"],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "tempo_dex_total_orders{chain_id=\"$chain_id\"}",
+          "legendFormat": "Orders",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Monitor Errors",
+      "description": "RPC errors encountered while fetching DEX data. Grouped by call type: next_order_id, books, tick_level_bid, tick_level_ask.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "gridPos": { "h": 8, "w": 4, "x": 20, "y": 3 },
+      "id": 6,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 10 }
+            ]
+          },
+          "unit": "short",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": ["lastNotNull"],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "increase(tempo_dex_monitor_errors{chain_id=\"$chain_id\"}[5m])",
+          "legendFormat": "{{request}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Bid Depth — Buy Side",
+      "description": "Total liquidity at the best bid (buy) price. Higher = more buyers ready to trade. Drop to 0 means no buy orders.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 11 },
+      "id": 3,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "scaleDistribution": { "type": "linear" },
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "tempo_dex_best_bid_liquidity{chain_id=\"$chain_id\", base_name=~\"$base_name\"}",
+          "legendFormat": "{{base_name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Ask Depth — Sell Side",
+      "description": "Total liquidity at the best ask (sell) price. Higher = more sellers ready to trade. Drop to 0 means no sell orders.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 11 },
+      "id": 4,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "scaleDistribution": { "type": "linear" },
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "tempo_dex_best_ask_liquidity{chain_id=\"$chain_id\", base_name=~\"$base_name\"}",
+          "legendFormat": "{{base_name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Slippage — Swap Cost Estimation",
+      "description": "Estimated price impact for a $1000 swap. Green (<50 bps) = low cost, Yellow (50-150 bps) = moderate, Red (>150 bps) = expensive. 1 bps = 0.01%.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 19 },
+      "id": 5,
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "scaleDistribution": { "type": "linear" },
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": {
+              "mode": "line+area"
+            }
+          },
+          "unit": "none",
+          "min": 0,
+          "noValue": "No liquidity data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "transparent", "value": null },
+              { "color": "rgba(50, 172, 45, 0.1)", "value": 0 },
+              { "color": "rgba(237, 129, 40, 0.15)", "value": 50 },
+              { "color": "rgba(245, 54, 54, 0.15)", "value": 150 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "expr": "tempo_dex_slippage_bps{chain_id=\"$chain_id\", base_name=~\"$base_name\"}",
+          "legendFormat": "{{base_name}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "annotations": { "list": [] }
+}
