@@ -512,6 +512,7 @@ where
             evm_config,
             self.state_provider_metrics,
             self.disable_state_cache,
+            Default::default(),
         ))
     }
 }

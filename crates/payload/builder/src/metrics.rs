@@ -11,8 +11,9 @@ use reth_trie_common::{
     AccountProof, HashedPostState, HashedStorage, MultiProof, MultiProofTargets, StorageMultiProof,
     StorageProof, TrieInput, updates::TrieUpdates,
 };
+use reth_engine_tree::tree::SharedPreservedSparseTrie;
 use std::time::Instant;
-use tracing::debug_span;
+use tracing::{debug_span, warn};
 
 #[derive(Metrics, Clone)]
 #[metrics(scope = "tempo_payload_builder")]
@@ -87,6 +88,8 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) hashed_post_state_duration_seconds: Histogram,
     /// Time to compute the state root and trie updates via `state_root_with_updates`.
     pub(crate) state_root_with_updates_duration_seconds: Histogram,
+    /// Whether the sparse trie was used for state root (1 = hit, 0 = no/fallback).
+    pub(crate) sparse_trie_state_root_hit: Gauge,
 }
 
 impl TempoPayloadBuilderMetrics {
@@ -116,9 +119,11 @@ impl TempoPayloadBuilderMetrics {
 
 /// Wraps a [`StateProvider`] reference to instrument `hashed_post_state` and
 /// `state_root_with_updates` with tracing spans and histogram metrics during `builder.finish()`.
+/// When a shared sparse trie is available, attempts sparse trie-based state root first.
 pub(crate) struct InstrumentedFinishProvider<'a> {
     pub(crate) inner: &'a dyn StateProvider,
     pub(crate) metrics: TempoPayloadBuilderMetrics,
+    pub(crate) sparse_trie: SharedPreservedSparseTrie,
 }
 
 impl<'a> AsRef<dyn StateProvider + 'a> for InstrumentedFinishProvider<'a> {
@@ -157,9 +162,22 @@ reth_storage_api::delegate_impls_to_as_ref!(
 impl HashedPostStateProvider for InstrumentedFinishProvider<'_> {
     fn hashed_post_state(&self, bundle_state: &reth_revm::db::BundleState) -> HashedPostState {
         let start = Instant::now();
-        let _span = debug_span!(target: "payload_builder", "hashed_post_state").entered();
+        let span = debug_span!(target: "payload_builder", "hashed_post_state",
+            accounts = tracing::field::Empty,
+            storage_slots = tracing::field::Empty,
+        )
+        .entered();
         let result = self.inner.hashed_post_state(bundle_state);
-        drop(_span);
+        span.record("accounts", result.accounts.len());
+        span.record(
+            "storage_slots",
+            result
+                .storages
+                .values()
+                .map(|s| s.storage.len())
+                .sum::<usize>(),
+        );
+        drop(span);
         self.metrics
             .hashed_post_state_duration_seconds
             .record(start.elapsed());
@@ -188,9 +206,38 @@ impl StateRootProvider for InstrumentedFinishProvider<'_> {
         hashed_state: HashedPostState,
     ) -> ProviderResult<(B256, TrieUpdates)> {
         let start = Instant::now();
-        let _span = debug_span!(target: "payload_builder", "state_root_with_updates").entered();
+
+        // Try sparse trie first
+        if let Some(result) =
+            self.sparse_trie.compute_state_root(self.inner, hashed_state.clone())
+        {
+            match result {
+                Ok(outcome) => {
+                    self.metrics
+                        .state_root_with_updates_duration_seconds
+                        .record(start.elapsed());
+                    self.metrics.sparse_trie_state_root_hit.set(1.0);
+                    return Ok(outcome);
+                }
+                Err(e) => {
+                    warn!(target: "payload_builder", %e, "sparse trie state root failed, falling back");
+                    self.metrics.sparse_trie_state_root_hit.set(0.0);
+                }
+            }
+        } else {
+            self.metrics.sparse_trie_state_root_hit.set(0.0);
+        }
+
+        // Fall back to standard computation
+        let span = debug_span!(target: "payload_builder", "state_root_with_updates",
+            storage_tries = tracing::field::Empty,
+        )
+        .entered();
         let result = self.inner.state_root_with_updates(hashed_state);
-        drop(_span);
+        if let Ok((_, ref trie_updates)) = result {
+            span.record("storage_tries", trie_updates.storage_tries_ref().len());
+        }
+        drop(span);
         self.metrics
             .state_root_with_updates_duration_seconds
             .record(start.elapsed());
