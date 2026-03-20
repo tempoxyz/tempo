@@ -37,9 +37,19 @@ slow-timeout = { period = "3m", terminate-after = 1 }
 [profile.ci-flaky]
 inherits = "ci"
 fail-fast = true
+retries = 0
 failure-output = "final"
 slow-timeout = { period = "3m", terminate-after = 1 }
 default-filter = "package(tempo-e2e) & test(can_restart_after_joining_from_snapshot)"
+
+# Dedicated profile for live RPC matrix tests (testnet/devnet).
+# These hit rate-limited external endpoints, so we serialize them and allow
+# more retries than regular tests.
+[profile.ci-rpc]
+inherits = "ci"
+test-threads = 1
+retries = 3
+slow-timeout = { period = "5m", terminate-after = 1 }
 
 # tempo-node integration tests (pool, block_building, etc.) also launch full
 # execution nodes with rayon pools. Limit to 4 slots so at most 8 run in parallel.
