@@ -162,8 +162,9 @@ jobs:
           find . -name 'Cargo.toml' -exec sed -i "s|paradigmxyz/reth\", rev = \"${CURRENT_REV}\"|paradigmxyz/reth\", rev = \"${NEW_REV}\"|g" {} +
           echo "Updated reth rev: $CURRENT_REV -> $NEW_REV"
 
-          # Regenerate lockfile
-          cargo update
+          # Update a single reth dependency, which in turn will update all dependencies with the same `git` source.
+          # We can't just do `cargo update` because it will also do unwanted bumps.
+          cargo update -p reth-engine-tree
 
       # ── commit rev bump if changed ──────────────────────────────
       - name: Commit reth rev bump
