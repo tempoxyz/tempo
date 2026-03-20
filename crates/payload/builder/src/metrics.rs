@@ -142,17 +142,45 @@ reth_storage_api::delegate_impls_to_as_ref!(
     BytecodeReader {
         fn bytecode_by_hash(&self, code_hash: &B256) -> ProviderResult<Option<Bytecode>>;
     }
-    StorageRootProvider {
-        fn storage_root(&self, address: Address, storage: HashedStorage) -> ProviderResult<B256>;
-        fn storage_proof(&self, address: Address, slot: B256, storage: HashedStorage) -> ProviderResult<StorageProof>;
-        fn storage_multiproof(&self, address: Address, slots: &[B256], storage: HashedStorage) -> ProviderResult<StorageMultiProof>;
-    }
+
     StateProofProvider {
         fn proof(&self, input: TrieInput, address: Address, slots: &[B256]) -> ProviderResult<AccountProof>;
         fn multiproof(&self, input: TrieInput, targets: MultiProofTargets) -> ProviderResult<MultiProof>;
         fn witness(&self, input: TrieInput, target: HashedPostState) -> ProviderResult<Vec<Bytes>>;
     }
 );
+
+impl StorageRootProvider for InstrumentedFinishProvider<'_> {
+    fn storage_root(&self, address: Address, storage: HashedStorage) -> ProviderResult<B256> {
+        let slots = storage.storage.len();
+        let _span = debug_span!(
+            target: "payload_builder",
+            "storage_root",
+            %address,
+            slots,
+        )
+        .entered();
+        self.inner.storage_root(address, storage)
+    }
+
+    fn storage_proof(
+        &self,
+        address: Address,
+        slot: B256,
+        storage: HashedStorage,
+    ) -> ProviderResult<StorageProof> {
+        self.inner.storage_proof(address, slot, storage)
+    }
+
+    fn storage_multiproof(
+        &self,
+        address: Address,
+        slots: &[B256],
+        storage: HashedStorage,
+    ) -> ProviderResult<StorageMultiProof> {
+        self.inner.storage_multiproof(address, slots, storage)
+    }
+}
 
 impl HashedPostStateProvider for InstrumentedFinishProvider<'_> {
     fn hashed_post_state(&self, bundle_state: &reth_revm::db::BundleState) -> HashedPostState {
