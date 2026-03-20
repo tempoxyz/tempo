@@ -617,7 +617,9 @@ impl TIP403Registry {
             PolicyType::WHITELIST => Ok(is_in_set),
             PolicyType::BLACKLIST => Ok(!is_in_set),
             PolicyType::COMPOUND => Err(TIP403RegistryError::incompatible_policy_type().into()),
-            PolicyType::__Invalid => unreachable!(),
+            PolicyType::__Invalid => {
+                Err(TIP403RegistryError::invalid_policy_type().into())
+            },
         }
     }
 
