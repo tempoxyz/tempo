@@ -177,6 +177,13 @@ where
 
         // Ensure that key auth is valid if present.
         if let Some(auth) = auth {
+            // Reject key_id == Address::ZERO (matches execution-layer check in authorize_key)
+            if auth.key_id == Address::ZERO {
+                return Ok(Err(TempoPoolTransactionError::Keychain(
+                    "KeyAuthorization key_id cannot be zero",
+                )));
+            }
+
             // Validate signature
             if !auth
                 .recover_signer()
@@ -211,6 +218,27 @@ where
                     min_allowed,
                 }));
             }
+
+            // Validate against on-chain key state: reject re-authorization of existing keys
+            // and revoked keys. This prevents deterministic execution failures from entering
+            // the pool regardless of signature type (root or keychain).
+            let authorized_key = state_provider
+                .with_read_only_storage_ctx(spec, || {
+                    AccountKeychain::new().keys[transaction.sender()][auth.key_id].read()
+                })
+                .map_err(ProviderError::other)?;
+
+            if authorized_key.expiry > 0 {
+                return Ok(Err(TempoPoolTransactionError::Keychain(
+                    "access key already exists",
+                )));
+            }
+
+            if authorized_key.is_revoked {
+                return Ok(Err(TempoPoolTransactionError::Keychain(
+                    "access key has been revoked",
+                )));
+            }
         }
 
         let Some(sig) = tx.signature().as_keychain() else {
@@ -239,23 +267,12 @@ where
 
         // Inline key authorization must still be validated against current key state and
         // fee-token spending limits to prevent deterministic execution failures from entering
-        // the pool.
+        // the pool. Note: key_id zero, re-auth, and revocation checks are already done above
+        // for all signature types.
         if let Some(auth) = auth {
             if auth.key_id != key_id {
                 return Ok(Err(TempoPoolTransactionError::Keychain(
                     "KeyAuthorization key_id does not match Keychain signature key_id",
-                )));
-            }
-
-            if authorized_key.expiry > 0 {
-                return Ok(Err(TempoPoolTransactionError::Keychain(
-                    "access key already exists",
-                )));
-            }
-
-            if authorized_key.is_revoked {
-                return Ok(Err(TempoPoolTransactionError::Keychain(
-                    "access key has been revoked",
                 )));
             }
 
@@ -4521,6 +4538,215 @@ mod tests {
                 .is_bad_transaction(),
                 "Expired key authorization rejection should NOT be a bad transaction (timing-sensitive)"
             );
+        }
+
+        /// Create an AA transaction with a primitive (root) signature and an inline
+        /// KeyAuthorization. This exercises the path where there is no keychain signature.
+        fn create_aa_with_root_signature_and_key_auth(
+            user_signer: &PrivateKeySigner,
+            key_auth: KeyAuthorization,
+        ) -> TempoPooledTransaction {
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let tx = TempoTransaction {
+                chain_id: 42431,
+                max_priority_fee_per_gas: 1_000_000_000,
+                max_fee_per_gas: 20_000_000_000,
+                gas_limit: 1_000_000,
+                calls: vec![Call {
+                    to: TxKind::Call(address!("0000000000000000000000000000000000000001")),
+                    value: U256::ZERO,
+                    input: alloy_primitives::Bytes::new(),
+                }],
+                nonce_key: U256::ZERO,
+                nonce: 0,
+                fee_token: Some(address!("0000000000000000000000000000000000000002")),
+                fee_payer_signature: None,
+                valid_after: None,
+                valid_before: None,
+                access_list: Default::default(),
+                tempo_authorization_list: vec![],
+                key_authorization: Some(signed_key_auth),
+            };
+
+            let tx_sig_hash = tx.signature_hash();
+            let tx_signature = user_signer
+                .sign_hash_sync(&tx_sig_hash)
+                .expect("signing failed");
+            let signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(tx_signature));
+            let signed = AASigned::new_unhashed(tx, signature);
+            let envelope: TempoTxEnvelope = signed.into();
+            let recovered = envelope.try_into_recovered().unwrap();
+            TempoPooledTransaction::new(recovered)
+        }
+
+        #[test]
+        fn test_root_signed_key_auth_zero_key_id_rejected() {
+            let (user_signer, user_address) = generate_keypair();
+
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: Address::ZERO,
+                expiry: None,
+                limits: None,
+            };
+
+            let transaction = create_aa_with_root_signature_and_key_auth(&user_signer, key_auth);
+
+            let validator = setup_validator_with_keychain_storage(
+                &transaction,
+                user_address,
+                Address::ZERO,
+                None,
+            );
+            let mut state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            );
+            assert!(
+                matches!(
+                    result.expect("should not be a provider error"),
+                    Err(TempoPoolTransactionError::Keychain(
+                        "KeyAuthorization key_id cannot be zero"
+                    ))
+                ),
+                "Root-signed tx with key_id=ZERO should be rejected"
+            );
+        }
+
+        #[test]
+        fn test_root_signed_key_auth_existing_key_rejected() {
+            let (user_signer, user_address) = generate_keypair();
+            let key_id = Address::random();
+
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id,
+                expiry: None,
+                limits: None,
+            };
+
+            let transaction = create_aa_with_root_signature_and_key_auth(&user_signer, key_auth);
+
+            let existing_key_slot = AuthorizedKey {
+                signature_type: 0,
+                expiry: u64::MAX,
+                enforce_limits: false,
+                is_revoked: false,
+            }
+            .encode_to_slot();
+
+            let validator = setup_validator_with_keychain_storage(
+                &transaction,
+                user_address,
+                key_id,
+                Some(existing_key_slot),
+            );
+            let mut state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            );
+            assert!(
+                matches!(
+                    result.expect("should not be a provider error"),
+                    Err(TempoPoolTransactionError::Keychain(
+                        "access key already exists"
+                    ))
+                ),
+                "Root-signed tx with existing key should be rejected"
+            );
+        }
+
+        #[test]
+        fn test_root_signed_key_auth_revoked_key_rejected() {
+            let (user_signer, user_address) = generate_keypair();
+            let key_id = Address::random();
+
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id,
+                expiry: None,
+                limits: None,
+            };
+
+            let transaction = create_aa_with_root_signature_and_key_auth(&user_signer, key_auth);
+
+            let revoked_key_slot = AuthorizedKey {
+                signature_type: 0,
+                expiry: 0,
+                enforce_limits: false,
+                is_revoked: true,
+            }
+            .encode_to_slot();
+
+            let validator = setup_validator_with_keychain_storage(
+                &transaction,
+                user_address,
+                key_id,
+                Some(revoked_key_slot),
+            );
+            let mut state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            );
+            assert!(
+                matches!(
+                    result.expect("should not be a provider error"),
+                    Err(TempoPoolTransactionError::Keychain(
+                        "access key has been revoked"
+                    ))
+                ),
+                "Root-signed tx with revoked key should be rejected"
+            );
+        }
+
+        #[test]
+        fn test_root_signed_key_auth_valid_passes() -> Result<(), ProviderError> {
+            let (user_signer, user_address) = generate_keypair();
+            let key_id = Address::random();
+
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id,
+                expiry: None,
+                limits: None,
+            };
+
+            let transaction = create_aa_with_root_signature_and_key_auth(&user_signer, key_auth);
+
+            // No existing key in state - authorization should pass
+            let validator =
+                setup_validator_with_keychain_storage(&transaction, user_address, key_id, None);
+            let mut state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )?;
+            assert!(
+                result.is_ok(),
+                "Root-signed tx with valid new key should pass, got: {result:?}"
+            );
+            Ok(())
         }
     }
 
