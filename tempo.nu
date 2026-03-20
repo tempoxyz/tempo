@@ -265,10 +265,10 @@ def hardfork-to-genesis-args [fork: string] {
         exit 1
     }
     let cutoff = ($idx | get 0.index)
-    let flag_names = ["--t0-time" "--t1-time" "--t1a-time" "--t1b-time" "--t1c-time" "--t2-time"]
-    $flag_names | enumerate | each { |it|
+    $TEMPO_HARDFORKS | enumerate | each { |it|
+        let flag = $"--($it.item | str downcase)-time"
         let time = if $it.index <= $cutoff { "0" } else { "18446744073709551615" }
-        [$it.item $time]
+        [$flag $time]
     } | flatten
 }
 
