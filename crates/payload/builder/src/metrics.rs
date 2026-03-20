@@ -142,11 +142,6 @@ reth_storage_api::delegate_impls_to_as_ref!(
     BytecodeReader {
         fn bytecode_by_hash(&self, code_hash: &B256) -> ProviderResult<Option<Bytecode>>;
     }
-    StorageRootProvider {
-        fn storage_root(&self, address: Address, storage: HashedStorage) -> ProviderResult<B256>;
-        fn storage_proof(&self, address: Address, slot: B256, storage: HashedStorage) -> ProviderResult<StorageProof>;
-        fn storage_multiproof(&self, address: Address, slots: &[B256], storage: HashedStorage) -> ProviderResult<StorageMultiProof>;
-    }
     StateProofProvider {
         fn proof(&self, input: TrieInput, address: Address, slots: &[B256]) -> ProviderResult<AccountProof>;
         fn multiproof(&self, input: TrieInput, targets: MultiProofTargets) -> ProviderResult<MultiProof>;
@@ -154,12 +149,51 @@ reth_storage_api::delegate_impls_to_as_ref!(
     }
 );
 
+impl StorageRootProvider for InstrumentedFinishProvider<'_> {
+    fn storage_root(&self, address: Address, storage: HashedStorage) -> ProviderResult<B256> {
+        let slots = storage.storage.len();
+        let _span = debug_span!(
+            target: "payload_builder",
+            "storage_root",
+            %address,
+            slots,
+        )
+        .entered();
+        self.inner.storage_root(address, storage)
+    }
+
+    fn storage_proof(
+        &self,
+        address: Address,
+        slot: B256,
+        storage: HashedStorage,
+    ) -> ProviderResult<StorageProof> {
+        self.inner.storage_proof(address, slot, storage)
+    }
+
+    fn storage_multiproof(
+        &self,
+        address: Address,
+        slots: &[B256],
+        storage: HashedStorage,
+    ) -> ProviderResult<StorageMultiProof> {
+        self.inner.storage_multiproof(address, slots, storage)
+    }
+}
+
 impl HashedPostStateProvider for InstrumentedFinishProvider<'_> {
     fn hashed_post_state(&self, bundle_state: &reth_revm::db::BundleState) -> HashedPostState {
         let start = Instant::now();
-        let _span = debug_span!(target: "payload_builder", "hashed_post_state").entered();
+        let span = debug_span!(target: "payload_builder", "hashed_post_state",
+            accounts = tracing::field::Empty,
+            storage_slots = tracing::field::Empty,
+        )
+        .entered();
         let result = self.inner.hashed_post_state(bundle_state);
-        drop(_span);
+        span.record("accounts", result.accounts.len());
+        let storage_slots: usize = result.storages.values().map(|s| s.storage.len()).sum();
+        span.record("storage_slots", storage_slots);
+        drop(span);
         self.metrics
             .hashed_post_state_duration_seconds
             .record(start.elapsed());
@@ -188,9 +222,15 @@ impl StateRootProvider for InstrumentedFinishProvider<'_> {
         hashed_state: HashedPostState,
     ) -> ProviderResult<(B256, TrieUpdates)> {
         let start = Instant::now();
-        let _span = debug_span!(target: "payload_builder", "state_root_with_updates").entered();
+        let span = debug_span!(target: "payload_builder", "state_root_with_updates",
+            storage_tries = tracing::field::Empty,
+        )
+        .entered();
         let result = self.inner.state_root_with_updates(hashed_state);
-        drop(_span);
+        if let Ok((_, ref trie_updates)) = result {
+            span.record("storage_tries", trie_updates.storage_tries_ref().len());
+        }
+        drop(span);
         self.metrics
             .state_root_with_updates_duration_seconds
             .record(start.elapsed());
