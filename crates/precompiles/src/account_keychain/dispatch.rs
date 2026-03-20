@@ -3,14 +3,14 @@
 use super::AccountKeychain;
 use crate::{Precompile, dispatch_call, input_cost, mutate_void, view};
 use alloy::{primitives::Address, sol_types::SolInterface};
-use revm::precompile::{PrecompileError, PrecompileResult};
+use revm::precompile::{PrecompileError, PrecompileFailure, PrecompileResult};
 use tempo_contracts::precompiles::IAccountKeychain::IAccountKeychainCalls;
 
 impl Precompile for AccountKeychain {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         self.storage
             .deduct_gas(input_cost(calldata.len()))
-            .map_err(|_| PrecompileError::OutOfGas)?;
+            .map_err(|_| PrecompileFailure::from(PrecompileError::OutOfGas))?;
 
         dispatch_call(
             calldata,

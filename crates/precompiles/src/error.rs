@@ -16,7 +16,8 @@ use alloy::{
 };
 use revm::{
     context::journaled_state::JournalLoadErasedError,
-    precompile::{PrecompileError, PrecompileOutput, PrecompileResult},
+    interpreter::gas::GasTracker,
+    precompile::{PrecompileError, PrecompileFailure, PrecompileOutput, PrecompileResult},
 };
 use tempo_contracts::precompiles::{
     AccountKeychainError, FeeManagerError, NonceError, RolesAuthError, StablecoinDEXError,
@@ -160,7 +161,7 @@ impl TempoPrecompileError {
             Self::ValidatorConfigV2Error(e) => e.abi_encode().into(),
             Self::AccountKeychainError(e) => e.abi_encode().into(),
             Self::OutOfGas => {
-                return Err(PrecompileError::OutOfGas);
+                return Err(PrecompileError::OutOfGas.into());
             }
             Self::UnknownFunctionSelector(selector) => UnknownFunctionSelector {
                 selector: selector.into(),
@@ -168,10 +169,14 @@ impl TempoPrecompileError {
             .abi_encode()
             .into(),
             Self::Fatal(msg) => {
-                return Err(PrecompileError::Fatal(msg));
+                return Err(PrecompileError::Fatal(msg).into());
             }
         };
-        Ok(PrecompileOutput::new_reverted(gas, bytes))
+        Ok(PrecompileOutput {
+            gas: GasTracker::new(gas, 0, 0),
+            bytes,
+            reverted: true,
+        })
     }
 }
 
@@ -263,7 +268,11 @@ impl<T> IntoPrecompileResult<T> for Result<T> {
         encode_ok: impl FnOnce(T) -> alloy::primitives::Bytes,
     ) -> PrecompileResult {
         match self {
-            Ok(res) => Ok(PrecompileOutput::new(gas, encode_ok(res))),
+            Ok(res) => Ok(PrecompileOutput {
+                gas: GasTracker::new(gas, 0, 0),
+                bytes: encode_ok(res),
+                reverted: false,
+            }),
             Err(err) => err.into_precompile_result(gas),
         }
     }

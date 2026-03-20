@@ -348,6 +348,10 @@ where
         self.spec
     }
 
+    fn gas_limit(&self) -> u64 {
+        0
+    }
+
     fn is_static(&self) -> bool {
         // read-only operations should always be static
         true
