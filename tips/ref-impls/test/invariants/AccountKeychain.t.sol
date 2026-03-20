@@ -8,6 +8,7 @@ import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 /// @notice Fuzz-based invariant tests for the AccountKeychain precompile
 /// @dev Tests invariants TEMPO-KEY1 through TEMPO-KEY19 for access key management
 ///      Note: TEMPO-KEY20/21 require integration tests (transient storage for transaction_key)
+/// forge-config: default.isolate = true
 contract AccountKeychainInvariantTest is InvariantBaseTest {
 
     /// @dev Starting offset for key ID address pool (distinct from zero address)
