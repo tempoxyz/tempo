@@ -173,6 +173,7 @@ fn init_txpool_defaults() {
 
 fn init_storage_defaults() {
     DefaultStorageValues::default()
+        // NOTE: when changing, don't forget to change in `e2e::launch_execution_node`
         .with_v2(false)
         .try_init()
         .expect("failed to initialize storage defaults");
