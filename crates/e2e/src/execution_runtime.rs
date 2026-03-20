@@ -83,6 +83,7 @@ pub struct Builder {
     epoch_length: Option<u64>,
     initial_dkg_outcome: Option<OnchainDkgOutcome>,
     t2_time: Option<u64>,
+    t3_time: Option<u64>,
     validators: Option<ordered::Map<PublicKey, ConsensusNodeConfig>>,
 }
 
@@ -92,6 +93,7 @@ impl Builder {
             epoch_length: None,
             initial_dkg_outcome: None,
             t2_time: None,
+            t3_time: None,
             validators: None,
         }
     }
@@ -124,11 +126,19 @@ impl Builder {
         }
     }
 
+    pub fn with_t3_time(self, t3_time: u64) -> Self {
+        Self {
+            t3_time: Some(t3_time),
+            ..self
+        }
+    }
+
     pub fn launch(self) -> eyre::Result<ExecutionRuntime> {
         let Self {
             epoch_length,
             initial_dkg_outcome,
             t2_time,
+            t3_time,
             validators,
         } = self;
 
@@ -158,6 +168,13 @@ impl Builder {
             .extra_fields
             .insert_value("t2Time".to_string(), t2_time)
             .unwrap();
+        if let Some(t3_time) = t3_time {
+            genesis
+                .config
+                .extra_fields
+                .insert_value("t3Time".to_string(), t3_time)
+                .unwrap();
+        }
 
         genesis.extra_data = initial_dkg_outcome.encode().to_vec().into();
 

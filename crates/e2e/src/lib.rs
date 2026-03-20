@@ -147,6 +147,11 @@ pub struct Setup {
     /// Default: 1.
     pub t2_time: u64,
 
+    /// The t3 hardfork time.
+    ///
+    /// Default: `None` (not activated).
+    pub t3_time: Option<u64>,
+
     /// Whether to activate subblocks building.
     pub with_subblocks: bool,
 }
@@ -166,6 +171,7 @@ impl Setup {
             connect_execution_layer_nodes: false,
             new_payload_wait_time: Duration::from_millis(300),
             t2_time: 1,
+            t3_time: None,
             with_subblocks: false,
         }
     }
@@ -223,6 +229,13 @@ impl Setup {
     pub fn t2_time(self, t2_time: u64) -> Self {
         Self { t2_time, ..self }
     }
+
+    pub fn t3_time(self, t3_time: u64) -> Self {
+        Self {
+            t3_time: Some(t3_time),
+            ..self
+        }
+    }
 }
 
 impl Default for Setup {
@@ -247,6 +260,7 @@ pub async fn setup_validators(
         linkage,
         new_payload_wait_time,
         t2_time,
+        t3_time,
         with_subblocks,
         ..
     }: Setup,
@@ -264,13 +278,15 @@ pub async fn setup_validators(
     let (onchain_dkg_outcome, validators) =
         generate_consensus_node_config(context, how_many_signers, how_many_verifiers);
 
-    let execution_runtime = ExecutionRuntime::builder()
+    let mut builder = ExecutionRuntime::builder()
         .with_epoch_length(epoch_length)
         .with_initial_dkg_outcome(onchain_dkg_outcome)
         .with_t2_time(t2_time)
-        .with_validators(validators.clone())
-        .launch()
-        .unwrap();
+        .with_validators(validators.clone());
+    if let Some(t3_time) = t3_time {
+        builder = builder.with_t3_time(t3_time);
+    }
+    let execution_runtime = builder.launch().unwrap();
 
     let execution_configs = ExecutionNodeConfig::generator()
         .with_count(how_many_signers + how_many_verifiers)

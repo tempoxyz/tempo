@@ -13,6 +13,7 @@ mod restart;
 mod subblocks;
 mod sync;
 mod v2_at_genesis;
+mod v3_at_genesis;
 
 #[test_traced]
 fn spawning_execution_node_works() {

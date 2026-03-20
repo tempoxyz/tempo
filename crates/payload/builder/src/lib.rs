@@ -343,6 +343,7 @@ where
                     general_gas_limit,
                     shared_gas_limit,
                     timestamp_millis_part: attributes.timestamp_millis_part(),
+                    consensus_context: attributes.consensus_context(),
                     subblock_fee_recipients,
                 },
             )
@@ -851,6 +852,7 @@ mod tests {
             Address::default(),
             1000,
             extra_data.clone(),
+            None,
             Vec::new,
         );
 

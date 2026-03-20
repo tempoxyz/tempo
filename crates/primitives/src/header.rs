@@ -1,17 +1,37 @@
 use alloy_consensus::{BlockHeader, Header, Sealable};
 use alloy_primitives::{Address, B64, B256, BlockNumber, Bloom, Bytes, U256, keccak256};
-use alloy_rlp::{RlpDecodable, RlpEncodable};
+use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 
-/// Tempo block header.
-///
-/// Encoded as `rlp([general_gas_limit, shared_gas_limit, timestamp_millis_part, inner])` meaning that any new
-/// fields added to the inner header will only affect the first list element.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, RlpEncodable, RlpDecodable)]
+/// Consensus context metadata for a Tempo block.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Default, RlpEncodable, RlpDecodable)]
 #[cfg_attr(feature = "reth-codec", derive(reth_codecs::Compact))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact, rlp))]
+pub struct TempoConsensusContext {
+    pub epoch: u64,
+    pub view: u64,
+    pub leader: B256,
+    pub parent_view: u64,
+}
+
+#[cfg(feature = "serde-bincode-compat")]
+impl reth_primitives_traits::serde_bincode_compat::RlpBincode for TempoConsensusContext {}
+
+/// Tempo block header.
+///
+/// RLP-encoded as `[general_gas_limit, shared_gas_limit, timestamp_millis_part, inner,
+/// consensus_context?]`. The `consensus_context` is trailing and omitted for pre-fork blocks.
+///
+/// RLP is implemented manually because `consensus_context` must be trailing (optional) while
+/// `inner: Header` must be the last field for `reth_codecs::Compact`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "reth-codec", derive(reth_codecs::Compact))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
+#[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact))]
 pub struct TempoHeader {
     /// Non-payment gas limit for the block.
     #[cfg_attr(
@@ -27,6 +47,13 @@ pub struct TempoHeader {
     /// Sub-second (milliseconds) portion of the timestamp.
     #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
     pub timestamp_millis_part: u64,
+
+    /// Consensus metadata for the block. `None` for pre-fork blocks.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub consensus_context: Option<TempoConsensusContext>,
 
     /// Inner Ethereum [`Header`].
     #[cfg_attr(feature = "serde", serde(flatten))]
@@ -46,6 +73,68 @@ impl TempoHeader {
 impl AsRef<Self> for TempoHeader {
     fn as_ref(&self) -> &Self {
         self
+    }
+}
+
+impl Encodable for TempoHeader {
+    fn encode(&self, out: &mut dyn alloy_primitives::bytes::BufMut) {
+        let payload_length = self.rlp_payload_length();
+        alloy_rlp::Header {
+            list: true,
+            payload_length,
+        }
+        .encode(out);
+        self.general_gas_limit.encode(out);
+        self.shared_gas_limit.encode(out);
+        self.timestamp_millis_part.encode(out);
+        self.inner.encode(out);
+        if let Some(ctx) = &self.consensus_context {
+            ctx.encode(out);
+        }
+    }
+
+    fn length(&self) -> usize {
+        let payload_length = self.rlp_payload_length();
+        payload_length + alloy_rlp::length_of_length(payload_length)
+    }
+}
+
+impl TempoHeader {
+    fn rlp_payload_length(&self) -> usize {
+        let mut len = self.general_gas_limit.length()
+            + self.shared_gas_limit.length()
+            + self.timestamp_millis_part.length()
+            + self.inner.length();
+        if let Some(ctx) = &self.consensus_context {
+            len += ctx.length();
+        }
+        len
+    }
+}
+
+impl Decodable for TempoHeader {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let header = alloy_rlp::Header::decode(buf)?;
+        if !header.list {
+            return Err(alloy_rlp::Error::UnexpectedString);
+        }
+        let remaining = buf.len();
+        let general_gas_limit = u64::decode(buf)?;
+        let shared_gas_limit = u64::decode(buf)?;
+        let timestamp_millis_part = u64::decode(buf)?;
+        let inner = Header::decode(buf)?;
+        let consensus_context = if remaining - buf.len() < header.payload_length {
+            Some(TempoConsensusContext::decode(buf)?)
+        } else {
+            None
+        };
+        Ok(Self {
+            general_gas_limit,
+            shared_gas_limit,
+            timestamp_millis_part,
+            consensus_context,
+            inner,
+        })
     }
 }
 
@@ -146,11 +235,13 @@ impl reth_primitives_traits::InMemorySize for TempoHeader {
             general_gas_limit,
             timestamp_millis_part,
             shared_gas_limit,
+            consensus_context,
         } = self;
         inner.size()
             + general_gas_limit.size()
             + timestamp_millis_part.size()
             + shared_gas_limit.size()
+            + core::mem::size_of_val(consensus_context)
     }
 }
 

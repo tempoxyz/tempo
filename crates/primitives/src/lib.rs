@@ -14,7 +14,7 @@ pub use transaction::{
 };
 
 mod header;
-pub use header::TempoHeader;
+pub use header::{TempoConsensusContext, TempoHeader};
 
 pub mod subblock;
 pub use subblock::{
