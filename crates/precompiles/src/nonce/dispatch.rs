@@ -2,14 +2,14 @@
 
 use crate::{Precompile, dispatch_call, input_cost, nonce::NonceManager, view};
 use alloy::{primitives::Address, sol_types::SolInterface};
-use revm::precompile::{PrecompileError, PrecompileResult};
+use revm::precompile::{PrecompileError, PrecompileFailure, PrecompileResult};
 use tempo_contracts::precompiles::INonce::INonceCalls;
 
 impl Precompile for NonceManager {
     fn call(&mut self, calldata: &[u8], _msg_sender: Address) -> PrecompileResult {
         self.storage
             .deduct_gas(input_cost(calldata.len()))
-            .map_err(|_| PrecompileError::OutOfGas)?;
+            .map_err(|_| PrecompileFailure::from(PrecompileError::OutOfGas))?;
 
         dispatch_call(calldata, INonceCalls::abi_decode, |call| match call {
             INonceCalls::getNonce(call) => view(call, |c| self.get_nonce(c)),

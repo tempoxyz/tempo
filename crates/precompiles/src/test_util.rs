@@ -12,7 +12,7 @@ use alloy::{
     primitives::{Address, B256, U256},
     sol_types::SolError,
 };
-use revm::precompile::PrecompileError;
+use revm::precompile::{PrecompileError, PrecompileFailure};
 #[cfg(any(test, feature = "test-utils"))]
 use tempo_contracts::precompiles::TIP20Error;
 use tempo_contracts::precompiles::{TIP20_FACTORY_ADDRESS, UnknownFunctionSelector};
@@ -38,7 +38,7 @@ pub fn check_selector_coverage<P: Precompile>(
 
         // Check if we got "Unknown function selector" error (old format)
         let is_unsupported_old = matches!(&result,
-            Err(PrecompileError::Other(msg)) if msg.contains("Unknown function selector")
+            Err(PrecompileFailure { error: PrecompileError::Other(msg), .. }) if msg.contains("Unknown function selector")
         );
 
         // Check if we got "Unknown function selector" error (new format - ABI-encoded)

@@ -9,7 +9,7 @@ use alloy::{
     primitives::Address,
     sol_types::{SolCall, SolInterface},
 };
-use revm::precompile::{PrecompileError, PrecompileResult};
+use revm::precompile::{PrecompileError, PrecompileFailure, PrecompileResult};
 use tempo_contracts::precompiles::IValidatorConfig::{
     IValidatorConfigCalls, changeValidatorStatusByIndexCall,
 };
@@ -18,7 +18,7 @@ impl Precompile for ValidatorConfig {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         self.storage
             .deduct_gas(input_cost(calldata.len()))
-            .map_err(|_| PrecompileError::OutOfGas)?;
+            .map_err(|_| PrecompileFailure::from(PrecompileError::OutOfGas))?;
 
         dispatch_call(
             calldata,
@@ -122,7 +122,7 @@ mod tests {
             validator_config.initialize(owner)?;
 
             let result = validator_config.call(&[0x12, 0x34], sender);
-            assert!(matches!(result, Err(PrecompileError::Other(_))));
+            assert!(matches!(result, Err(f) if matches!(f.error, PrecompileError::Other(_))));
 
             Ok(())
         })
@@ -145,7 +145,7 @@ mod tests {
 
             let result = validator_config.call(&calldata, sender)?;
             // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
-            assert_eq!(result.gas_used, 0);
+            assert_eq!(result.gas.remaining(), 0);
 
             // Verify we get the correct owner
             let decoded = Address::abi_decode(&result.bytes)?;
@@ -180,7 +180,7 @@ mod tests {
             let result = validator_config.call(&calldata, owner)?;
 
             // HashMapStorageProvider does not have gas accounting, so we expect 0
-            assert_eq!(result.gas_used, 0);
+            assert_eq!(result.gas.remaining(), 0);
 
             // Verify validator was added by calling getValidators
             let validators = validator_config.get_validators()?;

@@ -1,7 +1,10 @@
 use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::{EvmInternals, EvmInternalsError};
 use revm::{
-    context::{Block, CfgEnv, journaled_state::JournalCheckpoint},
+    context::{
+        Block, CfgEnv,
+        journaled_state::{JournalCheckpoint, JournalLoadError},
+    },
     context_interface::cfg::{GasParams, gas},
     state::{AccountInfo, Bytecode},
 };
@@ -227,6 +230,11 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     }
 
     #[inline]
+    fn gas_limit(&self) -> u64 {
+        self.gas_limit
+    }
+
+    #[inline]
     fn gas_used(&self) -> u64 {
         self.gas_limit - self.gas_remaining
     }
@@ -299,6 +307,15 @@ impl EvmPrecompileStorageProvider<'_> {
 impl From<EvmInternalsError> for TempoPrecompileError {
     fn from(value: EvmInternalsError) -> Self {
         Self::Fatal(value.to_string())
+    }
+}
+
+impl From<JournalLoadError<EvmInternalsError>> for TempoPrecompileError {
+    fn from(value: JournalLoadError<EvmInternalsError>) -> Self {
+        match value {
+            JournalLoadError::DBError(e) => Self::Fatal(e.to_string()),
+            JournalLoadError::ColdLoadSkipped => Self::OutOfGas,
+        }
     }
 }
 
