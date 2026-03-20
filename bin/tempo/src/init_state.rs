@@ -4,13 +4,12 @@
 //! to the genesis state. The binary format is produced by `tempo-xtask generate-state-bloat`.
 
 use std::{
-    collections::HashMap,
     fs::File,
     io::{BufReader, Read},
     path::PathBuf,
 };
 
-use alloy_primitives::{B256, U256, map::HashSet};
+use alloy_primitives::{B256, U256};
 use clap::Parser;
 use eyre::{Context as _, ensure};
 use reth_chainspec::EthereumHardforks;
@@ -32,6 +31,10 @@ const MAGIC: &[u8; 8] = b"TEMPOSB\x00";
 
 /// Expected format version
 const VERSION: u16 = 1;
+
+/// Number of storage entries to buffer before flushing hashed state to the database.
+/// 1M entries × 64 bytes ≈ 64 MiB peak memory per batch.
+const HASHING_BATCH_SIZE: usize = 1_000_000;
 
 /// Initialize state from a binary dump file.
 #[derive(Debug, Parser)]
@@ -79,14 +82,8 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         let mut total_entries = 0u64;
         let mut total_tokens = 0u64;
 
-        // Collect storage entries per address for hashing
-        let mut storage_for_hashing: HashMap<alloy_primitives::Address, Vec<StorageEntry>> =
-            HashMap::new();
-
-        // Track addresses for account hashing (we need to create empty accounts)
-        let mut addresses_seen: HashSet<alloy_primitives::Address> = HashSet::default();
-
-        // Process blocks from binary file
+        // Process tokens from binary file, flushing hashed state in bounded batches
+        // to keep memory usage constant regardless of bloat size.
         loop {
             // Try to read header
             let mut header_buf = [0u8; 40];
@@ -126,8 +123,6 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 "Processing token storage"
             );
 
-            addresses_seen.insert(address);
-
             // Get cursors for plain state tables
             let tx = provider_rw.tx_ref();
             let mut storage_cursor = tx.cursor_dup_write::<tables::PlainStorageState>()?;
@@ -139,10 +134,11 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 account_cursor.upsert(address, &Account::default())?;
             }
 
-            // Collect storage for hashing
-            let storage_entries = storage_for_hashing.entry(address).or_default();
+            // Write hashed account entry immediately
+            provider_rw.insert_account_for_hashing([(address, Some(Account::default()))])?;
 
-            // Read and insert entries
+            // Read entries and flush hashed storage in batches to bound memory
+            let mut batch = Vec::with_capacity(HASHING_BATCH_SIZE.min(pair_count as usize));
             let mut entry_buf = [0u8; 64];
             let start = std::time::Instant::now();
             let mut last_log = start;
@@ -164,10 +160,12 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 // Insert into plain storage state
                 storage_cursor.upsert(address, &entry)?;
 
-                // Collect for hashed storage
-                storage_entries.push(entry);
-
+                batch.push(entry);
                 total_entries += 1;
+
+                if batch.len() >= HASHING_BATCH_SIZE {
+                    provider_rw.insert_storage_for_hashing([(address, batch.drain(..))])?;
+                }
 
                 let now = std::time::Instant::now();
                 if now.duration_since(last_log) >= std::time::Duration::from_secs(5)
@@ -188,40 +186,27 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 }
             }
 
+            // Flush remaining entries for this token
+            if !batch.is_empty() {
+                provider_rw.insert_storage_for_hashing([(address, batch)])?;
+            }
+
             total_tokens += 1;
+
+            info!(
+                target: "tempo::cli",
+                %address,
+                total_entries,
+                "Token hashed storage flushed"
+            );
         }
 
         info!(
             target: "tempo::cli",
             total_tokens,
             total_entries,
-            "Plain storage state written, now writing hashed state..."
+            "All storage written (plain + hashed)"
         );
-
-        // Write hashed account entries for addresses that have storage.
-        // We create empty accounts (zero balance, zero nonce, no code) for precompile addresses.
-        // This is required for the storage to be included in the state trie computation.
-        let empty_account = Account::default();
-        provider_rw.insert_account_for_hashing(
-            addresses_seen
-                .iter()
-                .map(|addr| (*addr, Some(empty_account))),
-        )?;
-
-        info!(
-            target: "tempo::cli",
-            addresses = addresses_seen.len(),
-            "Hashed accounts written"
-        );
-
-        // Write hashed storage entries for trie computation
-        provider_rw.insert_storage_for_hashing(
-            storage_for_hashing
-                .into_iter()
-                .map(|(addr, entries)| (addr, entries.into_iter())),
-        )?;
-
-        info!(target: "tempo::cli", "Hashed storage written");
 
         // Commit the transaction
         provider_rw.commit()?;
