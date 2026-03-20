@@ -106,6 +106,7 @@ jemalloc = [
 	"reth-cli-util/jemalloc",
 	"reth-ethereum-cli/jemalloc",
 	"reth-ethereum/jemalloc",
+	"reth-provider/jemalloc",
 	"tempo-node/jemalloc",
 ]
 jemalloc-prof = [
