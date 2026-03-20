@@ -294,26 +294,21 @@ impl DexMonitor {
             }
 
             // 4. Slippage estimation
-            match dex
+            if let Ok(amount_out) = dex
                 .quoteSwapExactAmountIn(pair.base, pair.quote, 1_000_000_000u128)
                 .call()
                 .await
             {
-                Ok(amount_out) => {
-                    let slippage_bps = if amount_out > 0 {
-                        ((1_000_000_000_f64 - amount_out as f64) / 1_000_000_000_f64 * 10_000_f64)
-                            .abs()
-                    } else {
-                        0.0
-                    };
-                    gauge!("tempo_dex_slippage_bps",
-                        "base_name" => pair.base_name.clone(),
-                        "quote_name" => pair.quote_name.clone()
-                    )
-                    .set(slippage_bps);
-                }
-                Err(_) => {
-                }
+                let slippage_bps = if amount_out > 0 {
+                    ((1_000_000_000_f64 - amount_out as f64) / 1_000_000_000_f64 * 10_000_f64).abs()
+                } else {
+                    0.0
+                };
+                gauge!("tempo_dex_slippage_bps",
+                    "base_name" => pair.base_name.clone(),
+                    "quote_name" => pair.quote_name.clone()
+                )
+                .set(slippage_bps);
             }
         }
 
