@@ -171,7 +171,7 @@ jobs:
         if: steps.update.outputs.bumped == 'true'
         run: |
           git add -A
-          git commit -m "chore(deps): bump reth rev to ${{ steps.update.outputs.new_rev }} ($(date -u +%Y-%m-%d))"
+          git commit -m "deps: bump reth rev to ${{ steps.update.outputs.new_rev }} ($(date -u +%Y-%m-%d))"
 
       # ── cargo check + Amp fix loop ────────────────────────────
       - name: Fix compilation errors
@@ -321,7 +321,7 @@ jobs:
           DATE=$(date -u +%Y-%m-%d)
           OLD_REV="${{ steps.update.outputs.old_rev }}"
           NEW_REV="${{ steps.update.outputs.new_rev }}"
-          TITLE="chore(deps): update reth from main ($DATE)"
+          TITLE="deps: update reth from main ($DATE)"
 
           # Build PR body in a temp file to avoid shell quoting issues
           {
@@ -335,7 +335,7 @@ jobs:
             echo ""
 
             # Summarize source migrations using Amp
-            SOURCE_DIFF=$(git diff HEAD~1 -- '*.rs' '*.toml' ':!Cargo.lock' 2>/dev/null || true)
+            SOURCE_DIFF=$(git diff origin/main -- '*.rs' '*.toml' ':!Cargo.lock' 2>/dev/null || true)
             if [ -n "$SOURCE_DIFF" ]; then
               echo "## Migrations"
               echo ""
