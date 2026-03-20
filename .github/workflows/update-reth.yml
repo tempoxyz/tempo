@@ -330,6 +330,20 @@ jobs:
             if [ -n "$OLD_REV" ] && [ -n "$NEW_REV" ]; then
               echo "**reth**: [\`${OLD_REV:0:7}...${NEW_REV:0:7}\`](https://github.com/paradigmxyz/reth/compare/${OLD_REV}...${NEW_REV})"
               echo ""
+
+              # Summarize upstream reth changes
+              RETH_LOG=$(gh api "repos/paradigmxyz/reth/compare/${OLD_REV}...${NEW_REV}" \
+                --jq '[.commits[] | "- " + (.commit.message | split("\n")[0])] | join("\n")' 2>/dev/null || true)
+              if [ -n "$RETH_LOG" ]; then
+                echo "## Upstream reth changes"
+                echo ""
+                RETH_SUMMARY=$(echo "$RETH_LOG" | amp-run -x "Summarize these upstream reth commit messages into a concise markdown bullet list \
+                  grouped by area (e.g. engine, rpc, trie, db, perf, testing, etc). \
+                  Merge related commits into single bullets. Skip CI/doc-only changes unless significant. \
+                  Do NOT include any preamble or explanation, just the grouped bullet list.")
+                echo "$RETH_SUMMARY"
+                echo ""
+              fi
             fi
             echo "**Workflow Run**: [link](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
             echo ""
