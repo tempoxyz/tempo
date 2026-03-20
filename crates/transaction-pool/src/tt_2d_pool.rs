@@ -5681,18 +5681,16 @@ mod tests {
         pool.assert_invariants();
     }
 
-    /// Regression: removing a lower-nonce tx must not leave the independent tx non-pending.
-    ///
-    /// `demote_from_nonce` used to mark all txs with nonce > removed as non-pending without
-    /// cleaning up `independent_transactions`. Found by cargo-fuzz `aa2d_state_machine`.
+    /// Regression for cargo-fuzz `aa2d_state_machine`: removing a lower-nonce tx must not
+    /// leave the independent tx non-pending.
     #[test]
     fn remove_lower_nonce_preserves_independent_invariant() {
         let mut pool = AA2dPool::default();
         let sender = Address::with_last_byte(2);
-        let nk = U256::ZERO;
+        let seq = AASequenceId::new(sender, U256::ZERO);
 
-        // Add tx at nonce 5 (queued — gap at 0-4)
-        let tx5 = TxBuilder::aa(sender).nonce_key(nk).nonce(5).build();
+        // nonce 5, queued (gap at 0-4)
+        let tx5 = TxBuilder::aa(sender).nonce_key(seq.nonce_key).nonce(5).build();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx5, TransactionOrigin::External)),
             0,
@@ -5700,13 +5698,11 @@ mod tests {
         )
         .unwrap();
 
-        // Advance on-chain nonce to 5 → nonce 5 becomes independent + pending
-        let mut changes = HashMap::default();
-        changes.insert(AASequenceId::new(sender, nk), 5);
-        pool.on_nonce_changes(changes);
+        // advance on-chain nonce → nonce 5 becomes independent + pending
+        pool.on_nonce_changes(HashMap::from([(seq, 5)]));
 
-        // Add tx at nonce 2 (queued, lower nonce in same sequence)
-        let tx2 = TxBuilder::aa(sender).nonce_key(nk).nonce(2).build();
+        // add nonce 2 (queued, lower nonce in same sequence)
+        let tx2 = TxBuilder::aa(sender).nonce_key(seq.nonce_key).nonce(2).build();
         let tx2_hash = *tx2.hash();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx2, TransactionOrigin::External)),
@@ -5715,9 +5711,8 @@ mod tests {
         )
         .unwrap();
 
-        // Remove nonce 2 — must not leave independent tx at nonce 5 non-pending
+        // removing nonce 2 must not leave independent tx at nonce 5 non-pending
         pool.remove_transactions([&tx2_hash].into_iter());
-
         pool.assert_invariants();
     }
 }
