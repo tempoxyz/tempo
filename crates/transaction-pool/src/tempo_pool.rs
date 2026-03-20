@@ -257,14 +257,24 @@ where
             }
 
             // Check 2: Spending limit updates
-            // Only evict if the transaction's fee token matches the token whose limit changed.
+            // Only evict sender-paid keychain txs whose fee token matches the changed limit.
+            // Sponsored txs (fee payer != sender) are not subject to the sender's spending
+            // limit, so evicting them here would be a false positive.
             if !updates.spending_limit_changes.is_empty()
                 && let Some(ref subject) = keychain_subject
                 && subject.matches_spending_limit_update(&updates.spending_limit_changes)
             {
-                to_remove.push(*tx.hash());
-                spending_limit_count += 1;
-                continue;
+                let sender = *tx.transaction.sender_ref();
+                let sender_paid = tx
+                    .transaction
+                    .inner()
+                    .fee_payer(sender)
+                    .map_or(true, |fee_payer| fee_payer == sender);
+                if sender_paid {
+                    to_remove.push(*tx.hash());
+                    spending_limit_count += 1;
+                    continue;
+                }
             }
 
             // Check 2b: Spending limit spends
@@ -272,15 +282,24 @@ where
             // remaining limit but emits no event. We re-read the current remaining limit
             // from state for affected (account, key_id, fee_token) combos and evict if
             // the pending tx's fee cost now exceeds the remaining limit.
+            // Same as Check 2: only applies to sender-paid transactions.
             if !updates.spending_limit_spends.is_empty()
                 && let Some(ref subject) = keychain_subject
                 && subject.matches_spending_limit_update(&updates.spending_limit_spends)
                 && let Some(ref mut provider) = state_provider
                 && exceeds_spending_limit(provider, subject, tx.transaction.fee_token_cost())
             {
-                to_remove.push(*tx.hash());
-                spending_limit_spend_count += 1;
-                continue;
+                let sender = *tx.transaction.sender_ref();
+                let sender_paid = tx
+                    .transaction
+                    .inner()
+                    .fee_payer(sender)
+                    .map_or(true, |fee_payer| fee_payer == sender);
+                if sender_paid {
+                    to_remove.push(*tx.hash());
+                    spending_limit_spend_count += 1;
+                    continue;
+                }
             }
 
             // Check 3: Validator token changes (re-check liquidity for all transactions)
