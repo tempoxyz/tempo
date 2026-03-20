@@ -16,5 +16,10 @@ pub(crate) fn all_invariants() -> Vec<Invariant> {
             description: "Doubly-linked list pointers consistent at every tick level",
             check: linked_list::check_linked_list,
         },
+        Invariant {
+            name: "liquidity_consistency",
+            description: "total_liquidity == sum of order.remaining() at each tick",
+            check: liquidity::check_liquidity,
+        },
     ]
 }
