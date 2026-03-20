@@ -541,12 +541,12 @@ where
             subblock_txs = tracing::field::Empty,
         )
         .entered();
-        let subblocks_count = subblocks.len();
-        let mut subblock_transactions = 0u64;
+        let subblocks_count = subblocks.len() as f64;
+        let mut subblock_transactions = 0f64;
         // Apply subblock transactions
         for subblock in &subblocks {
             let subblock_start = Instant::now();
-            let mut subblock_tx_count = 0u64;
+            let mut subblock_tx_count = 0f64;
 
             for tx in subblock.transactions_recovered() {
                 if let Err(err) = builder.execute_transaction(tx.cloned()) {
@@ -567,7 +567,7 @@ where
                     }
                 }
 
-                subblock_tx_count += 1;
+                subblock_tx_count += 1.0;
             }
 
             self.metrics
@@ -575,23 +575,23 @@ where
                 .record(subblock_start.elapsed());
             self.metrics
                 .subblock_transaction_count
-                .record(subblock_tx_count as f64);
+                .record(subblock_tx_count);
             subblock_transactions += subblock_tx_count;
         }
-        _subblock_txs_span.record("subblock_txs", subblock_transactions);
+        _subblock_txs_span.record("subblock_txs", subblock_transactions as u64);
         drop(_subblock_txs_span);
         let total_subblock_transaction_execution_elapsed = subblocks_start.elapsed();
         self.metrics
             .total_subblock_transaction_execution_duration_seconds
             .record(total_subblock_transaction_execution_elapsed);
-        self.metrics.subblocks.record(subblocks_count as f64);
-        self.metrics.subblocks_last.set(subblocks_count as f64);
+        self.metrics.subblocks.record(subblocks_count);
+        self.metrics.subblocks_last.set(subblocks_count);
         self.metrics
             .subblock_transactions
-            .record(subblock_transactions as f64);
+            .record(subblock_transactions);
         self.metrics
             .subblock_transactions_last
-            .set(subblock_transactions as f64);
+            .set(subblock_transactions);
 
         // Apply system transactions
         let system_txs_execution_start = Instant::now();
