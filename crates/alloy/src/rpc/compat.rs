@@ -500,6 +500,45 @@ mod tests {
     }
 
     #[test]
+    fn test_aa_roundtrip_via_tx_env() {
+        use alloy_primitives::U256;
+
+        let calls = vec![
+            Call {
+                to: address!("0x1111111111111111111111111111111111111111").into(),
+                value: U256::ZERO,
+                input: Bytes::from(vec![0xaa]),
+            },
+            Call {
+                to: address!("0x2222222222222222222222222222222222222222").into(),
+                value: U256::ZERO,
+                input: Bytes::from(vec![0xbb]),
+            },
+        ];
+
+        let tx = TempoTransaction {
+            chain_id: 4217,
+            nonce: 1,
+            gas_limit: 100_000,
+            max_fee_per_gas: 1_000_000_000,
+            max_priority_fee_per_gas: 1_000_000,
+            calls: calls.clone(),
+            ..Default::default()
+        };
+
+        let req: TempoTransactionRequest = tx.into();
+
+        let evm_env = EvmEnv::default();
+        let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
+        let aa_calls = tx_env.tempo_tx_env.expect("tempo_tx_env").aa_calls;
+
+        assert_eq!(
+            aa_calls, calls,
+            "roundtrip via try_into_tx_env must preserve exact call list"
+        );
+    }
+
+    #[test]
     fn test_estimate_gas_invalid_fee_payer_signature_keeps_unresolved_fee_payer() {
         let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         let target = address!("0x2222222222222222222222222222222222222222");

@@ -135,22 +135,6 @@ impl BlockHeader for TempoHeader {
     }
 }
 
-#[cfg(feature = "reth")]
-impl reth_primitives_traits::InMemorySize for TempoHeader {
-    fn size(&self) -> usize {
-        let Self {
-            inner,
-            general_gas_limit,
-            timestamp_millis_part,
-            shared_gas_limit,
-        } = self;
-        inner.size()
-            + general_gas_limit.size()
-            + timestamp_millis_part.size()
-            + shared_gas_limit.size()
-    }
-}
-
 impl Sealable for TempoHeader {
     fn hash_slow(&self) -> B256 {
         keccak256(alloy_rlp::encode(self))
