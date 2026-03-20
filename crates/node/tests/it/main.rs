@@ -1,6 +1,7 @@
 mod backfill;
 mod base_fee;
 mod block_building;
+mod debug_trace_aa;
 mod createx;
 mod eth_call;
 mod eth_transactions;
