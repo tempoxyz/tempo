@@ -21,5 +21,10 @@ pub(crate) fn all_invariants() -> Vec<Invariant> {
             description: "total_liquidity == sum of order.remaining() at each tick",
             check: liquidity::check_liquidity,
         },
+        Invariant {
+            name: "balance_conservation",
+            description: "DEX external balance >= internal balances + escrow (TEMPO-DEX10)",
+            check: balance::check_balances,
+        },
     ]
 }
