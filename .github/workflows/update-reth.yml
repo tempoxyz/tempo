@@ -1,8 +1,7 @@
 # Nightly workflow to update reth dependencies from upstream main branch.
 #
-# Ensures `reth-bump` exists and is rebased onto latest main, then creates
-# a working branch `reth-bump-update` for the actual rev bump + fixes.
-# Opens a PR targeting `reth-bump`.
+# If `reth-auto-bump` exists, rebases it onto main (preserving source fixes)
+# and bumps to the latest reth rev. Opens a PR targeting `main`.
 
 name: Update reth deps
 
@@ -52,45 +51,32 @@ jobs:
           git config user.name "$GIT_NAME"
           git config user.email "${GIT_ID}+${GIT_LOGIN}@users.noreply.github.com"
 
-      # ── ensure reth-bump branch exists and is up-to-date ─────
-      - name: Setup reth-bump base branch
-        run: |
-          if git rev-parse --verify origin/reth-bump >/dev/null 2>&1; then
-            echo "reth-bump exists, rebasing onto main"
-            git checkout reth-bump
-            git rebase origin/main
-          else
-            echo "Creating reth-bump from main"
-            git checkout -b reth-bump origin/main
-          fi
-          git push --force-with-lease origin reth-bump
-
-      # ── detect or create working branch ─────────────────────────
+      # ── setup working branch ─────────────────────────────────
       - name: Setup working branch
         id: detect
         env:
           GH_TOKEN: ${{ secrets.DEREK_PAT }}
         run: |
-          EXISTING_PR=$(gh pr list --head reth-bump-update --base reth-bump --state open --json number --jq '.[0].number // empty')
+          EXISTING_PR=$(gh pr list --head reth-auto-bump --base main --state open --json number --jq '.[0].number // empty')
           if [ -n "$EXISTING_PR" ]; then
             echo "existing_pr=$EXISTING_PR" >> "$GITHUB_OUTPUT"
             echo "Found existing PR #$EXISTING_PR"
           fi
 
-          if git rev-parse --verify origin/reth-bump-update >/dev/null 2>&1; then
-            echo "Continuing on existing reth-bump-update branch"
-            git checkout reth-bump-update
-            if ! git rebase reth-bump; then
+          if git rev-parse --verify origin/reth-auto-bump >/dev/null 2>&1; then
+            echo "Continuing on existing reth-auto-bump branch, rebasing onto main"
+            git checkout reth-auto-bump
+            if ! git rebase origin/main; then
               echo "Rebase conflicts detected, resolving..."
               # Conflicts are expected in Cargo.toml/Cargo.lock from old rev bumps.
-              # Accept the base (reth-bump) version for those since we're about to
-              # bump to a new rev anyway. Keep source fixes from our side.
+              # Accept main's version for those since we're about to bump to a new
+              # rev anyway. Keep source fixes from our side.
               while [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; do
                 CONFLICTED=$(git diff --name-only --diff-filter=U)
                 for f in $CONFLICTED; do
                   case "$f" in
                     Cargo.toml|Cargo.lock)
-                      echo "  Accepting reth-bump version for $f"
+                      echo "  Accepting main version for $f"
                       git checkout --theirs "$f"
                       ;;
                     *)
@@ -105,8 +91,8 @@ jobs:
               echo "Rebase completed with conflict resolution"
             fi
           else
-            echo "Creating reth-bump-update from reth-bump"
-            git checkout -b reth-bump-update reth-bump
+            echo "Creating reth-auto-bump from main"
+            git checkout -b reth-auto-bump origin/main
           fi
 
       # ── toolchain (matches test.yml) ───────────────────────────
@@ -151,9 +137,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.DEREK_PAT }}
         run: |
-          # Base rev from reth-bump branch (what we're upgrading FROM)
-          BASE_REV=$(git show reth-bump:Cargo.toml | grep -m1 'paradigmxyz/reth' | sed 's/.*rev = "\([^"]*\)".*/\1/')
-          echo "Base reth rev (on reth-bump): $BASE_REV"
+          # Base rev from main branch (what we're upgrading FROM)
+          BASE_REV=$(git show origin/main:Cargo.toml | grep -m1 'paradigmxyz/reth' | sed 's/.*rev = "\([^"]*\)".*/\1/')
+          echo "Base reth rev (on main): $BASE_REV"
 
           # Current rev on working branch (may already have a previous bump)
           CURRENT_REV=$(grep -m1 'paradigmxyz/reth' Cargo.toml | sed 's/.*rev = "\([^"]*\)".*/\1/')
@@ -324,7 +310,7 @@ jobs:
       # ── push ───────────────────────────────────────────────────
       - name: Push working branch
         run: |
-          git push --force-with-lease origin reth-bump-update
+          git push --force-with-lease origin reth-auto-bump
 
       # ── create / update PR ─────────────────────────────────────
       - name: Create or update PR
@@ -361,9 +347,9 @@ jobs:
           } > /tmp/pr-body.txt
 
           # Skip PR if there are no commits between the branches
-          COMMITS_AHEAD=$(git rev-list --count reth-bump..reth-bump-update 2>/dev/null || echo "0")
+          COMMITS_AHEAD=$(git rev-list --count origin/main..reth-auto-bump 2>/dev/null || echo "0")
           if [ "$COMMITS_AHEAD" = "0" ]; then
-            echo "No commits ahead of reth-bump — nothing to PR"
+            echo "No commits ahead of main — nothing to PR"
             exit 0
           fi
 
@@ -376,8 +362,8 @@ jobs:
           else
             echo "Creating new PR"
             gh pr create \
-              --base reth-bump \
-              --head reth-bump-update \
+              --base main \
+              --head reth-auto-bump \
               --title "$TITLE" \
               --body-file /tmp/pr-body.txt \
               --label A-dependencies
@@ -389,7 +375,7 @@ jobs:
           GH_TOKEN: ${{ secrets.DEREK_PAT }}
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
         run: |
-          PR_BRANCH="reth-bump-update"
+          PR_BRANCH="reth-auto-bump"
 
           CI_TIMEOUT_MINUTES=30
           MAX_CI_FIX_ATTEMPTS=10
