@@ -179,23 +179,23 @@ jobs:
         env:
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
         run: |
-          echo "::group::Initial cargo check"
+          echo "::group::Initial cargo clippy"
           set +e
-          cargo check --workspace 2>&1
-          check_exit=$?
+          cargo clippy --all-targets --all-features --locked 2>&1
+          clippy_exit=$?
           set -e
           echo "::endgroup::"
 
-          if [ "$check_exit" -eq 0 ]; then
-            echo "Cargo check already passes — skipping."
+          if [ "$clippy_exit" -eq 0 ]; then
+            echo "Cargo clippy already passes — skipping."
             exit 0
           fi
 
           AMP_PROMPT="This Rust workspace just had its reth dependencies updated to the latest commit \
-          on the paradigmxyz/reth main branch. \`cargo check --workspace\` is now failing with compilation errors.
+          on the paradigmxyz/reth main branch. \`cargo clippy --all-targets --all-features --locked\` is now failing with compilation errors.
 
-          Run \`cargo check --workspace\` to see the errors, then fix the Rust source code and repeat \
-          until cargo check passes. You may also bump non-reth dependency versions in Cargo.toml files \
+          Run \`cargo clippy --all-targets --all-features --locked\` to see the errors, then fix the Rust source code and repeat \
+          until cargo clippy passes. You may also bump non-reth dependency versions in Cargo.toml files \
           if needed (e.g. revm, alloy), but do NOT modify the reth rev or git source specifications \
           in any Cargo.toml — those have already been updated by the workflow.
 
@@ -210,7 +210,7 @@ jobs:
             attempt=$((attempt + 1))
             if [ "$attempt" -gt "$MAX_ATTEMPTS" ] || [ "$SECONDS" -ge "$DEADLINE" ]; then
               echo "::error::Gave up after $((attempt - 1)) attempts / $((SECONDS / 60))m — pushing best effort"
-              echo "check_passed=false" >> "$GITHUB_OUTPUT"
+              echo "clippy_passed=false" >> "$GITHUB_OUTPUT"
               exit 0  # don't fail — let subsequent steps commit+push partial work
             fi
 
@@ -218,20 +218,20 @@ jobs:
             amp-run --dangerously-allow-all -x "$AMP_PROMPT"
             echo "::endgroup::"
 
-            echo "::group::Verify cargo check"
+            echo "::group::Verify cargo clippy"
             set +e
-            cargo check --workspace 2>&1
-            check_exit=$?
+            cargo clippy --all-targets --all-features --locked 2>&1
+            clippy_exit=$?
             set -e
             echo "::endgroup::"
 
-            if [ "$check_exit" -eq 0 ]; then
-              echo "Cargo check passed after attempt $attempt"
-              echo "check_passed=true" >> "$GITHUB_OUTPUT"
+            if [ "$clippy_exit" -eq 0 ]; then
+              echo "Clippy passed after attempt $attempt"
+              echo "clippy_passed=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
 
-            echo "Amp exited but cargo check still failing, retrying..."
+            echo "Amp exited but cargo clippy still failing, retrying..."
           done
 
       # ── test compilation check + Amp fix loop ─────────────────
