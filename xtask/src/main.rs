@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use crate::{
     generate_devnet::GenerateDevnet, generate_genesis::GenerateGenesis,
     generate_localnet::GenerateLocalnet, generate_state_bloat::GenerateStateBloat,
-    get_dkg_outcome::GetDkgOutcome,
+    get_dkg_outcome::GetDkgOutcome, migrate_validator::MigrateValidator,
 };
 
 use alloy::signers::{local::MnemonicBuilder, utils::secret_key_to_address};
@@ -18,6 +18,7 @@ mod generate_localnet;
 mod generate_state_bloat;
 mod genesis_args;
 mod get_dkg_outcome;
+mod migrate_validator;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
@@ -38,6 +39,10 @@ async fn main() -> eyre::Result<()> {
             .run()
             .await
             .wrap_err("failed to generate state bloat file"),
+        Action::MigrateValidator(args) => args
+            .run()
+            .await
+            .wrap_err("failed to migrate validator"),
     }
 }
 
@@ -59,6 +64,7 @@ enum Action {
     GenerateLocalnet(GenerateLocalnet),
     GenerateAddPeer(GenerateAddPeer),
     GenerateStateBloat(GenerateStateBloat),
+    MigrateValidator(MigrateValidator),
 }
 
 #[derive(Debug, clap::Args)]
