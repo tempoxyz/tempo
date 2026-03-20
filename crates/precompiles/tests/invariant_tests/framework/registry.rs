@@ -41,5 +41,10 @@ pub(crate) fn all_invariants() -> Vec<Invariant> {
             description: "round_up >= round_down and escrow(remaining) <= escrow(amount)",
             check: rounding::check_rounding,
         },
+        Invariant {
+            name: "flip_order_correctness",
+            description: "Flip tick constraints and remaining <= amount for all orders",
+            check: flip_order::check_flip_orders,
+        },
     ]
 }
