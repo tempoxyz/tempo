@@ -877,6 +877,32 @@ impl StablecoinDEX {
         Ok((amount_out, next_tick_info))
     }
 
+    /// T2+: cancel stale orders at the head of the queue until an authorized maker is found.
+    /// Returns the updated level and order, or `None` if no authorized orders remain.
+    fn skip_stale_orders(
+        &mut self,
+        book_key: B256,
+        bid: bool,
+    ) -> Result<Option<(TickLevel, Order)>> {
+        if !self.storage.spec().is_t2() {
+            return Ok(None);
+        }
+
+        loop {
+            let level = match self.get_best_price_level(book_key, bid) {
+                Ok(level) => level,
+                Err(_) => return Ok(None),
+            };
+            let order = self.orders[level.head].read()?;
+
+            if self.is_maker_authorized(&order)? {
+                return Ok(Some((level, order)));
+            }
+
+            self.cancel_active_order(order)?;
+        }
+    }
+
     /// Fill orders for exact output amount
     fn fill_orders_exact_out(
         &mut self,
@@ -885,8 +911,14 @@ impl StablecoinDEX {
         mut amount_out: u128,
         taker: Address,
     ) -> Result<u128> {
-        let mut level = self.get_best_price_level(book_key, bid)?;
-        let mut order = self.orders[level.head].read()?;
+        let (mut level, mut order) = match self.skip_stale_orders(book_key, bid)? {
+            Some(result) => result,
+            None => {
+                let level = self.get_best_price_level(book_key, bid)?;
+                let order = self.orders[level.head].read()?;
+                (level, order)
+            }
+        };
 
         let mut total_amount_in: u128 = 0;
 
@@ -965,8 +997,14 @@ impl StablecoinDEX {
         mut amount_in: u128,
         taker: Address,
     ) -> Result<u128> {
-        let mut level = self.get_best_price_level(book_key, bid)?;
-        let mut order = self.orders[level.head].read()?;
+        let (mut level, mut order) = match self.skip_stale_orders(book_key, bid)? {
+            Some(result) => result,
+            None => {
+                let level = self.get_best_price_level(book_key, bid)?;
+                let order = self.orders[level.head].read()?;
+                (level, order)
+            }
+        };
 
         let mut total_amount_out: u128 = 0;
 
@@ -1169,7 +1207,8 @@ impl StablecoinDEX {
     /// Cancels an order whose maker is blocked by [`TIP403Registry`] policy, allowing anyone to
     /// clean up stale liquidity.
     ///
-    /// [TIP-1015]: T2+ checks sender authorization (maker must be able to send escrowed tokens)
+    /// [TIP-1015]: T2+ checks sender authorization on the escrow token and recipient
+    /// authorization on the payout token. An order is stale if the maker fails either check.
     ///
     /// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
     ///
@@ -1183,21 +1222,53 @@ impl StablecoinDEX {
             return Err(StablecoinDEXError::order_does_not_exist().into());
         }
 
+        if self.is_maker_authorized(&order)? {
+            Err(StablecoinDEXError::order_not_stale().into())
+        } else {
+            self.cancel_active_order(order)
+        }
+    }
+
+    /// Returns `true` if the maker is authorized to keep the order open.
+    ///
+    /// Checks sender authorization on the escrow token (bid=quote, ask=base).
+    /// T2+: also checks recipient authorization on the payout token (bid=base, ask=quote).
+    fn is_maker_authorized(&self, order: &Order) -> Result<bool> {
         let book = self.books[order.book_key()].read()?;
-        let token = if order.is_bid() {
+        let registry = TIP403Registry::new();
+
+        let escrow_token = if order.is_bid() {
             book.quote
         } else {
             book.base
         };
+        let escrow_policy_id = TIP20Token::from_address(escrow_token)?.transfer_policy_id()?;
+        let sender_authorized =
+            match registry.is_authorized_as(escrow_policy_id, order.maker(), AuthRole::sender()) {
+                Ok(authorized) => authorized,
+                Err(e) if is_policy_lookup_error(&e) => false,
+                Err(e) => return Err(e),
+            };
 
-        let policy_id = TIP20Token::from_address(token)?.transfer_policy_id()?;
-        // If the policy lookup fails because the policy is invalid or missing, the order is stale.
-        // Pre-T2 this surfaces as Panic(UnderOverflow); T2+ returns TIP403RegistryError variants.
-        match TIP403Registry::new().is_authorized_as(policy_id, order.maker(), AuthRole::sender()) {
-            Ok(true) => Err(StablecoinDEXError::order_not_stale().into()),
-            Ok(false) => self.cancel_active_order(order),
-            Err(e) if is_policy_lookup_error(&e) => self.cancel_active_order(order),
-            Err(e) => Err(e),
+        if !sender_authorized {
+            return Ok(false);
+        }
+
+        if self.storage.spec().is_t2() {
+            let payout_token = if order.is_bid() {
+                book.base
+            } else {
+                book.quote
+            };
+            let payout_policy_id = TIP20Token::from_address(payout_token)?.transfer_policy_id()?;
+            match registry.is_authorized_as(payout_policy_id, order.maker(), AuthRole::recipient())
+            {
+                Ok(authorized) => Ok(authorized),
+                Err(e) if is_policy_lookup_error(&e) => Ok(false),
+                Err(e) => Err(e),
+            }
+        } else {
+            Ok(true)
         }
     }
 
@@ -4143,6 +4214,266 @@ mod tests {
     }
 
     #[test]
+    fn test_cancel_stale_order_recipient_blacklisted_on_payout_token_pre_t2() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let admin = Address::random();
+
+            let mut registry = TIP403Registry::new();
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
+
+            let (base_addr, quote_addr) =
+                setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 2)?;
+
+            exchange.create_pair(base_addr)?;
+            let order_id = exchange.place(alice, base_addr, MIN_ORDER_AMOUNT, false, 0)?;
+
+            let mut quote = TIP20Token::from_address(quote_addr)?;
+            quote.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy_id,
+                },
+            )?;
+
+            registry.modify_policy_blacklist(
+                admin,
+                ITIP403Registry::modifyPolicyBlacklistCall {
+                    policyId: policy_id,
+                    account: alice,
+                    restricted: true,
+                },
+            )?;
+
+            // Pre-T2: recipient check on payout token is not performed, order is not stale
+            let result = exchange.cancel_stale_order(order_id);
+            assert!(result.is_err());
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::StablecoinDEX(StablecoinDEXError::OrderNotStale(_))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_cancel_stale_order_recipient_blacklisted_on_payout_token_t2() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let admin = Address::random();
+
+            let mut registry = TIP403Registry::new();
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
+
+            let (base_addr, quote_addr) =
+                setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 2)?;
+
+            exchange.create_pair(base_addr)?;
+            let order_id = exchange.place(alice, base_addr, MIN_ORDER_AMOUNT, false, 0)?;
+
+            let mut quote = TIP20Token::from_address(quote_addr)?;
+            quote.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy_id,
+                },
+            )?;
+
+            registry.modify_policy_blacklist(
+                admin,
+                ITIP403Registry::modifyPolicyBlacklistCall {
+                    policyId: policy_id,
+                    account: alice,
+                    restricted: true,
+                },
+            )?;
+
+            // T2+: recipient check on payout token kicks in, order is stale
+            exchange.cancel_stale_order(order_id)?;
+
+            assert_eq!(exchange.balance_of(alice, base_addr)?, MIN_ORDER_AMOUNT);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_fill_skips_stale_order_t2() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let bob = Address::random();
+            let charlie = Address::random();
+            let admin = Address::random();
+
+            let mut registry = TIP403Registry::new();
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
+
+            let (base_addr, quote_addr) =
+                setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 4)?;
+
+            // Also give bob tokens
+            let mut base = TIP20Token::from_address(base_addr)?;
+            base.mint(
+                admin,
+                ITIP20::mintCall {
+                    to: bob,
+                    amount: U256::from(MIN_ORDER_AMOUNT * 2),
+                },
+            )?;
+            base.approve(
+                bob,
+                ITIP20::approveCall {
+                    spender: exchange.address,
+                    amount: U256::from(MIN_ORDER_AMOUNT * 2),
+                },
+            )?;
+
+            // Apply blacklist policy to base token (escrow for ask orders)
+            base.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy_id,
+                },
+            )?;
+
+            exchange.create_pair(base_addr)?;
+
+            // Alice places ask order first (will be at head of queue)
+            let alice_order_id = exchange.place(alice, base_addr, MIN_ORDER_AMOUNT, false, 0)?;
+            // Bob places ask order second (behind alice)
+            let bob_order_id = exchange.place(bob, base_addr, MIN_ORDER_AMOUNT, false, 0)?;
+
+            // Blacklist alice (sender on escrow token)
+            registry.modify_policy_blacklist(
+                admin,
+                ITIP403Registry::modifyPolicyBlacklistCall {
+                    policyId: policy_id,
+                    account: alice,
+                    restricted: true,
+                },
+            )?;
+
+            // Charlie swaps quote for base — alice's order is at head but stale
+            exchange.set_balance(charlie, quote_addr, MIN_ORDER_AMOUNT)?;
+            exchange.swap_exact_amount_in(charlie, quote_addr, base_addr, MIN_ORDER_AMOUNT, 0)?;
+
+            // Alice's stale order should have been skipped/cancelled
+            let alice_order = exchange.orders[alice_order_id].read()?;
+            assert!(
+                alice_order.maker().is_zero(),
+                "Alice's stale order should have been cancelled during fill"
+            );
+
+            // Bob's order should have been filled
+            let bob_order = exchange.orders[bob_order_id].read()?;
+            assert!(
+                bob_order.maker().is_zero(),
+                "Bob's order should have been filled"
+            );
+
+            // Alice gets her escrow refunded to internal balance (from cancel)
+            assert_eq!(exchange.balance_of(alice, base_addr)?, MIN_ORDER_AMOUNT);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_fill_does_not_skip_stale_order_pre_t2() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let charlie = Address::random();
+            let admin = Address::random();
+
+            let mut registry = TIP403Registry::new();
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
+
+            let (base_addr, quote_addr) =
+                setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 4)?;
+
+            let mut base = TIP20Token::from_address(base_addr)?;
+            base.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy_id,
+                },
+            )?;
+
+            exchange.create_pair(base_addr)?;
+
+            // Alice places ask order
+            exchange.place(alice, base_addr, MIN_ORDER_AMOUNT, false, 0)?;
+
+            // Blacklist alice
+            registry.modify_policy_blacklist(
+                admin,
+                ITIP403Registry::modifyPolicyBlacklistCall {
+                    policyId: policy_id,
+                    account: alice,
+                    restricted: true,
+                },
+            )?;
+
+            // Pre-T2: swap fills alice's stale order (no skip)
+            exchange.set_balance(charlie, quote_addr, MIN_ORDER_AMOUNT)?;
+            let amount_out = exchange.swap_exact_amount_in(
+                charlie,
+                quote_addr,
+                base_addr,
+                MIN_ORDER_AMOUNT,
+                0,
+            )?;
+
+            assert!(amount_out > 0, "Swap should fill stale order pre-T2");
+            // Alice gets payout credited to internal balance
+            assert!(exchange.balance_of(alice, quote_addr)? > 0);
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_place_when_base_blacklisted() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
@@ -4520,7 +4851,8 @@ mod tests {
     #[test]
     fn test_flip_order_fill_ignores_business_logic_error() -> eyre::Result<()> {
         // Business logic errors during flip are silently ignored (always).
-        for spec in [TempoHardfork::T1, TempoHardfork::T1A, TempoHardfork::T2] {
+        // T2 excluded: stale-order skipping cancels the order before fill.
+        for spec in [TempoHardfork::T1, TempoHardfork::T1A] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || {
                 let FlipOrderTestCtx {
