@@ -307,6 +307,7 @@ fn main() -> eyre::Result<()> {
                 )
             });
 
+            let consensus_storage_for_metrics = consensus_storage.clone();
             let runtime_config = commonware_runtime::tokio::Config::default()
                 .with_tcp_nodelay(Some(true))
                 .with_worker_threads(args.consensus.worker_threads)
@@ -325,6 +326,12 @@ fn main() -> eyre::Result<()> {
                     args.consensus.metrics_address,
                 )
                 .fuse();
+
+                let _disk_size_reporter =
+                    tempo_commonware_node::metrics::install_disk_size_reporter(
+                        ctx.with_label("disk"),
+                        consensus_storage_for_metrics,
+                    );
 
                 // Start the unified metrics exporter if configured
                 if let Some(config) = telemetry_config {
