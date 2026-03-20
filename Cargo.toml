@@ -20,6 +20,7 @@ members = [
   "crates/eyre",
   "crates/ext",
   "crates/evm",
+  "crates/evm/fuzz",
   "crates/e2e",
   "crates/faucet",
   "crates/node",

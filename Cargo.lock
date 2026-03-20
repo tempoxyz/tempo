@@ -12106,6 +12106,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-evm-fuzz"
+version = "1.4.2"
+dependencies = [
+ "alloy-primitives",
+ "arbitrary",
+]
+
+[[package]]
 name = "tempo-ext"
 version = "1.4.2"
 dependencies = [

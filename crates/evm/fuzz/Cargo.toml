@@ -1,0 +1,14 @@
+[package]
+name = "tempo-evm-fuzz"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+alloy-primitives = { workspace = true, features = ["std"] }
+arbitrary.workspace = true
