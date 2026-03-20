@@ -631,8 +631,11 @@ where
         } = builder.finish(instrumented_provider)?;
         if tracing::enabled!(target: "payload_builder", Level::DEBUG) {
             finish_span.record("accounts_changed", hashed_state.accounts.len());
-            let storage_slots_changed: usize =
-                hashed_state.storages.values().map(|s| s.storage.len()).sum();
+            let storage_slots_changed: usize = hashed_state
+                .storages
+                .values()
+                .map(|s| s.storage.len())
+                .sum();
             finish_span.record("storage_slots_changed", storage_slots_changed);
         }
         drop(finish_span);

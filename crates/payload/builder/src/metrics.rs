@@ -164,8 +164,14 @@ impl HashedPostStateProvider for InstrumentedFinishProvider<'_> {
         .entered();
         let result = self.inner.hashed_post_state(bundle_state);
         span.record("accounts", result.accounts.len());
-        span.record("storage_slots",
-            result.storages.values().map(|s| s.storage.len()).sum::<usize>());
+        span.record(
+            "storage_slots",
+            result
+                .storages
+                .values()
+                .map(|s| s.storage.len())
+                .sum::<usize>(),
+        );
         drop(span);
         self.metrics
             .hashed_post_state_duration_seconds
