@@ -26,5 +26,10 @@ pub(crate) fn all_invariants() -> Vec<Invariant> {
             description: "DEX external balance >= internal balances + escrow (TEMPO-DEX10)",
             check: balance::check_balances,
         },
+        Invariant {
+            name: "best_tick_accuracy",
+            description: "best_bid/ask is the actual best tick with liquidity (TEMPO-DEX12/13)",
+            check: best_tick::check_best_ticks,
+        },
     ]
 }
