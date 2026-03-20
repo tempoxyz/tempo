@@ -761,7 +761,7 @@ impl AA2dPool {
 
     /// Removes and returns all matching transactions and their dependent transactions from the
     /// pool.
-    pub(crate) fn remove_transactions_and_descendants<'a, I>(
+    pub fn remove_transactions_and_descendants<'a, I>(
         &mut self,
         hashes: I,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>
@@ -782,7 +782,7 @@ impl AA2dPool {
     }
 
     /// Removes all transactions from the given sender.
-    pub(crate) fn remove_transactions_by_sender(
+    pub fn remove_transactions_by_sender(
         &mut self,
         sender_id: Address,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
@@ -844,7 +844,7 @@ impl AA2dPool {
     ///
     /// This will prune mined transactions and promote unblocked transactions if any, returns `(promoted, mined)`
     #[allow(clippy::type_complexity)]
-    pub(crate) fn on_nonce_changes(
+    pub fn on_nonce_changes(
         &mut self,
         on_chain_ids: HashMap<AASequenceId, u64>,
     ) -> (
