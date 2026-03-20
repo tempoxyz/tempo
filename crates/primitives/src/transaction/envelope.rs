@@ -107,6 +107,12 @@ impl TempoTxEnvelope {
         }
     }
 
+    /// Returns `true` if the transaction is self-funded (no sponsor or recovery failed).
+    pub fn is_self_funded(&self, sender: Address) -> bool {
+        self.fee_payer(sender)
+            .map_or(true, |fee_payer| fee_payer == sender)
+    }
+
     /// Return the [`TempoTxType`] of the inner txn.
     pub const fn tx_type(&self) -> TempoTxType {
         match self {

@@ -30,10 +30,7 @@ use reth_ethereum::tasks::{
     Runtime,
     pool::{BlockingTaskGuard, BlockingTaskPool},
 };
-use reth_evm::{
-    EvmEnvFor, TxEnvFor,
-    revm::{Database, context::result::EVMError},
-};
+use reth_evm::{EvmEnvFor, TxEnvFor, revm::Database};
 use reth_node_api::{FullNodeComponents, FullNodeTypes, HeaderTy, PrimitivesTy};
 use reth_node_builder::{
     NodeAdapter,
@@ -279,9 +276,10 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
         evm_env: &EvmEnvFor<Self::Evm>,
         tx_env: &TxEnvFor<Self::Evm>,
     ) -> Result<u64, Self::Error> {
-        let fee_payer = tx_env
-            .fee_payer()
-            .map_err(EVMError::<ProviderError, _>::from)?;
+        // Defensive: create_txn_env already normalizes Some(None) → None for
+        // unresolvable placeholder signatures, but fall back to caller here too
+        // in case fee_payer() errors for any other reason during estimation.
+        let fee_payer = tx_env.fee_payer().unwrap_or(tx_env.caller);
 
         let fee_token = db
             .get_fee_token(tx_env, fee_payer, evm_env.cfg_env.spec)
@@ -323,7 +321,16 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
             request.nonce = Some(nonce);
         }
 
-        Ok(self.inner.create_txn_env(evm_env, request, db)?)
+        let mut tx_env = self.inner.create_txn_env(evm_env, request, db)?;
+
+        // If a fee-payer signature was present but recovery failed (e.g. placeholder
+        // signature during gas estimation / fill), clear the unresolved fee payer so
+        // the EVM falls back to sender-paid semantics instead of erroring.
+        if tx_env.fee_payer == Some(None) {
+            tx_env.fee_payer = None;
+        }
+
+        Ok(tx_env)
     }
 }
 

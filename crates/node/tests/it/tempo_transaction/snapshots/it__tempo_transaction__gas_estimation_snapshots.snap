@@ -9,6 +9,12 @@ baseline: 274318
 "secp256k1::batch_5_transfers": 578624
 "secp256k1::batch_10_transfers": 610586
 "secp256k1::contract_creation": 779451
+"sponsored_secp256k1::noop": 274318
+"sponsored_secp256k1::transfer": 553055
+"sponsored_secp256k1::batch_2_transfers": 559447
+"sponsored_secp256k1::batch_5_transfers": 578624
+"sponsored_secp256k1::batch_10_transfers": 610586
+"sponsored_secp256k1::contract_creation": 779451
 "p256::noop": 279358
 "p256::transfer": 558095
 "p256::batch_2_transfers": 564487
@@ -81,6 +87,12 @@ baseline: 274318
 "keychain_secp256k1::batch_5_transfers": 841796
 "keychain_secp256k1::batch_10_transfers": 874766
 "keychain_secp256k1::contract_creation": 1041616
+"sponsored_keychain_secp256k1::noop": 536482
+"sponsored_keychain_secp256k1::transfer": 815421
+"sponsored_keychain_secp256k1::batch_2_transfers": 822015
+"sponsored_keychain_secp256k1::batch_5_transfers": 841796
+"sponsored_keychain_secp256k1::batch_10_transfers": 874766
+"sponsored_keychain_secp256k1::contract_creation": 1041616
 "keychain_p256::noop": 541522
 "keychain_p256::transfer": 820460
 "keychain_p256::batch_2_transfers": 827054

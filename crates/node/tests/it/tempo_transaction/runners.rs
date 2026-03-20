@@ -338,6 +338,7 @@ fn gas_estimation_cases() -> Vec<GasCase> {
                     auth: auth_def.auth.clone(),
                     payload: payload.clone(),
                     expected: expected.clone(),
+                    placeholder_fee_payer: false,
                 });
             }
 
@@ -346,6 +347,40 @@ fn gas_estimation_cases() -> Vec<GasCase> {
                 auth: auth_def.auth.clone(),
                 payload: payload.clone(),
                 expected,
+                placeholder_fee_payer: false,
+            });
+        }
+    }
+
+    // --- Sponsored estimation cases (placeholder fee_payer_signature) ---
+    // The SDK calls eth_estimateGas with a dummy fee_payer_signature before the
+    // sponsor has signed. The RPC must fall back to sender-paid semantics and
+    // return a gas estimate comparable to the unsponsored counterpart.
+    let sponsored_auths: &[(&str, AuthKind)] = &[
+        ("secp256k1", AuthKind::Baseline),
+        (
+            "keychain_secp256k1",
+            AuthKind::Keychain {
+                key_type: None,
+                num_limits: 0,
+            },
+        ),
+    ];
+    for &(name, ref auth) in sponsored_auths {
+        for &(payload_name, ref payload) in payloads {
+            // After normalization the EVM sees the same sender-paid semantics,
+            // so gas should equal the unsponsored same-auth same-payload case.
+            let unsponsored_ref = if name == "secp256k1" && payload_name == "noop" {
+                "baseline".into()
+            } else {
+                format!("{name}::{payload_name}")
+            };
+            cases.push(GasCase {
+                name: format!("sponsored_{name}::{payload_name}"),
+                auth: auth.clone(),
+                payload: payload.clone(),
+                expected: ExpectedGasDiff::SameAs(unsponsored_ref),
+                placeholder_fee_payer: true,
             });
         }
     }
@@ -451,6 +486,17 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
             }
         }
 
+        // Attach a placeholder (all-zero) fee_payer_signature when the case
+        // simulates pre-sponsor estimation. Recovery will fail, so the RPC must
+        // fall back to sender-paid semantics.
+        if test_case.placeholder_fee_payer {
+            request.fee_payer_signature = Some(alloy::primitives::Signature::new(
+                U256::ZERO,
+                U256::ZERO,
+                false,
+            ));
+        }
+
         let gas = estimate_gas(provider, &request).await?;
         println!("  gas: {gas}");
 
@@ -483,6 +529,17 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
                     test_case.name,
                 );
                 println!("  ✓ gas {gas} > {ref_name} gas {ref_gas}");
+            }
+            ExpectedGasDiff::SameAs(ref_name) => {
+                let ref_gas = *results
+                    .get(ref_name.as_str())
+                    .unwrap_or_else(|| panic!("missing reference gas case '{ref_name}'"));
+                assert_eq!(
+                    gas, ref_gas,
+                    "[{}] expected same gas as {ref_name} ({ref_gas}), got {gas}",
+                    test_case.name,
+                );
+                println!("  ✓ gas {gas} == {ref_name} gas {ref_gas}");
             }
         }
 

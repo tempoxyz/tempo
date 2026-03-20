@@ -257,10 +257,16 @@ where
             }
 
             // Check 2: Spending limit updates
-            // Only evict if the transaction's fee token matches the token whose limit changed.
+            // Only evict if the transaction's fee token matches the token whose limit changed
+            // AND the sender is paying their own fees. Sponsored transactions are unaffected
+            // by the sender's spending-limit changes (the sponsor's limits apply instead).
             if !updates.spending_limit_changes.is_empty()
                 && let Some(ref subject) = keychain_subject
                 && subject.matches_spending_limit_update(&updates.spending_limit_changes)
+                && tx
+                    .transaction
+                    .inner()
+                    .is_self_funded(tx.transaction.sender())
             {
                 to_remove.push(*tx.hash());
                 spending_limit_count += 1;
@@ -272,9 +278,15 @@ where
             // remaining limit but emits no event. We re-read the current remaining limit
             // from state for affected (account, key_id, fee_token) combos and evict if
             // the pending tx's fee cost now exceeds the remaining limit.
+            // Same sender-paid guard as Check 2 — sponsored txs are not subject to the
+            // sender's spending limits.
             if !updates.spending_limit_spends.is_empty()
                 && let Some(ref subject) = keychain_subject
                 && subject.matches_spending_limit_update(&updates.spending_limit_spends)
+                && tx
+                    .transaction
+                    .inner()
+                    .is_self_funded(tx.transaction.sender())
                 && let Some(ref mut provider) = state_provider
                 && exceeds_spending_limit(provider, subject, tx.transaction.fee_token_cost())
             {

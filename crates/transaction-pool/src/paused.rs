@@ -225,12 +225,7 @@ impl PausedFeeTokenPool {
                     subject.matches_spending_limit_update(spending_limit_spends);
                 let sender_paid = if matches_limit_update || matches_limit_spend {
                     let sender = *entry.tx.transaction.sender_ref();
-                    entry
-                        .tx
-                        .transaction
-                        .inner()
-                        .fee_payer(sender)
-                        .map_or(true, |fee_payer| fee_payer == sender)
+                    entry.tx.transaction.inner().is_self_funded(sender)
                 } else {
                     false
                 };

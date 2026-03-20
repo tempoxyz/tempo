@@ -736,6 +736,8 @@ pub(crate) enum GasPayload {
 pub(crate) enum ExpectedGasDiff {
     Range(std::ops::RangeInclusive<u64>),
     GreaterThan(String),
+    /// Gas must equal the referenced case exactly.
+    SameAs(String),
 }
 
 pub(crate) struct GasCase {
@@ -743,4 +745,7 @@ pub(crate) struct GasCase {
     pub auth: AuthKind,
     pub payload: GasPayload,
     pub expected: ExpectedGasDiff,
+    /// When true, attach a placeholder (all-zero) fee_payer_signature to
+    /// simulate the SDK's `eth_estimateGas` call before the sponsor has signed.
+    pub placeholder_fee_payer: bool,
 }
