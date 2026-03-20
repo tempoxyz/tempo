@@ -49,6 +49,10 @@ rpc = ["tempo-contracts/rpc"]
 name = "storage"
 required-features = ["test-utils"]
 
+[[test]]
+name = "invariants"
+required-features = ["test-utils"]
+
 [[bench]]
 name = "tempo_precompiles"
 harness = false
