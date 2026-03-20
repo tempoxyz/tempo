@@ -10,6 +10,7 @@ import { BaseTest } from "./BaseTest.t.sol";
  * @dev These tests run against both the Solidity implementation (when !isTempo)
  *      and the Rust precompile (when isTempo).
  */
+/// forge-config: default.isolate = true
 contract AccountKeychainTest is BaseTest {
 
     // Using addresses for keyIds (derived from public keys)
@@ -30,7 +31,7 @@ contract AccountKeychainTest is BaseTest {
     //////////////////////////////////////////////////////////////*/
 
     function test_AuthorizeKey() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](1);
         limits[0] = IAccountKeychain.TokenLimit({
@@ -60,7 +61,7 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_AuthorizeKeyWithMultipleLimits() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](2);
         limits[0] = IAccountKeychain.TokenLimit({
@@ -96,7 +97,7 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_AuthorizeKeyNoLimits() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
 
@@ -116,7 +117,7 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_RevokeKey() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         // First authorize a key
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
@@ -146,7 +147,7 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_UpdateSpendingLimit() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         // First authorize a key with initial limits
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](1);
@@ -173,7 +174,7 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_UpdateSpendingLimit_EnablesLimitsOnUnlimitedKey() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         // Authorize a key with no limits enforced
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
@@ -227,7 +228,7 @@ contract AccountKeychainTest is BaseTest {
     //////////////////////////////////////////////////////////////*/
 
     function test_RevokeKey_AlreadyRevokedReturnsKeyNotFound() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         // Authorize and revoke a key
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
@@ -252,7 +253,7 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_GetRemainingLimit_ReturnsZeroForRevokedKey() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](1);
         limits[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 1000e6 });
@@ -273,7 +274,7 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_AuthorizeKey_RevertZeroKeyId() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
 
@@ -293,7 +294,7 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_AuthorizeKey_RevertExpiryInPast() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
 
@@ -327,7 +328,7 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_AuthorizeKey_RevertKeyAlreadyExists() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
 
@@ -357,7 +358,7 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_AuthorizeKey_RevertKeyAlreadyRevoked() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
 
@@ -388,7 +389,7 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_RevokeKey_RevertKeyNotFound() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         // Try to revoke a key that doesn't exist
         try keychain.revokeKey(aliceAccessKey) {
@@ -401,7 +402,7 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_UpdateSpendingLimit_RevertKeyNotFound() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         // Try to update limit for non-existent key
         try keychain.updateSpendingLimit(aliceAccessKey, USDC, 1000e6) {
@@ -414,7 +415,7 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_UpdateSpendingLimit_RevertKeyAlreadyRevoked() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
 
@@ -439,7 +440,7 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_UpdateSpendingLimit_RevertKeyExpired() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
 
@@ -462,7 +463,7 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_UpdateSpendingLimit_AddNewTokenLimit() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         // Authorize a key with only USDC limit
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](1);
@@ -491,7 +492,7 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_AuthorizeKey_LimitsIgnoredWhenEnforceLimitsFalse() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         // Authorize key with enforceLimits=false but pass limits anyway
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](2);
@@ -518,7 +519,7 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_DifferentKeyCanBeAuthorizedAfterRevocation() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
 
@@ -568,7 +569,7 @@ contract AccountKeychainTest is BaseTest {
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
 
         // Secp256k1
-        vm.prank(alice);
+        vm.prank(alice, alice);
         keychain.authorizeKey(
             aliceAccessKey,
             IAccountKeychain.SignatureType.Secp256k1,
@@ -582,7 +583,7 @@ contract AccountKeychainTest is BaseTest {
         );
 
         // P256
-        vm.prank(bob);
+        vm.prank(bob, bob);
         keychain.authorizeKey(
             bobAccessKey,
             IAccountKeychain.SignatureType.P256,
@@ -596,7 +597,7 @@ contract AccountKeychainTest is BaseTest {
         );
 
         // WebAuthn
-        vm.prank(charlie);
+        vm.prank(charlie, charlie);
         keychain.authorizeKey(
             charlieAccessKey,
             IAccountKeychain.SignatureType.WebAuthn,
@@ -626,12 +627,12 @@ contract AccountKeychainTest is BaseTest {
         uint64 expiry1 = uint64(block.timestamp + 100);
         uint64 expiry2 = uint64(block.timestamp + 200);
 
-        vm.prank(alice);
+        vm.prank(alice, alice);
         keychain.authorizeKey(
             sharedKeyId, IAccountKeychain.SignatureType.P256, expiry1, true, limits1
         );
 
-        vm.prank(bob);
+        vm.prank(bob, bob);
         keychain.authorizeKey(
             sharedKeyId, IAccountKeychain.SignatureType.Secp256k1, expiry2, true, limits2
         );
@@ -651,7 +652,7 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_MultipleKeysPerAccount() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
 
@@ -695,7 +696,7 @@ contract AccountKeychainTest is BaseTest {
     //////////////////////////////////////////////////////////////*/
 
     function test_Event_KeyAuthorized() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         if (!isTempo) {
             vm.expectEmit(true, true, false, true);
@@ -720,7 +721,7 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_Event_KeyRevoked() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         // First authorize
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
@@ -743,7 +744,7 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_Event_SpendingLimitUpdated() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         // First authorize
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](1);
@@ -782,7 +783,7 @@ contract AccountKeychainTest is BaseTest {
         vm.assume(sigType <= 2);
         vm.assume(expiry > block.timestamp); // Ensure expiry is in future for valid key
 
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
 
@@ -812,7 +813,7 @@ contract AccountKeychainTest is BaseTest {
         vm.assume(keyId != address(0));
         vm.assume(token1 != token2);
 
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](2);
         limits[0] = IAccountKeychain.TokenLimit({ token: token1, amount: amount1 });
@@ -843,7 +844,7 @@ contract AccountKeychainTest is BaseTest {
     {
         vm.assume(keyId != address(0));
 
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         // First authorize the key
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](1);
@@ -870,7 +871,7 @@ contract AccountKeychainTest is BaseTest {
         vm.assume(keyId != address(0));
         vm.assume(expiry > block.timestamp);
 
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
 
@@ -927,6 +928,8 @@ contract AccountKeychainTest is BaseTest {
         vm.assume(account2 != address(0));
         vm.assume(account1 != account2);
         vm.assume(keyId != address(0));
+        vm.assume(account1.code.length == 0);
+        vm.assume(account2.code.length == 0);
 
         IAccountKeychain.TokenLimit[] memory limits1 = new IAccountKeychain.TokenLimit[](1);
         limits1[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 1000e6 });
@@ -938,10 +941,10 @@ contract AccountKeychainTest is BaseTest {
         uint64 expiry2 = uint64(block.timestamp + 200);
 
         // Authorize same keyId for two different accounts
-        vm.prank(account1);
+        vm.prank(account1, account1);
         keychain.authorizeKey(keyId, IAccountKeychain.SignatureType.P256, expiry1, true, limits1);
 
-        vm.prank(account2);
+        vm.prank(account2, account2);
         keychain.authorizeKey(
             keyId, IAccountKeychain.SignatureType.Secp256k1, expiry2, true, limits2
         );
