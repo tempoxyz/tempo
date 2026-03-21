@@ -151,7 +151,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
                     key_data.as_ref(),
                     key_id,
                     caller_addr,
-                    is_t1c_active(evm_env.spec_id()),
+                    evm_env.spec_id().is_t1c(),
                 );
 
                 let mut calls = calls;
@@ -195,23 +195,6 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
             inner: inner.try_into_tx_env(evm_env)?,
         })
     }
-}
-
-/// Returns `true` if the generic `Spec` represents T1C or later.
-///
-/// The [`TryIntoTxEnv`] trait has an unconstrained `Spec` generic that prevents adding
-/// a `'static` bound needed for `Any` downcast. At runtime `Spec` is always [`TempoHardfork`].
-/// We read a single `u8` discriminant and compare it to avoid ever creating an invalid enum value.
-/// Defaults to `true` (latest behavior) if the type doesn't match.
-///
-/// NOTE: the `unsafe` block will be removed with the reth release of: <https://github.com/alloy-rs/evm/pull/306>
-fn is_t1c_active<Spec>(spec: &Spec) -> bool {
-    if std::mem::size_of::<Spec>() != std::mem::size_of::<TempoHardfork>() {
-        return true;
-    }
-    // SAFETY: reading a single u8 is always valid for any type with size >= 1.
-    let discriminant = unsafe { std::ptr::read(spec as *const Spec as *const u8) };
-    discriminant >= TempoHardfork::T1C as u8
 }
 
 /// Creates a mock AA signature for gas estimation based on key type hints
@@ -403,20 +386,6 @@ mod tests {
         let estimated_calls = tx_env.tempo_tx_env.expect("tempo_tx_env").aa_calls;
 
         assert_eq!(estimated_calls, built_calls);
-    }
-
-    #[test]
-    fn test_is_t1c_active() {
-        // pre-T1C (false)
-        assert!(!is_t1c_active(&TempoHardfork::Genesis));
-        assert!(!is_t1c_active(&TempoHardfork::T0));
-        assert!(!is_t1c_active(&TempoHardfork::T1));
-        assert!(!is_t1c_active(&TempoHardfork::T1A));
-        assert!(!is_t1c_active(&TempoHardfork::T1B));
-
-        // T1C and later (true)
-        assert!(is_t1c_active(&TempoHardfork::T1C));
-        assert!(is_t1c_active(&TempoHardfork::T2));
     }
 
     #[test]
