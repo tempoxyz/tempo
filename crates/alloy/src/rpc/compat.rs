@@ -103,13 +103,13 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
         let fee_payer = if self.fee_payer_signature.is_some() {
             // Try to recover the fee payer address from the signature.
             // If recovery fails (e.g. dummy signature during gas estimation / fill),
-            // keep it unresolved so estimation/fill can continue with sender-paid semantics.
+            // fall back to sender-paid semantics (None) so gas estimation still works.
             let recovered = self
                 .clone()
                 .build_aa()
                 .ok()
                 .and_then(|tx| tx.recover_fee_payer(caller_addr).ok());
-            Some(recovered)
+            recovered.map(Some)
         } else {
             None
         };
@@ -500,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn test_estimate_gas_invalid_fee_payer_signature_keeps_unresolved_fee_payer() {
+    fn test_estimate_gas_invalid_fee_payer_signature_falls_back_to_sender_paid() {
         let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         let target = address!("0x2222222222222222222222222222222222222222");
 
@@ -527,9 +527,8 @@ mod tests {
             "fee_payer_signature alone must produce an AA tx env"
         );
         assert_eq!(
-            tx_env.fee_payer,
-            Some(None),
-            "invalid fee_payer_signature should remain unresolved"
+            tx_env.fee_payer, None,
+            "invalid fee_payer_signature should fall back to sender-paid (None)"
         );
     }
 
