@@ -1,3 +1,5 @@
+pub mod dex;
+
 use alloy::{
     primitives::{
         Address,

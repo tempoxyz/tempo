@@ -30,6 +30,7 @@ async fn main() -> eyre::Result<()> {
     let args = TempoSidecar::parse();
 
     match args.cmd {
+        TempoSidecarSubcommand::DexMonitor(cmd) => cmd.run().await,
         TempoSidecarSubcommand::FeeAMMMonitor(cmd) => cmd.run().await,
         TempoSidecarSubcommand::SimpleArb(cmd) => cmd.run().await,
         TempoSidecarSubcommand::SyntheticLoad(cmd) => cmd.run().await,

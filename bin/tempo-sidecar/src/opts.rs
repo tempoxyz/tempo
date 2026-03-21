@@ -1,6 +1,6 @@
 use crate::cmd::{
-    monitor::MonitorArgs, simple_arb::SimpleArbArgs, synthetic_load::SyntheticLoadArgs,
-    tx_latency::TxLatencyArgs,
+    dex_monitor::DexMonitorArgs, monitor::MonitorArgs, simple_arb::SimpleArbArgs,
+    synthetic_load::SyntheticLoadArgs, tx_latency::TxLatencyArgs,
 };
 use clap::{Parser, Subcommand};
 
@@ -14,6 +14,7 @@ pub struct TempoSidecar {
 
 #[derive(Subcommand, Debug)]
 pub enum TempoSidecarSubcommand {
+    DexMonitor(DexMonitorArgs),
     FeeAMMMonitor(MonitorArgs),
     SimpleArb(SimpleArbArgs),
     SyntheticLoad(SyntheticLoadArgs),
