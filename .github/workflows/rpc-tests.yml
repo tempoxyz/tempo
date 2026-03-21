@@ -1,0 +1,51 @@
+name: RPC Tests
+
+permissions: {}
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/node/**'
+      - 'crates/primitives/**'
+      - 'crates/revm/**'
+  pull_request:
+    paths:
+      - 'crates/node/**'
+      - 'crates/primitives/**'
+      - 'crates/revm/**'
+  merge_group:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+  RUSTC_WRAPPER: "sccache"
+  TEMPO_TESTNET_RPC_URL: ${{ secrets.TEMPO_TESTNET_RPC_URL }}
+  TEMPO_DEVNET_RPC_URL: ${{ secrets.TEMPO_DEVNET_RPC_URL }}
+
+jobs:
+  rpc-tests:
+    name: rpc-tests (${{ matrix.network }})
+    runs-on: depot-ubuntu-latest-4
+    timeout-minutes: 30
+    continue-on-error: true
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        network: [testnet, devnet]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
+      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      - uses: taiki-e/install-action@3f67faa728964808f52294a9cd15561b15550b28 # v2.67.19
+        with:
+          tool: nextest@0.9.124
+      - name: Build RPC tests
+        run: cargo nextest run --profile ci-rpc -E 'package(tempo-node) & binary(it) & test(/test_matrices_${{ matrix.network }}/)' --no-run
+      - name: Run RPC tests
+        run: cargo nextest run --profile ci-rpc -E 'package(tempo-node) & binary(it) & test(/test_matrices_${{ matrix.network }}/)'
