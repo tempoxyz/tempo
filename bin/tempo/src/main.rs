@@ -72,7 +72,7 @@ type TempoCli =
 struct TempoArgs {
     /// Follow this specific RPC node for block hashes.
     /// If provided without a value, defaults to the RPC URL for the selected chain.
-    #[arg(long, value_name = "URL", default_missing_value = "auto", num_args(0..=1), env = "TEMPO_FOLLOW")]
+    #[arg(long, value_name = "URL", default_missing_value = "auto", num_args(0..=1), env = "TEMPO_FOLLOW", conflicts_with = "telemetry_url")]
     pub follow: Option<String>,
 
     #[command(flatten)]
