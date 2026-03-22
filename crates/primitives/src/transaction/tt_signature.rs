@@ -33,12 +33,17 @@ pub const P256N_HALF: U256 =
 /// To prevent signature malleability, we require s <= n/2.
 /// If s > n/2, we replace it with n - s.
 ///
-/// This function should be called by all P256 signing code before creating
-/// a signature, as the p256 crate does not guarantee low-s signatures.
-pub fn normalize_p256_s(s_bytes: &[u8]) -> B256 {
+/// Returns an error if `s` is zero or `s >= P256_ORDER` (out of range for a
+/// valid scalar). This function should be called by all P256 signing code
+/// before creating a signature, as the p256 crate does not guarantee low-s
+/// signatures.
+pub fn normalize_p256_s(s_bytes: &[u8]) -> Result<B256, &'static str> {
     let s = U256::from_be_slice(s_bytes);
+    if s.is_zero() || s >= P256_ORDER {
+        return Err("P256 s value out of range");
+    }
     let normalized_s = if s > P256N_HALF { P256_ORDER - s } else { s };
-    B256::from(normalized_s.to_be_bytes::<32>())
+    Ok(B256::from(normalized_s.to_be_bytes::<32>()))
 }
 
 /// Signature type identifiers
@@ -810,8 +815,13 @@ fn verify_p256_signature_internal(
     pub_key_y: &[u8],
     message_hash: &B256,
 ) -> Result<(), &'static str> {
-    // High-s value check: reject signatures where s > n/2 to prevent malleability
+    // Reject out-of-range s values (must be 0 < s < P256_ORDER)
     let s_value = U256::from_be_slice(s);
+    if s_value.is_zero() || s_value >= P256_ORDER {
+        return Err("P256 s value out of range");
+    }
+
+    // High-s value check: reject signatures where s > n/2 to prevent malleability
     if s_value > P256N_HALF {
         return Err("P256 signature has high s value");
     }
@@ -949,7 +959,7 @@ mod tests {
             signing_key.sign_prehash(message_hash.as_slice()).unwrap();
         let sig_bytes = signature.to_bytes();
         let r = B256::from_slice(&sig_bytes[0..32]);
-        let s = normalize_p256_s(&sig_bytes[32..64]);
+        let s = normalize_p256_s(&sig_bytes[32..64]).expect("p256 crate produces valid s");
         (r, s)
     }
 
@@ -974,7 +984,7 @@ mod tests {
         let low_s = U256::from(1u64);
         let low_s_bytes: [u8; 32] = low_s.to_be_bytes();
         assert_eq!(
-            U256::from_be_slice(normalize_p256_s(&low_s_bytes).as_slice()),
+            U256::from_be_slice(normalize_p256_s(&low_s_bytes).unwrap().as_slice()),
             low_s,
             "s < P256N_HALF should remain unchanged"
         );
@@ -982,7 +992,7 @@ mod tests {
         // s == P256N_HALF → unchanged
         let half_bytes: [u8; 32] = P256N_HALF.to_be_bytes();
         assert_eq!(
-            U256::from_be_slice(normalize_p256_s(&half_bytes).as_slice()),
+            U256::from_be_slice(normalize_p256_s(&half_bytes).unwrap().as_slice()),
             P256N_HALF,
             "s == P256N_HALF should remain unchanged"
         );
@@ -991,7 +1001,7 @@ mod tests {
         let high_s = P256N_HALF + U256::from(1u64);
         let high_s_bytes: [u8; 32] = high_s.to_be_bytes();
         assert_eq!(
-            U256::from_be_slice(normalize_p256_s(&high_s_bytes).as_slice()),
+            U256::from_be_slice(normalize_p256_s(&high_s_bytes).unwrap().as_slice()),
             P256_ORDER - high_s,
             "s > P256N_HALF should be normalized"
         );
@@ -1000,9 +1010,37 @@ mod tests {
         let max_s = P256_ORDER - U256::from(1u64);
         let max_s_bytes: [u8; 32] = max_s.to_be_bytes();
         assert_eq!(
-            U256::from_be_slice(normalize_p256_s(&max_s_bytes).as_slice()),
+            U256::from_be_slice(normalize_p256_s(&max_s_bytes).unwrap().as_slice()),
             U256::from(1u64),
             "s == P256_ORDER - 1 should normalize to 1"
+        );
+
+        // s == 0 → rejected
+        let zero_bytes: [u8; 32] = U256::ZERO.to_be_bytes();
+        assert!(
+            normalize_p256_s(&zero_bytes).is_err(),
+            "s == 0 should be rejected"
+        );
+
+        // s == P256_ORDER → rejected
+        let order_bytes: [u8; 32] = P256_ORDER.to_be_bytes();
+        assert!(
+            normalize_p256_s(&order_bytes).is_err(),
+            "s == P256_ORDER should be rejected"
+        );
+
+        // s == P256_ORDER + 1 → rejected
+        let over_bytes: [u8; 32] = (P256_ORDER + U256::from(1u64)).to_be_bytes();
+        assert!(
+            normalize_p256_s(&over_bytes).is_err(),
+            "s > P256_ORDER should be rejected"
+        );
+
+        // s == U256::MAX → rejected
+        let max_bytes: [u8; 32] = U256::MAX.to_be_bytes();
+        assert!(
+            normalize_p256_s(&max_bytes).is_err(),
+            "s == U256::MAX should be rejected"
         );
     }
 
