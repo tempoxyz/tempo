@@ -681,6 +681,13 @@ impl AA2dPool {
 
         // Demote once per seq_id, starting from the minimum removed nonce
         for (seq_id, min_nonce) in seq_ids_to_demote {
+            // If the tracked independent tx has a higher nonce than the removed tx,
+            // it will be demoted to non-pending — remove it to maintain the invariant.
+            if let Some(independent) = self.independent_transactions.get(&seq_id) {
+                if independent.transaction.nonce() > min_nonce {
+                    self.independent_transactions.remove(&seq_id);
+                }
+            }
             self.demote_from_nonce(&seq_id, min_nonce);
         }
 
@@ -5668,6 +5675,43 @@ mod tests {
             "rejected txs with new nonce keys should not grow seq_id_to_slot"
         );
 
+        pool.assert_invariants();
+    }
+
+    /// Regression test for CHAIN-985: `remove_transactions` demotes the independent tx
+    /// without cleaning up `independent_transactions`, violating the invariant.
+    #[test]
+    fn remove_transactions_demotes_independent_tx() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+        let nonce_key = U256::ZERO;
+        let seq_id = AASequenceId::new(sender, nonce_key);
+
+        // Add tx at nonce 5 (queued due to gap)
+        let tx5 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(5).build();
+        let valid_tx5 = wrap_valid_tx(tx5, TransactionOrigin::Local);
+        pool.add_transaction(Arc::new(valid_tx5), 0, TempoHardfork::T1)
+            .unwrap();
+
+        // on_nonce_changes(5) promotes nonce 5 to independent + pending
+        let mut changes = HashMap::default();
+        changes.insert(seq_id, 5);
+        pool.on_nonce_changes(changes);
+        assert!(
+            pool.independent_transactions.contains_key(&seq_id),
+            "nonce 5 should be tracked as independent"
+        );
+        pool.assert_invariants();
+
+        // Add tx at nonce 2 (queued, lower nonce in same sequence)
+        let tx2 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(2).build();
+        let valid_tx2 = wrap_valid_tx(tx2, TransactionOrigin::Local);
+        let tx2_hash = *valid_tx2.hash();
+        pool.add_transaction(Arc::new(valid_tx2), 0, TempoHardfork::T1)
+            .unwrap();
+
+        // remove_transactions on nonce 2 should not leave a stale independent entry
+        pool.remove_transactions(std::iter::once(&tx2_hash));
         pool.assert_invariants();
     }
 }
