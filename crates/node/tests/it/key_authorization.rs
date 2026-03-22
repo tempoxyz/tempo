@@ -318,15 +318,16 @@ async fn test_post_t1b_keyauth_oog_fixed() -> eyre::Result<()> {
     let nonce_after = provider.get_transaction_count(signer_addr).await?;
     assert_eq!(nonce_after, nonce + 1, "Post-T1B: nonce must be bumped");
 
-    // Replay rejected — nonce already advanced.
+    // Replay rejected — either by nonce check (nonce already advanced) or by
+    // pool-side key state check (key already exists on-chain).
     let replay_err = provider
         .send_raw_transaction(&encoded)
         .await
         .expect_err("Post-T1B: replay must be rejected");
     let err_msg = replay_err.to_string();
     assert!(
-        err_msg.contains("nonce too low: next nonce 1, tx nonce 0"),
-        "Post-T1B: replay error must be nonce-too-low, got: {err_msg}"
+        err_msg.contains("nonce too low") || err_msg.contains("access key already exists"),
+        "Post-T1B: replay error must be nonce-too-low or key-already-exists, got: {err_msg}"
     );
 
     Ok(())
