@@ -545,22 +545,23 @@ jobs:
             core.setOutput('feature-ref', featureRef);
             core.setOutput('feature-name', featureName);
 
-      - name: Update status (running benchmark)
+      - name: Update status (setting up benchmark)
         if: success() && env.BENCH_COMMENT_ID
         uses: actions/github-script@v8
         with:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |
             const s = require('./.github/scripts/bench-update-status.js');
-            await s({github, context, status: 'Running benchmark...'});
+            await s({github, context, status: 'Setting up benchmark...'});
 
-      - name: Run benchmark
-        id: bench
+      - name: Setup benchmark
+        id: bench-setup
         env:
           BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
           FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
         run: |
-          nu tempo.nu bench \
+          OUTPUT=$(nu tempo.nu bench \
+            --setup-only \
             --preset "$BENCH_PRESET" \
             --mode dev \
             --bloat "$BENCH_BLOAT" \
@@ -573,7 +574,66 @@ jobs:
             --tune \
             $([ "$BENCH_SAMPLY" = "true" ] && echo "--samply" || true) \
             $([ "$BENCH_TRACY" != "off" ] && echo "--tracy $BENCH_TRACY --tracy-seconds $BENCH_TRACY_SECONDS --tracy-offset $BENCH_TRACY_OFFSET" || true) \
-            $([ -n "$BENCH_BASELINE_HARDFORK" ] && echo "--baseline-hardfork $BENCH_BASELINE_HARDFORK --feature-hardfork $BENCH_FEATURE_HARDFORK" || true)
+            $([ -n "$BENCH_BASELINE_HARDFORK" ] && echo "--baseline-hardfork $BENCH_BASELINE_HARDFORK --feature-hardfork $BENCH_FEATURE_HARDFORK" || true) \
+            2>&1 | tee /dev/stderr)
+          CONFIG=$(echo "$OUTPUT" | grep '^BENCH_CONFIG_PATH=' | cut -d= -f2-)
+          echo "config=$CONFIG" >> "$GITHUB_OUTPUT"
+
+      - name: "Update status: baseline (1/2)"
+        if: success() && env.BENCH_COMMENT_ID
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.DEREK_PAT }}
+          script: |
+            const s = require('./.github/scripts/bench-update-status.js');
+            await s({github, context, status: 'Running baseline benchmark (1/2)...'});
+
+      - name: "Run benchmark: baseline (1/2)"
+        id: run-baseline-1
+        run: nu tempo.nu bench-run-single --config "${{ steps.bench-setup.outputs.config }}" --label baseline-1
+
+      - name: "Update status: feature (1/2)"
+        if: success() && env.BENCH_COMMENT_ID
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.DEREK_PAT }}
+          script: |
+            const s = require('./.github/scripts/bench-update-status.js');
+            await s({github, context, status: 'Running feature benchmark (1/2)...'});
+
+      - name: "Run benchmark: feature (1/2)"
+        id: run-feature-1
+        run: nu tempo.nu bench-run-single --config "${{ steps.bench-setup.outputs.config }}" --label feature-1
+
+      - name: "Update status: feature (2/2)"
+        if: success() && env.BENCH_COMMENT_ID
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.DEREK_PAT }}
+          script: |
+            const s = require('./.github/scripts/bench-update-status.js');
+            await s({github, context, status: 'Running feature benchmark (2/2)...'});
+
+      - name: "Run benchmark: feature (2/2)"
+        id: run-feature-2
+        run: nu tempo.nu bench-run-single --config "${{ steps.bench-setup.outputs.config }}" --label feature-2
+
+      - name: "Update status: baseline (2/2)"
+        if: success() && env.BENCH_COMMENT_ID
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.DEREK_PAT }}
+          script: |
+            const s = require('./.github/scripts/bench-update-status.js');
+            await s({github, context, status: 'Running baseline benchmark (2/2)...'});
+
+      - name: "Run benchmark: baseline (2/2)"
+        id: run-baseline-2
+        run: nu tempo.nu bench-run-single --config "${{ steps.bench-setup.outputs.config }}" --label baseline-2
+
+      - name: Finalize benchmark
+        if: success()
+        run: nu tempo.nu bench-finalize --config "${{ steps.bench-setup.outputs.config }}"
 
       - name: Find results directory
         id: results-dir
@@ -714,12 +774,21 @@ jobs:
         with:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |
+            const steps_status = [
+              ['setting up benchmark', '${{ steps.bench-setup.outcome }}'],
+              ['running baseline benchmark (1/2)', '${{ steps.run-baseline-1.outcome }}'],
+              ['running feature benchmark (1/2)', '${{ steps.run-feature-1.outcome }}'],
+              ['running feature benchmark (2/2)', '${{ steps.run-feature-2.outcome }}'],
+              ['running baseline benchmark (2/2)', '${{ steps.run-baseline-2.outcome }}'],
+            ];
+            const failed = steps_status.find(([, o]) => o === 'failure');
+            const failedStep = failed ? failed[0] : 'unknown step';
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               comment_id: parseInt(process.env.BENCH_COMMENT_ID),
-              body: `cc @${process.env.BENCH_ACTOR}\n\n❌ Benchmark failed. [View logs](${jobUrl})`,
+              body: `cc @${process.env.BENCH_ACTOR}\n\n❌ Benchmark failed while ${failedStep}. [View logs](${jobUrl})`,
             });
 
       - name: Update status (cancelled)
