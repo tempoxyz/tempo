@@ -60,7 +60,7 @@ use tempo_transaction_pool::{
     TempoTransactionPool,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
-use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
+use tracing::{Level, Span, debug, debug_span, error, info, instrument, trace, warn};
 
 /// Returns true if a subblock has any expired transactions for the given timestamp.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
@@ -210,7 +210,9 @@ where
         fields(
             id = %args.config.attributes.payload_id(),
             parent_number = %args.config.parent_header.number(),
-            parent_hash = %args.config.parent_header.hash()
+            parent_hash = %args.config.parent_header.hash(),
+            total_txs = tracing::field::Empty,
+            gas_used = tracing::field::Empty,
         )
     )]
     fn build_payload<Txs>(
@@ -381,7 +383,13 @@ where
             .record(pool_fetch_start.elapsed());
 
         let execution_start = Instant::now();
-        let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
+        let block_fill_span = debug_span!(target: "payload_builder", "block_fill",
+            pool_txs = tracing::field::Empty,
+            payment_txs = tracing::field::Empty,
+            cumulative_gas_used = tracing::field::Empty,
+        )
+        .entered();
+        let mut pool_tx_count = 0u64;
         while let Some(pool_tx) = best_txs.next() {
             // Ensure we still have capacity for this transaction within the non-shared gas limit.
             // The remaining `shared_gas_limit` is reserved for validator subblocks and must not
@@ -495,8 +503,12 @@ where
                 non_payment_gas_used += gas_used;
             }
             block_size_used += tx_rlp_length;
+            pool_tx_count += 1;
         }
-        drop(_block_fill_span);
+        block_fill_span.record("pool_txs", pool_tx_count);
+        block_fill_span.record("payment_txs", payment_transactions);
+        block_fill_span.record("cumulative_gas_used", cumulative_gas_used);
+        drop(block_fill_span);
         let total_normal_transaction_execution_elapsed = execution_start.elapsed();
         self.metrics
             .total_normal_transaction_execution_duration_seconds
@@ -523,14 +535,17 @@ where
         }
 
         let subblocks_start = Instant::now();
-        let _subblock_txs_span =
-            debug_span!(target: "payload_builder", "execute_subblock_txs").entered();
-        let subblocks_count = subblocks.len() as f64;
-        let mut subblock_transactions = 0f64;
+        let _subblock_txs_span = debug_span!(target: "payload_builder", "execute_subblock_txs",
+            subblocks = subblocks.len(),
+            subblock_txs = tracing::field::Empty,
+        )
+        .entered();
+        let subblocks_count = subblocks.len() as u64;
+        let mut subblock_transactions = 0u64;
         // Apply subblock transactions
         for subblock in &subblocks {
             let subblock_start = Instant::now();
-            let mut subblock_tx_count = 0f64;
+            let mut subblock_tx_count = 0u64;
 
             for tx in subblock.transactions_recovered() {
                 if let Err(err) = builder.execute_transaction(tx.cloned()) {
@@ -551,7 +566,7 @@ where
                     }
                 }
 
-                subblock_tx_count += 1.0;
+                subblock_tx_count += 1;
             }
 
             self.metrics
@@ -559,22 +574,23 @@ where
                 .record(subblock_start.elapsed());
             self.metrics
                 .subblock_transaction_count
-                .record(subblock_tx_count);
+                .record(subblock_tx_count as f64);
             subblock_transactions += subblock_tx_count;
         }
+        _subblock_txs_span.record("subblock_txs", subblock_transactions);
         drop(_subblock_txs_span);
         let total_subblock_transaction_execution_elapsed = subblocks_start.elapsed();
         self.metrics
             .total_subblock_transaction_execution_duration_seconds
             .record(total_subblock_transaction_execution_elapsed);
-        self.metrics.subblocks.record(subblocks_count);
-        self.metrics.subblocks_last.set(subblocks_count);
+        self.metrics.subblocks.record(subblocks_count as f64);
+        self.metrics.subblocks_last.set(subblocks_count as f64);
         self.metrics
             .subblock_transactions
-            .record(subblock_transactions);
+            .record(subblock_transactions as f64);
         self.metrics
             .subblock_transactions_last
-            .set(subblock_transactions);
+            .set(subblock_transactions as f64);
 
         // Apply system transactions
         let system_txs_execution_start = Instant::now();
@@ -597,7 +613,11 @@ where
             .record(total_transaction_execution_elapsed);
 
         let builder_finish_start = Instant::now();
-        let _finish_span = debug_span!(target: "payload_builder", "finish_block").entered();
+        let finish_span = debug_span!(target: "payload_builder", "finish_block",
+            accounts_changed = tracing::field::Empty,
+            storage_slots_changed = tracing::field::Empty,
+        )
+        .entered();
         let instrumented_provider = InstrumentedFinishProvider {
             inner: &*state_provider,
             metrics: self.metrics.clone(),
@@ -608,7 +628,15 @@ where
             hashed_state,
             trie_updates,
         } = builder.finish(instrumented_provider)?;
-        drop(_finish_span);
+        let accounts_changed = hashed_state.accounts.len();
+        let storage_slots_changed: usize = hashed_state
+            .storages
+            .values()
+            .map(|s| s.storage.len())
+            .sum();
+        finish_span.record("accounts_changed", accounts_changed);
+        finish_span.record("storage_slots_changed", storage_slots_changed);
+        drop(finish_span);
         let builder_finish_elapsed = builder_finish_start.elapsed();
         self.metrics
             .payload_finalization_duration_seconds
@@ -664,6 +692,10 @@ where
         self.metrics
             .rlp_block_size_bytes_last
             .set(rlp_length as f64);
+
+        let span = Span::current();
+        span.record("total_txs", total_transactions);
+        span.record("gas_used", gas_used);
 
         info!(
             parent_hash = ?sealed_block.parent_hash(),
