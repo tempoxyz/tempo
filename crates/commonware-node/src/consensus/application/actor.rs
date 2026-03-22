@@ -35,9 +35,9 @@ use futures::{
 };
 use rand_08::{CryptoRng, Rng};
 use reth_ethereum::chainspec::EthChainSpec as _;
-use reth_node_builder::{Block as _, BuiltPayload, ConsensusEngineHandle};
+use reth_node_builder::{Block as _, BuiltPayload};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
+use tempo_node::{TempoExecutionData, TempoFullNode};
 
 use reth_provider::{BlockHashReader as _, BlockReader as _};
 use tokio::sync::RwLock;
@@ -174,7 +174,7 @@ where
             Message::Verify(verify) => {
                 self.context.with_label("verify").spawn({
                     let inner = self.inner.clone();
-                    move |context| inner.handle_verify(*verify, context)
+                    move |_| inner.handle_verify(*verify)
                 });
             }
         }
@@ -372,7 +372,7 @@ impl Inner<Init> {
             proposer = %verify.proposer,
         ),
     )]
-    async fn handle_verify<TContext: Pacer>(self, verify: Verify, context: TContext) {
+    async fn handle_verify(self, verify: Verify) {
         let Verify {
             parent,
             payload,
@@ -388,7 +388,7 @@ impl Inner<Init> {
                 ))
             },
 
-            res = self.clone().verify(context, parent, payload, proposer, round) => {
+            res = self.clone().verify(parent, payload, proposer, round) => {
                 res.wrap_err("block verification failed")
             }
         );
@@ -448,13 +448,9 @@ impl Inner<Init> {
 
         // Send the proposal parent to reth to cover edge cases when we were not asked to verify it directly.
         if !verify_block(
-            context.clone(),
             parent_epoch_info.epoch(),
             &self.epoch_strategy,
-            self.execution_node
-                .add_ons_handle
-                .beacon_engine_handle
-                .clone(),
+            &self.executor,
             &parent,
             // It is safe to not verify the parent of the parent because this block is already notarized.
             parent.parent_digest(),
@@ -598,9 +594,8 @@ impl Inner<Init> {
         Ok(Block::from_execution_block(payload.block().clone()))
     }
 
-    async fn verify<TContext: Pacer>(
+    async fn verify(
         self,
-        context: TContext,
         (parent_view, parent_digest): (View, Digest),
         payload: Digest,
         proposer: PublicKey,
@@ -674,13 +669,9 @@ impl Inner<Init> {
         }
 
         let is_good = verify_block(
-            context,
             round.epoch(),
             &self.epoch_strategy,
-            self.execution_node
-                .add_ons_handle
-                .beacon_engine_handle
-                .clone(),
+            &self.executor,
             &block,
             parent_digest,
             &self.scheme_provider,
@@ -759,11 +750,10 @@ struct Init {
         parent.digest = %parent_digest,
     )
 )]
-async fn verify_block<TContext: Pacer>(
-    context: TContext,
+async fn verify_block(
     epoch: Epoch,
     epoch_strategy: &FixedEpocher,
-    engine: ConsensusEngineHandle<TempoPayloadTypes>,
+    executor: &crate::executor::Mailbox,
     block: &Block,
     parent_digest: Digest,
     scheme_provider: &SchemeProvider,
@@ -808,12 +798,11 @@ async fn verify_block<TContext: Pacer>(
         block: Arc::new(block),
         validator_set,
     };
-    let payload_status = engine
+    let payload_status = executor
         .new_payload(execution_data)
-        .pace(&context, Duration::from_millis(50))
         .await
         .wrap_err("failed sending `new payload` message to execution layer to validate block")?;
-    match payload_status.status {
+    match payload_status {
         PayloadStatusEnum::Valid => Ok(true),
         PayloadStatusEnum::Invalid { validation_error } => {
             info!(
