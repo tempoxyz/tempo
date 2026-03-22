@@ -26,7 +26,10 @@ use reth_revm::{
     state::{Account, Bytecode, EvmState},
 };
 use std::collections::{HashMap, HashSet};
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_chainspec::{
+    TempoChainSpec,
+    hardfork::{TempoHardfork, TempoHardforks},
+};
 use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
@@ -150,6 +153,13 @@ where
             seen_subblocks: Vec::new(),
             subblock_fee_recipients: ctx.subblock_fee_recipients,
         }
+    }
+
+    /// Returns the [`TempoHardfork`] for this block.
+    fn hardfork(&self) -> TempoHardfork {
+        self.inner
+            .spec
+            .tempo_hardfork_at(self.evm().block().timestamp.to::<u64>())
     }
 
     /// Validates a system transaction.
@@ -297,6 +307,7 @@ where
         &self,
         tx: &TempoTxEnvelope,
         gas_used: u64,
+        is_payment: bool,
     ) -> Result<BlockSection, BlockValidationError> {
         // Start with processing of transaction kinds that require specific sections.
         if tx.is_system_tx() {
@@ -329,7 +340,7 @@ where
             match self.section {
                 BlockSection::StartOfBlock | BlockSection::NonShared => {
                     if gas_used > self.non_shared_gas_left
-                        || (!tx.is_payment_v1() && gas_used > self.non_payment_gas_left)
+                        || (!is_payment && gas_used > self.non_payment_gas_left)
                     {
                         // Assume that this transaction wants to make use of gas incentive section
                         //
@@ -370,8 +381,7 @@ where
         self.inner.apply_pre_execution_changes()?;
 
         // Deploy 0xEF marker bytecode to ValidatorConfigV2 when T2 activates.
-        let timestamp = self.evm().block().timestamp.to::<u64>();
-        if self.inner.spec.is_t2_active_at_timestamp(timestamp) {
+        if self.hardfork().is_t2() {
             let db = self.evm_mut().ctx_mut().journaled_state.db_mut();
             let mut info = db
                 .basic(VALIDATOR_CONFIG_V2_ADDRESS)
@@ -421,11 +431,18 @@ where
 
         let inner = result?;
 
-        let next_section = self.validate_tx(recovered.tx(), inner.result.result.gas_used())?;
+        let is_payment = if self.hardfork().is_t2() {
+            recovered.tx().is_payment_v2()
+        } else {
+            recovered.tx().is_payment_v1()
+        };
+
+        let next_section =
+            self.validate_tx(recovered.tx(), inner.result.result.gas_used(), is_payment)?;
         Ok(TempoTxResult {
             inner,
             next_section,
-            is_payment: recovered.tx().is_payment_v1(),
+            is_payment,
             tx: matches!(next_section, BlockSection::SubBlock { .. })
                 .then(|| recovered.tx().clone()),
         })
@@ -966,7 +983,7 @@ mod tests {
 
         // Test regular transaction in StartOfBlock section goes to NonShared
         let tx = create_legacy_tx();
-        let result = executor.validate_tx(&tx, 21000);
+        let result = executor.validate_tx(&tx, 21000, false);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), BlockSection::NonShared);
     }
@@ -1008,7 +1025,7 @@ mod tests {
             .build(&mut db, &chainspec);
 
         let subblock_tx = create_subblock_tx(&proposer);
-        let result = executor.validate_tx(&subblock_tx, 21000);
+        let result = executor.validate_tx(&subblock_tx, 21000, false);
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
@@ -1023,7 +1040,7 @@ mod tests {
             })
             .build(&mut db2, &chainspec);
 
-        let result = executor2.validate_tx(&subblock_tx, 21000);
+        let result = executor2.validate_tx(&subblock_tx, 21000, false);
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
@@ -1053,7 +1070,7 @@ mod tests {
 
         // Try to submit a tx for proposer1 (already processed)
         let subblock_tx = create_subblock_tx(&proposer1);
-        let result = executor.validate_tx(&subblock_tx, 21000);
+        let result = executor.validate_tx(&subblock_tx, 21000, false);
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
@@ -1075,7 +1092,7 @@ mod tests {
 
         // Try to validate a regular tx
         let tx = create_legacy_tx();
-        let result = executor.validate_tx(&tx, 21000);
+        let result = executor.validate_tx(&tx, 21000, false);
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
