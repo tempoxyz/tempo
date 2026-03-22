@@ -47,6 +47,17 @@ pub(crate) struct ExtArgs {
     args: Vec<String>,
 }
 
+impl ExtArgs {
+    /// Runs the extension command by delegating to [`tempo_ext::run`].
+    pub(crate) fn run(&self) -> eyre::Result<()> {
+        let code = tempo_ext::run(std::env::args_os()).map_err(|e| eyre!("{e}"))?;
+        if code != 0 {
+            std::process::exit(code);
+        }
+        Ok(())
+    }
+}
+
 /// Tempo-specific subcommands that extend the reth CLI.
 #[derive(Debug, Subcommand)]
 #[expect(
@@ -90,6 +101,19 @@ pub(crate) enum TempoSubcommand {
     List(ExtArgs),
 }
 
+impl TempoSubcommand {
+    /// Returns the inner [`ExtArgs`] if this is an extension management command
+    /// (`add`, `update`, `remove`, `list`).
+    pub(crate) fn as_ext(&self) -> Option<&ExtArgs> {
+        match self {
+            Self::Add(args) | Self::Update(args) | Self::Remove(args) | Self::List(args) => {
+                Some(args)
+            }
+            _ => None,
+        }
+    }
+}
+
 impl ExtendedCommand for TempoSubcommand {
     fn execute(self, runner: CliRunner) -> eyre::Result<()> {
         match self {
@@ -101,13 +125,7 @@ impl ExtendedCommand for TempoSubcommand {
                 )?;
                 Ok(())
             }
-            Self::Add(_) | Self::Update(_) | Self::Remove(_) | Self::List(_) => {
-                let code = tempo_ext::run(std::env::args_os()).map_err(|e| eyre!("{e}"))?;
-                if code != 0 {
-                    std::process::exit(code);
-                }
-                Ok(())
-            }
+            Self::Add(ext) | Self::Update(ext) | Self::Remove(ext) | Self::List(ext) => ext.run(),
         }
     }
 }
