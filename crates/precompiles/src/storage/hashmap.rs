@@ -21,6 +21,8 @@ pub struct HashMapStorageProvider {
     block_number: u64,
     spec: TempoHardfork,
     is_static: bool,
+    counter_sload: u64,
+    counter_sstore: u64,
     snapshots: Vec<Snapshot>,
 
     /// Emitted events keyed by contract address.
@@ -61,6 +63,8 @@ impl HashMapStorageProvider {
             block_number: 0,
             spec,
             is_static: false,
+            counter_sload: 0,
+            counter_sstore: 0,
         }
     }
 
@@ -111,6 +115,8 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
+        self.counter_sstore += 1;
+
         self.internals.insert((address, key), value);
         Ok(())
     }
@@ -131,6 +137,8 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
     }
 
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
+        self.counter_sload += 1;
+
         Ok(self
             .internals
             .get(&(address, key))
@@ -256,5 +264,18 @@ impl HashMapStorageProvider {
             .entry(address)
             .and_modify(|v| v.clear())
             .or_default();
+    }
+
+    pub fn counter_sload(&self) -> u64 {
+        self.counter_sload
+    }
+
+    pub fn counter_sstore(&self) -> u64 {
+        self.counter_sstore
+    }
+
+    pub fn reset_counters(&mut self) {
+        self.counter_sload = 0;
+        self.counter_sstore = 0;
     }
 }
