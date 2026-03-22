@@ -6,6 +6,7 @@ import { TempoStreamChannel } from "../src/TempoStreamChannel.sol";
 import { ITempoStreamChannel } from "../src/interfaces/ITempoStreamChannel.sol";
 import { BaseTest } from "./BaseTest.t.sol";
 import { MockTIP20 } from "./mocks/MockTIP20.sol";
+import { MockERC1271Signer } from "./mocks/MockERC1271Signer.sol";
 
 contract TempoStreamChannelTest is BaseTest {
 
@@ -978,6 +979,158 @@ contract TempoStreamChannelTest is BaseTest {
         vm.prank(payer);
         vm.expectRevert(ITempoStreamChannel.InvalidPayee.selector);
         channel.open(address(0), address(token), DEPOSIT, SALT, address(0));
+    }
+
+    // --- ERC-1271 Smart Contract Signer Tests ---
+
+    function test_erc1271_contractPayer_eoaSigner() public {
+        // Contract pays, EOA signs vouchers (e.g. vault + admin key)
+        (address adminSigner, uint256 adminSignerKey) = makeAddrAndKey("admin");
+        MockERC1271Signer contractPayer = new MockERC1271Signer(adminSigner);
+
+        vm.startPrank(admin);
+        token.mint(address(contractPayer), 10_000_000);
+        vm.stopPrank();
+
+        contractPayer.approveToken(address(token), address(channel), type(uint256).max);
+
+        // Open: contract is payer, EOA is authorizedSigner
+        vm.prank(address(contractPayer));
+        bytes32 channelId = channel.open(
+            payee, address(token), DEPOSIT, bytes32(uint256(42)), adminSigner
+        );
+
+        TempoStreamChannel.Channel memory ch = channel.getChannel(channelId);
+        assertEq(ch.payer, address(contractPayer));
+        assertEq(ch.authorizedSigner, adminSigner);
+
+        // Sign voucher with EOA admin key (standard ECDSA path)
+        bytes32 digest = channel.getVoucherDigest(channelId, 500_000);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(adminSignerKey, digest);
+        bytes memory sig = abi.encodePacked(r, s, v);
+
+        vm.prank(payee);
+        channel.settle(channelId, 500_000, sig);
+
+        assertEq(channel.getChannel(channelId).settled, 500_000);
+        assertEq(token.balanceOf(payee), 500_000);
+    }
+
+    function test_erc1271_contractAsSigner() public {
+        // Contract is both payer AND authorizedSigner.
+        // Vouchers are signed by the delegated EOA key, verified via
+        // ERC-1271 isValidSignature on the contract.
+        (address adminSigner, uint256 adminSignerKey) = makeAddrAndKey("admin1271");
+        MockERC1271Signer contractSigner = new MockERC1271Signer(adminSigner);
+
+        vm.startPrank(admin);
+        token.mint(address(contractSigner), 10_000_000);
+        vm.stopPrank();
+
+        contractSigner.approveToken(address(token), address(channel), type(uint256).max);
+
+        // Open: contract is both payer and authorizedSigner
+        vm.prank(address(contractSigner));
+        bytes32 channelId = channel.open(
+            payee, address(token), DEPOSIT, bytes32(uint256(43)),
+            address(contractSigner) // ERC-1271 signer
+        );
+
+        TempoStreamChannel.Channel memory ch = channel.getChannel(channelId);
+        assertEq(ch.authorizedSigner, address(contractSigner));
+
+        // Sign with the delegated EOA key
+        bytes32 digest = channel.getVoucherDigest(channelId, 600_000);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(adminSignerKey, digest);
+        bytes memory sig = abi.encodePacked(r, s, v);
+
+        // Settle — escrow calls contractSigner.isValidSignature()
+        vm.prank(payee);
+        channel.settle(channelId, 600_000, sig);
+
+        assertEq(channel.getChannel(channelId).settled, 600_000);
+        assertEq(token.balanceOf(payee), 600_000);
+    }
+
+    function test_erc1271_rejectsWrongKey() public {
+        (address adminSigner,) = makeAddrAndKey("rightKey");
+        MockERC1271Signer contractSigner = new MockERC1271Signer(adminSigner);
+
+        vm.startPrank(admin);
+        token.mint(address(contractSigner), 10_000_000);
+        vm.stopPrank();
+
+        contractSigner.approveToken(address(token), address(channel), type(uint256).max);
+
+        vm.prank(address(contractSigner));
+        bytes32 channelId = channel.open(
+            payee, address(token), DEPOSIT, bytes32(uint256(44)),
+            address(contractSigner)
+        );
+
+        // Sign with a WRONG key
+        (, uint256 wrongKey) = makeAddrAndKey("wrongKey");
+        bytes32 digest = channel.getVoucherDigest(channelId, 500_000);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(wrongKey, digest);
+        bytes memory sig = abi.encodePacked(r, s, v);
+
+        vm.prank(payee);
+        vm.expectRevert(ITempoStreamChannel.InvalidSignature.selector);
+        channel.settle(channelId, 500_000, sig);
+    }
+
+    function test_erc1271_closeWithContractSigner() public {
+        (address adminSigner, uint256 adminSignerKey) = makeAddrAndKey("adminClose");
+        MockERC1271Signer contractSigner = new MockERC1271Signer(adminSigner);
+
+        vm.startPrank(admin);
+        token.mint(address(contractSigner), 10_000_000);
+        vm.stopPrank();
+
+        contractSigner.approveToken(address(token), address(channel), type(uint256).max);
+
+        vm.prank(address(contractSigner));
+        bytes32 channelId = channel.open(
+            payee, address(token), DEPOSIT, bytes32(uint256(45)),
+            address(contractSigner)
+        );
+
+        // Settle partial
+        uint128 amt1 = 300_000;
+        bytes32 digest1 = channel.getVoucherDigest(channelId, amt1);
+        (uint8 v1, bytes32 r1, bytes32 s1) = vm.sign(adminSignerKey, digest1);
+        vm.prank(payee);
+        channel.settle(channelId, amt1, abi.encodePacked(r1, s1, v1));
+
+        // Close with final voucher
+        uint128 finalAmt = 800_000;
+        bytes32 digest2 = channel.getVoucherDigest(channelId, finalAmt);
+        (uint8 v2, bytes32 r2, bytes32 s2) = vm.sign(adminSignerKey, digest2);
+        vm.prank(payee);
+        channel.close(channelId, finalAmt, abi.encodePacked(r2, s2, v2));
+
+        assertTrue(channel.getChannel(channelId).finalized);
+        assertEq(token.balanceOf(payee), finalAmt);
+    }
+
+    function test_erc1271_existingEOATestsStillPass() public {
+        // Verify that existing EOA-based authorized signer still works
+        // (backward compatibility)
+        (address delegateSigner, uint256 delegateKey) = makeAddrAndKey("compat");
+
+        vm.prank(payer);
+        bytes32 channelId = channel.open(
+            payee, address(token), DEPOSIT, bytes32(uint256(46)), delegateSigner
+        );
+
+        bytes32 digest = channel.getVoucherDigest(channelId, 500_000);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(delegateKey, digest);
+        bytes memory sig = abi.encodePacked(r, s, v);
+
+        vm.prank(payee);
+        channel.settle(channelId, 500_000, sig);
+
+        assertEq(channel.getChannel(channelId).settled, 500_000);
     }
 
 }

@@ -5,6 +5,7 @@ import { TempoUtilities } from "./TempoUtilities.sol";
 import { ITIP20 } from "./interfaces/ITIP20.sol";
 import { ITempoStreamChannel } from "./interfaces/ITempoStreamChannel.sol";
 import { ECDSA } from "solady/utils/ECDSA.sol";
+import { SignatureCheckerLib } from "solady/utils/SignatureCheckerLib.sol";
 import { EIP712 } from "solady/utils/EIP712.sol";
 
 /**
@@ -129,16 +130,7 @@ contract TempoStreamChannel is ITempoStreamChannel, EIP712 {
             revert AmountNotIncreasing();
         }
 
-        bytes32 structHash = keccak256(abi.encode(VOUCHER_TYPEHASH, channelId, cumulativeAmount));
-        bytes32 digest = _hashTypedData(structHash);
-        address signer = ECDSA.recoverCalldata(digest, signature);
-
-        address expectedSigner =
-            channel.authorizedSigner != address(0) ? channel.authorizedSigner : channel.payer;
-
-        if (signer != expectedSigner) {
-            revert InvalidSignature();
-        }
+        _verifyVoucher(channel, channelId, cumulativeAmount, signature);
 
         uint128 delta = cumulativeAmount - channel.settled;
         channel.settled = cumulativeAmount;
@@ -262,17 +254,7 @@ contract TempoStreamChannel is ITempoStreamChannel, EIP712 {
                 revert AmountExceedsDeposit();
             }
 
-            bytes32 structHash =
-                keccak256(abi.encode(VOUCHER_TYPEHASH, channelId, cumulativeAmount));
-            bytes32 digest = _hashTypedData(structHash);
-            address signer = ECDSA.recoverCalldata(digest, signature);
-
-            address expectedSigner =
-                channel.authorizedSigner != address(0) ? channel.authorizedSigner : channel.payer;
-
-            if (signer != expectedSigner) {
-                revert InvalidSignature();
-            }
+            _verifyVoucher(channel, channelId, cumulativeAmount, signature);
 
             delta = cumulativeAmount - settledAmount;
             settledAmount = cumulativeAmount;
@@ -422,6 +404,28 @@ contract TempoStreamChannel is ITempoStreamChannel, EIP712 {
     }
 
     // --- Internal Functions ---
+
+    /// @dev Verify a voucher signature. Supports both ECDSA (EOA) and
+    ///      ERC-1271 (smart contract) signers via SignatureCheckerLib.
+    function _verifyVoucher(
+        Channel storage channel,
+        bytes32 channelId,
+        uint128 cumulativeAmount,
+        bytes calldata signature
+    ) internal view {
+        bytes32 structHash = keccak256(abi.encode(VOUCHER_TYPEHASH, channelId, cumulativeAmount));
+        bytes32 digest = _hashTypedData(structHash);
+
+        address expectedSigner =
+            channel.authorizedSigner != address(0) ? channel.authorizedSigner : channel.payer;
+
+        // SignatureCheckerLib.isValidSignatureNowCalldata:
+        //   1. Tries ecrecover first (EOA — identical to current behavior)
+        //   2. Falls back to ERC-1271 isValidSignature (contract signers)
+        if (!SignatureCheckerLib.isValidSignatureNowCalldata(expectedSigner, digest, signature)) {
+            revert InvalidSignature();
+        }
+    }
 
     function _clearAndFinalize(bytes32 channelId) internal {
         delete channels[channelId];
