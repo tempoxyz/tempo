@@ -784,11 +784,24 @@ where
                 // 7. Remove included expiring nonce transactions
                 // Expiring nonce txs don't have sequential nonces, so we need to remove them
                 // on inclusion rather than relying on nonce changes.
-                pool.remove_included_expiring_nonce_txs(
+                // We match by expiring_nonce_hash (replay protection key) rather than tx_hash
+                // so that sibling variants (same payload, different fee payer) are cleaned up.
+                let removed_expiring = pool.remove_included_expiring_nonce_txs(
                     tip.blocks_iter()
-                        .flat_map(|block| block.body().transactions())
-                        .map(|tx| tx.tx_hash()),
+                        .flat_map(|block| block.transactions_recovered())
+                        .filter_map(|tx| {
+                            tx.as_aa()
+                                .filter(|aa| aa.tx().is_expiring_nonce_tx())
+                                .map(|aa| aa.expiring_nonce_hash(tx.signer()))
+                        }),
                 );
+
+                // Untrack expiry for removed expiring-nonce pool transactions,
+                // including sibling variants whose tx_hash may differ from the mined tx.
+                for tx in &removed_expiring {
+                    state.untrack_expiry(tx.hash());
+                }
+
                 metrics.nonce_pool_update_duration_seconds.record(nonce_pool_start.elapsed());
 
                 // 8. Update AMM liquidity cache (must happen before validator token eviction)

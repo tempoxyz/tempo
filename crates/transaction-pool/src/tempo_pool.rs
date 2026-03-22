@@ -140,15 +140,15 @@ where
 
     /// Removes expiring nonce transactions that were included in a block.
     ///
-    /// This is called with the transaction hashes from mined blocks to clean up
-    /// expiring nonce transactions on inclusion, rather than waiting for expiry.
-    pub(crate) fn remove_included_expiring_nonce_txs<'a>(
+    /// Called with the `expiring_nonce_hash` values computed from mined block transactions
+    /// so that sibling variants (same payload, different fee payer) are correctly cleaned up.
+    pub(crate) fn remove_included_expiring_nonce_txs(
         &self,
-        tx_hashes: impl Iterator<Item = &'a TxHash>,
-    ) {
+        expiring_nonce_hashes: impl Iterator<Item = B256>,
+    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         self.aa_2d_pool
             .write()
-            .remove_included_expiring_nonce_txs(tx_hashes);
+            .remove_included_expiring_nonce_txs(expiring_nonce_hashes)
     }
 
     /// Evicts transactions that are no longer valid due to on-chain events.
