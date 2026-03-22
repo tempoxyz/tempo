@@ -1,4 +1,5 @@
 use crate::monitor::{Monitor, prometheus_metrics};
+use crate::telemetry::{LogFormat, init_tracing};
 use alloy::primitives::Address;
 use clap::Parser;
 use eyre::{Context, eyre};
@@ -8,7 +9,6 @@ use poem::{EndpointExt, Route, Server, get, listener::TcpListener};
 use reqwest::Url;
 use tempo_precompiles::tip20::is_tip20_prefix;
 use tokio::signal;
-use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -30,13 +30,14 @@ pub struct MonitorArgs {
     /// NOTE: Only pools with both tokens whitelisted will be monitored.
     #[arg(short, long, value_delimiter = ',', num_args = 2.., required = true)]
     tokens: Vec<Address>,
+
+    #[arg(long, default_value_t = LogFormat::Terminal)]
+    log_format: LogFormat,
 }
 
 impl MonitorArgs {
     pub async fn run(self) -> eyre::Result<()> {
-        tracing_subscriber::FmtSubscriber::builder()
-            .with_env_filter(EnvFilter::from_default_env())
-            .init();
+        init_tracing(self.log_format);
 
         let builder = PrometheusBuilder::new().add_global_label("chain_id", self.chain_id.clone());
         let metrics_handle = builder

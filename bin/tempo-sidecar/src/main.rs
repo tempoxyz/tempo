@@ -5,6 +5,7 @@ mod cmd;
 pub mod monitor;
 mod opts;
 mod synthetic_load;
+mod telemetry;
 
 /// Force-install the default crypto provider.
 ///

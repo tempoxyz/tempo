@@ -1,8 +1,8 @@
 use crate::synthetic_load::SyntheticLoadGenerator;
+use crate::telemetry::{LogFormat, init_tracing};
 use alloy::primitives::{Address, address};
 use clap::Parser;
 use reqwest::Url;
-use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
 pub struct SyntheticLoadArgs {
@@ -27,13 +27,14 @@ pub struct SyntheticLoadArgs {
 
     #[arg(long)]
     seed: Option<u64>,
+
+    #[arg(long, default_value_t = LogFormat::Terminal)]
+    log_format: LogFormat,
 }
 
 impl SyntheticLoadArgs {
     pub async fn run(&self) -> eyre::Result<()> {
-        tracing_subscriber::FmtSubscriber::builder()
-            .with_env_filter(EnvFilter::from_default_env())
-            .init();
+        init_tracing(self.log_format);
 
         let generator = SyntheticLoadGenerator::new(
             self.mnemonic.clone(),

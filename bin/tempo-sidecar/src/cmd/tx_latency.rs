@@ -1,4 +1,5 @@
 use crate::monitor::prometheus_metrics;
+use crate::telemetry::{LogFormat, init_tracing};
 use alloy::{
     primitives::map::{B256Map, B256Set},
     providers::{Provider, ProviderBuilder, WsConnect},
@@ -33,6 +34,9 @@ pub struct TxLatencyArgs {
     /// Maximum age (seconds) to track pending transactions before expiring them.
     #[arg(long, default_value_t = 600)]
     max_pending_age_secs: u64,
+
+    #[arg(long, default_value_t = LogFormat::Terminal)]
+    log_format: LogFormat,
 }
 
 struct TransactionLatencyMonitor {
@@ -144,9 +148,7 @@ impl TransactionLatencyMonitor {
 
 impl TxLatencyArgs {
     pub async fn run(self) -> Result<()> {
-        tracing_subscriber::FmtSubscriber::builder()
-            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-            .init();
+        init_tracing(self.log_format);
 
         let builder = PrometheusBuilder::new().add_global_label("chain_id", self.chain_id.clone());
         let metrics_handle = builder

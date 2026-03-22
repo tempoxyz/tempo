@@ -21,6 +21,7 @@ use tempo_telemetry_util::error_field;
 use tracing::{debug, error, info, instrument};
 
 use crate::monitor;
+use crate::telemetry::{LogFormat, init_tracing};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -40,6 +41,9 @@ pub struct SimpleArbArgs {
     /// Prometheus port for metrics
     #[arg(long, default_value_t = 8000)]
     metrics_port: u64,
+
+    #[arg(long, default_value_t = LogFormat::Terminal)]
+    log_format: LogFormat,
 }
 
 #[instrument(skip(provider))]
@@ -76,9 +80,7 @@ async fn fetch_all_pairs<P: Provider>(provider: P) -> eyre::Result<HashSet<(Addr
 
 impl SimpleArbArgs {
     pub async fn run(self) -> eyre::Result<()> {
-        tracing_subscriber::FmtSubscriber::builder()
-            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-            .init();
+        init_tracing(self.log_format);
 
         let builder = PrometheusBuilder::new();
         let metrics_handle = builder
