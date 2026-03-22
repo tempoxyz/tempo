@@ -132,7 +132,7 @@ impl AA2dPool {
     /// `hardfork` indicates the active Tempo hardfork. When T1 or later, expiring nonce
     /// transactions (nonce_key == U256::MAX) are handled specially. Otherwise, they are
     /// treated as regular 2D nonce transactions.
-    pub(crate) fn add_transaction(
+    pub fn add_transaction(
         &mut self,
         transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
         on_chain_nonce: u64,
@@ -373,7 +373,7 @@ impl AA2dPool {
     }
 
     /// Returns how many pending and queued transactions are in the pool.
-    pub(crate) fn pending_and_queued_txn_count(&self) -> (usize, usize) {
+    pub fn pending_and_queued_txn_count(&self) -> (usize, usize) {
         let (pending_2d, queued_2d) = self.by_id.values().fold((0, 0), |mut acc, tx| {
             if tx.is_pending() {
                 acc.0 += 1;
@@ -476,7 +476,7 @@ impl AA2dPool {
 
     /// Returns the best, executable transactions for this sub-pool
     #[allow(clippy::mutable_key_type)]
-    pub(crate) fn best_transactions(&self) -> BestAA2dTransactions {
+    pub fn best_transactions(&self) -> BestAA2dTransactions {
         // Collect independent transactions from both 2D nonce pool and expiring nonce pool
         let mut independent: BTreeSet<_> =
             self.independent_transactions.values().cloned().collect();
@@ -653,7 +653,7 @@ impl AA2dPool {
     ///
     /// This batches demotion by seq_id to avoid O(N*N) complexity when removing many
     /// transactions from the same sequence.
-    pub(crate) fn remove_transactions<'a, I>(
+    pub fn remove_transactions<'a, I>(
         &mut self,
         tx_hashes: I,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>
@@ -761,7 +761,7 @@ impl AA2dPool {
 
     /// Removes and returns all matching transactions and their dependent transactions from the
     /// pool.
-    pub(crate) fn remove_transactions_and_descendants<'a, I>(
+    pub fn remove_transactions_and_descendants<'a, I>(
         &mut self,
         hashes: I,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>
@@ -782,7 +782,7 @@ impl AA2dPool {
     }
 
     /// Removes all transactions from the given sender.
-    pub(crate) fn remove_transactions_by_sender(
+    pub fn remove_transactions_by_sender(
         &mut self,
         sender_id: Address,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
@@ -844,7 +844,7 @@ impl AA2dPool {
     ///
     /// This will prune mined transactions and promote unblocked transactions if any, returns `(promoted, mined)`
     #[allow(clippy::type_complexity)]
-    pub(crate) fn on_nonce_changes(
+    pub fn on_nonce_changes(
         &mut self,
         on_chain_ids: HashMap<AASequenceId, u64>,
     ) -> (
@@ -1111,7 +1111,7 @@ impl AA2dPool {
     }
 
     /// Returns `true` if the transaction with the given hash is already included in this pool.
-    pub(crate) fn contains(&self, tx_hash: &TxHash) -> bool {
+    pub fn contains(&self, tx_hash: &TxHash) -> bool {
         self.by_hash.contains_key(tx_hash)
     }
 
@@ -1184,8 +1184,8 @@ impl AA2dPool {
     }
 
     /// Asserts that all assumptions are valid.
-    #[cfg(test)]
-    pub(crate) fn assert_invariants(&self) {
+    #[cfg(any(test, feature = "fuzzing"))]
+    pub fn assert_invariants(&self) {
         // Basic size constraints
         assert!(
             self.independent_transactions.len() <= self.by_id.len(),
@@ -1483,7 +1483,7 @@ impl PartialOrd for EvictionKey {
 
 /// A snapshot of the sub-pool containing all executable transactions.
 #[derive(Debug)]
-pub(crate) struct BestAA2dTransactions {
+pub struct BestAA2dTransactions {
     /// pending, executable transactions sorted by their priority.
     independent: BTreeSet<PendingTransaction<TxOrdering>>,
     /// _All_ transactions that are currently inside the pool grouped by their unique identifier.
@@ -1507,7 +1507,7 @@ impl BestAA2dTransactions {
     }
 
     /// Returns the next best transaction with its priority.
-    pub(crate) fn next_tx_and_priority(
+    pub fn next_tx_and_priority(
         &mut self,
     ) -> Option<(
         Arc<ValidPoolTransaction<TempoPooledTransaction>>,

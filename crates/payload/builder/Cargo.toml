@@ -41,3 +41,7 @@ alloy-rlp.workspace = true
 either.workspace = true
 metrics.workspace = true
 tracing.workspace = true
+
+[features]
+default = []
+fuzzing = []

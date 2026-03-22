@@ -1,0 +1,36 @@
+[package]
+name = "tempo-payload-builder-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+tempo-payload-builder = { path = ".." }
+tempo-payload-types = { path = "../../types" }
+tempo-primitives = { path = "../../../primitives", features = ["reth"] }
+
+reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "a0b0d88" }
+reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "a0b0d88" }
+reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth", rev = "a0b0d88" }
+
+alloy-consensus = "1.6.1"
+alloy-primitives = "1.5.7"
+alloy-rlp = "0.3.13"
+
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+
+[workspace]
+
+[[bin]]
+name = "payload_limits"
+path = "fuzz_targets/payload_limits.rs"
+doc = false
+
+[[bin]]
+name = "payload_subblock_lifecycle"
+path = "fuzz_targets/payload_subblock_lifecycle.rs"
+doc = false

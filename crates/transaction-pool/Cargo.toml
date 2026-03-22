@@ -36,6 +36,10 @@ alloy-primitives.workspace = true
 alloy-eips.workspace = true
 alloy-evm = { workspace = true, features = ["std"] }
 alloy-sol-types.workspace = true
+alloy-signer = { workspace = true, optional = true }
+alloy-signer-local = { workspace = true, optional = true }
+
+reth-ethereum-primitives = { workspace = true, optional = true }
 
 futures.workspace = true
 tracing.workspace = true
@@ -47,7 +51,11 @@ metrics.workspace = true
 
 [features]
 default = []
+fuzzing = ["test-utils"]
 test-utils = [
+  "dep:alloy-signer",
+  "dep:alloy-signer-local",
+  "dep:reth-ethereum-primitives",
   "reth-chainspec/test-utils",
   "reth-ethereum-primitives/test-utils",
   "reth-evm/test-utils",
