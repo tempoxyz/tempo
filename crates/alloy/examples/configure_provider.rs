@@ -14,6 +14,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Provider connected successfully");
     let chain_id = provider.get_chain_id().await?;
     println!("Chain ID: {chain_id}");
-    
+
     Ok(())
 }
