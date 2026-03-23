@@ -393,6 +393,9 @@ jobs:
       BENCH_COMMENT_ID: ${{ needs.tempo-bench-ack.outputs.comment-id }}
       TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
       GRAFANA_TEMPO: ${{ secrets.GRAFANA_TEMPO }}
+      CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
+      CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
+      CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
     steps:
       - name: Mask telemetry URL
         if: env.TEMPO_TELEMETRY_URL
@@ -401,6 +404,12 @@ jobs:
       - name: Mask Grafana Tempo URL
         if: env.GRAFANA_TEMPO
         run: echo "::add-mask::$GRAFANA_TEMPO"
+
+      - name: Mask ClickHouse credentials
+        if: env.CLICKHOUSE_URL
+        run: |
+          echo "::add-mask::$CLICKHOUSE_URL"
+          echo "::add-mask::$CLICKHOUSE_PASSWORD"
 
       - name: Clean up previous results
         run: sudo rm -rf bench-results/ 2>/dev/null || true
@@ -593,6 +602,10 @@ jobs:
         with:
           name: tempo-bench-results
           path: bench-results/
+
+      - name: Upload results to ClickHouse
+        if: success()
+        run: bash contrib/bench/upload-clickhouse.sh "${{ steps.results-dir.outputs.path }}"
 
       - name: Post results to PR
         if: success()

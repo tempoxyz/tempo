@@ -388,9 +388,8 @@ impl AccountKeychain {
     /// The T2 check prevents transaction-global root-key status from being reused by
     /// intermediate contracts (confused-deputy self-administration).
     ///
-    /// `tx_origin` is seeded by the handler before validation/execution on in-repo flows.
-    /// The zero-origin fallback here exists for out-of-tree integrations that bypass
-    /// handler setup.
+    /// `tx_origin` is seeded by the handler before validation/execution.
+    /// If origin is not seeded (zero), admin ops are rejected.
     fn ensure_admin_caller(&self, msg_sender: Address) -> Result<()> {
         if !self.transaction_key.t_read()?.is_zero() {
             return Err(AccountKeychainError::unauthorized_caller().into());
@@ -398,7 +397,7 @@ impl AccountKeychain {
 
         if self.storage.spec().is_t2() {
             let tx_origin = self.tx_origin.t_read()?;
-            if tx_origin != Address::ZERO && tx_origin != msg_sender {
+            if tx_origin.is_zero() || tx_origin != msg_sender {
                 return Err(AccountKeychainError::unauthorized_caller().into());
             }
         }
@@ -995,6 +994,86 @@ mod tests {
             );
             assert!(result.is_err());
             assert_unauthorized_error(result.unwrap_err());
+
+            Ok(())
+        })
+    }
+
+    /// Admin ops on T2 must reject when `tx_origin` is never seeded (zero).
+    ///
+    /// This catches any execution path that forgets to call `seed_tx_origin`.
+    #[test]
+    fn test_admin_operations_reject_unseeded_origin_on_t2() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let account = Address::random();
+        let key_id = Address::random();
+        let other_key = Address::random();
+        let token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            // Bootstrap: seed origin so we can authorize a key for later revoke/update tests.
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
+            keychain.authorize_key(
+                account,
+                authorizeKeyCall {
+                    keyId: key_id,
+                    signatureType: SignatureType::Secp256k1,
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![TokenLimit {
+                        token,
+                        amount: U256::from(100),
+                    }],
+                },
+            )?;
+
+            // Clear tx_origin back to zero — simulates an execution path that
+            // never called seed_tx_origin.
+            keychain.set_tx_origin(Address::ZERO)?;
+
+            // authorize_key must reject
+            let auth_result = keychain.authorize_key(
+                account,
+                authorizeKeyCall {
+                    keyId: other_key,
+                    signatureType: SignatureType::P256,
+                    expiry: u64::MAX,
+                    enforceLimits: false,
+                    limits: vec![],
+                },
+            );
+            assert!(
+                auth_result.is_err(),
+                "authorize_key must reject when tx_origin is not seeded on T2"
+            );
+            assert_unauthorized_error(auth_result.unwrap_err());
+
+            // revoke_key must reject
+            let revoke_result = keychain.revoke_key(account, revokeKeyCall { keyId: key_id });
+            assert!(
+                revoke_result.is_err(),
+                "revoke_key must reject when tx_origin is not seeded on T2"
+            );
+            assert_unauthorized_error(revoke_result.unwrap_err());
+
+            // update_spending_limit must reject
+            let update_result = keychain.update_spending_limit(
+                account,
+                updateSpendingLimitCall {
+                    keyId: key_id,
+                    token,
+                    newLimit: U256::from(200),
+                },
+            );
+            assert!(
+                update_result.is_err(),
+                "update_spending_limit must reject when tx_origin is not seeded on T2"
+            );
+            assert_unauthorized_error(update_result.unwrap_err());
 
             Ok(())
         })
