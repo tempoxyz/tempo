@@ -967,7 +967,8 @@ pub async fn generate_report(
 
     let mut benchmarked_blocks = Vec::new();
 
-    for number in start_block..=end_block {
+    // Skip start_block — it was the chain head before any transactions were sent
+    for number in (start_block + 1)..=end_block {
         let block = provider
             .get_block(number.into())
             .await?
@@ -1002,6 +1003,16 @@ pub async fn generate_report(
         });
 
         last_block_timestamp = Some(timestamp);
+    }
+
+    // Remove leading ramp-up blocks (system-only, no gas used)
+    while benchmarked_blocks.first().is_some_and(|b| b.gas_used == 0) {
+        benchmarked_blocks.remove(0);
+    }
+
+    // Reset latency_ms for the new first block (its latency was relative to a stripped block)
+    if let Some(first) = benchmarked_blocks.first_mut() {
+        first.latency_ms = None;
     }
 
     let metadata = BenchmarkMetadata {
