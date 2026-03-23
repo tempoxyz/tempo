@@ -1382,6 +1382,7 @@ where
                 init_gas.floor_gas = 0u64;
             }
 
+            // Validate gas limit is sufficient for initial gas
             if gas_limit < init_gas.initial_gas {
                 return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
                     gas_limit,
