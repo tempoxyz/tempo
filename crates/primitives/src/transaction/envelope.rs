@@ -323,12 +323,6 @@ impl reth_primitives_traits::InMemorySize for TempoTxType {
     }
 }
 
-impl alloy_consensus::InMemorySize for TempoTxType {
-    fn size(&self) -> usize {
-        size_of::<Self>()
-    }
-}
-
 impl fmt::Display for TempoTxType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
