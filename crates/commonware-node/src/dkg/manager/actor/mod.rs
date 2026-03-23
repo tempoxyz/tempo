@@ -643,10 +643,10 @@ where
             }
             std::cmp::Ordering::Greater => {
                 warn!(
-                    "the block is for a prior epoch, ignoring; this can happen \
-                    when a is shut down after the DKG loop completed but \
-                    before it was acknowledged by the other actors of the \
-                    system"
+                    "ignoring block for prior epoch; older blocks are replayed \
+                    against the DKG loop when a node was shut down right \
+                    after a boundary block completed an epoch, but before \
+                    it was fully processed by other actors"
                 );
                 return Ok(None);
             }
