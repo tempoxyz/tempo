@@ -1414,20 +1414,24 @@ mod tests {
             );
         }
 
-        // Test 4: CallGasCostMoreThanGasLimit - gas_limit < floor_gas (EIP-7623)
+        // Test 4: gas_limit < floor_gas (EIP-7623)
+        // For AA transactions, intrinsic gas is higher than for standard txs, so with
+        // gas_limit=31000 the intrinsic gas check fires first (CallGasCostMoreThanGasLimit).
+        // The floor gas error (GasFloorMoreThanGasLimit) would only appear if gas_limit
+        // were between intrinsic_gas and floor_gas, but AA intrinsic gas already exceeds
+        // both values here.
         {
             let large_calldata = vec![0x42; 1000]; // 1000 non-zero bytes = 1000 tokens
 
             let mut evm = create_evm_with_tx(
                 TxBuilder::new()
                     .call_identity(&large_calldata)
-                    .gas_limit(31_000) // Above initial_gas (~30600) but below floor_gas (~32500)
+                    .gas_limit(31_000)
                     .build(),
             )?;
 
             let result = handler.validate_initial_tx_gas(&mut evm);
 
-            // Should fail because gas_limit < floor_gas
             assert!(
                 matches!(
                     result,
@@ -1440,7 +1444,7 @@ mod tests {
                         )
                     )) if initial_gas > 31_000
                 ),
-                "Expected CallGasCostMoreThanGasLimit (floor gas), got: {result:?}"
+                "Expected CallGasCostMoreThanGasLimit, got: {result:?}"
             );
         }
 

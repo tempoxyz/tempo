@@ -1382,9 +1382,6 @@ where
                 init_gas.floor_gas = 0u64;
             }
 
-            // Validate gas limit is sufficient for initial gas.
-            // Use standard InvalidTransaction so reth's gas estimation binary search
-            // recognizes this as a "gas too low" error (is_gas_too_low() returns true).
             if gas_limit < init_gas.initial_gas {
                 return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
                     gas_limit,
@@ -1395,9 +1392,9 @@ where
 
             // Validate floor gas (Prague+)
             if !evm.ctx.cfg.is_eip7623_disabled() && gas_limit < init_gas.floor_gas {
-                return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
+                return Err(InvalidTransaction::GasFloorMoreThanGasLimit {
                     gas_limit,
-                    initial_gas: init_gas.floor_gas,
+                    gas_floor: init_gas.floor_gas,
                 }
                 .into());
             }
@@ -1651,9 +1648,9 @@ where
 
     // Validate floor gas (Prague+)
     if !evm.ctx.cfg.is_eip7623_disabled() && gas_limit < batch_gas.floor_gas {
-        return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
+        return Err(InvalidTransaction::GasFloorMoreThanGasLimit {
             gas_limit,
-            initial_gas: batch_gas.floor_gas,
+            gas_floor: batch_gas.floor_gas,
         }
         .into());
     }
@@ -2801,9 +2798,10 @@ mod tests {
                             err.as_invalid_tx_err(),
                             Some(TempoInvalidTransaction::EthInvalidTransaction(
                                 InvalidTransaction::CallGasCostMoreThanGasLimit { .. }
+                                    | InvalidTransaction::GasFloorMoreThanGasLimit { .. }
                             ))
                         ),
-                        "Expected CallGasCostMoreThanGasLimit, got: {err:?}"
+                        "Expected CallGasCostMoreThanGasLimit or GasFloorMoreThanGasLimit, got: {err:?}"
                     );
                 }
             }
