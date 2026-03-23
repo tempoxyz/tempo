@@ -10,12 +10,17 @@ crate::sol! {
         /// @return signer Address of the signer if valid, reverts otherwise
         function verify(bytes32 hash, bytes calldata signature) external view returns (address signer);
 
-        error InvalidSignature();
+        error InvalidSignatureFormat();
+        error SignatureVerificationFailed();
     }
 }
 
 impl SignatureVerifierError {
-    pub const fn invalid_signature() -> Self {
-        Self::InvalidSignature(ISignatureVerifier::InvalidSignature {})
+    pub const fn invalid_signature_format() -> Self {
+        Self::InvalidSignatureFormat(ISignatureVerifier::InvalidSignatureFormat {})
+    }
+
+    pub const fn signature_verification_failed() -> Self {
+        Self::SignatureVerificationFailed(ISignatureVerifier::SignatureVerificationFailed {})
     }
 }

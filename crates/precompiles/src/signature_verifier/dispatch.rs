@@ -1,7 +1,7 @@
 use super::SignatureVerifier;
 use crate::{Precompile, dispatch_call, input_cost, view};
 use alloy::{primitives::Address, sol_types::SolInterface};
-use revm::precompile::{PrecompileError, PrecompileResult};
+use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::ISignatureVerifier::ISignatureVerifierCalls;
 
 impl Precompile for SignatureVerifier {
@@ -9,6 +9,14 @@ impl Precompile for SignatureVerifier {
         self.storage
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
+
+        // Pre-T3: behave like an empty contract (call succeeds, no execution)
+        if !self.storage.spec().is_t3() {
+            return Ok(PrecompileOutput::new(
+                self.storage.gas_used(),
+                Default::default(),
+            ));
+        }
 
         dispatch_call(
             calldata,
@@ -32,7 +40,8 @@ mod tests {
 
     #[test]
     fn test_signature_verifier_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage =
+            HashMapStorageProvider::new_with_spec(1, tempo_chainspec::hardfork::TempoHardfork::T3);
         StorageCtx::enter(&mut storage, || {
             let mut verifier = SignatureVerifier::new();
 

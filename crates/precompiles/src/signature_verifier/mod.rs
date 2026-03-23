@@ -30,7 +30,7 @@ impl SignatureVerifier {
     ) -> Result<Address> {
         // Parse and validate signature (handles size checks + type disambiguation).
         let sig = PrimitiveSignature::from_bytes(&call.signature)
-            .map_err(|_| SignatureVerifierError::invalid_signature())?;
+            .map_err(|_| SignatureVerifierError::invalid_signature_format())?;
 
         // Charge verification gas before crypto (SV5).
         let verify_gas = match sig.signature_type() {
@@ -43,7 +43,7 @@ impl SignatureVerifier {
         // Verify and recover signer (SV1, SV2, SV4).
         let signer = sig
             .recover_signer(&call.hash)
-            .map_err(|_| SignatureVerifierError::invalid_signature())?;
+            .map_err(|_| SignatureVerifierError::signature_verification_failed())?;
 
         Ok(signer)
     }
@@ -61,7 +61,8 @@ mod tests {
     };
 
     fn run<R>(f: impl FnOnce() -> R) -> R {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage =
+            HashMapStorageProvider::new_with_spec(1, tempo_chainspec::hardfork::TempoHardfork::T3);
         StorageCtx::enter(&mut storage, f)
     }
 

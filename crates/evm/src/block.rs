@@ -27,7 +27,7 @@ use reth_revm::{
 };
 use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
+use tempo_contracts::precompiles::{SIGNATURE_VERIFIER_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS};
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
     subblock::PartialValidatorKey,
@@ -385,6 +385,26 @@ where
                 account.mark_touch();
                 db.commit(EvmState::from_iter([(
                     VALIDATOR_CONFIG_V2_ADDRESS,
+                    account,
+                )]));
+            }
+        }
+
+        // Deploy 0xEF marker bytecode to SignatureVerifier when T3 activates.
+        if self.inner.spec.is_t3_active_at_timestamp(timestamp) {
+            let db = self.evm_mut().ctx_mut().journaled_state.db_mut();
+            let mut info = db
+                .basic(SIGNATURE_VERIFIER_ADDRESS)
+                .map_err(BlockExecutionError::other)?
+                .unwrap_or_default();
+            if info.is_empty_code_hash() {
+                let code = Bytecode::new_legacy([0xef].into());
+                info.code_hash = code.hash_slow();
+                info.code = Some(code);
+                let mut account: Account = info.into();
+                account.mark_touch();
+                db.commit(EvmState::from_iter([(
+                    SIGNATURE_VERIFIER_ADDRESS,
                     account,
                 )]));
             }
