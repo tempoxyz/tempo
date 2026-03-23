@@ -631,11 +631,29 @@ where
             .containing(block.height())
             .expect("epoch strategy is covering all block heights");
 
-        ensure!(
-            epoch_info.epoch() == round.epoch(),
-            "block was not for this epoch; must observe all blocks epoch by \
-            epoch; cannot deal with observing blocks out-of-order"
-        );
+        match round.epoch().cmp(&epoch_info.epoch()) {
+            std::cmp::Ordering::Less => {
+                bail!(
+                    "block is for a future epoch `{}`, but the current DKG \
+                    loop is for epoch `{}`; this should never happen because \
+                    the DKG actor drives which epochs are entered or skipped",
+                    epoch_info.epoch(),
+                    round.epoch(),
+                );
+            }
+            std::cmp::Ordering::Greater => {
+                warn!(
+                    "the block is for a prior epoch, ignoring; this can happen \
+                    when a is shut down after the DKG loop completed but \
+                    before it was acknowledged by the other actors of the \
+                    system"
+                );
+                return Ok(None);
+            }
+            std::cmp::Ordering::Equal => {
+                // Normal, expected behavior.
+            }
+        }
 
         match epoch_info.phase() {
             EpochPhase::Early => {
