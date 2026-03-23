@@ -49,6 +49,10 @@ pub(crate) struct ExtArgs {
 
 /// Tempo-specific subcommands that extend the reth CLI.
 #[derive(Debug, Subcommand)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one-off commands; size doesn't matter"
+)]
 pub(crate) enum TempoSubcommand {
     /// Consensus-related commands.
     #[command(subcommand)]
@@ -169,13 +173,25 @@ impl ValidatorIdentityArgs {
     }
 }
 
+/// Either a pre-computed signature or a signing key to compute it from.
+#[derive(Debug, clap::Args)]
+#[group(required = true, multiple = false)]
+pub(crate) struct SignatureArgs {
+    /// A pre-computed ed25519 signature over the validator identity.
+    #[arg(long, value_name = "SIGNATURE")]
+    signature: Option<Bytes>,
+
+    /// Path to the ed25519 signing key file. The signature is computed
+    /// automatically so a separate `create-*-signature` step is not needed.
+    #[arg(long, value_name = "FILE")]
+    signing_key: Option<PathBuf>,
+}
+
 /// Shared arguments for commands that update the validator config contract.
 #[derive(Debug, clap::Args)]
 pub(crate) struct ValidatorTransactionArgs {
-    /// The ed25519 signature proving validator key ownership and validity over
-    /// the validator identity.
-    #[arg(long, value_name = "SIGNATURE")]
-    signature: Bytes,
+    #[command(flatten)]
+    sig: SignatureArgs,
 
     /// Path to the file holding the Ethereum private key.
     #[arg(long, value_name = "FILE")]
@@ -226,9 +242,17 @@ impl AddValidator {
             .await
             .wrap_err("failed to get chain id")?;
 
-        self.identity
-            .to_config(chain_id)
-            .check_add_validator_signature(self.fee_recipient, self.submit.signature.as_ref())
+        let config = self.identity.to_config(chain_id);
+
+        let signature = resolve_signature(
+            self.submit.sig.signature,
+            self.submit.sig.signing_key.as_deref(),
+            VALIDATOR_NS_ADD,
+            &config.add_validator_message_hash(self.fee_recipient),
+        )?;
+
+        config
+            .check_add_validator_signature(self.fee_recipient, signature.as_ref())
             .wrap_err("add-validator signature check failed")?;
 
         let calldata = IValidatorConfigV2::addValidatorCall {
@@ -236,7 +260,7 @@ impl AddValidator {
             publicKey: self.identity.public_key,
             ingress: self.identity.ingress.to_string(),
             egress: self.identity.egress.to_string(),
-            signature: self.submit.signature,
+            signature,
             feeRecipient: self.fee_recipient,
         };
 
@@ -293,9 +317,17 @@ impl RotateValidator {
             .await
             .wrap_err("failed to get chain id")?;
 
-        self.identity
-            .to_config(chain_id)
-            .check_rotate_validator_signature(self.submit.signature.as_ref())
+        let config = self.identity.to_config(chain_id);
+
+        let signature = resolve_signature(
+            self.submit.sig.signature,
+            self.submit.sig.signing_key.as_deref(),
+            VALIDATOR_NS_ROTATE,
+            &config.rotate_validator_message_hash(),
+        )?;
+
+        config
+            .check_rotate_validator_signature(signature.as_ref())
             .wrap_err("rotate-validator signature check failed")?;
 
         let validator_call_args = IValidatorConfigV2::validatorByAddressCall {
@@ -320,7 +352,7 @@ impl RotateValidator {
             publicKey: self.identity.public_key,
             ingress: self.identity.ingress.to_string(),
             egress: self.identity.egress.to_string(),
-            signature: self.submit.signature,
+            signature,
         };
 
         let tx = TransactionRequest::default()
@@ -336,6 +368,30 @@ impl RotateValidator {
         println!("transaction submitted: {tx_hash}");
 
         Ok(())
+    }
+}
+
+/// Resolves the ed25519 signature for a validator config transaction.
+///
+/// If a pre-computed `signature` is provided, it is returned as-is.
+/// Otherwise, the signature is computed from the `signing_key` file.
+fn resolve_signature(
+    signature: Option<Bytes>,
+    signing_key: Option<&std::path::Path>,
+    namespace: &[u8],
+    message: &B256,
+) -> eyre::Result<Bytes> {
+    match (signature, signing_key) {
+        (Some(sig), _) => Ok(sig),
+        (None, Some(path)) => {
+            let key = SigningKey::read_from_file(path).wrap_err("failed reading signing key")?;
+            let private_key = key.into_inner();
+            let sig = private_key.sign(namespace, message.as_slice());
+            Ok(sig.encode().into())
+        }
+        (None, None) => Err(eyre!(
+            "either --signature or --signing-key must be provided"
+        )),
     }
 }
 

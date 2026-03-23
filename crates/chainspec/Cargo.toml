@@ -20,6 +20,7 @@ reth-network-peers.workspace = true
 
 alloy-evm.workspace = true
 alloy-genesis.workspace = true
+once_cell.workspace = true
 alloy-primitives.workspace = true
 alloy-eips.workspace = true
 alloy-hardforks.workspace = true
@@ -32,11 +33,23 @@ paste.workspace = true
 [dev-dependencies]
 
 [features]
-default = ["serde", "cli"]
+default = ["std", "serde", "cli"]
+std = [
+    "alloy-eips/std",
+    "alloy-evm/std",
+    "alloy-genesis/std",
+    "alloy-primitives/std",
+    "once_cell/std",
+    "reth-chainspec/std",
+    "reth-network-peers/std",
+    "serde/std",
+    "serde_json/std",
+    "tempo-primitives/std",
+]
 serde = [
     "alloy-eips/serde",
     "alloy-hardforks/serde",
     "alloy-primitives/serde",
     "tempo-primitives/serde"
 ]
-cli = ["dep:reth-cli", "dep:eyre", "tempo-primitives/reth-codec"]
+cli = ["std", "dep:reth-cli", "dep:eyre", "tempo-primitives/reth-codec"]

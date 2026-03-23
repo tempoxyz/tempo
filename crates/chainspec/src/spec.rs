@@ -2,6 +2,7 @@ use crate::{
     bootnodes::{andantino_nodes, moderato_nodes, presto_nodes},
     hardfork::{TempoHardfork, TempoHardforks},
 };
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use alloy_eips::eip7840::BlobParams;
 use alloy_evm::{
     eth::spec::EthExecutorSpec,
@@ -12,13 +13,17 @@ use alloy_evm::{
 };
 use alloy_genesis::Genesis;
 use alloy_primitives::{Address, B256, U256};
+use once_cell as _;
+#[cfg(not(feature = "std"))]
+use once_cell::sync::Lazy as LazyLock;
 use reth_chainspec::{
     BaseFeeParams, Chain, ChainSpec, DepositContract, DisplayHardforks, EthChainSpec,
     EthereumHardfork, EthereumHardforks, ForkCondition, ForkFilter, ForkId, Hardfork, Hardforks,
     Head,
 };
 use reth_network_peers::NodeRecord;
-use std::sync::{Arc, LazyLock};
+#[cfg(feature = "std")]
+use std::sync::LazyLock;
 use tempo_primitives::TempoHeader;
 
 /// T0 base fee: 10 billion attodollars (1×10^10)
@@ -309,7 +314,7 @@ impl EthChainSpec for TempoChainSpec {
         self.inner.prune_delete_limit()
     }
 
-    fn display_hardforks(&self) -> Box<dyn std::fmt::Display> {
+    fn display_hardforks(&self) -> Box<dyn core::fmt::Display> {
         // filter only tempo hardforks
         let tempo_forks = self.inner.hardforks.forks_iter().filter(|(fork, _)| {
             !EthereumHardfork::VARIANTS
@@ -495,11 +500,14 @@ mod tests {
             assert!(cs.is_t1c_active_at_timestamp(1773327600));
             assert_eq!(cs.tempo_hardfork_at(1773327600), TempoHardfork::T1C);
 
-            // T1C stays active on mainnet; T2/T3 not yet scheduled
-            assert!(cs.is_t1c_active_at_timestamp(u64::MAX));
-            assert!(!cs.is_t2_active_at_timestamp(u64::MAX));
-            assert!(!cs.is_t3_active_at_timestamp(u64::MAX));
-            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T1C);
+            // Before T2 activation (1774965600 = Mar 31st 2026 16:00 CEST)
+            assert!(!cs.is_t2_active_at_timestamp(1774965599));
+            assert_eq!(cs.tempo_hardfork_at(1774965599), TempoHardfork::T1C);
+
+            // At and after T2 activation
+            assert!(cs.is_t2_active_at_timestamp(1774965600));
+            assert_eq!(cs.tempo_hardfork_at(1774965600), TempoHardfork::T2);
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T2);
         }
 
         #[test]
@@ -531,11 +539,16 @@ mod tests {
             assert!(cs.is_t1c_active_at_timestamp(1773068400));
             assert_eq!(cs.tempo_hardfork_at(1773068400), TempoHardfork::T1C);
 
-            // T1C stays active on moderato; T2/T3 not yet scheduled
-            assert!(cs.is_t1c_active_at_timestamp(u64::MAX));
-            assert!(!cs.is_t2_active_at_timestamp(u64::MAX));
+            // Before T2 activation (1774537200 = Mar 26th 2026 16:00 CET)
+            assert!(!cs.is_t2_active_at_timestamp(1774537199));
+            assert_eq!(cs.tempo_hardfork_at(1774537199), TempoHardfork::T1C);
+
+            // At and after T2 activation
+            assert!(cs.is_t2_active_at_timestamp(1774537200));
+            assert_eq!(cs.tempo_hardfork_at(1774537200), TempoHardfork::T2);
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T2);
+
             assert!(!cs.is_t3_active_at_timestamp(u64::MAX));
-            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T1C);
         }
 
         #[test]
