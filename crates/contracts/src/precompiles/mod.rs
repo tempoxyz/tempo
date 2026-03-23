@@ -6,6 +6,7 @@ pub mod tip20;
 pub mod tip20_factory;
 pub mod tip403_registry;
 pub mod tip_fee_manager;
+pub mod signature_verifier;
 pub mod validator_config;
 pub mod validator_config_v2;
 
@@ -18,6 +19,7 @@ pub use tip_fee_manager::*;
 pub use tip20::*;
 pub use tip20_factory::*;
 pub use tip403_registry::*;
+pub use signature_verifier::*;
 pub use validator_config::*;
 pub use validator_config_v2::*;
 
@@ -35,3 +37,5 @@ pub const ACCOUNT_KEYCHAIN_ADDRESS: Address =
     address!("0xAAAAAAAA00000000000000000000000000000000");
 pub const VALIDATOR_CONFIG_V2_ADDRESS: Address =
     address!("0xCCCCCCCC00000000000000000000000000000001");
+pub const SIGNATURE_VERIFIER_ADDRESS: Address =
+    address!("0x7369676E00000000000000000000000000000000");

@@ -11,6 +11,7 @@ pub(crate) mod ip_validation;
 
 pub mod account_keychain;
 pub mod nonce;
+pub mod signature_verifier;
 pub mod stablecoin_dex;
 pub mod tip20;
 pub mod tip20_factory;
@@ -25,6 +26,7 @@ pub mod test_util;
 use crate::{
     account_keychain::AccountKeychain,
     nonce::NonceManager,
+    signature_verifier::SignatureVerifier,
     stablecoin_dex::StablecoinDEX,
     storage::StorageCtx,
     tip_fee_manager::TipFeeManager,
@@ -53,8 +55,9 @@ use revm::{
 
 pub use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
-    STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
-    TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
+    VALIDATOR_CONFIG_V2_ADDRESS,
 };
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
@@ -134,6 +137,8 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
             Some(AccountKeychain::create_precompile(&cfg))
         } else if *address == VALIDATOR_CONFIG_V2_ADDRESS {
             Some(ValidatorConfigV2::create_precompile(&cfg))
+        } else if *address == SIGNATURE_VERIFIER_ADDRESS {
+            Some(SignatureVerifier::create_precompile(&cfg))
         } else {
             None
         }
@@ -232,6 +237,13 @@ impl ValidatorConfigV2 {
     /// Creates the EVM precompile for this type.
     pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
         tempo_precompile!("ValidatorConfigV2", cfg, |input| { Self::new() })
+    }
+}
+
+impl SignatureVerifier {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
+        tempo_precompile!("SignatureVerifier", cfg, |input| { Self::new() })
     }
 }
 
@@ -633,6 +645,13 @@ mod tests {
         assert!(
             keychain_precompile.is_some(),
             "AccountKeychain should be registered"
+        );
+
+        // SignatureVerifier should be registered
+        let sig_verifier_precompile = precompiles.get(&SIGNATURE_VERIFIER_ADDRESS);
+        assert!(
+            sig_verifier_precompile.is_some(),
+            "SignatureVerifier should be registered"
         );
 
         // TIP20 tokens with prefix should be registered

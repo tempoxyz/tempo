@@ -12286,6 +12286,7 @@ dependencies = [
  "criterion 0.8.2",
  "derive_more",
  "eyre",
+ "p256",
  "proptest",
  "rand 0.8.5",
  "revm",
@@ -12296,6 +12297,7 @@ dependencies = [
  "tempo-contracts",
  "tempo-evm",
  "tempo-precompiles-macros",
+ "tempo-primitives",
  "thiserror 2.0.18",
  "tracing",
 ]
