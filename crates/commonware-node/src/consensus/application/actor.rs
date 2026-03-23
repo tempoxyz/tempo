@@ -583,16 +583,16 @@ impl Inner<Init> {
         let remaining_resolve = self.payload_resolve_time.saturating_sub(elapsed);
         let remaining_return = self.payload_return_time.saturating_sub(elapsed);
         debug!(
-            elapsed_ms = elapsed.as_millis(),
-            resolve_time_ms = remaining_resolve.as_millis(),
-            return_time_ms = remaining_return.as_millis(),
+            elapsed = %tempo_telemetry_util::display_duration(elapsed),
+            resolve_time = %tempo_telemetry_util::display_duration(remaining_resolve),
+            return_time = %tempo_telemetry_util::display_duration(remaining_return),
             "sleeping before payload builder resolving"
         );
 
-        // Start the timer for `self.payload_return_time`
+        // Start the timer for `remaining_return`
         //
         // This guarantees that we will not propose the block too early, and waits for at least
-        // `remaining_return` (payload_return_time minus time already spent in propose),
+        // `remaining_return` (`payload_return_time` minus time already spent in propose),
         // plus whatever time is needed to finish building the block.
         let payload_return_time = context.current() + remaining_return;
 
