@@ -16,6 +16,11 @@ on:
       - 'crates/revm/**'
   merge_group:
 
+# Deterministic test signers share on-chain state — serialize runs per network.
+concurrency:
+  group: rpc-tests-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: full

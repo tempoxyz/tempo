@@ -234,10 +234,18 @@ pub(super) fn build_authorization(
     chain_id: u64,
     delegate_address: Address,
 ) -> (alloy_eips::eip7702::Authorization, B256) {
+    build_authorization_with_nonce(chain_id, delegate_address, 0)
+}
+
+pub(super) fn build_authorization_with_nonce(
+    chain_id: u64,
+    delegate_address: Address,
+    nonce: u64,
+) -> (alloy_eips::eip7702::Authorization, B256) {
     let auth = alloy_eips::eip7702::Authorization {
         chain_id: alloy_primitives::U256::from(chain_id),
         address: delegate_address,
-        nonce: 0,
+        nonce,
     };
     let sig_hash = compute_authorization_signature_hash(&auth);
     (auth, sig_hash)
@@ -272,9 +280,46 @@ pub(super) fn verify_delegation_code(
     );
 }
 
+// ===== Deterministic Key Helpers =====
+
+/// Returns a deterministic [`PrivateKeySigner`] derived from the well-known Anvil
+/// test mnemonic. Using fixed keys avoids creating fresh on-chain state on every
+/// CI run (new accounts, faucet transactions, etc.).
+///
+/// Each unique `salt` produces a unique key via `keccak256(salt)`.
+pub(crate) fn deterministic_signer(salt: &str) -> PrivateKeySigner {
+    let secret = keccak256(salt.as_bytes());
+    PrivateKeySigner::from_bytes(&secret).expect("keccak256 output is a valid secp256k1 key")
+}
+
+/// Returns a deterministic [`Address`] for use as a recipient in tests.
+pub(crate) fn deterministic_recipient(salt: &str) -> Address {
+    Address::from_word(keccak256(salt.as_bytes()))
+}
+
 // ===== Keychain/Access Key Helper Functions =====
 
-/// Helper to generate a P256 access key
+/// Helper to generate a P256 access key deterministically from a salt.
+///
+/// Uses `keccak256(salt)` as the P256 secret scalar, producing stable keys
+/// across CI runs.
+pub(crate) fn generate_p256_access_key_from_salt(
+    salt: &str,
+) -> (
+    p256::ecdsa::SigningKey,
+    alloy::primitives::B256,
+    alloy::primitives::B256,
+    Address,
+) {
+    use p256::ecdsa::SigningKey;
+
+    let secret = keccak256(salt.as_bytes());
+    let signing_key =
+        SigningKey::from_bytes(secret.as_slice().into()).expect("valid P256 scalar from keccak256");
+    p256_key_parts(&signing_key)
+}
+
+/// Helper to generate a random P256 access key.
 pub(crate) fn generate_p256_access_key() -> (
     p256::ecdsa::SigningKey,
     alloy::primitives::B256,
@@ -284,13 +329,24 @@ pub(crate) fn generate_p256_access_key() -> (
     use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
 
     let signing_key = SigningKey::random(&mut OsRng);
+    p256_key_parts(&signing_key)
+}
+
+fn p256_key_parts(
+    signing_key: &p256::ecdsa::SigningKey,
+) -> (
+    p256::ecdsa::SigningKey,
+    alloy::primitives::B256,
+    alloy::primitives::B256,
+    Address,
+) {
     let verifying_key = signing_key.verifying_key();
     let encoded_point = verifying_key.to_encoded_point(false);
     let pub_key_x = alloy::primitives::B256::from_slice(encoded_point.x().unwrap().as_ref());
     let pub_key_y = alloy::primitives::B256::from_slice(encoded_point.y().unwrap().as_ref());
     let key_addr =
         tempo_primitives::transaction::tt_signature::derive_p256_address(&pub_key_x, &pub_key_y);
-    (signing_key, pub_key_x, pub_key_y, key_addr)
+    (signing_key.clone(), pub_key_x, pub_key_y, key_addr)
 }
 
 /// Helper to create a key authorization

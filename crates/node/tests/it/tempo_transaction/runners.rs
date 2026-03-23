@@ -498,9 +498,9 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
 /// For fee-payer cases, also verifies that the fee-payer signature hash is
 /// deterministic by signing + recovering with a random signer.
 pub(super) async fn run_fill_transaction_matrix<E: TestEnv>(env: &mut E) -> eyre::Result<()> {
-    let signer_addr = Address::random();
+    let signer_addr = deterministic_recipient("fill-tx-signer");
     let current_timestamp = env.current_block_timestamp().await?;
-    let fee_payer_signer = PrivateKeySigner::random();
+    let fee_payer_signer = deterministic_signer("fill-tx-fee-payer");
 
     let matrix = [
         FillTestCase::new(NonceMode::Protocol, KeyType::Secp256k1).omit_nonce_key(),
@@ -637,7 +637,7 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
     let chain_id = env.chain_id();
 
     // --- choose signer and fund ---
-    let root_signer = PrivateKeySigner::random();
+    let root_signer = deterministic_signer(&format!("raw-send-root-{}", test_case.name));
     let root_addr = root_signer.address();
     let funded = if !test_case.fee_payer {
         env.fund_account(root_addr).await?
@@ -645,7 +645,7 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
         rand_funding_amount()
     };
 
-    let fee_payer_signer = PrivateKeySigner::random();
+    let fee_payer_signer = deterministic_signer(&format!("raw-send-fee-payer-{}", test_case.name));
     if test_case.fee_payer {
         let _ = env.fund_account(fee_payer_signer.address()).await?;
     }
@@ -653,7 +653,7 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
     // --- build calls based on TestAction ---
     let calls = match &test_case.test_action {
         TestAction::NoOp => vec![Call {
-            to: Address::random().into(),
+            to: deterministic_recipient(&format!("raw-send-noop-{}", test_case.name)).into(),
             value: U256::ZERO,
             input: Bytes::new(),
         }],
@@ -666,7 +666,7 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
         TestAction::Transfer(amount) => {
             vec![create_transfer_call(
                 DEFAULT_FEE_TOKEN,
-                Address::random(),
+                deterministic_recipient(&format!("raw-send-transfer-{}", test_case.name)),
                 *amount,
             )]
         }
@@ -674,7 +674,7 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
             to: tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS.into(),
             value: U256::ZERO,
             input: updateSpendingLimitCall {
-                keyId: Address::random(),
+                keyId: deterministic_recipient(&format!("raw-send-admin-key-{}", test_case.name)),
                 token: DEFAULT_FEE_TOKEN,
                 newLimit: U256::from(20u64) * U256::from(10).pow(U256::from(18)),
             }
@@ -803,9 +803,16 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
         KeySetup::UnauthorizedKey => {
             assert!(matches!(test_case.expected, ExpectedOutcome::Rejection));
             // Authorize one key, then sign tx with a different (never-authorized) key
-            let (_auth_signing, auth_pub_x, auth_pub_y, auth_addr) = generate_p256_access_key();
+            let (_auth_signing, auth_pub_x, auth_pub_y, auth_addr) =
+                generate_p256_access_key_from_salt(&format!(
+                    "raw-send-unauth-auth-{}",
+                    test_case.name
+                ));
             let (unauth_signing, unauth_pub_x, unauth_pub_y, _unauth_addr) =
-                generate_p256_access_key();
+                generate_p256_access_key_from_salt(&format!(
+                    "raw-send-unauth-unauth-{}",
+                    test_case.name
+                ));
 
             let mock_sig = match test_case.key_type {
                 KeyType::P256 => create_mock_p256_sig(auth_pub_x, auth_pub_y),
@@ -857,9 +864,15 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
             match test_case.key_type {
                 KeyType::Secp256k1 => {
                     // KeyAuthorization signed by a wrong secp256k1 signer
-                    let access_signer = PrivateKeySigner::random();
+                    let access_signer = deterministic_signer(&format!(
+                        "raw-send-invalid-auth-access-{}",
+                        test_case.name
+                    ));
                     let access_addr = access_signer.address();
-                    let wrong_root = PrivateKeySigner::random();
+                    let wrong_root = deterministic_signer(&format!(
+                        "raw-send-invalid-auth-wrong-root-{}",
+                        test_case.name
+                    ));
 
                     let key_auth = KeyAuthorization {
                         chain_id,
@@ -885,9 +898,16 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
                         P256SignatureWithPreHash, normalize_p256_s,
                     };
 
-                    let (another_key, pub_x_3, pub_y_3, addr_3) = generate_p256_access_key();
+                    let (another_key, pub_x_3, pub_y_3, addr_3) =
+                        generate_p256_access_key_from_salt(&format!(
+                            "raw-send-invalid-auth-p256-{}",
+                            test_case.name
+                        ));
                     let (wrong_signer_key, wrong_pub_x, wrong_pub_y, _) =
-                        generate_p256_access_key();
+                        generate_p256_access_key_from_salt(&format!(
+                            "raw-send-invalid-auth-wrong-p256-{}",
+                            test_case.name
+                        ));
 
                     let auth_message_hash = KeyAuthorization {
                         chain_id,
@@ -972,7 +992,8 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
             }
         }
         KeyType::P256 | KeyType::WebAuthn => {
-            let (signing_key, pub_key_x, pub_key_y, signer_addr) = generate_p256_access_key();
+            let (signing_key, pub_key_x, pub_key_y, signer_addr) =
+                generate_p256_access_key_from_salt(&format!("raw-send-p256-{}", test_case.name));
             if !test_case.fee_payer {
                 let _ = env.fund_account(signer_addr).await?;
             }
@@ -1049,7 +1070,8 @@ async fn run_raw_access_key_case<E: TestEnv>(
 ) -> eyre::Result<()> {
     match test_case.key_type {
         KeyType::Secp256k1 => {
-            let access_signer = PrivateKeySigner::random();
+            let access_signer =
+                deterministic_signer(&format!("raw-access-secp-{}", test_case.name));
             let access_addr = access_signer.address();
 
             let key_auth = create_key_authorization(
@@ -1112,7 +1134,7 @@ async fn run_raw_access_key_case<E: TestEnv>(
         }
         KeyType::P256 | KeyType::WebAuthn => {
             let (access_signing_key, access_pub_x, access_pub_y, access_key_addr) =
-                generate_p256_access_key();
+                generate_p256_access_key_from_salt(&format!("raw-access-p256-{}", test_case.name));
             let mock_sig = match test_case.key_type {
                 KeyType::P256 => create_mock_p256_sig(access_pub_x, access_pub_y),
                 KeyType::WebAuthn => create_mock_webauthn_sig(access_pub_x, access_pub_y),
@@ -1145,7 +1167,9 @@ async fn run_raw_access_key_case<E: TestEnv>(
                         .await?;
 
                     // Now key1 tries to authorize key2 (unauthorized)
-                    let (_, pub_x_2, pub_y_2, access_addr_2) = generate_p256_access_key();
+                    let (_, pub_x_2, pub_y_2, access_addr_2) = generate_p256_access_key_from_salt(
+                        &format!("raw-access-unauth-key2-{}", test_case.name),
+                    );
                     let mock_sig_2 = match test_case.key_type {
                         KeyType::P256 => create_mock_p256_sig(pub_x_2, pub_y_2),
                         KeyType::WebAuthn => create_mock_webauthn_sig(pub_x_2, pub_y_2),
@@ -1165,7 +1189,11 @@ async fn run_raw_access_key_case<E: TestEnv>(
                         chain_id,
                         new_nonce,
                         vec![Call {
-                            to: Address::random().into(),
+                            to: deterministic_recipient(&format!(
+                                "raw-access-unauth-target-{}",
+                                test_case.name
+                            ))
+                            .into(),
                             value: U256::ZERO,
                             input: Bytes::new(),
                         }],
@@ -1260,13 +1288,13 @@ pub(super) async fn run_send_case<E: TestEnv>(
     let chain_id = env.chain_id();
 
     if test_case.access_key {
-        let root_signer = PrivateKeySigner::random();
+        let root_signer = deterministic_signer(&format!("send-access-root-{}", test_case.name));
         let root_addr = root_signer.address();
         let funded = env.fund_account(root_addr).await?;
         let transfer_amount = resolve_send_amounts(test_case, funded);
 
         let (access_signing_key, access_pub_key_x, access_pub_key_y, access_key_addr) =
-            generate_p256_access_key();
+            generate_p256_access_key_from_salt(&format!("send-access-p256-{}", test_case.name));
         let access_signature = match test_case.key_type {
             KeyType::P256 => create_mock_p256_sig(access_pub_key_x, access_pub_key_y),
             KeyType::WebAuthn => create_mock_webauthn_sig(access_pub_key_x, access_pub_key_y),
@@ -1281,9 +1309,12 @@ pub(super) async fn run_send_case<E: TestEnv>(
             Some(create_default_token_limit(funded)),
         )?;
 
-        let recipient_1 = Address::random();
+        let recipient_1 = deterministic_recipient(&format!("send-access-r1-{}", test_case.name));
         let recipient_2 = if test_case.batch_calls {
-            Some(Address::random())
+            Some(deterministic_recipient(&format!(
+                "send-access-r2-{}",
+                test_case.name
+            )))
         } else {
             None
         };
@@ -1301,7 +1332,8 @@ pub(super) async fn run_send_case<E: TestEnv>(
         );
         tx.key_authorization = Some(key_auth);
 
-        let fee_payer_signer = PrivateKeySigner::random();
+        let fee_payer_signer =
+            deterministic_signer(&format!("send-access-fee-payer-{}", test_case.name));
         if test_case.fee_payer {
             let _ = env.fund_account(fee_payer_signer.address()).await?;
         }
@@ -1356,12 +1388,12 @@ pub(super) async fn run_send_case<E: TestEnv>(
 
     match test_case.key_type {
         KeyType::Secp256k1 => {
-            let signer = PrivateKeySigner::random();
+            let signer = deterministic_signer(&format!("send-secp-{}", test_case.name));
             let signer_addr = signer.address();
             let funded = env.fund_account(signer_addr).await?;
             let transfer_amount = resolve_send_amounts(test_case, funded);
 
-            let recipient = Address::random();
+            let recipient = deterministic_recipient(&format!("send-secp-r-{}", test_case.name));
             let mut tx = create_basic_aa_tx(
                 chain_id,
                 env.provider().get_transaction_count(signer_addr).await?,
@@ -1369,7 +1401,8 @@ pub(super) async fn run_send_case<E: TestEnv>(
                 2_000_000,
             );
 
-            let fee_payer_signer = PrivateKeySigner::random();
+            let fee_payer_signer =
+                deterministic_signer(&format!("send-secp-fee-payer-{}", test_case.name));
             if test_case.fee_payer {
                 let _ = env.fund_account(fee_payer_signer.address()).await?;
             }
@@ -1399,13 +1432,17 @@ pub(super) async fn run_send_case<E: TestEnv>(
             .await?;
         }
         KeyType::P256 | KeyType::WebAuthn => {
-            let (signing_key, pub_key_x, pub_key_y, signer_addr) = generate_p256_access_key();
+            let (signing_key, pub_key_x, pub_key_y, signer_addr) =
+                generate_p256_access_key_from_salt(&format!("send-p256-{}", test_case.name));
             let funded = env.fund_account(signer_addr).await?;
             let transfer_amount = resolve_send_amounts(test_case, funded);
 
-            let recipient_1 = Address::random();
+            let recipient_1 = deterministic_recipient(&format!("send-p256-r1-{}", test_case.name));
             let recipient_2 = if test_case.batch_calls {
-                Some(Address::random())
+                Some(deterministic_recipient(&format!(
+                    "send-p256-r2-{}",
+                    test_case.name
+                )))
             } else {
                 None
             };
@@ -1430,7 +1467,8 @@ pub(super) async fn run_send_case<E: TestEnv>(
                 2_000_000,
             );
 
-            let fee_payer_signer = PrivateKeySigner::random();
+            let fee_payer_signer =
+                deterministic_signer(&format!("send-p256-fee-payer-{}", test_case.name));
             if test_case.fee_payer {
                 let _ = env.fund_account(fee_payer_signer.address()).await?;
             }
@@ -1505,12 +1543,14 @@ pub(super) async fn run_fill_sign_send<E: TestEnv>(
     }
 
     let tx_hash = if uses_p256 {
-        let (signing_key, pub_key_x, pub_key_y, signer_addr) = generate_p256_access_key();
+        let (signing_key, pub_key_x, pub_key_y, signer_addr) =
+            generate_p256_access_key_from_salt(&format!("fill-sign-send-p256-{}", test_case.name));
 
         // In the E2E fill flow, P256/WebAuthn signers use a fee payer
         // to cover gas (the fee_payer flag on FillTestCase is not checked
         // here because eth_fillTransaction always requires one).
-        let fee_payer_signer = PrivateKeySigner::random();
+        let fee_payer_signer =
+            deterministic_signer(&format!("fill-sign-send-fee-payer-p256-{}", test_case.name));
         let _ = env.fund_account(fee_payer_signer.address()).await?;
 
         let current_timestamp = env.current_block_timestamp().await?;
@@ -1557,7 +1597,7 @@ pub(super) async fn run_fill_sign_send<E: TestEnv>(
         let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
         submit_expecting(env, envelope, test_case.expected, false, None).await?
     } else {
-        let signer = PrivateKeySigner::random();
+        let signer = deterministic_signer(&format!("fill-sign-send-secp-{}", test_case.name));
         let signer_addr = signer.address();
         if !test_case.fee_payer {
             let _ = env.fund_account(signer_addr).await?;
@@ -1599,7 +1639,8 @@ pub(super) async fn run_fill_sign_send<E: TestEnv>(
             tx.valid_before = None;
         }
 
-        let fee_payer_signer = PrivateKeySigner::random();
+        let fee_payer_signer =
+            deterministic_signer(&format!("fill-sign-send-fee-payer-secp-{}", test_case.name));
         if test_case.fee_payer {
             let _ = env.fund_account(fee_payer_signer.address()).await?;
             sign_fee_payer(&mut tx, signer_addr, &fee_payer_signer)?;
@@ -1666,11 +1707,11 @@ pub(super) async fn run_fee_payer_cosign_scenario<E: TestEnv>(env: &mut E) -> ey
 
     let chain_id = env.chain_id();
 
-    let fee_payer_signer = PrivateKeySigner::random();
+    let fee_payer_signer = deterministic_signer("cosign-fee-payer");
     let fee_payer_addr = fee_payer_signer.address();
     let _ = env.fund_account(fee_payer_addr).await?;
 
-    let user_signer = PrivateKeySigner::random();
+    let user_signer = deterministic_signer("cosign-user");
     let user_addr = user_signer.address();
 
     let fee_payer_balance_before =
@@ -1679,11 +1720,12 @@ pub(super) async fn run_fee_payer_cosign_scenario<E: TestEnv>(env: &mut E) -> ey
             .call()
             .await?;
 
+    let user_nonce = env.provider().get_transaction_count(user_addr).await?;
     let mut tx = create_basic_aa_tx(
         chain_id,
-        0,
+        user_nonce,
         vec![Call {
-            to: Address::random().into(),
+            to: deterministic_recipient("cosign-noop").into(),
             value: U256::ZERO,
             input: Bytes::new(),
         }],
@@ -1740,16 +1782,18 @@ pub(super) async fn run_authorization_list_scenario<E: TestEnv>(env: &mut E) -> 
 
     let chain_id = env.chain_id();
 
-    let sender_signer = PrivateKeySigner::random();
+    let sender_signer = deterministic_signer("auth-list-sender");
     let sender_addr = sender_signer.address();
     let _ = env.fund_account(sender_addr).await?;
 
     let delegate_address = tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS;
 
     // Authority 1: Secp256k1
-    let auth1_signer = PrivateKeySigner::random();
+    let auth1_signer = deterministic_signer("auth-list-auth1");
     let auth1_addr = auth1_signer.address();
-    let (auth1, sig_hash1) = build_authorization(chain_id, delegate_address);
+    let auth1_nonce = env.provider().get_transaction_count(auth1_addr).await?;
+    let (auth1, sig_hash1) =
+        build_authorization_with_nonce(chain_id, delegate_address, auth1_nonce);
     let sig1 = auth1_signer.sign_hash_sync(&sig_hash1)?;
     let auth1_signed = TempoSignedAuthorization::new_unchecked(
         auth1,
@@ -1757,24 +1801,27 @@ pub(super) async fn run_authorization_list_scenario<E: TestEnv>(env: &mut E) -> 
     );
 
     // Authority 2: P256
-    let (auth2_key, pub2_x, pub2_y, auth2_addr) = generate_p256_access_key();
-    let (auth2, sig_hash2) = build_authorization(chain_id, delegate_address);
+    let (auth2_key, pub2_x, pub2_y, auth2_addr) =
+        generate_p256_access_key_from_salt("auth-list-auth2");
+    let auth2_nonce = env.provider().get_transaction_count(auth2_addr).await?;
+    let (auth2, sig_hash2) =
+        build_authorization_with_nonce(chain_id, delegate_address, auth2_nonce);
     let inner2 = sign_p256_primitive(sig_hash2, &auth2_key, pub2_x, pub2_y)?;
     let auth2_signed =
         TempoSignedAuthorization::new_unchecked(auth2, TempoSignature::Primitive(inner2));
 
     // Authority 3: WebAuthn
-    let (auth3_key, pub3_x, pub3_y, auth3_addr) = generate_p256_access_key();
-    let (auth3, sig_hash3) = build_authorization(chain_id, delegate_address);
+    let (auth3_key, pub3_x, pub3_y, auth3_addr) =
+        generate_p256_access_key_from_salt("auth-list-auth3");
+    let auth3_nonce = env.provider().get_transaction_count(auth3_addr).await?;
+    let (auth3, sig_hash3) =
+        build_authorization_with_nonce(chain_id, delegate_address, auth3_nonce);
     let inner3 =
         sign_webauthn_primitive(sig_hash3, &auth3_key, pub3_x, pub3_y, "https://example.com")?;
     let auth3_signed =
         TempoSignedAuthorization::new_unchecked(auth3, TempoSignature::Primitive(inner3));
 
-    // Verify BEFORE state
-    assert!(env.provider().get_code_at(auth1_addr).await?.is_empty());
-
-    let recipient = Address::random();
+    let recipient = deterministic_recipient("auth-list-recipient");
     let tx_request = TempoTransactionRequest {
         inner: TransactionRequest {
             from: Some(sender_addr),
@@ -1842,12 +1889,12 @@ pub(super) async fn run_keychain_auth_list_skipped_scenario<E: TestEnv>(
 
     let chain_id = env.chain_id();
 
-    let sender_signer = PrivateKeySigner::random();
+    let sender_signer = deterministic_signer("keychain-skip-sender");
     let sender_addr = sender_signer.address();
     let _ = env.fund_account(sender_addr).await?;
 
-    let attacker_signer = PrivateKeySigner::random();
-    let victim_addr = Address::random();
+    let attacker_signer = deterministic_signer("keychain-skip-attacker");
+    let victim_addr = deterministic_recipient("keychain-skip-victim");
     let delegate_address = attacker_signer.address();
 
     let victim_nonce_before = env.provider().get_transaction_count(victim_addr).await?;
@@ -1868,7 +1915,7 @@ pub(super) async fn run_keychain_auth_list_skipped_scenario<E: TestEnv>(
     let recovered = spoofed_auth.recover_authority()?;
     assert_eq!(recovered, victim_addr);
 
-    let recipient = Address::random();
+    let recipient = deterministic_recipient("keychain-skip-recipient");
     let sender_nonce_before = env.provider().get_transaction_count(sender_addr).await?;
     let tx_request = TempoTransactionRequest {
         inner: TransactionRequest {
@@ -1932,13 +1979,16 @@ pub(super) async fn run_keychain_expiry_scenario<E: TestEnv>(env: &mut E) -> eyr
 
     let chain_id = env.chain_id();
 
-    let root_signer = PrivateKeySigner::random();
+    let root_signer = deterministic_signer("keychain-expiry-root");
     let root_addr = root_signer.address();
     let funded = env.fund_account(root_addr).await?;
 
-    let (never_signing, never_pub_x, never_pub_y, never_addr) = generate_p256_access_key();
-    let (short_signing, short_pub_x, short_pub_y, short_addr) = generate_p256_access_key();
-    let (_past_signing, past_pub_x, past_pub_y, past_addr) = generate_p256_access_key();
+    let (never_signing, never_pub_x, never_pub_y, never_addr) =
+        generate_p256_access_key_from_salt("keychain-expiry-never");
+    let (short_signing, short_pub_x, short_pub_y, short_addr) =
+        generate_p256_access_key_from_salt("keychain-expiry-short");
+    let (_past_signing, past_pub_x, past_pub_y, past_addr) =
+        generate_p256_access_key_from_salt("keychain-expiry-past");
 
     let mut nonce = env.provider().get_transaction_count(root_addr).await?;
     // Use a small fraction to leave room for gas across multiple operations
@@ -1966,7 +2016,7 @@ pub(super) async fn run_keychain_expiry_scenario<E: TestEnv>(env: &mut E) -> eyr
     env.submit_tx(envelope.encoded_2718(), hash).await?;
     nonce += 1;
 
-    let recipient1 = Address::random();
+    let recipient1 = deterministic_recipient("keychain-expiry-r1");
     let transfer_tx = create_basic_aa_tx(
         chain_id,
         nonce,
@@ -2025,7 +2075,7 @@ pub(super) async fn run_keychain_expiry_scenario<E: TestEnv>(env: &mut E) -> eyr
     nonce += 1;
 
     // Use before expiry
-    let recipient2 = Address::random();
+    let recipient2 = deterministic_recipient("keychain-expiry-r2");
     let before_tx = create_basic_aa_tx(
         chain_id,
         nonce,
@@ -2075,7 +2125,7 @@ pub(super) async fn run_keychain_expiry_scenario<E: TestEnv>(env: &mut E) -> eyr
         nonce,
         vec![create_transfer_call(
             DEFAULT_FEE_TOKEN,
-            Address::random(),
+            deterministic_recipient("keychain-expiry-expired"),
             transfer_amount,
         )],
         2_000_000,
@@ -2122,7 +2172,8 @@ pub(super) async fn run_keychain_expiry_scenario<E: TestEnv>(env: &mut E) -> eyr
 pub(super) async fn run_send_negative_scenario<E: TestEnv>(env: &mut E) -> eyre::Result<()> {
     println!("\n=== Send negative scenario ===\n");
 
-    let (_signing_key, _pub_key_x, _pub_key_y, signer_addr) = generate_p256_access_key();
+    let (_signing_key, _pub_key_x, _pub_key_y, signer_addr) =
+        generate_p256_access_key_from_salt("send-neg-signer");
     let _ = env.fund_account(signer_addr).await?;
     let _chain_id = env.chain_id();
 
@@ -2154,7 +2205,7 @@ pub(super) async fn run_send_negative_scenario<E: TestEnv>(env: &mut E) -> eyre:
                 ..Default::default()
             },
             calls: vec![Call {
-                to: Address::random().into(),
+                to: deterministic_recipient("send-neg-webauthn-target").into(),
                 value: U256::ZERO,
                 input: Bytes::new(),
             }],
@@ -2190,22 +2241,24 @@ pub(super) async fn run_fee_payer_negative_scenario<E: TestEnv>(env: &mut E) -> 
     }
 
     let chain_id = env.chain_id();
-    let user_signer = PrivateKeySigner::random();
+    let user_signer = deterministic_signer("fee-payer-neg-user");
     let user_addr = user_signer.address();
-    // Don't fund user — fee payer is expected to pay
+    // Fund user for case 3 (self-sponsored), and use current nonce everywhere
+    let _ = env.fund_account(user_addr).await?;
+    let user_nonce = env.provider().get_transaction_count(user_addr).await?;
 
-    let real_fee_payer = PrivateKeySigner::random();
+    let real_fee_payer = deterministic_signer("fee-payer-neg-real");
     let _ = env.fund_account(real_fee_payer.address()).await?;
 
     // Case 1: Wrong fee payer signature (signed by a different, unfunded signer)
     {
         println!("  Case 1: Wrong fee payer signature");
-        let wrong_signer = PrivateKeySigner::random();
+        let wrong_signer = deterministic_signer("fee-payer-neg-wrong");
         let mut tx = create_basic_aa_tx(
             chain_id,
-            0,
+            user_nonce,
             vec![Call {
-                to: Address::random().into(),
+                to: deterministic_recipient("fee-payer-neg-target-1").into(),
                 value: U256::ZERO,
                 input: Bytes::new(),
             }],
@@ -2223,9 +2276,9 @@ pub(super) async fn run_fee_payer_negative_scenario<E: TestEnv>(env: &mut E) -> 
         println!("  Case 2: Placeholder fee payer signature");
         let mut tx = create_basic_aa_tx(
             chain_id,
-            0,
+            user_nonce,
             vec![Call {
-                to: Address::random().into(),
+                to: deterministic_recipient("fee-payer-neg-target-2").into(),
                 value: U256::ZERO,
                 input: Bytes::new(),
             }],
@@ -2245,15 +2298,12 @@ pub(super) async fn run_fee_payer_negative_scenario<E: TestEnv>(env: &mut E) -> 
     // Case 3: Self-sponsored fee payer (fee payer resolves to sender)
     {
         println!("  Case 3: Self-sponsored fee payer signature");
-        // Fund sender so rejection reason is self-sponsored fee payer,
-        // not insufficient sender balance.
-        let _ = env.fund_account(user_addr).await?;
 
         let mut tx = create_basic_aa_tx(
             chain_id,
-            0,
+            user_nonce,
             vec![Call {
-                to: Address::random().into(),
+                to: deterministic_recipient("fee-payer-neg-target-3").into(),
                 value: U256::ZERO,
                 input: Bytes::new(),
             }],
@@ -2307,16 +2357,18 @@ pub(super) async fn run_nonce_rejection_scenario<E: TestEnv>(env: &mut E) -> eyr
     // Case 1: Protocol nonce too low
     {
         println!("  Case 1: Protocol nonce too low");
-        let signer = PrivateKeySigner::random();
+        let signer = deterministic_signer("nonce-reject-protocol");
         let signer_addr = signer.address();
         let _ = env.fund_account(signer_addr).await?;
 
-        // Send one tx to bump nonce to 1
+        let current_nonce = env.provider().get_transaction_count(signer_addr).await?;
+
+        // Send one tx at current nonce to bump it
         let tx = create_basic_aa_tx(
             chain_id,
-            0,
+            current_nonce,
             vec![Call {
-                to: Address::random().into(),
+                to: deterministic_recipient("nonce-reject-protocol-target").into(),
                 value: U256::ZERO,
                 input: Bytes::new(),
             }],
@@ -2327,12 +2379,12 @@ pub(super) async fn run_nonce_rejection_scenario<E: TestEnv>(env: &mut E) -> eyr
         let tx_hash = *envelope.tx_hash();
         env.submit_tx(envelope.encoded_2718(), tx_hash).await?;
 
-        // Now try to send with nonce=0 again (should be rejected)
+        // Replay the same nonce (should be rejected as too low)
         let replay_tx = create_basic_aa_tx(
             chain_id,
-            0,
+            current_nonce,
             vec![Call {
-                to: Address::random().into(),
+                to: deterministic_recipient("nonce-reject-protocol-replay").into(),
                 value: U256::ZERO,
                 input: Bytes::new(),
             }],
@@ -2347,39 +2399,44 @@ pub(super) async fn run_nonce_rejection_scenario<E: TestEnv>(env: &mut E) -> eyr
     // Case 2: 2D nonce replay
     {
         println!("  Case 2: 2D nonce replay");
-        let signer = PrivateKeySigner::random();
+        let signer = deterministic_signer("nonce-reject-2d");
         let signer_addr = signer.address();
         let _ = env.fund_account(signer_addr).await?;
 
-        // Send tx with nonce_key=42, nonce=0
+        // Use a unique nonce_key per run to avoid stale 2D nonce state.
+        // Derive from the current protocol nonce which increments each run.
+        let run_nonce = env.provider().get_transaction_count(signer_addr).await?;
+        let nonce_key = U256::from(1000 + run_nonce);
+
+        // Send tx with this 2D nonce_key, nonce=0
         let mut tx = create_basic_aa_tx(
             chain_id,
             0,
             vec![Call {
-                to: Address::random().into(),
+                to: deterministic_recipient("nonce-reject-2d-target").into(),
                 value: U256::ZERO,
                 input: Bytes::new(),
             }],
             2_000_000,
         );
-        tx.nonce_key = U256::from(42);
+        tx.nonce_key = nonce_key;
         let sig = sign_aa_tx_secp256k1(&tx, &signer)?;
         let envelope: TempoTxEnvelope = tx.into_signed(sig).into();
         let tx_hash = *envelope.tx_hash();
         env.submit_tx(envelope.encoded_2718(), tx_hash).await?;
 
-        // Replay same nonce_key=42, nonce=0 (should be rejected)
+        // Replay same nonce_key + nonce=0 (should be rejected)
         let mut replay_tx = create_basic_aa_tx(
             chain_id,
             0,
             vec![Call {
-                to: Address::random().into(),
+                to: deterministic_recipient("nonce-reject-2d-replay").into(),
                 value: U256::ZERO,
                 input: Bytes::new(),
             }],
             2_000_000,
         );
-        replay_tx.nonce_key = U256::from(42);
+        replay_tx.nonce_key = nonce_key;
         let replay_sig = sign_aa_tx_secp256k1(&replay_tx, &signer)?;
         let replay_envelope: TempoTxEnvelope = replay_tx.into_signed(replay_sig).into();
         env.submit_tx_expecting_rejection(replay_envelope.encoded_2718(), None)
@@ -2396,7 +2453,7 @@ pub(super) async fn run_gas_fee_boundary_scenario<E: TestEnv>(env: &mut E) -> ey
 
     let chain_id = env.chain_id();
     let calls = vec![Call {
-        to: Address::random().into(),
+        to: deterministic_recipient("gas-fee-boundary-target").into(),
         value: U256::ZERO,
         input: Bytes::new(),
     }];
@@ -2404,7 +2461,7 @@ pub(super) async fn run_gas_fee_boundary_scenario<E: TestEnv>(env: &mut E) -> ey
     // Case 1: Gas limit too low
     {
         println!("  Case 1: Gas limit too low");
-        let signer = PrivateKeySigner::random();
+        let signer = deterministic_signer("gas-fee-boundary-low-gas");
         let _ = env.fund_account(signer.address()).await?;
         let nonce = env
             .provider()
@@ -2420,7 +2477,7 @@ pub(super) async fn run_gas_fee_boundary_scenario<E: TestEnv>(env: &mut E) -> ey
     // Case 2: max_fee_per_gas < base_fee
     {
         println!("  Case 2: max_fee_per_gas < base_fee");
-        let signer = PrivateKeySigner::random();
+        let signer = deterministic_signer("gas-fee-boundary-low-fee");
         let _ = env.fund_account(signer.address()).await?;
         let nonce = env
             .provider()
@@ -2438,7 +2495,7 @@ pub(super) async fn run_gas_fee_boundary_scenario<E: TestEnv>(env: &mut E) -> ey
     // Case 3: max_priority_fee_per_gas > max_fee_per_gas
     {
         println!("  Case 3: max_priority > max_fee");
-        let signer = PrivateKeySigner::random();
+        let signer = deterministic_signer("gas-fee-boundary-high-priority");
         let _ = env.fund_account(signer.address()).await?;
         let nonce = env
             .provider()
@@ -2464,7 +2521,7 @@ pub(super) async fn run_create_contract_address_scenario<E: TestEnv>(
 
     let chain_id = env.chain_id();
 
-    let signer = PrivateKeySigner::random();
+    let signer = deterministic_signer("create-contract-addr");
     let signer_addr = signer.address();
     let _ = env.fund_account(signer_addr).await?;
 

@@ -176,7 +176,7 @@ impl super::types::TestEnv for RpcEnv {
         signer_addr: Address,
         count: u64,
     ) -> eyre::Result<()> {
-        let recipient = Address::random();
+        let recipient = deterministic_recipient("bump-protocol-nonce");
         let start_nonce = self.provider.get_transaction_count(signer_addr).await?;
 
         for i in 0..count {
