@@ -496,10 +496,14 @@ mod tests {
             assert!(cs.is_t1c_active_at_timestamp(1773327600));
             assert_eq!(cs.tempo_hardfork_at(1773327600), TempoHardfork::T1C);
 
-            // T1C stays active on mainnet; T2 not yet scheduled
-            assert!(cs.is_t1c_active_at_timestamp(u64::MAX));
-            assert!(!cs.is_t2_active_at_timestamp(u64::MAX));
-            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T1C);
+            // Before T2 activation (1774965600 = Mar 31st 2026 16:00 CEST)
+            assert!(!cs.is_t2_active_at_timestamp(1774965599));
+            assert_eq!(cs.tempo_hardfork_at(1774965599), TempoHardfork::T1C);
+
+            // At and after T2 activation
+            assert!(cs.is_t2_active_at_timestamp(1774965600));
+            assert_eq!(cs.tempo_hardfork_at(1774965600), TempoHardfork::T2);
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T2);
         }
 
         #[test]
@@ -531,10 +535,14 @@ mod tests {
             assert!(cs.is_t1c_active_at_timestamp(1773068400));
             assert_eq!(cs.tempo_hardfork_at(1773068400), TempoHardfork::T1C);
 
-            // T1C stays active on moderato; T2 not yet scheduled
-            assert!(cs.is_t1c_active_at_timestamp(u64::MAX));
-            assert!(!cs.is_t2_active_at_timestamp(u64::MAX));
-            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T1C);
+            // Before T2 activation (1774537200 = Mar 26th 2026 16:00 CET)
+            assert!(!cs.is_t2_active_at_timestamp(1774537199));
+            assert_eq!(cs.tempo_hardfork_at(1774537199), TempoHardfork::T1C);
+
+            // At and after T2 activation
+            assert!(cs.is_t2_active_at_timestamp(1774537200));
+            assert_eq!(cs.tempo_hardfork_at(1774537200), TempoHardfork::T2);
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T2);
         }
 
         #[test]
