@@ -266,6 +266,9 @@ pub enum TempoPoolTransactionError {
     #[error("Fee payer signature recovery failed")]
     InvalidFeePayerSignature,
 
+    #[error("Fee payer cannot resolve to sender address")]
+    SelfSponsoredFeePayer,
+
     #[error(
         "Native transfers are not supported, if you were trying to transfer a stablecoin, please call TIP20::Transfer"
     )]
@@ -430,6 +433,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::ExpiringNonceMissingValidBefore
             | Self::ExpiringNonceNonceNotZero
             | Self::InvalidFeePayerSignature
+            | Self::SelfSponsoredFeePayer
             | Self::NoCalls
             | Self::CreateCallWithAuthorizationList
             | Self::CreateCallNotFirst
@@ -878,6 +882,7 @@ mod tests {
                 false,
             ),
             (TempoPoolTransactionError::InvalidFeePayerSignature, true),
+            (TempoPoolTransactionError::SelfSponsoredFeePayer, true),
             (TempoPoolTransactionError::NonZeroValue, true),
             (TempoPoolTransactionError::SubblockNonceKey, true),
             (
