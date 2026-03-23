@@ -6,7 +6,7 @@ use alloy::{
         Filter, TransactionRequest,
         trace::parity::{ChangedType, Delta},
     },
-    signers::local::MnemonicBuilder,
+    signers::local::{MnemonicBuilder, PrivateKeySigner},
     sol_types::{SolCall, SolError, SolEvent},
 };
 use alloy_eips::BlockId;
@@ -581,6 +581,88 @@ async fn test_eth_estimate_gas_preseeded_zero_address_validator_token() -> eyre:
     assert!(
         gas > 0,
         "gas estimation must succeed with pre-seeded validatorTokens[address(0)]"
+    );
+
+    Ok(())
+}
+
+/// Regression test: if a user holds a valid fee token but has not set `userTokens[sender]`,
+/// zero-value basic transfer estimation falls back to PathUSD. When PathUSD balance is zero,
+/// `eth_estimateGas` with a non-zero fee cap must return `insufficient funds` instead of the
+/// confusing intrinsic gas error caused by a zero gas allowance cap.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_eth_estimate_gas_zero_value_transfer_returns_insufficient_funds() -> eyre::Result<()>
+{
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let http_url = setup.http_url;
+
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet_address = wallet.address();
+    let provider = ProviderBuilder::new()
+        .wallet(wallet)
+        .connect_http(http_url.clone());
+
+    let user = PrivateKeySigner::random();
+    let user_address = user.address();
+    let user_provider = ProviderBuilder::new().wallet(user).connect_http(http_url);
+
+    let fee_manager =
+        IFeeManager::new(tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    let path_usd = ITIP20::new(PATH_USD_ADDRESS, provider.clone());
+    let alternate_fee_token = setup_test_token(provider.clone(), wallet_address).await?;
+
+    alternate_fee_token
+        .mint(user_address, U256::from(1_000_000u64))
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    assert_eq!(
+        fee_manager.userTokens(user_address).call().await?,
+        Address::ZERO
+    );
+    assert_eq!(path_usd.balanceOf(user_address).call().await?, U256::ZERO);
+    assert_eq!(
+        alternate_fee_token.balanceOf(user_address).call().await?,
+        U256::from(1_000_000u64)
+    );
+
+    let gas: String = user_provider
+        .raw_request(
+            "eth_estimateGas".into(),
+            [serde_json::json!({
+                "from": user_address,
+                "to": user_address,
+                "value": "0x0",
+            })],
+        )
+        .await?;
+    assert!(u64::from_str_radix(gas.trim_start_matches("0x"), 16)? > 0);
+
+    let err = user_provider
+        .raw_request::<_, String>(
+            "eth_estimateGas".into(),
+            [serde_json::json!({
+                "from": user_address,
+                "to": user_address,
+                "value": "0x0",
+                "maxFeePerGas": format!("0x{:x}", TEMPO_T1_BASE_FEE),
+            })],
+        )
+        .await
+        .unwrap_err();
+
+    let err = err.to_string();
+    assert!(
+        err.contains("insufficient funds for gas * price + value"),
+        "unexpected error: {err}"
+    );
+    assert!(
+        !err.contains("gas_limit 0 < intrinsic_gas 21000"),
+        "unexpected error: {err}"
     );
 
     Ok(())

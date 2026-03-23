@@ -21,7 +21,7 @@ pub use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::TempoChainSpec;
 use tempo_evm::TempoStateAccess;
 use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager};
-use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
+use tempo_primitives::transaction::{TEMPO_EXPIRING_NONCE_KEY, calc_gas_balance_spending};
 pub use token::{TempoToken, TempoTokenApiServer};
 
 use crate::{node::TempoNode, rpc::error::TempoEthApiError};
@@ -272,7 +272,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
         self.inner.evm_memory_limit()
     }
 
-    /// Returns the max gas limit that the caller can afford given a transaction environment.
+    /// Returns the max gas limit that the caller can afford based on their fee token balance.
     fn caller_gas_allowance(
         &self,
         mut db: impl Database<Error: Into<EthApiError>>,
@@ -289,6 +289,14 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
         let fee_token_balance = db
             .get_token_balance(fee_token, fee_payer, evm_env.cfg_env.spec)
             .map_err(ProviderError::other)?;
+
+        if fee_token_balance.is_zero() {
+            return Err(TempoEthApiError::insufficient_fee_token_funds(
+                calc_gas_balance_spending(tx_env.gas_limit, tx_env.inner.gas_price),
+                U256::ZERO,
+                fee_token,
+            ));
+        }
 
         Ok(fee_token_balance
             // multiply by the scaling factor
