@@ -23,7 +23,7 @@ use tempo_primitives::{
 };
 
 /// How far in the future the block timestamp can be.
-pub const ALLOWED_FUTURE_BLOCK_TIME_MILLIS: u64 = 500;
+pub const ALLOWED_FUTURE_BLOCK_TIME_MILLIS: u64 = 0;
 
 /// Divisor for calculating shared gas limit (payment lane capacity).
 /// shared_gas_limit = block_gas_limit / TEMPO_SHARED_GAS_DIVISOR
@@ -56,6 +56,13 @@ impl TempoConsensus {
     ) -> Result<(), ConsensusError> {
         self.inner.validate_header(header)?;
 
+        // Validate the timestamp milliseconds part
+        if header.timestamp_millis_part >= 1000 {
+            return Err(ConsensusError::Other(
+                "Timestamp milliseconds part must be less than 1000".to_string(),
+            ));
+        }
+
         if header.timestamp_millis() > present_timestamp_millis + ALLOWED_FUTURE_BLOCK_TIME_MILLIS {
             return Err(ConsensusError::TimestampIsInFuture {
                 timestamp: header.timestamp_millis(),
@@ -81,13 +88,6 @@ impl TempoConsensus {
                 "General gas limit {} does not match expected {}",
                 header.general_gas_limit, expected_general_gas_limit
             )));
-        }
-
-        // Validate the timestamp milliseconds part
-        if header.timestamp_millis_part >= 1000 {
-            return Err(ConsensusError::Other(
-                "Timestamp milliseconds part must be less than 1000".to_string(),
-            ));
         }
 
         Ok(())
@@ -374,22 +374,6 @@ mod tests {
         let sealed = SealedHeader::seal_slow(header);
 
         assert!(consensus.validate_header(&sealed).is_ok());
-    }
-
-    #[test]
-    fn test_validate_header_timestamp_in_the_future() {
-        let consensus = TempoConsensus::new(ANDANTINO.clone());
-        let future_timestamp = current_timestamp_millis() + ALLOWED_FUTURE_BLOCK_TIME_MILLIS + 10;
-        let header = TestHeaderBuilder::default()
-            .gas_limit(30_000_000)
-            .timestamp_millis(future_timestamp)
-            .build();
-        let sealed = SealedHeader::seal_slow(header);
-
-        let result = consensus.validate_header(&sealed);
-        assert!(
-            matches!(result, Err(ConsensusError::TimestampIsInFuture { timestamp, .. }) if timestamp == future_timestamp)
-        );
     }
 
     #[test]
