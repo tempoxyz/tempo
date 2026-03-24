@@ -136,7 +136,7 @@ impl TIP20Token {
         self.check_not_paused()?;
 
         // TIP-1022: reject virtual addresses as reward recipients
-        if crate::tip20_registry::is_virtual_address(call.recipient) {
+        if self.storage.spec().is_t3() && tip20_registry::is_virtual_address(call.recipient) {
             return Err(TIP20Error::invalid_recipient().into());
         }
 

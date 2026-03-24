@@ -307,9 +307,10 @@ impl TIP403Registry {
     /// Creates a simple policy and pre-populates it with an initial set of accounts.
     ///
     /// # Errors
+    /// - `UnderOverflow` — policy ID counter overflows
     /// - `IncompatiblePolicyType` — `policyType` is not `WHITELIST` or `BLACKLIST` (T2+), or
     ///   accounts are non-empty for compound/invalid types (pre-T2)
-    /// - `UnderOverflow` — policy ID counter overflows
+    /// - `VirtualAddressNotAllowed` — virtual addresses are forbidden (T3+)
     pub fn create_policy_with_accounts(
         &mut self,
         msg_sender: Address,
@@ -318,10 +319,12 @@ impl TIP403Registry {
         let admin = call.admin;
         let policy_type = call.policyType.ensure_is_simple()?;
 
-        // TIP-1022: reject virtual addresses in initial account set
-        for account in call.accounts.iter() {
-            if is_virtual_address(*account) {
-                return Err(TIP403RegistryError::virtual_address_not_allowed().into());
+        // TIP-1022: reject virtual addresses in initial account set (spec T3+)
+        if self.storage.spec().is_t3() {
+            for account in call.accounts.iter() {
+                if is_virtual_address(*account) {
+                    return Err(TIP403RegistryError::virtual_address_not_allowed().into());
+                }
             }
         }
 
@@ -430,13 +433,14 @@ impl TIP403Registry {
     /// - `Unauthorized` — `msg_sender` is not the policy admin
     /// - `IncompatiblePolicyType` — the policy is not a whitelist
     /// - `PolicyNotFound` — the policy ID does not exist (T2+)
+    /// - `VirtualAddressNotAllowed` — virtual addresses are forbidden (T3+)
     pub fn modify_policy_whitelist(
         &mut self,
         msg_sender: Address,
         call: ITIP403Registry::modifyPolicyWhitelistCall,
     ) -> Result<()> {
-        // TIP-1022: virtual addresses are forwarding aliases, not valid policy members
-        if is_virtual_address(call.account) {
+        // TIP-1022: virtual addresses are forwarding aliases, not valid policy members (spec: T3+)
+        if self.storage.spec().is_t3() && is_virtual_address(call.account) {
             return Err(TIP403RegistryError::virtual_address_not_allowed().into());
         }
 
@@ -470,13 +474,14 @@ impl TIP403Registry {
     /// - `Unauthorized` — `msg_sender` is not the policy admin
     /// - `IncompatiblePolicyType` — the policy is not a blacklist
     /// - `PolicyNotFound` — the policy ID does not exist (T2+)
+    /// - `VirtualAddressNotAllowed` — virtual addresses are forbidden (T3+)
     pub fn modify_policy_blacklist(
         &mut self,
         msg_sender: Address,
         call: ITIP403Registry::modifyPolicyBlacklistCall,
     ) -> Result<()> {
-        // TIP-1022: virtual addresses are forwarding aliases, not valid policy members
-        if is_virtual_address(call.account) {
+        // TIP-1022: virtual addresses are forwarding aliases, not valid policy members (spec: T3+)
+        if self.storage.spec().is_t3() && is_virtual_address(call.account) {
             return Err(TIP403RegistryError::virtual_address_not_allowed().into());
         }
 
