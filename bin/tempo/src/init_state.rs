@@ -2,9 +2,11 @@
 //!
 //! This command loads TIP20 storage slots from a binary file and applies them
 //! to the genesis state. The binary format is produced by `tempo-xtask generate-state-bloat`.
+//!
+//! Uses batched inserts with periodic commits to keep memory bounded regardless
+//! of input file size.
 
 use std::{
-    collections::HashMap,
     fs::File,
     io::{BufReader, Read},
     path::PathBuf,
@@ -33,6 +35,9 @@ const MAGIC: &[u8; 8] = b"TEMPOSB\x00";
 /// Expected format version
 const VERSION: u16 = 1;
 
+/// Number of storage entries to batch before flushing hashed storage and committing.
+const HASHING_BATCH_SIZE: usize = 1_000_000;
+
 /// Initialize state from a binary dump file.
 #[derive(Debug, Parser)]
 pub(crate) struct InitFromBinaryDump<C: reth_cli::chainspec::ChainSpecParser = TempoChainSpecParser>
@@ -60,7 +65,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         let environment = self.env.init::<N>(AccessRights::RW, runtime)?;
         let provider_factory = environment.provider_factory;
 
-        let provider_rw = provider_factory.database_provider_rw()?;
+        let mut provider_rw = provider_factory.database_provider_rw()?;
 
         // Verify we're at genesis (block 0)
         let last_block = provider_rw.last_block_number()?;
@@ -78,13 +83,14 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
         let mut total_entries = 0u64;
         let mut total_tokens = 0u64;
+        let mut total_commits = 0u64;
 
-        // Collect storage entries per address for hashing
-        let mut storage_for_hashing: HashMap<alloy_primitives::Address, Vec<StorageEntry>> =
-            HashMap::new();
-
-        // Track addresses for account hashing (we need to create empty accounts)
+        // Track addresses for account hashing (small — only token addresses)
         let mut addresses_seen: HashSet<alloy_primitives::Address> = HashSet::default();
+
+        // Batch buffer for hashed storage inserts
+        let mut batch: Vec<StorageEntry> = Vec::with_capacity(HASHING_BATCH_SIZE);
+        let mut batch_address: Option<alloy_primitives::Address> = None;
 
         // Process blocks from binary file
         loop {
@@ -123,29 +129,36 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 target: "tempo::cli",
                 %address,
                 pair_count,
-                "Processing token storage"
+                "Processing token storage block"
             );
+
+            // Flush batch if we're switching to a different address
+            if batch_address.is_some() && batch_address != Some(address) && !batch.is_empty() {
+                let flush_addr = batch_address.unwrap();
+                provider_rw
+                    .insert_storage_for_hashing([(flush_addr, batch.drain(..).into_iter())])?;
+                provider_rw.commit()?;
+                provider_rw = provider_factory.database_provider_rw()?;
+                total_commits += 1;
+            }
+            batch_address = Some(address);
 
             addresses_seen.insert(address);
 
-            // Get cursors for plain state tables
-            let tx = provider_rw.tx_ref();
-            let mut storage_cursor = tx.cursor_dup_write::<tables::PlainStorageState>()?;
-            let mut account_cursor = tx.cursor_write::<tables::PlainAccountState>()?;
-
-            // Insert empty account for this address (required for storage to be included in trie)
-            // Only insert if the account doesn't already exist from genesis
-            if account_cursor.seek_exact(address)?.is_none() {
-                account_cursor.upsert(address, &Account::default())?;
+            // Ensure account exists in plain state
+            {
+                let tx = provider_rw.tx_ref();
+                let mut account_cursor = tx.cursor_write::<tables::PlainAccountState>()?;
+                if account_cursor.seek_exact(address)?.is_none() {
+                    account_cursor.upsert(address, &Account::default())?;
+                }
             }
-
-            // Collect storage for hashing
-            let storage_entries = storage_for_hashing.entry(address).or_default();
 
             // Read and insert entries
             let mut entry_buf = [0u8; 64];
             let start = std::time::Instant::now();
             let mut last_log = start;
+
             for i in 0..pair_count {
                 reader
                     .read_exact(&mut entry_buf)
@@ -162,12 +175,31 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 let entry = StorageEntry { key: slot, value };
 
                 // Insert into plain storage state
-                storage_cursor.upsert(address, &entry)?;
+                {
+                    let tx = provider_rw.tx_ref();
+                    let mut storage_cursor = tx.cursor_dup_write::<tables::PlainStorageState>()?;
+                    storage_cursor.upsert(address, &entry)?;
+                }
 
                 // Collect for hashed storage
-                storage_entries.push(entry);
-
+                batch.push(entry);
                 total_entries += 1;
+
+                // Flush batch when it reaches the threshold
+                if batch.len() >= HASHING_BATCH_SIZE {
+                    provider_rw
+                        .insert_storage_for_hashing([(address, batch.drain(..).into_iter())])?;
+                    provider_rw.commit()?;
+                    provider_rw = provider_factory.database_provider_rw()?;
+                    total_commits += 1;
+
+                    // Re-ensure account exists after reopen (idempotent)
+                    let tx = provider_rw.tx_ref();
+                    let mut account_cursor = tx.cursor_write::<tables::PlainAccountState>()?;
+                    if account_cursor.seek_exact(address)?.is_none() {
+                        account_cursor.upsert(address, &Account::default())?;
+                    }
+                }
 
                 let now = std::time::Instant::now();
                 if now.duration_since(last_log) >= std::time::Duration::from_secs(5)
@@ -191,16 +223,22 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             total_tokens += 1;
         }
 
+        // Flush any remaining batch entries
+        if let Some(addr) = batch_address {
+            if !batch.is_empty() {
+                provider_rw.insert_storage_for_hashing([(addr, batch.drain(..).into_iter())])?;
+            }
+        }
+
         info!(
             target: "tempo::cli",
             total_tokens,
             total_entries,
-            "Plain storage state written, now writing hashed state..."
+            total_commits,
+            "Plain and hashed storage written, writing hashed accounts..."
         );
 
         // Write hashed account entries for addresses that have storage.
-        // We create empty accounts (zero balance, zero nonce, no code) for precompile addresses.
-        // This is required for the storage to be included in the state trie computation.
         let empty_account = Account::default();
         provider_rw.insert_account_for_hashing(
             addresses_seen
@@ -214,22 +252,14 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             "Hashed accounts written"
         );
 
-        // Write hashed storage entries for trie computation
-        provider_rw.insert_storage_for_hashing(
-            storage_for_hashing
-                .into_iter()
-                .map(|(addr, entries)| (addr, entries.into_iter())),
-        )?;
-
-        info!(target: "tempo::cli", "Hashed storage written");
-
-        // Commit the transaction
+        // Final commit
         provider_rw.commit()?;
 
         info!(
             target: "tempo::cli",
             total_tokens,
             total_entries,
+            total_commits = total_commits + 1,
             "Binary state dump loaded successfully"
         );
 
