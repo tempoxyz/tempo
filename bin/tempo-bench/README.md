@@ -146,16 +146,16 @@ Run 15 second benchmark with 20k TPS:
 tempo-bench run-max-tps --duration 15 --tps 20000
 ```
 
-Run benchmark on MacOS:
+On machines with tight file-descriptor or connection limits, lower concurrent HTTP usage:
 
 ```bash
-tempo-bench run-max-tps --duration 15 --tps 20000 --disable-thread-pinning
+tempo-bench run-max-tps --duration 15 --tps 20000 --max-concurrent-requests 50
 ```
 
-Run benchmark with less workers than the default:
+Run benchmark with less concurrency than the default:
 
 ```bash
-tempo-bench run-max-tps --duration 15 --tps 20 -w 1
+tempo-bench run-max-tps --duration 15 --tps 20 --max-concurrent-requests 1
 ```
 
 Run benchmark with more accounts than the default:
