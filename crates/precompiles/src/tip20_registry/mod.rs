@@ -416,7 +416,7 @@ mod tests {
 
     #[test]
     fn test_resolve_recipient_virtual_unregistered_reverts() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         let virtual_addr = make_virtual_address(MasterId::ZERO, UserTag::ZERO);
 
         StorageCtx::enter(&mut storage, || {
@@ -436,7 +436,7 @@ mod tests {
 
     #[test]
     fn test_resolve_recipient_virtual_registered() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         let (master, salt) = (MASTER, SALT.into());
 
         StorageCtx::enter(&mut storage, || {

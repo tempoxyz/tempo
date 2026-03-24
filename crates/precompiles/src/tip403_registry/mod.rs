@@ -2333,7 +2333,7 @@ mod tests {
 
     #[test]
     fn test_modify_whitelist_rejects_virtual_address() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
@@ -2367,7 +2367,7 @@ mod tests {
 
     #[test]
     fn test_modify_blacklist_rejects_virtual_address() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
@@ -2401,7 +2401,7 @@ mod tests {
 
     #[test]
     fn test_create_policy_with_accounts_rejects_virtual_address() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
