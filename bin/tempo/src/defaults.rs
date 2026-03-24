@@ -89,6 +89,7 @@ impl TelemetryArgs {
 /// `Debug` redacts credentials so they don't leak in clap error output or logs.
 #[derive(Clone)]
 pub(crate) struct UrlWithAuth(Url);
+
 impl UrlWithAuth {
     /// Returns a copy of the URL with the password replaced by `***`.
     fn redacted(&self) -> Url {
