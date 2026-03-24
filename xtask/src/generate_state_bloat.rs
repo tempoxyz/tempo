@@ -2,6 +2,8 @@
 //!
 //! Generates a binary file containing TIP20 storage slots (total_supply + balances)
 //! that can be loaded during genesis initialization to create a bloated state.
+//!
+//! Uses chunked streaming to keep memory bounded regardless of target file size.
 
 use alloy::{
     primitives::{Address, U256, keccak256},
@@ -12,7 +14,7 @@ use alloy::{
 };
 use coins_bip32::prelude::*;
 use eyre::{Context as _, ensure};
-use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::{
     fs::File,
@@ -28,6 +30,9 @@ const MAGIC: &[u8; 8] = b"TEMPOSB\x00";
 
 /// Format version
 const VERSION: u16 = 1;
+
+/// Default chunk size: 256k entries per chunk (~16 MiB memory)
+const DEFAULT_CHUNK_SIZE: usize = 256 * 1024;
 
 /// Generate state bloat file
 #[derive(Debug, clap::Args)]
@@ -61,6 +66,10 @@ pub(crate) struct GenerateStateBloat {
     /// Remaining addresses use fast keccak-based derivation (not signable).
     #[arg(long, default_value = "10000")]
     signable_count: usize,
+
+    /// Number of entries to process per chunk. Controls peak memory usage.
+    #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
+    chunk_size: usize,
 }
 
 impl GenerateStateBloat {
@@ -72,6 +81,7 @@ impl GenerateStateBloat {
             out,
             balance,
             signable_count,
+            chunk_size,
         } = self;
 
         ensure!(
@@ -79,14 +89,15 @@ impl GenerateStateBloat {
             "at least one token ID must be specified"
         );
         ensure!(size > 0, "size must be greater than 0");
+        ensure!(chunk_size > 0, "chunk_size must be greater than 0");
 
         let target_bytes = size * 1024 * 1024; // MiB to bytes
         let num_tokens = tokens.len() as u64;
 
         // Calculate number of accounts needed
         // Per token: 1 header (40 bytes) + 1 total_supply (64 bytes) + N balances (64 bytes each)
-        // Total bytes ≈ T * (40 + 64 + N * 64)
-        // Solving for N: N = (target_bytes / T - 104) / 64
+        // With chunking, each chunk gets its own header, so overhead increases slightly.
+        // We calculate based on the simple model first, then adjust.
         let header_size = 40u64;
         let entry_size = 64u64;
         let overhead_per_token = header_size + entry_size; // header + total_supply
@@ -100,77 +111,27 @@ impl GenerateStateBloat {
         );
 
         let total_accounts = accounts_per_token as usize;
+        let actual_signable = signable_count.min(total_accounts);
 
         let estimated_size_mib =
             (num_tokens * (overhead_per_token + accounts_per_token * entry_size)) as f64
                 / (1024.0 * 1024.0);
         let out_display = out.display();
+        let num_chunks = (total_accounts + chunk_size - 1) / chunk_size;
         println!("State bloat generation:");
         println!("  Target size: {size} MiB");
         println!("  Tokens: {num_tokens}");
         println!("  Accounts per token: {accounts_per_token}");
         println!("  Estimated file size: {estimated_size_mib:.2} MiB");
+        println!("  Chunk size: {chunk_size} entries ({num_chunks} chunks)");
         println!("  Output: {out_display}");
-
-        // Step 1: Derive user addresses (hybrid approach)
-        // - First `signable_count` addresses use proper BIP32 derivation (slow but signable)
-        // - Remaining addresses use fast keccak-based derivation (not signable, just for bloat)
-        let actual_signable = signable_count.min(total_accounts);
-        let fast_count = total_accounts - actual_signable;
-
-        println!(
-            "\nDeriving {total_accounts} user addresses ({actual_signable} signable, {fast_count} fast)..."
-        );
 
         // Parse mnemonic and derive parent key once (this is the slow PBKDF2 step)
         let parent_key = derive_parent_key(&mnemonic)?;
         let parent_key = Arc::new(parent_key);
         let seed = keccak256(mnemonic.as_bytes());
 
-        let pb = ProgressBar::new(total_accounts as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} ({per_sec}) ({eta})")
-                .expect("valid template"),
-        );
-
-        let user_addresses: Vec<Address> = (0..total_accounts)
-            .into_par_iter()
-            .progress_with(pb.clone())
-            .map(|i| {
-                if i < actual_signable {
-                    // Proper BIP32 derivation (signable)
-                    let child = parent_key
-                        .derive_child(i as u32)
-                        .expect("child derivation should not fail");
-                    let key: &coins_bip32::prelude::SigningKey = child.as_ref();
-                    let credential = k256::ecdsa::SigningKey::from_bytes(&key.to_bytes()).unwrap();
-                    secret_key_to_address(&credential)
-                } else {
-                    // Fast keccak-based derivation (not signable)
-                    derive_address_fast(&seed, i as u64)
-                }
-            })
-            .collect();
-        pb.finish_with_message("done");
-
-        // Step 2: Precompute balance slots (cached - same for all tokens, parallel)
-        println!("\nPrecomputing {total_accounts} balance slots (keccak256)...");
-        let pb = ProgressBar::new(total_accounts as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} ({per_sec}) ({eta})")
-                .expect("valid template"),
-        );
-
-        let balance_slots: Vec<U256> = user_addresses
-            .par_iter()
-            .progress_with(pb.clone())
-            .map(|addr| compute_mapping_slot(*addr, tip20_slots::BALANCES))
-            .collect();
-        pb.finish_with_message("done");
-
-        // Step 3: Generate token addresses
+        // Generate token addresses
         let token_addresses: Vec<Address> = tokens.iter().map(|&id| token_address(id)).collect();
 
         println!("\nToken addresses:");
@@ -178,59 +139,77 @@ impl GenerateStateBloat {
             println!("  Token {id}: {addr}");
         }
 
-        // Step 4: Stream-write the binary file
-        println!("\nWriting state bloat file...");
-        let file = File::create(&out).wrap_err("failed to create output file")?;
-        let mut writer = BufWriter::with_capacity(64 * 1024 * 1024, file); // 64MB buffer
-
+        // Precompute constants
         let balance_value = U256::from(balance);
         let total_supply = balance_value * U256::from(total_accounts);
-
-        // Precompute constant byte representations
         let balance_bytes = balance_value.to_be_bytes::<32>();
         let total_supply_bytes = total_supply.to_be_bytes::<32>();
         let total_supply_slot_bytes = tip20_slots::TOTAL_SUPPLY.to_be_bytes::<32>();
 
-        // Precompute balance slot bytes to avoid to_be_bytes in inner loop
-        let balance_slot_bytes: Vec<[u8; 32]> = balance_slots
-            .iter()
-            .map(|s| s.to_be_bytes::<32>())
-            .collect();
+        // Open output file
+        let file = File::create(&out).wrap_err("failed to create output file")?;
+        let mut writer = BufWriter::with_capacity(64 * 1024 * 1024, file); // 64MB buffer
 
-        // Chunk size: 256k entries = 16 MiB per chunk
-        const CHUNK_ENTRIES: usize = 256 * 1024;
-        let chunks_per_token =
-            (balance_slot_bytes.len() + CHUNK_ENTRIES - 1) / CHUNK_ENTRIES.max(1);
-        let total_chunks = num_tokens as usize * chunks_per_token;
+        println!("\nGenerating and writing in {num_chunks} chunks...");
 
-        let pb = ProgressBar::new(total_chunks as u64);
+        let pb = ProgressBar::new(total_accounts as u64);
         pb.set_style(
             ProgressStyle::default_bar()
-                .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} chunks ({eta})")
+                .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} ({per_sec}) ({eta})")
                 .expect("valid template"),
         );
 
-        let mut chunk_buf = Vec::with_capacity(CHUNK_ENTRIES * 64);
+        let mut chunk_buf = Vec::with_capacity(chunk_size.min(DEFAULT_CHUNK_SIZE) * 64);
 
-        for token_addr in &token_addresses {
-            let pair_count = 1 + accounts_per_token; // total_supply + balances
+        for chunk_idx in 0..num_chunks {
+            let chunk_start = chunk_idx * chunk_size;
+            let chunk_end = (chunk_start + chunk_size).min(total_accounts);
+            let chunk_len = chunk_end - chunk_start;
 
-            // Write header: [magic:8][version:2][flags:2][address:20][pair_count:8] = 40 bytes
-            write_header(&mut writer, *token_addr, pair_count)?;
+            // Derive addresses and compute slot bytes for this chunk only
+            let slot_bytes: Vec<[u8; 32]> = (chunk_start..chunk_end)
+                .into_par_iter()
+                .map(|i| {
+                    let addr = if i < actual_signable {
+                        let child = parent_key
+                            .derive_child(i as u32)
+                            .expect("child derivation should not fail");
+                        let key: &coins_bip32::prelude::SigningKey = child.as_ref();
+                        let credential =
+                            k256::ecdsa::SigningKey::from_bytes(&key.to_bytes()).unwrap();
+                        secret_key_to_address(&credential)
+                    } else {
+                        derive_address_fast(&seed, i as u64)
+                    };
+                    compute_mapping_slot(addr, tip20_slots::BALANCES).to_be_bytes::<32>()
+                })
+                .collect();
 
-            // Write total_supply entry
-            writer.write_all(&total_supply_slot_bytes)?;
-            writer.write_all(&total_supply_bytes)?;
+            // Write one block per token for this chunk
+            for (token_idx, token_addr) in token_addresses.iter().enumerate() {
+                let is_first_chunk = chunk_idx == 0;
+                let pair_count = chunk_len as u64 + if is_first_chunk { 1 } else { 0 };
 
-            // Write balance entries in chunks
-            for slots_chunk in balance_slot_bytes.chunks(CHUNK_ENTRIES) {
+                write_header(&mut writer, *token_addr, pair_count)?;
+
+                // Only write total_supply in the first chunk for each token
+                if is_first_chunk {
+                    writer.write_all(&total_supply_slot_bytes)?;
+                    writer.write_all(&total_supply_bytes)?;
+                }
+
+                // Write balance entries
                 chunk_buf.clear();
-                for slot_bytes in slots_chunk {
-                    chunk_buf.extend_from_slice(slot_bytes);
+                for slot in &slot_bytes {
+                    chunk_buf.extend_from_slice(slot);
                     chunk_buf.extend_from_slice(&balance_bytes);
                 }
                 writer.write_all(&chunk_buf)?;
-                pb.inc(1);
+
+                // Only count progress once per chunk (on the last token)
+                if token_idx == token_addresses.len() - 1 {
+                    pb.inc(chunk_len as u64);
+                }
             }
         }
 
