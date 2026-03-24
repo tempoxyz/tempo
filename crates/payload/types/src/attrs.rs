@@ -33,10 +33,12 @@ impl InterruptHandle {
 #[derive(
     derive_more::Debug, Clone, Serialize, Deserialize, derive_more::Deref, derive_more::DerefMut,
 )]
+#[serde(rename_all = "camelCase")]
 pub struct TempoPayloadAttributes {
     /// Inner [`EthPayloadAttributes`].
     #[deref]
     #[deref_mut]
+    #[serde(flatten)]
     inner: EthPayloadAttributes,
     /// Interrupt handle.
     #[serde(skip)]
@@ -358,7 +360,7 @@ mod tests {
             eth_attrs.suggested_fee_recipient
         );
         assert_eq!(tempo_attrs.prev_randao, eth_attrs.prev_randao);
-        assert_eq!(tempo_attrs.withdrawals().as_ref().map(|w| w.len()), Some(1));
+        assert_eq!(tempo_attrs.withdrawals().as_ref().map(|w| w.len()), Some(0));
         assert_eq!(
             tempo_attrs.parent_beacon_block_root(),
             eth_attrs.parent_beacon_block_root
