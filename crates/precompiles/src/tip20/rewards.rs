@@ -10,6 +10,7 @@ use crate::{
     error::{Result, TempoPrecompileError},
     storage::Handler,
     tip20::{Recipient, TIP20Token},
+    tip20_registry,
 };
 use alloy::primitives::{Address, U256, uint};
 use tempo_contracts::precompiles::{ITIP20, TIP20Error, TIP20Event};
