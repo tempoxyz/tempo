@@ -14,7 +14,6 @@ use std::{sync::Arc, time::Duration};
 
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{B256, Bytes};
-use alloy_rpc_types_engine::PayloadId;
 use commonware_codec::{Encode as _, ReadExt as _};
 use commonware_consensus::{
     Heightable as _,
@@ -40,10 +39,9 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 
 use reth_provider::{BlockHashReader as _, BlockReader as _};
+use tempo_payload_types::TempoPayloadAttributes;
 use tokio::sync::RwLock;
 use tracing::{Level, debug, error, error_span, info, info_span, instrument, warn};
-
-use tempo_payload_types::TempoPayloadBuilderAttributes;
 
 use super::{
     Mailbox,
@@ -525,23 +523,15 @@ impl Inner<Init> {
             }
         };
 
-        let attrs = TempoPayloadBuilderAttributes::new(
-            // XXX: derives the payload ID from the parent so that
-            // overlong payload builds will eventually succeed on the
-            // next iteration: if all other nodes take equally as long,
-            // the consensus engine will kill the proposal task (see
-            // also `response.cancellation` below). Then eventually
-            // consensus will circle back to an earlier node, which then
-            // has the chance of picking up the old payload.
-            payload_id_from_block_hash(&parent.block_hash()),
-            parent.block_hash(),
+        let parent_hash = parent.block_hash();
+        let attrs = TempoPayloadAttributes::new(
             self.fee_recipient,
             context.current().epoch_millis(),
             extra_data,
             move || {
                 self.subblocks
                     .as_ref()
-                    .and_then(|s| s.get_subblocks(parent.block_hash()).ok())
+                    .and_then(|s| s.get_subblocks(parent_hash).ok())
                     .unwrap_or_default()
             },
         );
@@ -551,7 +541,7 @@ impl Inner<Init> {
         let payload_id = self
             .execution_node
             .payload_builder_handle
-            .send_new_payload(attrs)
+            .send_new_payload(parent_hash, attrs)
             .pace(&context, Duration::from_millis(20))
             .await
             .map_err(|_| eyre!("channel was closed before a response was returned"))
@@ -903,14 +893,6 @@ async fn verify_header_extra_data(
     }
 
     Ok(())
-}
-
-/// Constructs a [`PayloadId`] from the first 8 bytes of `block_hash`.
-fn payload_id_from_block_hash(block_hash: &B256) -> PayloadId {
-    PayloadId::new(
-        <[u8; 8]>::try_from(&block_hash[0..8])
-            .expect("a 32 byte array always has more than 8 bytes"),
-    )
 }
 
 /// Reports the verification result as a tracing event and consensus response.

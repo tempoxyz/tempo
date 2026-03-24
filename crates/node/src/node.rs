@@ -316,16 +316,17 @@ impl PayloadAttributesBuilder<TempoPayloadAttributes, TempoHeader>
         let mut inner = self.inner.build(parent);
         inner.suggested_fee_recipient = Address::ZERO;
 
-        let timestamp_millis_part = std::time::SystemTime::now()
+        let timestamp_millis = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_millis() as u64
-            % 1000;
+            .as_millis() as u64;
 
-        TempoPayloadAttributes {
-            inner,
-            timestamp_millis_part,
-        }
+        TempoPayloadAttributes::new(
+            Address::ZERO,
+            timestamp_millis,
+            Default::default(),
+            Vec::new,
+        )
     }
 }
 
