@@ -24,6 +24,10 @@ const WEBAUTHN_VERIFY_GAS: u64 = 8_000;
 pub struct SignatureVerifier {}
 
 impl SignatureVerifier {
+    pub fn initialize(&mut self) -> Result<()> {
+        self.__initialize()
+    }
+
     pub fn verify(
         &mut self,
         call: ISignatureVerifier::verifyCall,
@@ -66,11 +70,12 @@ mod tests {
         StorageCtx::enter(&mut storage, f)
     }
 
-    fn make_verify_call(hash: B256, signature: Vec<u8>) -> ISignatureVerifier::verifyCall {
-        ISignatureVerifier::verifyCall {
+    fn verify_helper(hash: B256, signature: Vec<u8>) -> Result<Address> {
+        let mut verifier = SignatureVerifier::new();
+        verifier.verify(ISignatureVerifier::verifyCall {
             hash,
             signature: Bytes::from(signature),
-        }
+        })
     }
 
     #[test]
@@ -82,8 +87,7 @@ mod tests {
             let sig_bytes = sig.as_bytes().to_vec();
             assert_eq!(sig_bytes.len(), 65);
 
-            let mut verifier = SignatureVerifier::new();
-            let result = verifier.verify(make_verify_call(hash, sig_bytes)).unwrap();
+            let result = verify_helper(hash, sig_bytes).unwrap();
             assert_eq!(result, signer.address());
         })
     }
@@ -120,8 +124,7 @@ mod tests {
             sig_bytes.push(0); // pre_hash = false
             assert_eq!(sig_bytes.len(), 130);
 
-            let mut verifier = SignatureVerifier::new();
-            let result = verifier.verify(make_verify_call(hash, sig_bytes)).unwrap();
+            let result = verify_helper(hash, sig_bytes).unwrap();
             assert_eq!(result, expected_address);
         })
     }
@@ -129,8 +132,7 @@ mod tests {
     #[test]
     fn test_verify_empty_signature_reverts() {
         run(|| {
-            let mut verifier = SignatureVerifier::new();
-            let result = verifier.verify(make_verify_call(B256::ZERO, vec![]));
+            let result = verify_helper(B256::ZERO, vec![]);
             assert!(result.is_err());
         })
     }
@@ -138,12 +140,11 @@ mod tests {
     #[test]
     fn test_verify_secp256k1_wrong_length_reverts() {
         run(|| {
-            let mut verifier = SignatureVerifier::new();
             // 64 bytes — not 65
-            let result = verifier.verify(make_verify_call(B256::ZERO, vec![0u8; 64]));
+            let result = verify_helper(B256::ZERO, vec![0u8; 64]);
             assert!(result.is_err());
             // 66 bytes — not 65
-            let result = verifier.verify(make_verify_call(B256::ZERO, vec![0u8; 66]));
+            let result = verify_helper(B256::ZERO, vec![0u8; 66]);
             assert!(result.is_err());
         })
     }
@@ -151,11 +152,10 @@ mod tests {
     #[test]
     fn test_verify_p256_wrong_length_reverts() {
         run(|| {
-            let mut verifier = SignatureVerifier::new();
             // 0x01 prefix + 128 bytes (should be 129)
             let mut sig = vec![SIGNATURE_TYPE_P256];
             sig.extend_from_slice(&[0u8; 128]);
-            let result = verifier.verify(make_verify_call(B256::ZERO, sig));
+            let result = verify_helper(B256::ZERO, sig);
             assert!(result.is_err());
         })
     }
@@ -163,11 +163,10 @@ mod tests {
     #[test]
     fn test_verify_webauthn_too_short_reverts() {
         run(|| {
-            let mut verifier = SignatureVerifier::new();
             // 0x02 prefix + 127 bytes (min is 128)
             let mut sig = vec![SIGNATURE_TYPE_WEBAUTHN];
             sig.extend_from_slice(&[0u8; 127]);
-            let result = verifier.verify(make_verify_call(B256::ZERO, sig));
+            let result = verify_helper(B256::ZERO, sig);
             assert!(result.is_err());
         })
     }
@@ -175,11 +174,10 @@ mod tests {
     #[test]
     fn test_verify_webauthn_too_long_reverts() {
         run(|| {
-            let mut verifier = SignatureVerifier::new();
             // 0x02 prefix + 2049 bytes (max is 2048)
             let mut sig = vec![SIGNATURE_TYPE_WEBAUTHN];
             sig.extend_from_slice(&[0u8; 2049]);
-            let result = verifier.verify(make_verify_call(B256::ZERO, sig));
+            let result = verify_helper(B256::ZERO, sig);
             assert!(result.is_err());
         })
     }
@@ -187,10 +185,9 @@ mod tests {
     #[test]
     fn test_verify_unknown_type_reverts() {
         run(|| {
-            let mut verifier = SignatureVerifier::new();
             let mut sig = vec![0x05];
             sig.extend_from_slice(&[0u8; 129]);
-            let result = verifier.verify(make_verify_call(B256::ZERO, sig));
+            let result = verify_helper(B256::ZERO, sig);
             assert!(result.is_err());
         })
     }
@@ -198,8 +195,7 @@ mod tests {
     #[test]
     fn test_verify_invalid_secp256k1_signature_reverts() {
         run(|| {
-            let mut verifier = SignatureVerifier::new();
-            let result = verifier.verify(make_verify_call(B256::ZERO, vec![0u8; 65]));
+            let result = verify_helper(B256::ZERO, vec![0u8; 65]);
             assert!(result.is_err());
         })
     }
