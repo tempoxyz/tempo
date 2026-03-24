@@ -403,10 +403,7 @@ where
                 info.code = Some(code);
                 let mut account: Account = info.into();
                 account.mark_touch();
-                db.commit(EvmState::from_iter([(
-                    SIGNATURE_VERIFIER_ADDRESS,
-                    account,
-                )]));
+                db.commit(EvmState::from_iter([(SIGNATURE_VERIFIER_ADDRESS, account)]));
             }
         }
 

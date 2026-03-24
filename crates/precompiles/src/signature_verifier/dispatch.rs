@@ -22,9 +22,7 @@ impl Precompile for SignatureVerifier {
             calldata,
             ISignatureVerifierCalls::abi_decode,
             |call| match call {
-                ISignatureVerifierCalls::verify(call) => {
-                    view(call, |c| self.verify(c))
-                }
+                ISignatureVerifierCalls::verify(call) => view(call, |c| self.verify(c)),
             },
         )
     }

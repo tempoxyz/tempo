@@ -6,10 +6,7 @@ use tempo_contracts::precompiles::SignatureVerifierError;
 use crate::{SIGNATURE_VERIFIER_ADDRESS, error::Result};
 use alloy::primitives::Address;
 use tempo_precompiles_macros::contract;
-use tempo_primitives::transaction::{
-    SignatureType,
-    tt_signature::PrimitiveSignature,
-};
+use tempo_primitives::transaction::{SignatureType, tt_signature::PrimitiveSignature};
 
 /// Gas cost for secp256k1 signature verification.
 const SECP256K1_VERIFY_GAS: u64 = 3_000;
@@ -28,10 +25,7 @@ impl SignatureVerifier {
         self.__initialize()
     }
 
-    pub fn verify(
-        &mut self,
-        call: ISignatureVerifier::verifyCall,
-    ) -> Result<Address> {
+    pub fn verify(&mut self, call: ISignatureVerifier::verifyCall) -> Result<Address> {
         // Parse and validate signature (handles size checks + type disambiguation).
         let sig = PrimitiveSignature::from_bytes(&call.signature)
             .map_err(|_| SignatureVerifierError::invalid_signature_format())?;
@@ -96,9 +90,7 @@ mod tests {
     fn test_verify_p256_valid() {
         use p256::ecdsa::SigningKey;
         use p256::elliptic_curve::rand_core::OsRng;
-        use tempo_primitives::transaction::tt_signature::{
-            derive_p256_address, normalize_p256_s,
-        };
+        use tempo_primitives::transaction::tt_signature::{derive_p256_address, normalize_p256_s};
 
         run(|| {
             let signing_key = SigningKey::random(&mut OsRng);
@@ -109,8 +101,9 @@ mod tests {
             let expected_address = derive_p256_address(&pub_key_x, &pub_key_y);
 
             let hash = B256::from([0xBB; 32]);
-            let (signature, _) =
-                signing_key.sign_prehash_recoverable(hash.as_slice()).unwrap();
+            let (signature, _) = signing_key
+                .sign_prehash_recoverable(hash.as_slice())
+                .unwrap();
             let r = B256::from_slice(&signature.r().to_bytes());
             let s = normalize_p256_s(&signature.s().to_bytes());
 

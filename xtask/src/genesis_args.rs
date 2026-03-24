@@ -51,6 +51,7 @@ use tempo_precompiles::{
     PATH_USD_ADDRESS,
     account_keychain::AccountKeychain,
     nonce::NonceManager,
+    signature_verifier::SignatureVerifier,
     stablecoin_dex::StablecoinDEX,
     storage::{ContractStorage, StorageCtx},
     tip_fee_manager::{IFeeManager, TipFeeManager},
@@ -58,7 +59,6 @@ use tempo_precompiles::{
     tip20_factory::TIP20Factory,
     tip403_registry::TIP403Registry,
     validator_config::ValidatorConfig,
-    signature_verifier::SignatureVerifier,
     validator_config_v2::ValidatorConfigV2,
 };
 

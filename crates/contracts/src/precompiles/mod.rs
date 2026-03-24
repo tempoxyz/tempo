@@ -1,12 +1,12 @@
 pub mod account_keychain;
 pub mod common_errors;
 pub mod nonce;
+pub mod signature_verifier;
 pub mod stablecoin_dex;
 pub mod tip20;
 pub mod tip20_factory;
 pub mod tip403_registry;
 pub mod tip_fee_manager;
-pub mod signature_verifier;
 pub mod validator_config;
 pub mod validator_config_v2;
 
@@ -14,12 +14,12 @@ pub use account_keychain::*;
 use alloy_primitives::{Address, address};
 pub use common_errors::*;
 pub use nonce::*;
+pub use signature_verifier::*;
 pub use stablecoin_dex::*;
 pub use tip_fee_manager::*;
 pub use tip20::*;
 pub use tip20_factory::*;
 pub use tip403_registry::*;
-pub use signature_verifier::*;
 pub use validator_config::*;
 pub use validator_config_v2::*;
 
