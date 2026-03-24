@@ -391,8 +391,8 @@ fn main() -> eyre::Result<()> {
             .public_key()?
             .map(|key| B256::from_slice(key.as_ref()));
 
-        // Validators must not prune account or storage history — they need full
-        // state to participate in consensus and serve historical queries.
+        // Validators must not prune account or storage history — the consensus
+        // implementation relies on historical state to fetch the validator set.
         if validator_key.is_some()
             && let Some(prune_config) = builder.config().prune_config()
         {
