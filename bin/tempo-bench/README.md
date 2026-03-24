@@ -174,10 +174,12 @@ The benchmark will continuously output performance metrics including transaction
 
 ## Quick Start
 
-### 1. Generate genesis.json
+### 1. Generate genesis
+
+`generate-genesis` expects a **directory**; it writes `genesis.json` inside it (plus validator keys when applicable):
 
 ```bash
-cargo x generate-genesis --accounts 50000 --output genesis.json
+cargo x generate-genesis --accounts 50000 --output ./bench-genesis
 ```
 
 ### 2. Start the Node
