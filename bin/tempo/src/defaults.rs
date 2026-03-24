@@ -104,6 +104,7 @@ impl std::fmt::Debug for UrlWithAuth {
         write!(f, "{}", self.redacted())
     }
 }
+
 impl std::fmt::Display for UrlWithAuth {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.redacted())
