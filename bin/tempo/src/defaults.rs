@@ -98,6 +98,7 @@ impl UrlWithAuth {
         url
     }
 }
+
 impl std::fmt::Debug for UrlWithAuth {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.redacted())
