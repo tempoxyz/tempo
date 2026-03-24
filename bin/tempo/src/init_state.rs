@@ -2,9 +2,6 @@
 //!
 //! This command loads TIP20 storage slots from a binary file and applies them
 //! to the genesis state. The binary format is produced by `tempo-xtask generate-state-bloat`.
-//!
-//! Uses batched inserts with periodic commits to keep memory bounded regardless
-//! of input file size.
 
 use std::{
     fs::File,
@@ -35,8 +32,8 @@ const MAGIC: &[u8; 8] = b"TEMPOSB\x00";
 /// Expected format version
 const VERSION: u16 = 1;
 
-/// Number of storage entries to batch before flushing hashed storage and committing.
-const HASHING_BATCH_SIZE: usize = 8_000_000;
+/// Entries per batch before flushing and committing. 40M ≈ 2.8 GB heap.
+const HASHING_BATCH_SIZE: usize = 40_000_000;
 
 /// Initialize state from a binary dump file.
 #[derive(Debug, Parser)]
@@ -225,7 +222,6 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         info!(
             target: "tempo::cli",
             total_blocks,
-            unique_tokens = addresses_seen.len(),
             total_entries,
             total_commits,
             "Plain and hashed storage written, writing hashed accounts..."
@@ -251,7 +247,6 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         info!(
             target: "tempo::cli",
             total_blocks,
-            unique_tokens = addresses_seen.len(),
             total_entries,
             total_commits = total_commits + 1,
             "Binary state dump loaded successfully"
