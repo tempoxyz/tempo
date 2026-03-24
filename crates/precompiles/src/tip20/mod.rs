@@ -1,11 +1,12 @@
 //! [TIP-20] token standard — Tempo's native fungible token implementation.
 //!
 //! Provides ERC-20-like balances, allowances, and transfers with Tempo extensions:
-//! role-based access control, pausability, supply caps, transfer policies ([TIP-403]),
-//! opt-in staking rewards,EIP-2612 permits (post-T2) and quote-token graphs.
+//! role-based access control, pausability, supply caps, transfer policies ([TIP-403]), opt-in
+//! staking rewards, EIP-2612 permits (T2+), quote-token graphs, and virtual addresses ([TIP-1022]).
 //!
 //! [TIP-20]: <https://docs.tempo.xyz/protocol/tip20>
 //! [TIP-403]: <https://docs.tempo.xyz/protocol/tip403>
+//! [TIP-1022]: <https://docs.tempo.xyz/protocol/tip1022>
 
 pub mod dispatch;
 pub mod rewards;
@@ -70,9 +71,8 @@ pub fn validate_usd_currency(token: Address) -> Result<()> {
 
 /// Resolved transfer recipient carrying both the literal (event) and effective (target) addresses.
 ///
-/// For non-virtual recipients both fields are identical. For [TIP-1022] virtual addresses
-/// `literal` is the virtual address used in `Transfer` events while `effective` is the resolved
-/// master whose balance is credited.
+/// For non-virtual recipients both fields are equal. For [TIP-1022] virtual addresses, `event` is
+/// used in `Transfer` events while `target` is the resolved master whose balance is updated.
 ///
 /// [TIP-1022]: <https://docs.tempo.xyz/protocol/tip1022>
 pub struct Recipient {
@@ -92,10 +92,10 @@ impl Recipient {
         }
     }
 
-    /// Resolves a recipient via the [TIP-1022] registry.
+    /// Resolves a recipient via the [`TIP20Registry`].
     ///
-    /// If `addr` is a virtual address its registered master is looked up; otherwise both
-    /// fields are set to `addr`.
+    /// If `addr` is a virtual address its registered master is looked up.
+    /// Otherwise, both fields are set to `addr`.
     pub fn resolve(addr: Address) -> Result<Self> {
         let effective = TIP20Registry::new().resolve_recipient(addr)?;
         Ok(Self {
@@ -112,8 +112,7 @@ impl Recipient {
         Ok(())
     }
 
-    /// Returns `true` when the literal address differs from the effective one (i.e. the
-    /// recipient is a [TIP-1022] virtual address).
+    /// Returns `true` when the event address differs from the target one.
     #[inline]
     pub fn is_virtual(&self) -> bool {
         self.event != self.target
@@ -131,8 +130,8 @@ impl Recipient {
         })
     }
 
-    /// Builds the forwarding `Transfer(virtual, master, amount)` event for [TIP-1022]
-    /// virtual recipients. Returns `None` for non-virtual recipients.
+    /// Builds the forwarding `Transfer(virtual, master, amount)` event for virtual recipients.
+    /// Returns `None` for non-virtual recipients.
     pub fn virtual_transfer(&self, amount: U256) -> Option<TIP20Event> {
         self.is_virtual()
             .then_some(TIP20Event::Transfer(ITIP20::Transfer {
@@ -147,9 +146,10 @@ impl Recipient {
 ///
 /// Implements ERC-20-like functionality (balances, allowances, transfers) with additional
 /// features: role-based access control, pausability, supply caps, transfer policies ([TIP-403]),
-/// and opt-in staking rewards.
+/// virtual addresses ([TIP-1022]), and opt-in staking rewards.
 ///
 /// [TIP-403]: <https://docs.tempo.xyz/protocol/tip403>
+/// [TIP-1022]: <https://docs.tempo.xyz/protocol/tip1022>
 ///
 /// Each token lives at a deterministic address with the `0x20C0` prefix.
 ///
@@ -468,7 +468,7 @@ impl TIP20Token {
 
     /// Mints `amount` tokens to the resolved target `to` address:
     /// - Enforces mint-recipient compliance via [`TIP403Registry`] and validates against supply cap
-    /// - Resolves `to` addresses following the `TIP-1022` spec. If `to` is a virtual, credits the
+    /// - Resolves `to` via the [`TIP20Registry`]. If `to` is a virtual address, credits the
     ///   resolved master and emits a two-hop `Transfer` and `Mint(virtual, amount)` events
     ///
     /// # Errors
@@ -1035,12 +1035,10 @@ impl TIP20Token {
         AccountKeychain::new().authorize_transfer(from, self.address, amount)
     }
 
-    /// Core transfer: debits `from`, credits `to.target`, and emits
-    /// `Transfer(from, to.event, amount)`.
+    /// Core transfer: debits `from`, credits `to.target`, emits `Transfer(from, to.event, amount)`.
     ///
-    /// For non-virtual transfers `to.event == to.target`. For [TIP-1022] virtual recipient
-    /// transfers the caller splits them: `to.event` is the literal (virtual) address and
-    /// `to.target` is the resolved master.
+    /// - For non-virtual transfers `to.event == to.target`.
+    /// - For virtual recipients, `to.event` is the virtual and `to.target` is the resolved master.
     fn _transfer(&mut self, from: Address, to: &Recipient, amount: U256) -> Result<()> {
         let from_balance = self.get_balance(from)?;
         if amount > from_balance {
