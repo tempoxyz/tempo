@@ -4,6 +4,7 @@ pub mod nonce;
 pub mod stablecoin_dex;
 pub mod tip20;
 pub mod tip20_factory;
+pub mod tip20_registry;
 pub mod tip403_registry;
 pub mod tip_fee_manager;
 pub mod validator_config;
@@ -17,6 +18,7 @@ pub use stablecoin_dex::*;
 pub use tip_fee_manager::*;
 pub use tip20::*;
 pub use tip20_factory::*;
+pub use tip20_registry::*;
 pub use tip403_registry::*;
 pub use validator_config::*;
 pub use validator_config_v2::*;
@@ -35,3 +37,5 @@ pub const ACCOUNT_KEYCHAIN_ADDRESS: Address =
     address!("0xAAAAAAAA00000000000000000000000000000000");
 pub const VALIDATOR_CONFIG_V2_ADDRESS: Address =
     address!("0xCCCCCCCC00000000000000000000000000000001");
+pub const TIP20_REGISTRY_ADDRESS: Address =
+    address!("0xFDC0000000000000000000000000000000000000");
