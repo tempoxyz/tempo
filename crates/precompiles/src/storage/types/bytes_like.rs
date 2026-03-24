@@ -49,6 +49,7 @@ pub struct BytesLikeHandler<T> {
 }
 
 impl<T: Storable> BytesLikeHandler<T> {
+    /// Creates a new handler for the bytes-like value at the given base slot.
     #[inline]
     pub fn new(base_slot: U256, address: Address) -> Self {
         Self {
@@ -71,6 +72,7 @@ impl<T: Storable> BytesLikeHandler<T> {
         Ok(calc_string_length(base_value, is_long))
     }
 
+    /// Returns whether the stored value is empty.
     #[inline]
     pub fn is_empty(&self) -> Result<bool> {
         Ok(self.len()? == 0)

@@ -1,3 +1,5 @@
+//! ABI dispatch for the [`TIP403Registry`] precompile.
+
 use crate::{
     Precompile, dispatch_call, input_cost, mutate, mutate_void,
     tip403_registry::{AuthRole, TIP403Registry},

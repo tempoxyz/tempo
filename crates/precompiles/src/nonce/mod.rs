@@ -1,3 +1,8 @@
+//! 2D nonce management precompile and expiring nonce replay protection,
+//! enabling concurrent transaction execution as part of [Tempo Transactions].
+//!
+//! [Tempo Transactions]: <https://docs.tempo.xyz/protocol/transactions>
+
 pub mod dispatch;
 
 pub use tempo_contracts::precompiles::INonce;
@@ -51,12 +56,15 @@ pub struct NonceManager {
 }
 
 impl NonceManager {
-    /// Initializes the nonce manager contract.
+    /// Initializes the nonce manager precompile storage layout.
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
     }
 
-    /// Get the nonce for a specific account and nonce key
+    /// Returns the current nonce for `account` at the given `nonceKey`.
+    ///
+    /// # Errors
+    /// - `ProtocolNonceNotSupported` — nonce key 0 is the protocol nonce and cannot be read here
     pub fn get_nonce(&self, call: INonce::getNonceCall) -> Result<u64> {
         // Protocol nonce (key 0) is stored in account state, not in this precompile
         // Users should query account nonce directly, not through this precompile
@@ -68,7 +76,12 @@ impl NonceManager {
         self.nonces[call.account][call.nonceKey].read()
     }
 
-    /// Internal: Increment nonce for a specific account and nonce key
+    /// Increments the 2D nonce for `account` at `nonce_key` and returns the new value, enabling
+    /// concurrent transaction execution. Key `0` is reserved for the protocol nonce.
+    ///
+    /// # Errors
+    /// - `InvalidNonceKey` — `nonce_key` is 0, which is reserved for the protocol nonce
+    /// - `NonceOverflow` — the current nonce value is `u64::MAX` and cannot be incremented
     pub fn increment_nonce(&mut self, account: Address, nonce_key: U256) -> Result<u64> {
         if nonce_key == 0 {
             return Err(NonceError::invalid_nonce_key().into());
@@ -98,7 +111,10 @@ impl NonceManager {
         Ok(expiry != 0 && expiry > now)
     }
 
-    /// Checks and marks an expiring nonce transaction.
+    /// Validates and records an expiring nonce transaction. Uses a
+    /// circular buffer that overwrites expired entries as the pointer
+    /// advances. The hash is `keccak256(encode_for_signing || sender)`,
+    /// invariant to fee payer changes.
     ///
     /// Uses a circular buffer that overwrites expired entries as the pointer advances.
     ///
@@ -111,10 +127,10 @@ impl NonceManager {
     /// 3. Check if we can evict the entry at current pointer (must be expired or empty)
     /// 4. Mark the hash as seen
     ///
-    /// Returns an error if:
-    /// - The expiry is not within (now, now + EXPIRING_NONCE_MAX_EXPIRY_SECS]
-    /// - The hash has already been seen and not expired
-    /// - The entry at current pointer is not expired (buffer full of valid entries)
+    /// # Errors
+    /// - `InvalidExpiringNonceExpiry` — `valid_before` not in (now, now + EXPIRING_NONCE_MAX_EXPIRY_SECS]
+    /// - `ExpiringNonceReplay` — transaction hash is already recorded and has not yet expired
+    /// - `ExpiringNonceSetFull` — the circular buffer slot holds an unexpired entry that can't be evicted
     pub fn check_and_mark_expiring_nonce(
         &mut self,
         expiring_nonce_hash: B256,

@@ -184,7 +184,7 @@ jobs:
           # Update all tempo dependencies to point to the current commit
           # Using # as delimiter since URLs contain /
           sed -i -E \
-            "s#(tempo-[a-z-]+) = \{ git = \"https://github.com/tempoxyz/tempo\", rev = \"[^\"]+\" \}#\1 = { git = \"https://github.com/tempoxyz/tempo\", rev = \"$COMMIT_SHA\" }#g" \
+            "s#(tempo-[a-z-]+) = \{ git = \"https://github.com/tempoxyz/tempo\", rev = \"[^\"]+\"([^}]*)\}#\1 = { git = \"https://github.com/tempoxyz/tempo\", rev = \"$COMMIT_SHA\"\2}#g" \
             Cargo.toml
 
           echo "Updated Cargo.toml:"

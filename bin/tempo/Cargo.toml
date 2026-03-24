@@ -20,18 +20,22 @@ tempo-eyre.workspace = true
 tempo-node = { workspace = true, features = ["default"] }
 tempo-commonware-node.workspace = true
 tempo-commonware-node-config.workspace = true
+tempo-precompiles.workspace = true
+tempo-validator-config.workspace = true
 tempo-chainspec = { workspace = true, features = ["default"] }
 tempo-consensus.workspace = true
 tempo-evm.workspace = true
 tempo-faucet.workspace = true
 
 alloy-consensus.workspace = true
+alloy-network.workspace = true
 alloy-primitives.workspace = true
 alloy-provider = { workspace = true, features = [
 	"reqwest",
 	"reqwest-rustls-tls",
 ] }
 alloy-rpc-types-eth.workspace = true
+alloy-signer-local.workspace = true
 alloy-sol-types.workspace = true
 commonware-codec.workspace = true
 commonware-consensus.workspace = true
@@ -68,6 +72,7 @@ tokio-util.workspace = true
 tracing.workspace = true
 pyroscope = { workspace = true, optional = true }
 pyroscope_pprofrs = { workspace = true, optional = true }
+tracy-client = { workspace = true, optional = true }
 
 [[bin]]
 name = "tempo"
@@ -101,6 +106,7 @@ jemalloc = [
 	"reth-cli-util/jemalloc",
 	"reth-ethereum-cli/jemalloc",
 	"reth-ethereum/jemalloc",
+	"reth-provider/jemalloc",
 	"tempo-node/jemalloc",
 ]
 jemalloc-prof = [
@@ -120,6 +126,8 @@ jemalloc-symbols = [
 tracy = [
 	"reth-ethereum-cli/tracy",
 	"tempo-node/tracy",
+	"dep:tracy-client",
+	"tracy-client/ondemand",
 ]
 tracy-allocator = [
 	"reth-cli-util/tracy-allocator",

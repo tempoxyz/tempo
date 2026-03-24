@@ -41,6 +41,16 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) gas_used: Histogram,
     /// Amount of gas used in the payload.
     pub(crate) gas_used_last: Gauge,
+    /// Gas used by general (non-payment) transactions in the payload.
+    pub(crate) general_gas_used_last: Gauge,
+    /// Gas used by payment transactions in the payload.
+    pub(crate) payment_gas_used_last: Gauge,
+    /// General lane gas limit.
+    pub(crate) general_gas_limit_last: Gauge,
+    /// Payment lane gas limit.
+    pub(crate) payment_gas_limit_last: Gauge,
+    /// Shared (subblock) gas limit.
+    pub(crate) shared_gas_limit_last: Gauge,
     /// Time to create the pool's `BestTransactions` iterator, including lock acquisition and snapshot.
     pub(crate) pool_fetch_duration_seconds: Histogram,
     /// Time to acquire the state provider and initialize the state DB.
