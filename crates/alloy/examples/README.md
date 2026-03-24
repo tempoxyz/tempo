@@ -7,7 +7,7 @@ Runnable examples demonstrating common operations with the `tempo-alloy` crate.
 Set the `RPC_URL` environment variable to a Tempo RPC endpoint:
 
 ```bash
-export RPC_URL="https://rpc.testnet.tempo.xyz"
+export RPC_URL="https://rpc.moderato.tempo.xyz"
 ```
 
 ## Running Examples

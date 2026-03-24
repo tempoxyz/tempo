@@ -227,7 +227,7 @@ where
                 .iter()
                 .filter(|(validator, _)| amm_cache.is_active_validator(validator))
                 .filter(|(_, new_token)| !amm_cache.is_active_validator_token(new_token))
-                .map(|(_, new_token)| *new_token)
+                .map(|(_, &new_token)| new_token)
                 .collect();
             amm_cache.track_tokens(&active_new_tokens)
         };
