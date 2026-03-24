@@ -214,6 +214,27 @@ impl<DB, I> TempoEvmHandler<DB, I> {
 }
 
 impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
+    fn seed_tx_origin(
+        &self,
+        evm: &mut TempoEvm<DB, I>,
+    ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
+        let ctx = evm.ctx_mut();
+
+        // Seed tx.origin in keychain transient storage for both regular execution and
+        // RPC simulations (`eth_call` / `eth_estimateGas`) that go through handler execution.
+        StorageCtx::enter_evm(
+            &mut ctx.journaled_state,
+            &ctx.block,
+            &ctx.cfg,
+            &ctx.tx,
+            || {
+                let mut keychain = AccountKeychain::new();
+                keychain.set_tx_origin(ctx.tx.caller())
+            },
+        )
+        .map_err(|e| EVMError::Custom(e.to_string()))
+    }
+
     /// Loads the fee token and fee payer from the transaction environment.
     ///
     /// Resolves and validates the fee fields used by Tempo's fee system:
@@ -223,8 +244,8 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
     /// Must be called before `validate_against_state_and_deduct_caller`, which uses the
     /// loaded fee fields for balance checks.
     ///
-    /// Called by [`Handler::run`] and [`InspectorHandler::inspect_run`]. Exposed for consumers
-    /// like `FoundryHandler` that override `inspect_run` but still need Tempo fee setup.
+    /// Exposed for consumers like `FoundryHandler` that override the default run flow
+    /// but still need Tempo fee setup.
     pub fn load_fee_fields(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
@@ -232,6 +253,13 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
         let ctx = evm.ctx_mut();
 
         self.fee_payer = ctx.tx.fee_payer()?;
+        if ctx.cfg.spec.is_t2()
+            && ctx.tx.has_fee_payer_signature()
+            && self.fee_payer == ctx.tx.caller()
+        {
+            return Err(TempoInvalidTransaction::SelfSponsoredFeePayer.into());
+        }
+
         self.fee_token = ctx
             .journaled_state
             .get_fee_token(&ctx.tx, self.fee_payer, ctx.cfg.spec)
@@ -669,18 +697,12 @@ where
         &self,
         evm: &mut Self::Evm,
     ) -> Result<(), Self::Error> {
+        self.seed_tx_origin(evm)?;
+
         let block = &evm.inner.ctx.block;
         let tx = &evm.inner.ctx.tx;
         let cfg = &evm.inner.ctx.cfg;
         let journal = &mut evm.inner.ctx.journaled_state;
-
-        // Set tx.origin in the keychain's transient storage for spending limit checks.
-        // This must be done for ALL transactions so precompiles can access it.
-        StorageCtx::enter_evm(journal, block, cfg, tx, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.set_tx_origin(tx.caller())
-        })
-        .map_err(|e| EVMError::Custom(e.to_string()))?;
 
         // Validate fee token has TIP20 prefix before loading balance.
         // This prevents panics in get_token_balance for invalid fee tokens.
@@ -1823,6 +1845,79 @@ mod tests {
             ),
             "Should reject invalid fee token with InvalidFeeToken error"
         );
+    }
+
+    #[test]
+    fn test_self_sponsored_fee_payer_rejected_post_t2() {
+        let caller = Address::random();
+        let invalid_token = Address::random();
+
+        let mut handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::default();
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T2;
+
+        let tx_env = TempoTxEnv {
+            inner: revm::context::TxEnv {
+                caller,
+                ..Default::default()
+            },
+            fee_token: Some(invalid_token),
+            fee_payer: Some(Some(caller)),
+            ..Default::default()
+        };
+
+        let mut evm: TempoEvm<CacheDB<EmptyDB>, ()> = TempoEvm::new(
+            Context::mainnet()
+                .with_db(CacheDB::new(EmptyDB::default()))
+                .with_block(TempoBlockEnv::default())
+                .with_cfg(cfg)
+                .with_tx(tx_env),
+            (),
+        );
+
+        let result = handler.load_fee_fields(&mut evm);
+        assert!(matches!(
+            result,
+            Err(EVMError::Transaction(
+                TempoInvalidTransaction::SelfSponsoredFeePayer
+            ))
+        ));
+    }
+
+    #[test]
+    fn test_self_sponsored_fee_payer_not_rejected_pre_t2() {
+        let caller = Address::random();
+        let invalid_token = Address::random();
+
+        let mut handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::default();
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T1C;
+
+        let tx_env = TempoTxEnv {
+            inner: revm::context::TxEnv {
+                caller,
+                ..Default::default()
+            },
+            fee_token: Some(invalid_token),
+            fee_payer: Some(Some(caller)),
+            ..Default::default()
+        };
+
+        let mut evm: TempoEvm<CacheDB<EmptyDB>, ()> = TempoEvm::new(
+            Context::mainnet()
+                .with_db(CacheDB::new(EmptyDB::default()))
+                .with_block(TempoBlockEnv::default())
+                .with_cfg(cfg)
+                .with_tx(tx_env),
+            (),
+        );
+
+        let result = handler.load_fee_fields(&mut evm);
+        assert!(matches!(
+            result,
+            Err(EVMError::Transaction(TempoInvalidTransaction::InvalidFeeToken(addr)))
+                if addr == invalid_token
+        ));
     }
 
     #[test]

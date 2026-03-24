@@ -40,7 +40,7 @@ use reth_ethereum::{
 };
 use reth_node_builder::{NodeBuilder, NodeConfig};
 use reth_node_core::{
-    args::{DatadirArgs, PayloadBuilderArgs, RpcServerArgs},
+    args::{DatadirArgs, PayloadBuilderArgs, RpcServerArgs, StorageArgs},
     exit::NodeExitFuture,
 };
 use reth_rpc_builder::RpcModuleSelection;
@@ -1116,6 +1116,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
             interval: Duration::from_millis(100),
             ..Default::default()
         })
+        .with_storage(StorageArgs { v2: false })
         .apply(|mut c| {
             c.network.discovery.disable_discovery = true;
             c.network = c.network.with_unused_ports();

@@ -169,6 +169,10 @@ pub(crate) struct GenesisArgs {
     #[arg(long, default_value = "0")]
     t2_time: u64,
 
+    /// T3 hardfork activation time.
+    #[arg(long, default_value = "0")]
+    t3_time: u64,
+
     /// Whether to skip initializing validator config v1
     #[arg(long)]
     no_initialize_validator_config_v1: bool,
@@ -537,6 +541,9 @@ impl GenesisArgs {
         chain_config
             .extra_fields
             .insert_value("t2Time".to_string(), self.t2_time)?;
+        chain_config
+            .extra_fields
+            .insert_value("t3Time".to_string(), self.t3_time)?;
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {

@@ -16,8 +16,8 @@ alloy = { workspace = true, features = [
   "rlp",
   "providers",
 ] }
-alloy-evm.workspace = true
-alloy-genesis.workspace = true
+alloy-evm = { workspace = true, features = ["std"] }
+alloy-genesis = { workspace = true, features = ["std"] }
 alloy-primitives.workspace = true
 
 commonware-codec.workspace = true

@@ -1055,11 +1055,10 @@ pub(crate) fn build_fill_request_context(
         U256::ZERO
     };
 
-    let fee_payer_signature = if test_case.fee_payer {
-        Some(Signature::new(U256::ONE, U256::ONE, false))
-    } else {
-        None
-    };
+    // Don't inject placeholder fee payer signatures for fill tests.
+    // Self-sponsored signatures are now rejected, so fee payer hash determinism is
+    // exercised in the runner by signing the filled tx hash with a separate signer.
+    let fee_payer_signature = None;
 
     let request = TempoTransactionRequest {
         inner: TransactionRequest {
