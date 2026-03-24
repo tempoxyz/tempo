@@ -88,8 +88,7 @@ mod tests {
 
     #[test]
     fn test_verify_p256_valid() {
-        use p256::ecdsa::SigningKey;
-        use p256::elliptic_curve::rand_core::OsRng;
+        use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
         use tempo_primitives::transaction::tt_signature::{derive_p256_address, normalize_p256_s};
 
         run(|| {
