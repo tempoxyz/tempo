@@ -100,6 +100,7 @@ Tempo has several SDKs to help you get started building on Tempo:
 - [Rust](https://docs.tempo.xyz/sdk/rust)
 - [Go](https://docs.tempo.xyz/sdk/go)
 - [Foundry](https://docs.tempo.xyz/sdk/foundry)
+- [Foundry TIP-20 deployment example](./examples/foundry/README.md)
 
 Want to contribute?
 
