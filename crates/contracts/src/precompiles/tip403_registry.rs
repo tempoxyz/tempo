@@ -65,6 +65,23 @@ impl ITIP403Registry::PolicyType {
     }
 }
 
+impl ITIP403Registry::PolicyType {
+    /// Returns `true` if this is a whitelist policy.
+    pub const fn is_whitelist(&self) -> bool {
+        matches!(self, Self::WHITELIST)
+    }
+
+    /// Returns `true` if this is a blacklist policy.
+    pub const fn is_blacklist(&self) -> bool {
+        matches!(self, Self::BLACKLIST)
+    }
+
+    /// Returns `true` if this is a compound policy.
+    pub const fn is_compound(&self) -> bool {
+        matches!(self, Self::COMPOUND)
+    }
+}
+
 impl TIP403RegistryError {
     /// Creates an error for unauthorized calls
     pub const fn unauthorized() -> Self {
