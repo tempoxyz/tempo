@@ -110,6 +110,7 @@ impl std::fmt::Display for UrlWithAuth {
         write!(f, "{}", self.redacted())
     }
 }
+
 impl FromStr for UrlWithAuth {
     type Err = Box<dyn std::error::Error + Send + Sync + 'static>;
 
