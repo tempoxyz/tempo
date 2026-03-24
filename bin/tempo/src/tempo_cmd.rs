@@ -179,7 +179,7 @@ impl ValidatorIdentityArgs {
 /// Either a pre-computed signature or a signing key to compute it from.
 #[derive(Debug, clap::Args)]
 #[group(required = true, multiple = false)]
-pub(crate) struct SignatureArgs {
+pub(crate) struct ValidatorSignatureArgs {
     /// A pre-computed ed25519 signature over the validator identity.
     #[arg(long, value_name = "SIGNATURE")]
     signature: Option<Bytes>,
@@ -190,12 +190,27 @@ pub(crate) struct SignatureArgs {
     signing_key: Option<PathBuf>,
 }
 
+impl ValidatorSignatureArgs {
+    fn resolve(self, namespace: &[u8], message: &B256) -> eyre::Result<Bytes> {
+        match (self.signature, self.signing_key) {
+            (Some(sig), _) => Ok(sig),
+            (None, Some(path)) => {
+                let key =
+                    SigningKey::read_from_file(&path).wrap_err("failed reading signing key")?;
+                let private_key = key.into_inner();
+                let sig = private_key.sign(namespace, message.as_slice());
+                Ok(sig.encode().into())
+            }
+            (None, None) => Err(eyre!(
+                "either --signature or --signing-key must be provided"
+            )),
+        }
+    }
+}
+
 /// Shared arguments for commands that update the validator config contract.
 #[derive(Debug, clap::Args)]
 pub(crate) struct ValidatorTransactionArgs {
-    #[command(flatten)]
-    sig: SignatureArgs,
-
     /// Path to the file holding the Ethereum private key.
     #[arg(long, value_name = "FILE")]
     private_key: PathBuf,
@@ -209,6 +224,8 @@ pub(crate) struct ValidatorTransactionArgs {
 pub(crate) struct AddValidator {
     #[command(flatten)]
     identity: ValidatorIdentityArgs,
+    #[command(flatten)]
+    sig: ValidatorSignatureArgs,
     #[command(flatten)]
     submit: ValidatorTransactionArgs,
     /// The fee recipient address
@@ -247,9 +264,7 @@ impl AddValidator {
 
         let config = self.identity.to_config(chain_id);
 
-        let signature = resolve_signature(
-            self.submit.sig.signature,
-            self.submit.sig.signing_key.as_deref(),
+        let signature = self.sig.resolve(
             VALIDATOR_NS_ADD,
             &config.add_validator_message_hash(self.fee_recipient),
         )?;
@@ -289,12 +304,12 @@ pub(crate) struct TransferValidatorOwnership {
     #[arg(long, value_name = "ETHEREUM_ADDRESS")]
     validator_address: Address,
 
+    #[command(flatten)]
+    submit: ValidatorTransactionArgs,
+
     /// Path to the file holding the private key of the new validator address
     #[arg(long, value_name = "FILE")]
     new_private_key: PathBuf,
-
-    #[command(flatten)]
-    submit: ValidatorTransactionArgs,
 }
 
 impl TransferValidatorOwnership {
@@ -371,6 +386,8 @@ pub(crate) struct RotateValidator {
     #[command(flatten)]
     identity: ValidatorIdentityArgs,
     #[command(flatten)]
+    sig: ValidatorSignatureArgs,
+    #[command(flatten)]
     submit: ValidatorTransactionArgs,
 }
 
@@ -405,12 +422,9 @@ impl RotateValidator {
 
         let config = self.identity.to_config(chain_id);
 
-        let signature = resolve_signature(
-            self.submit.sig.signature,
-            self.submit.sig.signing_key.as_deref(),
-            VALIDATOR_NS_ROTATE,
-            &config.rotate_validator_message_hash(),
-        )?;
+        let signature = self
+            .sig
+            .resolve(VALIDATOR_NS_ROTATE, &config.rotate_validator_message_hash())?;
 
         config
             .check_rotate_validator_signature(signature.as_ref())
@@ -454,30 +468,6 @@ impl RotateValidator {
         println!("transaction submitted: {tx_hash}");
 
         Ok(())
-    }
-}
-
-/// Resolves the ed25519 signature for a validator config transaction.
-///
-/// If a pre-computed `signature` is provided, it is returned as-is.
-/// Otherwise, the signature is computed from the `signing_key` file.
-fn resolve_signature(
-    signature: Option<Bytes>,
-    signing_key: Option<&std::path::Path>,
-    namespace: &[u8],
-    message: &B256,
-) -> eyre::Result<Bytes> {
-    match (signature, signing_key) {
-        (Some(sig), _) => Ok(sig),
-        (None, Some(path)) => {
-            let key = SigningKey::read_from_file(path).wrap_err("failed reading signing key")?;
-            let private_key = key.into_inner();
-            let sig = private_key.sign(namespace, message.as_slice());
-            Ok(sig.encode().into())
-        }
-        (None, None) => Err(eyre!(
-            "either --signature or --signing-key must be provided"
-        )),
     }
 }
 
