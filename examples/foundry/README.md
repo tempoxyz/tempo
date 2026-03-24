@@ -9,8 +9,13 @@ mint an initial supply, and verify the deployed address in the explorer.
 
 ## Prerequisites
 
-1. Foundry installed (`forge`, `cast`).
-2. `forge-std` installed in your Foundry project.
+1. Tempo's Foundry fork installed (`forge`, `cast`), for example:
+   ```bash
+   foundryup -n tempo
+   forge -V
+   ```
+   Ensure `forge -V` contains `-tempo`.
+2. A Tempo-enabled Foundry project (for example created with `forge init -n tempo`).
 3. A funded Tempo testnet account.
 
 Get testnet funds:
