@@ -44,6 +44,7 @@ crate::sol! {
         error PolicyNotSimple();
         error InvalidPolicyType();
         error IncompatiblePolicyType();
+        error VirtualAddressNotAllowed();
     }
 }
 
@@ -70,5 +71,10 @@ impl TIP403RegistryError {
 
     pub const fn policy_not_simple() -> Self {
         Self::PolicyNotSimple(ITIP403Registry::PolicyNotSimple {})
+    }
+
+    /// Virtual addresses are TIP-1022 forwarding aliases and cannot be used as policy members.
+    pub const fn virtual_address_not_allowed() -> Self {
+        Self::VirtualAddressNotAllowed(ITIP403Registry::VirtualAddressNotAllowed {})
     }
 }

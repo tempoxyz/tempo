@@ -13,8 +13,10 @@ use crate::{
     storage::{Handler, Mapping},
     tip20::is_tip20_prefix,
 };
-use alloy::primitives::{Address, FixedBytes, keccak256};
-use alloy::sol_types::SolValue;
+use alloy::{
+    primitives::{Address, FixedBytes, keccak256},
+    sol_types::SolValue,
+};
 pub use tempo_contracts::precompiles::{ITIP20Registry, TIP20RegistryError, TIP20RegistryEvent};
 use tempo_precompiles_macros::{Storable, contract};
 
@@ -179,6 +181,12 @@ impl TIP20Registry {
     ///
     /// [TIP-1022]: <https://docs.tempo.xyz/protocol/tip1022>
     pub fn resolve_recipient(&self, to: Address) -> Result<Address> {
+        // Explicit check because it isn't exclusibly a view function.
+        // It is also used by `tip20::Recipient`.
+        if !self.storage.spec().is_t2() {
+            return Ok(to);
+        }
+
         match decode_virtual_address(to) {
             None => Ok(to),
             Some((master_id, _)) => self

@@ -6,7 +6,7 @@ use crate::{
     view,
 };
 use alloy::{primitives::Address, sol_types::SolInterface};
-use revm::precompile::{PrecompileError, PrecompileResult};
+use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::ITIP20Registry::ITIP20RegistryCalls;
 
 impl Precompile for TIP20Registry {
@@ -14,6 +14,14 @@ impl Precompile for TIP20Registry {
         self.storage
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
+
+        // Pre-T2: behave like an empty contract (call succeeds, no execution)
+        if !self.storage.spec().is_t2() {
+            return Ok(PrecompileOutput::new(
+                self.storage.gas_used(),
+                Default::default(),
+            ));
+        }
 
         dispatch_call(
             calldata,
