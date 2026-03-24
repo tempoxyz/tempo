@@ -162,6 +162,10 @@ jobs:
           find . -name 'Cargo.toml' -exec sed -i "s|paradigmxyz/reth\", rev = \"${CURRENT_REV}\"|paradigmxyz/reth\", rev = \"${NEW_REV}\"|g" {} +
           echo "Updated reth rev: $CURRENT_REV -> $NEW_REV"
 
+          # Update a single reth dependency, which in turn will update all dependencies with the same `git` source.
+          # We can't just do `cargo update` because it will also do unwanted bumps.
+          cargo update -p reth-engine-tree
+
       # ── commit rev bump if changed ──────────────────────────────
       - name: Commit reth rev bump
         if: steps.update.outputs.bumped == 'true'
@@ -177,7 +181,7 @@ jobs:
         run: |
           echo "::group::Initial cargo clippy"
           set +e
-          cargo clippy --all-targets --all-features 2>&1
+          cargo clippy --all-targets --all-features --locked 2>&1
           clippy_exit=$?
           set -e
           echo "::endgroup::"
@@ -188,9 +192,9 @@ jobs:
           fi
 
           AMP_PROMPT="This Rust workspace just had its reth dependencies updated to the latest commit \
-          on the paradigmxyz/reth main branch. \`cargo clippy --all-targets --all-features\` is now failing with compilation errors.
+          on the paradigmxyz/reth main branch. \`cargo clippy --all-targets --all-features --locked\` is now failing with compilation errors.
 
-          Run \`cargo clippy --all-targets --all-features\` to see the errors, then fix the Rust source code and repeat \
+          Run \`cargo clippy --all-targets --all-features --locked\` to see the errors, then fix the Rust source code and repeat \
           until cargo clippy passes. You may also bump non-reth dependency versions in Cargo.toml files \
           if needed (e.g. revm, alloy), but do NOT modify the reth rev or git source specifications \
           in any Cargo.toml — those have already been updated by the workflow.
@@ -216,7 +220,7 @@ jobs:
 
             echo "::group::Verify cargo clippy"
             set +e
-            cargo clippy --all-targets --all-features 2>&1
+            cargo clippy --all-targets --all-features --locked 2>&1
             clippy_exit=$?
             set -e
             echo "::endgroup::"
@@ -341,6 +345,7 @@ jobs:
                 RETH_SUMMARY=$(echo "$RETH_LOG" | amp-run -x "Summarize these upstream reth commit messages into a concise markdown bullet list \
                   grouped by area (e.g. Engine, RPC, Trie, DB, Perf, Bench, Testing). Use bold **Area** headers. \
                   Merge related commits into single bullets. Skip CI/doc-only changes unless significant. \
+                  When referencing PRs, use full GitHub markdown links like [#1234](https://github.com/paradigmxyz/reth/pull/1234) — never bare #1234. \
                   Do NOT include any preamble or explanation, just the grouped bullet list.")
                 echo "$RETH_SUMMARY"
                 echo ""
