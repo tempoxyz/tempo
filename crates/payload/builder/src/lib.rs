@@ -48,7 +48,10 @@ use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_consensus::TEMPO_SHARED_GAS_DIVISOR;
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, evm::TempoEvm};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
-use tempo_precompiles::{storage::StorageCtx, validator_config_v2::ValidatorConfigV2};
+use tempo_precompiles::{
+    DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS, storage::StorageCtx,
+    tip_fee_manager::TipFeeManager, validator_config_v2::ValidatorConfigV2,
+};
 use tempo_primitives::{
     RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoTxEnvelope,
     subblock::PartialValidatorKey,
@@ -57,11 +60,29 @@ use tempo_primitives::{
         envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
     },
 };
+use tempo_revm::IntoAddress;
 use tempo_transaction_pool::{
     TempoTransactionPool,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
+
+/// Resolves the validator's preferred fee token from state, falling back to [`DEFAULT_FEE_TOKEN`].
+fn resolve_validator_fee_token(
+    state_provider: &dyn StateProvider,
+    beneficiary: Address,
+) -> Result<Address, PayloadBuilderError> {
+    let slot = TipFeeManager::new().validator_tokens[beneficiary].slot();
+    let raw = state_provider
+        .storage(TIP_FEE_MANAGER_ADDRESS, slot.into())?
+        .unwrap_or_default();
+    let token = raw.into_address();
+    Ok(if token.is_zero() {
+        DEFAULT_FEE_TOKEN
+    } else {
+        token
+    })
+}
 
 /// Returns true if a subblock has any expired transactions for the given timestamp.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
@@ -405,6 +426,8 @@ where
             .record(prepare_system_txs_elapsed);
 
         let base_fee = builder.evm_mut().block().basefee;
+        let validator_fee_token =
+            resolve_validator_fee_token(&*state_provider, builder.evm_mut().block().beneficiary)?;
         let pool_fetch_start = Instant::now();
         let mut best_txs = best_txs(BestTransactionsAttributes::new(
             base_fee,
@@ -536,8 +559,17 @@ where
                 .record(elapsed);
             trace!(?elapsed, "Transaction executed");
 
-            // update and add to total fees
-            total_fees += calc_gas_balance_spending(gas_used, effective_gas_price);
+            // Score payload value by actual validator payout, applying the AMM
+            // haircut when the transaction's fee token differs from the validator's.
+            let nominal_spending = calc_gas_balance_spending(gas_used, effective_gas_price);
+            let validator_payout =
+                if pool_tx.transaction.resolved_fee_token_or_default() == validator_fee_token {
+                    nominal_spending
+                } else {
+                    tempo_precompiles::tip_fee_manager::amm::compute_amount_out(nominal_spending)
+                        .map_err(PayloadBuilderError::other)?
+                };
+            total_fees += validator_payout;
             cumulative_gas_used += gas_used;
             if !is_payment {
                 non_payment_gas_used += gas_used;

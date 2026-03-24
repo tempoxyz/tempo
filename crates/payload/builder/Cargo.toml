@@ -12,10 +12,11 @@ workspace = true
 
 [dependencies]
 tempo-chainspec.workspace = true
-tempo-precompiles.workspace = true
 tempo-consensus.workspace = true
 tempo-evm.workspace = true
+tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
+tempo-revm.workspace = true
 tempo-transaction-pool.workspace = true
 tempo-payload-types.workspace = true
 
