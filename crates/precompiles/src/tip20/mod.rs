@@ -469,7 +469,7 @@ impl TIP20Token {
     /// Mints `amount` tokens to the resolved target `to` address:
     /// - Enforces mint-recipient compliance via [`TIP403Registry`] and validates against supply cap
     /// - Resolves `to` addresses following the `TIP-1022` spec. If `to` is a virtual, credits the
-    /// resolved master and emits a two-hop `Transfer` and `Mint(virtual, amount)` events
+    ///   resolved master and emits a two-hop `Transfer` and `Mint(virtual, amount)` events
     ///
     /// # Errors
     /// - `PolicyForbids` — TIP-403 policy rejects the mint recipient

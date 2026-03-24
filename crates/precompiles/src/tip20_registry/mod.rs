@@ -1,4 +1,4 @@
-//! [TIP-1022] virtual address registry precompile.
+//! [TIP-1022] virtual address registry precompile. Enabled on `TempoHardfork::T3`.
 //!
 //! Provides on-chain registration of virtual-address masters and resolution of
 //! [TIP-1022] virtual addresses back to their registered master EOA/contract.
@@ -183,7 +183,7 @@ impl TIP20Registry {
     pub fn resolve_recipient(&self, to: Address) -> Result<Address> {
         // Explicit check because it isn't exclusibly a view function.
         // It is also used by `tip20::Recipient`.
-        if !self.storage.spec().is_t2() {
+        if !self.storage.spec().is_t3() {
             return Ok(to);
         }
 
