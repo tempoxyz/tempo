@@ -20,8 +20,8 @@ use revm::{
 };
 use tempo_contracts::precompiles::{
     AccountKeychainError, FeeManagerError, NonceError, RolesAuthError, StablecoinDEXError,
-    TIP20FactoryError, TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector,
-    ValidatorConfigError, ValidatorConfigV2Error,
+    TIP20FactoryError, TIP20RegistryError, TIP403RegistryError, TIPFeeAMMError,
+    UnknownFunctionSelector, ValidatorConfigError, ValidatorConfigV2Error,
 };
 
 /// Top-level error type for all Tempo precompile operations
@@ -44,6 +44,10 @@ pub enum TempoPrecompileError {
     /// Error from roles auth
     #[error("Roles auth error: {0:?}")]
     RolesAuthError(RolesAuthError),
+
+    /// Error from TIP20 registry (TIP-1022)
+    #[error("TIP20 registry error: {0:?}")]
+    TIP20RegistryError(TIP20RegistryError),
 
     /// Error from 403 registry
     #[error("TIP403 registry error: {0:?}")]
@@ -114,6 +118,7 @@ impl TempoPrecompileError {
             | Self::NonceError(_)
             | Self::TIP20Factory(_)
             | Self::RolesAuthError(_)
+            | Self::TIP20RegistryError(_)
             | Self::TIPFeeAMMError(_)
             | Self::FeeManagerError(_)
             | Self::TIP403RegistryError(_)
@@ -145,6 +150,7 @@ impl TempoPrecompileError {
             Self::TIP20(e) => e.abi_encode().into(),
             Self::TIP20Factory(e) => e.abi_encode().into(),
             Self::RolesAuthError(e) => e.abi_encode().into(),
+            Self::TIP20RegistryError(e) => e.abi_encode().into(),
             Self::TIP403RegistryError(e) => e.abi_encode().into(),
             Self::FeeManagerError(e) => e.abi_encode().into(),
             Self::TIPFeeAMMError(e) => e.abi_encode().into(),
@@ -217,6 +223,7 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20Factory);
     add_errors_to_registry(&mut registry, TempoPrecompileError::RolesAuthError);
+    add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20RegistryError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP403RegistryError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::FeeManagerError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIPFeeAMMError);
