@@ -9,7 +9,7 @@
 use crate::{
     error::{Result, TempoPrecompileError},
     storage::Handler,
-    tip20::TIP20Token,
+    tip20::{Recipient, TIP20Token},
 };
 use alloy::primitives::{Address, U256, uint};
 use tempo_contracts::precompiles::{ITIP20, TIP20Error, TIP20Event};
@@ -45,7 +45,7 @@ impl TIP20Token {
         self.ensure_transfer_authorized(msg_sender, token_address)?;
         self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
-        self._transfer(msg_sender, token_address, call.amount)?;
+        self._transfer(msg_sender, &Recipient::direct(token_address), call.amount)?;
 
         let opted_in_supply = U256::from(self.get_opted_in_supply()?);
         if opted_in_supply.is_zero() {
@@ -126,12 +126,19 @@ impl TIP20Token {
     /// # Errors
     /// - `Paused` — token transfers are currently paused
     /// - `PolicyForbids` — TIP-403 policy rejects the sender→recipient transfer authorization
+    /// - `InvalidRecipient` — TIP-1022 virtual addresses are rejected
     pub fn set_reward_recipient(
         &mut self,
         msg_sender: Address,
         call: ITIP20::setRewardRecipientCall,
     ) -> Result<()> {
         self.check_not_paused()?;
+
+        // TIP-1022: reject virtual addresses as reward recipients
+        if crate::tip20_registry::is_virtual_address(call.recipient) {
+            return Err(TIP20Error::invalid_recipient().into());
+        }
+
         if call.recipient != Address::ZERO {
             self.ensure_transfer_authorized(msg_sender, call.recipient)?;
         }

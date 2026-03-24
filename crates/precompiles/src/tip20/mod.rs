@@ -26,6 +26,7 @@ use crate::{
     storage::{Handler, Mapping},
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
+    tip20_registry::TIP20Registry,
     tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
 };
 use alloy::{
@@ -65,6 +66,81 @@ pub fn validate_usd_currency(token: Address) -> Result<()> {
         return Err(TIP20Error::invalid_currency().into());
     }
     Ok(())
+}
+
+/// Resolved transfer recipient carrying both the literal (event) and effective (target) addresses.
+///
+/// For non-virtual recipients both fields are identical. For [TIP-1022] virtual addresses
+/// `literal` is the virtual address used in `Transfer` events while `effective` is the resolved
+/// master whose balance is credited.
+///
+/// [TIP-1022]: <https://docs.tempo.xyz/protocol/tip1022>
+pub struct Recipient {
+    /// Address used in `Transfer` events — the literal recipient supplied by the caller.
+    pub event: Address,
+    /// Address whose balance is actually credited.
+    pub target: Address,
+}
+
+impl Recipient {
+    /// Creates a [`Recipient`] where both addresses are the same.
+    #[inline]
+    pub fn direct(addr: Address) -> Self {
+        Self {
+            event: addr,
+            target: addr,
+        }
+    }
+
+    /// Resolves a recipient via the [TIP-1022] registry.
+    ///
+    /// If `addr` is a virtual address its registered master is looked up; otherwise both
+    /// fields are set to `addr`.
+    pub fn resolve(addr: Address) -> Result<Self> {
+        let effective = TIP20Registry::new().resolve_recipient(addr)?;
+        Ok(Self {
+            event: addr,
+            target: effective,
+        })
+    }
+
+    /// Validates that the effective recipient is not the zero address or a TIP-20 token.
+    pub fn validate(&self) -> Result<()> {
+        if self.target.is_zero() || is_tip20_prefix(self.target) {
+            return Err(TIP20Error::invalid_recipient().into());
+        }
+        Ok(())
+    }
+
+    /// Returns `true` when the literal address differs from the effective one (i.e. the
+    /// recipient is a [TIP-1022] virtual address).
+    #[inline]
+    pub fn is_virtual(&self) -> bool {
+        self.event != self.target
+    }
+
+    /// Builds the primary `Transfer(from, to, amount)` event.
+    ///
+    /// For virtual recipients `to` is the virtual address (first hop); for regular
+    /// recipients this is the only `Transfer` event needed.
+    pub fn transfer(&self, from: Address, amount: U256) -> TIP20Event {
+        TIP20Event::Transfer(ITIP20::Transfer {
+            from,
+            to: self.event,
+            amount,
+        })
+    }
+
+    /// Builds the forwarding `Transfer(virtual, master, amount)` event for [TIP-1022]
+    /// virtual recipients. Returns `None` for non-virtual recipients.
+    pub fn virtual_transfer(&self, amount: U256) -> Option<TIP20Event> {
+        self.is_virtual()
+            .then_some(TIP20Event::Transfer(ITIP20::Transfer {
+                from: self.event,
+                to: self.target,
+                amount,
+            }))
+    }
 }
 
 /// TIP-20 token contract — the native token standard on Tempo.
@@ -390,19 +466,27 @@ impl TIP20Token {
 
     // Token operations
 
-    /// Mints `amount` tokens to the specified `to` address.
-    /// Enforces mint-recipient compliance via [`TIP403Registry`] and validates against supply cap.
+    /// Mints `amount` tokens to the resolved target `to` address:
+    /// - Enforces mint-recipient compliance via [`TIP403Registry`] and validates against supply cap
+    /// - Resolves `to` addresses following the `TIP-1022` spec. If `to` is a virtual, credits the
+    /// resolved master and emits a two-hop `Transfer` and `Mint(virtual, amount)` events
     ///
     /// # Errors
     /// - `PolicyForbids` — TIP-403 policy rejects the mint recipient
     /// - `Unauthorized` — caller does not hold the `ISSUER_ROLE` role
     /// - `SupplyCapExceeded` — minting would push total supply above the cap
     pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
-        self._mint(msg_sender, call.to, call.amount)?;
+        let to = Recipient::resolve(call.to)?;
+        self._mint(msg_sender, &to, call.amount)?;
+
         self.emit_event(TIP20Event::Mint(ITIP20::Mint {
             to: call.to,
             amount: call.amount,
         }))?;
+        if let Some(hop) = to.virtual_transfer(call.amount) {
+            self.emit_event(hop)?;
+        }
+
         Ok(())
     }
 
@@ -412,7 +496,8 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::mintWithMemoCall,
     ) -> Result<()> {
-        self._mint(msg_sender, call.to, call.amount)?;
+        let to = Recipient::resolve(call.to)?;
+        self._mint(msg_sender, &to, call.amount)?;
 
         self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
             from: Address::ZERO,
@@ -423,17 +508,24 @@ impl TIP20Token {
         self.emit_event(TIP20Event::Mint(ITIP20::Mint {
             to: call.to,
             amount: call.amount,
-        }))
+        }))?;
+        if let Some(hop) = to.virtual_transfer(call.amount) {
+            self.emit_event(hop)?;
+        }
+        Ok(())
     }
 
-    /// Internal helper to mint new tokens and update balances
-    fn _mint(&mut self, msg_sender: Address, to: Address, amount: U256) -> Result<()> {
+    /// Internal helper to mint new tokens and update balances.
+    fn _mint(&mut self, msg_sender: Address, to: &Recipient, amount: U256) -> Result<()> {
         self.check_role(msg_sender, *ISSUER_ROLE)?;
         let total_supply = self.total_supply()?;
 
-        // Check if the `to` address is authorized to receive minted tokens
-        let policy_id = self.transfer_policy_id()?;
-        if !TIP403Registry::new().is_authorized_as(policy_id, to, AuthRole::mint_recipient())? {
+        // Check if the resolved target address is authorized to receive minted tokens
+        if !TIP403Registry::new().is_authorized_as(
+            self.transfer_policy_id()?,
+            to.target,
+            AuthRole::mint_recipient(),
+        )? {
             return Err(TIP20Error::policy_forbids().into());
         }
 
@@ -446,20 +538,16 @@ impl TIP20Token {
             return Err(TIP20Error::supply_cap_exceeded().into());
         }
 
-        self.handle_rewards_on_mint(to, amount)?;
+        self.handle_rewards_on_mint(to.target, amount)?;
 
         self.set_total_supply(new_supply)?;
-        let to_balance = self.get_balance(to)?;
+        let to_balance = self.get_balance(to.target)?;
         let new_to_balance: alloy::primitives::Uint<256, 4> = to_balance
             .checked_add(amount)
             .ok_or(TempoPrecompileError::under_overflow())?;
-        self.set_balance(to, new_to_balance)?;
+        self.set_balance(to.target, new_to_balance)?;
 
-        self.emit_event(TIP20Event::Transfer(ITIP20::Transfer {
-            from: Address::ZERO,
-            to,
-            amount,
-        }))
+        self.emit_event(to.transfer(Address::ZERO, amount))
     }
 
     /// Burns `amount` from the caller's balance and reduces total supply.
@@ -520,7 +608,7 @@ impl TIP20Token {
             return Err(TIP20Error::policy_forbids().into());
         }
 
-        self._transfer(call.from, Address::ZERO, call.amount)?;
+        self._transfer(call.from, &Recipient::direct(Address::ZERO), call.amount)?;
 
         let total_supply = self.total_supply()?;
         let new_supply =
@@ -542,7 +630,7 @@ impl TIP20Token {
     fn _burn(&mut self, msg_sender: Address, amount: U256) -> Result<()> {
         self.check_role(msg_sender, *ISSUER_ROLE)?;
 
-        self._transfer(msg_sender, Address::ZERO, amount)?;
+        self._transfer(msg_sender, &Recipient::direct(Address::ZERO), amount)?;
 
         let total_supply = self.total_supply()?;
         let new_supply =
@@ -686,14 +774,14 @@ impl TIP20Token {
     /// - `InsufficientBalance` — sender balance lower than transfer amount
     pub fn transfer(&mut self, msg_sender: Address, call: ITIP20::transferCall) -> Result<bool> {
         trace!(%msg_sender, ?call, "transferring TIP20");
-        self.check_not_paused()?;
-        self.check_recipient(call.to)?;
-        self.ensure_transfer_authorized(msg_sender, call.to)?;
+        let to = Recipient::resolve(call.to)?;
+        self.validate_transfer(msg_sender, &to)?;
+        self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
-        // Check and update spending limits for access keys
-        AccountKeychain::new().authorize_transfer(msg_sender, self.address, call.amount)?;
-
-        self._transfer(msg_sender, call.to, call.amount)?;
+        self._transfer(msg_sender, &to, call.amount)?;
+        if let Some(hop) = to.virtual_transfer(call.amount) {
+            self.emit_event(hop)?;
+        }
         Ok(true)
     }
 
@@ -711,7 +799,12 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::transferFromCall,
     ) -> Result<bool> {
-        self._transfer_from(msg_sender, call.from, call.to, call.amount)
+        let to = Recipient::resolve(call.to)?;
+        self._transfer_from(msg_sender, call.from, &to, call.amount)?;
+        if let Some(hop) = to.virtual_transfer(call.amount) {
+            self.emit_event(hop)?;
+        }
+        Ok(true)
     }
 
     /// Like [`Self::transfer_from`], but attaches a 32-byte memo.
@@ -720,7 +813,8 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::transferFromWithMemoCall,
     ) -> Result<bool> {
-        self._transfer_from(msg_sender, call.from, call.to, call.amount)?;
+        let to = Recipient::resolve(call.to)?;
+        self._transfer_from(msg_sender, call.from, &to, call.amount)?;
 
         self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
             from: call.from,
@@ -728,7 +822,9 @@ impl TIP20Token {
             amount: call.amount,
             memo: call.memo,
         }))?;
-
+        if let Some(hop) = to.virtual_transfer(call.amount) {
+            self.emit_event(hop)?;
+        }
         Ok(true)
     }
 
@@ -748,12 +844,14 @@ impl TIP20Token {
         to: Address,
         amount: U256,
     ) -> Result<bool> {
-        self.check_not_paused()?;
-        self.check_recipient(to)?;
-        self.ensure_transfer_authorized(from, to)?;
+        let to = Recipient::resolve(to)?;
+        self.validate_transfer(from, &to)?;
         self.check_and_update_spending_limit(from, amount)?;
 
-        self._transfer(from, to, amount)?;
+        self._transfer(from, &to, amount)?;
+        if let Some(hop) = to.virtual_transfer(amount) {
+            self.emit_event(hop)?;
+        }
 
         Ok(true)
     }
@@ -762,12 +860,10 @@ impl TIP20Token {
         &mut self,
         msg_sender: Address,
         from: Address,
-        to: Address,
+        to: &Recipient,
         amount: U256,
     ) -> Result<bool> {
-        self.check_not_paused()?;
-        self.check_recipient(to)?;
-        self.ensure_transfer_authorized(from, to)?;
+        self.validate_transfer(from, to)?;
 
         let allowed = self.get_allowance(from, msg_sender)?;
         if amount > allowed {
@@ -792,19 +888,22 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::transferWithMemoCall,
     ) -> Result<()> {
-        self.check_not_paused()?;
-        self.check_recipient(call.to)?;
-        self.ensure_transfer_authorized(msg_sender, call.to)?;
+        let to = Recipient::resolve(call.to)?;
+        self.validate_transfer(msg_sender, &to)?;
         self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
-        self._transfer(msg_sender, call.to, call.amount)?;
+        self._transfer(msg_sender, &to, call.amount)?;
 
         self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
             from: msg_sender,
             to: call.to,
             amount: call.amount,
             memo: call.memo,
-        }))
+        }))?;
+        if let Some(hop) = to.virtual_transfer(call.amount) {
+            self.emit_event(hop)?;
+        }
+        Ok(())
     }
 }
 
@@ -891,14 +990,12 @@ impl TIP20Token {
         Ok(())
     }
 
-    /// Validates that the recipient is not:
-    /// - the zero address (preventing accidental burns)
-    /// - another TIP20 token
-    fn check_recipient(&self, to: Address) -> Result<()> {
-        if to.is_zero() || is_tip20_prefix(to) {
-            return Err(TIP20Error::invalid_recipient().into());
-        }
-        Ok(())
+    /// Checks pause state, validates the effective recipient, and ensures the transfer
+    /// is authorized. Shared by public entrypoints that resolve a [`Recipient`] up front.
+    fn validate_transfer(&self, from: Address, to: &Recipient) -> Result<()> {
+        self.check_not_paused()?;
+        to.validate()?;
+        self.ensure_transfer_authorized(from, to.target)
     }
 
     /// Check whether a transfer is authorized by the token's [`TIP403Registry`] policy.
@@ -938,7 +1035,13 @@ impl TIP20Token {
         AccountKeychain::new().authorize_transfer(from, self.address, amount)
     }
 
-    fn _transfer(&mut self, from: Address, to: Address, amount: U256) -> Result<()> {
+    /// Core transfer: debits `from`, credits `to.target`, and emits
+    /// `Transfer(from, to.event, amount)`.
+    ///
+    /// For non-virtual transfers `to.event == to.target`. For [TIP-1022] virtual recipient
+    /// transfers the caller splits them: `to.event` is the literal (virtual) address and
+    /// `to.target` is the resolved master.
+    fn _transfer(&mut self, from: Address, to: &Recipient, amount: U256) -> Result<()> {
         let from_balance = self.get_balance(from)?;
         if amount > from_balance {
             return Err(
@@ -946,7 +1049,7 @@ impl TIP20Token {
             );
         }
 
-        self.handle_rewards_on_transfer(from, to, amount)?;
+        self.handle_rewards_on_transfer(from, to.target, amount)?;
 
         // Adjust balances
         let new_from_balance = from_balance
@@ -955,16 +1058,16 @@ impl TIP20Token {
 
         self.set_balance(from, new_from_balance)?;
 
-        if to != Address::ZERO {
-            let to_balance = self.get_balance(to)?;
+        if to.target != Address::ZERO {
+            let to_balance = self.get_balance(to.target)?;
             let new_to_balance = to_balance
                 .checked_add(amount)
                 .ok_or(TempoPrecompileError::under_overflow())?;
 
-            self.set_balance(to, new_to_balance)?;
+            self.set_balance(to.target, new_to_balance)?;
         }
 
-        self.emit_event(TIP20Event::Transfer(ITIP20::Transfer { from, to, amount }))
+        self.emit_event(to.transfer(from, amount))
     }
 
     /// Transfers fee tokens from `from` to the fee manager before transaction execution.
