@@ -126,12 +126,12 @@ impl GenerateStateBloat {
         println!("  Chunk size: {chunk_size} entries ({num_chunks} chunks)");
         println!("  Output: {out_display}");
 
-        // Parse mnemonic and derive parent key once (this is the slow PBKDF2 step)
+        // Step 1: Derive parent key (slow PBKDF2 step)
         let parent_key = derive_parent_key(&mnemonic)?;
         let parent_key = Arc::new(parent_key);
         let seed = keccak256(mnemonic.as_bytes());
 
-        // Generate token addresses
+        // Step 2: Generate token addresses
         let token_addresses: Vec<Address> = tokens.iter().map(|&id| token_address(id)).collect();
 
         println!("\nToken addresses:");
@@ -139,14 +139,14 @@ impl GenerateStateBloat {
             println!("  Token {id}: {addr}");
         }
 
-        // Precompute constants
+        // Step 3: Precompute constants
         let balance_value = U256::from(balance);
         let total_supply = balance_value * U256::from(total_accounts);
         let balance_bytes = balance_value.to_be_bytes::<32>();
         let total_supply_bytes = total_supply.to_be_bytes::<32>();
         let total_supply_slot_bytes = tip20_slots::TOTAL_SUPPLY.to_be_bytes::<32>();
 
-        // Open output file
+        // Step 4: Stream-write the binary file in chunks
         let file = File::create(&out).wrap_err("failed to create output file")?;
         let mut writer = BufWriter::with_capacity(64 * 1024 * 1024, file); // 64MB buffer
 
