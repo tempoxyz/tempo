@@ -21,9 +21,9 @@ reth-ethereum-consensus.workspace = true
 reth-primitives-traits.workspace = true
 
 alloy-consensus.workspace = true
-alloy-evm.workspace = true
+alloy-evm = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
-alloy-genesis.workspace = true
+alloy-genesis = { workspace = true, features = ["std"] }
 alloy-primitives.workspace = true
 serde_json.workspace = true

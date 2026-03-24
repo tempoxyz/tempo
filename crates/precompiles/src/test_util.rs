@@ -84,7 +84,7 @@ pub fn assert_full_coverage(results: impl IntoIterator<Item = Vec<([u8; 4], &'st
     );
 }
 
-/// Helper to create a test storage provider with a random address
+/// Creates a test [`HashMapStorageProvider`] (chain ID 1) paired with a random address.
 pub fn setup_storage() -> (HashMapStorageProvider, Address) {
     (HashMapStorageProvider::new(1), Address::random())
 }
@@ -179,9 +179,9 @@ impl TIP20Setup {
         }
     }
 
-    /// Do not clear the emitted events of the token.
+    /// Clears emitted events for the token after applying the configuration.
     ///
-    /// SAFETY: it is the caller's responsibility to ensure the test uses `HashMapStorageProvider`.
+    /// SAFETY: the caller must ensure the test uses `HashMapStorageProvider`.
     pub fn clear_events(mut self) -> Self {
         self.clear_events = true;
         self
@@ -276,7 +276,7 @@ impl TIP20Setup {
         TIP20Token::from_address(PATH_USD_ADDRESS)
     }
 
-    /// Initialize the TIP20 factory if needed.
+    /// Returns the [`TIP20Factory`], initializing it if not yet deployed.
     pub fn factory() -> Result<TIP20Factory> {
         let mut factory = TIP20Factory::new();
         if !is_initialized(TIP20_FACTORY_ADDRESS)? {
@@ -285,7 +285,7 @@ impl TIP20Setup {
         Ok(factory)
     }
 
-    /// Apply the configuration, returning just the TIP20Token.
+    /// Applies the configuration and returns the fully configured [`TIP20Token`].
     pub fn apply(self) -> Result<TIP20Token> {
         let mut token = match self.action.clone() {
             Action::PathUSD => self.path_usd_inner()?,
@@ -360,13 +360,13 @@ impl TIP20Setup {
         Ok(token)
     }
 
-    /// Apply the configuration, and expect it to fail with the given error.
+    /// Applies the configuration and asserts it fails with `expected`.
     pub fn expect_err(self, expected: TempoPrecompileError) {
         let result = self.apply();
         assert!(result.is_err_and(|err| err == expected));
     }
 
-    /// Apply the configuration, and expect it to fail with the given TIP20 error.
+    /// Applies the configuration and asserts it fails with the given [`TIP20Error`].
     pub fn expect_tip20_err(self, expected: TIP20Error) {
         let result = self.apply();
         assert!(result.is_err_and(|err| err == TempoPrecompileError::TIP20(expected)));
@@ -379,6 +379,7 @@ fn is_initialized(address: Address) -> Result<bool> {
     crate::storage::StorageCtx.has_bytecode(address)
 }
 
+/// Looks up the admin of a TIP-20 token by scanning `TokenCreated` events from the factory.
 #[cfg(any(test, feature = "test-utils"))]
 fn get_tip20_admin(token: Address) -> Option<Address> {
     use alloy::{primitives::Log, sol_types::SolEvent};
