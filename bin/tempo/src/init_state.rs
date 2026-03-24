@@ -94,13 +94,16 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
         // Process blocks from binary file
         loop {
-            // Try to read header
+            // Try to read header — distinguish clean EOF (0 bytes) from truncation
             let mut header_buf = [0u8; 40];
-            match reader.read_exact(&mut header_buf) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            match reader.read(&mut header_buf[..1]) {
+                Ok(0) => break, // clean EOF between blocks
+                Ok(_) => {}
                 Err(e) => return Err(e).wrap_err("failed to read block header"),
             }
+            reader
+                .read_exact(&mut header_buf[1..])
+                .wrap_err("truncated block header (got partial header at end of file)")?;
 
             // Validate magic
             ensure!(
