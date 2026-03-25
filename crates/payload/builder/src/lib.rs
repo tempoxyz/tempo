@@ -25,7 +25,7 @@ use reth_evm::{
 };
 use reth_execution_types::BlockExecutionOutput;
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
-use reth_payload_primitives::{BuiltPayload, BuiltPayloadExecutedBlock, PayloadBuilderAttributes};
+use reth_payload_primitives::{BuiltPayload, BuiltPayloadExecutedBlock};
 use reth_primitives_traits::{Recovered, transaction::error::InvalidTransactionError};
 use reth_revm::{
     State,
@@ -47,7 +47,7 @@ use std::{
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_consensus::TEMPO_SHARED_GAS_DIVISOR;
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
-use tempo_payload_types::{TempoBuiltPayload, TempoPayloadBuilderAttributes};
+use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
 use tempo_primitives::{
     RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoTxEnvelope,
     subblock::PartialValidatorKey,
@@ -160,7 +160,7 @@ where
     Provider:
         StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + Clone + 'static,
 {
-    type Attributes = TempoPayloadBuilderAttributes;
+    type Attributes = TempoPayloadAttributes;
     type BuiltPayload = TempoBuiltPayload;
 
     fn try_build(
@@ -208,14 +208,14 @@ where
         target = "payload_builder",
         skip_all,
         fields(
-            id = %args.config.attributes.payload_id(),
+            id = %args.config.payload_id,
             parent_number = %args.config.parent_header.number(),
             parent_hash = %args.config.parent_header.hash()
         )
     )]
     fn build_payload<Txs>(
         &self,
-        args: BuildArguments<TempoPayloadBuilderAttributes, TempoBuiltPayload>,
+        args: BuildArguments<TempoPayloadAttributes, TempoBuiltPayload>,
         best_txs: impl FnOnce(BestTransactionsAttributes) -> Txs,
         empty: bool,
     ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError>
@@ -231,6 +231,7 @@ where
         let PayloadConfig {
             parent_header,
             attributes,
+            payload_id: _,
         } = config;
 
         let start = Instant::now();
@@ -266,7 +267,7 @@ where
         let is_osaka = self
             .provider
             .chain_spec()
-            .is_osaka_active_at_timestamp(attributes.timestamp());
+            .is_osaka_active_at_timestamp(attributes.timestamp);
 
         let block_gas_limit: u64 = parent_header.gas_limit();
         let shared_gas_limit = block_gas_limit / TEMPO_SHARED_GAS_DIVISOR;
@@ -274,7 +275,7 @@ where
         // The remaining `shared_gas_limit` is reserved for validator subblocks.
         let non_shared_gas_limit = block_gas_limit - shared_gas_limit;
         let general_gas_limit = chain_spec.general_gas_limit_at(
-            attributes.timestamp(),
+            attributes.timestamp,
             block_gas_limit,
             shared_gas_limit,
         );
@@ -282,7 +283,12 @@ where
         let mut cumulative_gas_used = 0;
         let mut non_payment_gas_used = 0;
         // initial block size usage - size of withdrawals plus 1Kb of overhead for the block header
-        let mut block_size_used = attributes.withdrawals().length() + 1024;
+        let mut block_size_used = attributes
+            .withdrawals
+            .as_ref()
+            .map(|w| w.length())
+            .unwrap_or(0)
+            + 1024;
         let mut payment_transactions = 0u64;
         let mut total_fees = U256::ZERO;
 
@@ -304,7 +310,7 @@ where
             // We pre-validate all of the subblocks on top of parent state in subblocks service
             // which leaves the only reason for transactions to get invalidated by expiry of
             // `valid_before` field.
-            if has_expired_transactions(subblock, attributes.timestamp()) {
+            if has_expired_transactions(subblock, attributes.timestamp) {
                 self.metrics.inc_subblocks_expired();
                 return false;
             }
@@ -332,12 +338,12 @@ where
                 &parent_header,
                 TempoNextBlockEnvAttributes {
                     inner: NextBlockEnvAttributes {
-                        timestamp: attributes.timestamp(),
-                        suggested_fee_recipient: attributes.suggested_fee_recipient(),
-                        prev_randao: attributes.prev_randao(),
+                        timestamp: attributes.timestamp,
+                        suggested_fee_recipient: attributes.suggested_fee_recipient,
+                        prev_randao: attributes.prev_randao,
                         gas_limit: block_gas_limit,
-                        parent_beacon_block_root: attributes.parent_beacon_block_root(),
-                        withdrawals: Some(attributes.withdrawals().clone()),
+                        parent_beacon_block_root: attributes.parent_beacon_block_root,
+                        withdrawals: attributes.withdrawals.clone().map(Into::into),
                         extra_data: attributes.extra_data().clone(),
                     },
                     general_gas_limit,
@@ -642,7 +648,7 @@ where
             .set(shared_gas_limit as f64);
 
         let requests = chain_spec
-            .is_prague_active_at_timestamp(attributes.timestamp())
+            .is_prague_active_at_timestamp(attributes.timestamp)
             .then(|| execution_result.requests.clone());
 
         let sealed_block = Arc::new(block.sealed_block().clone());
@@ -685,8 +691,7 @@ where
             "Built payload"
         );
 
-        let eth_payload =
-            EthBuiltPayload::new(attributes.payload_id(), sealed_block, total_fees, requests);
+        let eth_payload = EthBuiltPayload::new(sealed_block, total_fees, requests);
 
         let execution_output = BlockExecutionOutput {
             result: execution_result,
@@ -736,7 +741,6 @@ mod tests {
     use super::*;
     use alloy_consensus::BlockBody;
     use alloy_primitives::{Address, B256, Bytes, Signature};
-    use reth_payload_builder::PayloadId;
     use reth_primitives_traits::SealedBlock;
     use tempo_primitives::{
         AASigned, Block, SignedSubBlock, SubBlock, SubBlockVersion, TempoSignature,
@@ -814,7 +818,7 @@ mod tests {
             },
         };
         let sealed = Arc::new(SealedBlock::seal_slow(block));
-        let eth = EthBuiltPayload::new(PayloadId::default(), sealed, U256::ZERO, None);
+        let eth = EthBuiltPayload::new(sealed, U256::ZERO, None);
         TempoBuiltPayload::new(eth, None)
     }
 
@@ -860,14 +864,8 @@ mod tests {
         // Test that extra_data in attributes can be accessed correctly
         let extra_data = Bytes::from(vec![42, 43, 44, 45, 46]);
 
-        let attrs = TempoPayloadBuilderAttributes::new(
-            PayloadId::default(),
-            B256::default(),
-            Address::default(),
-            1000,
-            extra_data.clone(),
-            Vec::new,
-        );
+        let attrs =
+            TempoPayloadAttributes::new(Address::default(), 1000, extra_data.clone(), Vec::new);
 
         assert_eq!(attrs.extra_data(), &extra_data);
 
