@@ -667,7 +667,11 @@ impl Inner<Init> {
             let Some(event) = canonical_events.next().await else {
                 bail!("canonical state stream ended unexpectedly");
             };
-            if !event.committed().blocks().contains_key(&parent_number) {
+            let committed = event.committed();
+            let Some(block) = committed.blocks().get(&parent_number) else {
+                continue;
+            };
+            if block.hash() != parent_hash {
                 continue;
             }
             return match crate::validators::read_fee_recipient_at_block_hash(
