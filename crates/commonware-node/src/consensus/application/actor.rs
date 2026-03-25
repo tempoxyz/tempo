@@ -629,9 +629,24 @@ impl Inner<Init> {
             &self.public_key,
             parent_hash,
         ) {
-            Ok(Some(fee_recipient)) if fee_recipient.is_zero() => Ok(self.fee_recipient),
-            Ok(Some(fee_recipient)) => Ok(fee_recipient),
-            Ok(None) => Ok(self.fee_recipient),
+            Ok(Some(fee_recipient)) if fee_recipient.is_zero() => {
+                debug!(
+                    fallback = %self.fee_recipient,
+                    "on-chain fee recipient is zero; using CLI fee recipient",
+                );
+                Ok(self.fee_recipient)
+            }
+            Ok(Some(fee_recipient)) => {
+                debug!(%fee_recipient, "using on-chain fee recipient");
+                Ok(fee_recipient)
+            }
+            Ok(None) => {
+                debug!(
+                    fallback = %self.fee_recipient,
+                    "v2 contract not active; using CLI fee recipient",
+                );
+                Ok(self.fee_recipient)
+            }
             Err(error) => Err(error),
         }
     }
