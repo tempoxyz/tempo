@@ -224,9 +224,9 @@ def bench-mount [] {
 # Bench metadata marker (persists across workspace wipes)
 # ============================================================================
 
-# Read bench metadata marker from $HOME. Returns record or null.
-def read-bench-marker [] {
-    let path = $"($env.HOME)/.tempo-bench-meta.json"
+# Read bench metadata marker from the datadir's meta directory. Returns record or null.
+def read-bench-marker [datadir: string] {
+    let path = $"($datadir)/($BENCH_META_SUBDIR)/marker.json"
     if ($path | path exists) {
         open $path
     } else {
@@ -234,9 +234,11 @@ def read-bench-marker [] {
     }
 }
 
-# Write bench metadata marker to $HOME.
+# Write bench metadata marker into the datadir's meta directory.
 def write-bench-marker [bloat: int, accounts: int, datadir: string] {
-    let path = $"($env.HOME)/.tempo-bench-meta.json"
+    let meta_dir = $"($datadir)/($BENCH_META_SUBDIR)"
+    mkdir $meta_dir
+    let path = $"($meta_dir)/marker.json"
     {
         bloat_mib: $bloat
         accounts: $accounts
@@ -1345,19 +1347,21 @@ def "main bench-init" [
     let datadir = if $bench_datadir != "" {
         $bench_datadir
     } else if (has-schelk) {
-        "/reth-bench"
+        $"/reth-bench/tempo_($bloat)mb"
     } else {
         $"($LOCALNET_DIR | path expand)/reth"
     }
     let meta_dir = $"($datadir)/($BENCH_META_SUBDIR)"
     let genesis_accounts = ([$accounts 3] | math max) + 1
 
+    # Mount schelk first so we can read the marker from the datadir
+    bench-mount
+
     # Check marker (unless --force)
     if not $force {
-        let marker = (read-bench-marker)
+        let marker = (read-bench-marker $datadir)
         if $marker != null {
             if ($marker.bloat_mib | into int) == $bloat and ($marker.accounts | into int) == $genesis_accounts {
-                bench-mount
                 if ($"($datadir)/db" | path exists) and ($"($meta_dir)/genesis.json" | path exists) {
                     print $"Virgin snapshot already initialized \(bloat=($bloat) MiB, accounts=($genesis_accounts)\). Use --force to re-initialize."
                     return
@@ -1384,9 +1388,6 @@ def "main bench-init" [
         let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
         cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
     }
-
-    # Mount schelk
-    bench-mount
 
     # Clean database files
     for subdir in [db static_files rocksdb consensus invalid_block_hooks] {
@@ -1660,7 +1661,7 @@ def "main bench" [
         let datadir = if $bench_datadir != "" {
             $bench_datadir
         } else if (has-schelk) {
-            "/reth-bench"
+            $"/reth-bench/tempo_($bloat)mb"
         } else {
             $"($abs_localnet)/reth"
         }
@@ -1689,7 +1690,7 @@ def "main bench" [
             let feature_datadir = $"($datadir)/feature-db"
 
             # Check if dual-hardfork snapshot is cached
-            let marker = (read-bench-marker)
+            let marker = (read-bench-marker $datadir)
             let snapshot_ready = (
                 not $force
                 and $marker != null
@@ -1793,7 +1794,8 @@ def "main bench" [
                 bench-mount
 
                 # Write marker with hardfork info
-                let path = $"($env.HOME)/.tempo-bench-meta.json"
+                mkdir $meta_dir
+                let marker_path = $"($meta_dir)/marker.json"
                 {
                     bloat_mib: $bloat
                     accounts: $genesis_accounts
@@ -1801,8 +1803,8 @@ def "main bench" [
                     baseline_hardfork: ($baseline_hardfork | str upcase)
                     feature_hardfork: ($feature_hardfork | str upcase)
                     initialized_at: (date now | format date "%Y-%m-%dT%H:%M:%SZ")
-                } | to json | save -f $path
-                print $"Bench marker written to ($path)"
+                } | to json | save -f $marker_path
+                print $"Bench marker written to ($marker_path)"
 
                 print "Dual-hardfork databases initialized and promoted."
             }
@@ -1812,7 +1814,7 @@ def "main bench" [
             # ============================================================
             let genesis_path_std = $"($abs_localnet)/genesis.json"
 
-            let marker = (read-bench-marker)
+            let marker = (read-bench-marker $datadir)
             let snapshot_ready = (
                 not $force
                 and $marker != null
