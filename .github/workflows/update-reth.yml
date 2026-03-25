@@ -104,7 +104,7 @@ jobs:
 
       # ── amp CLI ────────────────────────────────────────────────
       - name: Install Amp CLI
-        run: npm install -g @sourcegraph/amp
+        run: curl -fsSL https://ampcode.com/install.sh | bash
 
       # ── amp helper ────────────────────────────────────────────
       - name: Create amp wrapper
