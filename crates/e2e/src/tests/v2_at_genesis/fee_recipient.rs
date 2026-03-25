@@ -10,13 +10,8 @@ use reth_provider::CanonStateSubscriptions as _;
 
 use crate::{Setup, setup_validators};
 
-/// The fee recipient written into the V2 contract at genesis.
 const ORIGINAL_FEE_RECIPIENT: Address = Address::new([0xFE; 20]);
-
-/// The updated fee recipient set via `setFeeRecipient`.
 const UPDATED_FEE_RECIPIENT: Address = Address::new([0xAB; 20]);
-
-/// The CLI fallback fee recipient set on the consensus engine builder.
 const FALLBACK_FEE_RECIPIENT: Address = Address::new([0xCC; 20]);
 
 /// Verifies that the block beneficiary follows the on-chain V2 fee recipient
@@ -47,27 +42,22 @@ fn block_beneficiary_follows_v2_fee_recipient() {
             .parse()
             .unwrap();
 
-        // Validator index is 1 (1-indexed in the V2 contract).
         let receipt = execution_runtime
             .set_fee_recipient_v2(http_url, 1, UPDATED_FEE_RECIPIENT)
             .await
             .unwrap();
         let change_height = receipt.block_number.unwrap();
 
-        // Subscribe to canonical events and wait for a block past the change.
         let mut canonical_events = nodes[0].execution().provider.canonical_state_stream();
-
         let target = change_height + 1;
         while let Some(event) = canonical_events.next().await {
-            let tip = event.committed().tip().number();
-            if tip >= target {
+            if event.committed().tip().number() >= target {
                 break;
             }
         }
 
         let provider = nodes[0].execution_provider();
 
-        // Blocks up to and including the inclusion height use the old address.
         for height in 1..=change_height {
             let block = provider
                 .block_by_number(height)
@@ -79,7 +69,6 @@ fn block_beneficiary_follows_v2_fee_recipient() {
             );
         }
 
-        // The block immediately after the inclusion uses the new address.
         let block = provider
             .block_by_number(target)
             .expect("provider error")
@@ -92,8 +81,7 @@ fn block_beneficiary_follows_v2_fee_recipient() {
 }
 
 /// Verifies that when the on-chain fee recipient is set to `Address::ZERO`,
-/// the node falls back to the CLI-configured fee recipient on the consensus
-/// engine builder.
+/// the node falls back to the CLI-configured fee recipient.
 #[test_traced]
 fn falls_back_to_cli_fee_recipient_when_onchain_is_zero() {
     let _ = tempo_eyre::install();
@@ -110,10 +98,7 @@ fn falls_back_to_cli_fee_recipient_when_onchain_is_zero() {
 
     executor.start(|mut context| async move {
         let (mut nodes, execution_runtime) = setup_validators(&mut context, setup).await;
-
-        // Override the consensus engine builder's fee_recipient before starting.
         nodes[0].consensus_config_mut().fee_recipient = FALLBACK_FEE_RECIPIENT;
-
         join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
 
         let http_url = nodes[0]
@@ -124,29 +109,22 @@ fn falls_back_to_cli_fee_recipient_when_onchain_is_zero() {
             .parse()
             .unwrap();
 
-        // Set the on-chain fee recipient to Address::ZERO to trigger fallback.
-        // Validator index is 1 (1-indexed in the V2 contract).
         let receipt = execution_runtime
             .set_fee_recipient_v2(http_url, 1, Address::ZERO)
             .await
             .unwrap();
         let change_height = receipt.block_number.unwrap();
 
-        // Subscribe to canonical events and wait for a block past the change.
         let mut canonical_events = nodes[0].execution().provider.canonical_state_stream();
-
         let target = change_height + 1;
         while let Some(event) = canonical_events.next().await {
-            let tip = event.committed().tip().number();
-            if tip >= target {
+            if event.committed().tip().number() >= target {
                 break;
             }
         }
 
         let provider = nodes[0].execution_provider();
 
-        // Blocks up to and including the inclusion height use the original
-        // on-chain address.
         for height in 1..=change_height {
             let block = provider
                 .block_by_number(height)
@@ -158,8 +136,6 @@ fn falls_back_to_cli_fee_recipient_when_onchain_is_zero() {
             );
         }
 
-        // After the on-chain value becomes zero, the node falls back to the
-        // CLI fee recipient.
         let block = provider
             .block_by_number(target)
             .expect("provider error")
