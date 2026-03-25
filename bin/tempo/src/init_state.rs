@@ -11,7 +11,7 @@ use std::{
 
 use alloy_primitives::{
     B256, U256,
-    map::{HashMap, HashSet},
+    map::{AddressMap, AddressSet},
 };
 use clap::Parser;
 use eyre::{Context as _, ensure};
@@ -86,24 +86,21 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         let mut total_commits = 0u64;
 
         // Track addresses for account hashing (small — only token addresses)
-        let mut addresses_seen: HashSet<alloy_primitives::Address> = HashSet::default();
+        let mut addresses_seen: AddressSet = AddressSet::default();
 
         // Batch buffer for hashed storage inserts (multi-address)
-        let mut batch: HashMap<alloy_primitives::Address, Vec<StorageEntry>> = HashMap::default();
+        let mut batch: AddressMap<Vec<StorageEntry>> = AddressMap::default();
         let mut batch_total: usize = 0;
 
         // Process blocks from binary file
         loop {
-            // Try to read header — distinguish clean EOF (0 bytes) from truncation
+            // Read next block header; EOF means no more blocks.
             let mut header_buf = [0u8; 40];
-            match reader.read(&mut header_buf[..1]) {
-                Ok(0) => break, // clean EOF between blocks
-                Ok(_) => {}
+            match reader.read_exact(&mut header_buf) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
                 Err(e) => return Err(e).wrap_err("failed to read block header"),
             }
-            reader
-                .read_exact(&mut header_buf[1..])
-                .wrap_err("truncated block header (got partial header at end of file)")?;
 
             // Validate magic
             ensure!(
