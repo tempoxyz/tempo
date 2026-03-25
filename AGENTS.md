@@ -4,6 +4,10 @@ Tempo is a blockchain node built on [Reth SDK](https://github.com/paradigmxyz/re
 
 ## Pull Requests
 
+### Branches
+
+When adding a new TIP, use the branch format `tip/XXXX` where `XXXX` is the next available TIP number.
+
 ### Titles
 
 Use [Conventional Commits](https://www.conventionalcommits.org/) with an optional scope:
