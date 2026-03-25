@@ -114,7 +114,7 @@ jobs:
           cat > /usr/local/bin/amp-run <<'WRAPPER'
           #!/usr/bin/env bash
           set -euo pipefail
-          OUTPUT=$(amp "$@" --stream-json 2>&1)
+          OUTPUT=$(amp "$@" --stream-json --take-me-back 2>&1)
           FIRST_LINE=$(echo "$OUTPUT" | head -1 || true)
           THREAD_ID=$(echo "$FIRST_LINE" | jq -r '.session_id // empty' 2>/dev/null || true)
           if [ -n "$THREAD_ID" ]; then
