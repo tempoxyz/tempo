@@ -19,10 +19,8 @@ const UPDATED_FEE_RECIPIENT: Address = Address::new([0xAB; 20]);
 /// The CLI fallback fee recipient set on the consensus engine builder.
 const FALLBACK_FEE_RECIPIENT: Address = Address::new([0xCC; 20]);
 
-/// Starts a single-node network with V2 active at genesis and a non-zero fee
-/// recipient. Calls `setFeeRecipient` with a new address, waits for inclusion,
-/// and verifies that blocks up to and including the inclusion height use the
-/// old address, while the block immediately after uses the new one.
+/// Verifies that the block beneficiary follows the on-chain V2 fee recipient
+/// across a `setFeeRecipient` update.
 #[test_traced]
 fn block_beneficiary_follows_v2_fee_recipient() {
     let _ = tempo_eyre::install();
