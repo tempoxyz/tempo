@@ -187,7 +187,7 @@ async fn read_validator_from_contract(
     let resp = provider
         .call(tx.into())
         .await
-        .wrap_err_with(|| format!("failed to read contract"))?;
+        .wrap_err("failed to read contract")?;
 
     let validator = match lookup {
         ValidatorLookup::Address(_) => {
@@ -197,7 +197,7 @@ async fn read_validator_from_contract(
             IValidatorConfigV2::validatorByIndexCall::abi_decode_returns(&resp)
         }
     }
-    .wrap_err_with(|| format!("failed to decode validator"))?;
+    .wrap_err("failed to decode validator")?;
 
     Ok(validator)
 }
@@ -271,7 +271,7 @@ pub(crate) struct ValidatorTransactionArgs {
     private_key: PathBuf,
 
     /// The RPC URL to submit the transaction to.
-    #[arg(long, value_name = "RPC_URL", default_value = "https://rpc.presto.tempo.xyz")]
+    #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
     rpc_url: String,
 
     /// Skip the interactive confirmation prompt.
@@ -286,7 +286,7 @@ impl ValidatorTransactionArgs {
             &serde_json::json!({
                 "to": VALIDATOR_CONFIG_V2_ADDRESS,
                 "signature": T::SIGNATURE,
-                "call": serde_json::to_value(&call)?,
+                "call": serde_json::to_value(call)?,
             })
         );
 
@@ -513,7 +513,11 @@ pub(crate) struct CreateAddValidatorSignatureArgs {
     #[arg(long, value_name = "ETHEREUM_ADDRESS")]
     fee_recipient: Address,
     /// RPC used to fetch the chain id
-    #[arg(long, value_name = "RPC_URL", default_value = "https://rpc.presto.tempo.xyz")]
+    #[arg(
+        long,
+        value_name = "RPC_URL",
+        default_value = "https://rpc.presto.tempo.xyz"
+    )]
     chain_id_from_rpc_url: String,
     /// Path to the ed25519 signing key file.
     #[arg(long, value_name = "FILE")]
@@ -551,7 +555,11 @@ pub(crate) struct CreateRotateValidatorSignatureArgs {
     #[command(flatten)]
     identity: ValidatorIdentityArgs,
     /// RPC used to fetch the chain id
-    #[arg(long, value_name = "RPC_URL", default_value = "https://rpc.presto.tempo.xyz")]
+    #[arg(
+        long,
+        value_name = "RPC_URL",
+        default_value = "https://rpc.presto.tempo.xyz"
+    )]
     chain_id_from_rpc_url: String,
     /// Path to the ed25519 signing key file.
     #[arg(long, value_name = "FILE")]
@@ -1056,7 +1064,7 @@ impl ValidatorsInfo {
             last_boundary: boundary_height.get(),
             epoch_length,
             is_next_full_dkg: dkg_outcome.is_next_full_dkg,
-            next_full_dkg_epoch: next_full_dkg_epoch,
+            next_full_dkg_epoch,
             validators: validator_entries,
         };
 
