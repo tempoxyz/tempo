@@ -40,6 +40,10 @@ pub async fn run_consensus_stack(
     execution_node: TempoFullNode,
     feed_state: feed::FeedStateHandle,
 ) -> eyre::Result<()> {
+    config
+        .validate_timing()
+        .wrap_err("invalid consensus timing configuration")?;
+
     let share = config
         .signing_share
         .as_ref()

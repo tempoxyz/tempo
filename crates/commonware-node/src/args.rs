@@ -290,6 +290,41 @@ impl FromStr for PositiveDuration {
 }
 
 impl Args {
+    /// Validates that timing-related arguments are consistent with each other.
+    ///
+    /// Checks:
+    /// - `time_to_prepare_proposal_transactions < minimum_time_before_propose`
+    /// - `minimum_time_before_propose < wait_for_proposal`
+    /// - `time_to_build_subblock < minimum_time_before_propose`
+    pub fn validate_timing(&self) -> eyre::Result<()> {
+        let time_to_prepare = self.time_to_prepare_proposal_transactions.into_duration();
+        let min_before_propose = self.minimum_time_before_propose.into_duration();
+        let wait_for_proposal = self.wait_for_proposal.into_duration();
+        let time_to_build_subblock = self.time_to_build_subblock.into_duration();
+
+        eyre::ensure!(
+            time_to_prepare < min_before_propose,
+            "consensus.time-to-prepare-proposal-transactions ({time_to_prepare:?}) \
+             must be less than consensus.minimum-time-before-propose ({min_before_propose:?})"
+        );
+
+        eyre::ensure!(
+            min_before_propose < wait_for_proposal,
+            "consensus.minimum-time-before-propose ({min_before_propose:?}) \
+             must be less than consensus.wait-for-proposal ({wait_for_proposal:?})"
+        );
+
+        if self.enable_subblocks {
+            eyre::ensure!(
+                time_to_build_subblock < min_before_propose,
+                "consensus.time-to-build-subblock ({time_to_build_subblock:?}) \
+                 must be less than consensus.minimum-time-before-propose ({min_before_propose:?})"
+            );
+        }
+
+        Ok(())
+    }
+
     /// Returns the signing key loaded from specified file.
     pub(crate) fn signing_key(&self) -> eyre::Result<Option<SigningKey>> {
         if let Some(signing_key) = self.loaded_signing_key.get() {
@@ -319,5 +354,102 @@ impl Args {
         Ok(self
             .signing_key()?
             .map(|signing_key| signing_key.public_key()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Creates an [`Args`] with the given timing values for testing.
+    fn args_with_timing(
+        time_to_prepare_ms: u64,
+        min_before_propose_ms: u64,
+        wait_for_proposal_ms: u64,
+        time_to_build_subblock_ms: u64,
+    ) -> Args {
+        let dur = |ms: u64| -> PositiveDuration { format!("{ms}ms").parse().unwrap() };
+
+        Args {
+            signing_key: None,
+            signing_share: None,
+            listen_address: "127.0.0.1:8000".parse().unwrap(),
+            metrics_address: "127.0.0.1:8001".parse().unwrap(),
+            max_message_size_bytes: 10_000_000,
+            worker_threads: 3,
+            message_backlog: 16_384,
+            mailbox_size: 16_384,
+            deque_size: 10,
+            fee_recipient: None,
+            wait_for_peer_response: dur(2000),
+            wait_for_notarizations: dur(2000),
+            wait_for_proposal: dur(wait_for_proposal_ms),
+            wait_to_rebroadcast_nullify: dur(10_000),
+            views_to_track: 256,
+            inactive_views_until_leader_skip: 32,
+            time_to_prepare_proposal_transactions: dur(time_to_prepare_ms),
+            minimum_time_before_propose: dur(min_before_propose_ms),
+            enable_subblocks: false,
+            time_to_build_subblock: dur(time_to_build_subblock_ms),
+            use_local_defaults: false,
+            bypass_ip_check: false,
+            allow_private_ips: false,
+            allow_dns: true,
+            synchrony_bound: dur(5000),
+            wait_before_peers_redial: dur(1000),
+            wait_before_peers_reping: dur(50_000),
+            wait_before_peers_discovery: dur(60_000),
+            connection_per_peer_min_period: dur(60_000),
+            handshake_per_ip_min_period: dur(5000),
+            handshake_per_subnet_min_period: dur(15),
+            handshake_stale_after: dur(10_000),
+            handshake_timeout: dur(5000),
+            max_concurrent_handshakes: 512.try_into().unwrap(),
+            time_to_unblock_byzantine_peer: dur(3_600_000),
+            backfill_frequency: 8.try_into().unwrap(),
+            subblock_broadcast_interval: dur(50),
+            fcu_heartbeat_interval: dur(300_000),
+            loaded_signing_key: OnceLock::new(),
+            storage_dir: None,
+        }
+    }
+
+    #[test]
+    fn validate_timing_defaults_pass() {
+        // defaults: 200ms, 450ms, 1200ms, 100ms
+        let args = args_with_timing(200, 450, 1200, 100);
+        args.validate_timing().unwrap();
+    }
+
+    #[test]
+    fn validate_timing_prepare_ge_min_before_propose() {
+        let args = args_with_timing(450, 450, 1200, 100);
+        let err = args.validate_timing().unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("time-to-prepare-proposal-transactions")
+        );
+    }
+
+    #[test]
+    fn validate_timing_min_before_propose_ge_wait_for_proposal() {
+        let args = args_with_timing(200, 1200, 1200, 100);
+        let err = args.validate_timing().unwrap_err();
+        assert!(err.to_string().contains("minimum-time-before-propose"));
+    }
+
+    #[test]
+    fn validate_timing_subblock_ge_min_before_propose() {
+        let mut args = args_with_timing(200, 450, 1200, 500);
+        args.enable_subblocks = true;
+        let err = args.validate_timing().unwrap_err();
+        assert!(err.to_string().contains("time-to-build-subblock"));
+    }
+
+    #[test]
+    fn validate_timing_subblock_ignored_when_disabled() {
+        let mut args = args_with_timing(200, 450, 1200, 500);
+        args.enable_subblocks = false;
+        args.validate_timing().unwrap();
     }
 }
