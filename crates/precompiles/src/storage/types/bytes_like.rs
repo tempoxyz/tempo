@@ -302,7 +302,14 @@ fn calc_string_length(slot_value: U256, is_long: bool) -> Result<usize> {
         // Short string: LSB stores (length * 2)
         // Extract length: LSB / 2
         let bytes = slot_value.to_be_bytes::<32>();
-        Ok((bytes[31] / 2) as usize)
+        let length = (bytes[31] / 2) as usize;
+        if length > 31 {
+            // Unreachable unless the state has been tampered
+            return Err(TempoPrecompileError::Fatal(format!(
+                "short string length {length} exceeds maximum of 31 bytes"
+            )));
+        }
+        Ok(length)
     }
 }
 
@@ -549,6 +556,8 @@ mod tests {
 
     #[test]
     fn test_calc_string_length_bounded() {
+        // -- long-string path --------------------------------------------------
+
         // Exact PoC value: slot = 0x0008000000000001
         // LSB=1 → long string, decoded length = (0x0008000000000001 - 1) / 2 = 0x0004000000000000
         let malicious_slot = U256::from(0x0008000000000001u64);
@@ -561,6 +570,22 @@ mod tests {
 
         let above_max = U256::from((MAX_DYNAMIC_LENGTH + 1) * 2 + 1);
         assert!(calc_string_length(above_max, true).is_err());
+
+        // -- short-string path -------------------------------------------------
+
+        // Valid boundary: 31 bytes → LSB = 62 (0x3E), must be accepted
+        let max_short = U256::from(31u64 * 2);
+        assert!(!is_long_string(max_short));
+        assert_eq!(calc_string_length(max_short, false), Ok(31));
+
+        // Malicious: LSB = 0xFE → decoded length = 127, must be rejected
+        let malicious_short = U256::from(0xFEu64);
+        assert!(!is_long_string(malicious_short));
+        assert!(calc_string_length(malicious_short, false).is_err());
+
+        // Boundary: 32 bytes → LSB = 64 (0x40), must be rejected
+        let above_short = U256::from(32u64 * 2);
+        assert!(calc_string_length(above_short, false).is_err());
     }
 
     #[test]
