@@ -348,7 +348,7 @@ impl AddValidator {
 
         self.submit.confirm(&serde_json::json!({
             "to": VALIDATOR_CONFIG_V2_ADDRESS,
-            "function": "addValidator",
+            "function": IValidatorConfigV2::addValidatorCall::SIGNATURE,
             "call": serde_json::to_value(&calldata)?,
         }))?;
 
@@ -404,7 +404,7 @@ impl TransferValidatorOwnership {
 
         self.submit.confirm(&serde_json::json!({
             "to": VALIDATOR_CONFIG_V2_ADDRESS,
-            "function": "transferValidatorOwnership",
+            "function": IValidatorConfigV2::transferValidatorOwnershipCall::SIGNATURE,
             "call": serde_json::to_value(&calldata)?,
         }))?;
 
@@ -467,7 +467,7 @@ impl RotateValidator {
 
         self.submit.confirm(&serde_json::json!({
             "to": VALIDATOR_CONFIG_V2_ADDRESS,
-            "function": "rotateValidator",
+            "function": IValidatorConfigV2::rotateValidatorCall::SIGNATURE,
             "call": serde_json::to_value(&calldata)?,
         }))?;
 
@@ -601,7 +601,7 @@ impl SetValidatorIpAddress {
 
         self.submit.confirm(&serde_json::json!({
             "to": VALIDATOR_CONFIG_V2_ADDRESS,
-            "function": "setIpAddresses",
+            "function": IValidatorConfigV2::setIpAddressesCall::SIGNATURE,
             "call": serde_json::to_value(&calldata)?,
         }))?;
 
@@ -647,7 +647,7 @@ impl SetValidatorFeeRecipient {
 
         self.submit.confirm(&serde_json::json!({
             "to": VALIDATOR_CONFIG_V2_ADDRESS,
-            "function": "setFeeRecipient",
+            "function": IValidatorConfigV2::setFeeRecipientCall::SIGNATURE,
             "call": serde_json::to_value(&calldata)?,
         }))?;
 
