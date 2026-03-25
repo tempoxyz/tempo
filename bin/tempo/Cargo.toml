@@ -28,7 +28,6 @@ tempo-evm.workspace = true
 tempo-faucet.workspace = true
 
 alloy-consensus.workspace = true
-alloy-network.workspace = true
 alloy-primitives.workspace = true
 alloy-provider = { workspace = true, features = [
 	"reqwest",

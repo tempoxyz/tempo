@@ -11788,7 +11788,6 @@ name = "tempo"
 version = "1.5.0"
 dependencies = [
  "alloy-consensus",
- "alloy-network",
  "alloy-primitives",
  "alloy-provider",
  "alloy-rpc-types-eth",
