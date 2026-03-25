@@ -8,12 +8,10 @@ Tempo is a blockchain node built on [Reth SDK](https://github.com/paradigmxyz/re
 
 When creating a new TIP:
 
-- Branch: `tip/XXXX` where `XXXX` is the next available TIP number (check `tips/` directory).
+- Branch: `tip/XXXX` where `XXXX` is the next available TIP number (check `tips/` directory and existing branches).
 - File: `tips/tip-XXXX.md` matching the branch number.
 - Follow the template in `tips/tip_template.md`.
 - Follow the process and quality gates in `tips/tip-0000.md`.
-
-When adding a new TIP, use the branch format `tip/XXXX` where `XXXX` is the next available TIP number.
 
 ### Titles
 
