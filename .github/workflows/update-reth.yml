@@ -303,6 +303,23 @@ jobs:
             echo "No source changes to commit."
           fi
 
+      # ── zepter feature lint ─────────────────────────────────────
+      - uses: taiki-e/cache-cargo-install-action@34ce5120836e5f9f1508d8713d7fdea0e8facd6f # v3.0.1
+        with:
+          tool: zepter
+      - name: Fix zepter lint
+        run: |
+          if ! zepter run check; then
+            echo "Zepter check failed — running auto-fix..."
+            zepter
+            if [ -n "$(git status --porcelain)" ]; then
+              git add -A
+              git commit -m "fix: resolve zepter feature propagation from reth update ($(date -u +%Y-%m-%d))"
+            fi
+          else
+            echo "Zepter check passed."
+          fi
+
       # ── push ───────────────────────────────────────────────────
       - name: Push working branch
         run: |
