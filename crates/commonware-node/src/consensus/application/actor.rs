@@ -620,35 +620,10 @@ impl Inner<Init> {
         Ok(Block::from_execution_block(payload.block().clone()))
     }
 
-    /// Reads the fee recipient from the V2 contract at `parent_hash`,
-    /// falling back to the CLI-configured value when V2 is not active or
-    /// the on-chain address is `Address::ZERO`.
-    fn read_fee_recipient(&self, parent_hash: B256) -> eyre::Result<alloy_primitives::Address> {
-        match crate::validators::read_fee_recipient_at_block_hash(
-            &self.execution_node,
-            &self.public_key,
-            parent_hash,
-        ) {
-            Ok(Some(fee_recipient)) if fee_recipient.is_zero() => {
-                debug!("on-chain fee recipient is zero; using CLI fee recipient");
-                Ok(self.fee_recipient)
-            }
-            Ok(Some(fee_recipient)) => {
-                debug!("using on-chain fee recipient");
-                Ok(fee_recipient)
-            }
-            Ok(None) => {
-                debug!("v2 contract not active; using CLI fee recipient");
-                Ok(self.fee_recipient)
-            }
-            Err(error) => Err(error),
-        }
-    }
-
     /// Resolves the fee recipient to use for a proposal built on top of
     /// `parent_hash`.
     ///
-    /// Tries [`read_fee_recipient`](Self::read_fee_recipient) immediately. On
+    /// Tries [`read_fee_recipient`] immediately. On
     /// failure, subscribes to canonical state notifications and retries once
     /// the committed chain segment contains the parent block. The caller is
     /// expected to race this against `response.closed()` so that consensus can
@@ -665,7 +640,12 @@ impl Inner<Init> {
         // delivers events sent after subscription.
         let mut canonical_events = self.execution_node.provider.canonical_state_stream();
 
-        match self.read_fee_recipient(parent_hash) {
+        match read_fee_recipient(
+            &self.execution_node,
+            &self.public_key,
+            parent_hash,
+            self.fee_recipient,
+        ) {
             Ok(fee_recipient) => return Ok(fee_recipient),
             Err(error) => {
                 warn!(
@@ -691,7 +671,13 @@ impl Inner<Init> {
                 );
                 continue;
             }
-            return self.read_fee_recipient(parent_hash).wrap_err(
+            return read_fee_recipient(
+                &self.execution_node,
+                &self.public_key,
+                parent_hash,
+                self.fee_recipient,
+            )
+            .wrap_err(
                 "failed reading fee recipient from validator config v2 \
                  after parent was committed",
             );
@@ -839,6 +825,32 @@ struct Init {
     dkg_manager: crate::dkg::manager::Mailbox,
     /// The communication channel to the executor agent.
     executor: crate::executor::Mailbox,
+}
+
+/// Reads the fee recipient from the V2 contract at `parent_hash`,
+/// falling back to `fallback` when V2 is not active or the on-chain
+/// address is `Address::ZERO`.
+fn read_fee_recipient(
+    node: &TempoFullNode,
+    public_key: &PublicKey,
+    parent_hash: B256,
+    fallback: alloy_primitives::Address,
+) -> eyre::Result<alloy_primitives::Address> {
+    match crate::validators::read_fee_recipient_at_block_hash(node, public_key, parent_hash) {
+        Ok(Some(fee_recipient)) if fee_recipient.is_zero() => {
+            debug!("on-chain fee recipient is zero; using CLI fee recipient");
+            Ok(fallback)
+        }
+        Ok(Some(fee_recipient)) => {
+            debug!("using on-chain fee recipient");
+            Ok(fee_recipient)
+        }
+        Ok(None) => {
+            debug!("v2 contract not active; using CLI fee recipient");
+            Ok(fallback)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// Verifies `block` given its `parent` against the execution layer.
