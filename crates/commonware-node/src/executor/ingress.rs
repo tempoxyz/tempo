@@ -17,23 +17,34 @@ pub(crate) struct Mailbox {
 
 impl Mailbox {
     /// Requests the agent to update the head of the canonical chain to `digest`.
-    pub(crate) fn canonicalize_head(
-        &self,
-        height: Height,
-        digest: Digest,
-        attributes: Option<TempoPayloadAttributes>,
-    ) -> eyre::Result<oneshot::Receiver<Option<PayloadId>>> {
-        let (tx, rx) = oneshot::channel();
+    pub(crate) fn canonicalize_head(&self, height: Height, digest: Digest) -> eyre::Result<()> {
         self.inner
             .unbounded_send(Message::in_current_span(CanonicalizeHead {
                 height,
                 digest,
-                attributes: attributes.map(Box::new),
-                ack: tx,
             }))
-            .wrap_err("failed sending canonicalize request to agent, this means it exited")?;
+            .wrap_err("failed sending canonicalize request to agent, this means it exited")
+    }
 
-        Ok(rx)
+    /// Canonicalizes the given head and requests a new payload to be built.
+    pub(crate) async fn canonicalize_and_build(
+        &self,
+        height: Height,
+        digest: Digest,
+        attributes: TempoPayloadAttributes,
+    ) -> eyre::Result<PayloadId> {
+        let (id_tx, id_rx) = oneshot::channel();
+        self.inner
+            .unbounded_send(Message::in_current_span(CanonicalizeAndBuild {
+                height,
+                digest,
+                attributes: Box::new(attributes),
+                id_tx,
+            }))
+            .wrap_err(
+                "failed sending canonicalize and build request to agent, this means it exited",
+            )?;
+        id_rx.await.map_err(|_| eyre!("no payload id received"))
     }
 
     pub(crate) async fn subscribe_finalized(&self, height: Height) -> eyre::Result<()> {
@@ -69,6 +80,8 @@ impl Message {
 pub(super) enum Command {
     /// Requests the agent to set the head of the canonical chain to `digest`.
     CanonicalizeHead(CanonicalizeHead),
+    /// Requests the agent to canonicalize the head and build a new payload.
+    CanonicalizeAndBuild(CanonicalizeAndBuild),
     /// Requests the agent to forward a finalization event to the execution layer.
     Finalize(Box<Update<Block>>),
     /// Returns once the executor actor has finalized the block at `height`.
@@ -79,8 +92,14 @@ pub(super) enum Command {
 pub(super) struct CanonicalizeHead {
     pub(super) height: Height,
     pub(super) digest: Digest,
-    pub(super) attributes: Option<Box<TempoPayloadAttributes>>,
-    pub(super) ack: oneshot::Sender<Option<PayloadId>>,
+}
+
+#[derive(Debug)]
+pub(super) struct CanonicalizeAndBuild {
+    pub(super) height: Height,
+    pub(super) digest: Digest,
+    pub(super) attributes: Box<TempoPayloadAttributes>,
+    pub(super) id_tx: oneshot::Sender<PayloadId>,
 }
 
 #[derive(Debug)]
@@ -92,6 +111,12 @@ pub(super) struct SubscribeFinalized {
 impl From<CanonicalizeHead> for Command {
     fn from(value: CanonicalizeHead) -> Self {
         Self::CanonicalizeHead(value)
+    }
+}
+
+impl From<CanonicalizeAndBuild> for Command {
+    fn from(value: CanonicalizeAndBuild) -> Self {
+        Self::CanonicalizeAndBuild(value)
     }
 }
 

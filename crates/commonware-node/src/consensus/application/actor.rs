@@ -28,11 +28,7 @@ use prometheus_client::metrics::counter::Counter;
 
 use commonware_utils::{SystemTimeExt, channel::oneshot};
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
-use futures::{
-    StreamExt as _, TryFutureExt as _,
-    channel::mpsc,
-    future::{ready, try_join},
-};
+use futures::{StreamExt as _, TryFutureExt as _, channel::mpsc, future::try_join};
 use rand_08::{CryptoRng, Rng};
 use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_node_builder::{Block as _, BuiltPayload, ConsensusEngineHandle};
@@ -419,10 +415,10 @@ impl Inner<Init> {
             // Only make the verified block canonical when not doing a
             // re-propose at the end of an epoch.
             if parent.1 != payload
-                && let Err(error) =
-                    self.state
-                        .executor
-                        .canonicalize_head(block.height(), block.digest(), None)
+                && let Err(error) = self
+                    .state
+                    .executor
+                    .canonicalize_head(block.height(), block.digest())
             {
                 tracing::warn!(
                     %error,
@@ -560,15 +556,12 @@ impl Inner<Init> {
 
         let interrupt_handle = attrs.interrupt_handle().clone();
 
-        let payload_id = ready(self.state.executor.canonicalize_head(
-            parent.height(),
-            parent.digest(),
-            Some(attrs),
-        ))
-        .and_then(|ack| ack.map_err(eyre::Report::new))
-        .await
-        .wrap_err("failed updating canonical head to parent")?
-        .ok_or_eyre("no payload id received from an FCU request with attributes")?;
+        let payload_id = self
+            .state
+            .executor
+            .canonicalize_and_build(parent.height(), parent.digest(), attrs)
+            .await
+            .wrap_err("failed requesting a new payload build")?;
 
         debug!(
             resolve_time_ms = self.payload_resolve_time.as_millis(),
@@ -672,10 +665,10 @@ impl Inner<Init> {
             return Ok((block, false));
         }
 
-        if let Err(error) =
-            self.state
-                .executor
-                .canonicalize_head(parent.height(), parent.digest(), None)
+        if let Err(error) = self
+            .state
+            .executor
+            .canonicalize_head(parent.height(), parent.digest())
         {
             tracing::warn!(
                 %error,

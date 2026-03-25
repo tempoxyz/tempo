@@ -33,7 +33,10 @@ use super::{
     Config,
     ingress::{CanonicalizeHead, Command, Message, SubscribeFinalized},
 };
-use crate::consensus::{Digest, block::Block};
+use crate::{
+    consensus::{Digest, block::Block},
+    executor::ingress::CanonicalizeAndBuild,
+};
 
 /// Tracks the last forkchoice state that the executor sent to the execution layer.
 ///
@@ -303,12 +306,7 @@ where
     async fn handle_message(&mut self, message: Message) -> eyre::Result<()> {
         let cause = message.cause;
         match message.command {
-            Command::CanonicalizeHead(CanonicalizeHead {
-                height,
-                digest,
-                attributes,
-                ack,
-            }) => {
+            Command::CanonicalizeHead(CanonicalizeHead { height, digest }) => {
                 // Errors are logged inside canonicalize; head canonicalization failures
                 // are non-fatal and will be retried on the next block.
                 let _ = self
@@ -317,10 +315,27 @@ where
                         HeadOrFinalized::Head,
                         height,
                         digest,
-                        attributes.map(|a| *a),
-                        ack,
+                        None,
+                        oneshot::channel().0,
                     )
                     .await;
+            }
+            Command::CanonicalizeAndBuild(CanonicalizeAndBuild {
+                height,
+                digest,
+                attributes,
+                id_tx: ack,
+            }) => {
+                self.canonicalize(
+                    cause,
+                    HeadOrFinalized::Head,
+                    height,
+                    digest,
+                    Some(*attributes),
+                    ack,
+                )
+                .await
+                .wrap_err("failed canonicalizing and building payload")?;
             }
             Command::Finalize(finalized) => {
                 self.finalize(cause, *finalized)
@@ -359,7 +374,7 @@ where
         height: Height,
         digest: Digest,
         attributes: Option<TempoPayloadAttributes>,
-        ack: oneshot::Sender<Option<PayloadId>>,
+        payload_id_tx: oneshot::Sender<PayloadId>,
     ) -> eyre::Result<()> {
         let new_canonicalized = match head_or_finalized {
             HeadOrFinalized::Head => self.last_canonicalized.update_head(height, digest),
@@ -368,7 +383,6 @@ where
 
         if new_canonicalized == self.last_canonicalized && attributes.is_none() {
             info!("would not change forkchoice state; not sending it to the execution layer");
-            let _ = ack.send(None);
             return Ok(());
         }
 
@@ -398,7 +412,9 @@ where
                 .wrap_err("execution layer responded with error for forkchoice-update"));
         }
 
-        let _ = ack.send(fcu_response.payload_id);
+        if let Some(payload_id) = fcu_response.payload_id {
+            let _ = payload_id_tx.send(payload_id);
+        }
         self.last_canonicalized = new_canonicalized;
         self.reset_fcu_heartbeat_timer();
 
