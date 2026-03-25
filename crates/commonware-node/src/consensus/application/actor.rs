@@ -620,17 +620,30 @@ impl Inner<Init> {
         Ok(Block::from_execution_block(payload.block().clone()))
     }
 
-    /// Resolves the fee recipient to use for a proposal built on top of `parent_hash`.
+    /// Reads the fee recipient from the V2 contract at `parent_hash`,
+    /// falling back to the CLI-configured value when V2 is not active or
+    /// the on-chain address is `Address::ZERO`.
+    fn read_fee_recipient(&self, parent_hash: B256) -> eyre::Result<alloy_primitives::Address> {
+        match crate::validators::read_fee_recipient_at_block_hash(
+            &self.execution_node,
+            &self.public_key,
+            parent_hash,
+        ) {
+            Ok(Some(fee_recipient)) if fee_recipient.is_zero() => Ok(self.fee_recipient),
+            Ok(Some(fee_recipient)) => Ok(fee_recipient),
+            Ok(None) => Ok(self.fee_recipient),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Resolves the fee recipient to use for a proposal built on top of
+    /// `parent_hash`.
     ///
-    /// If the validator config v2 contract is active and initialized, the fee
-    /// recipient is read from the contract by looking up this node's validator
-    /// entry. If the contract is not yet usable, the CLI-configured fee
-    /// recipient is returned.
-    ///
-    /// On read errors (V2 active but lookup fails), this subscribes to
-    /// canonical state notifications and retries once the committed chain
-    /// segment contains the parent block. The caller is expected to race this
-    /// against `response.closed()` so that consensus can time out the proposal.
+    /// Tries [`read_fee_recipient`](Self::read_fee_recipient) immediately. On
+    /// failure, subscribes to canonical state notifications and retries once
+    /// the committed chain segment contains the parent block. The caller is
+    /// expected to race this against `response.closed()` so that consensus can
+    /// time out the proposal.
     #[instrument(skip_all, fields(%parent_hash, %parent_height), ret(Display), err(level = Level::WARN))]
     async fn resolve_fee_recipient(
         &self,
@@ -643,14 +656,8 @@ impl Inner<Init> {
         // delivers events sent after subscription.
         let mut canonical_events = self.execution_node.provider.canonical_state_stream();
 
-        match crate::validators::read_fee_recipient_at_block_hash(
-            &self.execution_node,
-            &self.public_key,
-            parent_hash,
-        ) {
-            Ok(Some(fee_recipient)) if fee_recipient.is_zero() => return Ok(self.fee_recipient),
-            Ok(Some(fee_recipient)) => return Ok(fee_recipient),
-            Ok(None) => return Ok(self.fee_recipient),
+        match self.read_fee_recipient(parent_hash) {
+            Ok(fee_recipient) => return Ok(fee_recipient),
             Err(error) => {
                 warn!(
                     %error,
@@ -675,19 +682,10 @@ impl Inner<Init> {
                 );
                 continue;
             }
-            return match crate::validators::read_fee_recipient_at_block_hash(
-                &self.execution_node,
-                &self.public_key,
-                parent_hash,
-            ) {
-                Ok(Some(fee_recipient)) if fee_recipient.is_zero() => Ok(self.fee_recipient),
-                Ok(Some(fee_recipient)) => Ok(fee_recipient),
-                Ok(None) => Ok(self.fee_recipient),
-                Err(error) => Err(error).wrap_err(
-                    "failed reading fee recipient from validator config v2 \
-                     after parent was committed",
-                ),
-            };
+            return self.read_fee_recipient(parent_hash).wrap_err(
+                "failed reading fee recipient from validator config v2 \
+                 after parent was committed",
+            );
         }
     }
 
