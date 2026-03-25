@@ -29,7 +29,7 @@ env:
 jobs:
   update:
     name: Update reth dependencies
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-latest-32
     timeout-minutes: 120
     steps:
       # ── checkout ───────────────────────────────────────────────
@@ -117,6 +117,11 @@ jobs:
           TMPOUT=$(mktemp)
           TMPERR=$(mktemp)
           trap 'rm -f "$TMPOUT" "$TMPERR"' EXIT
+
+          # Print full args/prompt for debugging
+          echo "=== amp-run invocation ===" >&2
+          echo "args: $*" >&2
+          echo "=== end amp-run invocation ===" >&2
 
           # Run amp, capture stdout and stderr to separate files
           AMP_EXIT=0
