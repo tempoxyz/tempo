@@ -113,8 +113,6 @@ serde-bincode-compat = [
 	"reth",
 	"serde",
 	"alloy-consensus/serde-bincode-compat",
-	"reth-primitives-traits?/serde-bincode-compat",
-	"reth-ethereum-primitives?/serde-bincode-compat",
 	"alloy-eips/serde-bincode-compat",
 	"alloy-rpc-types-eth?/serde-bincode-compat",
 ]

@@ -65,11 +65,7 @@ fn spawning_execution_node_works() {
             .node
             .add_ons_handle
             .beacon_engine_handle
-            .fork_choice_updated(
-                forkchoice_state,
-                None,
-                reth_node_builder::EngineApiMessageVersion::V3,
-            )
+            .fork_choice_updated(forkchoice_state, None)
             .await
             .expect("if the node runs it must be able to serve fork-choice updates");
         assert!(

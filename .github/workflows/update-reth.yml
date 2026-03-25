@@ -305,6 +305,23 @@ jobs:
             echo "No source changes to commit."
           fi
 
+      # ── zepter feature lint ─────────────────────────────────────
+      - uses: taiki-e/cache-cargo-install-action@34ce5120836e5f9f1508d8713d7fdea0e8facd6f # v3.0.1
+        with:
+          tool: zepter
+      - name: Fix zepter lint
+        run: |
+          if ! zepter run check; then
+            echo "Zepter check failed — running auto-fix..."
+            zepter
+            if [ -n "$(git status --porcelain)" ]; then
+              git add -A
+              git commit -m "fix: resolve zepter feature propagation from reth update ($(date -u +%Y-%m-%d))"
+            fi
+          else
+            echo "Zepter check passed."
+          fi
+
       # ── push ───────────────────────────────────────────────────
       - name: Push working branch
         run: |
@@ -343,6 +360,7 @@ jobs:
                 RETH_SUMMARY=$(echo "$RETH_LOG" | amp-run -x "Summarize these upstream reth commit messages into a concise markdown bullet list \
                   grouped by area (e.g. Engine, RPC, Trie, DB, Perf, Bench, Testing). Use bold **Area** headers. \
                   Merge related commits into single bullets. Skip CI/doc-only changes unless significant. \
+                  When referencing PRs, use full GitHub markdown links like [#1234](https://github.com/paradigmxyz/reth/pull/1234) — never bare #1234. \
                   Do NOT include any preamble or explanation, just the grouped bullet list.")
                 echo "$RETH_SUMMARY"
                 echo ""
