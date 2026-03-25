@@ -543,6 +543,9 @@ impl Inner<Init> {
         };
 
         // Use current timestamp but make sure that if parent's timestamp is in the future, we account for that.
+        //
+        // We don't expect this being hit in practice because we validate the
+        // timestamp is not in the future during EL validation.
         let current_timestamp = context.current().epoch_millis();
         let timestamp_millis = if current_timestamp <= parent.timestamp_millis() {
             self.metrics.parent_ahead_of_local_time.inc();

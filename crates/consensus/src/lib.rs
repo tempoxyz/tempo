@@ -23,6 +23,11 @@ use tempo_primitives::{
 };
 
 /// How far in the future the block timestamp can be.
+///
+/// We are setting this to 0 to not allow any drift of the block time in the future.
+/// We are considering this safe because with the way CL works currently block time would
+/// be consistent and thus an honest proposer should never produce a block that appears
+/// to be in the future even assuming 50-100ms clock drift.
 pub const ALLOWED_FUTURE_BLOCK_TIME_MILLIS: u64 = 0;
 
 /// Divisor for calculating shared gas limit (payment lane capacity).
