@@ -6,7 +6,7 @@
 
 use std::{collections::BTreeMap, pin::Pin, sync::Arc, time::Duration};
 
-use alloy_rpc_types_engine::ForkchoiceState;
+use alloy_rpc_types_engine::{ForkchoiceState, PayloadId};
 use commonware_consensus::{Heightable as _, marshal::Update, types::Height};
 
 use commonware_runtime::{
@@ -24,6 +24,7 @@ use futures::{
 };
 use reth_provider::{BlockHashReader, BlockNumReader as _};
 use tempo_node::{TempoExecutionData, TempoFullNode};
+use tempo_payload_types::TempoPayloadAttributes;
 use tracing::{
     Level, Span, debug, error, error_span, info, info_span, instrument, warn, warn_span,
 };
@@ -305,12 +306,20 @@ where
             Command::CanonicalizeHead(CanonicalizeHead {
                 height,
                 digest,
+                attributes,
                 ack,
             }) => {
                 // Errors are logged inside canonicalize; head canonicalization failures
                 // are non-fatal and will be retried on the next block.
                 let _ = self
-                    .canonicalize(cause, HeadOrFinalized::Head, height, digest, ack)
+                    .canonicalize(
+                        cause,
+                        HeadOrFinalized::Head,
+                        height,
+                        digest,
+                        attributes.map(|a| *a),
+                        ack,
+                    )
                     .await;
             }
             Command::Finalize(finalized) => {
@@ -349,16 +358,17 @@ where
         head_or_finalized: HeadOrFinalized,
         height: Height,
         digest: Digest,
-        ack: oneshot::Sender<()>,
+        attributes: Option<TempoPayloadAttributes>,
+        ack: oneshot::Sender<Option<PayloadId>>,
     ) -> eyre::Result<()> {
         let new_canonicalized = match head_or_finalized {
             HeadOrFinalized::Head => self.last_canonicalized.update_head(height, digest),
             HeadOrFinalized::Finalized => self.last_canonicalized.update_finalized(height, digest),
         };
 
-        if new_canonicalized == self.last_canonicalized {
+        if new_canonicalized == self.last_canonicalized && attributes.is_none() {
             info!("would not change forkchoice state; not sending it to the execution layer");
-            let _ = ack.send(());
+            let _ = ack.send(None);
             return Ok(());
         }
 
@@ -373,7 +383,7 @@ where
             .execution_node
             .add_ons_handle
             .beacon_engine_handle
-            .fork_choice_updated(new_canonicalized.forkchoice, None)
+            .fork_choice_updated(new_canonicalized.forkchoice, attributes)
             .pace(&self.context, Duration::from_millis(20))
             .await
             .wrap_err("failed requesting execution layer to update forkchoice state")?;
@@ -388,7 +398,7 @@ where
                 .wrap_err("execution layer responded with error for forkchoice-update"));
         }
 
-        let _ = ack.send(());
+        let _ = ack.send(fcu_response.payload_id);
         self.last_canonicalized = new_canonicalized;
         self.reset_fcu_heartbeat_timer();
 
@@ -405,6 +415,7 @@ where
                     HeadOrFinalized::Finalized,
                     height,
                     digest,
+                    None,
                     oneshot::channel().0,
                 )
                 .await
@@ -460,6 +471,7 @@ where
             HeadOrFinalized::Finalized,
             block.height(),
             block.digest(),
+            None,
             oneshot::channel().0,
         )
         .await

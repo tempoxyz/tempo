@@ -1,9 +1,11 @@
+use alloy_rpc_types_engine::PayloadId;
 use commonware_consensus::{Reporter, marshal::Update, types::Height};
 use eyre::{WrapErr as _, eyre};
 use futures::{
     SinkExt as _,
     channel::{mpsc, oneshot},
 };
+use tempo_payload_types::TempoPayloadAttributes;
 use tracing::Span;
 
 use crate::consensus::{Digest, block::Block};
@@ -19,12 +21,14 @@ impl Mailbox {
         &self,
         height: Height,
         digest: Digest,
-    ) -> eyre::Result<oneshot::Receiver<()>> {
+        attributes: Option<TempoPayloadAttributes>,
+    ) -> eyre::Result<oneshot::Receiver<Option<PayloadId>>> {
         let (tx, rx) = oneshot::channel();
         self.inner
             .unbounded_send(Message::in_current_span(CanonicalizeHead {
                 height,
                 digest,
+                attributes: attributes.map(Box::new),
                 ack: tx,
             }))
             .wrap_err("failed sending canonicalize request to agent, this means it exited")?;
@@ -75,7 +79,8 @@ pub(super) enum Command {
 pub(super) struct CanonicalizeHead {
     pub(super) height: Height,
     pub(super) digest: Digest,
-    pub(super) ack: oneshot::Sender<()>,
+    pub(super) attributes: Option<Box<TempoPayloadAttributes>>,
+    pub(super) ack: oneshot::Sender<Option<PayloadId>>,
 }
 
 #[derive(Debug)]

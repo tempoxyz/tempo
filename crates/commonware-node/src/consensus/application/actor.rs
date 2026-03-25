@@ -419,10 +419,10 @@ impl Inner<Init> {
             // Only make the verified block canonical when not doing a
             // re-propose at the end of an epoch.
             if parent.1 != payload
-                && let Err(error) = self
-                    .state
-                    .executor
-                    .canonicalize_head(block.height(), block.digest())
+                && let Err(error) =
+                    self.state
+                        .executor
+                        .canonicalize_head(block.height(), block.digest(), None)
             {
                 tracing::warn!(
                     %error,
@@ -482,15 +482,6 @@ impl Inner<Init> {
         {
             eyre::bail!("the proposal parent block is not valid");
         }
-
-        ready(
-            self.state
-                .executor
-                .canonicalize_head(parent.height(), parent.digest()),
-        )
-        .and_then(|ack| ack.map_err(eyre::Report::new))
-        .await
-        .wrap_err("failed updating canonical head to parent")?;
 
         // Query DKG manager for ceremony data before building payload
         // This data will be passed to the payload builder via attributes
@@ -569,15 +560,15 @@ impl Inner<Init> {
 
         let interrupt_handle = attrs.interrupt_handle().clone();
 
-        let payload_id = self
-            .execution_node
-            .payload_builder_handle
-            .send_new_payload(parent_hash, attrs)
-            .pace(&context, Duration::from_millis(20))
-            .await
-            .map_err(|_| eyre!("channel was closed before a response was returned"))
-            .and_then(|ret| ret.wrap_err("execution layer rejected request"))
-            .wrap_err("failed requesting new payload from the execution layer")?;
+        let payload_id = ready(self.state.executor.canonicalize_head(
+            parent.height(),
+            parent.digest(),
+            Some(attrs),
+        ))
+        .and_then(|ack| ack.map_err(eyre::Report::new))
+        .await
+        .wrap_err("failed updating canonical head to parent")?
+        .ok_or_eyre("no payload id received from an FCU request with attributes")?;
 
         debug!(
             resolve_time_ms = self.payload_resolve_time.as_millis(),
@@ -681,10 +672,10 @@ impl Inner<Init> {
             return Ok((block, false));
         }
 
-        if let Err(error) = self
-            .state
-            .executor
-            .canonicalize_head(parent.height(), parent.digest())
+        if let Err(error) =
+            self.state
+                .executor
+                .canonicalize_head(parent.height(), parent.digest(), None)
         {
             tracing::warn!(
                 %error,
