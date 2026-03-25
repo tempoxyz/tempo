@@ -2476,7 +2476,8 @@ mod tests {
         use reth_transaction_pool::error::PoolTransactionError;
         use tempo_chainspec::hardfork::TempoHardfork;
         use tempo_primitives::transaction::{
-            KeyAuthorization, SignatureType, SignedKeyAuthorization, TempoTransaction, TokenLimit,
+            CallScope, KeyAuthorization, SignatureType, SignedKeyAuthorization, TempoTransaction,
+            TokenLimit,
             tempo_transaction::Call,
             tt_signature::{
                 KeychainSignature, KeychainVersion, PrimitiveSignature, TempoSignature,
@@ -2490,6 +2491,15 @@ mod tests {
             spec.inner
                 .hardforks
                 .extend([(TempoHardfork::T1C, ForkCondition::Timestamp(0))]);
+            spec
+        }
+
+        /// Returns a MODERATO chain spec with T3 activated at timestamp 0.
+        fn moderato_with_t3() -> TempoChainSpec {
+            let mut spec = Arc::unwrap_or_clone(MODERATO.clone());
+            spec.inner
+                .hardforks
+                .extend([(TempoHardfork::T3, ForkCondition::Timestamp(0))]);
             spec
         }
 
@@ -3307,6 +3317,132 @@ mod tests {
                 "Inline key authorization spending limits should be skipped for sponsored transactions"
             );
             Ok(())
+        }
+
+        #[test]
+        fn test_key_authorization_t3_rejects_too_many_call_scopes() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+
+            let mut scopes = Vec::new();
+            for _ in 0..=MAX_CALL_SCOPES {
+                scopes.push(CallScope {
+                    target: Address::random(),
+                    selector_rules: None,
+                });
+            }
+
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: None,
+                allowed_calls: Some(scopes),
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage_spec(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+                moderato_with_t3(),
+            );
+            let mut state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )
+            .expect("should not be a provider error");
+
+            assert!(
+                matches!(
+                    result,
+                    Err(TempoPoolTransactionError::Keychain(
+                        "too many call scopes in key authorization"
+                    ))
+                ),
+                "Expected too many call scopes rejection, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_key_authorization_t3_rejects_duplicate_scope_targets() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+            let duplicate_target = Address::random();
+
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: None,
+                allowed_calls: Some(vec![
+                    CallScope {
+                        target: duplicate_target,
+                        selector_rules: None,
+                    },
+                    CallScope {
+                        target: duplicate_target,
+                        selector_rules: None,
+                    },
+                ]),
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage_spec(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+                moderato_with_t3(),
+            );
+            let mut state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )
+            .expect("should not be a provider error");
+
+            assert!(
+                matches!(
+                    result,
+                    Err(TempoPoolTransactionError::Keychain(
+                        "duplicate call scope targets are not allowed"
+                    ))
+                ),
+                "Expected duplicate target rejection, got: {result:?}"
+            );
         }
 
         /// Setup a validator using the DEV chain spec (T1C active at genesis).

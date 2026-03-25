@@ -554,13 +554,7 @@ impl AccountKeychain {
         self.key_scopes[account_key].mode.write(1)?;
 
         if call.allowAllSelectors {
-            // `allowAllSelectors=true` means selector rules are ignored for matching, but
-            // recipient-constrained selector rules are rejected to keep ABI inputs canonical.
-            for rule in &call.selectorRules {
-                if !rule.allowAllRecipients || !rule.recipients.is_empty() {
-                    return Err(AccountKeychainError::invalid_call_scope().into());
-                }
-            }
+            // TIP-1011 precedence: allow-all selectors ignores selectorRules entirely.
             self.upsert_target_scope(account_key, call.target, None)
         } else {
             let mut selector_rules = Vec::new();
@@ -3223,6 +3217,58 @@ mod tests {
                 keyId: key_id,
             })?;
             assert!(removed.is_empty());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t3_set_allowed_calls_allow_all_selectors_ignores_selector_rules() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let account = Address::random();
+        let key_id = Address::random();
+        let target = DEFAULT_FEE_TOKEN;
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
+
+            keychain.authorize_key(
+                account,
+                authorizeKeyCall {
+                    keyId: key_id,
+                    signatureType: SignatureType::Secp256k1,
+                    expiry: u64::MAX,
+                    enforceLimits: false,
+                    limits: vec![],
+                    allowedCalls: vec![],
+                },
+            )?;
+
+            keychain.set_allowed_calls(
+                account,
+                setAllowedCallsCall {
+                    keyId: key_id,
+                    target,
+                    allowAllSelectors: true,
+                    selectorRules: vec![SelectorRule {
+                        selector: TIP20_TRANSFER_SELECTOR.into(),
+                        allowAllRecipients: false,
+                        recipients: vec![Address::repeat_byte(0x99)],
+                    }],
+                },
+            )?;
+
+            let scopes = keychain.get_allowed_calls(getAllowedCallsCall {
+                account,
+                keyId: key_id,
+            })?;
+            assert_eq!(scopes.len(), 1);
+            assert_eq!(scopes[0].target, target);
+            assert!(scopes[0].allowAllSelectors);
+            assert!(scopes[0].selectorRules.is_empty());
 
             Ok(())
         })

@@ -1120,7 +1120,36 @@ where
                 // Call precompile to authorize the key (same phase as nonce increment)
                 match keychain.authorize_key(*root_account, authorize_call) {
                     // all is good, we can do execution.
-                    Ok(_) => Ok(false),
+                    Ok(_) => {
+                        // Preserve TIP-1011 tri-state semantics for inline key authorization:
+                        // - None => unrestricted
+                        // - Some([]) => explicit deny-all
+                        // The ABI path only carries a Vec for allowedCalls, so post-apply the
+                        // deny-all marker explicitly when the protocol payload was Some([]).
+                        if spec.is_t3()
+                            && key_auth
+                                .allowed_calls
+                                .as_ref()
+                                .is_some_and(|scopes| scopes.is_empty())
+                        {
+                            let deny_all_scopes:
+                                [tempo_precompiles::account_keychain::CallScopeConfig; 0] = [];
+                            keychain
+                                .apply_key_authorization_t3(
+                                    *root_account,
+                                    access_key_addr,
+                                    &[],
+                                    Some(&deny_all_scopes),
+                                )
+                                .map_err(|err| {
+                                    TempoInvalidTransaction::KeychainPrecompileError {
+                                        reason: err.to_string(),
+                                    }
+                                })?;
+                        }
+
+                        Ok(false)
+                    }
                     // on out of gas we are skipping execution but not invalidating the transaction.
                     Err(TempoPrecompileError::OutOfGas) => Ok(true),
                     Err(TempoPrecompileError::Fatal(err)) => Err(EVMError::Custom(err)),
