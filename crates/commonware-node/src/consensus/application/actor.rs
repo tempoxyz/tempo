@@ -631,6 +631,7 @@ impl Inner<Init> {
     /// canonical state notifications and retries once the committed chain
     /// segment contains the parent block. The caller is expected to race this
     /// against `response.closed()` so that consensus can time out the proposal.
+    #[instrument(skip_all, fields(%parent_hash, %parent_height))]
     async fn resolve_fee_recipient(
         &self,
         parent_hash: B256,
@@ -640,7 +641,6 @@ impl Inner<Init> {
         // updates that arrive between a failed read and subscribing.
         // `canonical_state_stream` wraps a `broadcast::Receiver` that only
         // delivers events sent after subscription.
-        let parent_number = parent_height.get();
         let mut canonical_events = self.execution_node.provider.canonical_state_stream();
 
         match crate::validators::read_fee_recipient_at_block_hash(
@@ -649,18 +649,13 @@ impl Inner<Init> {
             parent_hash,
         ) {
             Ok(Some(fee_recipient)) => {
-                info!(
-                    %fee_recipient,
-                    "read fee recipient from validator config v2",
-                );
+                info!(%fee_recipient, "read fee recipient from validator config v2");
                 return Ok(fee_recipient);
             }
             Ok(None) => return Ok(self.fee_recipient),
             Err(error) => {
                 warn!(
                     %error,
-                    %parent_hash,
-                    validator = %self.public_key,
                     "failed reading proposer fee recipient from validator \
                      config v2; waiting for canonical state events",
                 );
@@ -672,10 +667,14 @@ impl Inner<Init> {
                 bail!("canonical state stream ended unexpectedly");
             };
             let committed = event.committed();
-            let Some(block) = committed.blocks().get(&parent_number) else {
+            let Some(block) = committed.blocks().get(&parent_height.get()) else {
                 continue;
             };
             if block.hash() != parent_hash {
+                warn!(
+                    committed_hash = %block.hash(),
+                    "canonical event contained parent height but hash did not match",
+                );
                 continue;
             }
             return match crate::validators::read_fee_recipient_at_block_hash(
@@ -684,10 +683,7 @@ impl Inner<Init> {
                 parent_hash,
             ) {
                 Ok(Some(fee_recipient)) => {
-                    info!(
-                        %fee_recipient,
-                        "read fee recipient from validator config v2",
-                    );
+                    info!(%fee_recipient, "read fee recipient from validator config v2");
                     Ok(fee_recipient)
                 }
                 Ok(None) => Ok(self.fee_recipient),
