@@ -1461,6 +1461,7 @@ def "main bench" [
     --tracing-otlp: string = ""                     # OTLP endpoint for tracing (auto-derived from TEMPO_TELEMETRY_URL if not set)
     --baseline-hardfork: string = ""                # Latest active hardfork for baseline (e.g. T1, T1C, T2)
     --feature-hardfork: string = ""                 # Latest active hardfork for feature (e.g. T1, T1C, T2)
+    --init-only                                     # Only build binaries and initialize state snapshot, skip benchmark runs
 ] {
     validate-mode $mode
 
@@ -1890,6 +1891,12 @@ def "main bench" [
 
         # Resolve per-run genesis/datadir based on mode
         let genesis_path = if $dual_hardfork { "" } else { $"($abs_localnet)/genesis.json" }
+
+        if $init_only {
+            print "State initialization complete (--init-only). Skipping benchmark runs."
+            restore-system-tuning $tuning_state
+            return
+        }
 
         # Start observability stack
         if not $no_infra {
