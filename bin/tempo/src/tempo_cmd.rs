@@ -278,8 +278,15 @@ pub(crate) struct ValidatorTransactionArgs {
 }
 
 impl ValidatorTransactionArgs {
-    fn confirm(&self, summary: &serde_json::Value) -> eyre::Result<()> {
-        eprintln!("{}", serde_json::to_string_pretty(summary)?);
+    fn confirm<T: SolCall + Serialize>(&self, call: &T) -> eyre::Result<()> {
+        eprintln!(
+            "{}",
+            &serde_json::json!({
+                "to": VALIDATOR_CONFIG_V2_ADDRESS,
+                "signature": T::SIGNATURE,
+                "call": serde_json::to_value(&call)?,
+            })
+        );
 
         if self.yes {
             return Ok(());
@@ -357,7 +364,7 @@ impl AddValidator {
             .check_add_validator_signature(self.fee_recipient, signature.as_ref())
             .wrap_err("add-validator signature check failed")?;
 
-        let calldata = IValidatorConfigV2::addValidatorCall {
+        let call = IValidatorConfigV2::addValidatorCall {
             validatorAddress: self.identity.validator_address,
             publicKey: self.identity.public_key,
             ingress: self.identity.ingress.to_string(),
@@ -366,15 +373,11 @@ impl AddValidator {
             feeRecipient: self.fee_recipient,
         };
 
-        self.submit.confirm(&serde_json::json!({
-            "to": VALIDATOR_CONFIG_V2_ADDRESS,
-            "function": IValidatorConfigV2::addValidatorCall::SIGNATURE,
-            "call": serde_json::to_value(&calldata)?,
-        }))?;
+        self.submit.confirm(&call)?;
 
         let tx = TransactionRequest::default()
             .to(VALIDATOR_CONFIG_V2_ADDRESS)
-            .input(calldata.abi_encode().into());
+            .input(call.abi_encode().into());
 
         let pending = provider
             .send_transaction(tx.into())
@@ -415,26 +418,19 @@ impl TransferValidatorOwnership {
         let new_signer = PrivateKeySigner::from_bytes(&new_private_key)?;
         let new_validator_address = new_signer.address();
 
-        let validator = read_validator_from_contract(
-            &provider,
-            ValidatorLookup::Address(self.validator_address),
-        )
-        .await?;
+        let lookup = ValidatorLookup::Address(self.validator_address);
+        let validator = read_validator_from_contract(&provider, lookup).await?;
 
-        let calldata = IValidatorConfigV2::transferValidatorOwnershipCall {
+        let call = IValidatorConfigV2::transferValidatorOwnershipCall {
             idx: validator.index,
             newAddress: new_validator_address,
         };
 
-        self.submit.confirm(&serde_json::json!({
-            "to": VALIDATOR_CONFIG_V2_ADDRESS,
-            "function": IValidatorConfigV2::transferValidatorOwnershipCall::SIGNATURE,
-            "call": serde_json::to_value(&calldata)?,
-        }))?;
+        self.submit.confirm(&call)?;
 
         let tx = TransactionRequest::default()
             .to(VALIDATOR_CONFIG_V2_ADDRESS)
-            .input(calldata.abi_encode().into());
+            .input(call.abi_encode().into());
 
         let pending = provider
             .send_transaction(tx.into())
@@ -478,13 +474,10 @@ impl RotateValidator {
             .check_rotate_validator_signature(signature.as_ref())
             .wrap_err("rotate-validator signature check failed")?;
 
-        let validator = read_validator_from_contract(
-            &provider,
-            ValidatorLookup::Address(self.identity.validator_address),
-        )
-        .await?;
+        let lookup = ValidatorLookup::Address(self.identity.validator_address);
+        let validator = read_validator_from_contract(&provider, lookup).await?;
 
-        let calldata = IValidatorConfigV2::rotateValidatorCall {
+        let call = IValidatorConfigV2::rotateValidatorCall {
             idx: validator.index,
             publicKey: self.identity.public_key,
             ingress: self.identity.ingress.to_string(),
@@ -492,15 +485,11 @@ impl RotateValidator {
             signature,
         };
 
-        self.submit.confirm(&serde_json::json!({
-            "to": VALIDATOR_CONFIG_V2_ADDRESS,
-            "function": IValidatorConfigV2::rotateValidatorCall::SIGNATURE,
-            "call": serde_json::to_value(&calldata)?,
-        }))?;
+        self.submit.confirm(&call)?;
 
         let tx = TransactionRequest::default()
             .to(VALIDATOR_CONFIG_V2_ADDRESS)
-            .input(calldata.abi_encode().into());
+            .input(call.abi_encode().into());
 
         let pending = provider
             .send_transaction(tx.into())
@@ -618,27 +607,20 @@ impl SetValidatorIpAddress {
             return Err(eyre!("at least one of --ingress or --egress must be set"));
         }
 
-        let validator = read_validator_from_contract(
-            &provider,
-            ValidatorLookup::Address(self.validator_address),
-        )
-        .await?;
+        let lookup = ValidatorLookup::Address(self.validator_address);
+        let validator = read_validator_from_contract(&provider, lookup).await?;
 
-        let calldata = IValidatorConfigV2::setIpAddressesCall {
+        let call = IValidatorConfigV2::setIpAddressesCall {
             idx: validator.index,
             ingress: self.ingress.map_or(validator.ingress, |v| v.to_string()),
             egress: self.egress.map_or(validator.egress, |v| v.to_string()),
         };
 
-        self.submit.confirm(&serde_json::json!({
-            "to": VALIDATOR_CONFIG_V2_ADDRESS,
-            "function": IValidatorConfigV2::setIpAddressesCall::SIGNATURE,
-            "call": serde_json::to_value(&calldata)?,
-        }))?;
+        self.submit.confirm(&call)?;
 
         let tx = TransactionRequest::default()
             .to(VALIDATOR_CONFIG_V2_ADDRESS)
-            .input(calldata.abi_encode().into());
+            .input(call.abi_encode().into());
 
         let pending = provider
             .send_transaction(tx.into())
@@ -670,25 +652,19 @@ impl SetValidatorFeeRecipient {
         let signer = self.submit.signer()?;
         let provider = self.submit.provider(signer).await?;
 
-        let validator = read_validator_from_contract(
-            &provider,
-            ValidatorLookup::Address(self.validator_address),
-        )
-        .await?;
-        let calldata = IValidatorConfigV2::setFeeRecipientCall {
+        let lookup = ValidatorLookup::Address(self.validator_address);
+        let validator = read_validator_from_contract(&provider, lookup).await?;
+
+        let call = IValidatorConfigV2::setFeeRecipientCall {
             idx: validator.index,
             feeRecipient: self.fee_recipient,
         };
 
-        self.submit.confirm(&serde_json::json!({
-            "to": VALIDATOR_CONFIG_V2_ADDRESS,
-            "function": IValidatorConfigV2::setFeeRecipientCall::SIGNATURE,
-            "call": serde_json::to_value(&calldata)?,
-        }))?;
+        self.submit.confirm(&call)?;
 
         let tx = TransactionRequest::default()
             .to(VALIDATOR_CONFIG_V2_ADDRESS)
-            .input(calldata.abi_encode().into());
+            .input(call.abi_encode().into());
 
         let pending = provider
             .send_transaction(tx.into())
