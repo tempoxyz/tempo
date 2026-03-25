@@ -123,9 +123,16 @@ jobs:
           echo "args: $*" >&2
           echo "=== end amp-run invocation ===" >&2
 
-          # Run amp, capture stdout and stderr to separate files
+          # Run amp with debug logging, capture stdout and stderr
           AMP_EXIT=0
-          amp "$@" --stream-json >"$TMPOUT" 2>"$TMPERR" || AMP_EXIT=$?
+          AMP_LOG_LEVEL=debug AMP_DEBUG=1 amp "$@" --stream-json >"$TMPOUT" 2>"$TMPERR" || AMP_EXIT=$?
+
+          # Dump amp debug logs
+          if [ -f ~/.cache/amp/logs/cli.log ]; then
+            echo "=== amp cli.log ===" >&2
+            cat ~/.cache/amp/logs/cli.log >&2
+            echo "=== end amp cli.log ===" >&2
+          fi
 
           # Always dump full stderr
           if [ -s "$TMPERR" ]; then
