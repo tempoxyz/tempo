@@ -9,7 +9,10 @@ use std::{
     path::PathBuf,
 };
 
-use alloy_primitives::{B256, U256, map::HashMap};
+use alloy_primitives::{
+    B256, U256,
+    map::HashMap,
+};
 use clap::Parser;
 use eyre::{Context as _, ensure};
 use reth_chainspec::EthereumHardforks;
@@ -197,8 +200,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                     // Drop cursor before commit
                     drop(storage_cursor);
 
-                    provider_rw
-                        .insert_storage_for_hashing(batch.drain())?;
+                    provider_rw.insert_storage_for_hashing(batch.drain())?;
                     batch_total = 0;
                     provider_rw.commit()?;
                     provider_rw = provider_factory.database_provider_rw()?;
