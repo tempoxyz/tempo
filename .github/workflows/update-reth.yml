@@ -581,26 +581,24 @@ jobs:
           # Build detail lines
           DETAILS=""
           if [ "$BUMPED" = "true" ] && [ -n "$OLD_REV" ] && [ -n "$NEW_REV" ]; then
-            DETAILS="${DETAILS}\n• Reth rev: \`${OLD_REV:0:7}\` → \`${NEW_REV:0:7}\` (<https://github.com/paradigmxyz/reth/compare/${OLD_REV}...${NEW_REV}|diff>)"
+            DETAILS="${DETAILS}\n• <https://github.com/paradigmxyz/reth/compare/${OLD_REV}...${NEW_REV}|${OLD_REV:0:7} → ${NEW_REV:0:7}>"
           elif [ "$BUMPED" = "false" ]; then
-            DETAILS="${DETAILS}\n• Already on latest reth rev — no bump needed"
+            DETAILS="${DETAILS}\n• Already on latest reth rev"
           fi
 
           if [ "$CLIPPY_PASSED" = "false" ]; then
-            DETAILS="${DETAILS}\n• ⚠️ Clippy: unresolved errors after fix attempts"
-          elif [ "$CLIPPY_PASSED" = "true" ]; then
-            DETAILS="${DETAILS}\n• ✅ Clippy: passed"
+            DETAILS="${DETAILS}\n• ⚠️ Clippy: unresolved errors"
           fi
 
           if [ "$TEST_PASSED" = "false" ]; then
-            DETAILS="${DETAILS}\n• ⚠️ Test compilation: unresolved errors after fix attempts"
-          elif [ "$TEST_PASSED" = "true" ]; then
-            DETAILS="${DETAILS}\n• ✅ Test compilation: passed"
+            DETAILS="${DETAILS}\n• ⚠️ Tests: unresolved errors"
           fi
 
           if [ -n "$PR_URL" ]; then
-            DETAILS="${DETAILS}\n• PR: <${PR_URL}|#${PR_NUMBER}>"
+            DETAILS="${DETAILS}\n• <${PR_URL}|PR #${PR_NUMBER}>"
           fi
+
+          DETAILS="${DETAILS}\n• <${RUN_URL}|Workflow>"
 
           # Post to Slack via incoming webhook
           if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
@@ -614,7 +612,6 @@ jobs:
             --arg emoji "$EMOJI" \
             --arg status "$STATUS" \
             --arg details "$DETAILS_TEXT" \
-            --arg run_url "$RUN_URL" \
             --arg color "$COLOR" \
             '{
               text: ($emoji + " Reth update " + $status),
@@ -625,7 +622,7 @@ jobs:
                     type: "section",
                     text: {
                       type: "mrkdwn",
-                      text: ($emoji + " *Reth update " + $status + "*\n" + $details + "\n<" + $run_url + "|View workflow run>")
+                      text: ($emoji + " *Reth update " + $status + "*" + $details)
                     }
                   }
                 ]
