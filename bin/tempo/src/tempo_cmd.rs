@@ -754,7 +754,7 @@ pub(crate) struct ValidatorInfo {
 
     /// Look up a validator on the v1 config contract
     #[arg(long, default_value = "false")]
-    v1: bool,
+    v2: bool,
 }
 
 impl ValidatorInfo {
@@ -764,7 +764,8 @@ impl ValidatorInfo {
             .await
             .wrap_err("failed to connect to RPC")?;
 
-        if self.v1 {
+        // Once migrated, this block will be removed
+        if !self.v2 {
             let address = if let Some(addr) = self.address {
                 addr
             } else {
@@ -870,9 +871,13 @@ pub(crate) struct ValidatorsInfo {
     #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
     rpc_url: String,
 
-    /// Whethr to include historic validators (deactivated and not in the current committee).
-    #[arg(long)]
+    /// Whether to include historic validators (deactivated and not in the current committee).
+    #[arg(long, conflicts_with = "v2")]
     with_historic: bool,
+
+    /// Use the v2 config contract (active validators only).
+    #[arg(long)]
+    v2: bool,
 }
 
 impl ValidatorsInfo {
@@ -945,38 +950,99 @@ impl ValidatorsInfo {
             IValidatorConfig::getValidatorsCall::abi_decode_returns(&validators_result)
                 .wrap_err("failed to decode getValidators response")?;
 
-        let next_dkg_result = provider
-            .call(
-                TransactionRequest::default()
-                    .to(VALIDATOR_CONFIG_ADDRESS)
-                    .input(
-                        IValidatorConfig::getNextFullDkgCeremonyCall {}
-                            .abi_encode()
-                            .into(),
-                    )
-                    .into(),
-            )
-            .await
-            .wrap_err("failed to call getNextFullDkgCeremony")?;
-        let decoded_next_dkg =
-            IValidatorConfig::getNextFullDkgCeremonyCall::abi_decode_returns(&next_dkg_result)
-                .wrap_err("failed to decode getNextFullDkgCeremony response")?;
-
+        let next_full_dkg_epoch: u64;
         let mut validator_entries = Vec::with_capacity(decoded_validators.len());
-        for validator in decoded_validators.into_iter() {
-            let pubkey_bytes = validator.publicKey.0;
-            let key = PublicKey::decode(&mut &validator.publicKey.0[..])
-                .wrap_err("failed decoding on-chain ed25519 key")?;
 
-            let in_committee = dkg_outcome.players().position(&key).is_some();
+        // Once migrated, this block will be removed
+        if !self.v2 {
+            let next_dkg_result = provider
+                .call(
+                    TransactionRequest::default()
+                        .to(VALIDATOR_CONFIG_ADDRESS)
+                        .input(
+                            IValidatorConfig::getNextFullDkgCeremonyCall {}
+                                .abi_encode()
+                                .into(),
+                        )
+                        .into(),
+                )
+                .await
+                .wrap_err("failed to call getNextFullDkgCeremony")?;
 
-            if self.with_historic || (validator.active || in_committee) {
+            next_full_dkg_epoch =
+                IValidatorConfig::getNextFullDkgCeremonyCall::abi_decode_returns(&next_dkg_result)
+                    .wrap_err("failed to decode getNextFullDkgCeremony response")?;
+
+            for validator in decoded_validators.into_iter() {
+                let pubkey_bytes = validator.publicKey.0;
+                let key = PublicKey::decode(&mut &validator.publicKey.0[..])
+                    .wrap_err("failed decoding on-chain ed25519 key")?;
+
+                let in_committee = dkg_outcome.players().position(&key).is_some();
+
+                if self.with_historic || (validator.active || in_committee) {
+                    validator_entries.push(ValidatorEntry {
+                        onchain_address: validator.validatorAddress,
+                        public_key: alloy_primitives::hex::encode(pubkey_bytes),
+                        inbound_address: validator.inboundAddress,
+                        outbound_address: validator.outboundAddress,
+                        active: validator.active,
+                        is_dkg_dealer: dkg_outcome.players().position(&key).is_some(),
+                        is_dkg_player: dkg_outcome.next_players().position(&key).is_some(),
+                        in_committee,
+                    });
+                }
+            }
+        } else {
+            let tx = TransactionRequest::default()
+                .to(VALIDATOR_CONFIG_V2_ADDRESS)
+                .input(
+                    IValidatorConfigV2::getActiveValidatorsCall {}
+                        .abi_encode()
+                        .into(),
+                );
+
+            let resp = provider
+                .call(tx.into())
+                .await
+                .wrap_err("failed to call getActiveValidators")?;
+
+            let validators = IValidatorConfigV2::getActiveValidatorsCall::abi_decode_returns(&resp)
+                .wrap_err("failed to decode getActiveValidators response")?;
+
+            let next_dkg_result = provider
+                .call(
+                    TransactionRequest::default()
+                        .to(VALIDATOR_CONFIG_V2_ADDRESS)
+                        .input(
+                            IValidatorConfigV2::getNextNetworkIdentityRotationEpochCall {}
+                                .abi_encode()
+                                .into(),
+                        )
+                        .into(),
+                )
+                .await
+                .wrap_err("failed to call getNextNetworkIdentityRotationEpoch")?;
+
+            next_full_dkg_epoch =
+                IValidatorConfigV2::getNextNetworkIdentityRotationEpochCall::abi_decode_returns(
+                    &next_dkg_result,
+                )
+                .wrap_err("failed to decode getNextNetworkIdentityRotationEpoch response")?;
+
+            for validator in validators {
+                let pubkey_bytes = validator.publicKey.0;
+                let key = PublicKey::decode(&mut &pubkey_bytes[..])
+                    .wrap_err("failed decoding on-chain ed25519 key")?;
+
+                let in_committee = dkg_outcome.players().position(&key).is_some();
+
                 validator_entries.push(ValidatorEntry {
                     onchain_address: validator.validatorAddress,
                     public_key: alloy_primitives::hex::encode(pubkey_bytes),
-                    inbound_address: validator.inboundAddress,
-                    outbound_address: validator.outboundAddress,
-                    active: validator.active,
+                    inbound_address: validator.ingress,
+                    outbound_address: validator.egress,
+                    active: true,
                     is_dkg_dealer: dkg_outcome.players().position(&key).is_some(),
                     is_dkg_player: dkg_outcome.next_players().position(&key).is_some(),
                     in_committee,
@@ -990,7 +1056,7 @@ impl ValidatorsInfo {
             last_boundary: boundary_height.get(),
             epoch_length,
             is_next_full_dkg: dkg_outcome.is_next_full_dkg,
-            next_full_dkg_epoch: decoded_next_dkg,
+            next_full_dkg_epoch: next_full_dkg_epoch,
             validators: validator_entries,
         };
 
