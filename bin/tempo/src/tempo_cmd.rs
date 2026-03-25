@@ -129,7 +129,7 @@ pub(crate) enum ConsensusSubcommand {
     /// Rotate a validator to a new identity.
     RotateValidator(RotateValidator),
     /// Set the validator Ip Address
-    SetValidatorIpAdress(SetValidatorIpAdress),
+    SetValidatorIpAddress(SetValidatorIpAddress),
     /// SEt the validator fee recipient
     SetValidatorFeeRecipient(SetValidatorFeeRecipient),
     /// Transfer validator ownership
@@ -146,7 +146,7 @@ impl ConsensusSubcommand {
             Self::RotateValidator(args) => args.run(),
             Self::CreateAddValidatorSignature(args) => args.run(),
             Self::CreateRotateValidatorSignature(args) => args.run(),
-            Self::SetValidatorIpAdress(args) => args.run(),
+            Self::SetValidatorIpAddress(args) => args.run(),
             Self::SetValidatorFeeRecipient(args) => args.run(),
             Self::GeneratePrivateKey(args) => args.run(),
             Self::CalculatePublicKey(args) => args.run(),
@@ -606,7 +606,7 @@ impl CreateRotateValidatorSignatureArgs {
 }
 
 #[derive(Debug, clap::Args)]
-pub(crate) struct SetValidatorIpAdress {
+pub(crate) struct SetValidatorIpAddress {
     /// The validator's address
     #[arg(long, value_name = "ETHEREUM_ADDRESS")]
     validator_address: Address,
@@ -621,7 +621,7 @@ pub(crate) struct SetValidatorIpAdress {
     submit: ValidatorTransactionArgs,
 }
 
-impl SetValidatorIpAdress {
+impl SetValidatorIpAddress {
     fn run(self) -> eyre::Result<()> {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
