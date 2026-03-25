@@ -126,7 +126,7 @@ reth-cli = { git = "https://github.com/paradigmxyz/reth", rev = "2e5730b" }
 reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", rev = "2e5730b" }
 reth-cli-runner = { git = "https://github.com/paradigmxyz/reth", rev = "2e5730b" }
 reth-cli-util = { git = "https://github.com/paradigmxyz/reth", rev = "2e5730b" }
-reth-codecs = { git = "https://github.com/paradigmxyz/reth", rev = "2e5730b" }
+reth-codecs = { version = "0.1.0", default-features = false }
 reth-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "2e5730b" }
 reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", rev = "2e5730b" }
 reth-db = { git = "https://github.com/paradigmxyz/reth", rev = "2e5730b" }

@@ -636,7 +636,7 @@ mod codec {
     }
 
     impl reth_db_api::table::Decompress for TempoTxEnvelope {
-        fn decompress(value: &[u8]) -> Result<Self, reth_db_api::DatabaseError> {
+        fn decompress(value: &[u8]) -> Result<Self, reth_codecs::DecompressError> {
             let (obj, _) = Compact::from_compact(value, value.len());
             Ok(obj)
         }
