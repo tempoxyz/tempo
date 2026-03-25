@@ -116,6 +116,10 @@ jobs:
           set -uo pipefail
           AMP_EXIT=0
           OUTPUT=$(amp "$@" --stream-json 2>&1) || AMP_EXIT=$?
+          # Debug: print full amp output
+          echo "=== amp raw output ==="
+          echo "$OUTPUT"
+          echo "=== end amp raw output ==="
           FIRST_LINE=$(echo "$OUTPUT" | head -1 || true)
           THREAD_ID=$(echo "$FIRST_LINE" | jq -r '.session_id // empty' 2>/dev/null || true)
           if [ -n "$THREAD_ID" ]; then
