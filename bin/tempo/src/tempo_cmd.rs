@@ -95,7 +95,10 @@ pub(crate) enum TempoSubcommand {
 impl ExtendedCommand for TempoSubcommand {
     fn execute(self, runner: CliRunner) -> eyre::Result<()> {
         match self {
-            Self::Consensus(cmd) => cmd.run(),
+            Self::Consensus(cmd) => {
+                runner.run_blocking_until_ctrl_c(cmd.run())?;
+                Ok(())
+            }
             Self::InitFromBinaryDump(cmd) => {
                 let runtime = runner.runtime();
                 runner.run_blocking_until_ctrl_c(
@@ -141,7 +144,6 @@ pub(crate) enum ConsensusSubcommand {
 }
 
 impl ConsensusSubcommand {
-    #[tokio::main(flavor = "current_thread")]
     async fn run(self) -> eyre::Result<()> {
         match self {
             Self::AddValidator(args) => args.run().await,
@@ -151,8 +153,8 @@ impl ConsensusSubcommand {
             Self::CreateRotateValidatorSignature(args) => args.run().await,
             Self::SetValidatorIpAddress(args) => args.run().await,
             Self::SetValidatorFeeRecipient(args) => args.run().await,
-            Self::GeneratePrivateKey(args) => args.run().await,
-            Self::CalculatePublicKey(args) => args.run().await,
+            Self::GeneratePrivateKey(args) => args.run(),
+            Self::CalculatePublicKey(args) => args.run(),
             Self::ValidatorInfo(args) => args.run().await,
             Self::ValidatorsInfo(args) => args.run().await,
         }
@@ -690,7 +692,7 @@ pub(crate) struct GeneratePrivateKey {
 }
 
 impl GeneratePrivateKey {
-    async fn run(self) -> eyre::Result<()> {
+    fn run(self) -> eyre::Result<()> {
         let Self { output, force } = self;
         let signing_key = PrivateKey::random(&mut rand_08::thread_rng());
         let public_key = signing_key.public_key();
@@ -721,7 +723,7 @@ pub(crate) struct CalculatePublicKey {
 }
 
 impl CalculatePublicKey {
-    async fn run(self) -> eyre::Result<()> {
+    fn run(self) -> eyre::Result<()> {
         let Self { private_key } = self;
         let private_key = SigningKey::read_from_file(&private_key).wrap_err_with(|| {
             format!(
