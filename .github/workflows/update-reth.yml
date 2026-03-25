@@ -109,32 +109,35 @@ jobs:
       # ── amp helper ────────────────────────────────────────────
       - name: Create amp wrapper
         run: |
-          # Wrapper that runs amp with --stream-json, extracts the thread URL,
-          # logs it, and still prints the final result text.
+          # Wrapper that runs amp with --stream-json, streams all output
+          # live to stderr (visible in CI logs), and captures it for parsing.
           cat > /usr/local/bin/amp-run <<'WRAPPER'
           #!/usr/bin/env bash
           set -uo pipefail
+          TMPOUT=$(mktemp)
+          trap 'rm -f "$TMPOUT"' EXIT
+
+          # Run amp, tee all output to stderr (live CI logs) and capture to file
           AMP_EXIT=0
-          OUTPUT=$(amp "$@" --stream-json 2>&1) || AMP_EXIT=$?
-          # Debug: print full amp output
-          echo "=== amp raw output ==="
-          echo "$OUTPUT"
-          echo "=== end amp raw output ==="
-          FIRST_LINE=$(echo "$OUTPUT" | head -1 || true)
-          THREAD_ID=$(echo "$FIRST_LINE" | jq -r '.session_id // empty' 2>/dev/null || true)
+          amp "$@" --stream-json 2>&1 | tee >(cat >&2) > "$TMPOUT" || AMP_EXIT=$?
+
+          # Extract thread URL
+          THREAD_ID=$(head -1 "$TMPOUT" | jq -r '.session_id // empty' 2>/dev/null || true)
           if [ -n "$THREAD_ID" ]; then
             echo "🔗 Amp thread: https://ampcode.com/threads/${THREAD_ID}" >&2
           fi
+
           if [ "$AMP_EXIT" -ne 0 ]; then
             echo "::error::amp exited with code $AMP_EXIT" >&2
-            echo "$OUTPUT" >&2
             exit "$AMP_EXIT"
           fi
-          # Print the final result text
-          RESULT=$(echo "$OUTPUT" | jq -r 'select(.type=="result") | .result // empty' 2>/dev/null || true)
+
+          # Print the final result text to stdout
+          RESULT=$(jq -r 'select(.type=="result") | .result // empty' < "$TMPOUT" 2>/dev/null || true)
           echo "$RESULT"
+
           # Propagate error if amp returned an error result
-          IS_ERROR=$(echo "$OUTPUT" | jq -r 'select(.type=="result") | .is_error // false' 2>/dev/null || true)
+          IS_ERROR=$(jq -r 'select(.type=="result") | .is_error // false' < "$TMPOUT" 2>/dev/null || true)
           if [ "$IS_ERROR" = "true" ]; then
             echo "::error::amp returned error: $RESULT" >&2
             exit 1
