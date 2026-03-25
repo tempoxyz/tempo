@@ -21,6 +21,7 @@ use tempo_precompiles::{
     storage::StorageCtx,
     validator_config::{IValidatorConfig, ValidatorConfig},
 };
+use tempo_telemetry_util::{display_duration, display_option, display_result};
 
 use tracing::{Level, debug, info, instrument, warn};
 
@@ -72,11 +73,11 @@ pub(crate) async fn read_validator_config_with_retry(
         tracing::warn_span!("read_validator_config_with_retry").in_scope(|| {
             warn!(
                 attempts,
-                retry_after = %tempo_telemetry_util::display_duration(retry_after),
+                retry_after = %display_duration(retry_after),
                 is_syncing,
-                best_block = %tempo_telemetry_util::display_result(&best_block),
+                best_block = %display_result(&best_block),
                 %target_height,
-                blocks_behind = %tempo_telemetry_util::display_option(&blocks_behind),
+                blocks_behind = %display_option(&blocks_behind),
                 "reading validator config from contract failed; will retry",
             );
         });

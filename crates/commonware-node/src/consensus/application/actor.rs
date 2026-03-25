@@ -41,6 +41,7 @@ use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_node_builder::{Block as _, BuiltPayload, ConsensusEngineHandle};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
+use tempo_telemetry_util::display_duration;
 
 use reth_provider::{BlockHashReader as _, BlockReader as _};
 use tokio::sync::RwLock;
@@ -583,9 +584,9 @@ impl Inner<Init> {
         let remaining_resolve = self.payload_resolve_time.saturating_sub(elapsed);
         let remaining_return = self.payload_return_time.saturating_sub(elapsed);
         debug!(
-            elapsed = %tempo_telemetry_util::display_duration(elapsed),
-            resolve_time = %tempo_telemetry_util::display_duration(remaining_resolve),
-            return_time = %tempo_telemetry_util::display_duration(remaining_return),
+            elapsed = %display_duration(elapsed),
+            resolve_time = %display_duration(remaining_resolve),
+            return_time = %display_duration(remaining_return),
             "sleeping before payload builder resolving"
         );
 

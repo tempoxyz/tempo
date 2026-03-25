@@ -18,6 +18,7 @@ use reth_ethereum::network::NetworkInfo;
 use reth_provider::{BlockNumReader as _, HeaderProvider};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::TempoFullNode;
+use tempo_telemetry_util::display_result;
 use tracing::{Span, error, info, info_span, instrument, warn};
 
 use crate::{
@@ -100,7 +101,7 @@ where
                         info_span!("bootstrap peers").in_scope(|| {
                             info!(
                                 is_syncing = self.execution_node.network.is_syncing(),
-                                best_block = %tempo_telemetry_util::display_result(&self.execution_node.provider.best_block_number()),
+                                best_block = %display_result(&self.execution_node.provider.best_block_number()),
                                 "failed bootstrapping validators; will retry",
                             );
                         });
