@@ -93,7 +93,7 @@ use alloy_primitives::B256;
 use alloy_rpc_types_engine::PayloadAttributes;
 use reth_e2e_test_utils::setup;
 use reth_ethereum::tasks::Runtime;
-use reth_node_api::{FullNodeComponents, PayloadBuilderAttributes};
+use reth_node_api::FullNodeComponents;
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle, rpc::RethRpcAddOns};
 use reth_node_core::args::RpcServerArgs;
 use reth_rpc_builder::RpcModuleSelection;
@@ -108,7 +108,7 @@ use tempo_contracts::precompiles::{
     ITIP20Factory,
 };
 use tempo_node::node::TempoNode;
-use tempo_payload_types::{TempoPayloadAttributes, TempoPayloadBuilderAttributes};
+use tempo_payload_types::TempoPayloadAttributes;
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::ISSUER_ROLE};
 
 /// Creates a test TIP20 token with issuer role granted to the caller
@@ -428,17 +428,13 @@ impl TestNodeBuilder {
 }
 
 /// Default attributes generator for payload building
-fn default_attributes_generator(timestamp: u64) -> TempoPayloadBuilderAttributes {
-    let attributes = TempoPayloadAttributes {
-        inner: PayloadAttributes {
-            timestamp,
-            prev_randao: alloy::primitives::B256::ZERO,
-            suggested_fee_recipient: alloy::primitives::Address::ZERO,
-            withdrawals: Some(vec![]),
-            parent_beacon_block_root: Some(alloy::primitives::B256::ZERO),
-        },
-        timestamp_millis_part: 0,
-    };
-
-    TempoPayloadBuilderAttributes::try_new(B256::ZERO, attributes, 0).unwrap()
+fn default_attributes_generator(timestamp: u64) -> TempoPayloadAttributes {
+    PayloadAttributes {
+        timestamp,
+        prev_randao: alloy::primitives::B256::ZERO,
+        suggested_fee_recipient: alloy::primitives::Address::ZERO,
+        withdrawals: Some(vec![]),
+        parent_beacon_block_root: Some(alloy::primitives::B256::ZERO),
+    }
+    .into()
 }

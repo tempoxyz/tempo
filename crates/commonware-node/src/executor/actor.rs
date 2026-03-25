@@ -273,11 +273,7 @@ where
             .execution_node
             .add_ons_handle
             .beacon_engine_handle
-            .fork_choice_updated(
-                self.last_canonicalized.forkchoice,
-                None,
-                reth_node_builder::EngineApiMessageVersion::V3,
-            )
+            .fork_choice_updated(self.last_canonicalized.forkchoice, None)
             .pace(&self.context, Duration::from_millis(20))
             .await;
 
@@ -377,11 +373,7 @@ where
             .execution_node
             .add_ons_handle
             .beacon_engine_handle
-            .fork_choice_updated(
-                new_canonicalized.forkchoice,
-                None,
-                reth_node_builder::EngineApiMessageVersion::V3,
-            )
+            .fork_choice_updated(new_canonicalized.forkchoice, None)
             .pace(&self.context, Duration::from_millis(20))
             .await
             .wrap_err("failed requesting execution layer to update forkchoice state")?;
