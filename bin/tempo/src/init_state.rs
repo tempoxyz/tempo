@@ -7,6 +7,7 @@ use std::{
     fs::File,
     io::{BufReader, Read},
     path::PathBuf,
+    time::{Duration, Instant},
 };
 
 use alloy_primitives::{
@@ -15,6 +16,7 @@ use alloy_primitives::{
 };
 use clap::Parser;
 use eyre::{Context as _, ensure};
+use itertools::Itertools;
 use reth_chainspec::EthereumHardforks;
 use reth_cli_commands::common::{AccessRights, CliNodeTypes, EnvironmentArgs};
 use reth_db_api::{
@@ -89,7 +91,6 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
         // Batch buffer for hashed storage inserts (multi-address)
         let mut batch: AddressMap<Vec<StorageEntry>> = AddressMap::default();
-        let mut batch_total: usize = 0;
 
         // Process blocks from binary file
         loop {
@@ -140,65 +141,60 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 }
             }
 
-            // Read and insert entries — cursor is hoisted per block to avoid per-entry overhead
+            // Collect storage for hashing
+            let mut storage_entries = batch.entry(address).or_default();
+
+            // Read and insert entries
             let mut entry_buf = [0u8; 64];
-            let start = std::time::Instant::now();
+            let start = Instant::now();
             let mut last_log = start;
 
             let tx = provider_rw.tx_ref();
             let mut storage_cursor = tx.cursor_dup_write::<tables::PlainStorageState>()?;
 
-            for i in 0..pair_count {
-                reader
-                    .read_exact(&mut entry_buf)
-                    .wrap_err("failed to read storage entry")?;
+            for chunk in (0..pair_count).chunks(HASHING_BATCH_SIZE).into_iter() {
+                for i in chunk {
+                    reader
+                        .read_exact(&mut entry_buf)
+                        .wrap_err("failed to read storage entry")?;
 
-                let slot = B256::from_slice(&entry_buf[..32]);
-                let value = U256::from_be_bytes::<32>(entry_buf[32..64].try_into().unwrap());
+                    let slot = B256::from_slice(&entry_buf[..32]);
+                    let value = U256::from_be_bytes::<32>(entry_buf[32..64].try_into().unwrap());
 
-                // Skip zero values (they represent deletion)
-                if value.is_zero() {
-                    continue;
+                    // Skip zero values (they represent deletion)
+                    if value.is_zero() {
+                        continue;
+                    }
+
+                    let entry = StorageEntry { key: slot, value };
+
+                    // Insert into plain storage state
+                    storage_cursor.upsert(address, &entry)?;
+
+                    // Collect for hashed storage
+                    storage_entries.push(entry);
+                    total_entries += 1;
+
+                    let now = Instant::now();
+                    if now.duration_since(last_log) >= Duration::from_secs(5) || i + 1 == pair_count
+                    {
+                        let pct = ((i + 1) as f64 / pair_count as f64) * 100.0;
+                        let elapsed = start.elapsed();
+                        let pairs_per_sec = (i + 1) as f64 / elapsed.as_secs_f64();
+                        info!(
+                            target: "tempo::cli",
+                            %address,
+                            progress = format_args!("{}/{} ({pct:.0}%)", i + 1, pair_count),
+                            elapsed = ?elapsed,
+                            pairs_per_sec = pairs_per_sec as u64,
+                            "Inserting storage"
+                        );
+                        last_log = now;
+                    }
                 }
 
-                let entry = StorageEntry { key: slot, value };
-
-                // Insert into plain storage state
-                storage_cursor.upsert(address, &entry)?;
-
-                // Collect for hashed storage
-                batch.entry(address).or_default().push(entry);
-                batch_total += 1;
-                total_entries += 1;
-
-                // Flush batch when it reaches the threshold to bound heap usage
-                if batch_total >= HASHING_BATCH_SIZE {
-                    drop(storage_cursor);
-
-                    provider_rw.insert_storage_for_hashing(batch.drain())?;
-                    batch_total = 0;
-
-                    let tx = provider_rw.tx_ref();
-                    storage_cursor = tx.cursor_dup_write::<tables::PlainStorageState>()?;
-                }
-
-                let now = std::time::Instant::now();
-                if now.duration_since(last_log) >= std::time::Duration::from_secs(5)
-                    || i + 1 == pair_count
-                {
-                    let pct = ((i + 1) as f64 / pair_count as f64) * 100.0;
-                    let elapsed = start.elapsed();
-                    let pairs_per_sec = (i + 1) as f64 / elapsed.as_secs_f64();
-                    info!(
-                        target: "tempo::cli",
-                        %address,
-                        progress = format_args!("{}/{} ({pct:.0}%)", i + 1, pair_count),
-                        elapsed = ?elapsed,
-                        pairs_per_sec = pairs_per_sec as u64,
-                        "Inserting storage"
-                    );
-                    last_log = now;
-                }
+                provider_rw.insert_storage_for_hashing(batch.drain())?;
+                storage_entries = batch.entry(address).or_default();
             }
 
             // Drop cursor before potential flush at top of next iteration
