@@ -66,7 +66,7 @@ pub(crate) struct InitFromBinaryDump<C: reth_cli::chainspec::ChainSpecParser = T
     /// Entries to buffer before flushing hashed storage.
     ///
     /// Defaults to a batch size for roughly 16 GB of heap usage.
-    #[arg(long, value_name = "ENTRIES", default_value_t = DEFAULT_HASHING_BATCH_SIZE, value_parser = clap::value_parser!(usize).range(1..))]
+    #[arg(long, value_name = "ENTRIES", default_value_t = DEFAULT_HASHING_BATCH_SIZE)]
     hashing_batch_size: usize,
 }
 
