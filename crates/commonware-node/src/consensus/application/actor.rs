@@ -631,7 +631,7 @@ impl Inner<Init> {
     /// canonical state notifications and retries once the committed chain
     /// segment contains the parent block. The caller is expected to race this
     /// against `response.closed()` so that consensus can time out the proposal.
-    #[instrument(skip_all, fields(%parent_hash, %parent_height))]
+    #[instrument(skip_all, fields(%parent_hash, %parent_height), ret, err(level = Level::WARN))]
     async fn resolve_fee_recipient(
         &self,
         parent_hash: B256,
