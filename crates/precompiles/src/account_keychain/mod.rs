@@ -125,6 +125,17 @@ pub struct AuthorizedKey {
     pub is_revoked: bool,
 }
 
+/// Per-token periodic spending limit state (T3+).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Storable)]
+pub struct SpendingLimitPeriodState {
+    /// Maximum amount allowed per period.
+    pub max: U256,
+    /// Duration of each period in seconds. `0` means non-periodic.
+    pub period: u64,
+    /// End timestamp of the current period window.
+    pub period_end: u64,
+}
+
 // TODO(rusowsky): remove this and create a read-only wrapper that is callable from read-only ctx with db access
 impl AuthorizedKey {
     /// Decode AuthorizedKey from a storage slot value
@@ -188,12 +199,8 @@ pub struct AccountKeychain {
     // spendingLimits[(account, keyId)][token] -> amount
     // Using a hash of account and keyId as the key to avoid triple nesting
     spending_limits: Mapping<B256, Mapping<Address, U256>>,
-    // spendingLimitMax[(account, keyId)][token] -> max amount per period
-    spending_limit_max: Mapping<B256, Mapping<Address, U256>>,
-    // spendingLimitPeriod[(account, keyId)][token] -> period duration in seconds
-    spending_limit_period: Mapping<B256, Mapping<Address, u64>>,
-    // spendingLimitPeriodEnd[(account, keyId)][token] -> current period end timestamp
-    spending_limit_period_end: Mapping<B256, Mapping<Address, u64>>,
+    // spendingLimitPeriodState[(account, keyId)][token] -> { max, period, period_end }
+    spending_limit_period_state: Mapping<B256, Mapping<Address, SpendingLimitPeriodState>>,
 
     // key_scopes[(account, keyId)] -> call scoping configuration.
     key_scopes: Mapping<B256, KeyScope>,
@@ -439,7 +446,10 @@ impl AccountKeychain {
         if self.storage.spec().is_t3() {
             // T3: newLimit updates both the configured cap and current remaining amount,
             // while preserving period + period_end.
-            self.spending_limit_max[limit_key][call.token].write(call.newLimit)?;
+            let mut period_state =
+                self.spending_limit_period_state[limit_key][call.token].read()?;
+            period_state.max = call.newLimit;
+            self.spending_limit_period_state[limit_key][call.token].write(period_state)?;
         }
 
         // Emit event
@@ -724,9 +734,13 @@ impl AccountKeychain {
             };
 
             self.spending_limits[limit_key][limit.token].write(limit.limit)?;
-            self.spending_limit_max[limit_key][limit.token].write(limit.limit)?;
-            self.spending_limit_period[limit_key][limit.token].write(limit.period)?;
-            self.spending_limit_period_end[limit_key][limit.token].write(period_end)?;
+            self.spending_limit_period_state[limit_key][limit.token].write(
+                SpendingLimitPeriodState {
+                    max: limit.limit,
+                    period: limit.period,
+                    period_end,
+                },
+            )?;
         }
 
         let account_key = Self::account_key(account, key_id);
@@ -1178,23 +1192,21 @@ impl AccountKeychain {
             return Ok((remaining, 0));
         }
 
-        let period = self.spending_limit_period[limit_key][token].read()?;
-        if period == 0 {
+        let period_state = self.spending_limit_period_state[limit_key][token].read()?;
+        if period_state.period == 0 {
             return Ok((remaining, 0));
         }
 
-        let period_end = self.spending_limit_period_end[limit_key][token].read()?;
-        if current_timestamp < period_end {
-            return Ok((remaining, period_end));
+        if current_timestamp < period_state.period_end {
+            return Ok((remaining, period_state.period_end));
         }
 
-        let max = self.spending_limit_max[limit_key][token].read()?;
-        let elapsed = current_timestamp.saturating_sub(period_end);
-        let periods_elapsed = elapsed / period + 1;
-        let advance = period.saturating_mul(periods_elapsed);
-        let next_end = period_end.saturating_add(advance);
+        let elapsed = current_timestamp.saturating_sub(period_state.period_end);
+        let periods_elapsed = elapsed / period_state.period + 1;
+        let advance = period_state.period.saturating_mul(periods_elapsed);
+        let next_end = period_state.period_end.saturating_add(advance);
 
-        Ok((max, next_end))
+        Ok((period_state.max, next_end))
     }
 
     /// Deducts `amount` from the key's remaining spending limit for `token`, failing if exceeded.
@@ -1228,20 +1240,19 @@ impl AccountKeychain {
         let mut remaining = self.spending_limits[limit_key][token].read()?;
 
         if self.storage.spec().is_t3() {
-            let period = self.spending_limit_period[limit_key][token].read()?;
-            if period > 0 {
-                let period_end = self.spending_limit_period_end[limit_key][token].read()?;
+            let mut period_state = self.spending_limit_period_state[limit_key][token].read()?;
+            if period_state.period > 0 {
                 let now = self.storage.timestamp().saturating_to::<u64>();
-                if now >= period_end {
-                    let max = self.spending_limit_max[limit_key][token].read()?;
-                    let elapsed = now.saturating_sub(period_end);
-                    let periods_elapsed = elapsed / period + 1;
-                    let advance = period.saturating_mul(periods_elapsed);
-                    let next_end = period_end.saturating_add(advance);
+                if now >= period_state.period_end {
+                    let elapsed = now.saturating_sub(period_state.period_end);
+                    let periods_elapsed = elapsed / period_state.period + 1;
+                    let advance = period_state.period.saturating_mul(periods_elapsed);
+                    let next_end = period_state.period_end.saturating_add(advance);
 
-                    remaining = max;
-                    self.spending_limits[limit_key][token].write(max)?;
-                    self.spending_limit_period_end[limit_key][token].write(next_end)?;
+                    remaining = period_state.max;
+                    self.spending_limits[limit_key][token].write(period_state.max)?;
+                    period_state.period_end = next_end;
+                    self.spending_limit_period_state[limit_key][token].write(period_state)?;
                 }
             }
         }
