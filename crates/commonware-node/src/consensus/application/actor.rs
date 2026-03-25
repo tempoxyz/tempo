@@ -832,20 +832,11 @@ fn read_fee_recipient(
     block_hash: B256,
     fallback: alloy_primitives::Address,
 ) -> eyre::Result<alloy_primitives::Address> {
-    resolve_onchain_fee_recipient(
-        crate::validators::read_fee_recipient_at_block_hash(execution_node, public_key, block_hash),
-        fallback,
-    )
-}
-
-/// Resolves the fee recipient from the result of an on-chain read,
-/// falling back to `fallback` when V2 is not active or the on-chain
-/// address is `Address::ZERO`.
-fn resolve_onchain_fee_recipient(
-    onchain: eyre::Result<Option<alloy_primitives::Address>>,
-    fallback: alloy_primitives::Address,
-) -> eyre::Result<alloy_primitives::Address> {
-    match onchain {
+    match crate::validators::read_fee_recipient_at_block_hash(
+        execution_node,
+        public_key,
+        block_hash,
+    ) {
         Ok(Some(fee_recipient)) if fee_recipient.is_zero() => {
             debug!("on-chain fee recipient is zero; using CLI fee recipient");
             Ok(fallback)
@@ -1110,40 +1101,5 @@ impl Metrics {
         Self {
             parent_ahead_of_local_time,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use alloy_primitives::Address;
-
-    use super::resolve_onchain_fee_recipient;
-
-    const FALLBACK: Address = Address::ZERO;
-    const ONCHAIN: Address = Address::new([0x11; 20]);
-
-    #[test]
-    fn returns_onchain_fee_recipient() {
-        let result = resolve_onchain_fee_recipient(Ok(Some(ONCHAIN)), FALLBACK);
-        assert_eq!(result.unwrap(), ONCHAIN);
-    }
-
-    #[test]
-    fn falls_back_when_onchain_is_zero() {
-        let result = resolve_onchain_fee_recipient(Ok(Some(Address::ZERO)), FALLBACK);
-        assert_eq!(result.unwrap(), FALLBACK);
-    }
-
-    #[test]
-    fn falls_back_when_v2_not_active() {
-        let result = resolve_onchain_fee_recipient(Ok(None), FALLBACK);
-        assert_eq!(result.unwrap(), FALLBACK);
-    }
-
-    #[test]
-    fn propagates_read_error() {
-        let result =
-            resolve_onchain_fee_recipient(Err(eyre::eyre!("state not available")), FALLBACK);
-        assert!(result.is_err());
     }
 }
