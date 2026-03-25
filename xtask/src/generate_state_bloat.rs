@@ -14,6 +14,7 @@ use alloy::{
 };
 use coins_bip32::prelude::*;
 use eyre::{Context as _, ensure};
+use itertools::Itertools;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::{
@@ -161,13 +162,14 @@ impl GenerateStateBloat {
 
         let mut chunk_buf = Vec::with_capacity(chunk_size.min(total_accounts) * 64);
 
-        for chunk_idx in 0..num_chunks {
-            let chunk_start = chunk_idx * chunk_size;
-            let chunk_end = (chunk_start + chunk_size).min(total_accounts);
-            let chunk_len = chunk_end - chunk_start;
+        let mut is_first_chunk = true;
+
+        for chunk in &(0..total_accounts).chunks(chunk_size) {
+            let chunk_indices: Vec<_> = chunk.collect();
+            let chunk_len = chunk_indices.len();
 
             // Derive addresses and compute slot bytes for this chunk only
-            let slot_bytes: Vec<[u8; 32]> = (chunk_start..chunk_end)
+            let slot_bytes: Vec<[u8; 32]> = chunk_indices
                 .into_par_iter()
                 .map(|i| {
                     let addr = if i < actual_signable {
@@ -187,7 +189,6 @@ impl GenerateStateBloat {
 
             // Write one block per token for this chunk
             for (token_idx, token_addr) in token_addresses.iter().enumerate() {
-                let is_first_chunk = chunk_idx == 0;
                 let pair_count = chunk_len as u64 + if is_first_chunk { 1 } else { 0 };
 
                 write_header(&mut writer, *token_addr, pair_count)?;
@@ -211,6 +212,8 @@ impl GenerateStateBloat {
                     pb.inc(chunk_len as u64);
                 }
             }
+
+            is_first_chunk = false;
         }
 
         writer.flush()?;
