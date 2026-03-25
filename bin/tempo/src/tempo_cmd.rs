@@ -20,7 +20,7 @@ use commonware_cryptography::{
 };
 use commonware_math::algebra::Random as _;
 use commonware_utils::NZU64;
-use eyre::{Ok, OptionExt as _, Report, WrapErr as _, eyre};
+use eyre::{OptionExt as _, Report, WrapErr as _, eyre};
 use reth_cli_runner::CliRunner;
 use reth_ethereum_cli::ExtendedCommand;
 use serde::Serialize;
