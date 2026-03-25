@@ -10,15 +10,21 @@ use alloy::{
     sol_types::{SolCall, SolError, SolEvent},
 };
 use alloy_eips::BlockId;
-use alloy_rpc_types_eth::TransactionInput;
+use alloy_rpc_types_eth::{
+    TransactionInput,
+    state::{AccountOverride, StateOverride},
+};
 use reth_evm::revm::interpreter::instructions::utility::IntoU256;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{
     IFeeManager,
     ITIP20::{self, transferCall},
-    ITIPFeeAMM, UnknownFunctionSelector,
+    ITIPFeeAMM, IValidatorConfig, UnknownFunctionSelector,
 };
-use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::TIP20Token};
+use tempo_precompiles::{
+    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, storage::ContractStorage, tip20::TIP20Token,
+    validator_config::ValidatorConfig,
+};
 use test_case::test_case;
 
 #[test_case(ForkSchedule::Devnet ; "devnet")]
@@ -650,5 +656,73 @@ async fn test_unknown_selector_error_via_rpc(schedule: ForkSchedule) -> eyre::Re
         "Error should contain the correct unknown selector"
     );
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_get_validators_oom_state_override() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let provider = ProviderBuilder::new().connect_http(setup.http_url);
+    let val_config = ValidatorConfig::new();
+
+    // Malicious state diff: set array length to a huge number
+    let overrides = [(
+        val_config.address(),
+        AccountOverride::default().with_state_diff([(
+            val_config.validators_array.len_slot().into(),
+            B256::from(U256::from(0x0004000000000000u64)),
+        )]),
+    )]
+    .into_iter()
+    .collect::<StateOverride>();
+
+    let tx = TransactionRequest::default()
+        .to(val_config.address())
+        .input(TransactionInput::new(
+            IValidatorConfig::getValidatorsCall::SELECTOR.into(),
+        ));
+
+    // eth_call with the override must return an error, not OOM-crash the node
+    let res = provider.call(tx).overrides(overrides).await;
+    let err = res.unwrap_err().to_string();
+    assert!(err.contains("dyn array storage length") && err.contains("exceeds maximum"));
+
+    // Verify the node is still alive (didn't OOM)
+    provider.get_block_number().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip20_name_oom_state_override() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let provider = ProviderBuilder::new().connect_http(setup.http_url);
+
+    // Malicious state diff on the name slot (slot 2 in TIP20Token layout):
+    // 0x0008000000000001 → LSB=1 (long string), decoded len = 0x0004000000000000
+    let overrides = [(
+        PATH_USD_ADDRESS,
+        AccountOverride::default().with_state_diff([(
+            B256::from(U256::from(2)),
+            B256::from(U256::from(0x0008000000000001u64)),
+        )]),
+    )]
+    .into_iter()
+    .collect::<StateOverride>();
+
+    let tx = TransactionRequest::default()
+        .to(PATH_USD_ADDRESS)
+        .input(TransactionInput::new(ITIP20::nameCall::SELECTOR.into()));
+
+    // eth_call with the override must return an error, not OOM-crash the node
+    let res = provider.call(tx).overrides(overrides).await;
+    let err = res.unwrap_err().to_string();
+    assert!(err.contains("dyn storage size") && err.contains("exceeds maximum"),);
+
+    // Verify the node is still alive (didn't OOM)
+    provider.get_block_number().await?;
     Ok(())
 }

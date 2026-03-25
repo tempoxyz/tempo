@@ -18,6 +18,8 @@ use crate::{
 use alloy::primitives::{Address, Bytes, U256, keccak256};
 use std::marker::PhantomData;
 
+use super::MAX_DYNAMIC_LENGTH;
+
 impl StorableType for Bytes {
     const LAYOUT: Layout = Layout::Slots(1);
     const IS_DYNAMIC: bool = true;
@@ -69,7 +71,7 @@ impl<T: Storable> BytesLikeHandler<T> {
     pub fn len(&self) -> Result<usize> {
         let base_value = Slot::<U256>::new(self.base_slot, self.address).read()?;
         let is_long = is_long_string(base_value);
-        Ok(calc_string_length(base_value, is_long))
+        calc_string_length(base_value, is_long)
     }
 
     /// Returns whether the stored value is empty.
@@ -170,7 +172,7 @@ where
 {
     let base_value = storage.load(base_slot)?;
     let is_long = is_long_string(base_value);
-    let length = calc_string_length(base_value, is_long);
+    let length = calc_string_length(base_value, is_long)?;
 
     if is_long {
         // Long string: read data from keccak256(base_slot) + i
@@ -204,6 +206,11 @@ where
 #[inline]
 fn store_bytes_like<S: StorageOps>(bytes: &[u8], storage: &mut S, base_slot: U256) -> Result<()> {
     let length = bytes.len();
+    if length > MAX_DYNAMIC_LENGTH {
+        return Err(TempoPrecompileError::Fatal(format!(
+            "dyn storage length {length} exceeds maximum of 64 KB"
+        )));
+    }
 
     if length <= 31 {
         storage.store(base_slot, encode_short_string(bytes))
@@ -241,7 +248,7 @@ fn delete_bytes_like<S: StorageOps>(storage: &mut S, base_slot: U256) -> Result<
 
     if is_long {
         // Long string: need to clear data slots as well
-        let length = calc_string_length(base_value, true);
+        let length = calc_string_length(base_value, true)?;
         let slot_start = calc_data_slot(base_slot);
         let chunks = calc_chunks(length);
 
@@ -274,21 +281,28 @@ fn is_long_string(slot_value: U256) -> bool {
     (slot_value.byte(0) & 1) != 0
 }
 
-/// Extract the string length from a storage slot value.
+/// Extract and validate the string length from a storage slot value.
+///
+/// Returns an error if the decoded length exceeds [`MAX_DYNAMIC_LENGTH`].
 #[inline]
-fn calc_string_length(slot_value: U256, is_long: bool) -> usize {
+fn calc_string_length(slot_value: U256, is_long: bool) -> Result<usize> {
     if is_long {
         // Long string: slot stores (length * 2 + 1)
         // Extract length: (value - 1) / 2
         let length_times_two_plus_one: U256 = slot_value;
         let length_times_two: U256 = length_times_two_plus_one - U256::ONE;
         let length_u256: U256 = length_times_two >> 1;
-        length_u256.to::<usize>()
+        if length_u256 > U256::from(MAX_DYNAMIC_LENGTH) {
+            return Err(TempoPrecompileError::Fatal(format!(
+                "dyn storage size {length_u256} exceeds maximum of 64KB"
+            )));
+        }
+        Ok(length_u256.to::<usize>())
     } else {
         // Short string: LSB stores (length * 2)
         // Extract length: LSB / 2
         let bytes = slot_value.to_be_bytes::<32>();
-        (bytes[31] / 2) as usize
+        Ok((bytes[31] / 2) as usize)
     }
 }
 
@@ -425,7 +439,8 @@ mod tests {
             let encoded = encode_short_string(&bytes);
             let decoded_len = calc_string_length(encoded, false);
             assert_eq!(
-                decoded_len, len,
+                decoded_len,
+                Ok(len),
                 "Short string length mismatch for {len} bytes"
             );
         }
@@ -438,7 +453,8 @@ mod tests {
             let encoded = encode_long_string_length(len);
             let decoded_len = calc_string_length(encoded, true);
             assert_eq!(
-                decoded_len, len,
+                decoded_len,
+                Ok(len),
                 "Long string length mismatch for {len} bytes"
             );
         }
@@ -511,7 +527,8 @@ mod tests {
             let encoded = encode_short_string(&bytes);
             let decoded_len = calc_string_length(encoded, false);
             assert_eq!(
-                decoded_len, len,
+                decoded_len,
+                Ok(len),
                 "Short string roundtrip failed for {len} bytes"
             );
         }
@@ -521,10 +538,47 @@ mod tests {
             let encoded = encode_long_string_length(len);
             let decoded_len = calc_string_length(encoded, true);
             assert_eq!(
-                decoded_len, len,
+                decoded_len,
+                Ok(len),
                 "Long string roundtrip failed for {len} bytes"
             );
         }
+    }
+
+    // -- OOM REJECTION TESTS ---------------------------------------------------
+
+    #[test]
+    fn test_calc_string_length_bounded() {
+        // Exact PoC value: slot = 0x0008000000000001
+        // LSB=1 → long string, decoded length = (0x0008000000000001 - 1) / 2 = 0x0004000000000000
+        let malicious_slot = U256::from(0x0008000000000001u64);
+        assert!(is_long_string(malicious_slot));
+        assert!(calc_string_length(malicious_slot, true).is_err());
+
+        // Boundary: MAX_DYNAMIC_LENGTH is accepted, MAX_DYNAMIC_LENGTH + 1 is rejected
+        let at_max = U256::from(MAX_DYNAMIC_LENGTH * 2 + 1);
+        assert_eq!(calc_string_length(at_max, true), Ok(MAX_DYNAMIC_LENGTH));
+
+        let above_max = U256::from((MAX_DYNAMIC_LENGTH + 1) * 2 + 1);
+        assert!(calc_string_length(above_max, true).is_err());
+    }
+
+    #[test]
+    fn test_bytes_like_handler_rejects_overridden_length() -> eyre::Result<()> {
+        let (mut storage, address) = setup_storage();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut base = Slot::<U256>::new(U256::from(2), address);
+            let handler = BytesLikeHandler::<String>::new(U256::from(2), address);
+
+            // Simulate PoC state override: malicious long-string encoding
+            base.write(U256::from(0x0008000000000001u64))?;
+
+            assert!(handler.len().is_err(), "len() must reject huge length");
+            assert!(handler.read().is_err(), "read() must reject huge length");
+
+            Ok(())
+        })
     }
 
     // -- PROPERTY TESTS FOR STORAGE INTERACTION -------------------------------
