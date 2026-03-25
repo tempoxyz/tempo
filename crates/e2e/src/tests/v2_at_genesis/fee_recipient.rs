@@ -5,8 +5,7 @@ use alloy_primitives::Address;
 use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
 use futures::{StreamExt as _, future::join_all};
-use reth_ethereum::storage::BlockReader as _;
-use reth_ethereum::provider::CanonStateSubscriptions as _;
+use reth_ethereum::{provider::CanonStateSubscriptions as _, storage::BlockReader as _};
 
 use crate::{Setup, setup_validators};
 
