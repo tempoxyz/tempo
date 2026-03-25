@@ -381,7 +381,7 @@ jobs:
     needs: tempo-bench-ack
     name: tempo-bench
     runs-on: [self-hosted, Linux, X64, bare-metal]
-    timeout-minutes: 900
+    timeout-minutes: 1500
     env:
       BENCH_PR: ${{ needs.tempo-bench-ack.outputs.pr }}
       BENCH_ACTOR: ${{ needs.tempo-bench-ack.outputs.actor }}
@@ -559,36 +559,6 @@ jobs:
             core.setOutput('feature-ref', featureRef);
             core.setOutput('feature-name', featureName);
 
-      - name: Update status (generating state)
-        if: success() && env.BENCH_COMMENT_ID
-        uses: actions/github-script@v8
-        with:
-          github-token: ${{ secrets.DEREK_PAT }}
-          script: |
-            const s = require('./.github/scripts/bench-update-status.js');
-            await s({github, context, status: 'Generating state...'});
-
-      - name: Generate state
-        id: gen
-        timeout-minutes: 600
-        env:
-          BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
-          FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
-        run: |
-          nu tempo.nu bench \
-            --init-only \
-            --preset "$BENCH_PRESET" \
-            --mode dev \
-            --bloat "$BENCH_BLOAT" \
-            --duration "$BENCH_DURATION" \
-            --tps "$BENCH_TPS" \
-            --no-infra \
-            --baseline "$BASELINE_REF" \
-            --feature "$FEATURE_REF" \
-            --bench-datadir /reth-bench \
-            --tune \
-            $([ -n "$BENCH_BASELINE_HARDFORK" ] && echo "--baseline-hardfork $BENCH_BASELINE_HARDFORK --feature-hardfork $BENCH_FEATURE_HARDFORK" || true)
-
       - name: Update status (running benchmark)
         if: success() && env.BENCH_COMMENT_ID
         uses: actions/github-script@v8
@@ -600,7 +570,6 @@ jobs:
 
       - name: Run benchmark
         id: bench
-        timeout-minutes: 300
         env:
           BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
           FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
