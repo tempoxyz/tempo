@@ -183,6 +183,7 @@ jobs:
           echo "::endgroup::"
 
           if [ "$clippy_exit" -eq 0 ]; then
+            echo "clippy_passed=true" >> "$GITHUB_OUTPUT"
             echo "Cargo clippy already passes — skipping."
             exit 0
           fi
@@ -244,6 +245,7 @@ jobs:
           echo "::endgroup::"
 
           if [ "$test_exit" -eq 0 ]; then
+            echo "test_passed=true" >> "$GITHUB_OUTPUT"
             echo "Tests already compile — skipping."
             exit 0
           fi
@@ -537,3 +539,97 @@ jobs:
               exit 1
             fi
           done
+
+      # ── Slack notification ─────────────────────────────────────
+      - name: Notify Slack
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.DEREK_PAT }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_ENG_TEMPO_WORKFLOWS_WEBHOOK_URL }}
+        run: |
+          PR_BRANCH="reth-auto-bump"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          OLD_REV="${{ steps.update.outputs.old_rev }}"
+          NEW_REV="${{ steps.update.outputs.new_rev }}"
+          BUMPED="${{ steps.update.outputs.bumped }}"
+          CLIPPY_PASSED="${{ steps.check-loop.outputs.clippy_passed }}"
+          TEST_PASSED="${{ steps.test-loop.outputs.test_passed }}"
+
+          PR_NUMBER=""
+          PR_URL=""
+          PR_INFO=$(gh pr list --head "$PR_BRANCH" --base main --state open --json number,url --jq '.[0] | select(.) | [.number, .url] | @tsv' 2>/dev/null || true)
+          if [ -n "$PR_INFO" ]; then
+            IFS=$'\t' read -r PR_NUMBER PR_URL <<< "$PR_INFO"
+          fi
+
+          # Determine overall status
+          JOB_STATUS="${{ job.status }}"
+          if [ "$JOB_STATUS" = "success" ]; then
+            EMOJI="✅"
+            STATUS="succeeded"
+            COLOR="#2eb67d"
+          elif [ "$JOB_STATUS" = "cancelled" ]; then
+            EMOJI="⚠️"
+            STATUS="cancelled"
+            COLOR="#e0a523"
+          else
+            EMOJI="❌"
+            STATUS="failed"
+            COLOR="#e01e5a"
+          fi
+
+          # Build detail lines
+          DETAILS=""
+          if [ "$BUMPED" = "true" ] && [ -n "$OLD_REV" ] && [ -n "$NEW_REV" ]; then
+            DETAILS="${DETAILS}\n• <https://github.com/paradigmxyz/reth/compare/${OLD_REV}...${NEW_REV}|${OLD_REV:0:7} → ${NEW_REV:0:7}>"
+          elif [ "$BUMPED" = "false" ]; then
+            DETAILS="${DETAILS}\n• Already on latest reth rev"
+          fi
+
+          if [ "$CLIPPY_PASSED" = "false" ]; then
+            DETAILS="${DETAILS}\n• ⚠️ Clippy: unresolved errors"
+          fi
+
+          if [ "$TEST_PASSED" = "false" ]; then
+            DETAILS="${DETAILS}\n• ⚠️ Tests: unresolved errors"
+          fi
+
+          if [ -n "$PR_URL" ]; then
+            DETAILS="${DETAILS}\n• <${PR_URL}|PR #${PR_NUMBER}>"
+          fi
+
+          DETAILS="${DETAILS}\n• <${RUN_URL}|Workflow>"
+
+          # Post to Slack via incoming webhook
+          if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
+            echo "::warning::SLACK_WEBHOOK_URL is not set; skipping Slack notification"
+            exit 0
+          fi
+
+          DETAILS_TEXT=$(printf '%b' "$DETAILS")
+
+          PAYLOAD=$(jq -n \
+            --arg emoji "$EMOJI" \
+            --arg status "$STATUS" \
+            --arg details "$DETAILS_TEXT" \
+            --arg color "$COLOR" \
+            '{
+              text: ($emoji + " Reth update " + $status),
+              attachments: [{
+                color: $color,
+                blocks: [
+                  {
+                    type: "section",
+                    text: {
+                      type: "mrkdwn",
+                      text: ($emoji + " *Reth update " + $status + "*" + $details)
+                    }
+                  }
+                ]
+              }]
+            }')
+
+          curl -sf -X POST -H 'Content-type: application/json' \
+            --data "$PAYLOAD" \
+            "$SLACK_WEBHOOK_URL" \
+            || echo "::warning::Failed to post Slack notification"
