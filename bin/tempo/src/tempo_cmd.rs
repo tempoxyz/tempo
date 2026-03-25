@@ -139,18 +139,19 @@ pub(crate) enum ConsensusSubcommand {
 }
 
 impl ConsensusSubcommand {
-    fn run(self) -> eyre::Result<()> {
+    #[tokio::main(flavor = "current_thread")]
+    async fn run(self) -> eyre::Result<()> {
         match self {
-            Self::AddValidator(args) => args.run(),
-            Self::TransferValidatorOwnership(args) => args.run(),
-            Self::RotateValidator(args) => args.run(),
-            Self::CreateAddValidatorSignature(args) => args.run(),
-            Self::CreateRotateValidatorSignature(args) => args.run(),
-            Self::SetValidatorIpAddress(args) => args.run(),
-            Self::SetValidatorFeeRecipient(args) => args.run(),
-            Self::GeneratePrivateKey(args) => args.run(),
-            Self::CalculatePublicKey(args) => args.run(),
-            Self::ValidatorsInfo(args) => args.run(),
+            Self::AddValidator(args) => args.run().await,
+            Self::TransferValidatorOwnership(args) => args.run().await,
+            Self::RotateValidator(args) => args.run().await,
+            Self::CreateAddValidatorSignature(args) => args.run().await,
+            Self::CreateRotateValidatorSignature(args) => args.run().await,
+            Self::SetValidatorIpAddress(args) => args.run().await,
+            Self::SetValidatorFeeRecipient(args) => args.run().await,
+            Self::GeneratePrivateKey(args) => args.run().await,
+            Self::CalculatePublicKey(args) => args.run().await,
+            Self::ValidatorsInfo(args) => args.run().await,
         }
     }
 }
@@ -317,15 +318,7 @@ pub(crate) struct AddValidator {
 }
 
 impl AddValidator {
-    fn run(self) -> eyre::Result<()> {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .wrap_err("failed constructing async runtime")?
-            .block_on(self.run_async())
-    }
-
-    async fn run_async(self) -> eyre::Result<()> {
+    async fn run(self) -> eyre::Result<()> {
         let signer = self.submit.signer()?;
         let provider = self.submit.provider(signer).await?;
 
@@ -390,15 +383,7 @@ pub(crate) struct TransferValidatorOwnership {
 }
 
 impl TransferValidatorOwnership {
-    fn run(self) -> eyre::Result<()> {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .wrap_err("failed constructing async runtime")?
-            .block_on(self.run_async())
-    }
-
-    async fn run_async(self) -> eyre::Result<()> {
+    async fn run(self) -> eyre::Result<()> {
         let signer = self.submit.signer()?;
         let provider = self.submit.provider(signer).await?;
 
@@ -450,15 +435,7 @@ pub(crate) struct RotateValidator {
 }
 
 impl RotateValidator {
-    fn run(self) -> eyre::Result<()> {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .wrap_err("failed constructing async runtime")?
-            .block_on(self.run_async())
-    }
-
-    async fn run_async(self) -> eyre::Result<()> {
+    async fn run(self) -> eyre::Result<()> {
         let signer = self.submit.signer()?;
         let provider = self.submit.provider(signer).await?;
 
@@ -526,15 +503,7 @@ pub(crate) struct CreateAddValidatorSignatureArgs {
 }
 
 impl CreateAddValidatorSignatureArgs {
-    fn run(self) -> eyre::Result<()> {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .wrap_err("failed constructing async runtime")?
-            .block_on(self.run_async())
-    }
-
-    async fn run_async(self) -> eyre::Result<()> {
+    async fn run(self) -> eyre::Result<()> {
         let signing_key =
             SigningKey::read_from_file(&self.signing_key).wrap_err("failed reading signing key")?;
 
@@ -572,15 +541,7 @@ pub(crate) struct CreateRotateValidatorSignatureArgs {
 }
 
 impl CreateRotateValidatorSignatureArgs {
-    fn run(self) -> eyre::Result<()> {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .wrap_err("failed constructing async runtime")?
-            .block_on(self.run_async())
-    }
-
-    async fn run_async(self) -> eyre::Result<()> {
+    async fn run(self) -> eyre::Result<()> {
         let signing_key =
             SigningKey::read_from_file(&self.signing_key).wrap_err("failed reading signing key")?;
 
@@ -622,30 +583,20 @@ pub(crate) struct SetValidatorIpAddress {
 }
 
 impl SetValidatorIpAddress {
-    fn run(self) -> eyre::Result<()> {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .wrap_err("failed constructing async runtime")?
-            .block_on(self.run_async())
-    }
-
-    async fn run_async(self) -> eyre::Result<()> {
+    async fn run(self) -> eyre::Result<()> {
         let signer = self.submit.signer()?;
         let provider = self.submit.provider(signer).await?;
 
-        let validator = read_validator_from_contract(&provider, self.validator_address).await?;
         if self.ingress.is_none() && self.egress.is_none() {
             return Err(eyre!("at least one of --ingress or --egress must be set"));
         }
 
-        let ingress = self.ingress.map(|v| v.to_string());
-        let egress = self.egress.map(|v| v.to_string());
+        let validator = read_validator_from_contract(&provider, self.validator_address).await?;
 
         let calldata = IValidatorConfigV2::setIpAddressesCall {
             idx: validator.index,
-            ingress: ingress.unwrap_or(validator.ingress),
-            egress: egress.unwrap_or(validator.egress),
+            ingress: self.ingress.map_or(validator.ingress, |v| v.to_string()),
+            egress: self.egress.map_or(validator.egress, |v| v.to_string()),
         };
 
         self.submit.confirm(&serde_json::json!({
@@ -684,15 +635,7 @@ pub(crate) struct SetValidatorFeeRecipient {
 }
 
 impl SetValidatorFeeRecipient {
-    fn run(self) -> eyre::Result<()> {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .wrap_err("failed constructing async runtime")?
-            .block_on(self.run_async())
-    }
-
-    async fn run_async(self) -> eyre::Result<()> {
+    async fn run(self) -> eyre::Result<()> {
         let signer = self.submit.signer()?;
         let provider = self.submit.provider(signer).await?;
 
@@ -736,7 +679,7 @@ pub(crate) struct GeneratePrivateKey {
 }
 
 impl GeneratePrivateKey {
-    fn run(self) -> eyre::Result<()> {
+    async fn run(self) -> eyre::Result<()> {
         let Self { output, force } = self;
         let signing_key = PrivateKey::random(&mut rand_08::thread_rng());
         let public_key = signing_key.public_key();
@@ -754,6 +697,7 @@ impl GeneratePrivateKey {
             "wrote private key to: {}\npublic key: {public_key}",
             output.display()
         );
+
         Ok(())
     }
 }
@@ -766,7 +710,7 @@ pub(crate) struct CalculatePublicKey {
 }
 
 impl CalculatePublicKey {
-    fn run(self) -> eyre::Result<()> {
+    async fn run(self) -> eyre::Result<()> {
         let Self { private_key } = self;
         let private_key = SigningKey::read_from_file(&private_key).wrap_err_with(|| {
             format!(
@@ -774,6 +718,7 @@ impl CalculatePublicKey {
                 private_key.display()
             )
         })?;
+
         let validating_key = private_key.public_key();
         println!("public key: {validating_key}");
         Ok(())
@@ -836,15 +781,7 @@ pub(crate) struct ValidatorsInfo {
 }
 
 impl ValidatorsInfo {
-    fn run(self) -> eyre::Result<()> {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .wrap_err("failed constructing async runtime")?
-            .block_on(self.run_async())
-    }
-
-    async fn run_async(self) -> eyre::Result<()> {
+    async fn run(self) -> eyre::Result<()> {
         use alloy_consensus::BlockHeader;
         use alloy_provider::ProviderBuilder;
 
