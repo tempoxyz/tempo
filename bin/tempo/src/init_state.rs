@@ -35,7 +35,7 @@ const MAGIC: &[u8; 8] = b"TEMPOSB\x00";
 /// Expected format version
 const VERSION: u16 = 1;
 
-/// Entries per batch before flushing and committing. 40M ≈ 2.8 GB heap.
+/// Entries per batch before flushing hashed storage to bound heap usage. 40M ≈ 2.8 GB heap.
 const HASHING_BATCH_SIZE: usize = 40_000_000;
 
 /// Initialize state from a binary dump file.
@@ -65,7 +65,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         let environment = self.env.init::<N>(AccessRights::RW, runtime)?;
         let provider_factory = environment.provider_factory;
 
-        let mut provider_rw = provider_factory.database_provider_rw()?;
+        let provider_rw = provider_factory.database_provider_rw()?;
 
         // Verify we're at genesis (block 0)
         let last_block = provider_rw.last_block_number()?;
@@ -83,7 +83,6 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
         let mut total_entries = 0u64;
         let mut total_blocks = 0u64;
-        let mut total_commits = 0u64;
 
         // Track addresses and their account data for hashing (small — only token addresses)
         let mut accounts_seen: AddressMap<Account> = AddressMap::default();
@@ -192,31 +191,14 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 batch_total += 1;
                 total_entries += 1;
 
-                // Flush batch when it reaches the threshold
+                // Flush batch when it reaches the threshold to bound heap usage
                 if batch_total >= HASHING_BATCH_SIZE {
-                    // Drop cursor before commit
                     drop(storage_cursor);
 
                     provider_rw.insert_storage_for_hashing(batch.drain())?;
                     batch_total = 0;
-                    provider_rw.commit()?;
-                    provider_rw = provider_factory.database_provider_rw()?;
-                    total_commits += 1;
 
-                    // Re-ensure account exists after reopen — use the real account
-                    // metadata we saved earlier to preserve bytecode_hash.
-                    {
-                        let tx = provider_rw.tx_ref();
-                        let mut account_cursor =
-                            tx.cursor_write::<tables::PlainAccountState>()?;
-                        if account_cursor.seek_exact(address)?.is_none() {
-                            let account =
-                                accounts_seen.get(&address).copied().unwrap_or_default();
-                            account_cursor.upsert(address, &account)?;
-                        }
-                    }
-
-                    // Reopen cursor on new transaction
+                    // Reopen cursor after batch flush
                     let tx = provider_rw.tx_ref();
                     storage_cursor = tx.cursor_dup_write::<tables::PlainStorageState>()?;
                 }
@@ -256,7 +238,6 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             total_blocks,
             unique_tokens = accounts_seen.len(),
             total_entries,
-            total_commits,
             "Plain and hashed storage written, writing hashed accounts..."
         );
 
@@ -282,7 +263,6 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             total_blocks,
             unique_tokens = accounts_seen.len(),
             total_entries,
-            total_commits = total_commits + 1,
             "Binary state dump loaded successfully"
         );
 
