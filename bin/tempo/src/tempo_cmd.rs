@@ -134,6 +134,8 @@ pub(crate) enum ConsensusSubcommand {
     SetValidatorFeeRecipient(SetValidatorFeeRecipient),
     /// Transfer validator ownership
     TransferValidatorOwnership(TransferValidatorOwnership),
+    /// Query a single validator by address or index.
+    ValidatorInfo(ValidatorInfo),
     /// Query validator info from the previous epoch's DKG outcome and current contract state.
     ValidatorsInfo(ValidatorsInfo),
 }
@@ -151,31 +153,49 @@ impl ConsensusSubcommand {
             Self::SetValidatorFeeRecipient(args) => args.run().await,
             Self::GeneratePrivateKey(args) => args.run().await,
             Self::CalculatePublicKey(args) => args.run().await,
+            Self::ValidatorInfo(args) => args.run().await,
             Self::ValidatorsInfo(args) => args.run().await,
         }
     }
 }
 
+enum ValidatorLookup {
+    Address(Address),
+    Index(u64),
+}
+
 async fn read_validator_from_contract(
     provider: &impl Provider<TempoNetwork>,
-    validator_address: Address,
+    lookup: ValidatorLookup,
 ) -> eyre::Result<Validator> {
-    let validator_call_args = IValidatorConfigV2::validatorByAddressCall {
-        validatorAddress: validator_address,
+    let calldata = match lookup {
+        ValidatorLookup::Address(addr) => IValidatorConfigV2::validatorByAddressCall {
+            validatorAddress: addr,
+        }
+        .abi_encode(),
+        ValidatorLookup::Index(idx) => {
+            IValidatorConfigV2::validatorByIndexCall { index: idx }.abi_encode()
+        }
     };
 
     let tx = TransactionRequest::default()
         .to(VALIDATOR_CONFIG_V2_ADDRESS)
-        .input(validator_call_args.abi_encode().into());
+        .input(calldata.into());
 
-    let validator_call_resp = provider
+    let resp = provider
         .call(tx.into())
         .await
-        .wrap_err("failed to call validatorByAddress")?;
+        .wrap_err_with(|| format!("failed to read contract"))?;
 
-    let validator =
-        IValidatorConfigV2::validatorByAddressCall::abi_decode_returns(&validator_call_resp)
-            .wrap_err("failed to decode validatorByAddress response")?;
+    let validator = match lookup {
+        ValidatorLookup::Address(_) => {
+            IValidatorConfigV2::validatorByAddressCall::abi_decode_returns(&resp)
+        }
+        ValidatorLookup::Index(_) => {
+            IValidatorConfigV2::validatorByIndexCall::abi_decode_returns(&resp)
+        }
+    }
+    .wrap_err_with(|| format!("failed to decode validator"))?;
 
     Ok(validator)
 }
@@ -395,7 +415,11 @@ impl TransferValidatorOwnership {
         let new_signer = PrivateKeySigner::from_bytes(&new_private_key)?;
         let new_validator_address = new_signer.address();
 
-        let validator = read_validator_from_contract(&provider, self.validator_address).await?;
+        let validator = read_validator_from_contract(
+            &provider,
+            ValidatorLookup::Address(self.validator_address),
+        )
+        .await?;
 
         let calldata = IValidatorConfigV2::transferValidatorOwnershipCall {
             idx: validator.index,
@@ -454,8 +478,11 @@ impl RotateValidator {
             .check_rotate_validator_signature(signature.as_ref())
             .wrap_err("rotate-validator signature check failed")?;
 
-        let validator =
-            read_validator_from_contract(&provider, self.identity.validator_address).await?;
+        let validator = read_validator_from_contract(
+            &provider,
+            ValidatorLookup::Address(self.identity.validator_address),
+        )
+        .await?;
 
         let calldata = IValidatorConfigV2::rotateValidatorCall {
             idx: validator.index,
@@ -591,7 +618,11 @@ impl SetValidatorIpAddress {
             return Err(eyre!("at least one of --ingress or --egress must be set"));
         }
 
-        let validator = read_validator_from_contract(&provider, self.validator_address).await?;
+        let validator = read_validator_from_contract(
+            &provider,
+            ValidatorLookup::Address(self.validator_address),
+        )
+        .await?;
 
         let calldata = IValidatorConfigV2::setIpAddressesCall {
             idx: validator.index,
@@ -639,7 +670,11 @@ impl SetValidatorFeeRecipient {
         let signer = self.submit.signer()?;
         let provider = self.submit.provider(signer).await?;
 
-        let validator = read_validator_from_contract(&provider, self.validator_address).await?;
+        let validator = read_validator_from_contract(
+            &provider,
+            ValidatorLookup::Address(self.validator_address),
+        )
+        .await?;
         let calldata = IValidatorConfigV2::setFeeRecipientCall {
             idx: validator.index,
             feeRecipient: self.fee_recipient,
@@ -721,6 +756,45 @@ impl CalculatePublicKey {
 
         let validating_key = private_key.public_key();
         println!("public key: {validating_key}");
+        Ok(())
+    }
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct ValidatorInfo {
+    /// RPC URL to query.
+    #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
+    rpc_url: String,
+
+    /// Look up by validator address.
+    #[arg(long, conflicts_with = "index")]
+    address: Option<Address>,
+
+    /// Look up by validator index.
+    #[arg(long, conflicts_with = "address")]
+    index: Option<u64>,
+}
+
+impl ValidatorInfo {
+    async fn run(self) -> eyre::Result<()> {
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect(&self.rpc_url)
+            .await
+            .wrap_err("failed to connect to RPC")?;
+
+        let lookup = match (self.address, self.index) {
+            (Some(addr), None) => ValidatorLookup::Address(addr),
+            (None, Some(idx)) => ValidatorLookup::Index(idx),
+            _ => {
+                return Err(eyre!(
+                    "exactly one of --address or --index must be provided"
+                ));
+            }
+        };
+
+        let validator = read_validator_from_contract(&provider, lookup).await?;
+        println!("{}", serde_json::to_string_pretty(&validator)?);
+
         Ok(())
     }
 }
