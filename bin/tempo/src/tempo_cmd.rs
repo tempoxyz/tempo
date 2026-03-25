@@ -751,6 +751,10 @@ pub(crate) struct ValidatorInfo {
     /// Look up by validator index.
     #[arg(long, conflicts_with = "address")]
     index: Option<u64>,
+
+    /// Look up a validator on the v1 config contract
+    #[arg(long, default_value = "false")]
+    v1: bool,
 }
 
 impl ValidatorInfo {
@@ -760,14 +764,53 @@ impl ValidatorInfo {
             .await
             .wrap_err("failed to connect to RPC")?;
 
-        let lookup = match (self.address, self.index) {
-            (Some(addr), None) => ValidatorLookup::Address(addr),
-            (None, Some(idx)) => ValidatorLookup::Index(idx),
-            _ => {
-                return Err(eyre!(
-                    "exactly one of --address or --index must be provided"
-                ));
-            }
+        if self.v1 {
+            let address = if let Some(addr) = self.address {
+                addr
+            } else {
+                let idx = self.index.ok_or_eyre("--address or --index must be set")?;
+                let call = IValidatorConfig::validatorsArrayCall {
+                    index: alloy_primitives::U256::from(idx),
+                };
+
+                let resp = provider
+                    .call(
+                        TransactionRequest::default()
+                            .to(VALIDATOR_CONFIG_ADDRESS)
+                            .input(call.abi_encode().into())
+                            .into(),
+                    )
+                    .await
+                    .wrap_err("failed to call validatorsArray")?;
+
+                IValidatorConfig::validatorsArrayCall::abi_decode_returns(&resp)
+                    .wrap_err("failed to decode validatorsArray response")?
+            };
+
+            let call = IValidatorConfig::validatorsCall { validator: address };
+            let resp = provider
+                .call(
+                    TransactionRequest::default()
+                        .to(VALIDATOR_CONFIG_ADDRESS)
+                        .input(call.abi_encode().into())
+                        .into(),
+                )
+                .await
+                .wrap_err("failed to call validators")?;
+
+            let validator = IValidatorConfig::validatorsCall::abi_decode_returns(&resp)
+                .wrap_err("failed to decode validators response")?;
+
+            println!("{}", serde_json::to_string_pretty(&validator)?);
+
+            return Ok(());
+        }
+
+        let lookup = if let Some(addr) = self.address {
+            ValidatorLookup::Address(addr)
+        } else {
+            let idx = self.index.ok_or_eyre("--address or --index must be set")?;
+            ValidatorLookup::Index(idx)
         };
 
         let validator = read_validator_from_contract(&provider, lookup).await?;
