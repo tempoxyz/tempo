@@ -7,7 +7,10 @@ use std::{
     fs::File,
     io::{BufReader, Read},
     path::PathBuf,
-    sync::mpsc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    },
     time::{Duration, Instant},
 };
 
@@ -45,6 +48,61 @@ const WORKER_CHUNK_SIZE: usize = 100;
 
 /// Maximum number of channels that can exist in memory before draining.
 const MAXIMUM_CHANNELS: usize = 10_000;
+
+/// Peak RssAnon in KiB, updated atomically from progress logging.
+static PEAK_RSS_ANON_KB: AtomicU64 = AtomicU64::new(0);
+
+/// Memory stats from /proc/self/status (Linux only).
+#[derive(Debug, Default)]
+struct MemStats {
+    rss_kb: u64,
+    rss_anon_kb: u64,
+    rss_file_kb: u64,
+    vm_hwm_kb: u64,
+}
+
+impl MemStats {
+    /// Read current memory stats from /proc/self/status.
+    /// Returns default (zeros) on non-Linux or if parsing fails.
+    fn read() -> Self {
+        Self::try_read().unwrap_or_default()
+    }
+
+    fn try_read() -> Option<Self> {
+        let data = std::fs::read_to_string("/proc/self/status").ok()?;
+        let mut stats = Self::default();
+        for line in data.lines() {
+            let (key, val) = line.split_once(':')?;
+            let kb = || val.trim().strip_suffix(" kB")?.trim().parse::<u64>().ok();
+            match key.trim() {
+                "VmRSS" => stats.rss_kb = kb()?,
+                "RssAnon" => stats.rss_anon_kb = kb()?,
+                "RssFile" => stats.rss_file_kb = kb()?,
+                "VmHWM" => stats.vm_hwm_kb = kb()?,
+                _ => {}
+            }
+        }
+        // Update peak RssAnon
+        PEAK_RSS_ANON_KB.fetch_max(stats.rss_anon_kb, Ordering::Relaxed);
+        Some(stats)
+    }
+
+    fn rss_mb(&self) -> u64 {
+        self.rss_kb / 1024
+    }
+    fn rss_anon_mb(&self) -> u64 {
+        self.rss_anon_kb / 1024
+    }
+    fn rss_file_mb(&self) -> u64 {
+        self.rss_file_kb / 1024
+    }
+    fn vm_hwm_mb(&self) -> u64 {
+        self.vm_hwm_kb / 1024
+    }
+    fn peak_rss_anon_mb() -> u64 {
+        PEAK_RSS_ANON_KB.load(Ordering::Relaxed) / 1024
+    }
+}
 
 /// Initialize state from a binary dump file.
 #[derive(Debug, Parser)]
@@ -218,12 +276,17 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                     let pct = ((i + 1) as f64 / pair_count as f64) * 100.0;
                     let elapsed = start.elapsed();
                     let pairs_per_sec = (i + 1) as f64 / elapsed.as_secs_f64();
+                    let mem = MemStats::read();
                     info!(
                         target: "tempo::cli",
                         %address,
                         progress = format_args!("{}/{} ({pct:.0}%)", i + 1, pair_count),
                         elapsed = ?elapsed,
                         pairs_per_sec = pairs_per_sec as u64,
+                        rss_mb = mem.rss_mb(),
+                        rss_anon_mb = mem.rss_anon_mb(),
+                        rss_file_mb = mem.rss_file_mb(),
+                        peak_rss_anon_mb = MemStats::peak_rss_anon_mb(),
                         "Collecting storage"
                     );
                     last_log = now;
@@ -257,10 +320,16 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         // Drain all remaining channels
         collect_hashed(&mut pending_channels, &mut hashed_collector)?;
 
+        let mem = MemStats::read();
         info!(
             target: "tempo::cli",
             total_blocks,
             total_entries,
+            rss_mb = mem.rss_mb(),
+            rss_anon_mb = mem.rss_anon_mb(),
+            rss_file_mb = mem.rss_file_mb(),
+            peak_rss_anon_mb = MemStats::peak_rss_anon_mb(),
+            vm_hwm_mb = mem.vm_hwm_mb(),
             "Entries collected, merging genesis storage into ETL collectors..."
         );
 
@@ -407,10 +476,16 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         }
         drop(hashed_cursor);
 
+        let mem = MemStats::read();
         info!(
             target: "tempo::cli",
             total_plain,
             total_hashes,
+            rss_mb = mem.rss_mb(),
+            rss_anon_mb = mem.rss_anon_mb(),
+            rss_file_mb = mem.rss_file_mb(),
+            peak_rss_anon_mb = MemStats::peak_rss_anon_mb(),
+            vm_hwm_mb = mem.vm_hwm_mb(),
             "Storage written, writing hashed accounts..."
         );
 
@@ -445,10 +520,15 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         // Commit the transaction
         provider_rw.commit()?;
 
+        let mem = MemStats::read();
         info!(
             target: "tempo::cli",
             total_blocks,
             total_entries,
+            rss_mb = mem.rss_mb(),
+            rss_anon_mb = mem.rss_anon_mb(),
+            peak_rss_anon_mb = MemStats::peak_rss_anon_mb(),
+            vm_hwm_mb = mem.vm_hwm_mb(),
             "Binary state dump loaded successfully"
         );
 
