@@ -124,6 +124,10 @@ pub(crate) enum ConsensusSubcommand {
     RotateValidator(RotateValidator),
     /// Create an ed25519 signature for `rotateValidator`.
     CreateRotateValidatorSignature(CreateRotateValidatorSignatureArgs),
+    /// Set the validator Ip Address
+    SetValidatorIPAddress(SetValidatorIPAddress),
+    /// SEt the validator fee recipient
+    SetValidatorFeeRecipient(SetValidatorFeeRecipient),
     /// Generates an ed25519 signing key pair to be used in consensus.
     GeneratePrivateKey(GeneratePrivateKey),
     /// Calculates the public key from an ed25519 signing key.
@@ -140,6 +144,8 @@ impl ConsensusSubcommand {
             Self::RotateValidator(args) => args.run(),
             Self::CreateAddValidatorSignature(args) => args.run(),
             Self::CreateRotateValidatorSignature(args) => args.run(),
+            Self::SetValidatorIPAddress(args) => args.run(),
+            Self::SetValidatorFeeRecipient(args) => args.run(),
             Self::GeneratePrivateKey(args) => args.run(),
             Self::CalculatePublicKey(args) => args.run(),
             Self::ValidatorsInfo(args) => args.run(),
@@ -562,6 +568,160 @@ impl CreateRotateValidatorSignatureArgs {
         let signature = private_key.sign(VALIDATOR_NS_ROTATE, message.as_slice());
         let encoded = signature.encode();
         println!("{}", alloy_primitives::hex::encode_prefixed(encoded));
+        Ok(())
+    }
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct SetValidatorIPAddress {
+    /// RPC used to fetch the chain id
+    #[arg(long, value_name = "ETHEREUM_ADDRESS")]
+    validator_address: Address,
+
+    #[arg(long, value_name = "IP:PORT")]
+    ingress: SocketAddr,
+
+    #[arg(long, value_name = "IP")]
+    egress: IpAddr,
+
+    #[command(flatten)]
+    submit: ValidatorTransactionArgs,
+}
+
+impl SetValidatorIPAddress {
+    fn run(self) -> eyre::Result<()> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .wrap_err("failed constructing async runtime")?
+            .block_on(self.run_async())
+    }
+
+    async fn run_async(self) -> eyre::Result<()> {
+        let private_key_bytes =
+            std::fs::read(&self.submit.private_key).wrap_err("failed reading private key")?;
+        let private_key =
+            B256::try_from(private_key_bytes.as_slice()).wrap_err("invalid private key")?;
+        let signer = PrivateKeySigner::from_bytes(&private_key)?;
+
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .fetch_chain_id()
+            .with_gas_estimation()
+            .wallet(EthereumWallet::from(signer))
+            .connect(&self.submit.rpc_url)
+            .await
+            .wrap_err("failed to connect to RPC")?;
+
+        let validator_call_args = IValidatorConfigV2::validatorByAddressCall {
+            validatorAddress: self.validator_address,
+        };
+        let validator_call_resp = provider
+            .call(
+                TransactionRequest::default()
+                    .to(VALIDATOR_CONFIG_V2_ADDRESS)
+                    .input(validator_call_args.abi_encode().into())
+                    .into(),
+            )
+            .await
+            .wrap_err("failed to call validatorByAddress")?;
+
+        let validator =
+            IValidatorConfigV2::validatorByAddressCall::abi_decode_returns(&validator_call_resp)
+                .wrap_err("failed to decode validatorByAddress response")?;
+
+        let calldata = IValidatorConfigV2::setIpAddressesCall {
+            idx: validator.index,
+            ingress: self.ingress.to_string(),
+            egress: self.egress.to_string(),
+        };
+
+        let tx = TransactionRequest::default()
+            .to(VALIDATOR_CONFIG_V2_ADDRESS)
+            .input(calldata.abi_encode().into());
+
+        let pending = provider
+            .send_transaction(tx.into())
+            .await
+            .wrap_err("failed to send transaction")?;
+
+        let tx_hash = pending.tx_hash();
+        println!("transaction submitted: {tx_hash}");
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct SetValidatorFeeRecipient {
+    /// RPC used to fetch the chain id
+    #[arg(long, value_name = "ETHEREUM_ADDRESS")]
+    validator_address: Address,
+
+    #[arg(long, value_name = "ETHEREUM_ADDRESS")]
+    fee_recipient: Address,
+
+    #[command(flatten)]
+    submit: ValidatorTransactionArgs,
+}
+
+impl SetValidatorFeeRecipient {
+    fn run(self) -> eyre::Result<()> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .wrap_err("failed constructing async runtime")?
+            .block_on(self.run_async())
+    }
+
+    async fn run_async(self) -> eyre::Result<()> {
+        let private_key_bytes =
+            std::fs::read(&self.submit.private_key).wrap_err("failed reading private key")?;
+        let private_key =
+            B256::try_from(private_key_bytes.as_slice()).wrap_err("invalid private key")?;
+        let signer = PrivateKeySigner::from_bytes(&private_key)?;
+
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .fetch_chain_id()
+            .with_gas_estimation()
+            .wallet(EthereumWallet::from(signer))
+            .connect(&self.submit.rpc_url)
+            .await
+            .wrap_err("failed to connect to RPC")?;
+
+        let validator_call_args = IValidatorConfigV2::validatorByAddressCall {
+            validatorAddress: self.validator_address,
+        };
+        let validator_call_resp = provider
+            .call(
+                TransactionRequest::default()
+                    .to(VALIDATOR_CONFIG_V2_ADDRESS)
+                    .input(validator_call_args.abi_encode().into())
+                    .into(),
+            )
+            .await
+            .wrap_err("failed to call validatorByAddress")?;
+
+        let validator =
+            IValidatorConfigV2::validatorByAddressCall::abi_decode_returns(&validator_call_resp)
+                .wrap_err("failed to decode validatorByAddress response")?;
+
+        let calldata = IValidatorConfigV2::setFeeRecipientCall {
+            idx: validator.index,
+            feeRecipient: self.fee_recipient,
+        };
+
+        let tx = TransactionRequest::default()
+            .to(VALIDATOR_CONFIG_V2_ADDRESS)
+            .input(calldata.abi_encode().into());
+
+        let pending = provider
+            .send_transaction(tx.into())
+            .await
+            .wrap_err("failed to send transaction")?;
+
+        let tx_hash = pending.tx_hash();
+        println!("transaction submitted: {tx_hash}");
+
         Ok(())
     }
 }
