@@ -708,6 +708,8 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
                 expiry: u64::MAX,
                 enforceLimits: true,
                 limits: vec![],
+                enforceAllowedCalls: false,
+                allowedCalls: vec![],
             };
             tx.calls = vec![Call {
                 to: ACCOUNT_KEYCHAIN_ADDRESS.into(),

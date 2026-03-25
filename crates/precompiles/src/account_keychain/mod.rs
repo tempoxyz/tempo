@@ -328,15 +328,15 @@ impl AccountKeychain {
                 })
                 .collect::<Vec<_>>();
 
-            let allowed_call_configs = if call.allowedCalls.is_empty() {
-                None
-            } else {
+            let allowed_call_configs = if call.enforceAllowedCalls {
                 Some(
                     call.allowedCalls
                         .iter()
                         .map(Self::abi_call_scope_to_config)
                         .collect::<Result<Vec<_>>>()?,
                 )
+            } else {
+                None
             };
 
             self.apply_key_authorization_t3(
@@ -350,7 +350,7 @@ impl AccountKeychain {
                 return Err(AccountKeychainError::invalid_call_scope().into());
             }
 
-            if !call.allowedCalls.is_empty() {
+            if call.enforceAllowedCalls || !call.allowedCalls.is_empty() {
                 return Err(AccountKeychainError::invalid_call_scope().into());
             }
         }
@@ -1491,6 +1491,7 @@ mod tests {
                 expiry: u64::MAX,
                 enforceLimits: true,
                 limits: vec![],
+                enforceAllowedCalls: false,
                 allowedCalls: vec![],
             };
             keychain.authorize_key(msg_sender, setup_call)?;
@@ -1505,6 +1506,7 @@ mod tests {
                 expiry: u64::MAX,
                 enforceLimits: true,
                 limits: vec![],
+                enforceAllowedCalls: false,
                 allowedCalls: vec![],
             };
             let auth_result = keychain.authorize_key(msg_sender, auth_call);
@@ -1571,6 +1573,7 @@ mod tests {
                     expiry: u64::MAX,
                     enforceLimits: true,
                     limits: vec![],
+                    enforceAllowedCalls: false,
                     allowedCalls: vec![],
                 },
             )?;
@@ -1586,6 +1589,7 @@ mod tests {
                     expiry: u64::MAX,
                     enforceLimits: true,
                     limits: vec![],
+                    enforceAllowedCalls: false,
                     allowedCalls: vec![],
                 },
             );
@@ -1648,6 +1652,7 @@ mod tests {
                         amount: U256::from(100),
                         period: 0,
                     }],
+                    enforceAllowedCalls: false,
                     allowedCalls: vec![],
                 },
             )?;
@@ -1710,6 +1715,7 @@ mod tests {
                         amount: U256::from(100),
                         period: 0,
                     }],
+                    enforceAllowedCalls: false,
                     allowedCalls: vec![],
                 },
             )?;
@@ -1762,6 +1768,7 @@ mod tests {
                         amount: U256::from(100),
                         period: 0,
                     }],
+                    enforceAllowedCalls: false,
                     allowedCalls: vec![],
                 },
             )?;
@@ -1813,6 +1820,7 @@ mod tests {
                         amount: U256::from(100),
                         period: 0,
                     }],
+                    enforceAllowedCalls: false,
                     allowedCalls: vec![],
                 },
             )?;
@@ -1830,6 +1838,7 @@ mod tests {
                     expiry: u64::MAX,
                     enforceLimits: false,
                     limits: vec![],
+                    enforceAllowedCalls: false,
                     allowedCalls: vec![],
                 },
             );
@@ -1891,6 +1900,7 @@ mod tests {
                     amount: U256::from(100),
                     period: 0,
                 }],
+                enforceAllowedCalls: false,
                 allowedCalls: vec![],
             };
             keychain.authorize_key(account, auth_call.clone())?;
@@ -1973,6 +1983,7 @@ mod tests {
                 expiry: 0, // Zero expiry is in the past - should fail
                 enforceLimits: false,
                 limits: vec![],
+                enforceAllowedCalls: false,
                 allowedCalls: vec![],
             };
             let result = keychain.authorize_key(account, auth_call);
@@ -1999,6 +2010,7 @@ mod tests {
                 expiry: 1, // Very old timestamp - should fail
                 enforceLimits: false,
                 limits: vec![],
+                enforceAllowedCalls: false,
                 allowedCalls: vec![],
             };
             let result_past = keychain.authorize_key(account, auth_call_past);
@@ -2036,6 +2048,7 @@ mod tests {
                 expiry: u64::MAX,
                 enforceLimits: false,
                 limits: vec![],
+                enforceAllowedCalls: false,
                 allowedCalls: vec![],
             };
             keychain.authorize_key(account, auth_call_1)?;
@@ -2050,6 +2063,7 @@ mod tests {
                 expiry: u64::MAX,
                 enforceLimits: true,
                 limits: vec![],
+                enforceAllowedCalls: false,
                 allowedCalls: vec![],
             };
             keychain.authorize_key(account, auth_call_2)?;
@@ -2093,6 +2107,7 @@ mod tests {
                     amount: U256::from(100),
                     period: 0,
                 }],
+                enforceAllowedCalls: false,
                 allowedCalls: vec![],
             };
             keychain.authorize_key(eoa, auth_call)?;
@@ -2207,6 +2222,7 @@ mod tests {
                     amount: U256::from(100),
                     period: 0,
                 }],
+                enforceAllowedCalls: false,
                 allowedCalls: vec![],
             };
             keychain.authorize_key(eoa_alice, auth_call)?;
@@ -2337,6 +2353,7 @@ mod tests {
                 expiry: 1, // Minimal positive expiry
                 enforceLimits: false,
                 limits: vec![],
+                enforceAllowedCalls: false,
                 allowedCalls: vec![],
             };
             keychain.authorize_key(account, auth_call.clone())?;
@@ -2423,6 +2440,7 @@ mod tests {
                 expiry: u64::MAX,
                 enforceLimits: false,
                 limits: vec![],
+                enforceAllowedCalls: false,
                 allowedCalls: vec![],
             };
 
@@ -2457,6 +2475,7 @@ mod tests {
                 expiry: u64::MAX,
                 enforceLimits: false,
                 limits: vec![],
+                enforceAllowedCalls: false,
                 allowedCalls: vec![],
             };
             keychain.authorize_key(account, auth_call)?;
@@ -2509,6 +2528,7 @@ mod tests {
                     amount: U256::from(100),
                     period: 0,
                 }],
+                enforceAllowedCalls: false,
                 allowedCalls: vec![],
             };
             keychain.authorize_key(account, auth_call)?;
@@ -2555,6 +2575,7 @@ mod tests {
                 expiry: u64::MAX,
                 enforceLimits: false, // Initially no limits
                 limits: vec![],
+                enforceAllowedCalls: false,
                 allowedCalls: vec![],
             };
             keychain.authorize_key(account, auth_call)?;
@@ -2618,6 +2639,7 @@ mod tests {
                 expiry: u64::MAX,
                 enforceLimits: false,
                 limits: vec![],
+                enforceAllowedCalls: false,
                 allowedCalls: vec![],
             };
             keychain.authorize_key(account, auth_call)?;
@@ -2635,6 +2657,7 @@ mod tests {
                 expiry: u64::MAX,
                 enforceLimits: false,
                 limits: vec![],
+                enforceAllowedCalls: false,
                 allowedCalls: vec![],
             };
             keychain.authorize_key(account, auth_valid)?;
@@ -2710,6 +2733,7 @@ mod tests {
                     expiry: u64::MAX,
                     enforceLimits: false,
                     limits: vec![],
+                    enforceAllowedCalls: false,
                     allowedCalls: vec![],
                 },
             )?;
@@ -2722,6 +2746,7 @@ mod tests {
                     expiry: u64::MAX,
                     enforceLimits: false,
                     limits: vec![],
+                    enforceAllowedCalls: false,
                     allowedCalls: vec![],
                 },
             )?;
@@ -2734,6 +2759,7 @@ mod tests {
                     expiry: u64::MAX,
                     enforceLimits: false,
                     limits: vec![],
+                    enforceAllowedCalls: false,
                     allowedCalls: vec![],
                 },
             )?;
@@ -2797,6 +2823,7 @@ mod tests {
                 expiry: u64::MAX,
                 enforceLimits: false,
                 limits: vec![],
+                enforceAllowedCalls: false,
                 allowedCalls: vec![],
             };
             keychain.authorize_key(account, auth_call)?;
@@ -2867,6 +2894,7 @@ mod tests {
                     amount: U256::from(100),
                     period: 0,
                 }],
+                enforceAllowedCalls: false,
                 allowedCalls: vec![],
             };
             keychain.authorize_key(eoa, auth_call)?;
@@ -2939,6 +2967,7 @@ mod tests {
                     amount: U256::from(100),
                     period: 0,
                 }],
+                enforceAllowedCalls: false,
                 allowedCalls: vec![],
             };
             keychain.authorize_key(eoa, auth_call)?;
@@ -3002,6 +3031,7 @@ mod tests {
                     amount: original_limit,
                     period: 0,
                 }],
+                enforceAllowedCalls: false,
                 allowedCalls: vec![],
             };
             keychain.authorize_key(eoa, auth_call)?;
@@ -3062,6 +3092,7 @@ mod tests {
                         amount: U256::from(100),
                         period: 0,
                     }],
+                    enforceAllowedCalls: false,
                     allowedCalls: vec![],
                 },
             )?;
@@ -3128,6 +3159,7 @@ mod tests {
                     expiry: u64::MAX,
                     enforceLimits: false,
                     limits: vec![],
+                    enforceAllowedCalls: false,
                     allowedCalls: vec![],
                 },
             )?;
@@ -3169,6 +3201,7 @@ mod tests {
                     expiry: u64::MAX,
                     enforceLimits: false,
                     limits: vec![],
+                    enforceAllowedCalls: false,
                     allowedCalls: vec![],
                 },
             )?;
@@ -3243,6 +3276,7 @@ mod tests {
                     expiry: u64::MAX,
                     enforceLimits: false,
                     limits: vec![],
+                    enforceAllowedCalls: false,
                     allowedCalls: vec![],
                 },
             )?;
@@ -3297,6 +3331,7 @@ mod tests {
                     expiry: u64::MAX,
                     enforceLimits: false,
                     limits: vec![],
+                    enforceAllowedCalls: false,
                     allowedCalls: vec![],
                 },
             )?;
@@ -3375,6 +3410,7 @@ mod tests {
                     expiry: u64::MAX,
                     enforceLimits: false,
                     limits: vec![],
+                    enforceAllowedCalls: false,
                     allowedCalls: vec![],
                 },
             )?;

@@ -74,6 +74,7 @@ crate::sol! {
         /// @param expiry Block timestamp when the key expires (u64::MAX for never expires)
         /// @param enforceLimits Whether to enforce spending limits for this key
         /// @param limits Initial spending limits for tokens (only used if enforceLimits is true)
+        /// @param enforceAllowedCalls Whether call scope restrictions are enabled for this key
         /// @param allowedCalls Initial call scopes for this key
         function authorizeKey(
             address keyId,
@@ -81,6 +82,7 @@ crate::sol! {
             uint64 expiry,
             bool enforceLimits,
             TokenLimit[] calldata limits,
+            bool enforceAllowedCalls,
             CallScope[] calldata allowedCalls
         ) external;
 

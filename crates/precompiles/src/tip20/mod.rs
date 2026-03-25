@@ -1447,6 +1447,7 @@ pub(crate) mod tests {
                         amount: spending_limit,
                         period: 0,
                     }],
+                    enforceAllowedCalls: false,
                     allowedCalls: vec![],
                 },
             )?;
@@ -1517,6 +1518,7 @@ pub(crate) mod tests {
                         amount: spending_limit,
                         period: 0,
                     }],
+                    enforceAllowedCalls: false,
                     allowedCalls: vec![],
                 },
             )?;

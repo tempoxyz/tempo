@@ -1107,6 +1107,8 @@ where
                     })
                     .unwrap_or_default();
 
+                let enforce_allowed_calls = key_auth.allowed_calls.is_some();
+
                 // Create the authorize key call
                 let authorize_call = authorizeKeyCall {
                     keyId: access_key_addr,
@@ -1114,42 +1116,14 @@ where
                     expiry,
                     enforceLimits: enforce_limits,
                     limits: precompile_limits,
+                    enforceAllowedCalls: enforce_allowed_calls,
                     allowedCalls: precompile_allowed_calls,
                 };
 
                 // Call precompile to authorize the key (same phase as nonce increment)
                 match keychain.authorize_key(*root_account, authorize_call) {
                     // all is good, we can do execution.
-                    Ok(_) => {
-                        // Preserve TIP-1011 tri-state semantics for inline key authorization:
-                        // - None => unrestricted
-                        // - Some([]) => explicit deny-all
-                        // The ABI path only carries a Vec for allowedCalls, so post-apply the
-                        // deny-all marker explicitly when the protocol payload was Some([]).
-                        if spec.is_t3()
-                            && key_auth
-                                .allowed_calls
-                                .as_ref()
-                                .is_some_and(|scopes| scopes.is_empty())
-                        {
-                            let deny_all_scopes:
-                                [tempo_precompiles::account_keychain::CallScopeConfig; 0] = [];
-                            keychain
-                                .apply_key_authorization_t3(
-                                    *root_account,
-                                    access_key_addr,
-                                    &[],
-                                    Some(&deny_all_scopes),
-                                )
-                                .map_err(|err| {
-                                    TempoInvalidTransaction::KeychainPrecompileError {
-                                        reason: err.to_string(),
-                                    }
-                                })?;
-                        }
-
-                        Ok(false)
-                    }
+                    Ok(_) => Ok(false),
                     // on out of gas we are skipping execution but not invalidating the transaction.
                     Err(TempoPrecompileError::OutOfGas) => Ok(true),
                     Err(TempoPrecompileError::Fatal(err)) => Err(EVMError::Custom(err)),
