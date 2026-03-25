@@ -636,7 +636,13 @@ impl Inner<Init> {
         parent_hash: B256,
         parent_height: Height,
     ) -> eyre::Result<alloy_primitives::Address> {
-        // Try reading immediately before subscribing to events.
+        // Subscribe before the first read so we don't miss canonical state
+        // updates that arrive between a failed read and subscribing.
+        // `canonical_state_stream` wraps a `broadcast::Receiver` that only
+        // delivers events sent after subscription.
+        let parent_number = parent_height.get();
+        let mut canonical_events = self.execution_node.provider.canonical_state_stream();
+
         match crate::validators::read_fee_recipient_at_block_hash(
             &self.execution_node,
             &self.public_key,
@@ -656,13 +662,11 @@ impl Inner<Init> {
                     %parent_hash,
                     validator = %self.public_key,
                     "failed reading proposer fee recipient from validator \
-                     config v2; subscribing to canonical state events",
+                     config v2; waiting for canonical state events",
                 );
             }
         }
 
-        let parent_number = parent_height.get();
-        let mut canonical_events = self.execution_node.provider.canonical_state_stream();
         loop {
             let Some(event) = canonical_events.next().await else {
                 bail!("canonical state stream ended unexpectedly");
