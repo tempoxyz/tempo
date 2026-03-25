@@ -38,16 +38,13 @@ fn block_beneficiary_follows_v2_fee_recipient() {
         let (mut nodes, execution_runtime) = setup_validators(&mut context, setup).await;
         join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
 
-        let http_url = loop {
-            if let Some(url) = nodes[0]
-                .execution_node
-                .as_ref()
-                .and_then(|n| n.node.rpc_server_handle().http_url())
-            {
-                break url.parse().unwrap();
-            }
-            context.sleep(Duration::from_millis(100)).await;
-        };
+        let http_url = nodes[0]
+            .execution()
+            .rpc_server_handle()
+            .http_url()
+            .unwrap()
+            .parse()
+            .unwrap();
 
         // Validator index is 1 (1-indexed in the V2 contract).
         let receipt = execution_runtime
