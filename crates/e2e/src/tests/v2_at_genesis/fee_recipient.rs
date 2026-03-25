@@ -1,14 +1,14 @@
 //! Tests that the proposer reads the fee recipient from the V2 contract.
 
-use std::time::Duration;
-
+use alloy_consensus::BlockHeader as _;
 use alloy_primitives::Address;
 use commonware_macros::test_traced;
-use commonware_runtime::{Clock as _, Metrics as _, Runner as _, deterministic};
-use futures::future::join_all;
+use commonware_runtime::{Runner as _, deterministic};
+use futures::{StreamExt as _, future::join_all};
 use reth_ethereum::storage::BlockReader as _;
+use reth_provider::CanonStateSubscriptions as _;
 
-use crate::{CONSENSUS_NODE_PREFIX, Setup, setup_validators};
+use crate::{Setup, setup_validators};
 
 /// The fee recipient written into the V2 contract at genesis.
 const ONCHAIN_FEE_RECIPIENT: Address = Address::new([0xFE; 20]);
@@ -53,22 +53,15 @@ fn block_beneficiary_follows_v2_fee_recipient() {
             .unwrap();
         let change_height = receipt.block_number.unwrap();
 
-        // Wait for the block after the inclusion.
+        // Subscribe to canonical events and wait for a block past the change.
+        let mut canonical_events = nodes[0].execution().provider.canonical_state_stream();
+
         let target = change_height + 1;
-        loop {
-            let reached = context.encode().lines().any(|line| {
-                line.starts_with(CONSENSUS_NODE_PREFIX)
-                    && line.contains("_marshal_processed_height")
-                    && line
-                        .split_whitespace()
-                        .nth(1)
-                        .and_then(|v| v.parse::<u64>().ok())
-                        .is_some_and(|v| v >= target)
-            });
-            if reached {
+        while let Some(event) = canonical_events.next().await {
+            let tip = event.committed().tip().number();
+            if tip >= target {
                 break;
             }
-            context.sleep(Duration::from_secs(1)).await;
         }
 
         let provider = nodes[0].execution_provider();
