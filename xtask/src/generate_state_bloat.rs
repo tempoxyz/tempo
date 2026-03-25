@@ -117,7 +117,7 @@ impl GenerateStateBloat {
             (num_tokens * (overhead_per_token + accounts_per_token * entry_size)) as f64
                 / (1024.0 * 1024.0);
         let out_display = out.display();
-        let num_chunks = (total_accounts + chunk_size - 1) / chunk_size;
+        let num_chunks = total_accounts.div_ceil(chunk_size);
         println!("State bloat generation:");
         println!("  Target size: {size} MiB");
         println!("  Tokens: {num_tokens}");
