@@ -271,7 +271,7 @@ pub(crate) struct ValidatorTransactionArgs {
     private_key: PathBuf,
 
     /// The RPC URL to submit the transaction to.
-    #[arg(long, value_name = "RPC_URL")]
+    #[arg(long, value_name = "RPC_URL", default_value = "https://rpc.presto.tempo.xyz")]
     rpc_url: String,
 
     /// Skip the interactive confirmation prompt.
@@ -513,7 +513,7 @@ pub(crate) struct CreateAddValidatorSignatureArgs {
     #[arg(long, value_name = "ETHEREUM_ADDRESS")]
     fee_recipient: Address,
     /// RPC used to fetch the chain id
-    #[arg(long, value_name = "RPC_URL")]
+    #[arg(long, value_name = "RPC_URL", default_value = "https://rpc.presto.tempo.xyz")]
     chain_id_from_rpc_url: String,
     /// Path to the ed25519 signing key file.
     #[arg(long, value_name = "FILE")]
@@ -551,7 +551,7 @@ pub(crate) struct CreateRotateValidatorSignatureArgs {
     #[command(flatten)]
     identity: ValidatorIdentityArgs,
     /// RPC used to fetch the chain id
-    #[arg(long, value_name = "RPC_URL")]
+    #[arg(long, value_name = "RPC_URL", default_value = "https://rpc.presto.tempo.xyz")]
     chain_id_from_rpc_url: String,
     /// Path to the ed25519 signing key file.
     #[arg(long, value_name = "FILE")]
