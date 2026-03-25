@@ -225,7 +225,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
     use tempo_chainspec::{
         hardfork::TempoHardfork,
-        spec::{ANDANTINO, TempoChainSpec},
+        spec::{MODERATO, TempoChainSpec},
     };
 
     fn current_timestamp_millis() -> u64 {
@@ -298,10 +298,10 @@ mod tests {
             let shared_gas_limit = self
                 .shared_gas_limit
                 .unwrap_or(self.gas_limit / TEMPO_SHARED_GAS_DIVISOR);
-            // Default to pre-T1 divisor-based calculation for ANDANTINO (which doesn't have T1)
+            // Default to T1 fixed general gas limit
             let general_gas_limit = self
                 .general_gas_limit
-                .unwrap_or_else(|| (self.gas_limit - shared_gas_limit) / 2);
+                .unwrap_or(tempo_chainspec::spec::TEMPO_T1_GENERAL_GAS_LIMIT);
 
             TempoHeader {
                 inner: Header {
@@ -371,7 +371,7 @@ mod tests {
 
     #[test]
     fn test_validate_header() {
-        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let consensus = TempoConsensus::new(MODERATO.clone());
         let header = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
             .timestamp_millis(current_timestamp_millis())
@@ -383,7 +383,7 @@ mod tests {
 
     #[test]
     fn test_validate_header_shared_gas_mismatch() {
-        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let consensus = TempoConsensus::new(MODERATO.clone());
         let header = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
             .timestamp_millis(current_timestamp_millis())
@@ -402,12 +402,11 @@ mod tests {
 
     #[test]
     fn test_validate_header_general_gas_mismatch_pre_t1() {
-        // ANDANTINO doesn't have T1 active, so it uses the divisor-based calculation
-        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        // Pre-T1 chainspec uses the divisor-based calculation
+        let consensus = TempoConsensus::new(create_pre_t1_chainspec());
         let gas_limit = 500_000_000u64;
         let shared_gas_limit = gas_limit / TEMPO_SHARED_GAS_DIVISOR;
         // Pre-T1: expected = (gas_limit - shared_gas_limit) / 2
-        // Let's use a wrong value
         let header = TestHeaderBuilder::default()
             .gas_limit(gas_limit)
             .timestamp_millis(current_timestamp_millis())
@@ -432,6 +431,45 @@ mod tests {
             .build();
         let sealed = SealedHeader::seal_slow(header);
         assert!(consensus.validate_header(&sealed).is_ok());
+    }
+
+    /// Creates a chainspec with only T0 active (no T1).
+    fn create_pre_t1_chainspec() -> Arc<TempoChainSpec> {
+        let genesis_json = r#"{
+            "config": {
+                "chainId": 99998,
+                "homesteadBlock": 0,
+                "daoForkSupport": false,
+                "eip150Block": 0,
+                "eip155Block": 0,
+                "eip158Block": 0,
+                "byzantiumBlock": 0,
+                "constantinopleBlock": 0,
+                "petersburgBlock": 0,
+                "istanbulBlock": 0,
+                "berlinBlock": 0,
+                "londonBlock": 0,
+                "mergeNetsplitBlock": 0,
+                "shanghaiTime": 0,
+                "cancunTime": 0,
+                "pragueTime": 0,
+                "osakaTime": 0,
+                "terminalTotalDifficulty": 0,
+                "terminalTotalDifficultyPassed": true,
+                "epochLength": 21600,
+                "t0Time": 0
+            },
+            "nonce": "0x42",
+            "timestamp": "0x0",
+            "extraData": "0x",
+            "gasLimit": "0x1dcd6500",
+            "difficulty": "0x0",
+            "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "coinbase": "0x0000000000000000000000000000000000000000",
+            "alloc": {}
+        }"#;
+        let genesis: Genesis = serde_json::from_str(genesis_json).unwrap();
+        Arc::new(TempoChainSpec::from_genesis(genesis))
     }
 
     /// Creates a chainspec with T1 active at timestamp 0.
@@ -486,6 +524,7 @@ mod tests {
         let header = TestHeaderBuilder::default()
             .gas_limit(gas_limit)
             .timestamp_millis(current_timestamp_millis())
+            .general_gas_limit(999)
             .build();
         let sealed = SealedHeader::seal_slow(header);
 
@@ -509,7 +548,7 @@ mod tests {
 
     #[test]
     fn test_validate_header_timestamp_milli_gte_1000() {
-        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let consensus = TempoConsensus::new(MODERATO.clone());
 
         let current_timestamp_millis = 1000000999;
 
@@ -549,13 +588,16 @@ mod tests {
 
     #[test]
     fn test_validate_header_against_parent() {
-        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
+
+        let consensus = TempoConsensus::new(MODERATO.clone());
         let parent_ts = current_timestamp_millis() - 1;
         let parent = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
             .timestamp(parent_ts)
             .number(1)
             .timestamp_millis_part(500)
+            .base_fee(TEMPO_T1_BASE_FEE)
             .build();
         let parent_sealed = SealedHeader::seal_slow(parent);
 
@@ -564,6 +606,7 @@ mod tests {
             .timestamp(parent_ts + 1)
             .timestamp_millis_part(600)
             .number(2)
+            .base_fee(TEMPO_T1_BASE_FEE)
             .parent_hash(parent_sealed.hash())
             .build();
         let child_sealed = SealedHeader::seal_slow(child);
@@ -574,12 +617,15 @@ mod tests {
 
     #[test]
     fn test_validate_header_against_parent_timestamp_not_increasing() {
-        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
+
+        let consensus = TempoConsensus::new(MODERATO.clone());
         let parent_ts = current_timestamp_millis();
         let parent = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
             .timestamp(parent_ts)
             .timestamp_millis_part(500)
+            .base_fee(TEMPO_T1_BASE_FEE)
             .build();
         let parent_sealed = SealedHeader::seal_slow(parent);
 
@@ -588,6 +634,7 @@ mod tests {
             .timestamp(parent_ts)
             .timestamp_millis_part(400)
             .number(1)
+            .base_fee(TEMPO_T1_BASE_FEE)
             .parent_hash(parent_sealed.hash())
             .build();
         let child_sealed = SealedHeader::seal_slow(child);
@@ -671,7 +718,7 @@ mod tests {
 
     #[test]
     fn test_validate_body_against_header() {
-        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let consensus = TempoConsensus::new(MODERATO.clone());
         let header = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
             .timestamp(current_timestamp_millis())
@@ -691,8 +738,8 @@ mod tests {
 
     #[test]
     fn test_validate_block_pre_execution() {
-        let consensus = TempoConsensus::new(ANDANTINO.clone());
-        let chain_id = ANDANTINO.chain().id();
+        let consensus = TempoConsensus::new(MODERATO.clone());
+        let chain_id = MODERATO.chain().id();
 
         let system_tx = create_system_tx(chain_id, SYSTEM_TX_ADDRESSES[0]);
         let user_tx = create_tx(chain_id);
@@ -709,8 +756,8 @@ mod tests {
 
     #[test]
     fn test_validate_block_pre_execution_invalid_system_tx() {
-        let consensus = TempoConsensus::new(ANDANTINO.clone());
-        let chain_id = ANDANTINO.chain().id();
+        let consensus = TempoConsensus::new(MODERATO.clone());
+        let chain_id = MODERATO.chain().id();
 
         let tx = TxLegacy {
             chain_id: Some(chain_id),
@@ -740,8 +787,8 @@ mod tests {
 
     #[test]
     fn test_validate_block_pre_execution_no_system_tx() {
-        let consensus = TempoConsensus::new(ANDANTINO.clone());
-        let chain_id = ANDANTINO.chain().id();
+        let consensus = TempoConsensus::new(MODERATO.clone());
+        let chain_id = MODERATO.chain().id();
 
         let user_tx = create_tx(chain_id);
 
@@ -763,14 +810,14 @@ mod tests {
 
     #[test]
     fn test_validate_body_against_header_bad_tx_root() {
-        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let consensus = TempoConsensus::new(MODERATO.clone());
         let header = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
             .timestamp(current_timestamp_millis())
             .build();
         let sealed = SealedHeader::seal_slow(header);
 
-        let chain_id = ANDANTINO.chain().id();
+        let chain_id = MODERATO.chain().id();
         let user_tx = create_tx(chain_id);
         let body = BlockBody {
             transactions: vec![user_tx],
@@ -787,8 +834,8 @@ mod tests {
 
     #[test]
     fn test_validate_block_post_execution_bad_receipts() {
-        let consensus = TempoConsensus::new(ANDANTINO.clone());
-        let chain_id = ANDANTINO.chain().id();
+        let consensus = TempoConsensus::new(MODERATO.clone());
+        let chain_id = MODERATO.chain().id();
 
         let system_tx = create_system_tx(chain_id, SYSTEM_TX_ADDRESSES[0]);
         let user_tx = create_tx(chain_id);
@@ -824,7 +871,7 @@ mod tests {
 
     #[test]
     fn test_validate_header_timestamp_exactly_at_boundary() {
-        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let consensus = TempoConsensus::new(MODERATO.clone());
         let boundary_timestamp = current_timestamp_millis() + ALLOWED_FUTURE_BLOCK_TIME_MILLIS;
         let header = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
@@ -841,8 +888,8 @@ mod tests {
 
     #[test]
     fn test_validate_block_pre_execution_system_tx_out_of_order() {
-        let consensus = TempoConsensus::new(ANDANTINO.clone());
-        let chain_id = ANDANTINO.chain().id();
+        let consensus = TempoConsensus::new(MODERATO.clone());
+        let chain_id = MODERATO.chain().id();
 
         let wrong_addr = Address::repeat_byte(0xFF);
         let system_tx = create_system_tx(chain_id, wrong_addr);

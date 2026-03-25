@@ -143,8 +143,7 @@ pub const SUPPORTED_CHAINS: &[&str] = &["mainnet", "moderato", "testnet"];
 pub fn chain_value_parser(s: &str) -> eyre::Result<Arc<TempoChainSpec>> {
     Ok(match s {
         "mainnet" => PRESTO.clone(),
-        "testnet" => ANDANTINO.clone(),
-        "moderato" => MODERATO.clone(),
+        "testnet" | "moderato" => MODERATO.clone(),
         "dev" => DEV.clone(),
         _ => TempoChainSpec::from_genesis(reth_cli::chainspec::parse_genesis(s)?).into(),
     })
@@ -160,14 +159,6 @@ impl reth_cli::chainspec::ChainSpecParser for TempoChainSpecParser {
         chain_value_parser(s)
     }
 }
-
-pub static ANDANTINO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
-    let genesis: Genesis = serde_json::from_str(include_str!("./genesis/andantino.json"))
-        .expect("`./genesis/andantino.json` must be present and deserializable");
-    TempoChainSpec::from_genesis(genesis)
-        .with_default_follow_url("wss://rpc.testnet.tempo.xyz")
-        .into()
-});
 
 pub static MODERATO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
     let genesis: Genesis = serde_json::from_str(include_str!("./genesis/moderato.json"))
@@ -555,10 +546,10 @@ mod tests {
             let cs = super::super::TempoChainSpecParser::parse("testnet")
                 .expect("the testnet chainspec must always be well formed");
 
-            // No hardfork timestamps on andantino — always Genesis
-            assert_eq!(cs.tempo_hardfork_at(0), TempoHardfork::Genesis);
-            assert_eq!(cs.tempo_hardfork_at(1000), TempoHardfork::Genesis);
-            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::Genesis);
+            // "testnet" is an alias for moderato
+            let moderato = super::super::TempoChainSpecParser::parse("moderato")
+                .expect("the moderato chainspec must always be well formed");
+            assert_eq!(cs.inner.chain(), moderato.inner.chain());
         }
     }
 }
