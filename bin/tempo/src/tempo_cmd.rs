@@ -612,10 +612,10 @@ pub(crate) struct SetValidatorIpAdress {
     validator_address: Address,
     /// The inbound address for the validator.
     #[arg(long, value_name = "IP:PORT")]
-    ingress: SocketAddr,
+    ingress: Option<SocketAddr>,
     /// The outbound address for the validator.
     #[arg(long, value_name = "IP")]
-    egress: IpAddr,
+    egress: Option<IpAddr>,
 
     #[command(flatten)]
     submit: ValidatorTransactionArgs,
@@ -635,11 +635,17 @@ impl SetValidatorIpAdress {
         let provider = self.submit.provider(signer).await?;
 
         let validator = read_validator_from_contract(&provider, self.validator_address).await?;
+        if self.ingress.is_none() && self.egress.is_none() {
+            return Err(eyre!("at least one of --ingress or --egress must be set"));
+        }
+
+        let ingress = self.ingress.map(|v| v.to_string());
+        let egress = self.egress.map(|v| v.to_string());
 
         let calldata = IValidatorConfigV2::setIpAddressesCall {
             idx: validator.index,
-            ingress: self.ingress.to_string(),
-            egress: self.egress.to_string(),
+            ingress: ingress.unwrap_or(validator.ingress),
+            egress: egress.unwrap_or(validator.egress),
         };
 
         self.submit.confirm(&serde_json::json!({
