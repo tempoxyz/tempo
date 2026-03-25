@@ -92,8 +92,8 @@ use alloy::{
 use alloy_primitives::B256;
 use alloy_rpc_types_engine::PayloadAttributes;
 use reth_e2e_test_utils::setup;
-use reth_ethereum::tasks::TaskManager;
-use reth_node_api::{FullNodeComponents, PayloadBuilderAttributes};
+use reth_ethereum::tasks::Runtime;
+use reth_node_api::FullNodeComponents;
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle, rpc::RethRpcAddOns};
 use reth_node_core::args::RpcServerArgs;
 use reth_rpc_builder::RpcModuleSelection;
@@ -108,7 +108,7 @@ use tempo_contracts::precompiles::{
     ITIP20Factory,
 };
 use tempo_node::node::TempoNode;
-use tempo_payload_types::{TempoPayloadAttributes, TempoPayloadBuilderAttributes};
+use tempo_payload_types::TempoPayloadAttributes;
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::ISSUER_ROLE};
 
 /// Creates a test TIP20 token with issuer role granted to the caller
@@ -159,7 +159,7 @@ pub(crate) enum NodeSource {
 }
 
 /// Type alias for a local test node and task manager
-pub(crate) type LocalTestNode = (Box<dyn TestNodeHandle>, TaskManager);
+pub(crate) type LocalTestNode = (Box<dyn TestNodeHandle>, Runtime);
 
 /// Trait wrapper around NodeHandle to simplify function return types
 pub(crate) trait TestNodeHandle: Send {}
@@ -217,16 +217,12 @@ pub(crate) struct SingleNodeSetup {
     pub node: reth_e2e_test_utils::NodeHelperType<TempoNode>,
     /// Latest Tempo hardfork active at genesis (timestamp 0).
     pub hardfork: TempoHardfork,
-    /// Task manager that must be kept alive for the node to function
-    _tasks: TaskManager,
 }
 
 /// Result type for multi-node setup
 pub(crate) struct MultiNodeSetup {
     /// Node handles for direct manipulation
     pub nodes: Vec<reth_e2e_test_utils::NodeHelperType<TempoNode>>,
-    /// Task manager that must be kept alive for nodes to function
-    _tasks: TaskManager,
 }
 
 /// Result type for HTTP-only setup (no direct node access)
@@ -320,7 +316,7 @@ impl TestNodeBuilder {
         let chain_spec = self.build_chain_spec()?;
         let hardfork = chain_spec.tempo_hardfork_at(0);
 
-        let (mut nodes, tasks, _wallet) = setup::<TempoNode>(
+        let (mut nodes, _wallet) = setup::<TempoNode>(
             1,
             Arc::new(chain_spec),
             self.is_dev,
@@ -330,11 +326,7 @@ impl TestNodeBuilder {
 
         let node = nodes.remove(0);
 
-        Ok(SingleNodeSetup {
-            node,
-            hardfork,
-            _tasks: tasks,
-        })
+        Ok(SingleNodeSetup { node, hardfork })
     }
 
     /// Build multiple nodes with direct access
@@ -353,7 +345,7 @@ impl TestNodeBuilder {
 
         let chain_spec = self.build_chain_spec()?;
 
-        let (nodes, tasks, _wallet) = setup::<TempoNode>(
+        let (nodes, _wallet) = setup::<TempoNode>(
             self.node_count,
             Arc::new(chain_spec),
             self.is_dev,
@@ -361,10 +353,7 @@ impl TestNodeBuilder {
         )
         .await?;
 
-        Ok(MultiNodeSetup {
-            nodes,
-            _tasks: tasks,
-        })
+        Ok(MultiNodeSetup { nodes })
     }
 
     /// Build HTTP-only setup
@@ -376,7 +365,7 @@ impl TestNodeBuilder {
             });
         }
 
-        let tasks = TaskManager::current();
+        let runtime = Runtime::test();
         let chain_spec = self.build_chain_spec()?;
         let static_validator = self
             .custom_validator
@@ -396,7 +385,7 @@ impl TestNodeBuilder {
         node_config.dev.block_time = Some(Duration::from_millis(100));
 
         let node_handle = NodeBuilder::new(node_config.clone())
-            .testing_node(tasks.executor())
+            .testing_node(runtime.clone())
             .node(TempoNode::default())
             .launch_with_debug_capabilities()
             .map_debug_payload_attributes(move |mut attributes| {
@@ -419,7 +408,7 @@ impl TestNodeBuilder {
 
         Ok(HttpOnlySetup {
             http_url,
-            local_node: Some((Box::new(node_handle), tasks)),
+            local_node: Some((Box::new(node_handle), runtime)),
         })
     }
 
@@ -439,17 +428,13 @@ impl TestNodeBuilder {
 }
 
 /// Default attributes generator for payload building
-fn default_attributes_generator(timestamp: u64) -> TempoPayloadBuilderAttributes {
-    let attributes = TempoPayloadAttributes {
-        inner: PayloadAttributes {
-            timestamp,
-            prev_randao: alloy::primitives::B256::ZERO,
-            suggested_fee_recipient: alloy::primitives::Address::ZERO,
-            withdrawals: Some(vec![]),
-            parent_beacon_block_root: Some(alloy::primitives::B256::ZERO),
-        },
-        timestamp_millis_part: 0,
-    };
-
-    TempoPayloadBuilderAttributes::try_new(B256::ZERO, attributes, 0).unwrap()
+fn default_attributes_generator(timestamp: u64) -> TempoPayloadAttributes {
+    PayloadAttributes {
+        timestamp,
+        prev_randao: alloy::primitives::B256::ZERO,
+        suggested_fee_recipient: alloy::primitives::Address::ZERO,
+        withdrawals: Some(vec![]),
+        parent_beacon_block_root: Some(alloy::primitives::B256::ZERO),
+    }
+    .into()
 }

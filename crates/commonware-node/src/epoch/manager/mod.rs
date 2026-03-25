@@ -24,7 +24,7 @@ pub(crate) struct Config<TBlocker> {
     pub(crate) time_for_peer_response: Duration,
     pub(crate) time_to_propose: Duration,
     pub(crate) mailbox_size: usize,
-    pub(crate) subblocks: subblocks::Mailbox,
+    pub(crate) subblocks: Option<subblocks::Mailbox>,
     pub(crate) marshal: crate::alias::marshal::Mailbox,
     pub(crate) feed: feed::Mailbox,
     pub(crate) scheme_provider: SchemeProvider,

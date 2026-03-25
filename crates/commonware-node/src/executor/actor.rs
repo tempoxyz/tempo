@@ -4,9 +4,9 @@
 //! execution layer and tracks the digest of the latest finalized block.
 //! It also advances the canonical chain by sending forkchoice-updates.
 
-use std::{pin::Pin, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, pin::Pin, sync::Arc, time::Duration};
 
-use alloy_rpc_types_engine::ForkchoiceState;
+use alloy_rpc_types_engine::{ForkchoiceState, PayloadId};
 use commonware_consensus::{Heightable as _, marshal::Update, types::Height};
 
 use commonware_runtime::{
@@ -24,16 +24,18 @@ use futures::{
 };
 use reth_provider::{BlockHashReader, BlockNumReader as _};
 use tempo_node::{TempoExecutionData, TempoFullNode};
+use tempo_payload_types::TempoPayloadAttributes;
 use tracing::{
     Level, Span, debug, error, error_span, info, info_span, instrument, warn, warn_span,
 };
 
+use super::{
+    Config,
+    ingress::{CanonicalizeHead, Command, Message, SubscribeFinalized},
+};
 use crate::{
     consensus::{Digest, block::Block},
-    executor::{
-        Config,
-        ingress::{CanonicalizeHead, Command, Message},
-    },
+    executor::ingress::CanonicalizeAndBuild,
 };
 
 /// Tracks the last forkchoice state that the executor sent to the execution layer.
@@ -116,6 +118,10 @@ pub(crate) struct Actor<TContext> {
 
     /// The timer for the next FCU heartbeat. Reset whenever an FCU is sent.
     fcu_heartbeat_timer: Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
+
+    /// A list of subscriptions waiting for the executor to finalize a block
+    /// at a given height.
+    pending_finalized_subscriptions: BTreeMap<Height, Vec<oneshot::Sender<()>>>,
 }
 
 impl<TContext> Actor<TContext>
@@ -164,6 +170,7 @@ where
             },
             fcu_heartbeat_interval,
             fcu_heartbeat_timer,
+            pending_finalized_subscriptions: BTreeMap::new(),
         })
     }
 
@@ -270,11 +277,7 @@ where
             .execution_node
             .add_ons_handle
             .beacon_engine_handle
-            .fork_choice_updated(
-                self.last_canonicalized.forkchoice,
-                None,
-                reth_node_builder::EngineApiMessageVersion::V3,
-            )
+            .fork_choice_updated(self.last_canonicalized.forkchoice, None)
             .pace(&self.context, Duration::from_millis(20))
             .await;
 
@@ -303,21 +306,51 @@ where
     async fn handle_message(&mut self, message: Message) -> eyre::Result<()> {
         let cause = message.cause;
         match message.command {
-            Command::CanonicalizeHead(CanonicalizeHead {
-                height,
-                digest,
-                ack,
-            }) => {
+            Command::CanonicalizeHead(CanonicalizeHead { height, digest }) => {
                 // Errors are logged inside canonicalize; head canonicalization failures
                 // are non-fatal and will be retried on the next block.
                 let _ = self
-                    .canonicalize(cause, HeadOrFinalized::Head, height, digest, ack)
+                    .canonicalize(
+                        cause,
+                        HeadOrFinalized::Head,
+                        height,
+                        digest,
+                        None,
+                        oneshot::channel().0,
+                    )
                     .await;
+            }
+            Command::CanonicalizeAndBuild(CanonicalizeAndBuild {
+                height,
+                digest,
+                attributes,
+                id_tx: ack,
+            }) => {
+                self.canonicalize(
+                    cause,
+                    HeadOrFinalized::Head,
+                    height,
+                    digest,
+                    Some(*attributes),
+                    ack,
+                )
+                .await
+                .wrap_err("failed canonicalizing and building payload")?;
             }
             Command::Finalize(finalized) => {
                 self.finalize(cause, *finalized)
                     .await
                     .wrap_err("failed handling finalization")?;
+            }
+            Command::SubscribeFinalized(SubscribeFinalized { height, response }) => {
+                if self.last_canonicalized.finalized_height >= height {
+                    let _ = response.send(());
+                } else {
+                    self.pending_finalized_subscriptions
+                        .entry(height)
+                        .or_default()
+                        .push(response);
+                }
             }
         }
         Ok(())
@@ -340,16 +373,16 @@ where
         head_or_finalized: HeadOrFinalized,
         height: Height,
         digest: Digest,
-        ack: oneshot::Sender<()>,
+        attributes: Option<TempoPayloadAttributes>,
+        payload_id_tx: oneshot::Sender<PayloadId>,
     ) -> eyre::Result<()> {
         let new_canonicalized = match head_or_finalized {
             HeadOrFinalized::Head => self.last_canonicalized.update_head(height, digest),
             HeadOrFinalized::Finalized => self.last_canonicalized.update_finalized(height, digest),
         };
 
-        if new_canonicalized == self.last_canonicalized {
+        if new_canonicalized == self.last_canonicalized && attributes.is_none() {
             info!("would not change forkchoice state; not sending it to the execution layer");
-            let _ = ack.send(());
             return Ok(());
         }
 
@@ -364,11 +397,7 @@ where
             .execution_node
             .add_ons_handle
             .beacon_engine_handle
-            .fork_choice_updated(
-                new_canonicalized.forkchoice,
-                None,
-                reth_node_builder::EngineApiMessageVersion::V3,
-            )
+            .fork_choice_updated(new_canonicalized.forkchoice, attributes)
             .pace(&self.context, Duration::from_millis(20))
             .await
             .wrap_err("failed requesting execution layer to update forkchoice state")?;
@@ -383,7 +412,9 @@ where
                 .wrap_err("execution layer responded with error for forkchoice-update"));
         }
 
-        let _ = ack.send(());
+        if let Some(payload_id) = fcu_response.payload_id {
+            let _ = payload_id_tx.send(payload_id);
+        }
         self.last_canonicalized = new_canonicalized;
         self.reset_fcu_heartbeat_timer();
 
@@ -400,6 +431,7 @@ where
                     HeadOrFinalized::Finalized,
                     height,
                     digest,
+                    None,
                     oneshot::channel().0,
                 )
                 .await
@@ -449,11 +481,13 @@ where
         block: Block,
         acknowledgment: Exact,
     ) -> eyre::Result<()> {
+        let height = block.height();
         self.canonicalize(
             Span::current(),
             HeadOrFinalized::Finalized,
             block.height(),
             block.digest(),
+            None,
             oneshot::channel().0,
         )
         .await
@@ -483,6 +517,16 @@ where
         );
 
         acknowledgment.acknowledge();
+
+        self.pending_finalized_subscriptions.retain(|&key, value| {
+            let retain = key > height;
+            if !retain {
+                value.drain(..).for_each(|tx| {
+                    let _ = tx.send(());
+                });
+            }
+            retain
+        });
 
         Ok(())
     }

@@ -6,13 +6,13 @@ set -e
 
 # NOTE: if you make modifications to this script, please increment the version number.
 # WARNING: the SemVer pattern: major.minor.patch must be followed as we use it to determine if the script is up to date.
-TEMPOUP_INSTALLER_VERSION="0.0.5"
+TEMPOUP_INSTALLER_VERSION="0.0.7"
 
 REPO="tempoxyz/tempo"
 # GPG key fingerprint for release signing verification
 GPG_KEY_FINGERPRINT="EE3C5D41EA963E896F310EC3CBBFA54B20D33446"
 GPG_KEYSERVER="keyserver.ubuntu.com"
-BIN_DIR="${TEMPO_BIN_DIR:-/usr/local/bin}"
+BIN_DIR="${TEMPO_BIN_DIR:-$HOME/.tempo/bin}"
 TEMPOUP_BIN_URL="https://raw.githubusercontent.com/tempoxyz/tempo/main/tempoup/tempoup"
 TEMPOUP_BIN_PATH="$BIN_DIR/tempoup"
 
@@ -93,7 +93,7 @@ compute_sha256() {
 
 # Check if command exists
 check_cmd() {
-    command -v "$1" &>/dev/null
+    command -v "$1" >/dev/null 2>&1
 }
 
 # Check if tempoup installer is up to date
@@ -303,6 +303,9 @@ main() {
 
     info "Installing tempo..."
 
+    # Ensure BIN_DIR exists
+    mkdir -p "$BIN_DIR"
+
     # Detect system
     PLATFORM=$(detect_platform)
     ARCH=$(detect_arch)
@@ -419,7 +422,14 @@ main() {
     fi
 
     # Install binary
+    # Move old binary out of the way to avoid ETXTBSY ("Text file busy") when
+    # overwriting a running executable (e.g. `tempo update` calls tempoup
+    # while the tempo binary is still mapped). If the script fails at any
+    # point after this, the trap restores the old binary.
     info "Installing to $BIN_DIR/$BINARY_NAME..."
+    local OLD_BINARY="$BIN_DIR/$BINARY_NAME.old"
+    mv -f "$BIN_DIR/$BINARY_NAME" "$OLD_BINARY" 2>/dev/null || true
+    trap 'mv -f "$OLD_BINARY" "$BIN_DIR/$BINARY_NAME" 2>/dev/null || true' ERR EXIT
     if cp "$BINARY_PATH" "$BIN_DIR/$BINARY_NAME" 2>/dev/null; then
         chmod 755 "$BIN_DIR/$BINARY_NAME"
     elif sudo cp "$BINARY_PATH" "$BIN_DIR/$BINARY_NAME" 2>/dev/null; then
@@ -427,6 +437,9 @@ main() {
     else
         error "Failed to install to $BIN_DIR. Try running with sudo."
     fi
+    # Installation succeeded — remove backup and clear the trap
+    rm -f "$OLD_BINARY" 2>/dev/null || true
+    trap - ERR EXIT
 
     # Success message
     echo ""

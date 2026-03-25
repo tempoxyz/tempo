@@ -9,7 +9,7 @@ use crate::{
 use alloy_consensus::Transaction;
 use alloy_primitives::{
     Address, B256, TxHash,
-    map::{AddressMap, HashMap},
+    map::{AddressMap, AddressSet, HashMap},
 };
 use parking_lot::RwLock;
 use reth_chainspec::ChainSpecProvider;
@@ -29,15 +29,21 @@ use reth_transaction_pool::{
 };
 use revm::database::BundleAccount;
 use std::{sync::Arc, time::Instant};
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_chainspec::{
+    TempoChainSpec,
+    hardfork::{TempoHardfork, TempoHardforks},
+};
 use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
+    error::Result as TempoPrecompileResult,
     nonce::NonceManager,
-    tip_fee_manager::amm::{Pool as AmmPool, PoolKey, compute_amount_out},
-    tip20::slots as tip20_slots,
+    storage::Handler,
+    tip20::TIP20Token,
+    tip403_registry::{REJECT_ALL_POLICY_ID, TIP403Registry},
 };
 use tempo_primitives::Block;
+use tempo_revm::TempoStateAccess;
 
 /// Tempo transaction pool that routes based on nonce_key
 pub struct TempoTransactionPool<Client> {
@@ -84,7 +90,7 @@ where
     }
 
     /// Updates the 2d nonce pool with the given state changes.
-    pub(crate) fn notify_aa_pool_on_state_updates(&self, state: &HashMap<Address, BundleAccount>) {
+    pub(crate) fn notify_aa_pool_on_state_updates(&self, state: &AddressMap<BundleAccount>) {
         let (promoted, _mined) = self.aa_2d_pool.write().on_state_updates(state);
         // Note: mined transactions are notified via the vanilla pool updates
         self.protocol_pool
@@ -104,19 +110,22 @@ where
             return Ok(());
         }
 
-        let state_provider = self.client().state_by_block_hash(block_hash)?;
-        let mut nonce_changes = HashMap::default();
+        // Spec doesn't affect raw storage reads (sload), so default is safe here.
+        let spec = TempoHardfork::default();
+        let mut state_provider = self.client().state_by_block_hash(block_hash)?;
 
-        for seq_id in seq_ids {
-            // Read the current on-chain nonce for this sequence ID
-            let slot = NonceManager::new().nonces[seq_id.address][seq_id.nonce_key].slot();
-            let current_nonce: u64 = state_provider
-                .storage(NONCE_PRECOMPILE_ADDRESS, slot.into())?
-                .unwrap_or_default()
-                .saturating_to();
-
-            nonce_changes.insert(seq_id, current_nonce);
-        }
+        let nonce_changes = state_provider
+            .with_read_only_storage_ctx(spec, || -> TempoPrecompileResult<_> {
+                let mut changes = HashMap::default();
+                // Read the current on-chain nonce for this sequence ID
+                for id in &seq_ids {
+                    let current_nonce =
+                        NonceManager::new().nonces[id.address][id.nonce_key].read()?;
+                    changes.insert(*id, current_nonce);
+                }
+                Ok(changes)
+            })
+            .map_err(reth_provider::ProviderError::other)?;
 
         // Apply the nonce changes to the 2D pool
         let (promoted, _mined) = self.aa_2d_pool.write().on_nonce_changes(nonce_changes);
@@ -167,7 +176,7 @@ where
         // - validator token changes (liquidity check)
         // - blacklist/whitelist (policy check)
         // - spending limit spends (remaining limit check)
-        let state_provider = if !updates.validator_token_changes.is_empty()
+        let mut state_provider = if !updates.validator_token_changes.is_empty()
             || !updates.blacklist_additions.is_empty()
             || !updates.whitelist_removals.is_empty()
             || !updates.spending_limit_spends.is_empty()
@@ -177,22 +186,51 @@ where
             None
         };
 
-        // Cache policy lookups per fee token to avoid redundant storage reads
-        let mut policy_cache: AddressMap<u64> = AddressMap::default();
+        // Resolve the active hardfork for storage context.
+        let tip_timestamp = self
+            .protocol_pool
+            .validator()
+            .validator()
+            .inner
+            .fork_tracker()
+            .tip_timestamp();
+        let spec = self.client().chain_spec().tempo_hardfork_at(tip_timestamp);
 
-        // Filter validator token changes to only those from active validators.
-        // This prevents DoS via permissionless setValidatorToken: we only process
-        // token changes from validators who have actually produced recent blocks.
-        let amm_cache = self.amm_liquidity_cache();
-        let active_validator_token_changes: Vec<Address> = updates
-            .validator_token_changes
+        // Cache policy lookups per fee token to avoid redundant storage reads.
+        // For compound policies (TIP-1015), the cache stores all sub-policy IDs
+        // so eviction matches events emitted with sub-policy IDs.
+        let mut policy_cache: AddressMap<Vec<u64>> = AddressMap::default();
+
+        // Pre-collect policy IDs where TIP_FEE_MANAGER_ADDRESS (the fee recipient) was
+        // blacklisted or un-whitelisted. This is constant across all txs so we compute
+        // it once instead of re-scanning the updates list per transaction.
+        let fee_manager_blacklisted: Vec<u64> = updates
+            .blacklist_additions
             .iter()
-            .filter_map(|&(validator, new_token)| {
-                amm_cache
-                    .is_active_validator(&validator)
-                    .then_some(new_token)
-            })
+            .filter(|(_, account)| *account == TIP_FEE_MANAGER_ADDRESS)
+            .map(|(policy_id, _)| *policy_id)
             .collect();
+        let fee_manager_unwhitelisted: Vec<u64> = updates
+            .whitelist_removals
+            .iter()
+            .filter(|(_, account)| *account == TIP_FEE_MANAGER_ADDRESS)
+            .map(|(policy_id, _)| *policy_id)
+            .collect();
+
+        // Re-check liquidity for all pooled txs when an active validator changes token.
+        // Leverages the per-tx `has_enough_liquidity` check, which passes if ANY validator pair has
+        // enough liquidity, matching admission and preventing mass-eviction of valid txs.
+        let amm_cache = self.amm_liquidity_cache();
+        let has_active_validator_token_changes = !updates.validator_token_changes.is_empty() && {
+            let active_new_tokens: Vec<_> = updates
+                .validator_token_changes
+                .iter()
+                .filter(|(validator, _)| amm_cache.is_active_validator(validator))
+                .filter(|(_, new_token)| !amm_cache.is_active_validator_token(new_token))
+                .map(|(_, &new_token)| new_token)
+                .collect();
+            amm_cache.track_tokens(&active_new_tokens)
+        };
 
         let mut to_remove = Vec::new();
         let mut revoked_count = 0;
@@ -235,23 +273,21 @@ where
             // from state for affected (account, key_id, fee_token) combos and evict if
             // the pending tx's fee cost now exceeds the remaining limit.
             if !updates.spending_limit_spends.is_empty()
-                && let Some(ref provider) = state_provider
                 && let Some(ref subject) = keychain_subject
                 && subject.matches_spending_limit_update(&updates.spending_limit_spends)
-                && exceeds_spending_limit(&**provider, subject, tx.transaction.fee_token_cost())
+                && let Some(ref mut provider) = state_provider
+                && exceeds_spending_limit(provider, subject, tx.transaction.fee_token_cost())
             {
                 to_remove.push(*tx.hash());
                 spending_limit_spend_count += 1;
                 continue;
             }
 
-            // Check 3: Validator token changes (check liquidity for all transactions)
-            // NOTE: Only process changes from validators whose new token is already in use
-            // by actual block producers. This prevents permissionless setValidatorToken calls
-            // from triggering mass eviction.
-            if let Some(ref provider) = state_provider
-                && !active_validator_token_changes.is_empty()
-            {
+            // Check 3: Validator token changes (re-check liquidity for all transactions)
+            // Prevents mass eviction because it only:
+            // - evicts when NO validator token has enough liquidity
+            // - considers active validators (protects from permissionless `setValidatorToken`)
+            if has_active_validator_token_changes && let Some(ref provider) = state_provider {
                 let user_token = tx
                     .transaction
                     .inner()
@@ -259,40 +295,14 @@ where
                     .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN);
                 let cost = tx.transaction.fee_token_cost();
 
-                let amount_out = match compute_amount_out(cost) {
-                    Ok(amount) => amount,
-                    Err(_) => continue,
-                };
-
-                for &new_validator_token in &active_validator_token_changes {
-                    if user_token == new_validator_token {
-                        continue;
-                    }
-
-                    let pool_key = PoolKey::new(user_token, new_validator_token).get_id();
-                    let slot = tempo_precompiles::tip_fee_manager::TipFeeManager::new().pools
-                        [pool_key]
-                        .base_slot();
-
-                    let pool_value = match provider.storage(TIP_FEE_MANAGER_ADDRESS, slot.into()) {
-                        Ok(Some(value)) => value,
-                        Ok(None) => {
-                            to_remove.push(*tx.hash());
-                            liquidity_count += 1;
-                            break;
-                        }
-                        Err(_) => continue,
-                    };
-
-                    let reserve = alloy_primitives::U256::from(
-                        AmmPool::decode_from_slot(pool_value).reserve_validator_token,
-                    );
-
-                    if reserve < amount_out {
+                match amm_cache.has_enough_liquidity(user_token, cost, &**provider) {
+                    Ok(true) => {}
+                    Ok(false) => {
                         to_remove.push(*tx.hash());
                         liquidity_count += 1;
-                        break;
+                        continue;
                     }
+                    Err(_) => continue,
                 }
             }
 
@@ -300,7 +310,7 @@ where
             // Only check AA transactions with a fee token (non-AA transactions don't have
             // a fee payer that can be blacklisted via TIP403)
             if !updates.blacklist_additions.is_empty()
-                && let Some(ref provider) = state_provider
+                && let Some(ref mut provider) = state_provider
                 && let Some(fee_token) = tx.transaction.inner().fee_token()
             {
                 let fee_payer = tx
@@ -309,34 +319,36 @@ where
                     .fee_payer(tx.transaction.sender())
                     .unwrap_or(tx.transaction.sender());
 
-                // Check if any blacklist addition applies to this transaction
+                // Check if any blacklist addition applies to this transaction's fee payer
+                let mut sender_evicted = false;
                 for &(blacklist_policy_id, blacklisted_account) in &updates.blacklist_additions {
                     if fee_payer != blacklisted_account {
                         continue;
                     }
 
-                    // Get the token's transfer policy ID from cache or storage
-                    let token_policy = if let Some(&cached) = policy_cache.get(&fee_token) {
-                        Some(cached)
-                    } else {
-                        provider
-                            .storage(fee_token, tip20_slots::TRANSFER_POLICY_ID.into())
-                            .ok()
-                            .flatten()
-                            .map(|packed| {
-                                let policy_id: u64 =
-                                    (packed >> tip20_slots::TRANSFER_POLICY_ID_OFFSET).to();
-                                policy_cache.insert(fee_token, policy_id);
-                                policy_id
-                            })
-                    };
+                    let token_policies =
+                        get_sender_policy_ids(provider, fee_token, spec, &mut policy_cache);
 
-                    // If the token's policy matches the blacklist policy, evict the transaction
-                    if token_policy == Some(blacklist_policy_id) {
-                        to_remove.push(*tx.hash());
-                        blacklisted_count += 1;
+                    if token_policies
+                        .as_ref()
+                        .is_some_and(|ids| ids.contains(&blacklist_policy_id))
+                    {
+                        sender_evicted = true;
                         break;
                     }
+                }
+
+                // Check if the fee manager (recipient) was blacklisted on this token's
+                // recipient policy — the tx would fail at execution since the fee
+                // transfer to TIP_FEE_MANAGER_ADDRESS would be rejected.
+                let recipient_evicted = !sender_evicted
+                    && !fee_manager_blacklisted.is_empty()
+                    && get_recipient_policy_ids(provider, fee_token, spec)
+                        .is_some_and(|ids| fee_manager_blacklisted.iter().any(|p| ids.contains(p)));
+
+                if sender_evicted || recipient_evicted {
+                    to_remove.push(*tx.hash());
+                    blacklisted_count += 1;
                 }
             }
 
@@ -344,7 +356,7 @@ where
             // When a fee payer is removed from a whitelist, their pending transactions
             // will fail validation at execution time.
             if !updates.whitelist_removals.is_empty()
-                && let Some(ref provider) = state_provider
+                && let Some(ref mut provider) = state_provider
                 && let Some(fee_token) = tx.transaction.inner().fee_token()
             {
                 let fee_payer = tx
@@ -353,33 +365,35 @@ where
                     .fee_payer(tx.transaction.sender())
                     .unwrap_or(tx.transaction.sender());
 
+                let mut sender_evicted = false;
                 for &(whitelist_policy_id, unwhitelisted_account) in &updates.whitelist_removals {
                     if fee_payer != unwhitelisted_account {
                         continue;
                     }
 
-                    // Get the token's transfer policy ID from cache or storage
-                    let token_policy = if let Some(&cached) = policy_cache.get(&fee_token) {
-                        Some(cached)
-                    } else {
-                        provider
-                            .storage(fee_token, tip20_slots::TRANSFER_POLICY_ID.into())
-                            .ok()
-                            .flatten()
-                            .map(|packed| {
-                                let policy_id: u64 =
-                                    (packed >> tip20_slots::TRANSFER_POLICY_ID_OFFSET).to();
-                                policy_cache.insert(fee_token, policy_id);
-                                policy_id
-                            })
-                    };
+                    let token_policies =
+                        get_sender_policy_ids(provider, fee_token, spec, &mut policy_cache);
 
-                    // If the token's policy matches the whitelist policy, evict the transaction
-                    if token_policy == Some(whitelist_policy_id) {
-                        to_remove.push(*tx.hash());
-                        unwhitelisted_count += 1;
+                    if token_policies
+                        .as_ref()
+                        .is_some_and(|ids| ids.contains(&whitelist_policy_id))
+                    {
+                        sender_evicted = true;
                         break;
                     }
+                }
+
+                // Check if the fee manager (recipient) was un-whitelisted on this
+                // token's recipient policy.
+                let recipient_evicted = !sender_evicted
+                    && !fee_manager_unwhitelisted.is_empty()
+                    && get_recipient_policy_ids(provider, fee_token, spec).is_some_and(|ids| {
+                        fee_manager_unwhitelisted.iter().any(|p| ids.contains(p))
+                    });
+
+                if sender_evicted || recipient_evicted {
+                    to_remove.push(*tx.hash());
+                    unwhitelisted_count += 1;
                 }
             }
 
@@ -415,30 +429,6 @@ where
             self.remove_transactions(to_remove.clone());
         }
         to_remove
-    }
-
-    fn add_validated_transactions(
-        &self,
-        origin: TransactionOrigin,
-        transactions: Vec<TransactionValidationOutcome<TempoPooledTransaction>>,
-    ) -> Vec<PoolResult<AddedTransactionOutcome>> {
-        if transactions.iter().any(|outcome| {
-            outcome
-                .as_valid_transaction()
-                .map(|tx| tx.transaction().is_aa_2d())
-                .unwrap_or(false)
-        }) {
-            // mixed or 2d only
-            let mut results = Vec::with_capacity(transactions.len());
-            for tx in transactions {
-                results.push(self.add_validated_transaction(origin, tx));
-            }
-            return results;
-        }
-
-        self.protocol_pool
-            .inner()
-            .add_transactions(origin, transactions)
     }
 
     fn add_validated_transaction(
@@ -489,6 +479,9 @@ where
                     )?;
                     let hash = *added.hash();
                     if let Some(pending) = added.as_pending() {
+                        if pending.discarded.iter().any(|tx| *tx.hash() == hash) {
+                            return Err(PoolError::new(hash, PoolErrorKind::DiscardedOnInsert));
+                        }
                         self.protocol_pool
                             .inner()
                             .on_new_pending_transaction(pending);
@@ -613,13 +606,53 @@ where
         if transactions.is_empty() {
             return Vec::new();
         }
-        let validated = self
-            .protocol_pool
+
+        // Fully delegate to protocol pool for non-2D transactions
+        if !transactions.iter().any(|tx| tx.is_aa_2d()) {
+            return self
+                .protocol_pool
+                .add_transactions(origin, transactions)
+                .await;
+        }
+
+        self.protocol_pool
             .validator()
             .validate_transactions_with_origin(origin, transactions)
-            .await;
+            .await
+            .into_iter()
+            .map(|outcome| self.add_validated_transaction(origin, outcome))
+            .collect()
+    }
 
-        self.add_validated_transactions(origin, validated)
+    async fn add_transactions_with_origins(
+        &self,
+        transactions: Vec<(TransactionOrigin, Self::Transaction)>,
+    ) -> Vec<PoolResult<AddedTransactionOutcome>> {
+        if transactions.is_empty() {
+            return Vec::new();
+        }
+
+        // Fully delegate to protocol pool for non-2D transactions
+        if !transactions.iter().any(|(_, tx)| tx.is_aa_2d()) {
+            return self
+                .protocol_pool
+                .add_transactions_with_origins(transactions)
+                .await;
+        }
+
+        let origins = transactions
+            .iter()
+            .map(|(origin, _)| *origin)
+            .collect::<Vec<_>>();
+
+        self.protocol_pool
+            .validator()
+            .validate_transactions(transactions)
+            .await
+            .into_iter()
+            .zip(origins)
+            .map(|(outcome, origin)| self.add_validated_transaction(origin, outcome))
+            .collect()
     }
 
     fn transaction_event_listener(&self, tx_hash: B256) -> Option<TransactionEvents> {
@@ -862,6 +895,15 @@ where
         txs
     }
 
+    fn prune_transactions(
+        &self,
+        hashes: Vec<TxHash>,
+    ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
+        let mut txs = self.aa_2d_pool.write().remove_transactions(hashes.iter());
+        txs.extend(self.protocol_pool.prune_transactions(hashes));
+        txs
+    }
+
     fn retain_unknown<A: HandleMempoolData>(&self, announcement: &mut A) {
         self.protocol_pool.retain_unknown(announcement);
         if announcement.is_empty() {
@@ -1001,7 +1043,7 @@ where
         txs
     }
 
-    fn unique_senders(&self) -> std::collections::HashSet<Address> {
+    fn unique_senders(&self) -> AddressSet {
         let mut senders = self.protocol_pool.unique_senders();
         senders.extend(self.aa_2d_pool.read().senders_iter().copied());
         senders
@@ -1074,26 +1116,6 @@ where
     }
 }
 
-/// Checks whether a pending keychain tx exceeds its remaining spending limit.
-///
-/// Re-reads the current remaining limit from state for the tx's (account, key_id,
-/// fee_token) combo. Returns true if the tx's fee cost exceeds the remaining limit,
-/// meaning it should be evicted.
-pub(crate) fn exceeds_spending_limit(
-    provider: &dyn reth_storage_api::StateProvider,
-    subject: &crate::transaction::KeychainSubject,
-    fee_token_cost: alloy_primitives::U256,
-) -> bool {
-    let limit_key = AccountKeychain::spending_limit_key(subject.account, subject.key_id);
-    let slot = AccountKeychain::new().spending_limits[limit_key][subject.fee_token].slot();
-
-    match provider.storage(ACCOUNT_KEYCHAIN_ADDRESS, slot.into()) {
-        Ok(Some(remaining)) => fee_token_cost > remaining,
-        Ok(None) => !fee_token_cost.is_zero(),
-        Err(_) => false,
-    }
-}
-
 impl<Client> TransactionPoolExt for TempoTransactionPool<Client>
 where
     Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
@@ -1125,13 +1147,127 @@ where
     }
 }
 
+/// Checks whether a pending keychain tx exceeds its remaining spending limit.
+///
+/// Re-reads the current remaining limit from state for the tx's (account, key_id,
+/// fee_token) combo. Returns true if the tx's fee cost exceeds the remaining limit,
+/// meaning it should be evicted.
+pub(crate) fn exceeds_spending_limit(
+    provider: &mut impl StateProvider,
+    subject: &crate::transaction::KeychainSubject,
+    fee_token_cost: alloy_primitives::U256,
+) -> bool {
+    // Spec doesn't affect raw storage reads (sload), so default is safe here.
+    let spec = TempoHardfork::default();
+    let limit_key = AccountKeychain::spending_limit_key(subject.account, subject.key_id);
+
+    provider
+        .with_read_only_storage_ctx(spec, || -> TempoPrecompileResult<bool> {
+            let keychain = AccountKeychain::new();
+            if !keychain.keys[subject.account][subject.key_id]
+                .read()?
+                .enforce_limits
+            {
+                return Ok(false);
+            }
+
+            let remaining = keychain.spending_limits[limit_key][subject.fee_token].read()?;
+            Ok(fee_token_cost > remaining)
+        })
+        .unwrap_or_default()
+}
+
+/// Returns the set of policy IDs that can affect fee_payer authorization for a token.
+///
+/// For simple policies the set contains just the policy ID. For compound policies
+/// (TIP-1015) it contains both the compound root and the sender sub-policy, since
+/// fee transfer authorization checks `fee_payer` via `AuthRole::Sender`.
+/// `recipient_policy_id` and `mint_recipient_policy_id` are excluded — they govern
+/// other roles and cannot invalidate a fee_payer's transactions.
+fn get_sender_policy_ids(
+    provider: &mut impl StateProvider,
+    fee_token: Address,
+    spec: TempoHardfork,
+    cache: &mut AddressMap<Vec<u64>>,
+) -> Option<Vec<u64>> {
+    if let Some(cached) = cache.get(&fee_token) {
+        return Some(cached.clone());
+    }
+
+    provider.with_read_only_storage_ctx(spec, || {
+        let policy_id = TIP20Token::from_address(fee_token)
+            .and_then(|t| t.transfer_policy_id())
+            .ok()
+            .filter(|&id| id != REJECT_ALL_POLICY_ID)?;
+
+        let mut ids = vec![policy_id];
+
+        // For compound policies, include only the sender sub-policy ID.
+        let registry = TIP403Registry::new();
+        if let Ok(data) = registry.policy_records[policy_id].base.read()
+            && data.is_compound()
+            && let Ok(compound) = registry.policy_records[policy_id].compound.read()
+            && compound.sender_policy_id != REJECT_ALL_POLICY_ID
+        {
+            ids.push(compound.sender_policy_id);
+        }
+
+        // Cache even though compound sub-policy references are immutable: avoids
+        // redundant SLOADs when multiple transactions share the same fee token.
+        cache.insert(fee_token, ids.clone());
+        Some(ids)
+    })
+}
+
+/// Returns the set of policy IDs that can affect recipient authorization for a token.
+///
+/// For simple (non-compound) policies, the transfer policy applies symmetrically to both
+/// sender and recipient, so the set contains just the policy ID. For compound policies
+/// (TIP-1015) it contains both the compound root and the recipient sub-policy, since
+/// fee transfer authorization checks the fee manager via `AuthRole::Recipient`.
+///
+/// Unlike `get_sender_policy_ids` this is uncached — it's only called on the rare path
+/// where the fee manager itself is blacklisted or un-whitelisted.
+fn get_recipient_policy_ids(
+    provider: &mut impl StateProvider,
+    fee_token: Address,
+    spec: TempoHardfork,
+) -> Option<Vec<u64>> {
+    provider.with_read_only_storage_ctx(spec, || {
+        let policy_id = TIP20Token::from_address(fee_token)
+            .and_then(|t| t.transfer_policy_id())
+            .ok()
+            .filter(|&id| id != REJECT_ALL_POLICY_ID)?;
+
+        let mut ids = vec![policy_id];
+
+        let registry = TIP403Registry::new();
+        if let Ok(data) = registry.policy_records[policy_id].base.read()
+            && data.is_compound()
+            && let Ok(compound) = registry.policy_records[policy_id].compound.read()
+            && compound.recipient_policy_id != REJECT_ALL_POLICY_ID
+        {
+            ids.push(compound.recipient_policy_id);
+        }
+
+        Some(ids)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::transaction::KeychainSubject;
+    use alloy_primitives::{U256, address};
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_storage_api::StateProviderFactory;
-    use tempo_precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, account_keychain::AccountKeychain};
+    use tempo_contracts::precompiles::ITIP403Registry;
+    use tempo_precompiles::{
+        ACCOUNT_KEYCHAIN_ADDRESS, TIP403_REGISTRY_ADDRESS,
+        account_keychain::{AccountKeychain, AuthorizedKey},
+        tip20::slots as tip20_slots,
+        tip403_registry::PolicyData,
+    };
 
     fn provider_with_spending_limit(
         account: Address,
@@ -1143,16 +1279,309 @@ mod tests {
             tempo_chainspec::spec::MODERATO.clone(),
         ));
 
+        let keychain = AccountKeychain::new();
+
+        // Write AuthorizedKey with enforce_limits=true
+        let key_slot = keychain.keys[account][key_id].base_slot();
+        let authorized_key = AuthorizedKey {
+            signature_type: 0,
+            expiry: u64::MAX,
+            enforce_limits: true,
+            is_revoked: false,
+        }
+        .encode_to_slot();
+
         let limit_key = AccountKeychain::spending_limit_key(account, key_id);
-        let slot = AccountKeychain::new().spending_limits[limit_key][fee_token].slot();
+        let limit_slot = keychain.spending_limits[limit_key][fee_token].slot();
 
         provider.add_account(
             ACCOUNT_KEYCHAIN_ADDRESS,
-            ExtendedAccount::new(0, alloy_primitives::U256::ZERO)
-                .extend_storage([(slot.into(), remaining_limit)]),
+            ExtendedAccount::new(0, alloy_primitives::U256::ZERO).extend_storage([
+                (key_slot.into(), authorized_key),
+                (limit_slot.into(), remaining_limit),
+            ]),
         );
 
         provider.latest().unwrap()
+    }
+
+    /// Eviction must match sub-policy IDs against compound policies.
+    /// When a token uses a compound policy, and a sub-policy event fires,
+    /// the eviction comparison must detect the match.
+    #[test]
+    fn compound_policy_sub_policy_matches_eviction_check() {
+        let fee_token = address!("20C0000000000000000000000000000000000001");
+        let compound_policy_id: u64 = 5;
+        let sender_sub_policy: u64 = 3;
+        let recipient_sub_policy: u64 = 4;
+
+        let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
+            tempo_chainspec::spec::MODERATO.clone(),
+        ));
+
+        // Set up TIP20 token with transfer_policy_id = compound_policy_id
+        let transfer_policy_id_packed =
+            U256::from(compound_policy_id) << (tip20_slots::TRANSFER_POLICY_ID_OFFSET * 8);
+        provider.add_account(
+            fee_token,
+            ExtendedAccount::new(0, U256::ZERO).extend_storage([(
+                tip20_slots::TRANSFER_POLICY_ID.into(),
+                transfer_policy_id_packed,
+            )]),
+        );
+
+        // Set up TIP403 registry with compound policy pointing to sub-policies
+        let registry = TIP403Registry::new();
+        let policy_data = PolicyData {
+            policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
+            admin: Address::ZERO,
+        };
+        let base_slot = registry.policy_records[compound_policy_id].base.base_slot();
+        let compound_slot = registry.policy_records[compound_policy_id]
+            .compound
+            .base_slot();
+        // CompoundPolicyData: 3 u64s packed into one slot
+        let compound_encoded =
+            U256::from(sender_sub_policy) | (U256::from(recipient_sub_policy) << 64);
+
+        provider.add_account(
+            TIP403_REGISTRY_ADDRESS,
+            ExtendedAccount::new(0, U256::ZERO).extend_storage([
+                (base_slot.into(), policy_data.encode_to_slot()),
+                (compound_slot.into(), compound_encoded),
+            ]),
+        );
+
+        let mut state = provider.latest().unwrap();
+        let mut cache: AddressMap<Vec<u64>> = AddressMap::default();
+
+        let ids =
+            get_sender_policy_ids(&mut state, fee_token, TempoHardfork::default(), &mut cache)
+                .expect("should resolve policy IDs");
+
+        assert!(
+            ids.contains(&compound_policy_id),
+            "should contain compound policy ID"
+        );
+        assert!(
+            ids.contains(&sender_sub_policy),
+            "should contain sender sub-policy"
+        );
+    }
+
+    /// fee_payer is only checked against sender sub-policy at execution time,
+    /// so sender_policy_ids must NOT contain recipient_sub_policy.
+    #[test]
+    fn compound_policy_sender_ids_exclude_recipient_sub_policy() {
+        let fee_token = address!("20C0000000000000000000000000000000000001");
+        let compound_policy_id: u64 = 5;
+        let sender_sub_policy: u64 = 3;
+        let recipient_sub_policy: u64 = 4;
+
+        let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
+            tempo_chainspec::spec::MODERATO.clone(),
+        ));
+
+        let transfer_policy_id_packed =
+            U256::from(compound_policy_id) << (tip20_slots::TRANSFER_POLICY_ID_OFFSET * 8);
+        provider.add_account(
+            fee_token,
+            ExtendedAccount::new(0, U256::ZERO).extend_storage([(
+                tip20_slots::TRANSFER_POLICY_ID.into(),
+                transfer_policy_id_packed,
+            )]),
+        );
+
+        let registry = TIP403Registry::new();
+        let policy_data = PolicyData {
+            policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
+            admin: Address::ZERO,
+        };
+        let base_slot = registry.policy_records[compound_policy_id].base.base_slot();
+        let compound_slot = registry.policy_records[compound_policy_id]
+            .compound
+            .base_slot();
+        let compound_encoded =
+            U256::from(sender_sub_policy) | (U256::from(recipient_sub_policy) << 64);
+
+        provider.add_account(
+            TIP403_REGISTRY_ADDRESS,
+            ExtendedAccount::new(0, U256::ZERO).extend_storage([
+                (base_slot.into(), policy_data.encode_to_slot()),
+                (compound_slot.into(), compound_encoded),
+            ]),
+        );
+
+        let mut state = provider.latest().unwrap();
+        let mut cache: AddressMap<Vec<u64>> = AddressMap::default();
+
+        let ids =
+            get_sender_policy_ids(&mut state, fee_token, TempoHardfork::default(), &mut cache)
+                .expect("should resolve policy IDs");
+
+        assert!(ids.contains(&compound_policy_id));
+        assert!(ids.contains(&sender_sub_policy));
+        assert!(
+            !ids.contains(&recipient_sub_policy),
+            "sender policy IDs should not contain recipient_sub_policy"
+        );
+    }
+
+    /// mint_recipient_policy_id is never consulted for fee transfers,
+    /// so it must be excluded from sender policy IDs.
+    #[test]
+    fn compound_policy_excludes_mint_recipient() {
+        let fee_token = address!("20C0000000000000000000000000000000000001");
+        let compound_policy_id: u64 = 5;
+        let sender_sub: u64 = 3;
+        let recipient_sub: u64 = 4;
+        let mint_recipient_sub: u64 = 6;
+
+        let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
+            tempo_chainspec::spec::MODERATO.clone(),
+        ));
+
+        let transfer_policy_id_packed =
+            U256::from(compound_policy_id) << (tip20_slots::TRANSFER_POLICY_ID_OFFSET * 8);
+        provider.add_account(
+            fee_token,
+            ExtendedAccount::new(0, U256::ZERO).extend_storage([(
+                tip20_slots::TRANSFER_POLICY_ID.into(),
+                transfer_policy_id_packed,
+            )]),
+        );
+
+        let registry = TIP403Registry::new();
+        let policy_data = PolicyData {
+            policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
+            admin: Address::ZERO,
+        };
+        let base_slot = registry.policy_records[compound_policy_id].base.base_slot();
+        let compound_slot = registry.policy_records[compound_policy_id]
+            .compound
+            .base_slot();
+        let compound_encoded = U256::from(sender_sub)
+            | (U256::from(recipient_sub) << 64)
+            | (U256::from(mint_recipient_sub) << 128);
+
+        provider.add_account(
+            TIP403_REGISTRY_ADDRESS,
+            ExtendedAccount::new(0, U256::ZERO).extend_storage([
+                (base_slot.into(), policy_data.encode_to_slot()),
+                (compound_slot.into(), compound_encoded),
+            ]),
+        );
+
+        let mut state = provider.latest().unwrap();
+        let mut cache: AddressMap<Vec<u64>> = AddressMap::default();
+
+        let ids =
+            get_sender_policy_ids(&mut state, fee_token, TempoHardfork::default(), &mut cache)
+                .expect("should resolve policy IDs");
+
+        assert!(
+            !ids.contains(&mint_recipient_sub),
+            "mint_recipient must be excluded from sender policy IDs"
+        );
+    }
+
+    /// `get_recipient_policy_ids` returns the compound root and recipient sub-policy.
+    #[test]
+    fn recipient_policy_ids_includes_recipient_sub_policy() {
+        let fee_token = address!("20C0000000000000000000000000000000000001");
+        let compound_policy_id: u64 = 5;
+        let sender_sub: u64 = 3;
+        let recipient_sub: u64 = 4;
+
+        let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
+            tempo_chainspec::spec::MODERATO.clone(),
+        ));
+
+        let transfer_policy_id_packed =
+            U256::from(compound_policy_id) << (tip20_slots::TRANSFER_POLICY_ID_OFFSET * 8);
+        provider.add_account(
+            fee_token,
+            ExtendedAccount::new(0, U256::ZERO).extend_storage([(
+                tip20_slots::TRANSFER_POLICY_ID.into(),
+                transfer_policy_id_packed,
+            )]),
+        );
+
+        let registry = TIP403Registry::new();
+        let policy_data = PolicyData {
+            policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
+            admin: Address::ZERO,
+        };
+        let base_slot = registry.policy_records[compound_policy_id].base.base_slot();
+        let compound_slot = registry.policy_records[compound_policy_id]
+            .compound
+            .base_slot();
+        let compound_encoded = U256::from(sender_sub) | (U256::from(recipient_sub) << 64);
+
+        provider.add_account(
+            TIP403_REGISTRY_ADDRESS,
+            ExtendedAccount::new(0, U256::ZERO).extend_storage([
+                (base_slot.into(), policy_data.encode_to_slot()),
+                (compound_slot.into(), compound_encoded),
+            ]),
+        );
+
+        let mut state = provider.latest().unwrap();
+        let ids = get_recipient_policy_ids(&mut state, fee_token, TempoHardfork::default())
+            .expect("should resolve policy IDs");
+
+        assert!(
+            ids.contains(&compound_policy_id),
+            "should contain compound policy ID"
+        );
+        assert!(
+            ids.contains(&recipient_sub),
+            "should contain recipient sub-policy"
+        );
+        assert!(
+            !ids.contains(&sender_sub),
+            "recipient policy IDs should not contain sender sub-policy"
+        );
+    }
+
+    /// For simple (non-compound) policies, `get_recipient_policy_ids` returns just the root.
+    #[test]
+    fn recipient_policy_ids_simple_policy() {
+        let fee_token = address!("20C0000000000000000000000000000000000001");
+        let simple_policy_id: u64 = 7;
+
+        let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
+            tempo_chainspec::spec::MODERATO.clone(),
+        ));
+
+        let transfer_policy_id_packed =
+            U256::from(simple_policy_id) << (tip20_slots::TRANSFER_POLICY_ID_OFFSET * 8);
+        provider.add_account(
+            fee_token,
+            ExtendedAccount::new(0, U256::ZERO).extend_storage([(
+                tip20_slots::TRANSFER_POLICY_ID.into(),
+                transfer_policy_id_packed,
+            )]),
+        );
+
+        let registry = TIP403Registry::new();
+        let policy_data = PolicyData {
+            policy_type: ITIP403Registry::PolicyType::BLACKLIST as u8,
+            admin: Address::ZERO,
+        };
+        let base_slot = registry.policy_records[simple_policy_id].base.base_slot();
+
+        provider.add_account(
+            TIP403_REGISTRY_ADDRESS,
+            ExtendedAccount::new(0, U256::ZERO)
+                .extend_storage([(base_slot.into(), policy_data.encode_to_slot())]),
+        );
+
+        let mut state = provider.latest().unwrap();
+        let ids = get_recipient_policy_ids(&mut state, fee_token, TempoHardfork::default())
+            .expect("should resolve policy IDs");
+
+        assert_eq!(ids, vec![simple_policy_id]);
     }
 
     #[test]
@@ -1166,7 +1595,7 @@ mod tests {
             fee_token,
         };
 
-        let state = provider_with_spending_limit(
+        let mut state = provider_with_spending_limit(
             account,
             key_id,
             fee_token,
@@ -1174,7 +1603,7 @@ mod tests {
         );
 
         assert!(exceeds_spending_limit(
-            &*state,
+            &mut state,
             &subject,
             alloy_primitives::U256::from(200)
         ));
@@ -1191,7 +1620,7 @@ mod tests {
             fee_token,
         };
 
-        let state = provider_with_spending_limit(
+        let mut state = provider_with_spending_limit(
             account,
             key_id,
             fee_token,
@@ -1199,7 +1628,7 @@ mod tests {
         );
 
         assert!(!exceeds_spending_limit(
-            &*state,
+            &mut state,
             &subject,
             alloy_primitives::U256::from(200)
         ));
@@ -1216,14 +1645,64 @@ mod tests {
             fee_token,
         };
 
-        // Provider with no spending limit storage set
+        // Provider with AuthorizedKey (enforce_limits=true) but no spending limit slot
         let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
             tempo_chainspec::spec::MODERATO.clone(),
         ));
-        let state = provider.latest().unwrap();
+        let key_slot = AccountKeychain::new().keys[account][key_id].base_slot();
+        let authorized_key = AuthorizedKey {
+            signature_type: 0,
+            expiry: u64::MAX,
+            enforce_limits: true,
+            is_revoked: false,
+        }
+        .encode_to_slot();
+        provider.add_account(
+            ACCOUNT_KEYCHAIN_ADDRESS,
+            ExtendedAccount::new(0, alloy_primitives::U256::ZERO)
+                .extend_storage([(key_slot.into(), authorized_key)]),
+        );
+        let mut state = provider.latest().unwrap();
 
         assert!(exceeds_spending_limit(
-            &*state,
+            &mut state,
+            &subject,
+            alloy_primitives::U256::from(1)
+        ));
+    }
+
+    #[test]
+    fn exceeds_spending_limit_returns_false_when_limits_not_enforced() {
+        let account = Address::random();
+        let key_id = Address::random();
+        let fee_token = Address::random();
+        let subject = KeychainSubject {
+            account,
+            key_id,
+            fee_token,
+        };
+
+        // Provider with AuthorizedKey (enforce_limits=false)
+        let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
+            tempo_chainspec::spec::MODERATO.clone(),
+        ));
+        let key_slot = AccountKeychain::new().keys[account][key_id].base_slot();
+        let authorized_key = AuthorizedKey {
+            signature_type: 0,
+            expiry: u64::MAX,
+            enforce_limits: false,
+            is_revoked: false,
+        }
+        .encode_to_slot();
+        provider.add_account(
+            ACCOUNT_KEYCHAIN_ADDRESS,
+            ExtendedAccount::new(0, alloy_primitives::U256::ZERO)
+                .extend_storage([(key_slot.into(), authorized_key)]),
+        );
+        let mut state = provider.latest().unwrap();
+
+        assert!(!exceeds_spending_limit(
+            &mut state,
             &subject,
             alloy_primitives::U256::from(1)
         ));

@@ -60,14 +60,6 @@ pub(crate) trait TestEnv: Sized {
         Ok(())
     }
 
-    /// Submit a transaction that enters the pool but is excluded by the block
-    /// builder (execution simulation fails). Asserts no receipt exists after mining.
-    async fn submit_tx_excluded_by_builder(
-        &mut self,
-        encoded: Vec<u8>,
-        tx_hash: B256,
-    ) -> eyre::Result<()>;
-
     /// Submit a signed, encoded transaction and wait until it is mined.
     /// Returns the receipt JSON WITHOUT asserting status (caller checks).
     async fn submit_tx_unchecked(
@@ -320,7 +312,7 @@ impl RawSendTestCase {
         // 1. key_setup
         match &self.key_setup {
             KeySetup::ZeroPubKey => outcome = ExpectedOutcome::Revert,
-            KeySetup::DuplicateAuth => outcome = ExpectedOutcome::ExcludedByBuilder,
+            KeySetup::DuplicateAuth => outcome = ExpectedOutcome::Rejection,
             KeySetup::AccessKey {
                 expiry: KeyExpiry::Past,
                 ..
@@ -413,9 +405,8 @@ impl RawSendTestCase {
         }
         match self.expected {
             ExpectedOutcome::Success => {}
-            ExpectedOutcome::Rejection => flags.push("reject"),
+            ExpectedOutcome::Rejection => flags.push("rejected"),
             ExpectedOutcome::Revert => flags.push("revert"),
-            ExpectedOutcome::ExcludedByBuilder => flags.push("excluded"),
         }
         flags
     }
@@ -564,9 +555,6 @@ pub(crate) enum ExpectedOutcome {
     Rejection,
     /// Mined but reverted (status 0x0). Nonce still bumps.
     Revert,
-    /// Enters pool but excluded by block builder (execution simulation fails).
-    /// Tx is never mined — no receipt exists.
-    ExcludedByBuilder,
 }
 
 /// Test case definition for fill tests and E2E matrix

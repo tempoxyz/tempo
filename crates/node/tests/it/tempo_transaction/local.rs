@@ -153,36 +153,6 @@ impl super::types::TestEnv for Localnet {
         Ok(receipt)
     }
 
-    async fn submit_tx_excluded_by_builder(
-        &mut self,
-        encoded: Vec<u8>,
-        tx_hash: B256,
-    ) -> eyre::Result<()> {
-        self.setup.node.rpc.inject_tx(encoded.into()).await?;
-        assert!(
-            self.setup.node.inner.pool.contains(&tx_hash),
-            "Tx should be in pool after injection"
-        );
-
-        // Advance several blocks — tx should never be included by the builder.
-        for _ in 0..5 {
-            self.setup.node.advance_block().await?;
-
-            let raw: Option<serde_json::Value> = self
-                .provider
-                .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
-                .await?;
-            if let Some(receipt) = raw {
-                let status = receipt["status"].as_str().unwrap_or("?");
-                panic!(
-                    "Transaction {tx_hash} was mined (status={status}), \
-                     expected exclusion by builder"
-                );
-            }
-        }
-        Ok(())
-    }
-
     async fn bump_protocol_nonce(
         &mut self,
         signer: &PrivateKeySigner,
@@ -2098,7 +2068,8 @@ async fn test_v1_keychain_cross_account_replay_pre_t1c() -> eyre::Result<()> {
     let config = genesis["config"].as_object_mut().unwrap();
     let far_future = serde_json::Value::Number(serde_json::Number::from(u64::MAX));
     config.insert("t1cTime".to_string(), far_future.clone());
-    config.insert("t2Time".to_string(), far_future);
+    config.insert("t2Time".to_string(), far_future.clone());
+    config.insert("t3Time".to_string(), far_future);
     let mut setup = TestNodeBuilder::new()
         .with_genesis(serde_json::to_string(&genesis)?)
         .build_with_node_access()

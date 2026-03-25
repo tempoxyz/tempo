@@ -1,3 +1,11 @@
+//! Role-based [access control] for TIP-20 tokens.
+//!
+//! Implements `AccessControl`: each role has an admin role that can grant/revoke it.
+//! [`DEFAULT_ADMIN_ROLE`] is the root admin; [`UNGRANTABLE_ROLE`] is self-administered
+//! and cannot be granted externally.
+//!
+//! [Access control]: <https://docs.tempo.xyz/protocol/tip20/overview#role-based-access-control-rbac>
+
 use alloy::primitives::{Address, B256};
 
 use crate::{
@@ -12,12 +20,12 @@ pub const DEFAULT_ADMIN_ROLE: B256 = B256::ZERO;
 pub const UNGRANTABLE_ROLE: B256 = B256::new([0xff; 32]);
 
 impl TIP20Token {
-    /// Initialize the UNGRANTABLE_ROLE to be self-administered
+    /// Initializes the roles precompile by setting [`UNGRANTABLE_ROLE`] to be self-administered.
     pub fn initialize_roles(&mut self) -> Result<()> {
         self.set_role_admin_internal(UNGRANTABLE_ROLE, UNGRANTABLE_ROLE)
     }
 
-    /// Grant the default admin role to an account
+    /// Grants `DEFAULT_ADMIN_ROLE` to `admin`. Used during token initialization.
     pub fn grant_default_admin(&mut self, msg_sender: Address, admin: Address) -> Result<()> {
         self.grant_role_internal(admin, DEFAULT_ADMIN_ROLE)?;
 
@@ -31,15 +39,20 @@ impl TIP20Token {
         ))
     }
 
-    // Public functions that handle calldata and emit events
+    /// Returns whether `account` holds the given `role`.
     pub fn has_role(&self, call: IRolesAuth::hasRoleCall) -> Result<bool> {
         self.has_role_internal(call.account, call.role)
     }
 
+    /// Returns the admin role that governs `role`.
     pub fn get_role_admin(&self, call: IRolesAuth::getRoleAdminCall) -> Result<B256> {
         self.get_role_admin_internal(call.role)
     }
 
+    /// Grants `role` to `account`.
+    ///
+    /// # Errors
+    /// - `Unauthorized` — caller does not hold the admin role for `role`
     pub fn grant_role(
         &mut self,
         msg_sender: Address,
@@ -59,6 +72,10 @@ impl TIP20Token {
         ))
     }
 
+    /// Revokes `role` from `account`.
+    ///
+    /// # Errors
+    /// - `Unauthorized` — caller does not hold the admin role for `role`
     pub fn revoke_role(
         &mut self,
         msg_sender: Address,
@@ -78,6 +95,10 @@ impl TIP20Token {
         ))
     }
 
+    /// Allows the caller to voluntarily give up their own `role`.
+    ///
+    /// # Errors
+    /// - `Unauthorized` — caller does not hold `role`
     pub fn renounce_role(
         &mut self,
         msg_sender: Address,
@@ -96,6 +117,10 @@ impl TIP20Token {
         ))
     }
 
+    /// Changes the admin role that governs `role`.
+    ///
+    /// # Errors
+    /// - `Unauthorized` — caller does not hold the current admin role for `role`
     pub fn set_role_admin(
         &mut self,
         msg_sender: Address,
@@ -115,16 +140,20 @@ impl TIP20Token {
         ))
     }
 
-    // Utility functions for checking roles without calldata
+    /// Reverts if `account` does not hold `role`.
+    ///
+    /// # Errors
+    /// - `Unauthorized` — account does not hold `role`
     pub fn check_role(&self, account: Address, role: B256) -> Result<()> {
         self.check_role_internal(account, role)
     }
 
-    // Internal implementation functions
+    /// Low-level role check without calldata decoding.
     pub fn has_role_internal(&self, account: Address, role: B256) -> Result<bool> {
         self.roles[account][role].read()
     }
 
+    /// Low-level role grant without authorization checks or events.
     pub fn grant_role_internal(&mut self, account: Address, role: B256) -> Result<()> {
         self.roles[account][role].write(true)
     }

@@ -21,7 +21,7 @@ pub enum TempoInvalidTransaction {
 
     /// System transaction execution failed.
     #[error("system transaction execution failed, result: {_0:?}")]
-    SystemTransactionFailed(ExecutionResult<TempoHaltReason>),
+    SystemTransactionFailed(Box<ExecutionResult<TempoHaltReason>>),
 
     /// Fee payer signature recovery failed.
     ///
@@ -29,6 +29,10 @@ pub enum TempoInvalidTransaction {
     /// signature recovery for the fee payer fails.
     #[error("fee payer signature recovery failed")]
     InvalidFeePayerSignature,
+
+    /// Fee payer cannot resolve to the sender address.
+    #[error("fee payer cannot resolve to sender")]
+    SelfSponsoredFeePayer,
 
     // Tempo transaction errors
     /// Transaction cannot be included before validAfter timestamp.
@@ -386,6 +390,10 @@ mod tests {
         assert!(err.as_invalid_tx_err().is_some());
 
         let err = TempoInvalidTransaction::InvalidFeePayerSignature;
+        assert!(!err.is_nonce_too_low());
+        assert!(err.as_invalid_tx_err().is_none());
+
+        let err = TempoInvalidTransaction::SelfSponsoredFeePayer;
         assert!(!err.is_nonce_too_low());
         assert!(err.as_invalid_tx_err().is_none());
     }

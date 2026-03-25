@@ -19,6 +19,8 @@ pub struct PrometheusMetricsConfig {
     pub interval: SignedDuration,
     /// Optional Authorization header value
     pub auth_header: Option<String>,
+    /// Consensus Identifier for this node.
+    pub consensus_pubkey: Option<String>,
 }
 
 /// Spawns a task that periodically pushes both consensus and execution metrics to Victoria Metrics.
@@ -36,28 +38,33 @@ pub fn install_prometheus_metrics(
         .try_into()
         .wrap_err("invalid metrics duration")?;
 
-    let client = reqwest::Client::new();
+    let mut endpoint = config.endpoint;
+    if let Some(pubkey) = config.consensus_pubkey {
+        endpoint
+            .query_pairs_mut()
+            .append_pair("extra_label", &format!("consensus_pubkey={pubkey}"));
+    }
 
-    let endpoint = config.endpoint.to_string();
+    let url = endpoint.to_string();
+    let client = reqwest::Client::new();
     let auth_header = config.auth_header;
 
     let reth_recorder = install_prometheus_recorder();
     context.spawn(move |context| async move {
         use commonware_runtime::Clock as _;
 
-        tracing::info_span!("metrics_exporter", %endpoint).in_scope(|| tracing::info!("started"));
+        tracing::info_span!("metrics_exporter", %url).in_scope(|| tracing::info!("started"));
 
         loop {
             context.sleep(interval).await;
 
-            // Collect metrics from both sources
             let consensus_metrics = context.encode();
             let reth_metrics = reth_recorder.handle().render();
             let body = format!("{consensus_metrics}\n{reth_metrics}");
 
             // Push to Victoria Metrics
             let mut request = client
-                .post(&endpoint)
+                .post(&url)
                 .header("Content-Type", "text/plain")
                 .body(body);
 
@@ -66,7 +73,7 @@ pub fn install_prometheus_metrics(
             }
 
             let res = request.send().await;
-            tracing::info_span!("metrics_exporter", %endpoint).in_scope(|| match res {
+            tracing::info_span!("metrics_exporter", %url).in_scope(|| match res {
                 Ok(response) if !response.status().is_success() => {
                     tracing::warn!(status = %response.status(), "metrics endpoint returned failure")
                 }

@@ -8,9 +8,11 @@ mod consensus_rpc;
 mod dkg;
 mod linkage;
 mod metrics;
+mod migration_from_v1_to_v2;
 mod restart;
 mod subblocks;
 mod sync;
+mod v2_at_genesis;
 
 #[test_traced]
 fn spawning_execution_node_works() {
@@ -26,7 +28,7 @@ fn spawning_execution_node_works() {
     // #[test]
     // fn spawning_execution_node_works() {
     // let _telemetry = tracing_subscriber::fmt()
-    //     .with_max_level(Level::DEBUG)
+    //     .with_max_level(tracing::Level::DEBUG)
     //     .with_test_writer()
     //     .try_init();
     // <rest>
@@ -44,13 +46,11 @@ fn spawning_execution_node_works() {
         };
         let db_path = handle.nodes_dir().join("node-1").join("db");
         std::fs::create_dir_all(&db_path).expect("failed to create database directory");
-        let database = std::sync::Arc::new(
-            reth_db::init_db(db_path, reth_db::mdbx::DatabaseArguments::default())
-                .expect("failed to init database")
-                .with_metrics(),
-        );
+        let database = reth_db::init_db(db_path, reth_db::mdbx::DatabaseArguments::default())
+            .expect("failed to init database")
+            .with_metrics();
         let node = handle
-            .spawn_node("node-1", config, database)
+            .spawn_node("node-1", config, database, None)
             .await
             .expect("a running execution runtime must be able to spawn nodes");
 
@@ -65,11 +65,7 @@ fn spawning_execution_node_works() {
             .node
             .add_ons_handle
             .beacon_engine_handle
-            .fork_choice_updated(
-                forkchoice_state,
-                None,
-                reth_node_builder::EngineApiMessageVersion::V3,
-            )
+            .fork_choice_updated(forkchoice_state, None)
             .await
             .expect("if the node runs it must be able to serve fork-choice updates");
         assert!(

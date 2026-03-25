@@ -47,7 +47,7 @@ pub(crate) mod types;
 use types::TestEnv;
 
 mod local;
-mod testnet;
+mod rpc;
 
 /// Run all matrix tests and scenario runners against a single environment.
 async fn run_all_matrices(env: &mut impl TestEnv) -> eyre::Result<()> {
@@ -137,7 +137,23 @@ async fn test_gas_estimation_snapshots() -> eyre::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_matrices_testnet() -> eyre::Result<()> {
-    let mut env = testnet::Testnet::new().await?;
+    let Some(mut env) = rpc::RpcEnv::testnet().await? else {
+        eprintln!("TEMPO_TESTNET_RPC_URL not set, skipping");
+        return Ok(());
+    };
+
+    run_all_matrices(&mut env).await?;
+    env.run_estimate_gas_matrix().await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_matrices_devnet() -> eyre::Result<()> {
+    let Some(mut env) = rpc::RpcEnv::devnet().await? else {
+        eprintln!("TEMPO_DEVNET_RPC_URL not set, skipping");
+        return Ok(());
+    };
 
     run_all_matrices(&mut env).await?;
     env.run_estimate_gas_matrix().await?;

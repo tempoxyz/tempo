@@ -17,7 +17,6 @@ use std::{
 
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{B256, Bytes};
-use alloy_rpc_types_engine::PayloadId;
 use commonware_codec::{Encode as _, ReadExt as _};
 use commonware_consensus::{
     Heightable as _,
@@ -26,16 +25,13 @@ use commonware_consensus::{
 use commonware_cryptography::{certificate::Provider as _, ed25519::PublicKey};
 use commonware_macros::select;
 use commonware_runtime::{
-    ContextCell, FutureExt as _, Handle, Metrics, Pacer, Spawner, Storage, spawn_cell,
+    ContextCell, FutureExt as _, Handle, Metrics as _, Pacer, Spawner, Storage, spawn_cell,
 };
+use prometheus_client::metrics::counter::Counter;
 
 use commonware_utils::{SystemTimeExt, channel::oneshot};
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
-use futures::{
-    StreamExt as _, TryFutureExt as _,
-    channel::mpsc,
-    future::{ready, try_join},
-};
+use futures::{StreamExt as _, TryFutureExt as _, channel::mpsc, future::try_join};
 use rand_08::{CryptoRng, Rng};
 use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_node_builder::{Block as _, BuiltPayload, ConsensusEngineHandle};
@@ -44,10 +40,9 @@ use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 use tempo_telemetry_util::display_duration;
 
 use reth_provider::{BlockHashReader as _, BlockReader as _};
+use tempo_payload_types::TempoPayloadAttributes;
 use tokio::sync::RwLock;
 use tracing::{Level, debug, error, error_span, info, info_span, instrument, warn};
-
-use tempo_payload_types::TempoPayloadBuilderAttributes;
 
 use super::{
     Mailbox,
@@ -74,11 +69,19 @@ impl<TContext, TState> Actor<TContext, TState> {
 
 impl<TContext> Actor<TContext, Uninit>
 where
-    TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
+    TContext: Pacer
+        + governor::clock::Clock
+        + Rng
+        + CryptoRng
+        + Spawner
+        + Storage
+        + commonware_runtime::Metrics,
 {
     pub(super) async fn init(config: super::Config<TContext>) -> eyre::Result<Self> {
         let (tx, rx) = mpsc::channel(config.mailbox_size);
         let my_mailbox = Mailbox::from_sender(tx);
+
+        let metrics = Metrics::init(&config.context);
 
         Ok(Self {
             context: ContextCell::new(config.context),
@@ -100,6 +103,8 @@ where
                 subblocks: config.subblocks,
 
                 scheme_provider: config.scheme_provider,
+
+                metrics,
 
                 state: Uninit(()),
             },
@@ -139,7 +144,13 @@ where
 
 impl<TContext> Actor<TContext, Init>
 where
-    TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
+    TContext: Pacer
+        + governor::clock::Clock
+        + Rng
+        + CryptoRng
+        + Spawner
+        + Storage
+        + commonware_runtime::Metrics,
 {
     async fn run_until_stopped(mut self) {
         while let Some(msg) = self.mailbox.next().await {
@@ -199,8 +210,10 @@ struct Inner<TState> {
 
     execution_node: TempoFullNode,
     executor: crate::executor::Mailbox,
-    subblocks: subblocks::Mailbox,
+    subblocks: Option<subblocks::Mailbox>,
     scheme_provider: SchemeProvider,
+
+    metrics: Metrics,
 
     state: TState,
 }
@@ -352,27 +365,6 @@ impl Inner<Init> {
             *lock = Some((round, proposal.clone()));
         }
 
-        // Make sure reth sees the new payload so that in the next round we can
-        // verify blocks on top of it.
-        let is_good = verify_block(
-            context,
-            round.epoch(),
-            &self.epoch_strategy,
-            self.execution_node
-                .add_ons_handle
-                .beacon_engine_handle
-                .clone(),
-            &proposal,
-            parent_digest,
-            &self.scheme_provider,
-        )
-        .await
-        .wrap_err("failed verifying block against execution layer")?;
-
-        if !is_good {
-            eyre::bail!("validation reported that that just-proposed block is invalid");
-        }
-
         Ok(())
     }
 
@@ -493,15 +485,6 @@ impl Inner<Init> {
             eyre::bail!("the proposal parent block is not valid");
         }
 
-        ready(
-            self.state
-                .executor
-                .canonicalize_head(parent.height(), parent.digest()),
-        )
-        .and_then(|ack| ack.map_err(eyre::Report::new))
-        .await
-        .wrap_err("failed updating canonical head to parent")?;
-
         // Query DKG manager for ceremony data before building payload
         // This data will be passed to the payload builder via attributes
         let extra_data = if parent_epoch_info.last() == parent.height().next()
@@ -523,6 +506,10 @@ impl Inner<Init> {
             );
             info!(
                 %outcome.epoch,
+                outcome.network_identity = %outcome.network_identity(),
+                outcome.dealers = ?outcome.dealers(),
+                outcome.players = ?outcome.players(),
+                outcome.next_players = ?outcome.next_players(),
                 "received DKG outcome; will include in payload builder attributes",
             );
             outcome.encode().into()
@@ -548,22 +535,27 @@ impl Inner<Init> {
             }
         };
 
-        let attrs = TempoPayloadBuilderAttributes::new(
-            // XXX: derives the payload ID from the parent so that
-            // overlong payload builds will eventually succeed on the
-            // next iteration: if all other nodes take equally as long,
-            // the consensus engine will kill the proposal task (see
-            // also `response.cancellation` below). Then eventually
-            // consensus will circle back to an earlier node, which then
-            // has the chance of picking up the old payload.
-            payload_id_from_block_hash(&parent.block_hash()),
-            parent.block_hash(),
+        // Use current timestamp but make sure that if parent's timestamp is in the future, we account for that.
+        //
+        // We don't expect this being hit in practice because we validate the
+        // timestamp is not in the future during EL validation.
+        let current_timestamp = context.current().epoch_millis();
+        let timestamp_millis = if current_timestamp <= parent.timestamp_millis() {
+            self.metrics.parent_ahead_of_local_time.inc();
+            parent.timestamp_millis() + 1
+        } else {
+            current_timestamp
+        };
+
+        let parent_hash = parent.block_hash();
+        let attrs = TempoPayloadAttributes::new(
             self.fee_recipient,
-            context.current().epoch_millis(),
+            timestamp_millis,
             extra_data,
             move || {
                 self.subblocks
-                    .get_subblocks(parent.block_hash())
+                    .as_ref()
+                    .and_then(|s| s.get_subblocks(parent_hash).ok())
                     .unwrap_or_default()
             },
         );
@@ -571,14 +563,11 @@ impl Inner<Init> {
         let interrupt_handle = attrs.interrupt_handle().clone();
 
         let payload_id = self
-            .execution_node
-            .payload_builder_handle
-            .send_new_payload(attrs)
-            .pace(&context, Duration::from_millis(20))
+            .state
+            .executor
+            .canonicalize_and_build(parent.height(), parent.digest(), attrs)
             .await
-            .map_err(|_| eyre!("channel was closed before a response was returned"))
-            .and_then(|ret| ret.wrap_err("execution layer rejected request"))
-            .wrap_err("failed requesting new payload from the execution layer")?;
+            .wrap_err("failed requesting a new payload build")?;
 
         let elapsed = propose_start.elapsed();
         let remaining_resolve = self.payload_resolve_time.saturating_sub(elapsed);
@@ -747,6 +736,7 @@ impl Inner<Uninit> {
             },
             subblocks: self.subblocks,
             scheme_provider: self.scheme_provider,
+            metrics: self.metrics,
         };
 
         Ok(initialized)
@@ -858,7 +848,7 @@ async fn verify_block<TContext: Pacer>(
         PayloadStatusEnum::Syncing => {
             bail!(
                 "failed validating block because payload is still syncing, \
-                this means the parent block was available to the consensus
+                this means the parent block was available to the consensus \
                 layer but not the execution layer"
             )
         }
@@ -932,14 +922,6 @@ async fn verify_header_extra_data(
     Ok(())
 }
 
-/// Constructs a [`PayloadId`] from the first 8 bytes of `block_hash`.
-fn payload_id_from_block_hash(block_hash: &B256) -> PayloadId {
-    PayloadId::new(
-        <[u8; 8]>::try_from(&block_hash[0..8])
-            .expect("a 32 byte array always has more than 8 bytes"),
-    )
-}
-
 /// Reports the verification result as a tracing event and consensus response.
 ///
 /// This means either sending true/false if a decision could be rendered, or
@@ -999,5 +981,28 @@ async fn get_parent(
             .await
             .await
             .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))
+    }
+}
+
+#[derive(Clone)]
+struct Metrics {
+    parent_ahead_of_local_time: Counter,
+}
+
+impl Metrics {
+    fn init<TContext>(context: &TContext) -> Self
+    where
+        TContext: commonware_runtime::Metrics,
+    {
+        let parent_ahead_of_local_time = Counter::default();
+        context.register(
+            "parent_ahead_of_local_time",
+            "number of times the parent block timestamp was ahead of local time",
+            parent_ahead_of_local_time.clone(),
+        );
+
+        Self {
+            parent_ahead_of_local_time,
+        }
     }
 }

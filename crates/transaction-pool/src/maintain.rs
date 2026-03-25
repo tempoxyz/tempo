@@ -53,8 +53,10 @@ pub struct TempoPoolUpdates {
     /// may become unexecutable if the new limit is below their value.
     /// Indexed by account for efficient lookup.
     pub spending_limit_changes: SpendingLimitUpdates,
-    /// Validator token preference changes: (validator, new_token).
-    pub validator_token_changes: Vec<(Address, Address)>,
+    /// Validator token preference changes: validator to new_token (last-write-wins).
+    /// Uses `AddressMap` to deduplicate by validator, preventing resource amplification
+    /// when a validator emits multiple `ValidatorTokenSet` events in the same block.
+    pub validator_token_changes: AddressMap<Address>,
     /// User token preference changes.
     /// When a user changes their fee token preference via `setUserToken()`, pending
     /// transactions from that user that don't have an explicit fee_token set may now
@@ -120,7 +122,7 @@ impl TempoPoolUpdates {
                     updates.spending_limit_changes.insert(
                         event.account,
                         event.publicKey,
-                        event.token,
+                        Some(event.token),
                     );
                 }
             }
@@ -129,7 +131,7 @@ impl TempoPoolUpdates {
                 if let Ok(event) = IFeeManager::ValidatorTokenSet::decode_log(log) {
                     updates
                         .validator_token_changes
-                        .push((event.validator, event.token));
+                        .insert(event.validator, event.token);
                 } else if let Ok(event) = IFeeManager::UserTokenSet::decode_log(log) {
                     updates.user_token_changes.insert(event.user);
                 }
@@ -179,13 +181,15 @@ impl TempoPoolUpdates {
             if key_id.is_zero() {
                 continue;
             }
-            let fee_token = aa_tx
-                .tx()
-                .fee_token
-                .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN);
-            updates
-                .spending_limit_spends
-                .insert(keychain_sig.user_address, key_id, fee_token);
+            // Resolving the fee token requires state (AMM routing), which we don't have here.
+            // `None` wildcards the token in `SpendingLimitUpdates::contains`, so every pending tx
+            // for this (account, key_id) is re-checked. Safe because the main pool still gates
+            // eviction on `exceeds_spending_limit()`, which can read state.
+            updates.spending_limit_spends.insert(
+                keychain_sig.user_address,
+                key_id,
+                aa_tx.tx().fee_token,
+            );
         }
 
         updates
@@ -1226,7 +1230,6 @@ mod tests {
             blocks,
             ExecutionOutcome::default(),
             Default::default(),
-            Default::default(),
         ))
     }
 
@@ -1409,9 +1412,9 @@ mod tests {
             assert!(updates.spending_limit_spends.is_empty());
         }
 
-        /// Uses default fee token when keychain tx has no explicit fee_token.
+        /// When a keychain tx has no explicit fee_token, it is stored as a wildcard.
         #[test]
-        fn uses_default_fee_token_when_none_set() {
+        fn uses_wildcard_fee_token_when_none_set() {
             let user_address = Address::random();
             let access_key_signer = PrivateKeySigner::random();
             let key_id = access_key_signer.address();
@@ -1426,10 +1429,11 @@ mod tests {
 
             let updates = TempoPoolUpdates::from_chain(&chain);
 
+            // Wildcard should match any token
             assert!(updates.spending_limit_spends.contains(
                 user_address,
                 key_id,
-                tempo_precompiles::DEFAULT_FEE_TOKEN,
+                Address::random(),
             ));
         }
 
@@ -1442,9 +1446,32 @@ mod tests {
             updates.spending_limit_spends.insert(
                 Address::random(),
                 Address::random(),
-                Address::random(),
+                Some(Address::random()),
             );
             assert!(updates.has_invalidation_events());
+        }
+
+        /// Duplicate validator token changes must be deduplicated (last-write-wins).
+        #[test]
+        fn validator_token_changes_deduplicates_by_validator() {
+            let validator = Address::random();
+            let token_a = Address::random();
+            let token_b = Address::random();
+
+            let mut updates = TempoPoolUpdates::new();
+            updates.validator_token_changes.insert(validator, token_a);
+            updates.validator_token_changes.insert(validator, token_b);
+
+            assert_eq!(
+                updates.validator_token_changes.len(),
+                1,
+                "duplicate validator entries must be deduplicated"
+            );
+            assert_eq!(
+                updates.validator_token_changes.get(&validator).copied(),
+                Some(token_b),
+                "last-write-wins: second token should overwrite the first"
+            );
         }
     }
 }

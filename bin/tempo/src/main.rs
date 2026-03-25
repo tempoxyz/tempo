@@ -15,6 +15,11 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+// tracy-client is an optional dependency activated by the `tracy` feature.
+// It is not used directly but must be present for the `ondemand` feature flag.
+#[cfg(feature = "tracy")]
+use tracy_client as _;
+
 #[global_allocator]
 static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::new_allocator();
 
@@ -33,7 +38,7 @@ mod defaults;
 mod init_state;
 mod tempo_cmd;
 
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 use commonware_runtime::{Metrics, Runner};
 use eyre::WrapErr as _;
 use futures::{FutureExt as _, future::FusedFuture as _};
@@ -58,6 +63,9 @@ use tempo_node::{
 };
 use tokio::sync::oneshot;
 use tracing::{info, info_span};
+
+type TempoCli =
+    Cli<TempoChainSpecParser, TempoArgs, DefaultRpcModuleValidator, tempo_cmd::TempoSubcommand>;
 
 // TODO: migrate this to tempo_node eventually.
 #[derive(Debug, Clone, clap::Args)]
@@ -122,6 +130,39 @@ fn install_crypto_provider() {
         .expect("Failed to install default rustls crypto provider");
 }
 
+/// Print installed extensions as a footer after root help output.
+/// Skips printing when help is for a subcommand (e.g. `tempo node --help`).
+fn print_extensions_footer() {
+    let is_subcommand_help = std::env::args()
+        .skip(1)
+        .any(|a| !a.starts_with('-') && a != "help");
+    if is_subcommand_help {
+        return;
+    }
+
+    let extensions = match tempo_ext::installed_extensions() {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    if extensions.is_empty() {
+        return;
+    }
+    let use_color = std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let (b, bu, r) = if use_color {
+        ("\x1b[1m", "\x1b[1m\x1b[4m", "\x1b[0m")
+    } else {
+        ("", "", "")
+    };
+    println!("\n{bu}Extensions:{r}");
+    for (name, desc) in &extensions {
+        if desc.is_empty() {
+            println!("  {b}{name}{r}");
+        } else {
+            println!("  {b}{name:<22}{r} {desc}");
+        }
+    }
+}
+
 fn main() -> eyre::Result<()> {
     install_crypto_provider();
 
@@ -145,12 +186,38 @@ fn main() -> eyre::Result<()> {
     tempo_node::init_version_metadata();
     defaults::init_defaults();
 
-    let mut cli = Cli::<
-        TempoChainSpecParser,
-        TempoArgs,
-        DefaultRpcModuleValidator,
-        tempo_cmd::TempoSubcommand,
-    >::parse();
+    let mut cli = match TempoCli::command()
+        .about("Tempo")
+        .try_get_matches_from(std::env::args_os())
+        .and_then(|matches| TempoCli::from_arg_matches(&matches))
+    {
+        Ok(cli) => cli,
+        Err(err) => {
+            if err.kind() == clap::error::ErrorKind::InvalidSubcommand {
+                // Unknown subcommand — try the extension launcher.
+                let code = match tempo_ext::run(std::env::args_os()) {
+                    Ok(code) => code,
+                    Err(e) => {
+                        eprintln!("{e}");
+                        1
+                    }
+                };
+                std::process::exit(code);
+            }
+
+            if matches!(
+                err.kind(),
+                clap::error::ErrorKind::DisplayHelp
+                    | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+            ) {
+                let _ = err.print();
+                print_extensions_footer();
+                std::process::exit(0);
+            }
+
+            err.exit();
+        }
+    };
 
     // If telemetry is enabled, set logs OTLP (conflicts_with in TelemetryArgs prevents both being set)
     let mut telemetry_config = None;
@@ -161,12 +228,37 @@ fn main() -> eyre::Result<()> {
             .try_to_config()
             .wrap_err("failed to parse telemetry config")?
     {
+        let consensus_pubkey = node_cmd
+            .ext
+            .consensus
+            .public_key()
+            .wrap_err("failed parsing consensus key")?
+            .map(|k| k.to_string());
+
+        if let Some(pubkey) = &consensus_pubkey {
+            // VictoriaMetrics does not support merging `extra_fields` query args like `extra_labels` for
+            // metrics. A workaround for now is to directly hook into the `OTEL_RESOURCE_ATTRIBUTES` env var
+            // used at startup to capture contextual information.
+            let current = std::env::var("OTEL_RESOURCE_ATTRIBUTES").unwrap_or_default();
+            let new_attrs = if current.is_empty() {
+                format!("consensus_pubkey={pubkey}")
+            } else {
+                format!("{current},consensus_pubkey={pubkey}")
+            };
+
+            // SAFETY: called at startup before the OTEL SDK is initialised
+            unsafe {
+                std::env::set_var("OTEL_RESOURCE_ATTRIBUTES", &new_attrs);
+            }
+        }
+
         // Set Reth logs OTLP. Consensus logs are exported as well via the same tracing system.
         cli.traces.logs_otlp = Some(config.logs_otlp_url.clone());
         cli.traces.logs_otlp_filter = config
             .logs_otlp_filter
             .parse()
             .wrap_err("invalid default logs filter")?;
+
         telemetry_config.replace(config);
     }
 
@@ -236,10 +328,17 @@ fn main() -> eyre::Result<()> {
 
                 // Start the unified metrics exporter if configured
                 if let Some(config) = telemetry_config {
+                    let consensus_pubkey = args
+                        .consensus
+                        .public_key()
+                        .wrap_err("failed parsing consensus key")?
+                        .map(|k| k.to_string());
+
                     let prometheus_config = PrometheusMetricsConfig {
                         endpoint: config.metrics_prometheus_url,
                         interval: config.metrics_prometheus_interval,
                         auth_header: config.metrics_auth_header,
+                        consensus_pubkey,
                     };
 
                     install_prometheus_metrics(
@@ -291,6 +390,26 @@ fn main() -> eyre::Result<()> {
             .consensus
             .public_key()?
             .map(|key| B256::from_slice(key.as_ref()));
+
+        // Validators must not prune account or storage history — the consensus
+        // implementation relies on historical state to fetch the validator set.
+        if validator_key.is_some()
+            && let Some(prune_config) = builder.config().prune_config()
+        {
+            let modes = &prune_config.segments;
+            if let Some(mode) = &modes.account_history {
+                eyre::bail!(
+                    "validator nodes must not prune account history \
+                     (configured: {mode:?}). Remove --prune.account-history.* flags."
+                );
+            }
+            if let Some(mode) = &modes.storage_history {
+                eyre::bail!(
+                    "validator nodes must not prune storage history \
+                     (configured: {mode:?}). Remove --prune.storage-history.* flags."
+                );
+            }
+        }
 
         // Initialize Pyroscope profiling if enabled
         #[cfg(feature = "pyroscope")]

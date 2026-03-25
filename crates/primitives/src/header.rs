@@ -49,9 +49,6 @@ impl AsRef<Self> for TempoHeader {
     }
 }
 
-#[cfg(feature = "serde-bincode-compat")]
-impl reth_primitives_traits::serde_bincode_compat::RlpBincode for TempoHeader {}
-
 impl BlockHeader for TempoHeader {
     fn parent_hash(&self) -> B256 {
         self.inner.parent_hash()

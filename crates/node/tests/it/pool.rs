@@ -13,7 +13,7 @@ use reth_ethereum::{
     node::builder::{NodeBuilder, NodeHandle},
     pool::TransactionPool,
     primitives::SignerRecoverable,
-    tasks::TaskManager,
+    tasks::Runtime,
 };
 use reth_node_builder::BuiltPayload;
 use reth_node_core::{args::RpcServerArgs, node_config::NodeConfig};
@@ -35,8 +35,7 @@ use tempo_primitives::{
 #[tokio::test(flavor = "multi_thread")]
 async fn submit_pending_tx() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
-    let tasks = TaskManager::current();
-    let executor = tasks.executor();
+    let runtime = Runtime::test();
     let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
         "../assets/test-genesis.json"
     ))?);
@@ -50,7 +49,7 @@ async fn submit_pending_tx() -> eyre::Result<()> {
         node,
         node_exit_future: _,
     } = NodeBuilder::new(node_config.clone())
-        .testing_node(executor.clone())
+        .testing_node(runtime.clone())
         .node(TempoNode::default())
         .launch()
         .await?;
@@ -83,8 +82,7 @@ async fn submit_pending_tx() -> eyre::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_insufficient_funds() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
-    let tasks = TaskManager::current();
-    let executor = tasks.executor();
+    let runtime = Runtime::test();
     let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
         "../assets/test-genesis.json"
     ))?);
@@ -98,7 +96,7 @@ async fn test_insufficient_funds() -> eyre::Result<()> {
         node,
         node_exit_future: _,
     } = NodeBuilder::new(node_config.clone())
-        .testing_node(executor.clone())
+        .testing_node(runtime.clone())
         .node(TempoNode::default())
         .launch()
         .await?;
@@ -300,7 +298,7 @@ async fn test_evict_tx_on_validator_token_change() -> eyre::Result<()> {
     // This should NOT evict the transaction because the attacker's token is not
     // used by any active block producers.
     let updates = tempo_transaction_pool::TempoPoolUpdates {
-        validator_token_changes: vec![(user_addr, attacker_token)],
+        validator_token_changes: [(user_addr, attacker_token)].into_iter().collect(),
         ..Default::default()
     };
     pool.evict_invalidated_transactions(&updates);
