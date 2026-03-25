@@ -88,6 +88,7 @@ where
             mailbox: rx,
 
             inner: Inner {
+                public_key: config.public_key,
                 fee_recipient: config.fee_recipient,
                 epoch_strategy: config.epoch_strategy,
 
@@ -199,6 +200,7 @@ where
 
 #[derive(Clone)]
 struct Inner<TState> {
+    public_key: PublicKey,
     fee_recipient: alloy_primitives::Address,
     epoch_strategy: FixedEpocher,
     payload_resolve_time: Duration,
@@ -555,17 +557,14 @@ impl Inner<Init> {
         };
 
         let parent_hash = parent.block_hash();
-        let attrs = TempoPayloadAttributes::new(
-            self.fee_recipient,
-            timestamp_millis,
-            extra_data,
-            move || {
+        let fee_recipient = self.resolve_fee_recipient(&context, parent_hash).await?;
+        let attrs =
+            TempoPayloadAttributes::new(fee_recipient, timestamp_millis, extra_data, move || {
                 self.subblocks
                     .as_ref()
                     .and_then(|s| s.get_subblocks(parent_hash).ok())
                     .unwrap_or_default()
-            },
-        );
+            });
 
         let interrupt_handle = attrs.interrupt_handle().clone();
 
@@ -617,6 +616,57 @@ impl Inner<Init> {
         context.sleep_until(payload_return_time).await;
 
         Ok(Block::from_execution_block(payload.block().clone()))
+    }
+
+    /// Resolves the fee recipient to use for a proposal built on top of `parent_hash`.
+    ///
+    /// If the validator config v2 contract is active and initialized, the fee
+    /// recipient is read from the contract by looking up this node's validator
+    /// entry. If the contract is not yet usable, the CLI-configured fee
+    /// recipient is returned.
+    ///
+    /// On transient read errors (V2 active but lookup fails), this retries with
+    /// backoff. The caller is expected to race this against `response.closed()`
+    /// so that consensus can time out the proposal.
+    async fn resolve_fee_recipient<TContext: Pacer>(
+        &self,
+        context: &TContext,
+        parent_hash: B256,
+    ) -> eyre::Result<alloy_primitives::Address> {
+        const MIN_RETRY: Duration = Duration::from_millis(100);
+        const MAX_RETRY: Duration = Duration::from_millis(500);
+
+        let mut attempts = 0u32;
+        loop {
+            attempts += 1;
+            match crate::validators::read_fee_recipient_at_block_hash(
+                &self.execution_node,
+                &self.public_key,
+                parent_hash,
+            ) {
+                Ok(Some(fee_recipient)) => {
+                    info!(
+                        %fee_recipient,
+                        "read fee recipient from validator config v2",
+                    );
+                    return Ok(fee_recipient);
+                }
+                Ok(None) => return Ok(self.fee_recipient),
+                Err(error) => {
+                    let retry_after = MIN_RETRY.saturating_mul(attempts).min(MAX_RETRY);
+                    warn!(
+                        attempts,
+                        %error,
+                        %parent_hash,
+                        validator = %self.public_key,
+                        ?retry_after,
+                        "failed reading proposer fee recipient from validator \
+                         config v2; will retry",
+                    );
+                    context.sleep(retry_after).await;
+                }
+            }
+        }
     }
 
     async fn verify<TContext: Pacer>(
@@ -726,6 +776,7 @@ impl Inner<Uninit> {
         dkg_manager: crate::dkg::manager::Mailbox,
     ) -> eyre::Result<Inner<Init>> {
         let initialized = Inner {
+            public_key: self.public_key,
             fee_recipient: self.fee_recipient,
             epoch_strategy: self.epoch_strategy,
             payload_resolve_time: self.payload_resolve_time,

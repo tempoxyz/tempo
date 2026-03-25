@@ -6,6 +6,7 @@
 use std::time::Duration;
 
 use commonware_consensus::types::FixedEpocher;
+use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{Metrics, Pacer, Spawner, Storage};
 
 use eyre::WrapErr as _;
@@ -37,7 +38,12 @@ pub(super) struct Config<TContext> {
     /// The execution context of the commonwarexyz application (tokio runtime, etc).
     pub(super) context: TContext,
 
-    /// Used as PayloadAttributes.suggested_fee_recipient
+    /// This node's ed25519 public key, used to look up the fee recipient from
+    /// the validator config v2 contract.
+    pub(super) public_key: PublicKey,
+
+    /// Used as PayloadAttributes.suggested_fee_recipient when the V2 contract
+    /// is not yet active.
     pub(super) fee_recipient: alloy_primitives::Address,
 
     /// Number of messages from consensus to hold in our backlog

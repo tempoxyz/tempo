@@ -347,6 +347,7 @@ where
 
         let (application, application_mailbox) = application::init(super::application::Config {
             context: context.with_label("application"),
+            public_key: self.signer.public_key(),
             fee_recipient: self.fee_recipient,
             mailbox_size: self.mailbox_size,
             marshal: marshal_mailbox.clone(),
