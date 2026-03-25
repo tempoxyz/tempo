@@ -1,5 +1,5 @@
 use crate::{
-    bootnodes::{andantino_nodes, moderato_nodes, presto_nodes},
+    bootnodes::{moderato_nodes, presto_nodes},
     hardfork::{TempoHardfork, TempoHardforks},
 };
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
@@ -336,7 +336,6 @@ impl EthChainSpec for TempoChainSpec {
     fn bootnodes(&self) -> Option<Vec<NodeRecord>> {
         match self.inner.chain_id() {
             4217 => Some(presto_nodes()),
-            42429 => Some(andantino_nodes()),
             42431 => Some(moderato_nodes()),
             _ => self.inner.bootnodes(),
         }
