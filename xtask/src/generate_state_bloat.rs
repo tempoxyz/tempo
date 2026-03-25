@@ -159,7 +159,7 @@ impl GenerateStateBloat {
                 .expect("valid template"),
         );
 
-        let mut chunk_buf = Vec::with_capacity(chunk_size * 64);
+        let mut chunk_buf = Vec::with_capacity(chunk_size.min(total_accounts) * 64);
 
         for chunk_idx in 0..num_chunks {
             let chunk_start = chunk_idx * chunk_size;
