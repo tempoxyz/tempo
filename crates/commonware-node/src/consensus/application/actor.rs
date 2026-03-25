@@ -559,7 +559,8 @@ impl Inner<Init> {
         let parent_hash = parent.block_hash();
         let fee_recipient = self
             .resolve_fee_recipient(parent_hash, parent.height())
-            .await?;
+            .await
+            .wrap_err("failed resolving fee recipient for proposal")?;
         let attrs =
             TempoPayloadAttributes::new(fee_recipient, timestamp_millis, extra_data, move || {
                 self.subblocks
@@ -621,13 +622,8 @@ impl Inner<Init> {
     }
 
     /// Resolves the fee recipient to use for a proposal built on top of
-    /// `parent_hash`.
-    ///
-    /// Tries [`read_fee_recipient`] immediately. On
-    /// failure, subscribes to canonical state notifications and retries once
-    /// the committed chain segment contains the parent block. The caller is
-    /// expected to race this against `response.closed()` so that consensus can
-    /// time out the proposal.
+    /// `parent_hash`. Waits for canonical state events if the state at
+    /// `parent_hash` is not yet available.
     #[instrument(skip_all, fields(%parent_hash, %parent_height), ret(Display), err(level = Level::WARN))]
     async fn resolve_fee_recipient(
         &self,
@@ -827,16 +823,20 @@ struct Init {
     executor: crate::executor::Mailbox,
 }
 
-/// Reads the fee recipient from the V2 contract at `parent_hash`,
+/// Reads the fee recipient from the V2 contract at `block_hash`,
 /// falling back to `fallback` when V2 is not active or the on-chain
 /// address is `Address::ZERO`.
 fn read_fee_recipient(
-    node: &TempoFullNode,
+    execution_node: &TempoFullNode,
     public_key: &PublicKey,
-    parent_hash: B256,
+    block_hash: B256,
     fallback: alloy_primitives::Address,
 ) -> eyre::Result<alloy_primitives::Address> {
-    match crate::validators::read_fee_recipient_at_block_hash(node, public_key, parent_hash) {
+    match crate::validators::read_fee_recipient_at_block_hash(
+        execution_node,
+        public_key,
+        block_hash,
+    ) {
         Ok(Some(fee_recipient)) if fee_recipient.is_zero() => {
             debug!("on-chain fee recipient is zero; using CLI fee recipient");
             Ok(fallback)
