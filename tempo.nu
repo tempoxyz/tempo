@@ -16,6 +16,19 @@ const METRICS_LABELS_FILE = "/tmp/bench-metrics-labels.json"
 const MINIO_BUCKET = "minio/tempo-binaries"
 const BENCH_META_SUBDIR = ".bench-meta"
 
+# Emit GitHub Actions log groups for CI visibility.
+# Usage: ci-group "Phase name" { ... }
+def ci-group [title: string, body: closure] {
+    print $"::group::($title)"
+    try {
+        do $body
+        print "::endgroup::"
+    } catch { |e|
+        print "::endgroup::"
+        error make { msg: $e.msg }
+    }
+}
+
 # Preset weight configurations: [tip20, erc20, swap, order]
 const PRESETS = {
     tip20: [1.0, 0.0, 0.0, 0.0],
@@ -1598,6 +1611,7 @@ def "main bench" [
         )
 
         # Prune worktree registrations where the directory no longer exists
+        ci-group "Setting up worktrees" {
         git worktree prune
 
         for wt in [$baseline_wt $feature_wt] {
@@ -1616,6 +1630,7 @@ def "main bench" [
         if $feature != "local" {
             git worktree add $feature_wt $feature_sha
         }
+        }
 
         # Build binaries (apply tracy build config if needed)
         let tbc = (tracy-build-config $features $tracy)
@@ -1625,6 +1640,7 @@ def "main bench" [
         let effective_no_cache = $no_cache or ($tracy != "off")
 
         if $baseline == "local" or $feature == "local" {
+            ci-group "Building local binaries" {
             print "Building local binaries..."
             if $tracy != "off" {
                 # Build tempo (with tracy) and tempo-bench (without) separately
@@ -1633,19 +1649,24 @@ def "main bench" [
             } else {
                 build-tempo ["tempo" "tempo-bench"] $profile $effective_features
             }
+            }
         }
         if $baseline != "local" {
+            ci-group $"Building baseline binary \(($baseline)\)" {
             if $effective_no_cache {
                 build-in-worktree --no-cache --extra-rustflags $effective_extra_rustflags --bench-features $features $baseline_wt $baseline $profile $effective_features $baseline_sha
             } else {
                 build-in-worktree $baseline_wt $baseline $profile $effective_features $baseline_sha
             }
+            }
         }
         if $feature != "local" {
+            ci-group $"Building feature binary \(($feature)\)" {
             if $effective_no_cache {
                 build-in-worktree --no-cache --extra-rustflags $effective_extra_rustflags --bench-features $features $feature_wt $feature $profile $effective_features $feature_sha
             } else {
                 build-in-worktree $feature_wt $feature $profile $effective_features $feature_sha
+            }
             }
         }
 
@@ -1710,6 +1731,7 @@ def "main bench" [
                 print $"Using cached dual-hardfork snapshot \(initialized ($marker.initialized_at)\)"
             } else {
                 # Generate two genesis files with different hardfork schedules
+                ci-group $"Generating dual-hardfork genesis files" {
                 print $"Generating baseline genesis \(latest fork: ($baseline_hardfork)\)..."
                 let baseline_genesis_dir = $"($abs_localnet)/genesis-baseline-dir"
                 if ($baseline_genesis_dir | path exists) { rm -rf $baseline_genesis_dir }
@@ -1741,9 +1763,11 @@ def "main bench" [
                 }
                 cp $"($feature_genesis_dir)/genesis.json" $feature_genesis_path
                 rm -rf $feature_genesis_dir
+                }
 
                 # Generate bloat file (shared, fork-agnostic)
                 if $bloat > 0 and not ($bloat_file | path exists) {
+                    ci-group $"Generating state bloat file \(($bloat) MiB\)" {
                     print $"Generating state bloat \(($bloat) MiB\)..."
                     let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
                     if $baseline == "local" {
@@ -1754,6 +1778,7 @@ def "main bench" [
                             cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
                         }
                     }
+                    }
                 }
 
                 # Initialize both datadirs
@@ -1761,6 +1786,7 @@ def "main bench" [
                     { name: "baseline", genesis: $baseline_genesis_path, dd: $baseline_datadir, tempo: $baseline_tempo }
                     { name: "feature", genesis: $feature_genesis_path, dd: $feature_datadir, tempo: $feature_tempo }
                 ] {
+                    ci-group $"Initializing ($side.name) database + loading bloat" {
                     # Clean existing data
                     for subdir in [db static_files rocksdb consensus invalid_block_hooks] {
                         let path = $"($side.dd)/($subdir)"
@@ -1779,8 +1805,10 @@ def "main bench" [
                         print $"Loading state bloat into ($side.name)..."
                         run-external $side.tempo "init-from-binary-dump" "--chain" $side.genesis "--datadir" $side.dd $bloat_file | complete
                     }
+                    }
                 }
 
+                ci-group "Promoting dual-hardfork snapshot" {
                 # Save genesis files to meta dir
                 mkdir $meta_dir
                 cp $baseline_genesis_path $"($meta_dir)/genesis-baseline.json"
@@ -1807,6 +1835,7 @@ def "main bench" [
                 print $"Bench marker written to ($marker_path)"
 
                 print "Dual-hardfork databases initialized and promoted."
+                }
             }
         } else {
             # ============================================================
@@ -1831,6 +1860,7 @@ def "main bench" [
             } else {
                 # Full init: generate genesis + bloat, init db, promote
                 if not ($genesis_path_std | path exists) {
+                    ci-group $"Generating genesis \(($genesis_accounts) accounts\)" {
                     if not ($abs_localnet | path exists) { mkdir $abs_localnet }
                     print $"Generating genesis with ($genesis_accounts) accounts from baseline..."
                     if $baseline == "local" {
@@ -1841,9 +1871,11 @@ def "main bench" [
                             cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts --no-dkg-in-genesis
                         }
                     }
+                    }
                 }
 
                 if $bloat > 0 and not ($bloat_file | path exists) {
+                    ci-group $"Generating state bloat file \(($bloat) MiB\)" {
                     print $"Generating state bloat \(($bloat) MiB\) from baseline..."
                     let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
                     if $baseline == "local" {
@@ -1854,8 +1886,10 @@ def "main bench" [
                             cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
                         }
                     }
+                    }
                 }
 
+                ci-group $"Initializing database + loading state bloat \(($bloat) MiB\)" {
                 for subdir in [db static_files rocksdb consensus invalid_block_hooks] {
                     let path = $"($datadir)/($subdir)"
                     if ($path | path exists) { rm -rf $path }
@@ -1872,7 +1906,9 @@ def "main bench" [
                     print $"Loading state bloat into ($datadir)..."
                     run-external $feature_tempo "init-from-binary-dump" "--chain" $genesis_path_std "--datadir" $datadir $bloat_file | complete
                 }
+                }
 
+                ci-group "Promoting snapshot" {
                 mkdir $meta_dir
                 cp $genesis_path_std $"($meta_dir)/genesis.json"
                 if $bloat > 0 and ($bloat_file | path exists) {
@@ -1885,6 +1921,7 @@ def "main bench" [
                 write-bench-marker $bloat $genesis_accounts $datadir
 
                 print "Database initialized and promoted to virgin baseline."
+                }
             }
         }
 
@@ -1929,17 +1966,21 @@ def "main bench" [
         }
 
         for run in $runs {
+            ci-group $"Run: ($run.label)" {
             # bench-recover restores the entire schelk volume to the promoted
             # virgin state. In dual-hardfork mode this resets both baseline-db
             # and feature-db subdirs at once.
             bench-recover $datadir
             run-bench-single $run.tempo $baseline_bench_bin $run.genesis $run.datadir $run.label $results_dir $tps $duration $accounts $max_concurrent_requests $weights $preset $bench_args $loud $node_args $bloat $run.git_ref $benchmark_id $reference_epoch $samply $samply_args_list $tracy $tracy_filter $tracy_seconds $tracy_offset $tracing_otlp
+            }
         }
 
         # Generate summary report
+        ci-group "Generating summary report" {
         let baseline_label = if $dual_hardfork { $"($baseline) \(($baseline_hardfork | str upcase)\)" } else { $baseline }
         let feature_label = if $dual_hardfork { $"($feature) \(($feature_hardfork | str upcase)\)" } else { $feature }
         generate-summary $results_dir $baseline_label $feature_label $bloat $preset $tps $duration --benchmark-id $benchmark_id --reference-epoch $reference_epoch
+        }
 
         # Cleanup worktrees (only those we created)
         if $baseline != "local" or $feature != "local" {
