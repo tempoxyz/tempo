@@ -574,13 +574,13 @@ impl CreateRotateValidatorSignatureArgs {
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct SetValidatorIPAddress {
-    /// RPC used to fetch the chain id
+    /// The validator's address
     #[arg(long, value_name = "ETHEREUM_ADDRESS")]
     validator_address: Address,
-
+    /// The inbound address for the validator.
     #[arg(long, value_name = "IP:PORT")]
     ingress: SocketAddr,
-
+    /// The outbound address for the validator.
     #[arg(long, value_name = "IP")]
     egress: IpAddr,
 
@@ -653,10 +653,10 @@ impl SetValidatorIPAddress {
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct SetValidatorFeeRecipient {
-    /// RPC used to fetch the chain id
+    /// The validator's address
     #[arg(long, value_name = "ETHEREUM_ADDRESS")]
     validator_address: Address,
-
+    /// The fee recipient address
     #[arg(long, value_name = "ETHEREUM_ADDRESS")]
     fee_recipient: Address,
 
