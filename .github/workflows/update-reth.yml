@@ -545,7 +545,7 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ secrets.DEREK_PAT }}
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_ENG_TEMPO_WORKFLOWS_WEBHOOK_URL }}
         run: |
           PR_BRANCH="reth-auto-bump"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
