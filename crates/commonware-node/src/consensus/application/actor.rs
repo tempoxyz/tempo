@@ -649,8 +649,7 @@ impl Inner<Init> {
             parent_hash,
         ) {
             Ok(Some(fee_recipient)) => {
-                info!(%fee_recipient, "read fee recipient from validator config v2");
-                return Ok(fee_recipient);
+                return Ok(self.fee_recipient_or_fallback(fee_recipient));
             }
             Ok(None) => return Ok(self.fee_recipient),
             Err(error) => {
@@ -682,16 +681,34 @@ impl Inner<Init> {
                 &self.public_key,
                 parent_hash,
             ) {
-                Ok(Some(fee_recipient)) => {
-                    info!(%fee_recipient, "read fee recipient from validator config v2");
-                    Ok(fee_recipient)
-                }
+                Ok(Some(fee_recipient)) => Ok(self.fee_recipient_or_fallback(fee_recipient)),
                 Ok(None) => Ok(self.fee_recipient),
                 Err(error) => Err(error).wrap_err(
                     "failed reading fee recipient from validator config v2 \
                      after parent was committed",
                 ),
             };
+        }
+    }
+
+    /// Returns `onchain` if it is not `Address::ZERO`, otherwise falls back to
+    /// the CLI-configured fee recipient.
+    fn fee_recipient_or_fallback(
+        &self,
+        onchain: alloy_primitives::Address,
+    ) -> alloy_primitives::Address {
+        if onchain.is_zero() {
+            info!(
+                fallback = %self.fee_recipient,
+                "on-chain fee recipient is zero; using CLI fee recipient",
+            );
+            self.fee_recipient
+        } else {
+            info!(
+                %onchain,
+                "using on-chain fee recipient from validator config v2",
+            );
+            onchain
         }
     }
 

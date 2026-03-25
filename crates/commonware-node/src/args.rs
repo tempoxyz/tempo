@@ -56,12 +56,11 @@ pub struct Args {
     #[arg(long = "consensus.deque-size", default_value_t = 10)]
     pub deque_size: usize,
 
-    /// The fee recipient that will be specified by this node. Will use the
-    /// coinbase address in genesis if not set.
-    #[arg(
-        long = "consensus.fee-recipient",
-        required_unless_present_any = ["follow", "dev"],
-    )]
+    /// The fee recipient that will be specified by this node. Used as a
+    /// fallback when the on-chain fee recipient in validator config v2 is
+    /// not set (i.e. `Address::ZERO`), or when the v2 contract is not yet
+    /// active.
+    #[arg(long = "consensus.fee-recipient")]
     pub fee_recipient: Option<alloy_primitives::Address>,
 
     /// The amount of time to wait for a peer to respond to a consensus request.
