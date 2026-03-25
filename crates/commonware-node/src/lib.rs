@@ -85,7 +85,7 @@ pub async fn run_consensus_stack(
     // through this subchannel.
     let subblocks = network.register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, message_backlog);
 
-    let fee_recipient = config.fee_recipient.unwrap_or_default();
+    let fee_recipient = config.fee_recipient;
 
     let consensus_engine = crate::consensus::engine::Builder {
         fee_recipient,

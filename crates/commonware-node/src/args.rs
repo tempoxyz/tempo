@@ -60,8 +60,8 @@ pub struct Args {
     /// fallback when the on-chain fee recipient in validator config v2 is
     /// not set (i.e. `Address::ZERO`), or when the v2 contract is not yet
     /// active.
-    #[arg(long = "consensus.fee-recipient")]
-    pub fee_recipient: Option<alloy_primitives::Address>,
+    #[arg(long = "consensus.fee-recipient", default_value_t = alloy_primitives::Address::ZERO)]
+    pub fee_recipient: alloy_primitives::Address,
 
     /// The amount of time to wait for a peer to respond to a consensus request.
     #[arg(long = "consensus.wait-for-peer-response", default_value = "2s")]
