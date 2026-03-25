@@ -54,6 +54,7 @@ fn generate_consensus_node_config(
     rng: &mut impl CryptoRngCore,
     signers: u32,
     verifiers: u32,
+    fee_recipient: Address,
 ) -> (
     OnchainDkgOutcome,
     ordered::Map<PublicKey, ConsensusNodeConfig>,
@@ -91,7 +92,7 @@ fn generate_consensus_node_config(
                     address: crate::execution_runtime::validator(i as u32),
                     ingress: SocketAddr::from(([127, 0, 0, (i + 1) as u8], 8000)),
                     egress: SocketAddr::from(([127, 0, 0, (i + 1) as u8], 0)),
-                    fee_recipient: Address::ZERO,
+                    fee_recipient,
                     private_key,
                     share: shares.get_value(&public_key).cloned(),
                 };
@@ -149,6 +150,9 @@ pub struct Setup {
 
     /// Whether to activate subblocks building.
     pub with_subblocks: bool,
+
+    /// The fee recipient written into the V2 contract for each validator.
+    pub fee_recipient: Address,
 }
 
 impl Setup {
@@ -167,6 +171,7 @@ impl Setup {
             new_payload_wait_time: Duration::from_millis(300),
             t2_time: 1,
             with_subblocks: false,
+            fee_recipient: Address::ZERO,
         }
     }
 
@@ -223,6 +228,13 @@ impl Setup {
     pub fn t2_time(self, t2_time: u64) -> Self {
         Self { t2_time, ..self }
     }
+
+    pub fn fee_recipient(self, fee_recipient: Address) -> Self {
+        Self {
+            fee_recipient,
+            ..self
+        }
+    }
 }
 
 impl Default for Setup {
@@ -248,6 +260,7 @@ pub async fn setup_validators(
         new_payload_wait_time,
         t2_time,
         with_subblocks,
+        fee_recipient,
         ..
     }: Setup,
 ) -> (Vec<TestingNode<Context>>, ExecutionRuntime) {
@@ -261,8 +274,12 @@ pub async fn setup_validators(
     );
     network.start();
 
-    let (onchain_dkg_outcome, validators) =
-        generate_consensus_node_config(context, how_many_signers, how_many_verifiers);
+    let (onchain_dkg_outcome, validators) = generate_consensus_node_config(
+        context,
+        how_many_signers,
+        how_many_verifiers,
+        fee_recipient,
+    );
 
     let execution_runtime = ExecutionRuntime::builder()
         .with_epoch_length(epoch_length)
