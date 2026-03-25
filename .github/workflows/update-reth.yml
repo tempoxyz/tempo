@@ -581,7 +581,7 @@ jobs:
           # Build detail lines
           DETAILS=""
           if [ "$BUMPED" = "true" ] && [ -n "$OLD_REV" ] && [ -n "$NEW_REV" ]; then
-            DETAILS="${DETAILS}\n• <https://github.com/paradigmxyz/reth/compare/${OLD_REV}...${NEW_REV}|${OLD_REV:0:7} → ${NEW_REV:0:7}>"
+            DETAILS="${DETAILS}\n• <https://github.com/paradigmxyz/reth/commit/${OLD_REV}|${OLD_REV:0:7}> → <https://github.com/paradigmxyz/reth/commit/${NEW_REV}|${NEW_REV:0:7}> (<https://github.com/paradigmxyz/reth/compare/${OLD_REV}...${NEW_REV}|diff>)"
           elif [ "$BUMPED" = "false" ]; then
             DETAILS="${DETAILS}\n• Already on latest reth rev"
           fi
@@ -614,7 +614,6 @@ jobs:
             --arg details "$DETAILS_TEXT" \
             --arg color "$COLOR" \
             '{
-              text: ($emoji + " Reth update " + $status),
               attachments: [{
                 color: $color,
                 blocks: [
