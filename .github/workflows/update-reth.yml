@@ -125,7 +125,7 @@ jobs:
 
           # Run amp with debug logging, capture stdout and stderr
           AMP_EXIT=0
-          AMP_LOG_LEVEL=debug AMP_DEBUG=1 amp "$@" --stream-json >"$TMPOUT" 2>"$TMPERR" || AMP_EXIT=$?
+          AMP_LOG_LEVEL=debug AMP_DEBUG=1 amp "$@" --stream-json --take-me-back >"$TMPOUT" 2>"$TMPERR" || AMP_EXIT=$?
 
           # Dump amp debug logs
           if [ -f ~/.cache/amp/logs/cli.log ]; then
