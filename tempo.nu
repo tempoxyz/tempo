@@ -1004,49 +1004,66 @@ def run-dev-node [accounts: int, genesis: string, samply: bool, samply_args: lis
     } else {
         $"./target/($profile)/tempo"
     }
-    let datadir = $"($LOCALNET_DIR)/reth"
-    let log_dir = $"($LOCALNET_DIR)/logs"
 
     let genesis_path = if $genesis != "" {
         # Custom genesis provided - check if bloat requires init
         if $bloat > 0 {
             generate-bloat-file $bloat $profile
-            load-bloat-into-node $tempo_bin $genesis $datadir
+            load-bloat-into-node $tempo_bin $genesis $"($LOCALNET_DIR)/reth"
         }
         $genesis
     } else {
-        let default_genesis = $"($LOCALNET_DIR)/genesis.json"
-        let needs_generation = $reset or (not ($default_genesis | path exists))
+        let needs_generation = $reset or (not ($LOCALNET_DIR | path exists)) or (
+            (ls $LOCALNET_DIR | where type == "dir" | get name | where { |d| ($d | path basename) =~ '^\d+\.\d+\.\d+\.\d+:\d+$' } | length) == 0
+        )
 
         if $needs_generation {
             if $reset {
                 print "Resetting localnet data..."
             } else {
-                print "Genesis not found, generating..."
+                print "Localnet not found, generating..."
             }
             rm -rf $LOCALNET_DIR
-            mkdir $LOCALNET_DIR
-            print $"Generating genesis with ($accounts) accounts..."
-            cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $LOCALNET_DIR -a $accounts --no-dkg-in-genesis
+
+            print $"Generating localnet with ($accounts) accounts and 1 validator..."
+            cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $LOCALNET_DIR --accounts $accounts --validators 127.0.0.1:8000 --force | ignore
         }
 
-        # Apply state bloat if requested (requires fresh init)
+        # Apply state bloat if requested
+        let validator_dir = (ls $LOCALNET_DIR | where type == "dir" | get name | where { |d| ($d | path basename) =~ '^\d+\.\d+\.\d+\.\d+:\d+$' } | first)
         if $bloat > 0 {
             generate-bloat-file $bloat $profile
-            load-bloat-into-node $tempo_bin $default_genesis $datadir
+            load-bloat-into-node $tempo_bin $"($LOCALNET_DIR)/genesis.json" $validator_dir
         }
 
-        $default_genesis
+        $"($LOCALNET_DIR)/genesis.json"
     }
 
-    let args = (build-base-args $genesis_path $datadir $log_dir "0.0.0.0" 8545 9001)
-        | append (build-dev-args)
+    # Find the validator directory for signing keys
+    let validator_dir = (ls $LOCALNET_DIR | where type == "dir" | get name | where { |d| ($d | path basename) =~ '^\d+\.\d+\.\d+\.\d+:\d+$' } | first)
+    let log_dir = $"($LOCALNET_DIR)/logs"
+    mkdir $log_dir
+
+    let args = (build-base-args $genesis_path $validator_dir $log_dir "0.0.0.0" 8545 9001)
+        | append (build-consensus-args $validator_dir "" 8000)
         | append (log-filter-args $loud)
         | append $extra_args
 
     let cmd = wrap-samply [$tempo_bin ...$args] $samply $samply_args
-    print $"Running dev node: `($cmd | str join ' ')`..."
+    print $"Running dev node (single-validator consensus): `($cmd | str join ' ')`..."
     run-external ($cmd | first) ...($cmd | skip 1)
+}
+
+# Build Reth --dev mode arguments (auto-mining, no consensus).
+# Used by benchmarks and coverage runs that don't need the full consensus stack.
+def build-dev-args [] {
+    [
+        "--dev"
+        "--dev.block-time" "1sec"
+        "--builder.gaslimit" "3000000000"
+        "--builder.max-tasks" "8"
+        "--builder.deadline" "3"
+    ]
 }
 
 # Build base node arguments shared between dev and consensus modes
@@ -1066,17 +1083,6 @@ def build-base-args [genesis_path: string, datadir: string, log_dir: string, bin
         "--faucet.amount" "1000000000000"
         "--faucet.address" "0x20c0000000000000000000000000000000000000"
         "--faucet.address" "0x20c0000000000000000000000000000000000001"
-    ]
-}
-
-# Build dev mode specific arguments
-def build-dev-args [] {
-    [
-        "--dev"
-        "--dev.block-time" "1sec"
-        "--builder.gaslimit" "3000000000"
-        "--builder.max-tasks" "8"
-        "--builder.deadline" "3"
     ]
 }
 
@@ -1230,12 +1236,11 @@ def build-consensus-args [node_dir: string, trusted_peers: string, port: int] {
     let authrpc_port = $port + 3
     let discv5_port = $port + 4
 
-    [
+    let base = [
         "--consensus.signing-key" $signing_key
         "--consensus.signing-share" $signing_share
         "--consensus.listen-address" $"($ip):($port)"
         "--consensus.metrics-address" $"($ip):($metrics_port)"
-        "--trusted-peers" $trusted_peers
         "--port" $"($execution_p2p_port)"
         "--discovery.port" $"($execution_p2p_port)"
         "--discovery.v5.port" $"($discv5_port)"
@@ -1245,6 +1250,11 @@ def build-consensus-args [node_dir: string, trusted_peers: string, port: int] {
         "--consensus.use-local-defaults"
         "--consensus.bypass-ip-check"
     ]
+    if $trusted_peers != "" {
+        $base | append ["--trusted-peers" $trusted_peers]
+    } else {
+        $base
+    }
 }
 
 # ============================================================================
