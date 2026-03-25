@@ -39,7 +39,7 @@ use reth_node_builder::{Block as _, BuiltPayload, ConsensusEngineHandle};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 
-use reth_provider::{BlockHashReader as _, BlockReader as _};
+use reth_provider::{BlockHashReader as _, BlockReader as _, CanonStateSubscriptions as _};
 use tempo_payload_types::TempoPayloadAttributes;
 use tokio::sync::RwLock;
 use tracing::{Level, debug, error, error_span, info, info_span, instrument, warn};
@@ -557,7 +557,7 @@ impl Inner<Init> {
         };
 
         let parent_hash = parent.block_hash();
-        let fee_recipient = self.resolve_fee_recipient(&context, parent_hash).await?;
+        let fee_recipient = self.resolve_fee_recipient(parent_hash).await?;
         let attrs =
             TempoPayloadAttributes::new(fee_recipient, timestamp_millis, extra_data, move || {
                 self.subblocks
@@ -625,17 +625,14 @@ impl Inner<Init> {
     /// entry. If the contract is not yet usable, the CLI-configured fee
     /// recipient is returned.
     ///
-    /// On transient read errors (V2 active but lookup fails), this retries with
-    /// backoff. The caller is expected to race this against `response.closed()`
-    /// so that consensus can time out the proposal.
-    async fn resolve_fee_recipient<TContext: Pacer>(
+    /// On read errors (V2 active but lookup fails), this waits for canonical
+    /// state notifications before retrying. The caller is expected to race this
+    /// against `response.closed()` so that consensus can time out the proposal.
+    async fn resolve_fee_recipient(
         &self,
-        context: &TContext,
         parent_hash: B256,
     ) -> eyre::Result<alloy_primitives::Address> {
-        const MIN_RETRY: Duration = Duration::from_millis(100);
-        const MAX_RETRY: Duration = Duration::from_millis(500);
-
+        let mut canonical_events = self.execution_node.provider.canonical_state_stream();
         let mut attempts = 0u32;
         loop {
             attempts += 1;
@@ -653,17 +650,15 @@ impl Inner<Init> {
                 }
                 Ok(None) => return Ok(self.fee_recipient),
                 Err(error) => {
-                    let retry_after = MIN_RETRY.saturating_mul(attempts).min(MAX_RETRY);
                     warn!(
                         attempts,
                         %error,
                         %parent_hash,
                         validator = %self.public_key,
-                        ?retry_after,
                         "failed reading proposer fee recipient from validator \
-                         config v2; will retry",
+                         config v2; waiting for next canonical state change",
                     );
-                    context.sleep(retry_after).await;
+                    canonical_events.next().await;
                 }
             }
         }
