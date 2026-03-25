@@ -1,5 +1,6 @@
 use std::{
     fs::OpenOptions,
+    io::Write as _,
     net::{IpAddr, SocketAddr},
     path::PathBuf,
     sync::Arc,
@@ -249,9 +250,33 @@ pub(crate) struct ValidatorTransactionArgs {
     /// The RPC URL to submit the transaction to.
     #[arg(long, value_name = "RPC_URL")]
     rpc_url: String,
+
+    /// Skip the interactive confirmation prompt.
+    #[arg(long, short = 'y')]
+    yes: bool,
 }
 
 impl ValidatorTransactionArgs {
+    fn confirm(&self, summary: &serde_json::Value) -> eyre::Result<()> {
+        eprintln!("{}", serde_json::to_string_pretty(summary)?);
+
+        if self.yes {
+            return Ok(());
+        }
+
+        eprint!("\nSubmit this transaction? [y/N] ");
+        std::io::stderr().flush()?;
+
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+
+        if !matches!(input.trim(), "y" | "Y" | "yes" | "YES") {
+            Err(eyre!("transaction cancelled by user"))
+        } else {
+            Ok(())
+        }
+    }
+
     fn signer(&self) -> eyre::Result<PrivateKeySigner> {
         let private_key_bytes = std::fs::read(&self.private_key)
             .wrap_err("failed reading validator ethereum private key")?;
@@ -328,6 +353,12 @@ impl AddValidator {
             feeRecipient: self.fee_recipient,
         };
 
+        self.submit.confirm(&serde_json::json!({
+            "to": VALIDATOR_CONFIG_V2_ADDRESS,
+            "function": "addValidator",
+            "call": serde_json::to_value(&calldata)?,
+        }))?;
+
         let tx = TransactionRequest::default()
             .to(VALIDATOR_CONFIG_V2_ADDRESS)
             .input(calldata.abi_encode().into());
@@ -385,6 +416,12 @@ impl TransferValidatorOwnership {
             idx: validator.index,
             newAddress: new_validator_address,
         };
+
+        self.submit.confirm(&serde_json::json!({
+            "to": VALIDATOR_CONFIG_V2_ADDRESS,
+            "function": "transferValidatorOwnership",
+            "call": serde_json::to_value(&calldata)?,
+        }))?;
 
         let tx = TransactionRequest::default()
             .to(VALIDATOR_CONFIG_V2_ADDRESS)
@@ -450,6 +487,12 @@ impl RotateValidator {
             egress: self.identity.egress.to_string(),
             signature,
         };
+
+        self.submit.confirm(&serde_json::json!({
+            "to": VALIDATOR_CONFIG_V2_ADDRESS,
+            "function": "rotateValidator",
+            "call": serde_json::to_value(&calldata)?,
+        }))?;
 
         let tx = TransactionRequest::default()
             .to(VALIDATOR_CONFIG_V2_ADDRESS)
@@ -599,6 +642,12 @@ impl SetValidatorIpAdress {
             egress: self.egress.to_string(),
         };
 
+        self.submit.confirm(&serde_json::json!({
+            "to": VALIDATOR_CONFIG_V2_ADDRESS,
+            "function": "setIpAddresses",
+            "call": serde_json::to_value(&calldata)?,
+        }))?;
+
         let tx = TransactionRequest::default()
             .to(VALIDATOR_CONFIG_V2_ADDRESS)
             .input(calldata.abi_encode().into());
@@ -646,6 +695,12 @@ impl SetValidatorFeeRecipient {
             idx: validator.index,
             feeRecipient: self.fee_recipient,
         };
+
+        self.submit.confirm(&serde_json::json!({
+            "to": VALIDATOR_CONFIG_V2_ADDRESS,
+            "function": "setFeeRecipient",
+            "call": serde_json::to_value(&calldata)?,
+        }))?;
 
         let tx = TransactionRequest::default()
             .to(VALIDATOR_CONFIG_V2_ADDRESS)
