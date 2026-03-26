@@ -70,7 +70,6 @@ eyre.workspace = true
 jiff.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
-rayon.workspace = true
 tracing.workspace = true
 pyroscope = { workspace = true, optional = true }
 pyroscope_pprofrs = { workspace = true, optional = true }
