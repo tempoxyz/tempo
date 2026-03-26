@@ -22,7 +22,7 @@ jobs:
           ref: ${{ github.head_ref }}
           persist-credentials: true
 
-      - run: npm install -g @sourcegraph/amp
+      - run: curl -fsSL https://ampcode.com/install.sh | bash
 
       - uses: wevm/changelogs/check@master
         with:
