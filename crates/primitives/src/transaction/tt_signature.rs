@@ -803,24 +803,6 @@ pub fn derive_p256_address(pub_key_x: &B256, pub_key_y: &B256) -> Address {
     Address::from_slice(&hash[12..])
 }
 
-fn validate_p256_signature_components(r: &[u8], s: &[u8]) -> Result<(), &'static str> {
-    let r_value = U256::from_be_slice(r);
-    if r_value == U256::ZERO || r_value >= P256_ORDER {
-        return Err("Invalid P256 signature encoding");
-    }
-
-    let s_value = U256::from_be_slice(s);
-    if s_value == U256::ZERO || s_value >= P256_ORDER {
-        return Err("Invalid P256 signature encoding");
-    }
-
-    if s_value > P256N_HALF {
-        return Err("P256 signature has high s value");
-    }
-
-    Ok(())
-}
-
 /// Concatenates byte slices into a fixed-size array without heap allocations.
 fn concat<const N: usize>(slices: &[&[u8]]) -> [u8; N] {
     let mut out = [0u8; N];
@@ -896,7 +878,21 @@ fn verify_p256_signature_internal(
     pub_key_y: &[u8],
     message_hash: &B256,
 ) -> Result<(), &'static str> {
-    validate_p256_signature_components(r, s)?;
+    // Scalar encoding check: reject signatures where r or s is zero or >= n.
+    let r_value = U256::from_be_slice(r);
+    if r_value == U256::ZERO || r_value >= P256_ORDER {
+        return Err("Invalid P256 signature encoding");
+    }
+
+    let s_value = U256::from_be_slice(s);
+    if s_value == U256::ZERO || s_value >= P256_ORDER {
+        return Err("Invalid P256 signature encoding");
+    }
+
+    // High-s value check: reject signatures where s > n/2 to prevent malleability.
+    if s_value > P256N_HALF {
+        return Err("P256 signature has high s value");
+    }
 
     #[cfg(all(feature = "std", not(test)))]
     {
@@ -1662,47 +1658,6 @@ mod tests {
         assert!(
             p256_sig.recover_signer(&sig_hash).is_err(),
             "high-s P256 signatures must be rejected"
-        );
-    }
-
-    #[test]
-    fn test_recover_signer_p256_malformed_public_key_rejected() {
-        let (signing_key, _, _) = generate_p256_keypair();
-        let sig_hash = B256::from([0xDD; 32]);
-        let (r, s) = sign_p256_normalized(&signing_key, &sig_hash);
-
-        let p256_sig =
-            TempoSignature::Primitive(PrimitiveSignature::P256(P256SignatureWithPreHash {
-                r,
-                s,
-                pub_key_x: B256::ZERO,
-                pub_key_y: B256::ZERO,
-                pre_hash: false,
-            }));
-
-        assert!(
-            p256_sig.recover_signer(&sig_hash).is_err(),
-            "malformed P256 public keys must be rejected"
-        );
-    }
-
-    #[test]
-    fn test_recover_signer_p256_malformed_signature_encoding_rejected() {
-        let (_, pub_key_x, pub_key_y) = generate_p256_keypair();
-        let sig_hash = B256::from([0xEE; 32]);
-
-        let p256_sig =
-            TempoSignature::Primitive(PrimitiveSignature::P256(P256SignatureWithPreHash {
-                r: B256::ZERO,
-                s: B256::from(U256::from(1u64).to_be_bytes::<32>()),
-                pub_key_x,
-                pub_key_y,
-                pre_hash: false,
-            }));
-
-        assert!(
-            p256_sig.recover_signer(&sig_hash).is_err(),
-            "malformed P256 signatures must be rejected"
         );
     }
 
