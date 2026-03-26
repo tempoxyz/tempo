@@ -7,6 +7,7 @@ use std::{
     fs::File,
     io::{BufReader, Read},
     path::PathBuf,
+    sync::mpsc,
     time::{Duration, Instant},
 };
 
@@ -38,6 +39,12 @@ const VERSION: u16 = 1;
 
 /// ETL collector file size (200 MiB per temp file before spilling a new one).
 const ETL_FILE_SIZE: usize = 200 * 1024 * 1024;
+
+/// Maximum number of storage entries to hash per rayon worker job.
+const WORKER_CHUNK_SIZE: usize = 100;
+
+/// Maximum number of channels that can exist in memory before draining.
+const MAXIMUM_CHANNELS: usize = 10_000;
 
 /// Initialize state from a binary dump file.
 #[derive(Debug, Parser)]
@@ -93,6 +100,10 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             Collector::new(ETL_FILE_SIZE, None);
         let mut hashed_collector: Collector<Vec<u8>, CompactU256> =
             Collector::new(ETL_FILE_SIZE, None);
+
+        let mut hash_chunk: Vec<(alloy_primitives::Address, B256, CompactU256)> =
+            Vec::with_capacity(WORKER_CHUNK_SIZE);
+        let mut pending_channels: Vec<mpsc::Receiver<(Vec<u8>, CompactU256)>> = Vec::new();
 
         // Process blocks from binary file
         loop {
@@ -152,8 +163,6 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 accounts_seen.insert(address, account);
             }
 
-            let hashed_address = keccak256(address);
-
             // Read entries into both ETL collectors
             let mut entry_buf = [0u8; 64];
             let start = Instant::now();
@@ -182,13 +191,36 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                     .insert(plain_key, compact_value.clone())
                     .wrap_err("ETL insert failed")?;
 
-                // Collect hashed entry: key = hashed_address ++ hashed_slot
-                let mut hashed_key = Vec::with_capacity(64);
-                hashed_key.extend_from_slice(hashed_address.as_slice());
-                hashed_key.extend_from_slice(keccak256(slot).as_slice());
-                hashed_collector
-                    .insert(hashed_key, compact_value)
-                    .wrap_err("ETL insert failed")?;
+                // Queue raw data for parallel hashing
+                hash_chunk.push((address, slot, compact_value));
+
+                if hash_chunk.len() >= WORKER_CHUNK_SIZE {
+                    let chunk = std::mem::replace(
+                        &mut hash_chunk,
+                        Vec::with_capacity(WORKER_CHUNK_SIZE),
+                    );
+                    let (tx, rx) = mpsc::sync_channel(chunk.len());
+                    pending_channels.push(rx);
+                    rayon::spawn(move || {
+                        let mut last_addr = alloy_primitives::Address::ZERO;
+                        let mut hashed_addr = B256::ZERO;
+                        for (address, slot, value) in chunk {
+                            if address != last_addr {
+                                last_addr = address;
+                                hashed_addr = keccak256(address);
+                            }
+                            let mut hashed_key = Vec::with_capacity(64);
+                            hashed_key.extend_from_slice(hashed_addr.as_slice());
+                            hashed_key.extend_from_slice(keccak256(slot).as_slice());
+                            let _ = tx.send((hashed_key, value));
+                        }
+                    });
+
+                    // Drain accumulated channels periodically
+                    if pending_channels.len() >= MAXIMUM_CHANNELS {
+                        collect_hashed(&mut pending_channels, &mut hashed_collector)?;
+                    }
+                }
 
                 total_entries += 1;
 
@@ -211,6 +243,30 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
             total_blocks += 1;
         }
+
+        // Spawn leftover chunk
+        if !hash_chunk.is_empty() {
+            let chunk = std::mem::take(&mut hash_chunk);
+            let (tx, rx) = mpsc::sync_channel(chunk.len());
+            pending_channels.push(rx);
+            rayon::spawn(move || {
+                let mut last_addr = alloy_primitives::Address::ZERO;
+                let mut hashed_addr = B256::ZERO;
+                for (address, slot, value) in chunk {
+                    if address != last_addr {
+                        last_addr = address;
+                        hashed_addr = keccak256(address);
+                    }
+                    let mut hashed_key = Vec::with_capacity(64);
+                    hashed_key.extend_from_slice(hashed_addr.as_slice());
+                    hashed_key.extend_from_slice(keccak256(slot).as_slice());
+                    let _ = tx.send((hashed_key, value));
+                }
+            });
+        }
+
+        // Drain all remaining channels
+        collect_hashed(&mut pending_channels, &mut hashed_collector)?;
 
         info!(
             target: "tempo::cli",
@@ -325,4 +381,17 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
         Ok(())
     }
+}
+
+/// Drain all pending hashing channels into the ETL collector.
+fn collect_hashed(
+    channels: &mut Vec<mpsc::Receiver<(Vec<u8>, CompactU256)>>,
+    collector: &mut Collector<Vec<u8>, CompactU256>,
+) -> eyre::Result<()> {
+    for rx in channels.drain(..) {
+        while let Ok((key, value)) = rx.recv() {
+            collector.insert(key, value)?;
+        }
+    }
+    Ok(())
 }

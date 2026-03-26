@@ -11785,6 +11785,7 @@ dependencies = [
  "pyroscope",
  "pyroscope_pprofrs",
  "rand 0.8.5",
+ "rayon",
  "reth-chainspec",
  "reth-cli",
  "reth-cli-commands",
