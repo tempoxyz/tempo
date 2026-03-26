@@ -473,7 +473,7 @@ impl AddValidator {
 #[derive(Debug, clap::Args)]
 pub(crate) struct TransferValidatorOwnership {
     /// Validator ethereum address, ed25519 public key, or index
-    #[arg(long)]
+    #[arg()]
     id: ValidatorId,
 
     #[command(flatten)]
@@ -671,7 +671,7 @@ impl CreateRotateValidatorSignatureArgs {
 #[derive(Debug, clap::Args)]
 pub(crate) struct SetValidatorIpAddress {
     /// Validator ethereum address, ed25519 public key, or index
-    #[arg(long)]
+    #[arg()]
     id: ValidatorId,
     /// The inbound address for the validator.
     #[arg(long, value_name = "IP:PORT")]
@@ -722,7 +722,7 @@ impl SetValidatorIpAddress {
 #[derive(Debug, clap::Args)]
 pub(crate) struct DeactivateValidator {
     /// Validator ethereum address, ed25519 public key, or index
-    #[arg(long)]
+    #[arg()]
     id: ValidatorId,
 
     #[command(flatten)]
@@ -761,7 +761,7 @@ impl DeactivateValidator {
 #[derive(Debug, clap::Args)]
 pub(crate) struct SetValidatorFeeRecipient {
     /// The validator's address
-    #[arg(long, value_name = "ETHEREUM_ADDRESS")]
+    #[arg()]
     id: ValidatorId,
     /// The fee recipient address
     #[arg(long, value_name = "ETHEREUM_ADDRESS")]
@@ -862,9 +862,8 @@ impl CalculatePublicKey {
 #[derive(Debug, clap::Args)]
 pub(crate) struct ValidatorInfo {
     /// Validator address, index, or ed25519 public key
-    #[arg(value_name = "IDENTIFIER")]
+    #[arg()]
     id: ValidatorId,
-
     /// RPC URL to query.
     #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
     rpc_url: String,
