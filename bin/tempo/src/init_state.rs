@@ -433,45 +433,40 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             "Hashed accounts written, computing state root and trie nodes..."
         );
 
-        // Compute the full merkle trie from HashedAccounts + HashedStorages
-        // and persist intermediate trie nodes to AccountsTrie / StoragesTrie.
-        // Without this the sparse trie cache on block 1 would see stale genesis
-        // trie nodes, fall back to a full sequential rebuild, and stall the node
-        // for minutes at large state sizes.
-        //
-        // Clear stale genesis trie nodes first — they are inconsistent with
-        // the new hashed state and cause the trie builder to panic on
-        // out-of-order leaves.
+        // Rebuild the merkle trie from scratch so the sparse trie cache on
+        // block 1 doesn't hit stale genesis nodes and stall on a full rebuild.
         let trie_start = Instant::now();
         provider_rw.tx_ref().clear::<tables::AccountsTrie>()?;
         provider_rw.tx_ref().clear::<tables::StoragesTrie>()?;
-        let mut intermediate_state: Option<IntermediateStateRootState> = None;
-        let mut total_trie_updates = 0usize;
+
+        let mut resume: Option<IntermediateStateRootState> = None;
+        let mut trie_writes = 0usize;
+
         let state_root = reth_trie_db::with_adapter!(provider_rw, |A| {
-            type S<'a, TX> = reth_trie::StateRoot<
-                reth_trie_db::DatabaseTrieCursorFactory<&'a TX, A>,
-                reth_trie_db::DatabaseHashedCursorFactory<&'a TX>,
+            use reth_trie_db::{DatabaseHashedCursorFactory, DatabaseTrieCursorFactory};
+            type DbStateRoot<'a, TX, Adapter> = reth_trie::StateRoot<
+                DatabaseTrieCursorFactory<&'a TX, Adapter>,
+                DatabaseHashedCursorFactory<&'a TX>,
             >;
-            let tx = provider_rw.tx_ref();
+
             loop {
-                let state_root_computer =
-                    S::from_tx(tx).with_intermediate_state(intermediate_state);
-                match state_root_computer.root_with_progress()? {
+                match DbStateRoot::<_, A>::from_tx(provider_rw.tx_ref())
+                    .with_intermediate_state(resume)
+                    .root_with_progress()?
+                {
                     StateRootProgress::Progress(state, _, updates) => {
-                        let n = provider_rw.write_trie_updates(updates)?;
-                        total_trie_updates += n;
+                        trie_writes += provider_rw.write_trie_updates(updates)?;
                         info!(
                             target: "tempo::cli",
                             last_key = %state.account_root_state.last_hashed_key,
-                            total_trie_updates,
+                            trie_writes,
                             elapsed = ?trie_start.elapsed(),
                             "Flushing trie updates"
                         );
-                        intermediate_state = Some(*state);
+                        resume = Some(*state);
                     }
                     StateRootProgress::Complete(root, _, updates) => {
-                        let n = provider_rw.write_trie_updates(updates)?;
-                        total_trie_updates += n;
+                        trie_writes += provider_rw.write_trie_updates(updates)?;
                         break root;
                     }
                 }
@@ -481,7 +476,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         info!(
             target: "tempo::cli",
             %state_root,
-            total_trie_updates,
+            trie_writes,
             elapsed = ?trie_start.elapsed(),
             "State root computed"
         );
