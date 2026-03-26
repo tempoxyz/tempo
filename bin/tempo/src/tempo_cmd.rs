@@ -169,6 +169,7 @@ impl ConsensusSubcommand {
 enum ValidatorId {
     Address(Address),
     Index(u64),
+    PublicKey(B256),
 }
 
 impl FromStr for ValidatorId {
@@ -179,9 +180,11 @@ impl FromStr for ValidatorId {
             Ok(Self::Index(idx))
         } else if let Ok(address) = s.parse::<Address>() {
             Ok(Self::Address(address))
+        } else if let Ok(pubkey) = s.parse::<B256>() {
+            Ok(Self::PublicKey(pubkey))
         } else {
             Err(eyre!(
-                "validator identifier must be an index or ethereum address"
+                "validator identifier must be an index, ethereum address, or ed25519 public key"
             ))
         }
     }
@@ -221,13 +224,16 @@ async fn read_validator_from_contract(
     provider: &impl Provider<TempoNetwork>,
     lookup: ValidatorId,
 ) -> eyre::Result<Validator> {
-    let calldata = match lookup {
+    let calldata: Vec<u8> = match lookup {
         ValidatorId::Address(addr) => IValidatorConfigV2::validatorByAddressCall {
             validatorAddress: addr,
         }
         .abi_encode(),
         ValidatorId::Index(idx) => {
             IValidatorConfigV2::validatorByIndexCall { index: idx }.abi_encode()
+        }
+        ValidatorId::PublicKey(pubkey) => {
+            IValidatorConfigV2::validatorByPublicKeyCall { publicKey: pubkey }.abi_encode()
         }
     };
 
@@ -246,6 +252,9 @@ async fn read_validator_from_contract(
         }
         ValidatorId::Index(_) => {
             IValidatorConfigV2::validatorByIndexCall::abi_decode_returns(&resp)
+        }
+        ValidatorId::PublicKey(_) => {
+            IValidatorConfigV2::validatorByPublicKeyCall::abi_decode_returns(&resp)
         }
     }
     .wrap_err("failed to decode validator")?;
@@ -839,7 +848,7 @@ impl CalculatePublicKey {
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct ValidatorInfo {
-    /// Validator address or index.
+    /// Validator address, index, or ed25519 public key
     #[arg(value_name = "IDENTIFIER")]
     id: ValidatorId,
 
@@ -859,7 +868,32 @@ impl ValidatorInfo {
 
         // Once migrated, this block will be removed
         if !is_v2_initialized {
+            if let ValidatorId::PublicKey(pubkey) = &self.id {
+                let call = IValidatorConfig::getValidatorsCall {};
+                let resp = provider
+                    .call(
+                        TransactionRequest::default()
+                            .to(VALIDATOR_CONFIG_ADDRESS)
+                            .input(call.abi_encode().into())
+                            .into(),
+                    )
+                    .await
+                    .wrap_err("failed to call getValidators")?;
+
+                let validators = IValidatorConfig::getValidatorsCall::abi_decode_returns(&resp)
+                    .wrap_err("failed to decode getValidators response")?;
+
+                let validator = validators
+                    .iter()
+                    .find(|v| v.publicKey == *pubkey)
+                    .ok_or_else(|| eyre!("no validator found with public key {pubkey}"))?;
+
+                println!("{}", serde_json::to_string_pretty(&validator)?);
+                return Ok(());
+            }
+
             let address = match &self.id {
+                ValidatorId::PublicKey(_) => unreachable!(), // already handled
                 ValidatorId::Address(addr) => *addr,
                 ValidatorId::Index(idx) => {
                     let call = IValidatorConfig::validatorsArrayCall {
