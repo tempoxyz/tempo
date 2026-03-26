@@ -11,7 +11,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use alloy_primitives::{B256, U256, keccak256, map::AddressSet};
+use alloy_primitives::{
+    B256, U256, keccak256,
+    map::{AddressMap, Entry},
+};
 use clap::Parser;
 use eyre::{Context as _, ensure};
 use reth_chainspec::EthereumHardforks;
@@ -92,8 +95,8 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         let mut total_entries = 0u64;
         let mut total_blocks = 0u64;
 
-        // Track addresses for account hashing (small — only token addresses)
-        let mut addresses_seen: AddressSet = AddressSet::default();
+        // Track addresses and their account data for hashing
+        let mut accounts_seen: AddressMap<Account> = AddressMap::default();
 
         // ETL collectors: accumulate entries sorted, spill to disk when full
         let mut plain_collector: Collector<Vec<u8>, CompactU256> =
@@ -145,13 +148,23 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 "Processing token storage block"
             );
 
-            // Ensure account exists in plain state (only on first encounter)
-            if addresses_seen.insert(address) {
+            // Ensure account exists in plain state (only on first encounter).
+            // Read the existing account from genesis, or insert a default empty one.
+            // Preserving the genesis account is critical: TIP20 tokens have bytecode (0xEF)
+            // set during genesis, and overwriting with Account::default() would clear the
+            // code hash, making the token appear uninitialized.
+            if let Entry::Vacant(e) = accounts_seen.entry(address) {
                 let tx = provider_rw.tx_ref();
                 let mut account_cursor = tx.cursor_write::<tables::PlainAccountState>()?;
-                if account_cursor.seek_exact(address)?.is_none() {
-                    account_cursor.upsert(address, &Account::default())?;
-                }
+                let account = match account_cursor.seek_exact(address)? {
+                    Some((_, account)) => account,
+                    None => {
+                        let account = Account::default();
+                        account_cursor.upsert(address, &account)?;
+                        account
+                    }
+                };
+                e.insert(account);
             }
 
             // Read entries into both ETL collectors
@@ -414,31 +427,17 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             "Storage written, writing hashed accounts..."
         );
 
-        // Write hashed account entries for addresses that have storage.
-        // Read actual account data from PlainAccountState rather than using
-        // Account::default(), which would overwrite code_hash and nonce for
-        // genesis accounts (e.g. TIP20 contracts).
-        {
-            let tx = provider_rw.tx_ref();
-            let mut cursor = tx.cursor_read::<tables::PlainAccountState>()?;
-            let accounts: Vec<_> = addresses_seen
+        // Write hashed account entries using the real account metadata from plain state.
+        // This preserves bytecode_hash for genesis accounts (e.g. TIP20 tokens with 0xEF code).
+        provider_rw.insert_account_for_hashing(
+            accounts_seen
                 .iter()
-                .map(|addr| {
-                    let account = cursor
-                        .seek_exact(*addr)
-                        .ok()
-                        .flatten()
-                        .map(|(_, acc)| acc)
-                        .unwrap_or_default();
-                    (*addr, Some(account))
-                })
-                .collect();
-            provider_rw.insert_account_for_hashing(accounts.into_iter())?;
-        }
+                .map(|(addr, account)| (*addr, Some(*account))),
+        )?;
 
         info!(
             target: "tempo::cli",
-            addresses = addresses_seen.len(),
+            addresses = accounts_seen.len(),
             "Hashed accounts written"
         );
 
