@@ -350,9 +350,10 @@ fn main() -> eyre::Result<()> {
 
                 if args.consensus.fee_recipient.is_some() {
                     warn!(
-                        "`--consensus.fee-recipient` is deprecated; the fee \
-                         recipient is now read from the validator config v2 \
-                         contract",
+                        "`--consensus.fee-recipient` is deprecated and will be \
+                         removed. It is only used pre-T2 hardfork, if validator \
+                         config v2 is not yet activated, or if the on-chain fee \
+                         recipient is set to the zero address",
                     );
                 }
 
