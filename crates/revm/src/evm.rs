@@ -1168,6 +1168,50 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn test_same_tx_key_authorization_rejects_key_type_mismatch() -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+
+        let mut evm = create_funded_evm_t1(caller);
+
+        let key_auth = KeyAuthorization {
+            chain_id: 1,
+            key_type: SignatureType::Secp256k1,
+            key_id: caller,
+            expiry: None,
+            limits: None,
+            allowed_calls: None,
+        };
+        let key_auth_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
+        let signed_key_auth = key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig));
+
+        let tx = TxBuilder::new()
+            .call_identity(&[0x01])
+            .key_authorization(signed_key_auth)
+            .gas_limit(1_000_000)
+            .build();
+
+        let signed_tx = key_pair.sign_tx_keychain(tx)?;
+        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+
+        let err = evm
+            .transact_commit(tx_env)
+            .expect_err("mismatched key_type should reject same-tx auth+use");
+
+        assert!(
+            matches!(
+                err,
+                revm::context::result::EVMError::Transaction(
+                    TempoInvalidTransaction::KeychainValidationFailed { .. }
+                )
+            ),
+            "expected KeychainValidationFailed, got: {err:?}"
+        );
+
+        Ok(())
+    }
+
     /// Test that Tempo transaction time window validation works correctly.
     /// Tests `valid_after` and `valid_before` fields against block timestamp.
     #[test]

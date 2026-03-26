@@ -30,7 +30,7 @@ use tempo_precompiles::{
     },
     nonce::{INonce, NonceManager},
     storage::Handler,
-    tip20::is_tip20_prefix,
+    tip20_factory::TIP20Factory,
 };
 use tempo_primitives::{
     Block,
@@ -236,9 +236,7 @@ where
                     ));
                 }
 
-                if !is_tip20_prefix(scope.target)
-                    || !Self::is_constrained_tip20_selector(rule.selector)
-                {
+                if !Self::is_constrained_tip20_selector(rule.selector) {
                     return Err(TempoPoolTransactionError::Keychain(
                         "recipient-constrained selector rules require TIP-20 target and constrained selector",
                     ));
@@ -256,6 +254,41 @@ where
         }
 
         Ok(())
+    }
+
+    fn validate_t3_key_authorization_tip20_targets(
+        &self,
+        auth: &tempo_primitives::transaction::SignedKeyAuthorization,
+        state_provider: &mut impl StateProvider,
+        spec: TempoHardfork,
+    ) -> Result<Result<(), TempoPoolTransactionError>, ProviderError> {
+        let Some(scopes) = auth.allowed_calls.as_ref() else {
+            return Ok(Ok(()));
+        };
+
+        let mut checked_targets = HashSet::new();
+        for scope in scopes {
+            let requires_deployed_tip20 = scope
+                .selector_rules
+                .as_ref()
+                .is_some_and(|rules| rules.iter().any(|rule| rule.recipients.is_some()));
+
+            if !requires_deployed_tip20 || !checked_targets.insert(scope.target) {
+                continue;
+            }
+
+            let is_tip20 = state_provider
+                .with_read_only_storage_ctx(spec, || TIP20Factory::new().is_tip20(scope.target))
+                .map_err(ProviderError::other)?;
+
+            if !is_tip20 {
+                return Ok(Err(TempoPoolTransactionError::Keychain(
+                    "recipient-constrained selector rules require a deployed TIP-20 target",
+                )));
+            }
+        }
+
+        Ok(Ok(()))
     }
 
     fn call_scope_allows_call(
@@ -378,8 +411,16 @@ where
                         "call scopes are not active before T3",
                     )));
                 }
-            } else if let Err(err) = self.validate_t3_key_authorization_shape(auth) {
-                return Ok(Err(err));
+            } else {
+                if let Err(err) = self.validate_t3_key_authorization_shape(auth) {
+                    return Ok(Err(err));
+                }
+
+                if let Err(err) =
+                    self.validate_t3_key_authorization_tip20_targets(auth, state_provider, spec)?
+                {
+                    return Ok(Err(err));
+                }
             }
 
             // Validate KeyAuthorization expiry, reject if expiring within the propagation
@@ -3640,6 +3681,73 @@ mod tests {
             assert!(
                 result.is_ok(),
                 "Expected allowed call-scope transaction to pass, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_key_authorization_t3_rejects_recipient_scope_for_undeployed_tip20() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+            let mut target_bytes = [0u8; 20];
+            target_bytes[0] = 0x20;
+            target_bytes[1] = 0xc0;
+            target_bytes[19] = 0x42;
+            let undeployed_tip20 = Address::from(target_bytes);
+
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: None,
+                allowed_calls: Some(vec![CallScope {
+                    target: undeployed_tip20,
+                    selector_rules: Some(vec![tempo_primitives::transaction::SelectorRule {
+                        selector: [0xa9, 0x05, 0x9c, 0xbb],
+                        recipients: Some(vec![address!(
+                            "00000000000000000000000000000000000000aa"
+                        )]),
+                    }]),
+                }]),
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage_spec(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+                moderato_with_t3(),
+            );
+            let mut state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )
+            .expect("should not be a provider error");
+
+            assert!(
+                matches!(
+                    result,
+                    Err(TempoPoolTransactionError::Keychain(
+                        "recipient-constrained selector rules require a deployed TIP-20 target"
+                    ))
+                ),
+                "Expected undeployed TIP-20 rejection, got: {result:?}"
             );
         }
 

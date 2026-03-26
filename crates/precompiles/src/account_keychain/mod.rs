@@ -27,7 +27,7 @@ use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     error::Result,
     storage::{Handler, Mapping, Set, packing::insert_into_word},
-    tip20::is_tip20_prefix,
+    tip20_factory::TIP20Factory,
 };
 use alloy::primitives::{Address, B256, TxKind, U256};
 use tempo_precompiles_macros::{Storable, contract};
@@ -272,6 +272,7 @@ impl AccountKeychain {
     /// - `InvalidSignatureType` — must be Secp256k1, P256, or WebAuthn
     pub fn authorize_key(&mut self, msg_sender: Address, call: authorizeKeyCall) -> Result<()> {
         self.ensure_admin_caller(msg_sender)?;
+        let is_t3 = self.storage.spec().is_t3();
 
         // Validate inputs
         if call.keyId == Address::ZERO {
@@ -315,8 +316,18 @@ impl AccountKeychain {
 
         self.keys[msg_sender][call.keyId].write(new_key)?;
 
-        // Set initial spending limits (only if enforce_limits is true)
-        if call.enforceLimits {
+        let limit_configs = call
+            .limits
+            .iter()
+            .map(|limit| TokenLimitConfig {
+                token: limit.token,
+                limit: limit.amount,
+                period: limit.period,
+            })
+            .collect::<Vec<_>>();
+
+        // Pre-T3 stores lifetime limits directly in the remaining-limit slot.
+        if call.enforceLimits && !is_t3 {
             let limit_key = Self::spending_limit_key(msg_sender, call.keyId);
             for limit in &call.limits {
                 self.spending_limits[limit_key][limit.token].write(limit.amount)?;
@@ -324,17 +335,7 @@ impl AccountKeychain {
         }
 
         // TIP-1011 fields are hardfork-gated at T3.
-        if self.storage.spec().is_t3() {
-            let limit_configs = call
-                .limits
-                .iter()
-                .map(|limit| TokenLimitConfig {
-                    token: limit.token,
-                    limit: limit.amount,
-                    period: limit.period,
-                })
-                .collect::<Vec<_>>();
-
+        if is_t3 {
             let allowed_call_configs = if call.enforceAllowedCalls {
                 Some(
                     call.allowedCalls
@@ -349,7 +350,11 @@ impl AccountKeychain {
             self.apply_key_authorization_t3(
                 msg_sender,
                 call.keyId,
-                &limit_configs,
+                if call.enforceLimits {
+                    &limit_configs
+                } else {
+                    &[]
+                },
                 allowed_call_configs.as_deref(),
             )?;
         } else {
@@ -1008,7 +1013,9 @@ impl AccountKeychain {
                 return Err(AccountKeychainError::recipient_limit_exceeded().into());
             }
 
-            if !is_tip20_prefix(target) || !Self::is_constrained_tip20_selector(rule.selector) {
+            if !TIP20Factory::new().is_tip20(target)?
+                || !Self::is_constrained_tip20_selector(rule.selector)
+            {
                 return Err(AccountKeychainError::invalid_call_scope().into());
             }
 
@@ -1418,6 +1425,7 @@ mod tests {
     use crate::{
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        test_util::TIP20Setup,
     };
     use alloy::primitives::{Address, TxKind, U256};
     use revm::state::Bytecode;
@@ -3082,6 +3090,116 @@ mod tests {
                 U256::from(140),
                 "saturating_add should allow refund beyond original limit without overflow"
             );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t3_authorize_key_ignores_limits_when_enforce_limits_false() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let account = Address::random();
+        let key_id = Address::random();
+        let token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
+            TIP20Setup::path_usd(account).apply()?;
+
+            keychain.authorize_key(
+                account,
+                authorizeKeyCall {
+                    keyId: key_id,
+                    signatureType: SignatureType::Secp256k1,
+                    expiry: u64::MAX,
+                    enforceLimits: false,
+                    limits: vec![TokenLimit {
+                        token,
+                        amount: U256::from(100),
+                        period: 60,
+                    }],
+                    enforceAllowedCalls: false,
+                    allowedCalls: vec![],
+                },
+            )?;
+
+            let limit_key = AccountKeychain::spending_limit_key(account, key_id);
+            assert_eq!(
+                keychain.spending_limits[limit_key][token].read()?,
+                U256::ZERO
+            );
+            assert_eq!(
+                keychain.spending_limit_period_state[limit_key][token].read()?,
+                SpendingLimitPeriodState::default()
+            );
+
+            let remaining = keychain.get_remaining_limit_with_period(getRemainingLimitCall {
+                account,
+                keyId: key_id,
+                token,
+            })?;
+            assert_eq!(remaining.remaining, U256::ZERO);
+            assert_eq!(remaining.periodEnd, 0);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t3_rejects_recipient_constrained_scope_for_undeployed_tip20() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let account = Address::random();
+        let key_id = Address::random();
+        let recipient = Address::repeat_byte(0x44);
+        let mut target_bytes = [0u8; 20];
+        target_bytes[0] = 0x20;
+        target_bytes[1] = 0xc0;
+        target_bytes[19] = 0x42;
+        let undeployed_tip20 = Address::from(target_bytes);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
+
+            keychain.authorize_key(
+                account,
+                authorizeKeyCall {
+                    keyId: key_id,
+                    signatureType: SignatureType::Secp256k1,
+                    expiry: u64::MAX,
+                    enforceLimits: false,
+                    limits: vec![],
+                    enforceAllowedCalls: false,
+                    allowedCalls: vec![],
+                },
+            )?;
+
+            let err = keychain
+                .apply_key_authorization_t3(
+                    account,
+                    key_id,
+                    &[],
+                    Some(&[CallScopeConfig {
+                        target: undeployed_tip20,
+                        selector_rules: Some(vec![SelectorRuleConfig {
+                            selector: TIP20_TRANSFER_SELECTOR,
+                            recipients: Some(vec![recipient]),
+                        }]),
+                    }]),
+                )
+                .expect_err("unexpected success for undeployed TIP-20 target");
+
+            match err {
+                TempoPrecompileError::AccountKeychainError(
+                    AccountKeychainError::InvalidCallScope(_),
+                ) => {}
+                other => panic!("expected InvalidCallScope, got {other:?}"),
+            }
 
             Ok(())
         })

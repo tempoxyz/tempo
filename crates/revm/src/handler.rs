@@ -1157,8 +1157,9 @@ where
                     .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
             };
 
-            // Check if this transaction includes a KeyAuthorization for the same key
-            // If so, skip keychain validation here - the key was just validated and authorized
+            // Check if this transaction includes a KeyAuthorization for the same key.
+            // Same-tx auth+use still needs key-type parity checks, but we avoid a full keychain
+            // existence lookup here to preserve the pre-T1B out-of-gas behavior.
             let is_authorizing_this_key = tempo_tx_env
                 .key_authorization
                 .as_ref()
@@ -1172,8 +1173,22 @@ where
                 cfg,
                 tx,
                 |mut keychain: AccountKeychain| {
-                    // Skip keychain validation when authorizing this key in the same tx
-                    if !is_authorizing_this_key {
+                    if is_authorizing_this_key {
+                        if spec.is_t1()
+                            && tempo_tx_env
+                                .key_authorization
+                                .as_ref()
+                                .is_some_and(|key_auth| {
+                                    key_auth.key_type != keychain_sig.signature.signature_type()
+                                })
+                        {
+                            return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                                reason: "key authorization key_type does not match the keychain signature type"
+                                    .to_string(),
+                            }
+                            .into());
+                        }
+                    } else {
                         // Validate that user_address has authorized this access key in the keychain
                         let user_address = &keychain_sig.user_address;
 
