@@ -1,7 +1,6 @@
 //! Tests that the proposer reads the fee recipient from the V2 contract.
 
 use alloy::consensus::BlockHeader as _;
-use alloy::transports::http::reqwest::Url;
 use alloy_primitives::Address;
 use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
