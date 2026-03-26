@@ -415,12 +415,26 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         );
 
         // Write hashed account entries for addresses that have storage.
-        let empty_account = Account::default();
-        provider_rw.insert_account_for_hashing(
-            addresses_seen
+        // Read actual account data from PlainAccountState rather than using
+        // Account::default(), which would overwrite code_hash and nonce for
+        // genesis accounts (e.g. TIP20 contracts).
+        {
+            let tx = provider_rw.tx_ref();
+            let mut cursor = tx.cursor_read::<tables::PlainAccountState>()?;
+            let accounts: Vec<_> = addresses_seen
                 .iter()
-                .map(|addr| (*addr, Some(empty_account))),
-        )?;
+                .map(|addr| {
+                    let account = cursor
+                        .seek_exact(*addr)
+                        .ok()
+                        .flatten()
+                        .map(|(_, acc)| acc)
+                        .unwrap_or_default();
+                    (*addr, Some(account))
+                })
+                .collect();
+            provider_rw.insert_account_for_hashing(accounts.into_iter())?;
+        }
 
         info!(
             target: "tempo::cli",
