@@ -821,20 +821,16 @@ fn validate_p256_signature_components(r: &[u8], s: &[u8]) -> Result<(), &'static
     Ok(())
 }
 
-#[cfg(feature = "std")]
-fn build_uncompressed_p256_public_key(pub_key_x: &[u8], pub_key_y: &[u8]) -> [u8; 65] {
-    let mut public_key = [0u8; 65];
-    public_key[0] = 0x04;
-    public_key[1..33].copy_from_slice(pub_key_x);
-    public_key[33..].copy_from_slice(pub_key_y);
-    public_key
-}
-
-fn build_fixed_p256_signature(r: &[u8], s: &[u8]) -> [u8; 64] {
-    let mut signature = [0u8; 64];
-    signature[..32].copy_from_slice(r);
-    signature[32..].copy_from_slice(s);
-    signature
+/// Concatenates byte slices into a fixed-size array without heap allocations.
+fn concat<const N: usize>(slices: &[&[u8]]) -> [u8; N] {
+    let mut out = [0u8; N];
+    let mut offset = 0;
+    for s in slices {
+        out[offset..offset + s.len()].copy_from_slice(s);
+        offset += s.len();
+    }
+    debug_assert_eq!(offset, N, "slices length doesn't match array size");
+    out
 }
 
 #[cfg(feature = "std")]
@@ -845,14 +841,18 @@ fn verify_p256_signature_with_aws_lc(
     pub_key_y: &[u8],
     message_hash: &B256,
 ) -> Result<(), &'static str> {
-    let public_key = build_uncompressed_p256_public_key(pub_key_x, pub_key_y);
-    let parsed_public_key = AwsLcParsedPublicKey::new(&ECDSA_P256_SHA256_FIXED, public_key)
+    let encoded_point = concat::<65>(&[&[0x04], pub_key_x, pub_key_y]);
+    let verifying_key = AwsLcParsedPublicKey::new(&ECDSA_P256_SHA256_FIXED, encoded_point)
         .map_err(|_| "Invalid P256 public key")?;
-    let signature = build_fixed_p256_signature(r, s);
+
+    let signature = concat::<64>(&[r, s]);
+
+    // Tempo verifies already-computed 32-byte message digests.
+    // Switching to message-based aws-lc verifier would hash again and change consensus behavior.
     let digest = AwsLcDigest::import_less_safe(message_hash.as_slice(), &AwsLcSha256)
         .map_err(|_| "Invalid P256 message digest")?;
 
-    parsed_public_key
+    verifying_key
         .verify_digest_sig(&digest, &signature)
         .map_err(|_| "P256 signature verification failed")
 }
@@ -867,13 +867,13 @@ fn verify_p256_signature_with_p256(
 ) -> Result<(), &'static str> {
     let encoded_point =
         EncodedPoint::from_affine_coordinates(pub_key_x.into(), pub_key_y.into(), false);
-
     let verifying_key =
         VerifyingKey::from_encoded_point(&encoded_point).map_err(|_| "Invalid P256 public key")?;
 
-    let signature = P256Signature::from_slice(&build_fixed_p256_signature(r, s))
+    let signature = P256Signature::from_slice(&concat::<64>(&[r, s]))
         .map_err(|_| "Invalid P256 signature encoding")?;
 
+    // Tempo verifies already-computed 32-byte message digests.
     verifying_key
         .verify_prehash(message_hash.as_slice(), &signature)
         .map_err(|_| "P256 signature verification failed")
@@ -898,14 +898,31 @@ fn verify_p256_signature_internal(
 ) -> Result<(), &'static str> {
     validate_p256_signature_components(r, s)?;
 
-    #[cfg(feature = "std")]
+    #[cfg(all(feature = "std", not(test)))]
     {
+        // production `std` builds use the `aws-lc-rs` crate
         verify_p256_signature_with_aws_lc(r, s, pub_key_x, pub_key_y, message_hash)
     }
 
     #[cfg(not(feature = "std"))]
     {
+        // production `no-std` builds use the `p256` crate
         verify_p256_signature_with_p256(r, s, pub_key_x, pub_key_y, message_hash)
+    }
+
+    #[cfg(all(feature = "std", test))]
+    {
+        // test builds use both crates to verify alignment
+        let aws_lc = verify_p256_signature_with_aws_lc(r, s, pub_key_x, pub_key_y, message_hash);
+        let p256 = verify_p256_signature_with_p256(r, s, pub_key_x, pub_key_y, message_hash);
+
+        assert_eq!(
+            aws_lc.is_ok(),
+            p256.is_ok(),
+            "aws-lc and p256 verification backends disagreed"
+        );
+
+        aws_lc
     }
 }
 
@@ -1132,75 +1149,6 @@ mod tests {
         assert!(
             result.is_ok(),
             "Valid P256 signature should verify successfully"
-        );
-    }
-
-    #[cfg(feature = "std")]
-    #[test]
-    fn test_p256_backends_agree_on_valid_and_invalid_vectors() {
-        let (signing_key, pub_key_x, pub_key_y) = generate_p256_keypair();
-        let message_hash = B256::from([0x11; 32]);
-        let (r, s) = sign_p256_normalized(&signing_key, &message_hash);
-
-        let aws_lc_valid = verify_p256_signature_with_aws_lc(
-            r.as_slice(),
-            s.as_slice(),
-            pub_key_x.as_slice(),
-            pub_key_y.as_slice(),
-            &message_hash,
-        );
-        let p256_valid = verify_p256_signature_with_p256(
-            r.as_slice(),
-            s.as_slice(),
-            pub_key_x.as_slice(),
-            pub_key_y.as_slice(),
-            &message_hash,
-        );
-        assert_eq!(aws_lc_valid.is_ok(), p256_valid.is_ok());
-        assert!(
-            aws_lc_valid.is_ok(),
-            "valid vector should pass on both backends"
-        );
-
-        let wrong_message_hash = B256::from([0x22; 32]);
-        let aws_lc_invalid = verify_p256_signature_with_aws_lc(
-            r.as_slice(),
-            s.as_slice(),
-            pub_key_x.as_slice(),
-            pub_key_y.as_slice(),
-            &wrong_message_hash,
-        );
-        let p256_invalid = verify_p256_signature_with_p256(
-            r.as_slice(),
-            s.as_slice(),
-            pub_key_x.as_slice(),
-            pub_key_y.as_slice(),
-            &wrong_message_hash,
-        );
-        assert_eq!(aws_lc_invalid.is_ok(), p256_invalid.is_ok());
-        assert!(
-            aws_lc_invalid.is_err(),
-            "wrong digest should fail on both backends"
-        );
-
-        let aws_lc_bad_pubkey = verify_p256_signature_with_aws_lc(
-            r.as_slice(),
-            s.as_slice(),
-            &[0u8; 32],
-            &[0u8; 32],
-            &message_hash,
-        );
-        let p256_bad_pubkey = verify_p256_signature_with_p256(
-            r.as_slice(),
-            s.as_slice(),
-            &[0u8; 32],
-            &[0u8; 32],
-            &message_hash,
-        );
-        assert_eq!(aws_lc_bad_pubkey.is_ok(), p256_bad_pubkey.is_ok());
-        assert!(
-            aws_lc_bad_pubkey.is_err(),
-            "malformed public keys should fail on both backends"
         );
     }
 
@@ -1766,14 +1714,7 @@ mod tests {
         let tx_hash = B256::from([0xCC; 32]);
         let webauthn_data = build_webauthn_data(0x01, None, &tx_hash);
 
-        // Compute message hash: sha256(authData || sha256(clientDataJSON))
-        let auth_data = &webauthn_data[..37];
-        let client_data = &webauthn_data[37..];
-        let client_data_hash = Sha256::digest(client_data);
-        let mut hasher = Sha256::new();
-        hasher.update(auth_data);
-        hasher.update(client_data_hash);
-        let message_hash = B256::from_slice(&hasher.finalize());
+        let message_hash = verify_webauthn_data_internal(&webauthn_data, &tx_hash).unwrap();
 
         let (r, s) = sign_p256_normalized(&signing_key, &message_hash);
 
