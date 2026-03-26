@@ -885,14 +885,15 @@ async fn wait_for_block_timestamp_sync(provider: &DynProvider<TempoNetwork>) -> 
             let block_ts = block.header.timestamp();
             let drift = now_secs.saturating_sub(block_ts);
             if drift <= max_drift_secs {
-                info!(block_ts, now_secs, drift, "Block timestamp synced with wall clock");
+                info!(
+                    block_ts,
+                    now_secs, drift, "Block timestamp synced with wall clock"
+                );
                 return Ok(());
             }
             info!(
                 block_ts,
-                now_secs,
-                drift,
-                "Waiting for block timestamp to catch up ({drift}s behind)"
+                now_secs, drift, "Waiting for block timestamp to catch up ({drift}s behind)"
             );
         }
 
