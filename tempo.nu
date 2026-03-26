@@ -180,13 +180,15 @@ def bench-init-db [tempo_bin: string, genesis: string, datadir: string, bloat: i
     }
 }
 
-# Save metadata files to meta dir, write marker, promote, and remount.
-# Must be called BEFORE bench-promote so everything is part of the virgin snapshot.
-# `files` is a list of [src, dest_name] pairs to copy into meta_dir.
-def bench-save-and-promote [datadir: string, meta_dir: string, marker: record, files: list] {
+# Save genesis files, bloat, and marker to meta dir, then promote and remount.
+# Everything is written before promote so it's part of the virgin snapshot.
+def bench-save-and-promote [datadir: string, meta_dir: string, marker: record, genesis_files: list, bloat: int, bloat_file: string] {
     mkdir $meta_dir
-    for pair in $files {
+    for pair in $genesis_files {
         cp ($pair | first) $"($meta_dir)/($pair | last)"
+    }
+    if $bloat > 0 and ($bloat_file | path exists) {
+        cp $bloat_file $"($meta_dir)/state_bloat.bin"
     }
     let marker_path = $"($meta_dir)/marker.json"
     $marker | insert initialized_at (date now | format date "%Y-%m-%dT%H:%M:%SZ") | to json | save -f $marker_path
@@ -1417,11 +1419,11 @@ def "main bench-init" [
     bench-clean-datadir $datadir
     bench-init-db $tempo_bin $genesis_path $datadir $bloat $bloat_file
 
-    let meta_files = (
-        [[$genesis_path "genesis.json"]]
-        | append (if $bloat > 0 and ($bloat_file | path exists) { [[$bloat_file "state_bloat.bin"]] } else { [] })
-    )
-    bench-save-and-promote $datadir $meta_dir { bloat_mib: $bloat, accounts: $genesis_accounts, bench_datadir: $datadir } $meta_files
+    bench-save-and-promote $datadir $meta_dir {
+        bloat_mib: $bloat,
+        accounts: $genesis_accounts,
+        bench_datadir: $datadir
+    } [[$genesis_path "genesis.json"]] $bloat $bloat_file
 
     print $"Virgin snapshot initialized and promoted."
 }
@@ -1767,17 +1769,13 @@ def "main bench" [
                     bench-init-db $side.tempo $side.genesis $side.dd $bloat $bloat_file
                 }
 
-                let meta_files = (
-                    [[$baseline_genesis_path "genesis-baseline.json"] [$feature_genesis_path "genesis-feature.json"]]
-                    | append (if $bloat > 0 and ($bloat_file | path exists) { [[$bloat_file "state_bloat.bin"]] } else { [] })
-                )
                 bench-save-and-promote $datadir $meta_dir {
                     bloat_mib: $bloat
                     accounts: $genesis_accounts
                     bench_datadir: $datadir
                     baseline_hardfork: ($baseline_hardfork | str upcase)
                     feature_hardfork: ($feature_hardfork | str upcase)
-                } $meta_files
+                } [[$baseline_genesis_path "genesis-baseline.json"] [$feature_genesis_path "genesis-feature.json"]] $bloat $bloat_file
 
                 print "Dual-hardfork databases initialized and promoted."
             }
@@ -1832,11 +1830,11 @@ def "main bench" [
                 bench-clean-datadir $datadir
                 bench-init-db $baseline_tempo $genesis_path_std $datadir $bloat $bloat_file
 
-                let meta_files = (
-                    [[$genesis_path_std "genesis.json"]]
-                    | append (if $bloat > 0 and ($bloat_file | path exists) { [[$bloat_file "state_bloat.bin"]] } else { [] })
-                )
-                bench-save-and-promote $datadir $meta_dir { bloat_mib: $bloat, accounts: $genesis_accounts, bench_datadir: $datadir } $meta_files
+                bench-save-and-promote $datadir $meta_dir {
+                    bloat_mib: $bloat,
+                    accounts: $genesis_accounts,
+                    bench_datadir: $datadir
+                } [[$genesis_path_std "genesis.json"]] $bloat $bloat_file
 
                 print "Database initialized and promoted to virgin baseline."
             }
