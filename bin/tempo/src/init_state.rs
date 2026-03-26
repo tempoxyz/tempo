@@ -29,6 +29,7 @@ use reth_primitives_traits::{Account, StorageEntry};
 use reth_provider::{BlockNumReader, DatabaseProviderFactory, HashingWriter};
 use reth_storage_api::{DBProvider, StorageSettingsCache, TrieWriter};
 use reth_trie::{IntermediateStateRootState, StateRootProgress};
+use reth_trie_db::DatabaseStateRoot;
 use tempo_chainspec::spec::TempoChainSpecParser;
 use tracing::info;
 
@@ -454,10 +455,14 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         let mut intermediate_state: Option<IntermediateStateRootState> = None;
         let mut total_trie_updates = 0usize;
         let state_root = reth_trie_db::with_adapter!(provider_rw, |A| {
+            type S<'a, TX> = reth_trie::StateRoot<
+                reth_trie_db::DatabaseTrieCursorFactory<&'a TX, A>,
+                reth_trie_db::DatabaseHashedCursorFactory<&'a TX>,
+            >;
             let tx = provider_rw.tx_ref();
             loop {
                 let state_root_computer =
-                    reth_trie_db::DatabaseStateRoot::<_, A>::from_tx(tx)
+                    S::from_tx(tx)
                         .with_intermediate_state(intermediate_state);
                 match state_root_computer.root_with_progress()? {
                     StateRootProgress::Progress(state, _, updates) => {
