@@ -87,7 +87,7 @@ on:
       no_slack:
         description: "Suppress Slack notifications for benchmark results"
         required: false
-        default: false
+        default: true
         type: boolean
 env:
   CARGO_TERM_COLOR: always
@@ -170,7 +170,7 @@ jobs:
               baselineHardfork = '${{ github.event.inputs.baseline-hardfork }}' || '';
               featureHardfork = '${{ github.event.inputs.feature-hardfork }}' || '';
               forceBloat = '${{ github.event.inputs.force-bloat }}' === 'true' ? 'true' : 'false';
-              noSlack = '${{ github.event.inputs.no_slack }}' === 'true' ? 'true' : 'false';
+              noSlack = '${{ github.event.inputs.no_slack }}' !== 'false' ? 'true' : 'false';
 
               // Find PR for the selected branch
               const branch = '${{ github.ref_name }}';
