@@ -878,17 +878,7 @@ fn verify_p256_signature_internal(
     pub_key_y: &[u8],
     message_hash: &B256,
 ) -> Result<(), &'static str> {
-    // Scalar encoding check: reject signatures where r or s is zero or >= n.
-    let r_value = U256::from_be_slice(r);
-    if r_value == U256::ZERO || r_value >= P256_ORDER {
-        return Err("Invalid P256 signature encoding");
-    }
-
     let s_value = U256::from_be_slice(s);
-    if s_value == U256::ZERO || s_value >= P256_ORDER {
-        return Err("Invalid P256 signature encoding");
-    }
-
     // High-s value check: reject signatures where s > n/2 to prevent malleability.
     if s_value > P256N_HALF {
         return Err("P256 signature has high s value");
