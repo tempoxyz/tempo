@@ -472,9 +472,9 @@ impl AddValidator {
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct TransferValidatorOwnership {
-    /// The validator's address
-    #[arg(long, value_name = "ETHEREUM_ADDRESS")]
-    validator_address: Address,
+    /// Validator ethereum address, ed25519 pubkey, or index
+    #[arg(long)]
+    id: ValidatorId,
 
     #[command(flatten)]
     submit: ValidatorTransactionArgs,
@@ -497,8 +497,7 @@ impl TransferValidatorOwnership {
         let new_signer = PrivateKeySigner::from_bytes(&new_private_key)?;
         let new_validator_address = new_signer.address();
 
-        let lookup = ValidatorId::Address(self.validator_address);
-        let validator = read_validator_from_contract(&provider, lookup).await?;
+        let validator = read_validator_from_contract(&provider, self.id).await?;
 
         let call = IValidatorConfigV2::transferValidatorOwnershipCall {
             idx: validator.index,
@@ -671,9 +670,9 @@ impl CreateRotateValidatorSignatureArgs {
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct SetValidatorIpAddress {
-    /// The validator's address
-    #[arg(long, value_name = "ETHEREUM_ADDRESS")]
-    validator_address: Address,
+    /// Validator ethereum address, ed25519 pubkey, or index
+    #[arg(long)]
+    id: ValidatorId,
     /// The inbound address for the validator.
     #[arg(long, value_name = "IP:PORT")]
     ingress: Option<SocketAddr>,
@@ -694,8 +693,7 @@ impl SetValidatorIpAddress {
             return Err(eyre!("at least one of --ingress or --egress must be set"));
         }
 
-        let lookup = ValidatorId::Address(self.validator_address);
-        let validator = read_validator_from_contract(&provider, lookup).await?;
+        let validator = read_validator_from_contract(&provider, self.id).await?;
 
         let call = IValidatorConfigV2::setIpAddressesCall {
             idx: validator.index,
@@ -723,9 +721,9 @@ impl SetValidatorIpAddress {
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct DeactivateValidator {
-    /// The validator's address
-    #[arg(long, value_name = "ETHEREUM_ADDRESS")]
-    validator_address: Address,
+    /// Validator ethereum address, ed25519 pubkey, or index
+    #[arg(long)]
+    id: ValidatorId,
 
     #[command(flatten)]
     submit: ValidatorTransactionArgs,
@@ -736,8 +734,7 @@ impl DeactivateValidator {
         let signer = self.submit.signer()?;
         let provider = self.submit.provider(signer).await?;
 
-        let lookup = ValidatorId::Address(self.validator_address);
-        let validator = read_validator_from_contract(&provider, lookup).await?;
+        let validator = read_validator_from_contract(&provider, self.id).await?;
 
         let call = IValidatorConfigV2::deactivateValidatorCall {
             idx: validator.index,
@@ -765,7 +762,7 @@ impl DeactivateValidator {
 pub(crate) struct SetValidatorFeeRecipient {
     /// The validator's address
     #[arg(long, value_name = "ETHEREUM_ADDRESS")]
-    validator_address: Address,
+    id: ValidatorId,
     /// The fee recipient address
     #[arg(long, value_name = "ETHEREUM_ADDRESS")]
     fee_recipient: Address,
@@ -779,8 +776,7 @@ impl SetValidatorFeeRecipient {
         let signer = self.submit.signer()?;
         let provider = self.submit.provider(signer).await?;
 
-        let lookup = ValidatorId::Address(self.validator_address);
-        let validator = read_validator_from_contract(&provider, lookup).await?;
+        let validator = read_validator_from_contract(&provider, self.id).await?;
 
         let call = IValidatorConfigV2::setFeeRecipientCall {
             idx: validator.index,
