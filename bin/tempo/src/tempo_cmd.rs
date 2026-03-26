@@ -203,19 +203,35 @@ async fn is_validator_config_v2_activated(
         .await
         .wrap_err("failed to check v2 contract")?;
 
-    // The contract is not deployed if emptry
+    // The contract is not deployed if empty
     if resp.is_empty() {
         return Ok(false);
     }
 
     let height = IValidatorConfigV2::getInitializedAtHeightCall::abi_decode_returns(&resp)
-        .wrap_err("failed to decode v2 initialized height response")?;
+        .wrap_err("failed to decode v2 getInitializedAtHeight call")?;
 
     let block_number = provider
         .get_block_number()
         .await
         .wrap_err("failed to fetch block number")?;
-    let initialized = height >= block_number;
+
+    if height < block_number {
+        return Ok(false);
+    }
+
+    let call = IValidatorConfigV2::isInitializedCall {};
+    let tx = TransactionRequest::default()
+        .to(VALIDATOR_CONFIG_V2_ADDRESS)
+        .input(call.abi_encode().into());
+
+    let resp = provider
+        .call(tx.into())
+        .await
+        .wrap_err("failed to check v2 contract")?;
+
+    let initialized = IValidatorConfigV2::isInitializedCall::abi_decode_returns(&resp)
+        .wrap_err("failed to decode v2 initialized call")?;
 
     Ok(initialized)
 }
