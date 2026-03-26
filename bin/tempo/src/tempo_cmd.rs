@@ -3,6 +3,7 @@ use std::{
     io::Write as _,
     net::{IpAddr, SocketAddr},
     path::PathBuf,
+    str::FromStr,
     sync::Arc,
 };
 
@@ -133,12 +134,12 @@ pub(crate) enum ConsensusSubcommand {
     RotateValidator(RotateValidator),
     /// Set the validator Ip Address
     SetValidatorIpAddress(SetValidatorIpAddress),
-    /// SEt the validator fee recipient
+    /// Set the validator fee recipient
     SetValidatorFeeRecipient(SetValidatorFeeRecipient),
     /// Transfer validator ownership
     TransferValidatorOwnership(TransferValidatorOwnership),
-    /// Query a single validator by address or index.
-    ValidatorInfo(ValidatorInfo),
+    /// Look up a validator by address or index.
+    Validator(ValidatorInfo),
     /// Query validator info from the previous epoch's DKG outcome and current contract state.
     ValidatorsInfo(ValidatorsInfo),
 }
@@ -155,27 +156,44 @@ impl ConsensusSubcommand {
             Self::SetValidatorFeeRecipient(args) => args.run().await,
             Self::GeneratePrivateKey(args) => args.run(),
             Self::CalculatePublicKey(args) => args.run(),
-            Self::ValidatorInfo(args) => args.run().await,
+            Self::Validator(args) => args.run().await,
             Self::ValidatorsInfo(args) => args.run().await,
         }
     }
 }
 
-enum ValidatorLookup {
+#[derive(Clone, Debug)]
+enum ValidatorId {
     Address(Address),
     Index(u64),
 }
 
+impl FromStr for ValidatorId {
+    type Err = eyre::Report;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Ok(idx) = s.parse::<u64>() {
+            Ok(ValidatorId::Index(idx))
+        } else if let Ok(address) = s.parse::<Address>() {
+            Ok(ValidatorId::Address(address))
+        } else {
+            Err(eyre!(
+                "validator identifier must be an index or ethereum address"
+            ))
+        }
+    }
+}
+
 async fn read_validator_from_contract(
     provider: &impl Provider<TempoNetwork>,
-    lookup: ValidatorLookup,
+    lookup: ValidatorId,
 ) -> eyre::Result<Validator> {
     let calldata = match lookup {
-        ValidatorLookup::Address(addr) => IValidatorConfigV2::validatorByAddressCall {
+        ValidatorId::Address(addr) => IValidatorConfigV2::validatorByAddressCall {
             validatorAddress: addr,
         }
         .abi_encode(),
-        ValidatorLookup::Index(idx) => {
+        ValidatorId::Index(idx) => {
             IValidatorConfigV2::validatorByIndexCall { index: idx }.abi_encode()
         }
     };
@@ -190,10 +208,10 @@ async fn read_validator_from_contract(
         .wrap_err("failed to read contract")?;
 
     let validator = match lookup {
-        ValidatorLookup::Address(_) => {
+        ValidatorId::Address(_) => {
             IValidatorConfigV2::validatorByAddressCall::abi_decode_returns(&resp)
         }
-        ValidatorLookup::Index(_) => {
+        ValidatorId::Index(_) => {
             IValidatorConfigV2::validatorByIndexCall::abi_decode_returns(&resp)
         }
     }
@@ -286,7 +304,7 @@ impl ValidatorTransactionArgs {
             &serde_json::json!({
                 "to": VALIDATOR_CONFIG_V2_ADDRESS,
                 "signature": T::SIGNATURE,
-                "call": serde_json::to_value(call)?,
+                "call": call,
             })
         );
 
@@ -420,7 +438,7 @@ impl TransferValidatorOwnership {
         let new_signer = PrivateKeySigner::from_bytes(&new_private_key)?;
         let new_validator_address = new_signer.address();
 
-        let lookup = ValidatorLookup::Address(self.validator_address);
+        let lookup = ValidatorId::Address(self.validator_address);
         let validator = read_validator_from_contract(&provider, lookup).await?;
 
         let call = IValidatorConfigV2::transferValidatorOwnershipCall {
@@ -476,7 +494,7 @@ impl RotateValidator {
             .check_rotate_validator_signature(signature.as_ref())
             .wrap_err("rotate-validator signature check failed")?;
 
-        let lookup = ValidatorLookup::Address(self.identity.validator_address);
+        let lookup = ValidatorId::Address(self.identity.validator_address);
         let validator = read_validator_from_contract(&provider, lookup).await?;
 
         let call = IValidatorConfigV2::rotateValidatorCall {
@@ -617,7 +635,7 @@ impl SetValidatorIpAddress {
             return Err(eyre!("at least one of --ingress or --egress must be set"));
         }
 
-        let lookup = ValidatorLookup::Address(self.validator_address);
+        let lookup = ValidatorId::Address(self.validator_address);
         let validator = read_validator_from_contract(&provider, lookup).await?;
 
         let call = IValidatorConfigV2::setIpAddressesCall {
@@ -662,7 +680,7 @@ impl SetValidatorFeeRecipient {
         let signer = self.submit.signer()?;
         let provider = self.submit.provider(signer).await?;
 
-        let lookup = ValidatorLookup::Address(self.validator_address);
+        let lookup = ValidatorId::Address(self.validator_address);
         let validator = read_validator_from_contract(&provider, lookup).await?;
 
         let call = IValidatorConfigV2::setFeeRecipientCall {
@@ -748,17 +766,13 @@ impl CalculatePublicKey {
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct ValidatorInfo {
+    /// Validator address or index.
+    #[arg(value_name = "ADDRESS_OR_INDEX")]
+    id: ValidatorId,
+
     /// RPC URL to query.
     #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
     rpc_url: String,
-
-    /// Look up by validator address.
-    #[arg(long, conflicts_with = "index")]
-    address: Option<Address>,
-
-    /// Look up by validator index.
-    #[arg(long, conflicts_with = "address")]
-    index: Option<u64>,
 
     /// Look up a validator on the v1 config contract
     #[arg(long, default_value = "false")]
@@ -774,26 +788,26 @@ impl ValidatorInfo {
 
         // Once migrated, this block will be removed
         if !self.v2 {
-            let address = if let Some(addr) = self.address {
-                addr
-            } else {
-                let idx = self.index.ok_or_eyre("--address or --index must be set")?;
-                let call = IValidatorConfig::validatorsArrayCall {
-                    index: alloy_primitives::U256::from(idx),
-                };
+            let address = match &self.id {
+                ValidatorId::Address(addr) => *addr,
+                ValidatorId::Index(idx) => {
+                    let call = IValidatorConfig::validatorsArrayCall {
+                        index: alloy_primitives::U256::from(*idx),
+                    };
 
-                let resp = provider
-                    .call(
-                        TransactionRequest::default()
-                            .to(VALIDATOR_CONFIG_ADDRESS)
-                            .input(call.abi_encode().into())
-                            .into(),
-                    )
-                    .await
-                    .wrap_err("failed to call validatorsArray")?;
+                    let resp = provider
+                        .call(
+                            TransactionRequest::default()
+                                .to(VALIDATOR_CONFIG_ADDRESS)
+                                .input(call.abi_encode().into())
+                                .into(),
+                        )
+                        .await
+                        .wrap_err("failed to call validatorsArray")?;
 
-                IValidatorConfig::validatorsArrayCall::abi_decode_returns(&resp)
-                    .wrap_err("failed to decode validatorsArray response")?
+                    IValidatorConfig::validatorsArrayCall::abi_decode_returns(&resp)
+                        .wrap_err("failed to decode validatorsArray response")?
+                }
             };
 
             let call = IValidatorConfig::validatorsCall { validator: address };
@@ -815,14 +829,7 @@ impl ValidatorInfo {
             return Ok(());
         }
 
-        let lookup = if let Some(addr) = self.address {
-            ValidatorLookup::Address(addr)
-        } else {
-            let idx = self.index.ok_or_eyre("--address or --index must be set")?;
-            ValidatorLookup::Index(idx)
-        };
-
-        let validator = read_validator_from_contract(&provider, lookup).await?;
+        let validator = read_validator_from_contract(&provider, self.id).await?;
         println!("{}", serde_json::to_string_pretty(&validator)?);
 
         Ok(())
