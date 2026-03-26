@@ -29,8 +29,7 @@ mod codec {
         bytes::{self, BufMut},
     };
     use reth_codecs::{
-        Compact,
-        DecompressError,
+        Compact, DecompressError,
         alloy::transaction::{CompactEnvelope, Envelope},
         txtype::{
             COMPACT_EXTENDED_IDENTIFIER_FLAG, COMPACT_IDENTIFIER_EIP1559,
