@@ -173,15 +173,45 @@ impl FromStr for ValidatorId {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if let Ok(idx) = s.parse::<u64>() {
-            Ok(ValidatorId::Index(idx))
+            Ok(Self::Index(idx))
         } else if let Ok(address) = s.parse::<Address>() {
-            Ok(ValidatorId::Address(address))
+            Ok(Self::Address(address))
         } else {
             Err(eyre!(
                 "validator identifier must be an index or ethereum address"
             ))
         }
     }
+}
+
+async fn is_validator_config_v2_activated(
+    provider: &impl Provider<TempoNetwork>,
+) -> eyre::Result<bool> {
+    let call = IValidatorConfigV2::getInitializedAtHeightCall {};
+    let tx = TransactionRequest::default()
+        .to(VALIDATOR_CONFIG_V2_ADDRESS)
+        .input(call.abi_encode().into());
+
+    let resp = provider
+        .call(tx.into())
+        .await
+        .wrap_err("failed to check v2 contract")?;
+
+    // The contract is not deployed if emptry
+    if resp.is_empty() {
+        return Ok(false);
+    }
+
+    let height = IValidatorConfigV2::getInitializedAtHeightCall::abi_decode_returns(&resp)
+        .wrap_err("failed to decode v2 initialized height response")?;
+
+    let block_number = provider
+        .get_block_number()
+        .await
+        .wrap_err("failed to fetch block number")?;
+    let initialized = height >= block_number;
+
+    Ok(initialized)
 }
 
 async fn read_validator_from_contract(
@@ -767,16 +797,12 @@ impl CalculatePublicKey {
 #[derive(Debug, clap::Args)]
 pub(crate) struct ValidatorInfo {
     /// Validator address or index.
-    #[arg(value_name = "ADDRESS_OR_INDEX")]
+    #[arg(value_name = "IDENTIFIER")]
     id: ValidatorId,
 
     /// RPC URL to query.
     #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
     rpc_url: String,
-
-    /// Look up a validator on the v1 config contract
-    #[arg(long, default_value = "false")]
-    v2: bool,
 }
 
 impl ValidatorInfo {
@@ -786,8 +812,10 @@ impl ValidatorInfo {
             .await
             .wrap_err("failed to connect to RPC")?;
 
+        let is_v2_initialized = is_validator_config_v2_activated(&provider).await?;
+
         // Once migrated, this block will be removed
-        if !self.v2 {
+        if !is_v2_initialized {
             let address = match &self.id {
                 ValidatorId::Address(addr) => *addr,
                 ValidatorId::Index(idx) => {
@@ -887,12 +915,8 @@ pub(crate) struct ValidatorsInfo {
     rpc_url: String,
 
     /// Whether to include historic validators (deactivated and not in the current committee).
-    #[arg(long, conflicts_with = "v2")]
-    with_historic: bool,
-
-    /// Use the v2 config contract (active validators only).
     #[arg(long)]
-    v2: bool,
+    with_historic: bool,
 }
 
 impl ValidatorsInfo {
@@ -951,25 +975,32 @@ impl ValidatorsInfo {
         let dkg_outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref())
             .wrap_err("failed to decode DKG outcome from extra_data")?;
 
-        let validators_result = provider
-            .call(
-                TransactionRequest::default()
-                    .to(VALIDATOR_CONFIG_ADDRESS)
-                    .input(IValidatorConfig::getValidatorsCall {}.abi_encode().into())
-                    .into(),
-            )
-            .await
-            .wrap_err("failed to call getValidators")?;
-
-        let decoded_validators =
-            IValidatorConfig::getValidatorsCall::abi_decode_returns(&validators_result)
-                .wrap_err("failed to decode getValidators response")?;
+        let is_v2_initialized = is_validator_config_v2_activated(&provider).await?;
+        if self.with_historic {
+            return Err(eyre!(
+                "--with-historic unsupported for the validator v2 configuration"
+            ));
+        }
 
         let next_full_dkg_epoch: u64;
-        let mut validator_entries = Vec::with_capacity(decoded_validators.len());
+        let mut validator_entries = Vec::new();
 
         // Once migrated, this block will be removed
-        if !self.v2 {
+        if !is_v2_initialized {
+            let validators_result = provider
+                .call(
+                    TransactionRequest::default()
+                        .to(VALIDATOR_CONFIG_ADDRESS)
+                        .input(IValidatorConfig::getValidatorsCall {}.abi_encode().into())
+                        .into(),
+                )
+                .await
+                .wrap_err("failed to call getValidators")?;
+
+            let decoded_validators =
+                IValidatorConfig::getValidatorsCall::abi_decode_returns(&validators_result)
+                    .wrap_err("failed to decode getValidators response")?;
+
             let next_dkg_result = provider
                 .call(
                     TransactionRequest::default()
