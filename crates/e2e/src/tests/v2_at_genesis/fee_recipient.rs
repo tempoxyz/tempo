@@ -34,7 +34,7 @@ fn block_beneficiary_follows_v2_fee_recipient() {
         let (mut nodes, execution_runtime) = setup_validators(&mut context, setup).await;
         join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
 
-        let http_url: Url = nodes[0]
+        let http_url = nodes[0]
             .execution()
             .rpc_server_handle()
             .http_url()
@@ -101,7 +101,7 @@ fn falls_back_to_cli_fee_recipient_when_onchain_is_zero() {
         nodes[0].consensus_config_mut().fee_recipient = Some(FALLBACK_FEE_RECIPIENT);
         join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
 
-        let http_url: Url = nodes[0]
+        let http_url = nodes[0]
             .execution()
             .rpc_server_handle()
             .http_url()
