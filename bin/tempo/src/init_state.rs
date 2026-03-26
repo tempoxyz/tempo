@@ -21,7 +21,7 @@ use reth_db_api::{
     models::CompactU256,
     table::Decompress,
     tables,
-    transaction::DbTxMut,
+    transaction::{DbTx, DbTxMut},
 };
 use reth_ethereum::{chainspec::EthChainSpec, tasks::Runtime};
 use reth_etl::Collector;
@@ -263,15 +263,66 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             target: "tempo::cli",
             total_blocks,
             total_entries,
-            "Entries collected, loading plain storage from ETL..."
+            "Entries collected, merging genesis storage into ETL collectors..."
         );
 
-        // Load sorted plain storage via ETL
+        // Merge existing genesis plain storage into the collector so it survives
+        // the clear + append_dup bulk load.
+        {
+            let tx = provider_rw.tx_ref();
+            let mut cursor = tx.cursor_read::<tables::PlainStorageState>()?;
+            let mut genesis_count = 0usize;
+            let walker = cursor.walk(None)?;
+            for row in walker {
+                let (address, entry) = row?;
+                let mut key = Vec::with_capacity(52);
+                key.extend_from_slice(address.as_slice());
+                key.extend_from_slice(entry.key.as_slice());
+                plain_collector
+                    .insert(key, CompactU256::from(entry.value))
+                    .wrap_err("ETL insert of genesis plain storage failed")?;
+                genesis_count += 1;
+            }
+            info!(
+                target: "tempo::cli",
+                genesis_count,
+                "Genesis plain storage entries merged into collector"
+            );
+        }
+
+        // Merge existing genesis hashed storage into the collector.
+        {
+            let tx = provider_rw.tx_ref();
+            let mut cursor = tx.cursor_read::<tables::HashedStorages>()?;
+            let mut genesis_count = 0usize;
+            let walker = cursor.walk(None)?;
+            for row in walker {
+                let (hashed_address, entry) = row?;
+                let mut key = Vec::with_capacity(64);
+                key.extend_from_slice(hashed_address.as_slice());
+                key.extend_from_slice(entry.key.as_slice());
+                hashed_collector
+                    .insert(key, CompactU256::from(entry.value))
+                    .wrap_err("ETL insert of genesis hashed storage failed")?;
+                genesis_count += 1;
+            }
+            info!(
+                target: "tempo::cli",
+                genesis_count,
+                "Genesis hashed storage entries merged into collector"
+            );
+        }
+
+        // Load sorted plain storage via ETL.
+        // Dedup: when genesis and dump have the same (address, slot), the collector
+        // may contain both. We buffer the last value seen for each key and only
+        // write when the key changes (keeping the later/dump value).
         let total_plain = plain_collector.len();
         let interval = (total_plain / 10).max(1);
         provider_rw.tx_ref().clear::<tables::PlainStorageState>()?;
         let tx = provider_rw.tx_ref();
         let mut plain_cursor = tx.cursor_dup_write::<tables::PlainStorageState>()?;
+        let mut pending_plain: Option<(Vec<u8>, Vec<u8>)> = None;
         for (index, item) in plain_collector.iter()?.enumerate() {
             if index > 0 && index % interval == 0 {
                 info!(
@@ -285,11 +336,25 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             }
 
             let (addr_slot, value) = item.wrap_err("ETL iteration failed")?;
+            if let Some((ref prev_key, ref prev_val)) = pending_plain {
+                if *prev_key != addr_slot {
+                    plain_cursor.append_dup(
+                        alloy_primitives::Address::from_slice(&prev_key[..20]),
+                        StorageEntry {
+                            key: B256::from_slice(&prev_key[20..]),
+                            value: CompactU256::decompress_owned(prev_val.clone())?.into(),
+                        },
+                    )?;
+                }
+            }
+            pending_plain = Some((addr_slot, value));
+        }
+        if let Some((key, val)) = pending_plain {
             plain_cursor.append_dup(
-                alloy_primitives::Address::from_slice(&addr_slot[..20]),
+                alloy_primitives::Address::from_slice(&key[..20]),
                 StorageEntry {
-                    key: B256::from_slice(&addr_slot[20..]),
-                    value: CompactU256::decompress_owned(value)?.into(),
+                    key: B256::from_slice(&key[20..]),
+                    value: CompactU256::decompress_owned(val)?.into(),
                 },
             )?;
         }
@@ -301,12 +366,13 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             "Plain storage written, loading hashed storage from ETL..."
         );
 
-        // Load sorted hashed storage via ETL
+        // Load sorted hashed storage via ETL (same dedup strategy).
         let total_hashes = hashed_collector.len();
         let interval = (total_hashes / 10).max(1);
         provider_rw.tx_ref().clear::<tables::HashedStorages>()?;
         let tx = provider_rw.tx_ref();
         let mut hashed_cursor = tx.cursor_dup_write::<tables::HashedStorages>()?;
+        let mut pending_hashed: Option<(Vec<u8>, Vec<u8>)> = None;
         for (index, item) in hashed_collector.iter()?.enumerate() {
             if index > 0 && index % interval == 0 {
                 info!(
@@ -320,11 +386,25 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             }
 
             let (addr_key, value) = item.wrap_err("ETL iteration failed")?;
+            if let Some((ref prev_key, ref prev_val)) = pending_hashed {
+                if *prev_key != addr_key {
+                    hashed_cursor.append_dup(
+                        B256::from_slice(&prev_key[..32]),
+                        StorageEntry {
+                            key: B256::from_slice(&prev_key[32..]),
+                            value: CompactU256::decompress_owned(prev_val.clone())?.into(),
+                        },
+                    )?;
+                }
+            }
+            pending_hashed = Some((addr_key, value));
+        }
+        if let Some((key, val)) = pending_hashed {
             hashed_cursor.append_dup(
-                B256::from_slice(&addr_key[..32]),
+                B256::from_slice(&key[..32]),
                 StorageEntry {
-                    key: B256::from_slice(&addr_key[32..]),
-                    value: CompactU256::decompress_owned(value)?.into(),
+                    key: B256::from_slice(&key[32..]),
+                    value: CompactU256::decompress_owned(val)?.into(),
                 },
             )?;
         }
