@@ -198,9 +198,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 // Queue raw data for parallel hashing
                 hash_chunk.push((address, slot, compact_value));
 
-                // Dispatch a full chunk to a rayon worker for parallel keccak hashing.
-                // Each worker hashes address+slot into the key format expected by
-                // HashedStorages and sends results back via a bounded channel.
+                // Offload keccak hashing to rayon; results flow back via bounded channels into hashed_collector.
                 if hash_chunk.len() >= WORKER_CHUNK_SIZE {
                     let chunk =
                         std::mem::replace(&mut hash_chunk, Vec::with_capacity(WORKER_CHUNK_SIZE));
