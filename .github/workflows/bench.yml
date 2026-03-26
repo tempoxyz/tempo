@@ -30,6 +30,11 @@ on:
           - "1"
           - "10"
           - "100"
+      force-bloat:
+        description: "Force re-creation of the bloat snapshot"
+        required: false
+        default: false
+        type: boolean
       tps:
         description: "Target transactions per second"
         required: false
@@ -79,12 +84,6 @@ on:
         required: false
         default: ""
         type: string
-      force-bloat:
-        description: "Force re-creation of the bloat snapshot"
-        required: false
-        default: false
-        type: boolean
-
 env:
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: "sccache"
