@@ -4,11 +4,21 @@ use super::tempo_transaction::{
 use alloc::vec::Vec;
 use alloy_primitives::{Address, B256, Bytes, Signature, U256, keccak256, uint};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use sha2::{Digest, Sha256};
+
+#[cfg(feature = "std")]
+use aws_lc_rs::{
+    digest::{Digest as AwsLcDigest, SHA256 as AwsLcSha256},
+    signature::{ECDSA_P256_SHA256_FIXED, ParsedPublicKey as AwsLcParsedPublicKey},
+};
+
+// Always mark `p256` as used to avoid `unused_crate_dependencies` warnings in `std` builds.
+use p256 as _;
+#[cfg(any(test, not(feature = "std")))]
 use p256::{
     EncodedPoint,
     ecdsa::{Signature as P256Signature, VerifyingKey, signature::hazmat::PrehashVerifier},
 };
-use sha2::{Digest, Sha256};
 
 #[cfg(not(feature = "std"))]
 use once_cell::race::OnceBox as OnceLock;
@@ -793,6 +803,82 @@ pub fn derive_p256_address(pub_key_x: &B256, pub_key_y: &B256) -> Address {
     Address::from_slice(&hash[12..])
 }
 
+fn validate_p256_signature_components(r: &[u8], s: &[u8]) -> Result<(), &'static str> {
+    let r_value = U256::from_be_slice(r);
+    if r_value == U256::ZERO || r_value >= P256_ORDER {
+        return Err("Invalid P256 signature encoding");
+    }
+
+    let s_value = U256::from_be_slice(s);
+    if s_value == U256::ZERO || s_value >= P256_ORDER {
+        return Err("Invalid P256 signature encoding");
+    }
+
+    if s_value > P256N_HALF {
+        return Err("P256 signature has high s value");
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "std")]
+fn build_uncompressed_p256_public_key(pub_key_x: &[u8], pub_key_y: &[u8]) -> [u8; 65] {
+    let mut public_key = [0u8; 65];
+    public_key[0] = 0x04;
+    public_key[1..33].copy_from_slice(pub_key_x);
+    public_key[33..].copy_from_slice(pub_key_y);
+    public_key
+}
+
+fn build_fixed_p256_signature(r: &[u8], s: &[u8]) -> [u8; 64] {
+    let mut signature = [0u8; 64];
+    signature[..32].copy_from_slice(r);
+    signature[32..].copy_from_slice(s);
+    signature
+}
+
+#[cfg(feature = "std")]
+fn verify_p256_signature_with_aws_lc(
+    r: &[u8],
+    s: &[u8],
+    pub_key_x: &[u8],
+    pub_key_y: &[u8],
+    message_hash: &B256,
+) -> Result<(), &'static str> {
+    let public_key = build_uncompressed_p256_public_key(pub_key_x, pub_key_y);
+    let parsed_public_key = AwsLcParsedPublicKey::new(&ECDSA_P256_SHA256_FIXED, public_key)
+        .map_err(|_| "Invalid P256 public key")?;
+    let signature = build_fixed_p256_signature(r, s);
+    let digest = AwsLcDigest::import_less_safe(message_hash.as_slice(), &AwsLcSha256)
+        .map_err(|_| "Invalid P256 message digest")?;
+
+    parsed_public_key
+        .verify_digest_sig(&digest, &signature)
+        .map_err(|_| "P256 signature verification failed")
+}
+
+#[cfg(any(test, not(feature = "std")))]
+fn verify_p256_signature_with_p256(
+    r: &[u8],
+    s: &[u8],
+    pub_key_x: &[u8],
+    pub_key_y: &[u8],
+    message_hash: &B256,
+) -> Result<(), &'static str> {
+    let encoded_point =
+        EncodedPoint::from_affine_coordinates(pub_key_x.into(), pub_key_y.into(), false);
+
+    let verifying_key =
+        VerifyingKey::from_encoded_point(&encoded_point).map_err(|_| "Invalid P256 public key")?;
+
+    let signature = P256Signature::from_slice(&build_fixed_p256_signature(r, s))
+        .map_err(|_| "Invalid P256 signature encoding")?;
+
+    verifying_key
+        .verify_prehash(message_hash.as_slice(), &signature)
+        .map_err(|_| "P256 signature verification failed")
+}
+
 /// Verifies a P256 signature using the provided components
 ///
 /// This performs actual cryptographic verification of the P256 signature
@@ -810,29 +896,17 @@ fn verify_p256_signature_internal(
     pub_key_y: &[u8],
     message_hash: &B256,
 ) -> Result<(), &'static str> {
-    // High-s value check: reject signatures where s > n/2 to prevent malleability
-    let s_value = U256::from_be_slice(s);
-    if s_value > P256N_HALF {
-        return Err("P256 signature has high s value");
+    validate_p256_signature_components(r, s)?;
+
+    #[cfg(feature = "std")]
+    {
+        verify_p256_signature_with_aws_lc(r, s, pub_key_x, pub_key_y, message_hash)
     }
 
-    // Parse public key from affine coordinates
-    let encoded_point = EncodedPoint::from_affine_coordinates(
-        pub_key_x.into(),
-        pub_key_y.into(),
-        false, // Not compressed
-    );
-
-    let verifying_key =
-        VerifyingKey::from_encoded_point(&encoded_point).map_err(|_| "Invalid P256 public key")?;
-
-    let signature = P256Signature::from_slice(&[r, s].concat())
-        .map_err(|_| "Invalid P256 signature encoding")?;
-
-    // Verify signature
-    verifying_key
-        .verify_prehash(message_hash.as_slice(), &signature)
-        .map_err(|_| "P256 signature verification failed")
+    #[cfg(not(feature = "std"))]
+    {
+        verify_p256_signature_with_p256(r, s, pub_key_x, pub_key_y, message_hash)
+    }
 }
 
 /// Minimal struct to deserialize only the fields we need from clientDataJSON.
@@ -1058,6 +1132,75 @@ mod tests {
         assert!(
             result.is_ok(),
             "Valid P256 signature should verify successfully"
+        );
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_p256_backends_agree_on_valid_and_invalid_vectors() {
+        let (signing_key, pub_key_x, pub_key_y) = generate_p256_keypair();
+        let message_hash = B256::from([0x11; 32]);
+        let (r, s) = sign_p256_normalized(&signing_key, &message_hash);
+
+        let aws_lc_valid = verify_p256_signature_with_aws_lc(
+            r.as_slice(),
+            s.as_slice(),
+            pub_key_x.as_slice(),
+            pub_key_y.as_slice(),
+            &message_hash,
+        );
+        let p256_valid = verify_p256_signature_with_p256(
+            r.as_slice(),
+            s.as_slice(),
+            pub_key_x.as_slice(),
+            pub_key_y.as_slice(),
+            &message_hash,
+        );
+        assert_eq!(aws_lc_valid.is_ok(), p256_valid.is_ok());
+        assert!(
+            aws_lc_valid.is_ok(),
+            "valid vector should pass on both backends"
+        );
+
+        let wrong_message_hash = B256::from([0x22; 32]);
+        let aws_lc_invalid = verify_p256_signature_with_aws_lc(
+            r.as_slice(),
+            s.as_slice(),
+            pub_key_x.as_slice(),
+            pub_key_y.as_slice(),
+            &wrong_message_hash,
+        );
+        let p256_invalid = verify_p256_signature_with_p256(
+            r.as_slice(),
+            s.as_slice(),
+            pub_key_x.as_slice(),
+            pub_key_y.as_slice(),
+            &wrong_message_hash,
+        );
+        assert_eq!(aws_lc_invalid.is_ok(), p256_invalid.is_ok());
+        assert!(
+            aws_lc_invalid.is_err(),
+            "wrong digest should fail on both backends"
+        );
+
+        let aws_lc_bad_pubkey = verify_p256_signature_with_aws_lc(
+            r.as_slice(),
+            s.as_slice(),
+            &[0u8; 32],
+            &[0u8; 32],
+            &message_hash,
+        );
+        let p256_bad_pubkey = verify_p256_signature_with_p256(
+            r.as_slice(),
+            s.as_slice(),
+            &[0u8; 32],
+            &[0u8; 32],
+            &message_hash,
+        );
+        assert_eq!(aws_lc_bad_pubkey.is_ok(), p256_bad_pubkey.is_ok());
+        assert!(
+            aws_lc_bad_pubkey.is_err(),
+            "malformed public keys should fail on both backends"
         );
     }
 
@@ -1545,6 +1688,77 @@ mod tests {
     }
 
     #[test]
+    fn test_recover_signer_p256_high_s_rejected() {
+        let (signing_key, pub_key_x, pub_key_y) = generate_p256_keypair();
+        let sig_hash = B256::from([0xCD; 32]);
+        let signature: p256::ecdsa::Signature =
+            signing_key.sign_prehash(sig_hash.as_slice()).unwrap();
+        let sig_bytes = signature.to_bytes();
+        let r = B256::from_slice(&sig_bytes[..32]);
+        let s_value = U256::from_be_slice(&sig_bytes[32..64]);
+        let high_s = if s_value > P256N_HALF {
+            s_value
+        } else {
+            P256_ORDER - s_value
+        };
+
+        let p256_sig =
+            TempoSignature::Primitive(PrimitiveSignature::P256(P256SignatureWithPreHash {
+                r,
+                s: B256::from(high_s.to_be_bytes::<32>()),
+                pub_key_x,
+                pub_key_y,
+                pre_hash: false,
+            }));
+
+        assert!(
+            p256_sig.recover_signer(&sig_hash).is_err(),
+            "high-s P256 signatures must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_recover_signer_p256_malformed_public_key_rejected() {
+        let (signing_key, _, _) = generate_p256_keypair();
+        let sig_hash = B256::from([0xDD; 32]);
+        let (r, s) = sign_p256_normalized(&signing_key, &sig_hash);
+
+        let p256_sig =
+            TempoSignature::Primitive(PrimitiveSignature::P256(P256SignatureWithPreHash {
+                r,
+                s,
+                pub_key_x: B256::ZERO,
+                pub_key_y: B256::ZERO,
+                pre_hash: false,
+            }));
+
+        assert!(
+            p256_sig.recover_signer(&sig_hash).is_err(),
+            "malformed P256 public keys must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_recover_signer_p256_malformed_signature_encoding_rejected() {
+        let (_, pub_key_x, pub_key_y) = generate_p256_keypair();
+        let sig_hash = B256::from([0xEE; 32]);
+
+        let p256_sig =
+            TempoSignature::Primitive(PrimitiveSignature::P256(P256SignatureWithPreHash {
+                r: B256::ZERO,
+                s: B256::from(U256::from(1u64).to_be_bytes::<32>()),
+                pub_key_x,
+                pub_key_y,
+                pre_hash: false,
+            }));
+
+        assert!(
+            p256_sig.recover_signer(&sig_hash).is_err(),
+            "malformed P256 signatures must be rejected"
+        );
+    }
+
+    #[test]
     fn test_recover_signer_webauthn() {
         let (signing_key, pub_key_x, pub_key_y) = generate_p256_keypair();
         let expected_address = derive_p256_address(&pub_key_x, &pub_key_y);
@@ -1576,6 +1790,27 @@ mod tests {
         assert_eq!(
             recovered, expected_address,
             "WebAuthn recovery should match derived address"
+        );
+    }
+
+    #[test]
+    fn test_recover_signer_webauthn_invalid_payload_rejected() {
+        let (signing_key, pub_key_x, pub_key_y) = generate_p256_keypair();
+        let tx_hash = B256::from([0xEF; 32]);
+        let (r, s) = sign_p256_normalized(&signing_key, &B256::ZERO);
+
+        let invalid_webauthn_sig =
+            TempoSignature::Primitive(PrimitiveSignature::WebAuthn(WebAuthnSignature {
+                r,
+                s,
+                pub_key_x,
+                pub_key_y,
+                webauthn_data: Bytes::from(build_webauthn_data(0x41, None, &tx_hash)),
+            }));
+
+        assert!(
+            invalid_webauthn_sig.recover_signer(&tx_hash).is_err(),
+            "invalid WebAuthn payloads must be rejected"
         );
     }
 

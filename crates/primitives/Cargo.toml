@@ -34,6 +34,7 @@ alloy-network = { workspace = true, optional = true }
 
 # Utils
 arbitrary = { workspace = true, features = ["derive"], optional = true }
+aws-lc-rs = { version = "1.16.2", optional = true }
 derive_more.workspace = true
 modular-bitfield = { version = "0.13.1", optional = true }
 serde = { workspace = true, features = ["derive"] }
@@ -71,6 +72,7 @@ std = [
 	"alloy-primitives/std",
 	"alloy-rlp/std",
 	"alloy-serde?/std",
+	"dep:aws-lc-rs",
 	"base64/std",
 	"derive_more/std",
 	"once_cell/std",
