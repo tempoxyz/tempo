@@ -1099,24 +1099,28 @@ mod tests {
     #[test]
     fn test_p256_signature_verification_invalid_signature() {
         let (_, pub_key_x, pub_key_y) = generate_p256_keypair();
+        let message_hash = B256::ZERO;
+
+        let assert_invalid = |r: &[u8], s: &[u8], context: &str| {
+            let result = verify_p256_signature_internal(
+                r,
+                s,
+                pub_key_x.as_slice(),
+                pub_key_y.as_slice(),
+                &message_hash,
+            );
+            assert!(result.is_err(), "{context} should fail verification");
+        };
 
         // Use invalid signature (all zeros)
         let r = [0u8; 32];
         let s = [0u8; 32];
-        let message_hash = B256::ZERO;
+        assert_invalid(&r, &s, "all-zero signature");
 
-        // Invalid signature (all zeros) should fail
-        let result = verify_p256_signature_internal(
-            &r,
-            &s,
-            pub_key_x.as_slice(),
-            pub_key_y.as_slice(),
-            &message_hash,
-        );
-        assert!(
-            result.is_err(),
-            "Invalid signature should fail verification"
-        );
+        let one = U256::from(1u64).to_be_bytes::<32>();
+        let order = P256_ORDER.to_be_bytes::<32>();
+        assert_invalid(&order, &one, "signature with r == P256_ORDER");
+        assert_invalid(&one, &order, "signature with s == P256_ORDER");
     }
 
     #[test]
