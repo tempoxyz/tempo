@@ -136,6 +136,7 @@ reth-engine-local = { git = "https://github.com/paradigmxyz/reth", rev = "7f4a9a
 reth-engine-tree = { git = "https://github.com/paradigmxyz/reth", rev = "7f4a9a0" }
 reth-errors = { git = "https://github.com/paradigmxyz/reth", rev = "7f4a9a0" }
 reth-eth-wire-types = { git = "https://github.com/paradigmxyz/reth", rev = "7f4a9a0" }
+reth-etl = { git = "https://github.com/paradigmxyz/reth", rev = "7f4a9a0" }
 reth-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "7f4a9a0" }
 reth-ethereum-cli = { git = "https://github.com/paradigmxyz/reth", rev = "7f4a9a0" }
 reth-ethereum-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "7f4a9a0" }
