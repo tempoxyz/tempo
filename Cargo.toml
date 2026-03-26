@@ -131,6 +131,7 @@ reth-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "7f4a9a0" 
 reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", rev = "7f4a9a0" }
 reth-db = { git = "https://github.com/paradigmxyz/reth", rev = "7f4a9a0" }
 reth-db-api = { git = "https://github.com/paradigmxyz/reth", rev = "7f4a9a0" }
+reth-etl = { git = "https://github.com/paradigmxyz/reth", rev = "7f4a9a0" }
 reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", rev = "7f4a9a0" }
 reth-engine-local = { git = "https://github.com/paradigmxyz/reth", rev = "7f4a9a0" }
 reth-engine-tree = { git = "https://github.com/paradigmxyz/reth", rev = "7f4a9a0" }

@@ -57,6 +57,7 @@ reth-cli-runner.workspace = true
 reth-cli-util.workspace = true
 rustls.workspace = true
 reth-db-api.workspace = true
+reth-etl.workspace = true
 reth-ethereum = { workspace = true, features = ["full", "cli"] }
 reth-ethereum-cli.workspace = true
 reth-node-builder.workspace = true
@@ -69,6 +70,7 @@ eyre.workspace = true
 jiff.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+rayon.workspace = true
 tracing.workspace = true
 pyroscope = { workspace = true, optional = true }
 pyroscope_pprofrs = { workspace = true, optional = true }
