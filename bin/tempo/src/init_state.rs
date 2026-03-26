@@ -8,6 +8,7 @@ use std::{
     io::{BufReader, Read},
     path::PathBuf,
     sync::mpsc,
+    thread,
     time::{Duration, Instant},
 };
 
@@ -43,11 +44,11 @@ const VERSION: u16 = 1;
 /// ETL collector file size (200 MiB per temp file before spilling a new one).
 const ETL_FILE_SIZE: usize = 200 * 1024 * 1024;
 
-/// Maximum number of storage entries to hash per rayon worker job.
+/// Maximum number of storage entries to hash per worker batch.
 const WORKER_CHUNK_SIZE: usize = 100;
 
-/// Maximum number of channels that can exist in memory before draining.
-const MAXIMUM_CHANNELS: usize = 10_000;
+/// Bounded channel depth for the hashing worker thread.
+const HASH_WORKER_QUEUE_DEPTH: usize = 256;
 
 /// Initialize state from a binary dump file.
 #[derive(Debug, Parser)]
@@ -101,12 +102,36 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         // ETL collectors: accumulate entries sorted, spill to disk when full
         let mut plain_collector: Collector<Vec<u8>, CompactU256> =
             Collector::new(ETL_FILE_SIZE, None);
-        let mut hashed_collector: Collector<Vec<u8>, CompactU256> =
-            Collector::new(ETL_FILE_SIZE, None);
-
         let mut hash_chunk: Vec<(alloy_primitives::Address, B256, CompactU256)> =
             Vec::with_capacity(WORKER_CHUNK_SIZE);
-        let mut pending_channels: Vec<mpsc::Receiver<(Vec<u8>, CompactU256)>> = Vec::new();
+
+        // Single worker thread for keccak hashing: owns the hashed ETL collector, receives
+        // batches over a bounded channel, and returns the collector when the sender drops.
+        let (hash_tx, hash_rx) = mpsc::sync_channel::<
+            Vec<(alloy_primitives::Address, B256, CompactU256)>,
+        >(HASH_WORKER_QUEUE_DEPTH);
+        let hash_worker =
+            thread::spawn(move || -> eyre::Result<Collector<Vec<u8>, CompactU256>> {
+                let mut hashed_collector: Collector<Vec<u8>, CompactU256> =
+                    Collector::new(ETL_FILE_SIZE, None);
+                while let Ok(chunk) = hash_rx.recv() {
+                    let mut last_addr = alloy_primitives::Address::ZERO;
+                    let mut hashed_addr = B256::ZERO;
+                    for (address, slot, value) in chunk {
+                        if address != last_addr {
+                            last_addr = address;
+                            hashed_addr = keccak256(address);
+                        }
+                        let mut hashed_key = Vec::with_capacity(64);
+                        hashed_key.extend_from_slice(hashed_addr.as_slice());
+                        hashed_key.extend_from_slice(keccak256(slot).as_slice());
+                        hashed_collector
+                            .insert(hashed_key, value)
+                            .wrap_err("hashed ETL insert failed")?;
+                    }
+                }
+                Ok(hashed_collector)
+            });
 
         // Process blocks from binary file
         loop {
@@ -149,7 +174,9 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             );
 
             // Ensure account exists in plain state (only on first encounter).
-            // Read the existing account from genesis, or insert a default empty one.
+            // The binary dump is chunked: generate-state-bloat writes one block per token
+            // per chunk, so the same token address appears in multiple blocks. This entry
+            // is Vacant on the first chunk and Occupied on subsequent ones.
             // Preserving the genesis account is critical: TIP20 tokens have bytecode (0xEF)
             // set during genesis, and overwriting with Account::default() would clear the
             // code hash, making the token appear uninitialized.
@@ -198,78 +225,31 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 // Queue raw data for parallel hashing
                 hash_chunk.push((address, slot, compact_value));
 
-                // Offload keccak hashing to rayon; results flow back via bounded channels into hashed_collector.
+                // Send full batches to the hashing worker thread.
                 if hash_chunk.len() >= WORKER_CHUNK_SIZE {
                     let chunk =
                         std::mem::replace(&mut hash_chunk, Vec::with_capacity(WORKER_CHUNK_SIZE));
-                    let (tx, rx) = mpsc::sync_channel(chunk.len());
-                    pending_channels.push(rx);
-                    rayon::spawn(move || {
-                        let mut last_addr = alloy_primitives::Address::ZERO;
-                        let mut hashed_addr = B256::ZERO;
-                        for (address, slot, value) in chunk {
-                            if address != last_addr {
-                                last_addr = address;
-                                hashed_addr = keccak256(address);
-                            }
-                            let mut hashed_key = Vec::with_capacity(64);
-                            hashed_key.extend_from_slice(hashed_addr.as_slice());
-                            hashed_key.extend_from_slice(keccak256(slot).as_slice());
-                            let _ = tx.send((hashed_key, value));
-                        }
-                    });
-
-                    // Drain accumulated channels periodically
-                    if pending_channels.len() >= MAXIMUM_CHANNELS {
-                        collect_hashed(&mut pending_channels, &mut hashed_collector)?;
-                    }
+                    hash_tx.send(chunk).wrap_err("hash worker disconnected")?;
                 }
 
                 total_entries += 1;
 
-                let now = Instant::now();
-                if now.duration_since(last_log) >= Duration::from_secs(5) || i + 1 == pair_count {
-                    let pct = ((i + 1) as f64 / pair_count as f64) * 100.0;
-                    let elapsed = start.elapsed();
-                    let pairs_per_sec = (i + 1) as f64 / elapsed.as_secs_f64();
-                    info!(
-                        target: "tempo::cli",
-                        %address,
-                        progress = format_args!("{}/{} ({pct:.0}%)", i + 1, pair_count),
-                        elapsed = ?elapsed,
-                        pairs_per_sec = pairs_per_sec as u64,
-                        "Collecting storage"
-                    );
-                    last_log = now;
-                }
+                log_collection_progress(&address, i, pair_count, start, &mut last_log);
             }
 
             total_blocks += 1;
         }
 
-        // Spawn leftover chunk
+        // Send any remaining entries to the worker and join.
         if !hash_chunk.is_empty() {
-            let chunk = std::mem::take(&mut hash_chunk);
-            let (tx, rx) = mpsc::sync_channel(chunk.len());
-            pending_channels.push(rx);
-            rayon::spawn(move || {
-                let mut last_addr = alloy_primitives::Address::ZERO;
-                let mut hashed_addr = B256::ZERO;
-                for (address, slot, value) in chunk {
-                    if address != last_addr {
-                        last_addr = address;
-                        hashed_addr = keccak256(address);
-                    }
-                    let mut hashed_key = Vec::with_capacity(64);
-                    hashed_key.extend_from_slice(hashed_addr.as_slice());
-                    hashed_key.extend_from_slice(keccak256(slot).as_slice());
-                    let _ = tx.send((hashed_key, value));
-                }
-            });
+            hash_tx
+                .send(std::mem::take(&mut hash_chunk))
+                .wrap_err("hash worker disconnected")?;
         }
-
-        // Drain all remaining channels
-        collect_hashed(&mut pending_channels, &mut hashed_collector)?;
+        drop(hash_tx);
+        let mut hashed_collector = hash_worker
+            .join()
+            .map_err(|_| eyre::eyre!("hash worker panicked"))??;
 
         info!(
             target: "tempo::cli",
@@ -325,9 +305,10 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             );
         }
 
-        // Load sorted plain storage via ETL.
-        // Dedup: when genesis and dump have the same (address, slot), the collector
-        // may contain both. We keep the last value seen for each key.
+        // Load sorted entries from the ETL collector into the database table.
+        // Strategy: iterate the sorted collector, deduplicate consecutive entries with
+        // the same composite key (address ++ slot), and bulk-insert via append_dup.
+        // The table is cleared first so append_dup ordering is guaranteed.
         let total_plain = plain_collector.len();
         let interval = (total_plain / 10).max(1);
         provider_rw.tx_ref().clear::<tables::PlainStorageState>()?;
@@ -377,7 +358,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             "Plain storage written, loading hashed storage from ETL..."
         );
 
-        // Load sorted hashed storage via ETL (same dedup strategy).
+        // Same dedup + bulk-insert strategy for the hashed storage table.
         let total_hashes = hashed_collector.len();
         let interval = (total_hashes / 10).max(1);
         provider_rw.tx_ref().clear::<tables::HashedStorages>()?;
@@ -463,15 +444,27 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
     }
 }
 
-/// Drain all pending hashing channels into the ETL collector.
-fn collect_hashed(
-    channels: &mut Vec<mpsc::Receiver<(Vec<u8>, CompactU256)>>,
-    collector: &mut Collector<Vec<u8>, CompactU256>,
-) -> eyre::Result<()> {
-    for rx in channels.drain(..) {
-        while let Ok((key, value)) = rx.recv() {
-            collector.insert(key, value)?;
-        }
+/// Log collection progress every 5 seconds and on the final entry.
+fn log_collection_progress(
+    address: &alloy_primitives::Address,
+    index: u64,
+    total: u64,
+    start: Instant,
+    last_log: &mut Instant,
+) {
+    let now = Instant::now();
+    if now.duration_since(*last_log) >= Duration::from_secs(5) || index + 1 == total {
+        let pct = ((index + 1) as f64 / total as f64) * 100.0;
+        let elapsed = start.elapsed();
+        let pairs_per_sec = (index + 1) as f64 / elapsed.as_secs_f64();
+        info!(
+            target: "tempo::cli",
+            %address,
+            progress = format_args!("{}/{} ({pct:.0}%)", index + 1, total),
+            elapsed = ?elapsed,
+            pairs_per_sec = pairs_per_sec as u64,
+            "Collecting storage"
+        );
+        *last_log = now;
     }
-    Ok(())
 }
