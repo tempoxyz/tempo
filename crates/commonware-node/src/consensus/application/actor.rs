@@ -832,25 +832,28 @@ fn read_fee_recipient(
     block_hash: B256,
     fallback: Option<alloy_primitives::Address>,
 ) -> eyre::Result<alloy_primitives::Address> {
-    match crate::validators::read_fee_recipient_at_block_hash(
+    let fee_recipient;
+    let msg = match crate::validators::read_fee_recipient_at_block_hash(
         execution_node,
         public_key,
         block_hash,
     ) {
-        Ok(Some(fee_recipient)) if fee_recipient.is_zero() => {
-            debug!(?fallback, "on-chain fee recipient is zero; using fallback",);
-            Ok(fallback.unwrap_or_default())
+        Ok(Some(recipient)) if recipient.is_zero() && fallback.is_some() => {
+            fee_recipient = fallback.expect("match arm checks it is set");
+            "on-chain fee recipient is zero; using fallback"
         }
-        Ok(Some(fee_recipient)) => {
-            debug!("using on-chain fee recipient");
-            Ok(fee_recipient)
+        Ok(Some(recipient)) => {
+            fee_recipient = recipient;
+            "using on-chain fee recipient"
         }
         Ok(None) => {
-            debug!(?fallback, "v2 contract not active; using fallback",);
-            Ok(fallback.unwrap_or_default())
+            fee_recipient = fallback.unwrap_or_default();
+            "v2 contract not active; using fallback"
         }
-        Err(error) => Err(error),
-    }
+        Err(error) => return Err(error),
+    };
+    debug!(%fee_recipient, msg);
+    Ok(fee_recipient)
 }
 
 /// Verifies `block` given its `parent` against the execution layer.
