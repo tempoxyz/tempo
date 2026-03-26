@@ -1,3 +1,5 @@
+//! ABI dispatch for the [`TIP20Token`] precompile.
+
 use crate::{
     Precompile, dispatch_call,
     error::TempoPrecompileError,
@@ -13,7 +15,7 @@ use alloy::{
 use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls, TIP20Error};
 
-/// Combined enum for dispatching to either ITIP20 or IRolesAuth
+/// Decoded call variant — either a TIP-20 token call or a role-management call.
 enum TIP20Call {
     TIP20(ITIP20Calls),
     RolesAuth(IRolesAuthCalls),

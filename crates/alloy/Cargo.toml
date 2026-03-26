@@ -1,5 +1,6 @@
 [package]
 name = "tempo-alloy"
+description = "Tempo extensions of Alloy"
 
 version.workspace = true
 edition.workspace = true
@@ -25,7 +26,6 @@ alloy-primitives = { workspace = true, features = ["rand"] }
 alloy-provider.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy-serde.workspace = true
-alloy-signer.workspace = true
 alloy-signer-local.workspace = true
 alloy-transport.workspace = true
 
@@ -43,6 +43,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 alloy = { workspace = true, features = ["providers", "rpc-types-eth", "sol-types"] }
+alloy-signer.workspace = true
 eyre.workspace = true
 test-case.workspace = true
 tokio.workspace = true

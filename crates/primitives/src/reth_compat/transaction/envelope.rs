@@ -1,4 +1,4 @@
-use crate::transaction::envelope::{TempoTxEnvelope, TempoTxType};
+use crate::transaction::envelope::TempoTxEnvelope;
 
 impl reth_primitives_traits::InMemorySize for TempoTxEnvelope {
     fn size(&self) -> usize {
@@ -11,17 +11,6 @@ impl reth_primitives_traits::InMemorySize for TempoTxEnvelope {
         }
     }
 }
-
-impl reth_primitives_traits::SignedTransaction for TempoTxEnvelope {}
-
-impl reth_primitives_traits::InMemorySize for TempoTxType {
-    fn size(&self) -> usize {
-        size_of::<Self>()
-    }
-}
-
-#[cfg(feature = "serde-bincode-compat")]
-impl reth_primitives_traits::serde_bincode_compat::RlpBincode for TempoTxEnvelope {}
 
 #[cfg(feature = "reth-codec")]
 mod codec {
@@ -41,6 +30,7 @@ mod codec {
     };
     use reth_codecs::{
         Compact,
+        DecompressError,
         alloy::transaction::{CompactEnvelope, Envelope},
         txtype::{
             COMPACT_EXTENDED_IDENTIFIER_FLAG, COMPACT_IDENTIFIER_EIP1559,
@@ -192,7 +182,7 @@ mod codec {
     }
 
     impl reth_db_api::table::Decompress for TempoTxEnvelope {
-        fn decompress(value: &[u8]) -> Result<Self, reth_db_api::DatabaseError> {
+        fn decompress(value: &[u8]) -> Result<Self, DecompressError> {
             let (obj, _) = Compact::from_compact(value, value.len());
             Ok(obj)
         }

@@ -11,11 +11,13 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DRY_RUN=true
+SEMVER_CHECK=false
 
 case "${1:-}" in
-    "")          DRY_RUN=true ;;
-    --publish)   DRY_RUN=false ;;
-    *)           echo "Usage: $0 [--publish]" >&2; exit 1 ;;
+    "")              DRY_RUN=true ;;
+    --publish)       DRY_RUN=false ;;
+    --semver-check)  SEMVER_CHECK=true ;;
+    *)               echo "Usage: $0 [--publish|--semver-check]" >&2; exit 1 ;;
 esac
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -183,15 +185,58 @@ fi
 
 log "Final build check passed ✓"
 
-# ── 9. Publish ─────────────────────────────────────────────────────────────────
-preflight_crate() {
-    local crate_dir="$1"
-    local name
-    name=$(grep -m1 'name = ' "$crate_dir/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')
-    log "Preflight: cargo publish --dry-run -p $name"
-    cargo publish --manifest-path "$crate_dir/Cargo.toml" --dry-run --allow-dirty 2>&1
-}
+# ── 9. Semver check (optional) ────────────────────────────────────────────────
+# Runs cargo-semver-checks against the last published version on crates.io.
+# Uses the sanitized + resolved workspace so the API surface matches what's
+# actually published.
+if $SEMVER_CHECK; then
+    log "Running cargo-semver-checks …"
+    SEMVER_FAILED=false
+    SEMVER_SKIPPED_ALL=true
+    for crate_dir in "$TMP_WORK_DIR/contracts" "$TMP_WORK_DIR/primitives" "$TMP_WORK_DIR/alloy"; do
+        crate_name=$(grep -m1 'name = ' "$crate_dir/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')
+        crate_ver=$(grep -m1 'version = ' "$crate_dir/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')
+        log "Checking $crate_name@$crate_ver …"
 
+        # Query crates.io for the latest published version.
+        # Using the API directly instead of `cargo info` which resolves
+        # the local workspace version when run inside a workspace.
+        published_ver=$(curl -sL "https://crates.io/api/v1/crates/$crate_name" \
+            -H "User-Agent: tempo-publish-script" | \
+            python3 -c "import sys,json; d=json.load(sys.stdin); print(d['crate']['max_stable_version'] or d['crate']['max_version'])" 2>/dev/null)
+        if [ -z "$published_ver" ] || [ "$published_ver" = "null" ]; then
+            log "$crate_name not yet published, skipping"
+            continue
+        fi
+
+        # Skip if version was already bumped — cargo-semver-checks can't resolve
+        # inter-crate deps that reference the unpublished version.
+        if [ "$crate_ver" != "$published_ver" ]; then
+            log "$crate_name version bumped ($published_ver → $crate_ver), skipping"
+            continue
+        fi
+
+        SEMVER_SKIPPED_ALL=false
+        if ! cargo semver-checks \
+            --manifest-path "$TMP_WORK_DIR/Cargo.toml" \
+            --package "$crate_name" \
+            --default-features 2>&1; then
+            SEMVER_FAILED=true
+        fi
+    done
+
+    if $SEMVER_SKIPPED_ALL; then
+        log "All crates have bumped versions, nothing to semver-check"
+    elif $SEMVER_FAILED; then
+        printf '\n  \033[1;33m⚠\033[0m Semver-incompatible changes detected.\n'
+        printf '    If intentional, add a changelog entry with the appropriate bump level.\n\n'
+        exit 1
+    else
+        log "Semver checks passed ✓"
+    fi
+fi
+
+# ── 10. Publish ────────────────────────────────────────────────────────────────
 retry_publish() {
     local crate_dir="$1"
     local name
@@ -201,8 +246,15 @@ retry_publish() {
 
     for ((i = 1; i <= max_attempts; i++)); do
         log "Publishing $name (attempt $i/$max_attempts) …"
-        if cargo publish --manifest-path "$crate_dir/Cargo.toml" --allow-dirty 2>&1; then
+        local output
+        if output=$(cargo publish --manifest-path "$crate_dir/Cargo.toml" --allow-dirty 2>&1); then
             log "$name published ✓"
+            return 0
+        fi
+        echo "$output"
+        # Already published — treat as success
+        if echo "$output" | grep -qE 'already uploaded|already exists'; then
+            log "$name already published, skipping ✓"
             return 0
         fi
         if ((i < max_attempts)); then
@@ -219,13 +271,8 @@ CRATES=("$TMP_WORK_DIR/contracts" "$TMP_WORK_DIR/primitives" "$TMP_WORK_DIR/allo
 if $DRY_RUN; then
     log "Dry-run complete. Use --publish to actually publish."
 else
-    # Preflight all crates first to catch errors before any real publish
-    log "Running publish preflight for all crates …"
-    for crate_dir in "${CRATES[@]}"; do
-        preflight_crate "$crate_dir"
-    done
-    log "Preflight passed ✓"
-
+    # Publish in dependency order. Each crate is published and indexed before
+    # the next one starts, so inter-crate deps resolve from crates.io.
     for crate_dir in "${CRATES[@]}"; do
         retry_publish "$crate_dir"
     done
