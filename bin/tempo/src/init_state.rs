@@ -10,10 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use alloy_primitives::{
-    B256, U256, keccak256,
-    map::AddressSet,
-};
+use alloy_primitives::{B256, U256, keccak256, map::AddressSet};
 use clap::Parser;
 use eyre::{Context as _, ensure};
 use reth_chainspec::EthereumHardforks;
