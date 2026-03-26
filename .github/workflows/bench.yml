@@ -410,6 +410,8 @@ jobs:
       CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
       CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
       CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+      SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
+      SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
     steps:
       - name: Mask telemetry URL
         if: env.TEMPO_TELEMETRY_URL
@@ -735,6 +737,24 @@ jobs:
             } else {
               await core.summary.addRaw(body).write();
             }
+
+      - name: Send Slack notification (success)
+        if: success() && steps.results-dir.outputs.path
+        uses: actions/github-script@v8
+        env:
+          BENCH_WORK_DIR: ${{ steps.results-dir.outputs.path }}
+        with:
+          script: |
+            const notify = require('./.github/scripts/bench-slack-notify.js');
+            await notify.success({ core, context });
+
+      - name: Send Slack notification (failure)
+        if: failure()
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const notify = require('./.github/scripts/bench-slack-notify.js');
+            await notify.failure({ core, context, failedStep: 'running benchmark' });
 
       - name: Update status (failed)
         if: failure() && env.BENCH_COMMENT_ID
