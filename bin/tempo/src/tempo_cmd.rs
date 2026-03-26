@@ -140,7 +140,7 @@ pub(crate) enum ConsensusSubcommand {
     SetValidatorFeeRecipient(SetValidatorFeeRecipient),
     /// Transfer validator ownership
     TransferValidatorOwnership(TransferValidatorOwnership),
-    /// Look up a validator by address or index.
+    /// Look up a validator by etheruem address, e25519 public key, or index.
     Validator(ValidatorInfo),
     /// Query validator info from the previous epoch's DKG outcome and current contract state.
     ValidatorsInfo(ValidatorsInfo),
@@ -472,7 +472,7 @@ impl AddValidator {
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct TransferValidatorOwnership {
-    /// Validator ethereum address, ed25519 pubkey, or index
+    /// Validator ethereum address, ed25519 public key, or index
     #[arg(long)]
     id: ValidatorId,
 
@@ -670,7 +670,7 @@ impl CreateRotateValidatorSignatureArgs {
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct SetValidatorIpAddress {
-    /// Validator ethereum address, ed25519 pubkey, or index
+    /// Validator ethereum address, ed25519 public key, or index
     #[arg(long)]
     id: ValidatorId,
     /// The inbound address for the validator.
@@ -721,7 +721,7 @@ impl SetValidatorIpAddress {
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct DeactivateValidator {
-    /// Validator ethereum address, ed25519 pubkey, or index
+    /// Validator ethereum address, ed25519 public key, or index
     #[arg(long)]
     id: ValidatorId,
 
