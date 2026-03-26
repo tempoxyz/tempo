@@ -760,7 +760,7 @@ impl DeactivateValidator {
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct SetValidatorFeeRecipient {
-    /// The validator's address
+    /// Validator ethereum address, ed25519 public key, or index
     #[arg()]
     id: ValidatorId,
     /// The fee recipient address
