@@ -9,7 +9,7 @@ use reth_tracing::{
     tracing::{debug, error, info},
 };
 use tempo_alloy::{
-    TempoNetwork, TempoWallet, fillers::ExpiringNonceFiller, provider::ext::TempoProviderBuilderExt,
+    TempoNetwork, fillers::ExpiringNonceFiller, provider::ext::TempoProviderBuilderExt,
 };
 
 use alloy::{
@@ -219,7 +219,7 @@ impl MaxTpsArgs {
                 .fetch_chain_id()
                 .with_gas_estimation()
                 .with_nonce_management(cached_nonce_manager)
-                .wallet(TempoWallet::from(EthereumWallet::from(signer)))
+                .wallet(EthereumWallet::from(signer))
                 .connect_http(target_url)
                 .erased()
         });

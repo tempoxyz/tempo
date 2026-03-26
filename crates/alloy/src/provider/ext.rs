@@ -1,10 +1,10 @@
-use alloy::sol_types::SolCall;
 use alloy_contract::Result as ContractResult;
 use alloy_primitives::{Address, U256};
 use alloy_provider::{
     Identity, Provider, ProviderBuilder,
     fillers::{JoinFill, RecommendedFillers},
 };
+use alloy_sol_types::SolCall;
 use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     IAccountKeychain::{

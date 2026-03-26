@@ -4,7 +4,7 @@ use crate::rpc::{TempoHeaderResponse, TempoTransactionReceipt, TempoTransactionR
 use alloy_consensus::{ReceiptWithBloom, TxType, error::UnsupportedTransactionType};
 
 use alloy_network::{
-    BuildResult, Ethereum, EthereumWallet, IntoWallet, Network, NetworkWallet, TransactionBuilder,
+    BuildResult, EthereumWallet, Network, NetworkWallet, TransactionBuilder,
     TransactionBuilderError, UnbuiltTransactionError,
 };
 use alloy_primitives::{Address, Bytes, ChainId, TxKind, U256};
@@ -12,7 +12,6 @@ use alloy_provider::fillers::{
     ChainIdFiller, GasFiller, JoinFill, NonceFiller, RecommendedFillers,
 };
 use alloy_rpc_types_eth::{AccessList, Block, Transaction};
-use alloy_signer_local::PrivateKeySigner;
 use tempo_primitives::{
     TempoHeader, TempoReceipt, TempoTxEnvelope, TempoTxType, transaction::TempoTypedTransaction,
 };
@@ -289,62 +288,6 @@ impl RecommendedFillers for TempoNetwork {
 
     fn recommended_fillers() -> Self::RecommendedFillers {
         Default::default()
-    }
-}
-
-/// Tempo wallet wrapper around [`EthereumWallet`].
-///
-/// This local wrapper avoids coherence conflicts if upstream alloy adds broader
-/// `NetworkWallet` blanket impls for `EthereumWallet`.
-#[derive(Debug, Clone)]
-pub struct TempoWallet {
-    inner: EthereumWallet,
-}
-
-impl From<EthereumWallet> for TempoWallet {
-    fn from(inner: EthereumWallet) -> Self {
-        Self { inner }
-    }
-}
-
-impl From<PrivateKeySigner> for TempoWallet {
-    fn from(signer: PrivateKeySigner) -> Self {
-        EthereumWallet::from(signer).into()
-    }
-}
-
-impl NetworkWallet<TempoNetwork> for TempoWallet {
-    fn default_signer_address(&self) -> Address {
-        NetworkWallet::<Ethereum>::default_signer_address(&self.inner)
-    }
-
-    fn has_signer_for(&self, address: &Address) -> bool {
-        NetworkWallet::<Ethereum>::has_signer_for(&self.inner, address)
-    }
-
-    fn signer_addresses(&self) -> impl Iterator<Item = Address> {
-        NetworkWallet::<Ethereum>::signer_addresses(&self.inner)
-    }
-
-    #[doc(alias = "sign_tx_from")]
-    async fn sign_transaction_from(
-        &self,
-        sender: Address,
-        mut tx: TempoTypedTransaction,
-    ) -> alloy_signer::Result<TempoTxEnvelope> {
-        let signer = self.inner.signer_by_address(sender).ok_or_else(|| {
-            alloy_signer::Error::other(format!("Missing signing credential for {sender}"))
-        })?;
-        let sig = signer.sign_transaction(tx.as_dyn_signable_mut()).await?;
-        Ok(tx.into_envelope(sig))
-    }
-}
-
-impl IntoWallet<TempoNetwork> for PrivateKeySigner {
-    type NetworkWallet = TempoWallet;
-
-    fn into_wallet(self) -> Self::NetworkWallet {
-        self.into()
     }
 }
 
