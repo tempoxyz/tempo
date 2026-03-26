@@ -128,6 +128,8 @@ pub(crate) enum ConsensusSubcommand {
     CreateAddValidatorSignature(CreateAddValidatorSignatureArgs),
     /// Create an ed25519 signature for `rotateValidator`.
     CreateRotateValidatorSignature(CreateRotateValidatorSignatureArgs),
+    /// Deactivate a validator
+    DeactivateValidator(DeactivateValidator),
     /// Generates an ed25519 signing key pair to be used in consensus.
     GeneratePrivateKey(GeneratePrivateKey),
     /// Rotate a validator to a new identity.
@@ -148,6 +150,7 @@ impl ConsensusSubcommand {
     async fn run(self) -> eyre::Result<()> {
         match self {
             Self::AddValidator(args) => args.run().await,
+            Self::DeactivateValidator(args) => args.run().await,
             Self::TransferValidatorOwnership(args) => args.run().await,
             Self::RotateValidator(args) => args.run().await,
             Self::CreateAddValidatorSignature(args) => args.run().await,
@@ -672,6 +675,46 @@ impl SetValidatorIpAddress {
             idx: validator.index,
             ingress: self.ingress.map_or(validator.ingress, |v| v.to_string()),
             egress: self.egress.map_or(validator.egress, |v| v.to_string()),
+        };
+
+        self.submit.confirm(&call)?;
+
+        let tx = TransactionRequest::default()
+            .to(VALIDATOR_CONFIG_V2_ADDRESS)
+            .input(call.abi_encode().into());
+
+        let pending = provider
+            .send_transaction(tx.into())
+            .await
+            .wrap_err("failed to send transaction")?;
+
+        let tx_hash = pending.tx_hash();
+        println!("transaction submitted: {tx_hash}");
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct DeactivateValidator {
+    /// The validator's address
+    #[arg(long, value_name = "ETHEREUM_ADDRESS")]
+    validator_address: Address,
+
+    #[command(flatten)]
+    submit: ValidatorTransactionArgs,
+}
+
+impl DeactivateValidator {
+    async fn run(self) -> eyre::Result<()> {
+        let signer = self.submit.signer()?;
+        let provider = self.submit.provider(signer).await?;
+
+        let lookup = ValidatorId::Address(self.validator_address);
+        let validator = read_validator_from_contract(&provider, lookup).await?;
+
+        let call = IValidatorConfigV2::deactivateValidatorCall {
+            idx: validator.index,
         };
 
         self.submit.confirm(&call)?;
