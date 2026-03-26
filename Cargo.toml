@@ -165,7 +165,9 @@ reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", rev = "7f
 reth-storage-api = { git = "https://github.com/paradigmxyz/reth", rev = "7f4a9a0" }
 reth-tracing = { git = "https://github.com/paradigmxyz/reth", rev = "7f4a9a0" }
 reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", rev = "7f4a9a0" }
+reth-trie = { git = "https://github.com/paradigmxyz/reth", rev = "7f4a9a0" }
 reth-trie-common = { git = "https://github.com/paradigmxyz/reth", rev = "7f4a9a0" }
+reth-trie-db = { git = "https://github.com/paradigmxyz/reth", rev = "7f4a9a0" }
 
 reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "7f4a9a0", features = [
   "std",
