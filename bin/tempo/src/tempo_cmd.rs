@@ -208,15 +208,16 @@ async fn is_validator_config_v2_activated(
         return Ok(false);
     }
 
-    let height = IValidatorConfigV2::getInitializedAtHeightCall::abi_decode_returns(&resp)
-        .wrap_err("failed to decode v2 getInitializedAtHeight call")?;
+    let initialized_height =
+        IValidatorConfigV2::getInitializedAtHeightCall::abi_decode_returns(&resp)
+            .wrap_err("failed to decode v2 getInitializedAtHeight call")?;
 
-    let block_number = provider
+    let latest_block_number = provider
         .get_block_number()
         .await
         .wrap_err("failed to fetch block number")?;
 
-    if height < block_number {
+    if latest_block_number < initialized_height {
         return Ok(false);
     }
 
