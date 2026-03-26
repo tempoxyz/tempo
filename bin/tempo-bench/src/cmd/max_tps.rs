@@ -863,14 +863,16 @@ fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
     })
 }
 
-/// Waits until the latest block timestamp is within 30s of wall clock time.
+/// Waits until the latest block timestamp is within 2s of wall clock time.
 ///
 /// After large state bloat loading, the node's first blocks can have timestamps
 /// minutes behind wall clock. The faucet's expiring nonce filler uses
-/// `SystemTime::now()` to set `valid_before`, which then gets rejected because
-/// it's "too far in the future" relative to the block timestamp.
+/// `SystemTime::now() + expiry_secs` to set `valid_before`, which then gets
+/// rejected because it's "too far in the future" relative to the block
+/// timestamp (protocol enforces `valid_before <= block_timestamp + 30s`).
+/// We wait for near-zero drift to avoid any off-by-one edge cases.
 async fn wait_for_block_timestamp_sync(provider: &DynProvider<TempoNetwork>) -> eyre::Result<()> {
-    let max_drift_secs = 30u64;
+    let max_drift_secs = 2u64;
     let poll_interval = Duration::from_secs(2);
     let max_wait = Duration::from_secs(600);
     let start = std::time::Instant::now();
