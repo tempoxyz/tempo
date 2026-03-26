@@ -85,13 +85,6 @@ pub async fn run_consensus_stack(
     // through this subchannel.
     let subblocks = network.register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, message_backlog);
 
-    if config.fee_recipient.is_some() {
-        tracing::warn!(
-            "`--consensus.fee-recipient` is deprecated; the fee recipient is \
-             now read from the validator config v2 contract",
-        );
-    }
-
     let consensus_engine = crate::consensus::engine::Builder {
         fee_recipient: config.fee_recipient,
 
