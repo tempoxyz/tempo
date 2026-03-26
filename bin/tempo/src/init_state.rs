@@ -442,6 +442,8 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         let mut resume: Option<IntermediateStateRootState> = None;
         let mut trie_writes = 0usize;
 
+        // Incrementally compute the merkle root over all hashed accounts/storage,
+        // using the correct DB adapter (v2 vs legacy) resolved at runtime by the macro.
         let state_root = reth_trie_db::with_adapter!(provider_rw, |A| {
             use reth_trie_db::{DatabaseHashedCursorFactory, DatabaseTrieCursorFactory};
             type DbStateRoot<'a, TX, Adapter> = reth_trie::StateRoot<
