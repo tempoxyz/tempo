@@ -195,10 +195,8 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 hash_chunk.push((address, slot, compact_value));
 
                 if hash_chunk.len() >= WORKER_CHUNK_SIZE {
-                    let chunk = std::mem::replace(
-                        &mut hash_chunk,
-                        Vec::with_capacity(WORKER_CHUNK_SIZE),
-                    );
+                    let chunk =
+                        std::mem::replace(&mut hash_chunk, Vec::with_capacity(WORKER_CHUNK_SIZE));
                     let (tx, rx) = mpsc::sync_channel(chunk.len());
                     pending_channels.push(rx);
                     rayon::spawn(move || {
@@ -325,8 +323,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
         // Load sorted plain storage via ETL.
         // Dedup: when genesis and dump have the same (address, slot), the collector
-        // may contain both. We buffer the last value seen for each key and only
-        // write when the key changes (keeping the later/dump value).
+        // may contain both. We keep the last value seen for each key.
         let total_plain = plain_collector.len();
         let interval = (total_plain / 10).max(1);
         provider_rw.tx_ref().clear::<tables::PlainStorageState>()?;
@@ -346,16 +343,16 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             }
 
             let (addr_slot, value) = item.wrap_err("ETL iteration failed")?;
-            if let Some((ref prev_key, ref prev_val)) = pending_plain {
-                if *prev_key != addr_slot {
-                    plain_cursor.append_dup(
-                        alloy_primitives::Address::from_slice(&prev_key[..20]),
-                        StorageEntry {
-                            key: B256::from_slice(&prev_key[20..]),
-                            value: CompactU256::decompress_owned(prev_val.clone())?.into(),
-                        },
-                    )?;
-                }
+            if let Some((ref prev_key, ref prev_val)) = pending_plain
+                && *prev_key != addr_slot
+            {
+                plain_cursor.append_dup(
+                    alloy_primitives::Address::from_slice(&prev_key[..20]),
+                    StorageEntry {
+                        key: B256::from_slice(&prev_key[20..]),
+                        value: CompactU256::decompress_owned(prev_val.clone())?.into(),
+                    },
+                )?;
             }
             pending_plain = Some((addr_slot, value));
         }
@@ -396,16 +393,16 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             }
 
             let (addr_key, value) = item.wrap_err("ETL iteration failed")?;
-            if let Some((ref prev_key, ref prev_val)) = pending_hashed {
-                if *prev_key != addr_key {
-                    hashed_cursor.append_dup(
-                        B256::from_slice(&prev_key[..32]),
-                        StorageEntry {
-                            key: B256::from_slice(&prev_key[32..]),
-                            value: CompactU256::decompress_owned(prev_val.clone())?.into(),
-                        },
-                    )?;
-                }
+            if let Some((ref prev_key, ref prev_val)) = pending_hashed
+                && *prev_key != addr_key
+            {
+                hashed_cursor.append_dup(
+                    B256::from_slice(&prev_key[..32]),
+                    StorageEntry {
+                        key: B256::from_slice(&prev_key[32..]),
+                        value: CompactU256::decompress_owned(prev_val.clone())?.into(),
+                    },
+                )?;
             }
             pending_hashed = Some((addr_key, value));
         }
