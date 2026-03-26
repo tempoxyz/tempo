@@ -1216,11 +1216,9 @@ where
                     // Set the transaction key in the keychain precompile
                     // This marks that the current transaction is using an access key
                     // The TIP20 precompile will read this during execution to enforce spending limits
-                    keychain.set_transaction_key(access_key_addr).map_err(|e| {
-                        TempoInvalidTransaction::KeychainValidationFailed {
-                            reason: e.to_string(),
-                        }
-                    })?;
+                    keychain
+                        .set_transaction_key(access_key_addr)
+                        .map_err(|e| EVMError::Custom(e.to_string()))?;
 
                     if spec.is_t3() {
                         let user_address = keychain_sig.user_address;
