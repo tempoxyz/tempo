@@ -201,7 +201,7 @@ where
 #[derive(Clone)]
 struct Inner<TState> {
     public_key: PublicKey,
-    fee_recipient: alloy_primitives::Address,
+    fee_recipient: Option<alloy_primitives::Address>,
     epoch_strategy: FixedEpocher,
     payload_resolve_time: Duration,
     payload_return_time: Duration,
@@ -830,7 +830,7 @@ fn read_fee_recipient(
     execution_node: &TempoFullNode,
     public_key: &PublicKey,
     block_hash: B256,
-    fallback: alloy_primitives::Address,
+    fallback: Option<alloy_primitives::Address>,
 ) -> eyre::Result<alloy_primitives::Address> {
     match crate::validators::read_fee_recipient_at_block_hash(
         execution_node,
@@ -838,16 +838,16 @@ fn read_fee_recipient(
         block_hash,
     ) {
         Ok(Some(fee_recipient)) if fee_recipient.is_zero() => {
-            debug!("on-chain fee recipient is zero; using CLI fee recipient");
-            Ok(fallback)
+            debug!(?fallback, "on-chain fee recipient is zero; using fallback",);
+            Ok(fallback.unwrap_or_default())
         }
         Ok(Some(fee_recipient)) => {
             debug!("using on-chain fee recipient");
             Ok(fee_recipient)
         }
         Ok(None) => {
-            debug!("v2 contract not active; using CLI fee recipient");
-            Ok(fallback)
+            debug!(?fallback, "v2 contract not active; using fallback",);
+            Ok(fallback.unwrap_or_default())
         }
         Err(error) => Err(error),
     }

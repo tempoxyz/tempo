@@ -69,7 +69,7 @@ const MAX_PENDING_ACKS: NonZeroUsize = NZUsize!(1);
 // because there doesn't really seem to be a point putting it into an extra initializer.
 #[derive(Clone)]
 pub struct Builder<TBlocker, TPeerManager> {
-    pub fee_recipient: alloy_primitives::Address,
+    pub fee_recipient: Option<alloy_primitives::Address>,
 
     pub execution_node: Option<TempoFullNode>,
 
@@ -330,7 +330,7 @@ where
                 signer: self.signer.clone(),
                 scheme_provider: scheme_provider.clone(),
                 node: execution_node.clone(),
-                fee_recipient: self.fee_recipient,
+                fee_recipient: self.fee_recipient.unwrap_or_default(),
                 time_to_build_subblock: self.time_to_build_subblock,
                 subblock_broadcast_interval: self.subblock_broadcast_interval,
                 epoch_strategy: epoch_strategy.clone(),

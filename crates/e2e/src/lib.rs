@@ -314,7 +314,7 @@ pub async fn setup_validators(
         execution_config.feed_state = Some(feed_state.clone());
 
         let engine_config = consensus::Builder {
-            fee_recipient: alloy_primitives::Address::ZERO,
+            fee_recipient: None,
             execution_node: None,
             blocker: oracle.control(private_key.public_key()),
             peer_manager: oracle.socket_manager(),

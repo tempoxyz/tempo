@@ -98,7 +98,7 @@ fn falls_back_to_cli_fee_recipient_when_onchain_is_zero() {
 
     executor.start(|mut context| async move {
         let (mut nodes, execution_runtime) = setup_validators(&mut context, setup).await;
-        nodes[0].consensus_config_mut().fee_recipient = FALLBACK_FEE_RECIPIENT;
+        nodes[0].consensus_config_mut().fee_recipient = Some(FALLBACK_FEE_RECIPIENT);
         join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
 
         let http_url = nodes[0]
