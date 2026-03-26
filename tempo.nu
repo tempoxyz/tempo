@@ -157,6 +157,47 @@ def schelk-force-unmount-state [] {
     $state | to json | sudo tee $state_path | ignore
 }
 
+# Clean database files from a datadir (db, static_files, rocksdb, etc.)
+def bench-clean-datadir [datadir: string] {
+    for subdir in [db static_files rocksdb consensus invalid_block_hooks] {
+        let path = $"($datadir)/($subdir)"
+        if ($path | path exists) { rm -rf $path }
+    }
+    for file in [reth.toml jwt.hex] {
+        let path = $"($datadir)/($file)"
+        if ($path | path exists) { rm $path }
+    }
+}
+
+# Initialize a database: run `tempo init`, optionally load state bloat
+def bench-init-db [tempo_bin: string, genesis: string, datadir: string, bloat: int, bloat_file: string] {
+    print $"Initializing database at ($datadir)..."
+    run-external $tempo_bin "init" "--chain" $genesis "--datadir" $datadir
+
+    if $bloat > 0 {
+        print $"Loading state bloat into ($datadir)..."
+        run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis "--datadir" $datadir $bloat_file | complete
+    }
+}
+
+# Save genesis files, bloat, and marker to meta dir, then promote and remount.
+# Everything is written before promote so it's part of the virgin snapshot.
+def bench-save-and-promote [datadir: string, meta_dir: string, marker: record, genesis_files: list, bloat: int, bloat_file: string] {
+    mkdir $meta_dir
+    for pair in $genesis_files {
+        cp ($pair | first) $"($meta_dir)/($pair | last)"
+    }
+    if $bloat > 0 and ($bloat_file | path exists) {
+        cp $bloat_file $"($meta_dir)/state_bloat.bin"
+    }
+    let marker_path = $"($meta_dir)/marker.json"
+    $marker | insert initialized_at (date now | format date "%Y-%m-%dT%H:%M:%SZ") | to json | save -f $marker_path
+    print $"Bench marker written to ($marker_path)"
+
+    bench-promote $datadir
+    bench-mount
+}
+
 # Recover snapshot to virgin state and remount
 def bench-recover [datadir: string] {
     if (has-schelk) {
@@ -224,26 +265,14 @@ def bench-mount [] {
 # Bench metadata marker (persists across workspace wipes)
 # ============================================================================
 
-# Read bench metadata marker from $HOME. Returns record or null.
-def read-bench-marker [] {
-    let path = $"($env.HOME)/.tempo-bench-meta.json"
+# Read bench metadata marker from the datadir's meta directory. Returns record or null.
+def read-bench-marker [datadir: string] {
+    let path = $"($datadir)/($BENCH_META_SUBDIR)/marker.json"
     if ($path | path exists) {
         open $path
     } else {
         null
     }
-}
-
-# Write bench metadata marker to $HOME.
-def write-bench-marker [bloat: int, accounts: int, datadir: string] {
-    let path = $"($env.HOME)/.tempo-bench-meta.json"
-    {
-        bloat_mib: $bloat
-        accounts: $accounts
-        bench_datadir: $datadir
-        initialized_at: (date now | format date "%Y-%m-%dT%H:%M:%SZ")
-    } | to json | save -f $path
-    print $"Bench marker written to ($path)"
 }
 
 # ============================================================================
@@ -1345,19 +1374,21 @@ def "main bench-init" [
     let datadir = if $bench_datadir != "" {
         $bench_datadir
     } else if (has-schelk) {
-        "/reth-bench"
+        $"/reth-bench/tempo_($bloat)mb"
     } else {
         $"($LOCALNET_DIR | path expand)/reth"
     }
     let meta_dir = $"($datadir)/($BENCH_META_SUBDIR)"
     let genesis_accounts = ([$accounts 3] | math max) + 1
 
+    # Mount schelk first so we can read the marker from the datadir
+    bench-mount
+
     # Check marker (unless --force)
     if not $force {
-        let marker = (read-bench-marker)
+        let marker = (read-bench-marker $datadir)
         if $marker != null {
             if ($marker.bloat_mib | into int) == $bloat and ($marker.accounts | into int) == $genesis_accounts {
-                bench-mount
                 if ($"($datadir)/db" | path exists) and ($"($meta_dir)/genesis.json" | path exists) {
                     print $"Virgin snapshot already initialized \(bloat=($bloat) MiB, accounts=($genesis_accounts)\). Use --force to re-initialize."
                     return
@@ -1385,41 +1416,14 @@ def "main bench-init" [
         cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
     }
 
-    # Mount schelk
-    bench-mount
+    bench-clean-datadir $datadir
+    bench-init-db $tempo_bin $genesis_path $datadir $bloat $bloat_file
 
-    # Clean database files
-    for subdir in [db static_files rocksdb consensus invalid_block_hooks] {
-        let path = $"($datadir)/($subdir)"
-        if ($path | path exists) { rm -rf $path }
-    }
-    for file in [reth.toml jwt.hex] {
-        let path = $"($datadir)/($file)"
-        if ($path | path exists) { rm $path }
-    }
-
-    # Init database
-    print $"Initializing database at ($datadir)..."
-    run-external $tempo_bin "init" "--chain" $genesis_path "--datadir" $datadir
-
-    if $bloat > 0 {
-        print $"Loading state bloat into ($datadir)..."
-        run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis_path "--datadir" $datadir $bloat_file | complete
-    }
-
-    # Save genesis + bloat to volume meta dir (survives schelk recover)
-    mkdir $meta_dir
-    cp $genesis_path $"($meta_dir)/genesis.json"
-    if $bloat > 0 and ($bloat_file | path exists) {
-        cp $bloat_file $"($meta_dir)/state_bloat.bin"
-    }
-
-    # Promote and remount
-    bench-promote $datadir
-    bench-mount
-
-    # Write marker
-    write-bench-marker $bloat $genesis_accounts $datadir
+    bench-save-and-promote $datadir $meta_dir {
+        bloat_mib: $bloat,
+        accounts: $genesis_accounts,
+        bench_datadir: $datadir
+    } [[$genesis_path "genesis.json"]] $bloat $bloat_file
 
     print $"Virgin snapshot initialized and promoted."
 }
@@ -1660,7 +1664,7 @@ def "main bench" [
         let datadir = if $bench_datadir != "" {
             $bench_datadir
         } else if (has-schelk) {
-            "/reth-bench"
+            $"/reth-bench/tempo_($bloat)mb"
         } else {
             $"($abs_localnet)/reth"
         }
@@ -1689,7 +1693,7 @@ def "main bench" [
             let feature_datadir = $"($datadir)/feature-db"
 
             # Check if dual-hardfork snapshot is cached
-            let marker = (read-bench-marker)
+            let marker = (read-bench-marker $datadir)
             let snapshot_ready = (
                 not $force
                 and $marker != null
@@ -1760,49 +1764,18 @@ def "main bench" [
                     { name: "baseline", genesis: $baseline_genesis_path, dd: $baseline_datadir, tempo: $baseline_tempo }
                     { name: "feature", genesis: $feature_genesis_path, dd: $feature_datadir, tempo: $feature_tempo }
                 ] {
-                    # Clean existing data
-                    for subdir in [db static_files rocksdb consensus invalid_block_hooks] {
-                        let path = $"($side.dd)/($subdir)"
-                        if ($path | path exists) { rm -rf $path }
-                    }
-                    for file in [reth.toml jwt.hex] {
-                        let path = $"($side.dd)/($file)"
-                        if ($path | path exists) { rm $path }
-                    }
-
-                    print $"Initializing ($side.name) database at ($side.dd)..."
+                    bench-clean-datadir $side.dd
                     mkdir $side.dd
-                    run-external $side.tempo "init" "--chain" $side.genesis "--datadir" $side.dd
-
-                    if $bloat > 0 {
-                        print $"Loading state bloat into ($side.name)..."
-                        run-external $side.tempo "init-from-binary-dump" "--chain" $side.genesis "--datadir" $side.dd $bloat_file | complete
-                    }
+                    bench-init-db $side.tempo $side.genesis $side.dd $bloat $bloat_file
                 }
 
-                # Save genesis files to meta dir
-                mkdir $meta_dir
-                cp $baseline_genesis_path $"($meta_dir)/genesis-baseline.json"
-                cp $feature_genesis_path $"($meta_dir)/genesis-feature.json"
-                if $bloat > 0 and ($bloat_file | path exists) {
-                    cp $bloat_file $"($meta_dir)/state_bloat.bin"
-                }
-
-                # Promote entire volume (snapshots both baseline-db and feature-db)
-                bench-promote $datadir
-                bench-mount
-
-                # Write marker with hardfork info
-                let path = $"($env.HOME)/.tempo-bench-meta.json"
-                {
+                bench-save-and-promote $datadir $meta_dir {
                     bloat_mib: $bloat
                     accounts: $genesis_accounts
                     bench_datadir: $datadir
                     baseline_hardfork: ($baseline_hardfork | str upcase)
                     feature_hardfork: ($feature_hardfork | str upcase)
-                    initialized_at: (date now | format date "%Y-%m-%dT%H:%M:%SZ")
-                } | to json | save -f $path
-                print $"Bench marker written to ($path)"
+                } [[$baseline_genesis_path "genesis-baseline.json"] [$feature_genesis_path "genesis-feature.json"]] $bloat $bloat_file
 
                 print "Dual-hardfork databases initialized and promoted."
             }
@@ -1812,7 +1785,7 @@ def "main bench" [
             # ============================================================
             let genesis_path_std = $"($abs_localnet)/genesis.json"
 
-            let marker = (read-bench-marker)
+            let marker = (read-bench-marker $datadir)
             let snapshot_ready = (
                 not $force
                 and $marker != null
@@ -1854,33 +1827,14 @@ def "main bench" [
                     }
                 }
 
-                for subdir in [db static_files rocksdb consensus invalid_block_hooks] {
-                    let path = $"($datadir)/($subdir)"
-                    if ($path | path exists) { rm -rf $path }
-                }
-                for file in [reth.toml jwt.hex] {
-                    let path = $"($datadir)/($file)"
-                    if ($path | path exists) { rm $path }
-                }
+                bench-clean-datadir $datadir
+                bench-init-db $baseline_tempo $genesis_path_std $datadir $bloat $bloat_file
 
-                print $"Initializing database at ($datadir)..."
-                run-external $baseline_tempo "init" "--chain" $genesis_path_std "--datadir" $datadir
-
-                if $bloat > 0 {
-                    print $"Loading state bloat into ($datadir)..."
-                    run-external $baseline_tempo "init-from-binary-dump" "--chain" $genesis_path_std "--datadir" $datadir $bloat_file | complete
-                }
-
-                mkdir $meta_dir
-                cp $genesis_path_std $"($meta_dir)/genesis.json"
-                if $bloat > 0 and ($bloat_file | path exists) {
-                    cp $bloat_file $"($meta_dir)/state_bloat.bin"
-                }
-
-                bench-promote $datadir
-                bench-mount
-
-                write-bench-marker $bloat $genesis_accounts $datadir
+                bench-save-and-promote $datadir $meta_dir {
+                    bloat_mib: $bloat,
+                    accounts: $genesis_accounts,
+                    bench_datadir: $datadir
+                } [[$genesis_path_std "genesis.json"]] $bloat $bloat_file
 
                 print "Database initialized and promoted to virgin baseline."
             }

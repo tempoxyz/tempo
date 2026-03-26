@@ -21,10 +21,15 @@ on:
         default: "300"
         type: string
       bloat:
-        description: "State bloat in MiB (0 = none)"
+        description: "State bloat in GB (0 = none)"
         required: false
-        default: "1024"
-        type: string
+        default: "1"
+        type: choice
+        options:
+          - "0"
+          - "1"
+          - "10"
+          - "100"
       tps:
         description: "Target transactions per second"
         required: false
@@ -143,7 +148,7 @@ jobs:
               actor = '${{ github.actor }}';
               preset = '${{ github.event.inputs.preset }}' || 'tip20';
               duration = '${{ github.event.inputs.duration }}' || '300';
-              bloat = '${{ github.event.inputs.bloat }}' || '1024';
+              bloat = String(parseInt('${{ github.event.inputs.bloat }}' || '1', 10) * 1000);
               tps = '${{ github.event.inputs.tps }}' || '10000';
               baseline = '${{ github.event.inputs.baseline }}';
               feature = '${{ github.event.inputs.feature }}';
@@ -578,7 +583,7 @@ jobs:
             --no-infra \
             --baseline "$BASELINE_REF" \
             --feature "$FEATURE_REF" \
-            --bench-datadir /reth-bench \
+            --bench-datadir "/reth-bench/tempo_${BENCH_BLOAT}mb" \
             --tune \
             $([ "$BENCH_SAMPLY" = "true" ] && echo "--samply" || true) \
             $([ "$BENCH_TRACY" != "off" ] && echo "--tracy $BENCH_TRACY --tracy-seconds $BENCH_TRACY_SECONDS --tracy-offset $BENCH_TRACY_OFFSET" || true) \

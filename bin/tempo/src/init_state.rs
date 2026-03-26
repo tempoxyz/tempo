@@ -10,7 +10,7 @@ use std::{
     path::PathBuf,
 };
 
-use alloy_primitives::{B256, U256, map::HashSet};
+use alloy_primitives::{B256, U256};
 use clap::Parser;
 use eyre::{Context as _, ensure};
 use reth_chainspec::EthereumHardforks;
@@ -83,8 +83,8 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         let mut storage_for_hashing: HashMap<alloy_primitives::Address, Vec<StorageEntry>> =
             HashMap::new();
 
-        // Track addresses for account hashing (we need to create empty accounts)
-        let mut addresses_seen: HashSet<alloy_primitives::Address> = HashSet::default();
+        // Track addresses and their account data for hashing
+        let mut accounts_seen: HashMap<alloy_primitives::Address, Account> = HashMap::new();
 
         // Process blocks from binary file
         loop {
@@ -126,18 +126,24 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 "Processing token storage"
             );
 
-            addresses_seen.insert(address);
-
             // Get cursors for plain state tables
             let tx = provider_rw.tx_ref();
             let mut storage_cursor = tx.cursor_dup_write::<tables::PlainStorageState>()?;
             let mut account_cursor = tx.cursor_write::<tables::PlainAccountState>()?;
 
-            // Insert empty account for this address (required for storage to be included in trie)
-            // Only insert if the account doesn't already exist from genesis
-            if account_cursor.seek_exact(address)?.is_none() {
-                account_cursor.upsert(address, &Account::default())?;
-            }
+            // Read the existing account from genesis, or insert a default empty one.
+            // Preserving the genesis account is critical: TIP20 tokens have bytecode (0xEF)
+            // set during genesis, and overwriting with Account::default() would clear the
+            // code hash, making the token appear uninitialized.
+            let account = match account_cursor.seek_exact(address)? {
+                Some((_, account)) => account,
+                None => {
+                    let account = Account::default();
+                    account_cursor.upsert(address, &account)?;
+                    account
+                }
+            };
+            accounts_seen.insert(address, account);
 
             // Collect storage for hashing
             let storage_entries = storage_for_hashing.entry(address).or_default();
@@ -198,19 +204,17 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             "Plain storage state written, now writing hashed state..."
         );
 
-        // Write hashed account entries for addresses that have storage.
-        // We create empty accounts (zero balance, zero nonce, no code) for precompile addresses.
-        // This is required for the storage to be included in the state trie computation.
-        let empty_account = Account::default();
+        // Write hashed account entries using the real account metadata from plain state.
+        // This preserves bytecode_hash for genesis accounts (e.g. TIP20 tokens with 0xEF code).
         provider_rw.insert_account_for_hashing(
-            addresses_seen
+            accounts_seen
                 .iter()
-                .map(|addr| (*addr, Some(empty_account))),
+                .map(|(addr, account)| (*addr, Some(*account))),
         )?;
 
         info!(
             target: "tempo::cli",
-            addresses = addresses_seen.len(),
+            addresses = accounts_seen.len(),
             "Hashed accounts written"
         );
 

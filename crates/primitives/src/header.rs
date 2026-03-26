@@ -194,7 +194,7 @@ impl reth_db_api::table::Compress for TempoHeader {
 
 #[cfg(feature = "reth-codec")]
 impl reth_db_api::table::Decompress for TempoHeader {
-    fn decompress(value: &[u8]) -> Result<Self, reth_db_api::DatabaseError> {
+    fn decompress(value: &[u8]) -> Result<Self, reth_codecs::DecompressError> {
         let (obj, _) = reth_codecs::Compact::from_compact(value, value.len());
         Ok(obj)
     }
