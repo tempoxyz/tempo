@@ -25,17 +25,6 @@ use crate::{
 use alloy::primitives::{Address, U256, keccak256};
 use std::{cell::RefCell, collections::HashMap, hash::Hash};
 
-/// Maximum length for dynamically-sized storage types: `Bytes`, `String`, `Vec`.
-///
-/// This limit applies to both reads and writes, guarding against out-of-memory
-/// conditions caused by corrupted or maliciously overridden storage values.
-/// - For `Bytes` and `String`, this caps allocation at 64 KB.
-/// - For `Vec<T>` caps the number of elements, so the actual footprint is `u16::MAX * size_of::<T>`.
-///   For 32-byte primitive types that is 2 MB.
-///
-/// NOTE: This limit is well above any precompile usage needs while preventing unbounded allocation.
-pub const MAX_DYNAMIC_LENGTH: usize = u16::MAX as usize;
-
 /// Describes how a type is laid out in EVM storage.
 ///
 /// This determines whether a type can be packed with other fields

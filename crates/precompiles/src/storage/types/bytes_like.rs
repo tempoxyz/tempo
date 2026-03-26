@@ -18,8 +18,6 @@ use crate::{
 use alloy::primitives::{Address, Bytes, U256, keccak256};
 use std::marker::PhantomData;
 
-use super::MAX_DYNAMIC_LENGTH;
-
 impl StorableType for Bytes {
     const LAYOUT: Layout = Layout::Slots(1);
     const IS_DYNAMIC: bool = true;
@@ -178,7 +176,7 @@ where
         // Long string: read data from keccak256(base_slot) + i
         let slot_start = calc_data_slot(base_slot);
         let chunks = calc_chunks(length);
-        let mut data = Vec::with_capacity(length);
+        let mut data = Vec::new();
 
         for i in 0..chunks {
             let slot = slot_start + U256::from(i);
@@ -206,12 +204,6 @@ where
 #[inline]
 fn store_bytes_like<S: StorageOps>(bytes: &[u8], storage: &mut S, base_slot: U256) -> Result<()> {
     let length = bytes.len();
-    if length > MAX_DYNAMIC_LENGTH {
-        return Err(TempoPrecompileError::Fatal(format!(
-            "dyn storage length {length} exceeds maximum of 64 KB"
-        )));
-    }
-
     if length <= 31 {
         storage.store(base_slot, encode_short_string(bytes))
     } else {
@@ -283,7 +275,7 @@ fn is_long_string(slot_value: U256) -> bool {
 
 /// Extract and validate the string length from a storage slot value.
 ///
-/// Returns an error if the decoded length exceeds [`MAX_DYNAMIC_LENGTH`].
+/// Returns an error if the decoded length overflows `usize` or a short-string length exceeds 31.
 #[inline]
 fn calc_string_length(slot_value: U256, is_long: bool) -> Result<usize> {
     if is_long {
@@ -292,10 +284,8 @@ fn calc_string_length(slot_value: U256, is_long: bool) -> Result<usize> {
         let length_times_two_plus_one: U256 = slot_value;
         let length_times_two: U256 = length_times_two_plus_one - U256::ONE;
         let length_u256: U256 = length_times_two >> 1;
-        if length_u256 > U256::from(MAX_DYNAMIC_LENGTH) {
-            return Err(TempoPrecompileError::Fatal(format!(
-                "dyn storage size {length_u256} exceeds maximum of 64KB"
-            )));
+        if length_u256 > U256::from(u32::MAX) {
+            return Err(TempoPrecompileError::under_overflow());
         }
         Ok(length_u256.to::<usize>())
     } else {
@@ -552,33 +542,39 @@ mod tests {
         }
     }
 
-    // -- OOM REJECTION TESTS ---------------------------------------------------
+    // -- TAMPERED STATE TESTS --------------------------------------------------
 
     #[test]
-    fn test_calc_string_length_bounded() {
-        // -- long-string path --------------------------------------------------
+    fn test_calc_string_length_tampered() {
+        // -- long-string overflow -----------------------------------------------
 
-        // Exact PoC value: slot = 0x0008000000000001
-        // LSB=1 → long string, decoded length = (0x0008000000000001 - 1) / 2 = 0x0004000000000000
+        // PoC value: decoded length = 0x0004000000000000, exceeds u32::MAX
         let malicious_slot = U256::from(0x0008000000000001u64);
         assert!(is_long_string(malicious_slot));
-        assert!(calc_string_length(malicious_slot, true).is_err());
+        assert_eq!(
+            calc_string_length(malicious_slot, true),
+            Err(TempoPrecompileError::under_overflow())
+        );
 
-        // Boundary: MAX_DYNAMIC_LENGTH is accepted, MAX_DYNAMIC_LENGTH + 1 is rejected
-        let at_max = U256::from(MAX_DYNAMIC_LENGTH * 2 + 1);
-        assert_eq!(calc_string_length(at_max, true), Ok(MAX_DYNAMIC_LENGTH));
+        // Boundary: u32::MAX is accepted
+        let at_max = U256::from(u32::MAX as u64 * 2 + 1);
+        assert_eq!(calc_string_length(at_max, true), Ok(u32::MAX as usize));
 
-        let above_max = U256::from((MAX_DYNAMIC_LENGTH + 1) * 2 + 1);
-        assert!(calc_string_length(above_max, true).is_err());
+        // Boundary: u32::MAX + 1 is rejected
+        let above_max = U256::from((u32::MAX as u64 + 1) * 2 + 1);
+        assert_eq!(
+            calc_string_length(above_max, true),
+            Err(TempoPrecompileError::under_overflow())
+        );
 
-        // -- short-string path -------------------------------------------------
+        // -- short-string tamper ------------------------------------------------
 
         // Valid boundary: 31 bytes → LSB = 62 (0x3E), must be accepted
         let max_short = U256::from(31u64 * 2);
         assert!(!is_long_string(max_short));
         assert_eq!(calc_string_length(max_short, false), Ok(31));
 
-        // Malicious: LSB = 0xFE → decoded length = 127, must be rejected
+        // Tampered: LSB = 0xFE → decoded length = 127, must be rejected
         let malicious_short = U256::from(0xFEu64);
         assert!(!is_long_string(malicious_short));
         assert!(calc_string_length(malicious_short, false).is_err());
@@ -586,24 +582,6 @@ mod tests {
         // Boundary: 32 bytes → LSB = 64 (0x40), must be rejected
         let above_short = U256::from(32u64 * 2);
         assert!(calc_string_length(above_short, false).is_err());
-    }
-
-    #[test]
-    fn test_bytes_like_handler_rejects_overridden_length() -> eyre::Result<()> {
-        let (mut storage, address) = setup_storage();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut base = Slot::<U256>::new(U256::from(2), address);
-            let handler = BytesLikeHandler::<String>::new(U256::from(2), address);
-
-            // Simulate PoC state override: malicious long-string encoding
-            base.write(U256::from(0x0008000000000001u64))?;
-
-            assert!(handler.len().is_err(), "len() must reject huge length");
-            assert!(handler.read().is_err(), "read() must reject huge length");
-
-            Ok(())
-        })
     }
 
     // -- PROPERTY TESTS FOR STORAGE INTERACTION -------------------------------
