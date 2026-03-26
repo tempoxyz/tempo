@@ -462,8 +462,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             let tx = provider_rw.tx_ref();
             loop {
                 let state_root_computer =
-                    S::from_tx(tx)
-                        .with_intermediate_state(intermediate_state);
+                    S::from_tx(tx).with_intermediate_state(intermediate_state);
                 match state_root_computer.root_with_progress()? {
                     StateRootProgress::Progress(state, _, updates) => {
                         let n = provider_rw.write_trie_updates(updates)?;
