@@ -10,10 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use alloy_primitives::{
-    B256, U256,
-    map::AddressMap,
-};
+use alloy_primitives::{B256, U256, map::AddressMap};
 use clap::Parser;
 use eyre::{Context as _, ensure};
 use itertools::Itertools;
@@ -147,17 +144,6 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 pair_count,
                 "Processing token storage block"
             );
-
-            // Flush batch if we're switching to a different address
-            if batch_address.is_some() && batch_address != Some(address) && !batch.is_empty() {
-                let flush_addr = batch_address.unwrap();
-                provider_rw
-                    .insert_storage_for_hashing([(flush_addr, batch.drain(..))])?;
-                provider_rw.commit()?;
-                provider_rw = provider_factory.database_provider_rw()?;
-                total_commits += 1;
-            }
-            batch_address = Some(address);
 
             // Read the existing account from genesis, or insert a default empty one
             // (only on first encounter). Preserving the genesis account is critical:
