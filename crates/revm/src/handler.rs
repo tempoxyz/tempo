@@ -126,35 +126,6 @@ fn tempo_signature_verification_gas(signature: &TempoSignature) -> u64 {
     }
 }
 
-#[inline]
-fn key_authorization_scope_slots(
-    key_auth: &tempo_primitives::transaction::SignedKeyAuthorization,
-) -> u64 {
-    match key_auth.authorization.allowed_calls.as_ref() {
-        None => 0,
-        Some(scopes) if scopes.is_empty() => 1,
-        Some(scopes) => {
-            let mut selectors = 0u64;
-            let mut constrained_selectors = 0u64;
-            let mut recipients = 0u64;
-
-            for scope in scopes {
-                if let Some(rules) = scope.selector_rules.as_ref() {
-                    selectors += rules.len() as u64;
-                    for rule in rules {
-                        if let Some(rule_recipients) = rule.recipients.as_ref() {
-                            constrained_selectors += 1;
-                            recipients += rule_recipients.len() as u64;
-                        }
-                    }
-                }
-            }
-
-            1 + scopes.len() as u64 + selectors + constrained_selectors + recipients
-        }
-    }
-}
-
 /// Calculates the intrinsic gas cost for a KeyAuthorization.
 ///
 /// This is charged before execution as part of transaction validation.
@@ -192,12 +163,20 @@ fn calculate_key_authorization_gas(
         let sload_cost =
             gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
 
-        let mut total = sig_gas + sload_cost + sstore_cost * (1 + num_limits) + BUFFER;
+        let limit_slots = if spec.is_t3() {
+            // T3 periodic limits write 4 set-slots per token:
+            // spending_limits[token] + period_state.{max,period,period_end}
+            num_limits.saturating_mul(4)
+        } else {
+            num_limits
+        };
+
+        let mut total = sig_gas + sload_cost + sstore_cost * (1 + limit_slots) + BUFFER;
 
         // T3+: include scoped-call storage rows in intrinsic gas.
         if spec.is_t3() {
             total = total.saturating_add(
-                sstore_cost.saturating_mul(key_authorization_scope_slots(key_auth)),
+                sstore_cost.saturating_mul(key_auth.authorization.call_scope_storage_slots()),
             );
         }
 
@@ -968,18 +947,14 @@ where
             // T3 gates all TIP-1011 fields. Before activation, transaction semantics must stay
             // unchanged, so periodic limits and call scopes are rejected.
             if !spec.is_t3() {
-                if key_auth
-                    .limits
-                    .as_ref()
-                    .is_some_and(|limits| limits.iter().any(|limit| limit.period != 0))
-                {
+                if key_auth.has_periodic_limits() {
                     return Err(TempoInvalidTransaction::KeychainValidationFailed {
                         reason: "periodic token limits are not active before T3".to_string(),
                     }
                     .into());
                 }
 
-                if key_auth.allowed_calls.is_some() {
+                if key_auth.has_call_scopes() {
                     return Err(TempoInvalidTransaction::KeychainValidationFailed {
                         reason: "call scopes are not active before T3".to_string(),
                     }
@@ -2648,6 +2623,41 @@ mod tests {
             let expected = ECRECOVER_GAS + sload + sstore * (1 + num_limits as u64) + BUFFER;
             assert_eq!(gas, expected, "T1B with {num_limits} limits");
         }
+
+        for num_limits in 0..=3 {
+            let gas = calculate_key_authorization_gas(
+                &create_key_auth(num_limits),
+                &t1b_gas_params,
+                TempoHardfork::T3,
+            );
+            let expected = ECRECOVER_GAS + sload + sstore * (1 + 4 * num_limits as u64) + BUFFER;
+            assert_eq!(gas, expected, "T3 with {num_limits} limits");
+        }
+
+        let scoped = SignedKeyAuthorization {
+            authorization: KeyAuthorization {
+                chain_id: 1,
+                key_type: SignatureType::Secp256k1,
+                key_id: Address::random(),
+                expiry: None,
+                limits: None,
+                allowed_calls: Some(vec![tempo_primitives::transaction::CallScope {
+                    target: Address::random(),
+                    selector_rules: Some(vec![tempo_primitives::transaction::SelectorRule {
+                        selector: [0xa9, 0x05, 0x9c, 0xbb],
+                        recipients: Some(vec![Address::random(), Address::random()]),
+                    }]),
+                }]),
+            },
+            signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+        };
+
+        let gas = calculate_key_authorization_gas(&scoped, &t1b_gas_params, TempoHardfork::T3);
+        // 1 key write + 14 scope slots:
+        // account mode(1) + target insert+mode(4) + selector insert+mode(4)
+        // + constrained selector recipient-length(1) + recipients values+positions(2*2).
+        let expected = ECRECOVER_GAS + sload + sstore * (1 + 14) + BUFFER;
+        assert_eq!(gas, expected, "T3 scope writes should be fully charged");
     }
 
     #[test]

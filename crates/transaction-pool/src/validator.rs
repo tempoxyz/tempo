@@ -258,6 +258,68 @@ where
         Ok(())
     }
 
+    fn call_scope_allows_call(
+        scopes: Option<&[tempo_primitives::transaction::CallScope]>,
+        to: &alloy_primitives::TxKind,
+        input: &[u8],
+    ) -> bool {
+        let Some(scopes) = scopes else {
+            return true;
+        };
+        if scopes.is_empty() {
+            return false;
+        }
+
+        let Some(target) = to.to().copied() else {
+            return false;
+        };
+
+        let Some(scope) = scopes.iter().find(|scope| scope.target == target) else {
+            return false;
+        };
+
+        let Some(selector_rules) = scope.selector_rules.as_deref() else {
+            return true;
+        };
+        if selector_rules.is_empty() || input.len() < 4 {
+            return false;
+        }
+
+        let selector = [input[0], input[1], input[2], input[3]];
+        let Some(rule) = selector_rules.iter().find(|rule| rule.selector == selector) else {
+            return false;
+        };
+
+        let Some(recipients) = rule.recipients.as_deref() else {
+            return true;
+        };
+        if input.len() < 36 {
+            return false;
+        }
+
+        let recipient_word = &input[4..36];
+        if recipient_word[..12].iter().any(|byte| *byte != 0) {
+            return false;
+        }
+
+        recipients.contains(&Address::from_slice(&recipient_word[12..]))
+    }
+
+    fn validate_inline_t3_call_scopes(
+        tx: &TempoTransaction,
+        auth: &tempo_primitives::transaction::SignedKeyAuthorization,
+    ) -> Result<(), TempoPoolTransactionError> {
+        for call in &tx.calls {
+            if !Self::call_scope_allows_call(auth.allowed_calls.as_deref(), &call.to, &call.input) {
+                return Err(TempoPoolTransactionError::Keychain(
+                    "call not allowed by key scope",
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
     /// Validates AA transactions against the keychain: signature recovery, key authorization,
     /// on-chain key existence/revocation/expiry, and spending limits.
     ///
@@ -305,17 +367,13 @@ where
 
             // TIP-1011 fields are T3-gated. Keep pre-T3 admission semantics unchanged.
             if !spec.is_t3() {
-                if auth
-                    .limits
-                    .as_ref()
-                    .is_some_and(|limits| limits.iter().any(|limit| limit.period != 0))
-                {
+                if auth.has_periodic_limits() {
                     return Ok(Err(TempoPoolTransactionError::Keychain(
                         "periodic token limits are not active before T3",
                     )));
                 }
 
-                if auth.allowed_calls.is_some() {
+                if auth.has_call_scopes() {
                     return Ok(Err(TempoPoolTransactionError::Keychain(
                         "call scopes are not active before T3",
                     )));
@@ -407,6 +465,12 @@ where
                 }
             }
 
+            if spec.is_t3()
+                && let Err(err) = Self::validate_inline_t3_call_scopes(tx.tx(), auth)
+            {
+                return Ok(Err(err));
+            }
+
             return Ok(Ok(()));
         }
 
@@ -457,6 +521,31 @@ where
             if let Err(err) = self.validate_spending_limit(transaction, fee_token, remaining_limit)
             {
                 return Ok(Err(err));
+            }
+        }
+
+        if spec.is_t3() {
+            let call_scope_result: tempo_precompiles::Result<()> = state_provider
+                .with_read_only_storage_ctx(spec, || {
+                    let keychain = AccountKeychain::new();
+                    for call in &tx.tx().calls {
+                        keychain.validate_call_scope_for_transaction(
+                            transaction.sender(),
+                            key_id,
+                            &call.to,
+                            &call.input,
+                        )?;
+                    }
+                    Ok(())
+                });
+
+            if let Err(err) = call_scope_result {
+                if err.is_system_error() {
+                    return Err(ProviderError::other(err));
+                }
+                return Ok(Err(TempoPoolTransactionError::Keychain(
+                    "call not allowed by key scope",
+                )));
             }
         }
 
@@ -3442,6 +3531,115 @@ mod tests {
                     ))
                 ),
                 "Expected duplicate target rejection, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_key_authorization_t3_rejects_inline_disallowed_call_scope() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: None,
+                allowed_calls: Some(vec![CallScope {
+                    target: address!("0000000000000000000000000000000000000002"),
+                    selector_rules: None,
+                }]),
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage_spec(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+                moderato_with_t3(),
+            );
+            let mut state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )
+            .expect("should not be a provider error");
+
+            assert!(
+                matches!(
+                    result,
+                    Err(TempoPoolTransactionError::Keychain(
+                        "call not allowed by key scope"
+                    ))
+                ),
+                "Expected call-scope rejection, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_key_authorization_t3_accepts_inline_allowed_call_scope() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: None,
+                allowed_calls: Some(vec![CallScope {
+                    target: address!("0000000000000000000000000000000000000001"),
+                    selector_rules: None,
+                }]),
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage_spec(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+                moderato_with_t3(),
+            );
+            let mut state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )
+            .expect("should not be a provider error");
+
+            assert!(
+                result.is_ok(),
+                "Expected allowed call-scope transaction to pass, got: {result:?}"
             );
         }
 

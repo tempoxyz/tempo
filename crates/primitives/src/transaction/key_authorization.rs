@@ -3,13 +3,13 @@ use crate::transaction::PrimitiveSignature;
 use alloc::vec::Vec;
 use alloy_consensus::crypto::RecoveryError;
 use alloy_primitives::{Address, B256, U256, keccak256};
-use alloy_rlp::{Buf, Encodable};
+use alloy_rlp::{Buf, EMPTY_STRING_CODE, Encodable};
 
 /// Token spending limit for access keys
 ///
 /// Defines a per-token spending limit for an access key provisioned via key_authorization.
 /// This limit is enforced by the AccountKeychain precompile when the key is used.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
@@ -48,7 +48,13 @@ impl alloy_rlp::Decodable for TokenLimit {
         let period = if fields.is_empty() {
             0
         } else {
-            alloy_rlp::Decodable::decode(&mut fields)?
+            let period: u64 = alloy_rlp::Decodable::decode(&mut fields)?;
+            if period == 0 {
+                return Err(alloy_rlp::Error::Custom(
+                    "token limit period=0 must be encoded in legacy two-field form",
+                ));
+            }
+            period
         };
 
         if !fields.is_empty() {
@@ -62,6 +68,46 @@ impl alloy_rlp::Decodable for TokenLimit {
             limit,
             period,
         })
+    }
+}
+
+impl Encodable for TokenLimit {
+    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+        let payload_length = self.token.length()
+            + self.limit.length()
+            + if self.period == 0 {
+                0
+            } else {
+                self.period.length()
+            };
+
+        alloy_rlp::Header {
+            list: true,
+            payload_length,
+        }
+        .encode(out);
+
+        self.token.encode(out);
+        self.limit.encode(out);
+        if self.period != 0 {
+            self.period.encode(out);
+        }
+    }
+
+    fn length(&self) -> usize {
+        let payload_length = self.token.length()
+            + self.limit.length()
+            + if self.period == 0 {
+                0
+            } else {
+                self.period.length()
+            };
+
+        alloy_rlp::Header {
+            list: true,
+            payload_length,
+        }
+        .length_with_payload()
     }
 }
 
@@ -110,7 +156,7 @@ pub struct SelectorRule {
 /// - `expiry`: `None` (omitted or 0x80) = key never expires, `Some(timestamp)` = expires at timestamp
 /// - `limits`: `None` (omitted or 0x80) = unlimited spending, `Some([])` = no spending, `Some([...])` = specific limits
 /// - `allowed_calls`: `None` = unrestricted, `Some([])` = deny-all, `Some([...])` = scoped calls
-#[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable)]
 #[rlp(trailing)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
@@ -144,6 +190,70 @@ pub struct KeyAuthorization {
     /// - `Some([])` = scoped mode with no allowed calls (deny-all)
     /// - `Some([CallScope{...}])` = explicit target/selector scope list
     pub allowed_calls: Option<Vec<CallScope>>,
+}
+
+impl alloy_rlp::Decodable for KeyAuthorization {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        fn decode_optional_field<T: alloy_rlp::Decodable>(
+            fields: &mut &[u8],
+        ) -> alloy_rlp::Result<Option<T>> {
+            if fields.is_empty() {
+                return Ok(None);
+            }
+            if fields.first() == Some(&EMPTY_STRING_CODE) {
+                fields.advance(1);
+                return Ok(None);
+            }
+
+            Ok(Some(alloy_rlp::Decodable::decode(fields)?))
+        }
+
+        let header = alloy_rlp::Header::decode(buf)?;
+        if !header.list {
+            return Err(alloy_rlp::Error::UnexpectedString);
+        }
+
+        let remaining = buf.len();
+        if header.payload_length > remaining {
+            return Err(alloy_rlp::Error::InputTooShort);
+        }
+
+        let mut fields = &buf[..header.payload_length];
+
+        let chain_id = alloy_rlp::Decodable::decode(&mut fields)?;
+        let key_type = alloy_rlp::Decodable::decode(&mut fields)?;
+        let key_id = alloy_rlp::Decodable::decode(&mut fields)?;
+
+        let expiry: Option<u64> = decode_optional_field(&mut fields)?;
+        let limits: Option<Vec<TokenLimit>> = decode_optional_field(&mut fields)?;
+
+        let allowed_calls = if fields.is_empty() {
+            None
+        } else {
+            if fields.first() == Some(&EMPTY_STRING_CODE) {
+                return Err(alloy_rlp::Error::Custom(
+                    "key authorization allowed_calls=None must be omitted on wire",
+                ));
+            }
+
+            Some(alloy_rlp::Decodable::decode(&mut fields)?)
+        };
+
+        if !fields.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
+        }
+
+        buf.advance(header.payload_length);
+
+        Ok(Self {
+            chain_id,
+            key_type,
+            key_id,
+            expiry,
+            limits,
+            allowed_calls,
+        })
+    }
 }
 
 impl KeyAuthorization {
@@ -427,6 +537,73 @@ mod tests {
         assert_eq!(decoded.token, token);
         assert_eq!(decoded.limit, limit);
         assert_eq!(decoded.period, 0);
+    }
+
+    #[test]
+    fn test_token_limit_encoding_omits_zero_period() {
+        let token_limit = TokenLimit {
+            token: Address::random(),
+            limit: U256::from(1234),
+            period: 0,
+        };
+
+        let mut encoded = Vec::new();
+        token_limit.encode(&mut encoded);
+
+        let mut payload = &encoded[..];
+        let header = alloy_rlp::Header::decode(&mut payload).expect("decode list header");
+        assert!(header.list);
+        assert_eq!(
+            header.payload_length,
+            token_limit.token.length() + token_limit.limit.length()
+        );
+    }
+
+    #[test]
+    fn test_token_limit_decode_rejects_explicit_zero_period_field() {
+        let token = Address::random();
+        let limit = U256::from(42);
+        let period = 0u64;
+
+        let mut encoded = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: token.length() + limit.length() + period.length(),
+        }
+        .encode(&mut encoded);
+        token.encode(&mut encoded);
+        limit.encode(&mut encoded);
+        period.encode(&mut encoded);
+
+        let err: alloy_rlp::Error =
+            <TokenLimit as alloy_rlp::Decodable>::decode(&mut encoded.as_slice()).unwrap_err();
+        assert!(matches!(err, alloy_rlp::Error::Custom(_)));
+    }
+
+    #[test]
+    fn test_key_authorization_decode_rejects_explicit_unrestricted_allowed_calls_field() {
+        let chain_id = 1u64;
+        let key_type = SignatureType::Secp256k1;
+        let key_id = Address::random();
+
+        let mut payload = Vec::new();
+        chain_id.encode(&mut payload);
+        key_type.encode(&mut payload);
+        key_id.encode(&mut payload);
+        payload.extend_from_slice(&[EMPTY_STRING_CODE, EMPTY_STRING_CODE, EMPTY_STRING_CODE]);
+
+        let mut encoded = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: payload.len(),
+        }
+        .encode(&mut encoded);
+        encoded.extend_from_slice(&payload);
+
+        let err: alloy_rlp::Error =
+            <KeyAuthorization as alloy_rlp::Decodable>::decode(&mut encoded.as_slice())
+                .unwrap_err();
+        assert!(matches!(err, alloy_rlp::Error::Custom(_)));
     }
 
     #[test]
