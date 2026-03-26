@@ -449,6 +449,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 DatabaseHashedCursorFactory<&'a TX>,
             >;
 
+            // Compute state root in chunks, flushing trie nodes to disk between iterations.
             loop {
                 match DbStateRoot::<_, A>::from_tx(provider_rw.tx_ref())
                     .with_intermediate_state(resume)
