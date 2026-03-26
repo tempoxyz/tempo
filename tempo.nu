@@ -157,6 +157,47 @@ def schelk-force-unmount-state [] {
     $state | to json | sudo tee $state_path | ignore
 }
 
+# Clean database files from a datadir (db, static_files, rocksdb, etc.)
+def bench-clean-datadir [datadir: string] {
+    for subdir in [db static_files rocksdb consensus invalid_block_hooks] {
+        let path = $"($datadir)/($subdir)"
+        if ($path | path exists) { rm -rf $path }
+    }
+    for file in [reth.toml jwt.hex] {
+        let path = $"($datadir)/($file)"
+        if ($path | path exists) { rm $path }
+    }
+}
+
+# Initialize a database: run `tempo init`, optionally load state bloat
+def bench-init-db [tempo_bin: string, genesis: string, datadir: string, bloat: int, bloat_file: string] {
+    print $"Initializing database at ($datadir)..."
+    run-external $tempo_bin "init" "--chain" $genesis "--datadir" $datadir
+
+    if $bloat > 0 {
+        print $"Loading state bloat into ($datadir)..."
+        run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis "--datadir" $datadir $bloat_file | complete
+    }
+}
+
+# Save genesis files, bloat, and marker to meta dir, then promote and remount.
+# Everything is written before promote so it's part of the virgin snapshot.
+def bench-save-and-promote [datadir: string, meta_dir: string, marker: record, genesis_files: list, bloat: int, bloat_file: string] {
+    mkdir $meta_dir
+    for pair in $genesis_files {
+        cp ($pair | first) $"($meta_dir)/($pair | last)"
+    }
+    if $bloat > 0 and ($bloat_file | path exists) {
+        cp $bloat_file $"($meta_dir)/state_bloat.bin"
+    }
+    let marker_path = $"($meta_dir)/marker.json"
+    $marker | insert initialized_at (date now | format date "%Y-%m-%dT%H:%M:%SZ") | to json | save -f $marker_path
+    print $"Bench marker written to ($marker_path)"
+
+    bench-promote $datadir
+    bench-mount
+}
+
 # Recover snapshot to virgin state and remount
 def bench-recover [datadir: string] {
     if (has-schelk) {
@@ -232,20 +273,6 @@ def read-bench-marker [datadir: string] {
     } else {
         null
     }
-}
-
-# Write bench metadata marker into the datadir's meta directory.
-def write-bench-marker [bloat: int, accounts: int, datadir: string] {
-    let meta_dir = $"($datadir)/($BENCH_META_SUBDIR)"
-    mkdir $meta_dir
-    let path = $"($meta_dir)/marker.json"
-    {
-        bloat_mib: $bloat
-        accounts: $accounts
-        bench_datadir: $datadir
-        initialized_at: (date now | format date "%Y-%m-%dT%H:%M:%SZ")
-    } | to json | save -f $path
-    print $"Bench marker written to ($path)"
 }
 
 # ============================================================================
@@ -396,32 +423,34 @@ def worktree-bin [worktree_dir: string, profile: string, bin_name: string] {
 
 # Run a single benchmark run (start node, run bench, stop node, collect report)
 def run-bench-single [
-    tempo_bin: string
-    bench_bin: string
-    genesis_path: string
-    datadir: string
-    run_label: string
-    results_dir: string
-    tps: int
-    duration: int
-    accounts: int
-    max_concurrent_requests: int
-    weights: list<float>
-    preset: string
-    bench_args: string
-    loud: bool
-    node_args: string
-    bloat: int
-    git_ref: string
-    benchmark_id: string
-    reference_epoch: int
-    samply: bool
-    samply_args: list<string>
-    tracy: string
-    tracy_filter: string
-    tracy_seconds: int
-    tracy_offset: int
-    tracing_otlp: string
+    --tempo-bin: string
+    --bench-bin: string
+    --genesis-path: string
+    --datadir: string
+    --run-label: string
+    --results-dir: string
+    --tps: int
+    --duration: int
+    --accounts: int
+    --max-concurrent-requests: int
+    --weights: list<float>
+    --preset: string = ""
+    --bench-args: string = ""
+    --loud
+    --node-args: string = ""
+    --bloat: int = 0
+    --git-ref: string = ""
+    --build-profile: string = ""
+    --benchmark-mode: string = ""
+    --benchmark-id: string = ""
+    --reference-epoch: int = 0
+    --samply
+    --samply-args: list<string> = []
+    --tracy: string = "off"
+    --tracy-filter: string = "debug"
+    --tracy-seconds: int = 0
+    --tracy-offset: int = 0
+    --tracing-otlp: string = ""
 ] {
     print $"=== Starting run: ($run_label) ==="
 
@@ -531,6 +560,9 @@ def run-bench-single [
         ]
     } else { [] })
     | append (if $bench_args != "" { $bench_args | split row " " } else { [] })
+    | append (if $git_ref != "" { ["--node-commit-sha" $git_ref] } else { [] })
+    | append (if $build_profile != "" { ["--build-profile" $build_profile] } else { [] })
+    | append (if $benchmark_mode != "" { ["--benchmark-mode" $benchmark_mode] } else { [] })
 
     print $"  Running benchmark..."
     try {
@@ -1389,38 +1421,14 @@ def "main bench-init" [
         cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
     }
 
-    # Clean database files
-    for subdir in [db static_files rocksdb consensus invalid_block_hooks] {
-        let path = $"($datadir)/($subdir)"
-        if ($path | path exists) { rm -rf $path }
-    }
-    for file in [reth.toml jwt.hex] {
-        let path = $"($datadir)/($file)"
-        if ($path | path exists) { rm $path }
-    }
+    bench-clean-datadir $datadir
+    bench-init-db $tempo_bin $genesis_path $datadir $bloat $bloat_file
 
-    # Init database
-    print $"Initializing database at ($datadir)..."
-    run-external $tempo_bin "init" "--chain" $genesis_path "--datadir" $datadir
-
-    if $bloat > 0 {
-        print $"Loading state bloat into ($datadir)..."
-        run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis_path "--datadir" $datadir $bloat_file | complete
-    }
-
-    # Save genesis + bloat to volume meta dir (survives schelk recover)
-    mkdir $meta_dir
-    cp $genesis_path $"($meta_dir)/genesis.json"
-    if $bloat > 0 and ($bloat_file | path exists) {
-        cp $bloat_file $"($meta_dir)/state_bloat.bin"
-    }
-
-    # Promote and remount
-    bench-promote $datadir
-    bench-mount
-
-    # Write marker
-    write-bench-marker $bloat $genesis_accounts $datadir
+    bench-save-and-promote $datadir $meta_dir {
+        bloat_mib: $bloat,
+        accounts: $genesis_accounts,
+        bench_datadir: $datadir
+    } [[$genesis_path "genesis.json"]] $bloat $bloat_file
 
     print $"Virgin snapshot initialized and promoted."
 }
@@ -1761,50 +1769,18 @@ def "main bench" [
                     { name: "baseline", genesis: $baseline_genesis_path, dd: $baseline_datadir, tempo: $baseline_tempo }
                     { name: "feature", genesis: $feature_genesis_path, dd: $feature_datadir, tempo: $feature_tempo }
                 ] {
-                    # Clean existing data
-                    for subdir in [db static_files rocksdb consensus invalid_block_hooks] {
-                        let path = $"($side.dd)/($subdir)"
-                        if ($path | path exists) { rm -rf $path }
-                    }
-                    for file in [reth.toml jwt.hex] {
-                        let path = $"($side.dd)/($file)"
-                        if ($path | path exists) { rm $path }
-                    }
-
-                    print $"Initializing ($side.name) database at ($side.dd)..."
+                    bench-clean-datadir $side.dd
                     mkdir $side.dd
-                    run-external $side.tempo "init" "--chain" $side.genesis "--datadir" $side.dd
-
-                    if $bloat > 0 {
-                        print $"Loading state bloat into ($side.name)..."
-                        run-external $side.tempo "init-from-binary-dump" "--chain" $side.genesis "--datadir" $side.dd $bloat_file | complete
-                    }
+                    bench-init-db $side.tempo $side.genesis $side.dd $bloat $bloat_file
                 }
 
-                # Save genesis files to meta dir
-                mkdir $meta_dir
-                cp $baseline_genesis_path $"($meta_dir)/genesis-baseline.json"
-                cp $feature_genesis_path $"($meta_dir)/genesis-feature.json"
-                if $bloat > 0 and ($bloat_file | path exists) {
-                    cp $bloat_file $"($meta_dir)/state_bloat.bin"
-                }
-
-                # Promote entire volume (snapshots both baseline-db and feature-db)
-                bench-promote $datadir
-                bench-mount
-
-                # Write marker with hardfork info
-                mkdir $meta_dir
-                let marker_path = $"($meta_dir)/marker.json"
-                {
+                bench-save-and-promote $datadir $meta_dir {
                     bloat_mib: $bloat
                     accounts: $genesis_accounts
                     bench_datadir: $datadir
                     baseline_hardfork: ($baseline_hardfork | str upcase)
                     feature_hardfork: ($feature_hardfork | str upcase)
-                    initialized_at: (date now | format date "%Y-%m-%dT%H:%M:%SZ")
-                } | to json | save -f $marker_path
-                print $"Bench marker written to ($marker_path)"
+                } [[$baseline_genesis_path "genesis-baseline.json"] [$feature_genesis_path "genesis-feature.json"]] $bloat $bloat_file
 
                 print "Dual-hardfork databases initialized and promoted."
             }
@@ -1856,33 +1832,14 @@ def "main bench" [
                     }
                 }
 
-                for subdir in [db static_files rocksdb consensus invalid_block_hooks] {
-                    let path = $"($datadir)/($subdir)"
-                    if ($path | path exists) { rm -rf $path }
-                }
-                for file in [reth.toml jwt.hex] {
-                    let path = $"($datadir)/($file)"
-                    if ($path | path exists) { rm $path }
-                }
+                bench-clean-datadir $datadir
+                bench-init-db $baseline_tempo $genesis_path_std $datadir $bloat $bloat_file
 
-                print $"Initializing database at ($datadir)..."
-                run-external $baseline_tempo "init" "--chain" $genesis_path_std "--datadir" $datadir
-
-                if $bloat > 0 {
-                    print $"Loading state bloat into ($datadir)..."
-                    run-external $baseline_tempo "init-from-binary-dump" "--chain" $genesis_path_std "--datadir" $datadir $bloat_file | complete
-                }
-
-                mkdir $meta_dir
-                cp $genesis_path_std $"($meta_dir)/genesis.json"
-                if $bloat > 0 and ($bloat_file | path exists) {
-                    cp $bloat_file $"($meta_dir)/state_bloat.bin"
-                }
-
-                bench-promote $datadir
-                bench-mount
-
-                write-bench-marker $bloat $genesis_accounts $datadir
+                bench-save-and-promote $datadir $meta_dir {
+                    bloat_mib: $bloat,
+                    accounts: $genesis_accounts,
+                    bench_datadir: $datadir
+                } [[$genesis_path_std "genesis.json"]] $bloat $bloat_file
 
                 print "Database initialized and promoted to virgin baseline."
             }
@@ -1933,7 +1890,20 @@ def "main bench" [
             # virgin state. In dual-hardfork mode this resets both baseline-db
             # and feature-db subdirs at once.
             bench-recover $datadir
-            run-bench-single $run.tempo $baseline_bench_bin $run.genesis $run.datadir $run.label $results_dir $tps $duration $accounts $max_concurrent_requests $weights $preset $bench_args $loud $node_args $bloat $run.git_ref $benchmark_id $reference_epoch $samply $samply_args_list $tracy $tracy_filter $tracy_seconds $tracy_offset $tracing_otlp
+            (run-bench-single
+                --tempo-bin $run.tempo --bench-bin $baseline_bench_bin
+                --genesis-path $run.genesis --datadir $run.datadir
+                --run-label $run.label --results-dir $results_dir
+                --tps $tps --duration $duration --accounts $accounts
+                --max-concurrent-requests $max_concurrent_requests
+                --weights $weights --preset $preset --bench-args $bench_args
+                --loud=$loud --node-args $node_args --bloat $bloat
+                --git-ref $run.git_ref --build-profile $profile --benchmark-mode $mode
+                --benchmark-id $benchmark_id --reference-epoch $reference_epoch
+                --samply=$samply --samply-args $samply_args_list
+                --tracy $tracy --tracy-filter $tracy_filter
+                --tracy-seconds $tracy_seconds --tracy-offset $tracy_offset
+                --tracing-otlp $tracing_otlp)
         }
 
         # Generate summary report
@@ -2066,6 +2036,7 @@ def "main bench" [
         ]
     } else { [] })
     | append (if $bench_args != "" { $bench_args | split row " " } else { [] })
+    | append ["--node-commit-sha" (git rev-parse HEAD | str trim) "--build-profile" $profile "--benchmark-mode" $mode]
 
     print $"Running benchmark: ($bench_cmd | str join ' ')"
     try {
