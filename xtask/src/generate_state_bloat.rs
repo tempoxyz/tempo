@@ -127,7 +127,7 @@ impl GenerateStateBloat {
         println!("  Chunk size: {chunk_size} entries ({num_chunks} chunks)");
         println!("  Output: {out_display}");
 
-        // Step 1: Derive parent key (slow PBKDF2 step)
+        // Step 1: Derive parent key
         let parent_key = derive_parent_key(&mnemonic)?;
         let parent_key = Arc::new(parent_key);
         let seed = keccak256(mnemonic.as_bytes());
