@@ -307,51 +307,29 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             );
         }
 
-        // Load sorted entries from the ETL collector into the database table.
+        // Load sorted entries from each ETL collector into its database table.
         // Strategy: iterate the sorted collector, deduplicate consecutive entries with
-        // the same composite key (address ++ slot), and bulk-insert via append_dup.
+        // the same composite key, and bulk-insert via append_dup.
         // The table is cleared first so append_dup ordering is guaranteed.
         let total_plain = plain_collector.len();
-        let interval = (total_plain / 10).max(1);
         provider_rw.tx_ref().clear::<tables::PlainStorageState>()?;
-        let tx = provider_rw.tx_ref();
-        let mut plain_cursor = tx.cursor_dup_write::<tables::PlainStorageState>()?;
-        let mut pending_plain: Option<(Vec<u8>, Vec<u8>)> = None;
-        for (index, item) in plain_collector.iter()?.enumerate() {
-            if index > 0 && index % interval == 0 {
-                info!(
-                    target: "tempo::cli",
-                    progress = format_args!(
-                        "{:.2}%",
-                        (index as f64 / total_plain as f64) * 100.0
-                    ),
-                    "Inserting plain storage"
-                );
-            }
-
-            let (addr_slot, value) = item.wrap_err("ETL iteration failed")?;
-            if let Some((ref prev_key, ref prev_val)) = pending_plain
-                && *prev_key != addr_slot
-            {
+        let mut plain_cursor = provider_rw
+            .tx_ref()
+            .cursor_dup_write::<tables::PlainStorageState>()?;
+        load_etl_to_cursor(
+            &mut plain_collector,
+            total_plain,
+            "plain storage",
+            |k, v| {
                 plain_cursor.append_dup(
-                    alloy_primitives::Address::from_slice(&prev_key[..20]),
+                    alloy_primitives::Address::from_slice(&k[..20]),
                     StorageEntry {
-                        key: B256::from_slice(&prev_key[20..]),
-                        value: CompactU256::decompress_owned(prev_val.clone())?.into(),
+                        key: B256::from_slice(&k[20..]),
+                        value: v,
                     },
-                )?;
-            }
-            pending_plain = Some((addr_slot, value));
-        }
-        if let Some((key, val)) = pending_plain {
-            plain_cursor.append_dup(
-                alloy_primitives::Address::from_slice(&key[..20]),
-                StorageEntry {
-                    key: B256::from_slice(&key[20..]),
-                    value: CompactU256::decompress_owned(val)?.into(),
-                },
-            )?;
-        }
+                )
+            },
+        )?;
         drop(plain_cursor);
 
         info!(
@@ -360,48 +338,25 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             "Plain storage written, loading hashed storage from ETL..."
         );
 
-        // Same dedup + bulk-insert strategy for the hashed storage table.
         let total_hashes = hashed_collector.len();
-        let interval = (total_hashes / 10).max(1);
         provider_rw.tx_ref().clear::<tables::HashedStorages>()?;
-        let tx = provider_rw.tx_ref();
-        let mut hashed_cursor = tx.cursor_dup_write::<tables::HashedStorages>()?;
-        let mut pending_hashed: Option<(Vec<u8>, Vec<u8>)> = None;
-        for (index, item) in hashed_collector.iter()?.enumerate() {
-            if index > 0 && index % interval == 0 {
-                info!(
-                    target: "tempo::cli",
-                    progress = format_args!(
-                        "{:.2}%",
-                        (index as f64 / total_hashes as f64) * 100.0
-                    ),
-                    "Inserting hashed storage"
-                );
-            }
-
-            let (addr_key, value) = item.wrap_err("ETL iteration failed")?;
-            if let Some((ref prev_key, ref prev_val)) = pending_hashed
-                && *prev_key != addr_key
-            {
+        let mut hashed_cursor = provider_rw
+            .tx_ref()
+            .cursor_dup_write::<tables::HashedStorages>()?;
+        load_etl_to_cursor(
+            &mut hashed_collector,
+            total_hashes,
+            "hashed storage",
+            |k, v| {
                 hashed_cursor.append_dup(
-                    B256::from_slice(&prev_key[..32]),
+                    B256::from_slice(&k[..32]),
                     StorageEntry {
-                        key: B256::from_slice(&prev_key[32..]),
-                        value: CompactU256::decompress_owned(prev_val.clone())?.into(),
+                        key: B256::from_slice(&k[32..]),
+                        value: v,
                     },
-                )?;
-            }
-            pending_hashed = Some((addr_key, value));
-        }
-        if let Some((key, val)) = pending_hashed {
-            hashed_cursor.append_dup(
-                B256::from_slice(&key[..32]),
-                StorageEntry {
-                    key: B256::from_slice(&key[32..]),
-                    value: CompactU256::decompress_owned(val)?.into(),
-                },
-            )?;
-        }
+                )
+            },
+        )?;
         drop(hashed_cursor);
 
         info!(
@@ -491,6 +446,44 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
     }
 }
 
+/// Iterate a sorted ETL collector, deduplicate consecutive entries with the same key
+/// (keeping the last value), and call `append` for each unique entry.
+fn load_etl_to_cursor(
+    collector: &mut Collector<Vec<u8>, CompactU256>,
+    total: usize,
+    label: &str,
+    mut append: impl FnMut(&[u8], U256) -> Result<(), reth_db_api::DatabaseError>,
+) -> eyre::Result<()> {
+    let interval = (total / 10).max(1);
+    let mut pending: Option<(Vec<u8>, Vec<u8>)> = None;
+    for (index, item) in collector.iter()?.enumerate() {
+        if index > 0 && index % interval == 0 {
+            info!(
+                target: "tempo::cli",
+                progress = format_args!("{:.2}%", (index as f64 / total as f64) * 100.0),
+                "Inserting {label}"
+            );
+        }
+
+        let (key, value) = item.wrap_err("ETL iteration failed")?;
+        if let Some((ref prev_key, ref prev_val)) = pending
+            && *prev_key != key
+        {
+            append(
+                prev_key,
+                CompactU256::decompress_owned(prev_val.clone())?.into(),
+            )
+            .wrap_err("cursor append failed")?;
+        }
+        pending = Some((key, value));
+    }
+    if let Some((key, val)) = pending {
+        append(&key, CompactU256::decompress_owned(val)?.into())
+            .wrap_err("cursor append failed")?;
+    }
+    Ok(())
+}
+
 /// Log collection progress every 5 seconds and on the final entry.
 fn log_collection_progress(
     address: &alloy_primitives::Address,
@@ -499,8 +492,7 @@ fn log_collection_progress(
     start: Instant,
     last_log: &mut Instant,
 ) {
-    let now = Instant::now();
-    if now.duration_since(*last_log) >= Duration::from_secs(5) || index + 1 == total {
+    if last_log.elapsed() >= Duration::from_secs(5) || index + 1 == total {
         let pct = ((index + 1) as f64 / total as f64) * 100.0;
         let elapsed = start.elapsed();
         let pairs_per_sec = (index + 1) as f64 / elapsed.as_secs_f64();
@@ -512,6 +504,6 @@ fn log_collection_progress(
             pairs_per_sec = pairs_per_sec as u64,
             "Collecting storage"
         );
-        *last_log = now;
+        *last_log = Instant::now();
     }
 }

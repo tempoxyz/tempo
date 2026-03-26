@@ -30,6 +30,11 @@ on:
           - "1"
           - "10"
           - "100"
+      force-bloat:
+        description: "Force re-creation of the bloat snapshot"
+        required: false
+        default: false
+        type: boolean
       tps:
         description: "Target transactions per second"
         required: false
@@ -79,7 +84,6 @@ on:
         required: false
         default: ""
         type: string
-
 env:
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: "sccache"
@@ -115,6 +119,7 @@ jobs:
       tracy-offset: ${{ steps.args.outputs.tracy-offset }}
       baseline-hardfork: ${{ steps.args.outputs.baseline-hardfork }}
       feature-hardfork: ${{ steps.args.outputs.feature-hardfork }}
+      force-bloat: ${{ steps.args.outputs.force-bloat }}
       comment-id: ${{ steps.ack.outputs.comment-id }}
     steps:
       - name: Check org membership
@@ -142,7 +147,7 @@ jobs:
         with:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |
-            let pr, actor, preset, duration, bloat, tps, baseline, feature, samply, tracy, tracySeconds, tracyOffset, baselineHardfork, featureHardfork;
+            let pr, actor, preset, duration, bloat, tps, baseline, feature, samply, tracy, tracySeconds, tracyOffset, baselineHardfork, featureHardfork, forceBloat;
 
             if (context.eventName === 'workflow_dispatch') {
               actor = '${{ github.actor }}';
@@ -158,6 +163,7 @@ jobs:
               tracyOffset = '${{ github.event.inputs.tracy-offset }}' || '120';
               baselineHardfork = '${{ github.event.inputs.baseline-hardfork }}' || '';
               featureHardfork = '${{ github.event.inputs.feature-hardfork }}' || '';
+              forceBloat = '${{ github.event.inputs.force-bloat }}' === 'true' ? 'true' : 'false';
 
               // Find PR for the selected branch
               const branch = '${{ github.ref_name }}';
@@ -180,8 +186,8 @@ jobs:
               const intArgs = new Set(['duration', 'bloat', 'tps', 'tracy-seconds', 'tracy-offset']);
               const refArgs = new Set(['baseline', 'feature']);
               const stringArgs = new Set(['preset', 'tracy', 'baseline-hardfork', 'feature-hardfork']);
-              const boolArgs = new Set(['samply']);
-              const defaults = { preset: 'tip20', duration: '300', bloat: '1024', tps: '10000', baseline: '', feature: '', samply: 'false', tracy: 'off', 'tracy-seconds': '30', 'tracy-offset': '120', 'baseline-hardfork': '', 'feature-hardfork': '' };
+              const boolArgs = new Set(['samply', 'force-bloat']);
+              const defaults = { preset: 'tip20', duration: '300', bloat: '1024', tps: '10000', baseline: '', feature: '', samply: 'false', tracy: 'off', 'tracy-seconds': '30', 'tracy-offset': '120', 'baseline-hardfork': '', 'feature-hardfork': '', 'force-bloat': 'false' };
               const unknown = [];
               const invalid = [];
               const args = body.replace(/^(?:@decofe|derek) bench\s*/, '');
@@ -223,7 +229,7 @@ jobs:
               if (unknown.length) errors.push(`Unknown argument(s): \`${unknown.join('`, `')}\``);
               if (invalid.length) errors.push(`Invalid value(s): ${invalid.join(', ')}`);
               if (errors.length) {
-                const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-hardfork=FORK] [feature-hardfork=FORK]\``;
+                const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [force-bloat] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-hardfork=FORK] [feature-hardfork=FORK]\``;
                 await github.rest.issues.createComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
@@ -245,9 +251,10 @@ jobs:
               tracyOffset = defaults['tracy-offset'];
               baselineHardfork = defaults['baseline-hardfork'];
               featureHardfork = defaults['feature-hardfork'];
+              forceBloat = defaults['force-bloat'];
             }
 
-            const usageStr = '**Usage:** `@decofe bench [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-hardfork=FORK] [feature-hardfork=FORK]`';
+            const usageStr = '**Usage:** `@decofe bench [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [force-bloat] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-hardfork=FORK] [feature-hardfork=FORK]`';
 
             // Validate tracy value
             if (!['off', 'on', 'full'].includes(tracy)) {
@@ -332,6 +339,7 @@ jobs:
             core.setOutput('tracy-offset', tracyOffset);
             core.setOutput('baseline-hardfork', baselineHardfork || '');
             core.setOutput('feature-hardfork', featureHardfork || '');
+            core.setOutput('force-bloat', forceBloat);
 
       - name: Acknowledge request
         id: ack
@@ -395,6 +403,7 @@ jobs:
       BENCH_TRACY_OFFSET: ${{ needs.tempo-bench-ack.outputs.tracy-offset }}
       BENCH_BASELINE_HARDFORK: ${{ needs.tempo-bench-ack.outputs.baseline-hardfork }}
       BENCH_FEATURE_HARDFORK: ${{ needs.tempo-bench-ack.outputs.feature-hardfork }}
+      BENCH_FORCE_BLOAT: ${{ needs.tempo-bench-ack.outputs.force-bloat }}
       BENCH_COMMENT_ID: ${{ needs.tempo-bench-ack.outputs.comment-id }}
       TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
       GRAFANA_TEMPO: ${{ secrets.GRAFANA_TEMPO }}
@@ -587,7 +596,8 @@ jobs:
             --tune \
             $([ "$BENCH_SAMPLY" = "true" ] && echo "--samply" || true) \
             $([ "$BENCH_TRACY" != "off" ] && echo "--tracy $BENCH_TRACY --tracy-seconds $BENCH_TRACY_SECONDS --tracy-offset $BENCH_TRACY_OFFSET" || true) \
-            $([ -n "$BENCH_BASELINE_HARDFORK" ] && echo "--baseline-hardfork $BENCH_BASELINE_HARDFORK --feature-hardfork $BENCH_FEATURE_HARDFORK" || true)
+            $([ -n "$BENCH_BASELINE_HARDFORK" ] && echo "--baseline-hardfork $BENCH_BASELINE_HARDFORK --feature-hardfork $BENCH_FEATURE_HARDFORK" || true) \
+            $([ "$BENCH_FORCE_BLOAT" = "true" ] && echo "--force" || true)
 
       - name: Find results directory
         id: results-dir
