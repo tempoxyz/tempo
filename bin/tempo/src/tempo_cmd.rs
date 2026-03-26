@@ -861,7 +861,7 @@ impl CalculatePublicKey {
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct ValidatorInfo {
-    /// Validator address, index, or ed25519 public key
+    /// Validator ethereum address, ed25519 public key, or index
     #[arg()]
     id: ValidatorId,
     /// RPC URL to query.
