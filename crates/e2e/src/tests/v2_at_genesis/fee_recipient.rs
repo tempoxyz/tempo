@@ -1,6 +1,7 @@
 //! Tests that the proposer reads the fee recipient from the V2 contract.
 
 use alloy::consensus::BlockHeader as _;
+use alloy::transports::http::reqwest::Url;
 use alloy_primitives::Address;
 use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
@@ -42,7 +43,7 @@ fn block_beneficiary_follows_v2_fee_recipient() {
             .unwrap();
 
         let receipt = execution_runtime
-            .set_fee_recipient_v2(http_url, 1, UPDATED_FEE_RECIPIENT)
+            .set_fee_recipient_v2(http_url, 0, UPDATED_FEE_RECIPIENT)
             .await
             .unwrap();
         let change_height = receipt.block_number.unwrap();
@@ -109,7 +110,7 @@ fn falls_back_to_cli_fee_recipient_when_onchain_is_zero() {
             .unwrap();
 
         let receipt = execution_runtime
-            .set_fee_recipient_v2(http_url, 1, Address::ZERO)
+            .set_fee_recipient_v2(http_url, 0, Address::ZERO)
             .await
             .unwrap();
         let change_height = receipt.block_number.unwrap();
