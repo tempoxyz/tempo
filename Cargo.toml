@@ -189,7 +189,7 @@ alloy-rpc-types-eth = { version = "1.8.2" }
 alloy-serde = { version = "1.8.2", default-features = false }
 alloy-signer = "1.8.2"
 alloy-signer-local = "1.8.2"
-coins-bip32 = "0.12"
+coins-bip32 = "0.13"
 alloy-sol-types = { version = "1.5.7", default-features = false }
 alloy-transport = "1.8.2"
 
