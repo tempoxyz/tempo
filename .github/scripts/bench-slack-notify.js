@@ -137,13 +137,17 @@ function buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, re
   metaParts.push(`triggered by ${actorSlackId ? `<@${actorSlackId}>` : `@${actor}`}`);
 
   const config = summary.config;
-  const configLine = `*Config:* preset: \`${config.preset}\`, duration: \`${config.duration}s\`, bloat: \`${config.bloat} MiB\`, tps: \`${config.tps}\``;
 
   const sectionText = [
     metaParts.join(' | '),
     '',
-    `*Baseline:* ${baselineLink} | *Feature:* ${featureLink}`,
-    configLine,
+    `*Baseline:* ${baselineLink}`,
+    `*Feature:* ${featureLink}`,
+    '',
+    `*Preset:* \`${config.preset}\``,
+    `*Duration:* \`${config.duration}s\``,
+    `*Bloat:* \`${config.bloat} MiB\``,
+    `*TPS:* \`${config.tps}\``,
   ].join('\n');
 
   const rows = buildMetricRows(summary);
