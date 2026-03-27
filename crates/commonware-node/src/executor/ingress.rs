@@ -30,7 +30,9 @@ impl Mailbox {
                 response,
             }))
             .wrap_err("failed sending canonicalize request to agent, this means it exited")?;
-        rx.await.wrap_err("TODO")
+        rx.await
+            .wrap_err("executor dropped respone")
+            .and_then(|res| res)
     }
 
     /// Canonicalizes the given head and requests a new payload to be built.
@@ -51,7 +53,9 @@ impl Mailbox {
             .wrap_err(
                 "failed sending canonicalize and build request to agent, this means it exited",
             )?;
-        rx.await.map_err(|_| eyre!("no payload id received"))
+        rx.await
+            .wrap_err("executor dropped response")
+            .and_then(|res| res)
     }
 
     pub(crate) async fn subscribe_finalized(&self, height: Height) -> eyre::Result<()> {
@@ -99,7 +103,7 @@ pub(super) enum Command {
 pub(super) struct CanonicalizeHead {
     pub(super) height: Height,
     pub(super) digest: Digest,
-    pub(super) response: oneshot::Sender<()>,
+    pub(super) response: oneshot::Sender<eyre::Result<()>>,
 }
 
 #[derive(Debug)]
@@ -107,7 +111,7 @@ pub(super) struct CanonicalizeAndBuild {
     pub(super) height: Height,
     pub(super) digest: Digest,
     pub(super) attributes: Box<TempoPayloadAttributes>,
-    pub(super) response: oneshot::Sender<PayloadId>,
+    pub(super) response: oneshot::Sender<eyre::Result<PayloadId>>,
 }
 
 #[derive(Debug)]

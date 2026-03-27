@@ -13,7 +13,6 @@ use commonware_runtime::{
     Clock, ContextCell, FutureExt, Handle, Metrics, Pacer, Spawner, spawn_cell,
 };
 use commonware_utils::{Acknowledgement, acknowledgement::Exact};
-use either::Either;
 use eyre::{OptionExt as _, Report, WrapErr as _, ensure};
 use futures::{
     FutureExt as _, StreamExt as _,
@@ -340,8 +339,7 @@ where
                         attributes: *attributes,
                     },
                 )
-                .await
-                .wrap_err("failed canonicalizing and building payload")?;
+                .await;
             }
             Command::Finalize(finalized) => {
                 self.finalize(cause, *finalized)
@@ -371,7 +369,6 @@ where
             head.digest = %digest,
             %head_or_finalized,
         ),
-        err,
     )]
     async fn canonicalize(
         &mut self,
@@ -380,15 +377,18 @@ where
         height: Height,
         digest: Digest,
         maybe_build: JustCanonicalizeOrAlsoBuild,
-    ) -> eyre::Result<()> {
+    ) {
         let new_canonicalized = match head_or_finalized {
             HeadOrFinalized::Head => self.last_canonicalized.update_head(height, digest),
             HeadOrFinalized::Finalized => self.last_canonicalized.update_finalized(height, digest),
         };
 
-        if new_canonicalized == self.last_canonicalized && maybe_build.is_just_canonicalize() {
+        if new_canonicalized == self.last_canonicalized
+            && let JustCanonicalizeOrAlsoBuild::JustCanonicalize { response } = maybe_build
+        {
             info!("would not change forkchoice state; not sending it to the execution layer");
-            return Ok(());
+            let _ = response.send(Ok(()));
+            return;
         }
 
         info!(
@@ -398,23 +398,24 @@ where
             finalized_block_height = %new_canonicalized.finalized_height,
             "sending forkchoice-update",
         );
-        let (response, attributes) = match maybe_build {
-            JustCanonicalizeOrAlsoBuild::JustCanonicalize { response } => {
-                (Either::Left(response), None)
-            }
-            JustCanonicalizeOrAlsoBuild::AlsoBuild {
-                response,
-                attributes,
-            } => (Either::Right(response), Some(attributes)),
-        };
-        let fcu_response = self
+        let fcu_response = match self
             .execution_node
             .add_ons_handle
             .beacon_engine_handle
-            .fork_choice_updated(new_canonicalized.forkchoice, attributes)
+            .fork_choice_updated(
+                new_canonicalized.forkchoice,
+                maybe_build.attributes().cloned(),
+            )
             .pace(&self.context, Duration::from_millis(20))
             .await
-            .wrap_err("failed requesting execution layer to update forkchoice state")?;
+            .wrap_err("failed requesting execution layer to update forkchoice state")
+        {
+            Err(error) => {
+                maybe_build.send_error(error);
+                return;
+            }
+            Ok(response) => response,
+        };
 
         debug!(
             payload_status = %fcu_response.payload_status,
@@ -422,25 +423,25 @@ where
         );
 
         if fcu_response.is_invalid() {
-            return Err(Report::msg(fcu_response.payload_status)
-                .wrap_err("execution layer responded with error for forkchoice-update"));
+            maybe_build.send_error(
+                Report::msg(fcu_response.payload_status)
+                    .wrap_err("execution layer responded with error for forkchoice-update"),
+            );
+            return;
         }
 
-        match response {
-            Either::Left(response) => {
-                let _ = response.send(());
+        match maybe_build {
+            JustCanonicalizeOrAlsoBuild::JustCanonicalize { response } => {
+                let _ = response.send(Ok(()));
             }
-            Either::Right(response) => {
+            JustCanonicalizeOrAlsoBuild::AlsoBuild { response, .. } => {
                 if let Some(payload_id) = fcu_response.payload_id {
-                    let _ = response.send(payload_id);
+                    let _ = response.send(Ok(payload_id));
                 }
             }
         }
-
         self.last_canonicalized = new_canonicalized;
         self.reset_fcu_heartbeat_timer();
-
-        Ok(())
     }
 
     #[instrument(parent = &cause, skip_all)]
@@ -455,8 +456,7 @@ where
                     digest,
                     JustCanonicalizeOrAlsoBuild::just_canonicalize_without_response(),
                 )
-                .await
-                .wrap_err("failed canonicalizing finalization tip")?;
+                .await;
             }
             Update::Block(block, acknowledgment) => {
                 self.forward_finalized(Span::current(), block, acknowledgment)
@@ -510,8 +510,7 @@ where
             block.digest(),
             JustCanonicalizeOrAlsoBuild::just_canonicalize_without_response(),
         )
-        .await
-        .wrap_err("failed canonicalizing finalized block")?;
+        .await;
 
         let block = block.into_inner();
         let payload_status = self
@@ -555,23 +554,36 @@ where
 /// Controls canonicalization: if attributes are sent, the FCU also builds a payload.
 enum JustCanonicalizeOrAlsoBuild {
     JustCanonicalize {
-        response: oneshot::Sender<()>,
+        response: oneshot::Sender<eyre::Result<()>>,
     },
     AlsoBuild {
-        response: oneshot::Sender<PayloadId>,
+        response: oneshot::Sender<eyre::Result<PayloadId>>,
         attributes: TempoPayloadAttributes,
     },
 }
 
 impl JustCanonicalizeOrAlsoBuild {
+    fn attributes(&self) -> Option<&TempoPayloadAttributes> {
+        match self {
+            Self::JustCanonicalize { .. } => None,
+            Self::AlsoBuild { attributes, .. } => Some(attributes),
+        }
+    }
+    fn send_error(self, error: eyre::Report) {
+        match self {
+            Self::JustCanonicalize { response } => {
+                let _ = response.send(Err(error));
+            }
+            Self::AlsoBuild { response, .. } => {
+                let _ = response.send(Err(error));
+            }
+        }
+    }
+
     fn just_canonicalize_without_response() -> Self {
         Self::JustCanonicalize {
             response: oneshot::channel().0,
         }
-    }
-
-    fn is_just_canonicalize(&self) -> bool {
-        matches!(self, JustCanonicalizeOrAlsoBuild::JustCanonicalize { .. })
     }
 }
 
