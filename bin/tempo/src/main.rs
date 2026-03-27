@@ -132,7 +132,7 @@ fn install_crypto_provider() {
 }
 
 trait NodeCommandExt {
-    /// Derive the enode ID from the p2p secret key without starting the network.
+    /// Derive the peer id from the p2p secret key without starting the network.
     fn peer_id(&self) -> reth_network_peers::PeerId;
 }
 
