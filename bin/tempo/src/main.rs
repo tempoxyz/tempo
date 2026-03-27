@@ -133,18 +133,18 @@ fn install_crypto_provider() {
 
 trait NodeCommandExt {
     /// Derive the enode ID from the p2p secret key without starting the network.
-    fn peer_id(&self) -> Option<reth_network_peers::PeerId>;
+    fn peer_id(&self) -> reth_network_peers::PeerId;
 }
 
 impl NodeCommandExt for reth_cli_commands::node::NodeCommand<TempoChainSpecParser, TempoArgs> {
-    fn peer_id(&self) -> Option<reth_network_peers::PeerId> {
+    fn peer_id(&self) -> reth_network_peers::PeerId {
         let data_dir = self.datadir.clone().resolve_datadir(self.chain.chain());
         let sk = self
             .network
             .secret_key(data_dir.p2p_secret())
             .expect("unable to derive peer id from p2p secret");
 
-        Some(pk2id(&sk.public_key(secp256k1::SECP256K1)))
+        pk2id(&sk.public_key(secp256k1::SECP256K1))
     }
 }
 
@@ -253,19 +253,14 @@ fn main() -> eyre::Result<()> {
             .wrap_err("failed parsing consensus key")?
             .map(|k| k.to_string());
 
-        let peer_id = node_cmd.peer_id().map(|id| format!("{id:x}"));
+        let peer_id = format!("{:x}", node_cmd.peer_id());
 
         // VictoriaMetrics does not support merging `extra_fields` query args like `extra_labels` for
         // metrics. A workaround for now is to directly hook into the `OTEL_RESOURCE_ATTRIBUTES` env var
         // used at startup to capture contextual information.
-        let mut extra_attrs = Vec::new();
-
+        let mut extra_attrs = vec![format!("peer_id={peer_id}")];
         if let Some(pubkey) = &consensus_pubkey {
             extra_attrs.push(format!("consensus_pubkey={pubkey}"));
-        }
-
-        if let Some(id) = &peer_id {
-            extra_attrs.push(format!("peer_id={id}"));
         }
 
         if !extra_attrs.is_empty() {
