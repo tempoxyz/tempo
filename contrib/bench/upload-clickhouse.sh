@@ -44,7 +44,7 @@ for label in baseline-1 feature-1 feature-2 baseline-2; do
   echo "  Processing: $label"
 
   # Generate SQL statements via python (one statement per line, no internal newlines)
-  QUERIES=$(REPORT_PATH="$REPORT" python3 << 'PYEOF'
+  QUERIES=$(REPORT_PATH="$REPORT" BENCH_RUN_LABEL="$label" python3 << 'PYEOF'
 import json, uuid, os
 
 report = json.load(open(os.environ["REPORT_PATH"]))
@@ -73,6 +73,15 @@ sha = meta.get("node_commit_sha") or ""
 profile = meta.get("build_profile") or ""
 mode = meta.get("mode") or ""
 
+run_label = os.environ.get("BENCH_RUN_LABEL", "")
+pr_number = os.environ.get("BENCH_PR", "")
+baseline_ref = os.environ.get("BENCH_BASELINE_REF", "")
+feature_ref = os.environ.get("BENCH_FEATURE_REF", "")
+triggered_by = os.environ.get("BENCH_ACTOR", "")
+run_type = os.environ.get("BENCH_RUN_TYPE", "manual")
+github_run_id = os.environ.get("GITHUB_RUN_ID", "")
+github_run_url = os.environ.get("BENCH_JOB_URL", "")
+
 print(
     f"INSERT INTO tempo_bench_runs (run_id, created_at, chain_id, start_block, end_block, "
     f"target_tps, run_duration_secs, accounts, total_connections, "
@@ -80,13 +89,16 @@ print(
     f"total_gas_used, avg_block_time_ms, avg_tps, "
     f"tip20_weight, place_order_weight, swap_weight, erc20_weight, "
     f"node_commit_sha, build_profile, benchmark_mode, "
-    f"argo_workflow_name, k8s_namespace) VALUES "
+    f"run_label, pr_number, baseline_ref, feature_ref, "
+    f"triggered_by, run_type, github_run_id, github_run_url) VALUES "
     f"('{run_id}', now64(3), {meta['chain_id']}, {meta['start_block']}, {meta['end_block']}, "
     f"{meta['target_tps']}, {meta['run_duration_secs']}, {meta['accounts']}, {meta['total_connections']}, "
     f"{total_blocks}, {total_tx}, {total_ok}, {total_err}, "
     f"{total_gas}, {avg_block_time_ms}, {avg_tps}, "
     f"{meta['tip20_weight']}, {meta['place_order_weight']}, {meta['swap_weight']}, {meta['erc20_weight']}, "
-    f"'{sha}', '{profile}', '{mode}', '', '')"
+    f"'{sha}', '{profile}', '{mode}', "
+    f"'{run_label}', '{pr_number}', '{baseline_ref}', '{feature_ref}', "
+    f"'{triggered_by}', '{run_type}', '{github_run_id}', '{github_run_url}')"
 )
 
 # Blocks insert (batch all blocks in one statement)
