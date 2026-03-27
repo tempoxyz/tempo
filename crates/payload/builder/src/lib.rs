@@ -188,6 +188,7 @@ where
         self.build_payload(
             BuildArguments::new(
                 Default::default(),
+                None,
                 config,
                 Default::default(),
                 Default::default(),
@@ -224,6 +225,7 @@ where
     {
         let BuildArguments {
             mut cached_reads,
+            execution_cache: _,
             config,
             cancel,
             best_payload,
