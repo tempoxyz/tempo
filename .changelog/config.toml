@@ -1,21 +1,38 @@
-# Changelogs configuration for tempo
-# https://github.com/wevm/changelogs
+# Changelogs configuration for alloy-tempo crate publishing.
+# See https://github.com/wevm/changelogs for docs.
 
-# How to bump packages that depend on changed packages
+# How to bump packages that depend on changed packages.
 dependent_bump = "patch"
 
 [changelog]
-# Generate per-crate changelogs (vs single root changelog)
 format = "per-crate"
 
-# Fixed groups: all always share the same version
-# tempo binaries share version
-[[fixed]]
-members = ["tempo"]
-
-# Packages to ignore (internal/test-only crates)
+# Ignore all workspace-only crates (not published to crates.io).
 ignore = [
-    "tempo-e2e",
+    "tempo",
     "tempo-bench",
-    "xtask",
+    "tempo-chainspec",
+    "tempo-commonware-node",
+    "tempo-commonware-node-config",
+    "tempo-consensus",
+    "tempo-dkg-onchain-artifacts",
+    "tempo-e2e",
+    "tempo-evm",
+    "tempo-ext",
+    "tempo-eyre",
+    "tempo-faucet",
+    "tempo-node",
+    "tempo-payload-builder",
+    "tempo-payload-types",
+    "tempo-precompiles",
+    "tempo-precompiles-macros",
+    "tempo-revm",
+    "tempo-sidecar",
+    "tempo-telemetry-util",
+    "tempo-transaction-pool",
+    "tempo-xtask",
 ]
+
+# All three published crates share the same version (workspace.package.version).
+[[fixed]]
+members = ["tempo-contracts", "tempo-primitives", "tempo-alloy"]

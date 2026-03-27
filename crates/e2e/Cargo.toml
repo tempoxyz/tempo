@@ -39,7 +39,6 @@ reth-ethereum = { workspace = true, features = [
   "test-utils",
   "pool",
 ] }
-reth-network-peers = { workspace = true, features = ["std"] }
 reth-node-builder.workspace = true
 reth-node-core.workspace = true
 reth-node-metrics.workspace = true
@@ -56,7 +55,6 @@ tempfile.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 serde_json.workspace = true
-secp256k1.workspace = true
 
 [dev-dependencies]
 commonware-consensus.workspace = true
