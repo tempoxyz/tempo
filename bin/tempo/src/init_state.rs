@@ -122,10 +122,11 @@ impl StorageLoader {
     }
 
     /// Ensure the address has an entry in `PlainAccountState`.
-    /// Repeated encounters are expected for chunked binary dumps: the same token
-    /// address can appear across multiple blocks, so this is vacant only on the
-    /// first encounter. Preserving the genesis account is critical because TIP20
-    /// tokens have bytecode (0xEF) set during genesis, and overwriting with
+    /// Repeated encounters are expected whenever storage is loaded in chunks:
+    /// both binary dumps and direct generation revisit the same token address
+    /// across multiple batches, so this is vacant only on the first encounter.
+    /// Preserving the genesis account is critical because TIP20 tokens have
+    /// bytecode (0xEF) set during genesis, and overwriting with
     /// `Account::default()` would clear the code hash and make the token appear
     /// uninitialized.
     fn ensure_account<P>(
@@ -168,7 +169,8 @@ impl StorageLoader {
         let compact_value = CompactU256::from(value);
 
         // Plain key = address ++ slot ++ 0x01 priority suffix (genesis uses 0x00).
-        // `load_etl_to_cursor` keeps the last value per base key, so dump wins.
+        // `load_etl_to_cursor` keeps the last value per base key, so generated
+        // storage wins over genesis on overlaps.
         let mut plain_key = Vec::with_capacity(53);
         plain_key.extend_from_slice(address.as_slice());
         plain_key.extend_from_slice(slot.as_slice());
@@ -235,7 +237,7 @@ impl StorageLoader {
                 let mut key = Vec::with_capacity(53);
                 key.extend_from_slice(address.as_slice());
                 key.extend_from_slice(entry.key.as_slice());
-                key.push(0x00); // lower priority than dump entries
+                key.push(0x00); // lower priority than generated entries
                 self.plain_collector
                     .insert(key, CompactU256::from(entry.value))
                     .wrap_err("ETL insert of genesis plain storage failed")?;
@@ -259,7 +261,7 @@ impl StorageLoader {
                 let mut key = Vec::with_capacity(65);
                 key.extend_from_slice(hashed_address.as_slice());
                 key.extend_from_slice(entry.key.as_slice());
-                key.push(0x00); // lower priority than dump entries
+                key.push(0x00); // lower priority than generated entries
                 hashed_collector
                     .insert(key, CompactU256::from(entry.value))
                     .wrap_err("ETL insert of genesis hashed storage failed")?;
@@ -274,7 +276,7 @@ impl StorageLoader {
 
         // Load sorted entries from each ETL collector into its database table.
         // Strategy: iterate the sorted collector, deduplicate consecutive entries with
-        // the same composite key, and bulk-insert via append_dup.
+        // the same base key (ignoring the priority suffix), and bulk-insert via append_dup.
         // The table is cleared first so append_dup ordering is guaranteed.
         let total_plain = self.plain_collector.len();
         provider_rw.tx_ref().clear::<tables::PlainStorageState>()?;
