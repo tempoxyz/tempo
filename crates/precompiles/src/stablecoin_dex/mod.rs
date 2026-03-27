@@ -1379,7 +1379,7 @@ impl StablecoinDEX {
     /// # Errors
     /// - `InvalidToken` — a token address does not have a valid TIP-20 prefix
     /// - `PairDoesNotExist` — no orderbook exists for a hop in the route
-    /// - `Paused` — a token in the route is paused (T2+)
+    /// - `Paused` — a token in the route is paused (T3+)
     fn validate_and_build_route(&self, path: &[Address]) -> Result<Vec<(B256, bool)>> {
         let mut route = Vec::new();
 
@@ -1390,9 +1390,9 @@ impl StablecoinDEX {
             let (base, quote) = {
                 let token_in_tip20 = TIP20Token::from_address(token_in)?;
 
-                // Ensure that the token is not paused (spec: T2+)
+                // Ensure that the token is not paused (spec: T3+)
                 // Necessary because TIP20 transfer checks don't cover internal DEX balance updates
-                if self.storage.spec().is_t2() {
+                if self.storage.spec().is_t3() {
                     token_in_tip20.check_not_paused()?;
                 }
 
@@ -4965,8 +4965,8 @@ mod tests {
     }
 
     #[test]
-    fn test_swap_paused_token_allowed_pre_t2_blocked_on_t2() -> eyre::Result<()> {
-        for spec in [TempoHardfork::T1C, TempoHardfork::T2] {
+    fn test_swap_paused_token_allowed_pre_t3_blocked_on_t3() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T2, TempoHardfork::T3] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinDEX::new();
@@ -5001,7 +5001,7 @@ mod tests {
                     u128::MAX,
                 );
 
-                if spec.is_t2() {
+                if spec.is_t3() {
                     assert_eq!(res_in, res_out);
                     assert_eq!(res_in.unwrap_err(), TIP20Error::contract_paused().into());
                 } else {
@@ -5016,8 +5016,8 @@ mod tests {
     }
 
     #[test]
-    fn test_swap_paused_intermediate_token_allowed_pre_t2_blocked_on_t2() -> eyre::Result<()> {
-        for spec in [TempoHardfork::T1C, TempoHardfork::T2] {
+    fn test_swap_paused_intermediate_token_allowed_pre_t3_blocked_on_t3() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T2, TempoHardfork::T3] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinDEX::new();
@@ -5076,7 +5076,7 @@ mod tests {
                     u128::MAX,
                 );
 
-                if spec.is_t2() {
+                if spec.is_t3() {
                     assert_eq!(res_in, res_out);
                     assert_eq!(res_in.unwrap_err(), TIP20Error::contract_paused().into());
                 } else {
