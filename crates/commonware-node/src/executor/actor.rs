@@ -13,6 +13,7 @@ use commonware_runtime::{
     Clock, ContextCell, FutureExt, Handle, Metrics, Pacer, Spawner, spawn_cell,
 };
 use commonware_utils::{Acknowledgement, acknowledgement::Exact};
+use either::Either;
 use eyre::{OptionExt as _, Report, WrapErr as _, ensure};
 use futures::{
     FutureExt as _, StreamExt as _,
@@ -38,8 +39,8 @@ use crate::{
     executor::ingress::CanonicalizeAndBuild,
 };
 
-/// Tracks the last forkchoice state that the executor sent to the execution layer.
-///
+/// Tracks the last forkchoice state that the executor sent to the execution layer. -> bool {
+/// matches!(self, JustCanonicalizeOrAlsoBuild::JustCanonicalize { response }/
 /// Also tracks the corresponding heights corresponding to
 /// `forkchoice_state.head_block_hash` and
 /// `forkchoice_state.finalized_block_hash`, respectively.
@@ -306,7 +307,11 @@ where
     async fn handle_message(&mut self, message: Message) -> eyre::Result<()> {
         let cause = message.cause;
         match message.command {
-            Command::CanonicalizeHead(CanonicalizeHead { height, digest }) => {
+            Command::CanonicalizeHead(CanonicalizeHead {
+                height,
+                digest,
+                response,
+            }) => {
                 // Errors are logged inside canonicalize; head canonicalization failures
                 // are non-fatal and will be retried on the next block.
                 let _ = self
@@ -315,8 +320,7 @@ where
                         HeadOrFinalized::Head,
                         height,
                         digest,
-                        None,
-                        oneshot::channel().0,
+                        JustCanonicalizeOrAlsoBuild::JustCanonicalize { response },
                     )
                     .await;
             }
@@ -324,15 +328,17 @@ where
                 height,
                 digest,
                 attributes,
-                id_tx: ack,
+                response,
             }) => {
                 self.canonicalize(
                     cause,
                     HeadOrFinalized::Head,
                     height,
                     digest,
-                    Some(*attributes),
-                    ack,
+                    JustCanonicalizeOrAlsoBuild::AlsoBuild {
+                        response,
+                        attributes: *attributes,
+                    },
                 )
                 .await
                 .wrap_err("failed canonicalizing and building payload")?;
@@ -373,15 +379,14 @@ where
         head_or_finalized: HeadOrFinalized,
         height: Height,
         digest: Digest,
-        attributes: Option<TempoPayloadAttributes>,
-        payload_id_tx: oneshot::Sender<PayloadId>,
+        maybe_build: JustCanonicalizeOrAlsoBuild,
     ) -> eyre::Result<()> {
         let new_canonicalized = match head_or_finalized {
             HeadOrFinalized::Head => self.last_canonicalized.update_head(height, digest),
             HeadOrFinalized::Finalized => self.last_canonicalized.update_finalized(height, digest),
         };
 
-        if new_canonicalized == self.last_canonicalized && attributes.is_none() {
+        if new_canonicalized == self.last_canonicalized && maybe_build.is_just_canonicalize() {
             info!("would not change forkchoice state; not sending it to the execution layer");
             return Ok(());
         }
@@ -393,6 +398,15 @@ where
             finalized_block_height = %new_canonicalized.finalized_height,
             "sending forkchoice-update",
         );
+        let (response, attributes) = match maybe_build {
+            JustCanonicalizeOrAlsoBuild::JustCanonicalize { response } => {
+                (Either::Left(response), None)
+            }
+            JustCanonicalizeOrAlsoBuild::AlsoBuild {
+                response,
+                attributes,
+            } => (Either::Right(response), Some(attributes)),
+        };
         let fcu_response = self
             .execution_node
             .add_ons_handle
@@ -412,9 +426,17 @@ where
                 .wrap_err("execution layer responded with error for forkchoice-update"));
         }
 
-        if let Some(payload_id) = fcu_response.payload_id {
-            let _ = payload_id_tx.send(payload_id);
+        match response {
+            Either::Left(response) => {
+                let _ = response.send(());
+            }
+            Either::Right(response) => {
+                if let Some(payload_id) = fcu_response.payload_id {
+                    let _ = response.send(payload_id);
+                }
+            }
         }
+
         self.last_canonicalized = new_canonicalized;
         self.reset_fcu_heartbeat_timer();
 
@@ -431,8 +453,7 @@ where
                     HeadOrFinalized::Finalized,
                     height,
                     digest,
-                    None,
-                    oneshot::channel().0,
+                    JustCanonicalizeOrAlsoBuild::just_canonicalize_without_response(),
                 )
                 .await
                 .wrap_err("failed canonicalizing finalization tip")?;
@@ -487,8 +508,7 @@ where
             HeadOrFinalized::Finalized,
             block.height(),
             block.digest(),
-            None,
-            oneshot::channel().0,
+            JustCanonicalizeOrAlsoBuild::just_canonicalize_without_response(),
         )
         .await
         .wrap_err("failed canonicalizing finalized block")?;
@@ -529,6 +549,29 @@ where
         });
 
         Ok(())
+    }
+}
+
+/// Controls canonicalization: if attributes are sent, the FCU also builds a payload.
+enum JustCanonicalizeOrAlsoBuild {
+    JustCanonicalize {
+        response: oneshot::Sender<()>,
+    },
+    AlsoBuild {
+        response: oneshot::Sender<PayloadId>,
+        attributes: TempoPayloadAttributes,
+    },
+}
+
+impl JustCanonicalizeOrAlsoBuild {
+    fn just_canonicalize_without_response() -> Self {
+        Self::JustCanonicalize {
+            response: oneshot::channel().0,
+        }
+    }
+
+    fn is_just_canonicalize(&self) -> bool {
+        matches!(self, JustCanonicalizeOrAlsoBuild::JustCanonicalize { .. })
     }
 }
 

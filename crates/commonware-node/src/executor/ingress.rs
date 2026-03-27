@@ -17,13 +17,20 @@ pub(crate) struct Mailbox {
 
 impl Mailbox {
     /// Requests the agent to update the head of the canonical chain to `digest`.
-    pub(crate) fn canonicalize_head(&self, height: Height, digest: Digest) -> eyre::Result<()> {
+    pub(crate) async fn canonicalize_head(
+        &self,
+        height: Height,
+        digest: Digest,
+    ) -> eyre::Result<()> {
+        let (response, rx) = oneshot::channel();
         self.inner
             .unbounded_send(Message::in_current_span(CanonicalizeHead {
                 height,
                 digest,
+                response,
             }))
-            .wrap_err("failed sending canonicalize request to agent, this means it exited")
+            .wrap_err("failed sending canonicalize request to agent, this means it exited")?;
+        rx.await.wrap_err("TODO")
     }
 
     /// Canonicalizes the given head and requests a new payload to be built.
@@ -33,18 +40,18 @@ impl Mailbox {
         digest: Digest,
         attributes: TempoPayloadAttributes,
     ) -> eyre::Result<PayloadId> {
-        let (id_tx, id_rx) = oneshot::channel();
+        let (response, rx) = oneshot::channel();
         self.inner
             .unbounded_send(Message::in_current_span(CanonicalizeAndBuild {
                 height,
                 digest,
                 attributes: Box::new(attributes),
-                id_tx,
+                response,
             }))
             .wrap_err(
                 "failed sending canonicalize and build request to agent, this means it exited",
             )?;
-        id_rx.await.map_err(|_| eyre!("no payload id received"))
+        rx.await.map_err(|_| eyre!("no payload id received"))
     }
 
     pub(crate) async fn subscribe_finalized(&self, height: Height) -> eyre::Result<()> {
@@ -92,6 +99,7 @@ pub(super) enum Command {
 pub(super) struct CanonicalizeHead {
     pub(super) height: Height,
     pub(super) digest: Digest,
+    pub(super) response: oneshot::Sender<()>,
 }
 
 #[derive(Debug)]
@@ -99,7 +107,7 @@ pub(super) struct CanonicalizeAndBuild {
     pub(super) height: Height,
     pub(super) digest: Digest,
     pub(super) attributes: Box<TempoPayloadAttributes>,
-    pub(super) id_tx: oneshot::Sender<PayloadId>,
+    pub(super) response: oneshot::Sender<PayloadId>,
 }
 
 #[derive(Debug)]
