@@ -327,13 +327,6 @@ impl PartialEq for AASigned {
 
 impl Eq for AASigned {}
 
-#[cfg(feature = "reth")]
-impl reth_primitives_traits::InMemorySize for AASigned {
-    fn size(&self) -> usize {
-        size_of::<Self>() + self.tx.size() + self.signature.size()
-    }
-}
-
 impl alloy_consensus::transaction::SignerRecoverable for AASigned {
     fn recover_signer(
         &self,

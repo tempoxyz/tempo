@@ -132,7 +132,7 @@ def load-bloat-into-node [tempo_bin: string, genesis_path: string, datadir: stri
     run-external $tempo_bin "init" "--chain" $genesis_path "--datadir" $datadir
 
     print $"Loading state bloat into ($datadir | path basename)..."
-    run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis_path "--datadir" $datadir $bloat_file | complete
+    run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis_path "--datadir" $datadir $bloat_file
 }
 
 # ============================================================================
@@ -423,32 +423,34 @@ def worktree-bin [worktree_dir: string, profile: string, bin_name: string] {
 
 # Run a single benchmark run (start node, run bench, stop node, collect report)
 def run-bench-single [
-    tempo_bin: string
-    bench_bin: string
-    genesis_path: string
-    datadir: string
-    run_label: string
-    results_dir: string
-    tps: int
-    duration: int
-    accounts: int
-    max_concurrent_requests: int
-    weights: list<float>
-    preset: string
-    bench_args: string
-    loud: bool
-    node_args: string
-    bloat: int
-    git_ref: string
-    benchmark_id: string
-    reference_epoch: int
-    samply: bool
-    samply_args: list<string>
-    tracy: string
-    tracy_filter: string
-    tracy_seconds: int
-    tracy_offset: int
-    tracing_otlp: string
+    --tempo-bin: string
+    --bench-bin: string
+    --genesis-path: string
+    --datadir: string
+    --run-label: string
+    --results-dir: string
+    --tps: int
+    --duration: int
+    --accounts: int
+    --max-concurrent-requests: int
+    --weights: list<float>
+    --preset: string = ""
+    --bench-args: string = ""
+    --loud
+    --node-args: string = ""
+    --bloat: int = 0
+    --git-ref: string = ""
+    --build-profile: string = ""
+    --benchmark-mode: string = ""
+    --benchmark-id: string = ""
+    --reference-epoch: int = 0
+    --samply
+    --samply-args: list<string> = []
+    --tracy: string = "off"
+    --tracy-filter: string = "debug"
+    --tracy-seconds: int = 0
+    --tracy-offset: int = 0
+    --tracing-otlp: string = ""
 ] {
     print $"=== Starting run: ($run_label) ==="
 
@@ -558,6 +560,9 @@ def run-bench-single [
         ]
     } else { [] })
     | append (if $bench_args != "" { $bench_args | split row " " } else { [] })
+    | append (if $git_ref != "" { ["--node-commit-sha" $git_ref] } else { [] })
+    | append (if $build_profile != "" { ["--build-profile" $build_profile] } else { [] })
+    | append (if $benchmark_mode != "" { ["--benchmark-mode" $benchmark_mode] } else { [] })
 
     print $"  Running benchmark..."
     try {
@@ -1885,7 +1890,20 @@ def "main bench" [
             # virgin state. In dual-hardfork mode this resets both baseline-db
             # and feature-db subdirs at once.
             bench-recover $datadir
-            run-bench-single $run.tempo $baseline_bench_bin $run.genesis $run.datadir $run.label $results_dir $tps $duration $accounts $max_concurrent_requests $weights $preset $bench_args $loud $node_args $bloat $run.git_ref $benchmark_id $reference_epoch $samply $samply_args_list $tracy $tracy_filter $tracy_seconds $tracy_offset $tracing_otlp
+            (run-bench-single
+                --tempo-bin $run.tempo --bench-bin $baseline_bench_bin
+                --genesis-path $run.genesis --datadir $run.datadir
+                --run-label $run.label --results-dir $results_dir
+                --tps $tps --duration $duration --accounts $accounts
+                --max-concurrent-requests $max_concurrent_requests
+                --weights $weights --preset $preset --bench-args $bench_args
+                --loud=$loud --node-args $node_args --bloat $bloat
+                --git-ref $run.git_ref --build-profile $profile --benchmark-mode $mode
+                --benchmark-id $benchmark_id --reference-epoch $reference_epoch
+                --samply=$samply --samply-args $samply_args_list
+                --tracy $tracy --tracy-filter $tracy_filter
+                --tracy-seconds $tracy_seconds --tracy-offset $tracy_offset
+                --tracing-otlp $tracing_otlp)
         }
 
         # Generate summary report
@@ -2018,6 +2036,7 @@ def "main bench" [
         ]
     } else { [] })
     | append (if $bench_args != "" { $bench_args | split row " " } else { [] })
+    | append ["--node-commit-sha" (git rev-parse HEAD | str trim) "--build-profile" $profile "--benchmark-mode" $mode]
 
     print $"Running benchmark: ($bench_cmd | str join ' ')"
     try {
