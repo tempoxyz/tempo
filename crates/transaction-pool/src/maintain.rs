@@ -181,15 +181,15 @@ impl TempoPoolUpdates {
             if key_id.is_zero() {
                 continue;
             }
-            // Resolving the fee token requires state (AMM routing), which we don't have here.
-            // `None` wildcards the token in `SpendingLimitUpdates::contains`, so every pending tx
-            // for this (account, key_id) is re-checked. Safe because the main pool still gates
-            // eviction on `exceeds_spending_limit()`, which can read state.
-            updates.spending_limit_spends.insert(
-                keychain_sig.user_address,
-                key_id,
-                aa_tx.tx().fee_token,
-            );
+            // Always wildcard the token: a mined tx paying fees in token Y can also
+            // decrement token X's spending limit via transfer/approve.
+            // `None` wildcards the token in `SpendingLimitUpdates::contains`, so every
+            // pending tx for this (account, key_id) is re-checked regardless of fee token.
+            // Safe because eviction is still gated on `exceeds_spending_limit()` which
+            // reads the actual remaining limit from state.
+            updates
+                .spending_limit_spends
+                .insert(keychain_sig.user_address, key_id, None);
         }
 
         updates
@@ -1357,7 +1357,8 @@ mod tests {
         use super::*;
         use alloy_signer_local::PrivateKeySigner;
 
-        /// Verify from_chain extracts (account, key_id, fee_token) from included keychain txs.
+        /// Verify from_chain extracts (account, key_id) with wildcard token from included
+        /// keychain txs, so all pending txs for that key are rechecked regardless of fee token.
         #[test]
         fn extracts_keychain_tx_spending_limit_spends() {
             let user_address = Address::random();
@@ -1375,11 +1376,18 @@ mod tests {
 
             let updates = TempoPoolUpdates::from_chain(&chain);
 
+            // Wildcard: matches both the original fee token and any other token
             assert!(
                 updates
                     .spending_limit_spends
                     .contains(user_address, key_id, fee_token),
-                "Should contain the keychain tx's (account, key_id, fee_token)"
+                "Should match the keychain tx's fee token"
+            );
+            assert!(
+                updates
+                    .spending_limit_spends
+                    .contains(user_address, key_id, Address::random()),
+                "Should match any other token (wildcard)"
             );
             assert_eq!(updates.spending_limit_spends.len(), 1);
         }
@@ -1435,6 +1443,44 @@ mod tests {
                 key_id,
                 Address::random(),
             ));
+        }
+
+        /// When a keychain tx has an explicit fee_token, spending_limit_spends should
+        /// still use a wildcard so pending txs with ANY fee token are rechecked.
+        /// This prevents the case where a mined tx pays fees in token Y but also
+        /// spends token X's limit via transfer/approve, leaving pending txs paying
+        /// in token X unrechecked.
+        #[test]
+        fn always_wildcards_fee_token_for_cross_token_recheck() {
+            let user_address = Address::random();
+            let access_key_signer = PrivateKeySigner::random();
+            let key_id = access_key_signer.address();
+            let fee_token_y = Address::random();
+            let fee_token_x = Address::random();
+
+            let keychain_tx = TxBuilder::aa(user_address)
+                .fee_token(fee_token_y)
+                .build_keychain(user_address, &access_key_signer);
+            let envelope = extract_envelope(&keychain_tx);
+
+            let block = create_block_with_txs(1, vec![envelope], vec![user_address]);
+            let chain = create_test_chain(vec![block]);
+
+            let updates = TempoPoolUpdates::from_chain(&chain);
+
+            // Must match ANY fee token (wildcard), not just the included tx's fee token
+            assert!(
+                updates
+                    .spending_limit_spends
+                    .contains(user_address, key_id, fee_token_x),
+                "spending_limit_spends should wildcard fee_token to catch cross-token limit spends"
+            );
+            assert!(
+                updates
+                    .spending_limit_spends
+                    .contains(user_address, key_id, fee_token_y),
+                "spending_limit_spends should also match the original fee token"
+            );
         }
 
         /// has_invalidation_events returns true when spending_limit_spends is non-empty.
