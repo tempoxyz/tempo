@@ -1264,10 +1264,9 @@ mod tests {
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::ITIP403Registry;
     use tempo_precompiles::{
-        ACCOUNT_KEYCHAIN_ADDRESS, TIP403_REGISTRY_ADDRESS,
         account_keychain::{AccountKeychain, AuthorizedKey},
         tip20::slots as tip20_slots,
-        tip403_registry::PolicyData,
+        tip403_registry::{CompoundPolicyData, PolicyData, TIP403Registry},
     };
 
     fn provider_with_spending_limit(
@@ -1325,26 +1324,24 @@ mod tests {
         );
 
         // Set up TIP403 registry with compound policy pointing to sub-policies
-        let registry = TIP403Registry::new();
-        let policy_data = PolicyData {
-            policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
-            admin: Address::ZERO,
-        };
-        let base_slot = registry.policy_records[compound_policy_id].base.base_slot();
-        let compound_slot = registry.policy_records[compound_policy_id]
-            .compound
-            .base_slot();
-        // CompoundPolicyData: 3 u64s packed into one slot
-        let compound_encoded =
-            U256::from(sender_sub_policy) | (U256::from(recipient_sub_policy) << 64);
-
-        provider.add_account(
-            TIP403_REGISTRY_ADDRESS,
-            ExtendedAccount::new(0, U256::ZERO).extend_storage([
-                (base_slot.into(), policy_data.encode_to_slot()),
-                (compound_slot.into(), compound_encoded),
-            ]),
-        );
+        provider
+            .setup_storage(TempoHardfork::default(), || {
+                let mut registry = TIP403Registry::new();
+                registry.policy_records[compound_policy_id]
+                    .base
+                    .write(PolicyData {
+                        policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
+                        admin: Address::ZERO,
+                    })?;
+                registry.policy_records[compound_policy_id]
+                    .compound
+                    .write(CompoundPolicyData {
+                        sender_policy_id: sender_sub_policy,
+                        recipient_policy_id: recipient_sub_policy,
+                        mint_recipient_policy_id: 0,
+                    })
+            })
+            .unwrap();
 
         let mut state = provider.latest().unwrap();
         let mut cache: AddressMap<Vec<u64>> = AddressMap::default();
@@ -1386,25 +1383,24 @@ mod tests {
             )]),
         );
 
-        let registry = TIP403Registry::new();
-        let policy_data = PolicyData {
-            policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
-            admin: Address::ZERO,
-        };
-        let base_slot = registry.policy_records[compound_policy_id].base.base_slot();
-        let compound_slot = registry.policy_records[compound_policy_id]
-            .compound
-            .base_slot();
-        let compound_encoded =
-            U256::from(sender_sub_policy) | (U256::from(recipient_sub_policy) << 64);
-
-        provider.add_account(
-            TIP403_REGISTRY_ADDRESS,
-            ExtendedAccount::new(0, U256::ZERO).extend_storage([
-                (base_slot.into(), policy_data.encode_to_slot()),
-                (compound_slot.into(), compound_encoded),
-            ]),
-        );
+        provider
+            .setup_storage(TempoHardfork::default(), || {
+                let mut registry = TIP403Registry::new();
+                registry.policy_records[compound_policy_id]
+                    .base
+                    .write(PolicyData {
+                        policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
+                        admin: Address::ZERO,
+                    })?;
+                registry.policy_records[compound_policy_id]
+                    .compound
+                    .write(CompoundPolicyData {
+                        sender_policy_id: sender_sub_policy,
+                        recipient_policy_id: recipient_sub_policy,
+                        mint_recipient_policy_id: 0,
+                    })
+            })
+            .unwrap();
 
         let mut state = provider.latest().unwrap();
         let mut cache: AddressMap<Vec<u64>> = AddressMap::default();
@@ -1445,26 +1441,24 @@ mod tests {
             )]),
         );
 
-        let registry = TIP403Registry::new();
-        let policy_data = PolicyData {
-            policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
-            admin: Address::ZERO,
-        };
-        let base_slot = registry.policy_records[compound_policy_id].base.base_slot();
-        let compound_slot = registry.policy_records[compound_policy_id]
-            .compound
-            .base_slot();
-        let compound_encoded = U256::from(sender_sub)
-            | (U256::from(recipient_sub) << 64)
-            | (U256::from(mint_recipient_sub) << 128);
-
-        provider.add_account(
-            TIP403_REGISTRY_ADDRESS,
-            ExtendedAccount::new(0, U256::ZERO).extend_storage([
-                (base_slot.into(), policy_data.encode_to_slot()),
-                (compound_slot.into(), compound_encoded),
-            ]),
-        );
+        provider
+            .setup_storage(TempoHardfork::default(), || {
+                let mut registry = TIP403Registry::new();
+                registry.policy_records[compound_policy_id]
+                    .base
+                    .write(PolicyData {
+                        policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
+                        admin: Address::ZERO,
+                    })?;
+                registry.policy_records[compound_policy_id]
+                    .compound
+                    .write(CompoundPolicyData {
+                        sender_policy_id: sender_sub,
+                        recipient_policy_id: recipient_sub,
+                        mint_recipient_policy_id: mint_recipient_sub,
+                    })
+            })
+            .unwrap();
 
         let mut state = provider.latest().unwrap();
         let mut cache: AddressMap<Vec<u64>> = AddressMap::default();
@@ -1501,24 +1495,24 @@ mod tests {
             )]),
         );
 
-        let registry = TIP403Registry::new();
-        let policy_data = PolicyData {
-            policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
-            admin: Address::ZERO,
-        };
-        let base_slot = registry.policy_records[compound_policy_id].base.base_slot();
-        let compound_slot = registry.policy_records[compound_policy_id]
-            .compound
-            .base_slot();
-        let compound_encoded = U256::from(sender_sub) | (U256::from(recipient_sub) << 64);
-
-        provider.add_account(
-            TIP403_REGISTRY_ADDRESS,
-            ExtendedAccount::new(0, U256::ZERO).extend_storage([
-                (base_slot.into(), policy_data.encode_to_slot()),
-                (compound_slot.into(), compound_encoded),
-            ]),
-        );
+        provider
+            .setup_storage(TempoHardfork::default(), || {
+                let mut registry = TIP403Registry::new();
+                registry.policy_records[compound_policy_id]
+                    .base
+                    .write(PolicyData {
+                        policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
+                        admin: Address::ZERO,
+                    })?;
+                registry.policy_records[compound_policy_id]
+                    .compound
+                    .write(CompoundPolicyData {
+                        sender_policy_id: sender_sub,
+                        recipient_policy_id: recipient_sub,
+                        mint_recipient_policy_id: 0,
+                    })
+            })
+            .unwrap();
 
         let mut state = provider.latest().unwrap();
         let ids = get_recipient_policy_ids(&mut state, fee_token, TempoHardfork::default())
@@ -1558,18 +1552,17 @@ mod tests {
             )]),
         );
 
-        let registry = TIP403Registry::new();
-        let policy_data = PolicyData {
-            policy_type: ITIP403Registry::PolicyType::BLACKLIST as u8,
-            admin: Address::ZERO,
-        };
-        let base_slot = registry.policy_records[simple_policy_id].base.base_slot();
-
-        provider.add_account(
-            TIP403_REGISTRY_ADDRESS,
-            ExtendedAccount::new(0, U256::ZERO)
-                .extend_storage([(base_slot.into(), policy_data.encode_to_slot())]),
-        );
+        provider
+            .setup_storage(TempoHardfork::default(), || {
+                let mut registry = TIP403Registry::new();
+                registry.policy_records[simple_policy_id]
+                    .base
+                    .write(PolicyData {
+                        policy_type: ITIP403Registry::PolicyType::BLACKLIST as u8,
+                        admin: Address::ZERO,
+                    })
+            })
+            .unwrap();
 
         let mut state = provider.latest().unwrap();
         let ids = get_recipient_policy_ids(&mut state, fee_token, TempoHardfork::default())
