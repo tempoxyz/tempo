@@ -2,7 +2,9 @@ use base64::{Engine, prelude::BASE64_STANDARD};
 use eyre::Context as _;
 use jiff::SignedDuration;
 use reth_cli_commands::download::DownloadDefaults;
-use reth_ethereum::node::core::args::{DefaultPayloadBuilderValues, DefaultTxPoolValues};
+use reth_ethereum::node::core::args::{
+    DefaultPayloadBuilderValues, DefaultStorageValues, DefaultTxPoolValues,
+};
 use std::{borrow::Cow, str::FromStr, time::Duration};
 use tempo_chainspec::hardfork::TempoHardfork;
 use url::Url;
@@ -169,7 +171,16 @@ fn init_txpool_defaults() {
         .expect("failed to initialize txpool defaults");
 }
 
+fn init_storage_defaults() {
+    DefaultStorageValues::default()
+        // NOTE: when changing, don't forget to change in `e2e::launch_execution_node`
+        .with_v2(false)
+        .try_init()
+        .expect("failed to initialize storage defaults");
+}
+
 pub(crate) fn init_defaults() {
+    init_storage_defaults();
     init_download_urls();
     init_payload_builder_defaults();
     init_txpool_defaults();

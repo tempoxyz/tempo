@@ -133,9 +133,6 @@ pub struct Setup {
     /// The number of heights in an epoch.
     pub epoch_length: u64,
 
-    /// Whether to connect execution layer nodes directly.
-    pub connect_execution_layer_nodes: bool,
-
     /// The amount of time the node waits for the execution layer to return
     /// a build a payload.
     pub new_payload_wait_time: Duration,
@@ -163,7 +160,6 @@ impl Setup {
                 success_rate: 1.0,
             },
             epoch_length: 20,
-            connect_execution_layer_nodes: false,
             new_payload_wait_time: Duration::from_millis(300),
             t2_time: 1,
             with_subblocks: false,
@@ -195,13 +191,6 @@ impl Setup {
     pub fn epoch_length(self, epoch_length: u64) -> Self {
         Self {
             epoch_length,
-            ..self
-        }
-    }
-
-    pub fn connect_execution_layer_nodes(self, connect_execution_layer_nodes: bool) -> Self {
-        Self {
-            connect_execution_layer_nodes,
             ..self
         }
     }
@@ -243,7 +232,6 @@ pub async fn setup_validators(
         epoch_length,
         how_many_signers,
         how_many_verifiers,
-        connect_execution_layer_nodes,
         linkage,
         new_payload_wait_time,
         t2_time,
@@ -274,7 +262,6 @@ pub async fn setup_validators(
 
     let execution_configs = ExecutionNodeConfig::generator()
         .with_count(how_many_signers + how_many_verifiers)
-        .with_peers(connect_execution_layer_nodes)
         .generate();
 
     let mut nodes = vec![];
@@ -346,7 +333,6 @@ pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> 
     executor.start(|mut context| async move {
         // Setup and run all validators.
         let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup.clone()).await;
-
         join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
 
         loop {
@@ -394,6 +380,36 @@ pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> 
 
         context.auditor().state()
     })
+}
+
+/// Connects a running node to a set of peers
+///
+/// Useful when a node is restarted and needs to re-connect to its previous peers as
+/// ports are not statically defined.
+pub async fn connect_execution_to_peers<TClock: commonware_runtime::Clock>(
+    node: &TestingNode<TClock>,
+    nodes: &[TestingNode<TClock>],
+) {
+    for other in nodes {
+        if node.public_key() == other.public_key() {
+            continue;
+        }
+
+        if let (Some(a), Some(b)) = (node.execution_node.as_ref(), other.execution_node.as_ref()) {
+            a.connect_peer(b).await;
+        }
+    }
+}
+
+/// Connects all running execution nodes as peers.
+///
+/// This must be called after nodes are started so that the ports are known
+pub async fn connect_execution_peers<TClock: commonware_runtime::Clock>(
+    nodes: &[TestingNode<TClock>],
+) {
+    for i in 0..nodes.len() {
+        connect_execution_to_peers(&nodes[i], &nodes[(i + 1)..]).await;
+    }
 }
 
 /// Links (or unlinks) validators using the oracle.

@@ -1,0 +1,634 @@
+# Nightly workflow to update reth dependencies from upstream main branch.
+#
+# If `reth-auto-bump` exists, rebases it onto main (preserving source fixes)
+# and bumps to the latest reth rev. Opens a PR targeting `main`.
+
+name: Update reth deps
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: update-reth
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+  RUSTC_WRAPPER: "sccache"
+  TEMPO_MAINNET_RPC_URL: ${{ secrets.TEMPO_MAINNET_RPC_URL }}
+  TEMPO_TESTNET_RPC_URL: ${{ secrets.TEMPO_TESTNET_RPC_URL }}
+  TEMPO_DEVNET_RPC_URL: ${{ secrets.TEMPO_DEVNET_RPC_URL }}
+
+jobs:
+  update:
+    name: Update reth dependencies
+    runs-on: depot-ubuntu-latest-32
+    timeout-minutes: 120
+    steps:
+      # ── checkout ───────────────────────────────────────────────
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.DEREK_PAT }}
+
+      # ── git identity (use Derek's account) ─────────────────────
+      - name: Configure git
+        env:
+          GH_TOKEN: ${{ secrets.DEREK_PAT }}
+        run: |
+          USER_JSON=$(gh api /user)
+          GIT_NAME=$(echo "$USER_JSON" | jq -r '.name // .login')
+          GIT_ID=$(echo "$USER_JSON" | jq -r '.id')
+          GIT_LOGIN=$(echo "$USER_JSON" | jq -r '.login')
+          git config user.name "$GIT_NAME"
+          git config user.email "${GIT_ID}+${GIT_LOGIN}@users.noreply.github.com"
+
+      # ── setup working branch ─────────────────────────────────
+      - name: Setup working branch
+        id: detect
+        env:
+          GH_TOKEN: ${{ secrets.DEREK_PAT }}
+        run: |
+          EXISTING_PR=$(gh pr list --head reth-auto-bump --base main --state open --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING_PR" ]; then
+            echo "existing_pr=$EXISTING_PR" >> "$GITHUB_OUTPUT"
+            echo "Found existing PR #$EXISTING_PR"
+          fi
+
+          if git rev-parse --verify origin/reth-auto-bump >/dev/null 2>&1; then
+            echo "Continuing on existing reth-auto-bump branch, rebasing onto main"
+            git checkout reth-auto-bump
+            if ! git rebase origin/main; then
+              echo "Rebase conflicts detected, resolving..."
+              # Conflicts are expected in Cargo.toml/Cargo.lock from old rev bumps.
+              # Accept main's version for those since we're about to bump to a new
+              # rev anyway. Keep source fixes from our side.
+              while [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; do
+                CONFLICTED=$(git diff --name-only --diff-filter=U)
+                for f in $CONFLICTED; do
+                  case "$f" in
+                    Cargo.toml|Cargo.lock)
+                      echo "  Accepting main version for $f"
+                      git checkout --theirs "$f"
+                      ;;
+                    *)
+                      echo "  Accepting our version for $f"
+                      git checkout --ours "$f"
+                      ;;
+                  esac
+                  git add "$f"
+                done
+                GIT_EDITOR=true git rebase --continue || true
+              done
+              echo "Rebase completed with conflict resolution"
+            fi
+          else
+            echo "Creating reth-auto-bump from main"
+            git checkout -b reth-auto-bump origin/main
+          fi
+
+      # ── toolchain (matches test.yml) ───────────────────────────
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
+      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      - uses: taiki-e/install-action@3f67faa728964808f52294a9cd15561b15550b28 # v2.67.19
+        with:
+          tool: nextest@0.9.124
+
+      # ── amp CLI ────────────────────────────────────────────────
+      - name: Install Amp CLI
+        run: curl -fsSL https://ampcode.com/install.sh | bash
+
+      # ── amp helper ────────────────────────────────────────────
+      - name: Create amp wrapper
+        run: |
+          # Wrapper that runs amp with --stream-json, extracts the thread URL,
+          # logs it, and still prints the final result text.
+          cat > /usr/local/bin/amp-run <<'WRAPPER'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          OUTPUT=$(amp "$@" --stream-json --take-me-back 2>&1)
+          FIRST_LINE=$(echo "$OUTPUT" | head -1 || true)
+          THREAD_ID=$(echo "$FIRST_LINE" | jq -r '.session_id // empty' 2>/dev/null || true)
+          if [ -n "$THREAD_ID" ]; then
+            echo "🔗 Amp thread: https://ampcode.com/threads/${THREAD_ID}"
+          fi
+          # Print the final result text
+          echo "$OUTPUT" | jq -r 'select(.type=="result") | .result // empty' 2>/dev/null || true
+          # Propagate error if amp failed
+          IS_ERROR=$(echo "$OUTPUT" | jq -r 'select(.type=="result") | .is_error // false' 2>/dev/null || true)
+          if [ "$IS_ERROR" = "true" ]; then
+            exit 1
+          fi
+          WRAPPER
+          chmod +x /usr/local/bin/amp-run
+
+      # ── update reth rev ─────────────────────────────────────────
+      - name: Update reth rev in Cargo.toml
+        id: update
+        env:
+          GH_TOKEN: ${{ secrets.DEREK_PAT }}
+        run: |
+          # Base rev from main branch (what we're upgrading FROM)
+          BASE_REV=$(git show origin/main:Cargo.toml | grep -m1 'paradigmxyz/reth' | sed 's/.*rev = "\([^"]*\)".*/\1/')
+          echo "Base reth rev (on main): $BASE_REV"
+
+          # Current rev on working branch (may already have a previous bump)
+          CURRENT_REV=$(grep -m1 'paradigmxyz/reth' Cargo.toml | sed 's/.*rev = "\([^"]*\)".*/\1/')
+          echo "Current reth rev (on working branch): $CURRENT_REV"
+
+          # Latest commit on reth main
+          NEW_REV=$(gh api repos/paradigmxyz/reth/commits/main --jq '.sha' | head -c 7)
+          echo "Latest reth main: $NEW_REV"
+
+          if [ "$CURRENT_REV" = "$NEW_REV" ]; then
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+            echo "Already on latest reth rev."
+            exit 0
+          fi
+
+          echo "bumped=true" >> "$GITHUB_OUTPUT"
+          echo "old_rev=$BASE_REV" >> "$GITHUB_OUTPUT"
+          echo "new_rev=$NEW_REV" >> "$GITHUB_OUTPUT"
+
+          # Update all reth rev references in Cargo.toml files
+          find . -name 'Cargo.toml' -exec sed -i "s|paradigmxyz/reth\", rev = \"${CURRENT_REV}\"|paradigmxyz/reth\", rev = \"${NEW_REV}\"|g" {} +
+          echo "Updated reth rev: $CURRENT_REV -> $NEW_REV"
+
+      # ── commit rev bump if changed ──────────────────────────────
+      - name: Commit reth rev bump
+        if: steps.update.outputs.bumped == 'true'
+        run: |
+          git add -A
+          git commit -m "deps: bump reth rev to ${{ steps.update.outputs.new_rev }} ($(date -u +%Y-%m-%d))"
+
+      # ── cargo check + Amp fix loop ────────────────────────────
+      - name: Fix compilation errors
+        id: check-loop
+        env:
+          AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
+        run: |
+          echo "::group::Initial cargo clippy"
+          set +e
+          cargo clippy --all-targets --all-features 2>&1
+          clippy_exit=$?
+          set -e
+          echo "::endgroup::"
+
+          if [ "$clippy_exit" -eq 0 ]; then
+            echo "clippy_passed=true" >> "$GITHUB_OUTPUT"
+            echo "Cargo clippy already passes — skipping."
+            exit 0
+          fi
+
+          AMP_PROMPT="This Rust workspace just had its reth dependencies updated to the latest commit \
+          on the paradigmxyz/reth main branch. \`cargo clippy --all-targets --all-features\` is now failing with compilation errors.
+
+          Run \`cargo clippy --all-targets --all-features\` to see the errors, then fix the Rust source code and repeat \
+          until cargo clippy passes. You may also bump non-reth dependency versions in Cargo.toml files \
+          if needed (e.g. revm, alloy), but do NOT modify the reth rev or git source specifications \
+          in any Cargo.toml — those have already been updated by the workflow.
+
+          IMPORTANT: Do NOT suppress warnings with #[allow(...)]. Instead, migrate the code \
+          to use the new non-deprecated APIs. Look at the upstream reth source code to understand \
+          what replaced the deprecated items."
+
+          MAX_ATTEMPTS=10
+          DEADLINE=$((SECONDS + 3600))  # 60 minutes
+          attempt=0
+          while true; do
+            attempt=$((attempt + 1))
+            if [ "$attempt" -gt "$MAX_ATTEMPTS" ] || [ "$SECONDS" -ge "$DEADLINE" ]; then
+              echo "::error::Gave up after $((attempt - 1)) attempts / $((SECONDS / 60))m — pushing best effort"
+              echo "clippy_passed=false" >> "$GITHUB_OUTPUT"
+              exit 0  # don't fail — let subsequent steps commit+push partial work
+            fi
+
+            echo "::group::Amp attempt $attempt"
+            amp-run --dangerously-allow-all -x "$AMP_PROMPT"
+            echo "::endgroup::"
+
+            echo "::group::Verify cargo clippy"
+            set +e
+            cargo clippy --all-targets --all-features 2>&1
+            clippy_exit=$?
+            set -e
+            echo "::endgroup::"
+
+            if [ "$clippy_exit" -eq 0 ]; then
+              echo "Clippy passed after attempt $attempt"
+              echo "clippy_passed=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            echo "Amp exited but cargo clippy still failing, retrying..."
+          done
+
+      # ── test compilation check + Amp fix loop ─────────────────
+      - name: Fix test compilation errors
+        id: test-loop
+        env:
+          AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
+        run: |
+          echo "::group::Initial test compilation check"
+          set +e
+          cargo nextest run --profile ci --no-run 2>&1
+          test_exit=$?
+          set -e
+          echo "::endgroup::"
+
+          if [ "$test_exit" -eq 0 ]; then
+            echo "test_passed=true" >> "$GITHUB_OUTPUT"
+            echo "Tests already compile — skipping."
+            exit 0
+          fi
+
+          AMP_PROMPT="This Rust workspace just had its reth dependencies updated to the latest commit \
+          on the paradigmxyz/reth main branch. Test compilation is failing.
+
+          Run \`cargo nextest run --profile ci --no-run\` to build test binaries and see the compilation errors, \
+          then fix the Rust source code and repeat until test binaries compile successfully. \
+          Also run \`cargo check --workspace\` after fixes to catch compilation regressions. \
+          You may also bump non-reth dependency versions in Cargo.toml files if needed (e.g. revm, alloy), \
+          but do NOT modify the reth rev or git source specifications in any Cargo.toml — \
+          those have already been updated by the workflow.
+
+          IMPORTANT: Do NOT suppress warnings with #[allow(...)]. Instead, migrate the code \
+          to use the new non-deprecated APIs. Look at the upstream reth source code to understand \
+          what replaced the deprecated items."
+
+          MAX_ATTEMPTS=10
+          DEADLINE=$((SECONDS + 3600))  # 60 minutes
+          attempt=0
+          while true; do
+            attempt=$((attempt + 1))
+            if [ "$attempt" -gt "$MAX_ATTEMPTS" ] || [ "$SECONDS" -ge "$DEADLINE" ]; then
+              echo "::error::Gave up after $((attempt - 1)) attempts / $((SECONDS / 60))m — pushing best effort"
+              echo "test_passed=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            echo "::group::Amp attempt $attempt"
+            amp-run --dangerously-allow-all -x "$AMP_PROMPT"
+            echo "::endgroup::"
+
+            echo "::group::Verify test compilation"
+            set +e
+            cargo nextest run --profile ci --no-run 2>&1
+            test_exit=$?
+            set -e
+            echo "::endgroup::"
+
+            if [ "$test_exit" -eq 0 ]; then
+              echo "Tests compile after attempt $attempt"
+              echo "test_passed=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            echo "Amp exited but test compilation still failing, retrying..."
+          done
+
+      # ── commit source fixes ─────────────────────────────────────
+      - name: Commit source fixes
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            git add -A
+            git commit -m "fix: resolve breaking changes from reth update ($(date -u +%Y-%m-%d))"
+          else
+            echo "No source changes to commit."
+          fi
+
+      # ── zepter feature lint ─────────────────────────────────────
+      - uses: taiki-e/cache-cargo-install-action@34ce5120836e5f9f1508d8713d7fdea0e8facd6f # v3.0.1
+        with:
+          tool: zepter
+      - name: Fix zepter lint
+        run: |
+          if ! zepter run check; then
+            echo "Zepter check failed — running auto-fix..."
+            zepter
+            if [ -n "$(git status --porcelain)" ]; then
+              git add -A
+              git commit -m "fix: resolve zepter feature propagation from reth update ($(date -u +%Y-%m-%d))"
+            fi
+          else
+            echo "Zepter check passed."
+          fi
+
+      # ── push ───────────────────────────────────────────────────
+      - name: Push working branch
+        run: |
+          git push --force-with-lease origin reth-auto-bump
+
+      # ── create / update PR ─────────────────────────────────────
+      - name: Create or update PR
+        env:
+          GH_TOKEN: ${{ secrets.DEREK_PAT }}
+          AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
+        run: |
+          DATE=$(date -u +%Y-%m-%d)
+          TITLE="deps: update reth from main ($DATE)"
+
+          # Always compute revs by reading Cargo.toml on each branch.
+          # steps.update.outputs.old_rev/new_rev are empty when no bump was
+          # needed this run (branch already had the latest rev).
+          OLD_REV=$(git show origin/main:Cargo.toml | grep -m1 'paradigmxyz/reth' | sed 's/.*rev = "\([^"]*\)".*/\1/')
+          NEW_REV=$(grep -m1 'paradigmxyz/reth' Cargo.toml | sed 's/.*rev = "\([^"]*\)".*/\1/')
+
+          # Build PR body in a temp file to avoid shell quoting issues
+          {
+            echo "Automated nightly update of reth dependencies from \`paradigmxyz/reth\` main branch."
+            echo ""
+
+            if [ -n "$OLD_REV" ] && [ -n "$NEW_REV" ] && [ "$OLD_REV" != "$NEW_REV" ]; then
+              # Summarize upstream reth changes
+              echo "## Upstream reth changes"
+              echo ""
+              echo "[\`${OLD_REV:0:7}...${NEW_REV:0:7}\`](https://github.com/paradigmxyz/reth/compare/${OLD_REV}...${NEW_REV})"
+              echo ""
+
+              RETH_LOG=$(gh api "repos/paradigmxyz/reth/compare/${OLD_REV}...${NEW_REV}" \
+                --jq '[.commits[] | "- " + (.commit.message | split("\n")[0])] | join("\n")' 2>/dev/null || true)
+              if [ -n "$RETH_LOG" ]; then
+                RETH_SUMMARY=$(echo "$RETH_LOG" | amp-run -x "Summarize these upstream reth commit messages into a concise markdown bullet list \
+                  grouped by area (e.g. Engine, RPC, Trie, DB, Perf, Bench, Testing). Use bold **Area** headers. \
+                  Merge related commits into single bullets. Skip CI/doc-only changes unless significant. \
+                  When referencing PRs, use full GitHub markdown links like [#1234](https://github.com/paradigmxyz/reth/pull/1234) — never bare #1234. \
+                  Do NOT include any preamble or explanation, just the grouped bullet list.")
+                echo "$RETH_SUMMARY"
+                echo ""
+              fi
+            fi
+
+            # Summarize source migrations using Amp
+            SOURCE_DIFF=$(git diff origin/main -- '*.rs' '*.toml' ':!Cargo.lock' 2>/dev/null || true)
+            if [ -n "$SOURCE_DIFF" ]; then
+              echo "## Migrations"
+              echo ""
+              SUMMARY=$(echo "$SOURCE_DIFF" | amp-run -x "Summarize the following code changes as a concise markdown bullet list. \
+                Each bullet should describe what was migrated and why (e.g. API rename, parameter change, removed method). \
+                Do NOT include any preamble or explanation, just the bullet list.")
+              echo "$SUMMARY"
+              echo ""
+            fi
+
+            echo "[GitHub Workflow](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+          } > /tmp/pr-body.txt
+
+          # Skip PR if there are no commits between the branches
+          COMMITS_AHEAD=$(git rev-list --count origin/main..reth-auto-bump 2>/dev/null || echo "0")
+          if [ "$COMMITS_AHEAD" = "0" ]; then
+            echo "No commits ahead of main — nothing to PR"
+            exit 0
+          fi
+
+          # Check for existing PR
+          EXISTING_PR="${{ steps.detect.outputs.existing_pr }}"
+
+          if [ -n "$EXISTING_PR" ]; then
+            echo "Updating existing PR #$EXISTING_PR"
+            gh pr edit "$EXISTING_PR" --title "$TITLE" --body-file /tmp/pr-body.txt
+          else
+            echo "Creating new PR"
+            gh pr create \
+              --base main \
+              --head reth-auto-bump \
+              --title "$TITLE" \
+              --body-file /tmp/pr-body.txt \
+              --label A-dependencies
+          fi
+
+      # ── wait for CI and fix failures ─────────────────────────
+      - name: Wait for CI and fix failures
+        env:
+          GH_TOKEN: ${{ secrets.DEREK_PAT }}
+          AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
+        run: |
+          PR_BRANCH="reth-auto-bump"
+
+          CI_TIMEOUT_MINUTES=30
+          MAX_CI_FIX_ATTEMPTS=10
+          CI_FIX_DEADLINE=$((SECONDS + 3600))  # 60 minutes for the whole fix cycle
+          ci_fix_attempt=0
+
+          while true; do
+            ci_fix_attempt=$((ci_fix_attempt + 1))
+            if [ "$ci_fix_attempt" -gt "$MAX_CI_FIX_ATTEMPTS" ] || [ "$SECONDS" -ge "$CI_FIX_DEADLINE" ]; then
+              echo "::error::CI fix loop gave up after $((ci_fix_attempt - 1)) attempts / $((SECONDS / 60))m"
+              exit 1
+            fi
+            echo "Polling CI checks..."
+            WAIT_START=$SECONDS
+            while true; do
+              STATUS=$(gh pr checks "$PR_BRANCH" --json bucket,name,state 2>&1) || true
+              # gh pr checks may return non-JSON (e.g. "no checks reported") before CI starts
+              if ! echo "$STATUS" | jq empty 2>/dev/null; then
+                echo "Waiting for CI to start (gh pr checks returned non-JSON)..."
+                sleep 60
+                continue
+              fi
+
+              # Check for any failures immediately
+              FAILED=$(echo "$STATUS" | jq -r '[.[] | select(.state == "FAILURE" or .state == "ERROR")] | .[].name' 2>/dev/null || true)
+              if [ -n "$FAILED" ]; then
+                echo "Found failed checks (not waiting for others): $FAILED"
+                break
+              fi
+
+              # All done with no failures = success
+              PENDING=$(echo "$STATUS" | jq -r '[.[] | select(.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS")] | length')
+              if [ "$PENDING" = "0" ] 2>/dev/null; then
+                echo "All CI checks passed!"
+                exit 0
+              fi
+
+              # Check for stuck jobs
+              ELAPSED=$(( (SECONDS - WAIT_START) / 60 ))
+              if [ "$ELAPSED" -ge "$CI_TIMEOUT_MINUTES" ]; then
+                echo "CI checks stuck for ${ELAPSED}m — investigating with Amp..."
+                STUCK_NAMES=$(echo "$STATUS" | jq -r '[.[] | select(.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS")] | map(.name) | join(", ")')
+
+                # Fetch logs from in-progress runs for the current HEAD commit
+                HEAD_SHA=$(gh pr view "$PR_BRANCH" --json headRefOid --jq '.headRefOid')
+                {
+                  echo "Some CI jobs on this PR have been running for over ${CI_TIMEOUT_MINUTES} minutes and appear stuck."
+                  echo "Investigate why these tests might be hanging. Look at the logs below for clues — common causes include"
+                  echo "deadlocks, infinite loops, tests waiting on network/RPC connections that never resolve, or resource exhaustion."
+                  echo "Fix the root cause in the source code if possible."
+                  echo ""
+                  echo "Stuck jobs: ${STUCK_NAMES}"
+                  echo ""
+                  echo "Logs from stuck jobs:"
+                  while IFS= read -r run_id; do
+                    [ -z "$run_id" ] && continue
+                    echo "Fetching logs for in-progress run $run_id..." >&2
+                    echo ""
+                    echo "=== run ${run_id} ==="
+                    LOG=$(gh run view "$run_id" --log 2>&1 || true)
+                    # Show error/panic lines with context, plus the tail for general state
+                    echo "$LOG" | grep -n -i -E 'panic|error\[|FAILED|timed out|deadlock|stack overflow' -B2 -A5 | head -200 || true
+                    echo "--- last 200 lines ---"
+                    echo "$LOG" | tail -200
+                  done < <(gh run list --branch "$PR_BRANCH" --commit "$HEAD_SHA" --status in_progress --json databaseId --jq '.[].databaseId')
+                } > /tmp/amp-prompt.txt
+
+                echo "::group::Amp stuck CI investigation"
+                amp-run --dangerously-allow-all -x < /tmp/amp-prompt.txt
+                echo "::endgroup::"
+
+                if [ -n "$(git status --porcelain)" ]; then
+                  git add -A
+                  git commit -m "fix: resolve stuck CI jobs from reth update ($(date -u +%Y-%m-%d))"
+                  git push origin "$PR_BRANCH"
+                else
+                  echo "Amp made no changes for stuck jobs — giving up"
+                  exit 1
+                fi
+                # Restart the outer loop to wait for new CI run
+                continue 2
+              fi
+
+              echo "CI still running ($PENDING checks pending, ${ELAPSED}m elapsed), no failures yet..."
+              sleep 60
+            done
+
+            # We get here when FAILED is non-empty
+            FAILED_NAMES=$(echo "$STATUS" | jq -r '[.[] | select(.state == "FAILURE" or .state == "ERROR")] | map(.name) | join(", ")')
+            echo "Failed checks: $FAILED_NAMES"
+
+            # Fetch logs from failed runs for the current HEAD commit
+            HEAD_SHA=$(gh pr view "$PR_BRANCH" --json headRefOid --jq '.headRefOid')
+            {
+              echo "The CI checks on this PR are failing. Please fix the issues."
+              echo "You may also bump non-reth dependency versions in Cargo.toml files if needed (e.g. revm, alloy),"
+              echo "but do NOT modify the reth rev or git source specifications in any Cargo.toml —"
+              echo "those have already been updated by the workflow."
+              echo ""
+              echo "IMPORTANT: Do NOT suppress warnings with #[allow(...)]. Instead, migrate the code"
+              echo "to use the new non-deprecated APIs. Look at the upstream reth source code to understand"
+              echo "what replaced the deprecated items."
+              echo ""
+              echo "Here are the CI failure logs:"
+              while IFS= read -r run_id; do
+                [ -z "$run_id" ] && continue
+                echo "Fetching logs for failed run $run_id..." >&2
+                echo ""
+                echo "=== run ${run_id} ==="
+                gh run view "$run_id" --log-failed 2>&1 | tail -200 || true
+              done < <(gh run list --branch "$PR_BRANCH" --commit "$HEAD_SHA" --status failure --json databaseId --jq '.[].databaseId')
+            } > /tmp/amp-prompt.txt
+
+            echo "::group::Amp CI fix"
+            amp-run --dangerously-allow-all -x < /tmp/amp-prompt.txt
+            echo "::endgroup::"
+
+            # Commit and push fixes
+            if [ -n "$(git status --porcelain)" ]; then
+              git add -A
+              git commit -m "fix: resolve CI failures from reth update ($(date -u +%Y-%m-%d))"
+              git push origin "$PR_BRANCH"
+            else
+              echo "Amp made no changes but CI is still failing — giving up"
+              exit 1
+            fi
+          done
+
+      # ── Slack notification ─────────────────────────────────────
+      - name: Notify Slack
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.DEREK_PAT }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_ENG_TEMPO_WORKFLOWS_WEBHOOK_URL }}
+        run: |
+          PR_BRANCH="reth-auto-bump"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          OLD_REV="${{ steps.update.outputs.old_rev }}"
+          NEW_REV="${{ steps.update.outputs.new_rev }}"
+          BUMPED="${{ steps.update.outputs.bumped }}"
+          CLIPPY_PASSED="${{ steps.check-loop.outputs.clippy_passed }}"
+          TEST_PASSED="${{ steps.test-loop.outputs.test_passed }}"
+
+          PR_NUMBER=""
+          PR_URL=""
+          PR_INFO=$(gh pr list --head "$PR_BRANCH" --base main --state open --json number,url --jq '.[0] | select(.) | [.number, .url] | @tsv' 2>/dev/null || true)
+          if [ -n "$PR_INFO" ]; then
+            IFS=$'\t' read -r PR_NUMBER PR_URL <<< "$PR_INFO"
+          fi
+
+          # Determine overall status
+          JOB_STATUS="${{ job.status }}"
+          if [ "$JOB_STATUS" = "success" ]; then
+            EMOJI="✅"
+            STATUS="succeeded"
+            COLOR="#2eb67d"
+          elif [ "$JOB_STATUS" = "cancelled" ]; then
+            EMOJI="⚠️"
+            STATUS="cancelled"
+            COLOR="#e0a523"
+          else
+            EMOJI="❌"
+            STATUS="failed"
+            COLOR="#e01e5a"
+          fi
+
+          # Build detail lines
+          DETAILS=""
+          if [ "$BUMPED" = "true" ] && [ -n "$OLD_REV" ] && [ -n "$NEW_REV" ]; then
+            DETAILS="${DETAILS}\n• <https://github.com/paradigmxyz/reth/commit/${OLD_REV}|${OLD_REV:0:7}> → <https://github.com/paradigmxyz/reth/commit/${NEW_REV}|${NEW_REV:0:7}> (<https://github.com/paradigmxyz/reth/compare/${OLD_REV}...${NEW_REV}|diff>)"
+          elif [ "$BUMPED" = "false" ]; then
+            DETAILS="${DETAILS}\n• Already on latest reth rev"
+          fi
+
+          if [ "$CLIPPY_PASSED" = "false" ]; then
+            DETAILS="${DETAILS}\n• ⚠️ Clippy: unresolved errors"
+          fi
+
+          if [ "$TEST_PASSED" = "false" ]; then
+            DETAILS="${DETAILS}\n• ⚠️ Tests: unresolved errors"
+          fi
+
+          if [ -n "$PR_URL" ]; then
+            DETAILS="${DETAILS}\n• <${PR_URL}|PR #${PR_NUMBER}>"
+          fi
+
+          DETAILS="${DETAILS}\n• <${RUN_URL}|Workflow>"
+
+          # Post to Slack via incoming webhook
+          if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
+            echo "::warning::SLACK_WEBHOOK_URL is not set; skipping Slack notification"
+            exit 0
+          fi
+
+          DETAILS_TEXT=$(printf '%b' "$DETAILS")
+
+          PAYLOAD=$(jq -n \
+            --arg emoji "$EMOJI" \
+            --arg status "$STATUS" \
+            --arg details "$DETAILS_TEXT" \
+            --arg color "$COLOR" \
+            '{
+              attachments: [{
+                color: $color,
+                blocks: [
+                  {
+                    type: "section",
+                    text: {
+                      type: "mrkdwn",
+                      text: ($emoji + " *Reth update " + $status + "*" + $details)
+                    }
+                  }
+                ]
+              }]
+            }')
+
+          curl -sf -X POST -H 'Content-type: application/json' \
+            --data "$PAYLOAD" \
+            "$SLACK_WEBHOOK_URL" \
+            || echo "::warning::Failed to post Slack notification"

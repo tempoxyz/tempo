@@ -28,7 +28,7 @@ use tempo_alloy::TempoNetwork;
 
 async fn build_provider() -> Result<impl Provider<TempoNetwork>, TransportError> {
     ProviderBuilder::new_with_network::<TempoNetwork>()
-        .connect("https://rpc.testnet.tempo.xyz")
+        .connect("https://rpc.moderato.tempo.xyz")
         .await
 }
 ```
@@ -82,7 +82,7 @@ use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderExt};
 
 async fn keychain_example() -> Result<(), Box<dyn std::error::Error>> {
     let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-        .connect("https://rpc.testnet.tempo.xyz")
+        .connect("https://rpc.moderato.tempo.xyz")
         .await?;
 
     let account = address!("0x1111111111111111111111111111111111111111");

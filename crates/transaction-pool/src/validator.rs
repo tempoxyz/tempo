@@ -773,6 +773,20 @@ where
             }
         };
 
+        if transaction
+            .inner()
+            .as_aa()
+            .is_some_and(|aa| aa.tx().fee_payer_signature.is_some())
+            && fee_payer == transaction.sender()
+        {
+            return TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::other(
+                    TempoPoolTransactionError::SelfSponsoredFeePayer,
+                ),
+            );
+        }
+
         let fee_token = match state_provider.get_fee_token(transaction.inner(), fee_payer, spec) {
             Ok(fee_token) => fee_token,
             Err(err) => {
@@ -1376,6 +1390,66 @@ mod tests {
             }
             _ => panic!(
                 "Expected Invalid outcome with InvalidFeePayerSignature error, got: {outcome:?}"
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_self_sponsored_fee_payer_rejected() {
+        use alloy_signer::SignerSync;
+        use alloy_signer_local::PrivateKeySigner;
+
+        let signer = PrivateKeySigner::random();
+        let sender = signer.address();
+
+        let mut tx = TempoTransaction {
+            chain_id: MODERATO.chain_id(),
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 20_000_000_000,
+            gas_limit: 1_000_000,
+            calls: vec![Call {
+                to: TxKind::Call(Address::random()),
+                value: U256::ZERO,
+                input: Default::default(),
+            }],
+            nonce_key: U256::ZERO,
+            nonce: 0,
+            fee_token: Some(PATH_USD_ADDRESS),
+            fee_payer_signature: Some(Signature::new(U256::ZERO, U256::ZERO, false)),
+            ..Default::default()
+        };
+
+        let fee_payer_hash = tx.fee_payer_signature_hash(sender);
+        tx.fee_payer_signature = Some(
+            signer
+                .sign_hash_sync(&fee_payer_hash)
+                .expect("fee payer signing should succeed"),
+        );
+
+        let signed = AASigned::new_unhashed(
+            tx,
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
+        );
+
+        let envelope: TempoTxEnvelope = signed.into();
+        let transaction = TempoPooledTransaction::new(
+            reth_primitives_traits::Recovered::new_unchecked(envelope, sender),
+        );
+        let validator = setup_validator(&transaction, 0);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                assert!(matches!(
+                    err.downcast_other_ref::<TempoPoolTransactionError>(),
+                    Some(TempoPoolTransactionError::SelfSponsoredFeePayer)
+                ));
+            }
+            _ => panic!(
+                "Expected Invalid outcome with SelfSponsoredFeePayer error, got: {outcome:?}"
             ),
         }
     }

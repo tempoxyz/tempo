@@ -298,7 +298,7 @@ async fn test_evict_tx_on_validator_token_change() -> eyre::Result<()> {
     // This should NOT evict the transaction because the attacker's token is not
     // used by any active block producers.
     let updates = tempo_transaction_pool::TempoPoolUpdates {
-        validator_token_changes: vec![(user_addr, attacker_token)],
+        validator_token_changes: [(user_addr, attacker_token)].into_iter().collect(),
         ..Default::default()
     };
     pool.evict_invalidated_transactions(&updates);

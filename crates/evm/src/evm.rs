@@ -76,6 +76,11 @@ impl<DB: Database> TempoEvm<DB> {
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
+    /// Consumes this EVM wrapper and returns the inner [`tempo_revm::TempoEvm`].
+    pub fn into_inner(self) -> tempo_revm::TempoEvm<DB, I> {
+        self.inner
+    }
+
     /// Provides a reference to the EVM context.
     pub const fn ctx(&self) -> &TempoContext<DB> {
         &self.inner.inner.ctx

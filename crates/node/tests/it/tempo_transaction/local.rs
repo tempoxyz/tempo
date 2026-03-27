@@ -2068,7 +2068,8 @@ async fn test_v1_keychain_cross_account_replay_pre_t1c() -> eyre::Result<()> {
     let config = genesis["config"].as_object_mut().unwrap();
     let far_future = serde_json::Value::Number(serde_json::Number::from(u64::MAX));
     config.insert("t1cTime".to_string(), far_future.clone());
-    config.insert("t2Time".to_string(), far_future);
+    config.insert("t2Time".to_string(), far_future.clone());
+    config.insert("t3Time".to_string(), far_future);
     let mut setup = TestNodeBuilder::new()
         .with_genesis(serde_json::to_string(&genesis)?)
         .build_with_node_access()
