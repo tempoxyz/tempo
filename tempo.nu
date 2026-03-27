@@ -727,6 +727,8 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     mut run_data = []
     mut baseline_blocks = []
     mut feature_blocks = []
+    mut baseline_intervals = []
+    mut feature_intervals = []
 
     for label in $run_labels {
         let report_path = $"($results_dir)/report-($label).json"
@@ -741,11 +743,18 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             continue
         }
 
+        let timestamps = ($blocks | get timestamp | sort)
+        let block_intervals = if ($timestamps | length) > 1 {
+            $timestamps | window 2 | each { |w| ($w | last) - ($w | first) }
+        } else { [] }
+
         # Collect blocks into baseline/feature groups
         if ($label | str starts-with "baseline") {
             $baseline_blocks = ($baseline_blocks | append $blocks)
+            $baseline_intervals = ($baseline_intervals | append $block_intervals)
         } else {
             $feature_blocks = ($feature_blocks | append $blocks)
+            $feature_intervals = ($feature_intervals | append $block_intervals)
         }
 
         let total_tx = ($blocks | get tx_count | math sum)
@@ -757,7 +766,6 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         let num_blocks = ($blocks | length)
 
         # Compute TPS from block timestamps (timestamps are in milliseconds)
-        let timestamps = ($blocks | get timestamp)
         let time_span_ms = if ($timestamps | length) > 1 {
             let first = ($timestamps | first)
             let last = ($timestamps | last)
@@ -809,20 +817,17 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     let f_lat = do $compute_latency_stats $feature_blocks
 
     # Compute block time stats for each group
-    let compute_block_time_stats = { |blocks: list<any>|
-        let timestamps = ($blocks | get timestamp | sort)
-        let intervals = if ($timestamps | length) > 1 {
-            $timestamps | window 2 | each { |w| ($w | last) - ($w | first) } | sort
-        } else { [] }
+    let compute_block_time_stats = { |intervals: list<any>|
+        let sorted_intervals = ($intervals | sort)
         {
-            p50: (percentile $intervals 50 | math round --precision 1)
-            p95: (percentile $intervals 95 | math round --precision 1)
-            p99: (percentile $intervals 99 | math round --precision 1)
+            p50: (percentile $sorted_intervals 50 | math round --precision 1)
+            p95: (percentile $sorted_intervals 95 | math round --precision 1)
+            p99: (percentile $sorted_intervals 99 | math round --precision 1)
         }
     }
 
-    let b_bt = do $compute_block_time_stats $baseline_blocks
-    let f_bt = do $compute_block_time_stats $feature_blocks
+    let b_bt = do $compute_block_time_stats $baseline_intervals
+    let f_bt = do $compute_block_time_stats $feature_intervals
 
     # Aggregate TPS and Mgas/s from per-run totals (total_tx / total_time)
     let baseline_runs = ($run_data | where { |r| $r.label | str starts-with "baseline" })
