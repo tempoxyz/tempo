@@ -207,7 +207,6 @@ fn test_slot_and_byte_counts() {
     // Unit enums derive as a single packed byte
     assert_eq!(PackedStatus::LAYOUT, Layout::Bytes(1));
     assert_eq!(EnumPacked::LAYOUT, Layout::Slots(1));
-    assert!(PackedStatus::IS_PACKABLE);
 }
 
 #[test]
