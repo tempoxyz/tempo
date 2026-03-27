@@ -161,8 +161,8 @@ impl TempoTxEnvelope {
     /// For AA transactions, every call must target a TIP-20 address.
     ///
     /// # NOTE
-    /// Pre-T2 consensus-level classifier, used during block validation against `general_gas_limit`.
-    /// See [`is_payment_v2`](Self::is_payment_v2) for the builder-level and T2+ consensus variant.
+    /// Pre-T3 consensus-level classifier, used during block validation against `general_gas_limit`.
+    /// See [`is_payment_v2`](Self::is_payment_v2) for the builder-level and T3+ consensus variant.
     ///
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment_v1(&self) -> bool {
@@ -182,7 +182,7 @@ impl TempoTxEnvelope {
     ///
     /// # NOTE
     /// Builder-level classifier, used by the transaction pool and payload builder to prevent DoS of
-    /// the payment lane. Additionally enshrined at the consensus-level in the T2 hardfork.
+    /// the payment lane. Additionally enshrined at the consensus-level in the T3 hardfork.
     ///
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment_v2(&self) -> bool {

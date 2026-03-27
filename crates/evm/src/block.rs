@@ -431,7 +431,7 @@ where
 
         let inner = result?;
 
-        let is_payment = if self.hardfork().is_t2() {
+        let is_payment = if self.hardfork().is_t3() {
             recovered.tx().is_payment_v2()
         } else {
             recovered.tx().is_payment_v1()
