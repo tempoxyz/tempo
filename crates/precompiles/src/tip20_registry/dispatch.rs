@@ -15,8 +15,8 @@ impl Precompile for TIP20Registry {
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
 
-        // Pre-T2: behave like an empty contract (call succeeds, no execution)
-        if !self.storage.spec().is_t2() {
+        // Pre-T3: behave like an empty contract (call succeeds, no execution)
+        if !self.storage.spec().is_t3() {
             return Ok(PrecompileOutput::new(
                 self.storage.gas_used(),
                 Default::default(),
@@ -70,7 +70,7 @@ mod tests {
 
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP20Registry::new();
 
@@ -89,7 +89,7 @@ mod tests {
 
     #[test]
     fn test_get_master_precompile() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP20Registry::new();
 
@@ -108,7 +108,7 @@ mod tests {
 
     #[test]
     fn test_is_virtual_address_precompile() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP20Registry::new();
 
