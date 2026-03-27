@@ -635,7 +635,7 @@ jobs:
         env:
           BENCH_BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
           BENCH_FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
-          BENCH_RUN_TYPE: ${{ github.event_name == 'schedule' && 'nightly' || 'manual' }}
+          BENCH_RUN_TYPE: ${{ github.event_name == 'schedule' && 'nightly' || github.event_name == 'issue_comment' && 'pr_comment' || 'manual' }}
           BENCH_JOB_URL: ${{ env.BENCH_JOB_URL }}
         run: bash contrib/bench/upload-clickhouse.sh "${{ steps.results-dir.outputs.path }}"
 

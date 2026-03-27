@@ -69,18 +69,21 @@ else:
     avg_block_time_ms = 0.0
     avg_tps = 0.0
 
-sha = meta.get("node_commit_sha") or ""
-profile = meta.get("build_profile") or ""
-mode = meta.get("mode") or ""
+def esc(s):
+    return s.replace("'", "\\'")
 
-run_label = os.environ.get("BENCH_RUN_LABEL", "")
-pr_number = os.environ.get("BENCH_PR", "")
-baseline_ref = os.environ.get("BENCH_BASELINE_REF", "")
-feature_ref = os.environ.get("BENCH_FEATURE_REF", "")
-triggered_by = os.environ.get("BENCH_ACTOR", "")
-run_type = os.environ.get("BENCH_RUN_TYPE", "manual")
-github_run_id = os.environ.get("GITHUB_RUN_ID", "")
-github_run_url = os.environ.get("BENCH_JOB_URL", "")
+sha = esc(meta.get("node_commit_sha") or "")
+profile = esc(meta.get("build_profile") or "")
+mode = esc(meta.get("mode") or "")
+
+run_label = esc(os.environ.get("BENCH_RUN_LABEL", ""))
+pr_number = esc(os.environ.get("BENCH_PR", ""))
+baseline_ref = esc(os.environ.get("BENCH_BASELINE_REF", ""))
+feature_ref = esc(os.environ.get("BENCH_FEATURE_REF", ""))
+triggered_by = esc(os.environ.get("BENCH_ACTOR", ""))
+run_type = esc(os.environ.get("BENCH_RUN_TYPE", "manual"))
+github_run_id = esc(os.environ.get("GITHUB_RUN_ID", ""))
+github_run_url = esc(os.environ.get("BENCH_JOB_URL", ""))
 
 print(
     f"INSERT INTO tempo_bench_runs (run_id, created_at, chain_id, start_block, end_block, "
