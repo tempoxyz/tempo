@@ -67,7 +67,7 @@ function tempoBlockTimeDeltas(deltas) {
 }
 
 function tempoThroughputDeltas(deltas) {
-  return [deltas.tps, deltas.tps_p50, deltas.tps_p95, deltas.tps_p99, deltas.mgas_s];
+  return [deltas.tps, deltas.tps_p50, deltas.tps_p90, deltas.tps_p99, deltas.mgas_s];
 }
 
 function fmtDelta(pct) {
@@ -136,7 +136,7 @@ function buildMetricRows(summary) {
   return [
     { label: 'Avg TPS',         baseline: fmtVal(b.tps, '', 0),     feature: fmtVal(f.tps, '', 0),     change: fmtDeltaInverse(d.tps) },
     { label: 'TPS P50',         baseline: fmtVal(b.tps_p50, '', 1), feature: fmtVal(f.tps_p50, '', 1), change: fmtDeltaInverse(d.tps_p50) },
-    { label: 'TPS P95',         baseline: fmtVal(b.tps_p95, '', 1), feature: fmtVal(f.tps_p95, '', 1), change: fmtDeltaInverse(d.tps_p95) },
+    { label: 'TPS P90',         baseline: fmtVal(b.tps_p90, '', 1), feature: fmtVal(f.tps_p90, '', 1), change: fmtDeltaInverse(d.tps_p90) },
     { label: 'TPS P99',         baseline: fmtVal(b.tps_p99, '', 1), feature: fmtVal(f.tps_p99, '', 1), change: fmtDeltaInverse(d.tps_p99) },
     { label: 'Gas/s',           baseline: fmtVal(b.mgas_s, ' Mgas/s', 1), feature: fmtVal(f.mgas_s, ' Mgas/s', 1), change: fmtDeltaInverse(d.mgas_s) },
     { label: 'Block P50',       baseline: fmtMs(b.block_time_p50),  feature: fmtMs(f.block_time_p50),  change: fmtDelta(d.block_time_p50) },
