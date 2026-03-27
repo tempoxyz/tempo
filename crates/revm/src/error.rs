@@ -30,6 +30,10 @@ pub enum TempoInvalidTransaction {
     #[error("fee payer signature recovery failed")]
     InvalidFeePayerSignature,
 
+    /// Fee payer cannot resolve to the sender address.
+    #[error("fee payer cannot resolve to sender")]
+    SelfSponsoredFeePayer,
+
     // Tempo transaction errors
     /// Transaction cannot be included before validAfter timestamp.
     ///
@@ -386,6 +390,10 @@ mod tests {
         assert!(err.as_invalid_tx_err().is_some());
 
         let err = TempoInvalidTransaction::InvalidFeePayerSignature;
+        assert!(!err.is_nonce_too_low());
+        assert!(err.as_invalid_tx_err().is_none());
+
+        let err = TempoInvalidTransaction::SelfSponsoredFeePayer;
         assert!(!err.is_nonce_too_low());
         assert!(err.as_invalid_tx_err().is_none());
     }

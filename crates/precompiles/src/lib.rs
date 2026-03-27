@@ -65,6 +65,9 @@ pub use account_keychain::AuthorizedKey;
 /// Being careful and pricing it twice as COPY_COST to mitigate different abi decodings.
 pub const INPUT_PER_WORD_COST: u64 = 6;
 
+/// Gas cost for `ecrecover` signature verification (used by KeyAuthorization and Permit).
+pub const ECRECOVER_GAS: u64 = 3_000;
+
 /// Returns the gas cost for decoding calldata of the given length, rounded up to word boundaries.
 #[inline]
 pub fn input_cost(calldata_len: usize) -> u64 {

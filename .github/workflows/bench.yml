@@ -21,10 +21,20 @@ on:
         default: "300"
         type: string
       bloat:
-        description: "State bloat in MiB (0 = none)"
+        description: "State bloat in GB (0 = none)"
         required: false
-        default: "1024"
-        type: string
+        default: "1"
+        type: choice
+        options:
+          - "0"
+          - "1"
+          - "10"
+          - "100"
+      force-bloat:
+        description: "Force re-creation of the bloat snapshot"
+        required: false
+        default: false
+        type: boolean
       tps:
         description: "Target transactions per second"
         required: false
@@ -40,7 +50,45 @@ on:
         required: false
         default: ""
         type: string
-
+      samply:
+        description: "Enable samply profiling"
+        required: false
+        default: false
+        type: boolean
+      tracy:
+        description: "Tracy profiling mode"
+        required: false
+        default: "off"
+        type: choice
+        options:
+          - "off"
+          - "on"
+          - "full"
+      tracy-seconds:
+        description: "Tracy capture duration limit in seconds (0 = unlimited)"
+        required: false
+        default: "30"
+        type: string
+      tracy-offset:
+        description: "Seconds to wait before starting tracy capture"
+        required: false
+        default: "120"
+        type: string
+      baseline-hardfork:
+        description: "Latest active hardfork for baseline (e.g. T1, T1C, T2). Empty = all forks active"
+        required: false
+        default: ""
+        type: string
+      feature-hardfork:
+        description: "Latest active hardfork for feature (e.g. T1, T1C, T2). Empty = all forks active"
+        required: false
+        default: ""
+        type: string
+      no_slack:
+        description: "Suppress Slack notifications for benchmark results"
+        required: false
+        default: true
+        type: boolean
 env:
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: "sccache"
@@ -70,6 +118,14 @@ jobs:
       feature: ${{ steps.args.outputs.feature }}
       baseline-name: ${{ steps.args.outputs.baseline-name }}
       feature-name: ${{ steps.args.outputs.feature-name }}
+      samply: ${{ steps.args.outputs.samply }}
+      tracy: ${{ steps.args.outputs.tracy }}
+      tracy-seconds: ${{ steps.args.outputs.tracy-seconds }}
+      tracy-offset: ${{ steps.args.outputs.tracy-offset }}
+      baseline-hardfork: ${{ steps.args.outputs.baseline-hardfork }}
+      feature-hardfork: ${{ steps.args.outputs.feature-hardfork }}
+      force-bloat: ${{ steps.args.outputs.force-bloat }}
+      no-slack: ${{ steps.args.outputs.no-slack }}
       comment-id: ${{ steps.ack.outputs.comment-id }}
     steps:
       - name: Check org membership
@@ -97,16 +153,24 @@ jobs:
         with:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |
-            let pr, actor, preset, duration, bloat, tps, baseline, feature;
+            let pr, actor, preset, duration, bloat, tps, baseline, feature, samply, tracy, tracySeconds, tracyOffset, baselineHardfork, featureHardfork, forceBloat, noSlack;
 
             if (context.eventName === 'workflow_dispatch') {
               actor = '${{ github.actor }}';
               preset = '${{ github.event.inputs.preset }}' || 'tip20';
               duration = '${{ github.event.inputs.duration }}' || '300';
-              bloat = '${{ github.event.inputs.bloat }}' || '1024';
+              bloat = String(parseInt('${{ github.event.inputs.bloat }}' || '1', 10) * 1000);
               tps = '${{ github.event.inputs.tps }}' || '10000';
               baseline = '${{ github.event.inputs.baseline }}';
               feature = '${{ github.event.inputs.feature }}';
+              samply = '${{ github.event.inputs.samply }}' === 'true' ? 'true' : 'false';
+              tracy = '${{ github.event.inputs.tracy }}' || 'off';
+              tracySeconds = '${{ github.event.inputs.tracy-seconds }}' || '30';
+              tracyOffset = '${{ github.event.inputs.tracy-offset }}' || '120';
+              baselineHardfork = '${{ github.event.inputs.baseline-hardfork }}' || '';
+              featureHardfork = '${{ github.event.inputs.feature-hardfork }}' || '';
+              forceBloat = '${{ github.event.inputs.force-bloat }}' === 'true' ? 'true' : 'false';
+              noSlack = '${{ github.event.inputs.no_slack }}' !== 'false' ? 'true' : 'false';
 
               // Find PR for the selected branch
               const branch = '${{ github.ref_name }}';
@@ -126,17 +190,22 @@ jobs:
               actor = context.payload.comment.user.login;
 
               const body = context.payload.comment.body.trim();
-              const intArgs = new Set(['duration', 'bloat', 'tps']);
+              const intArgs = new Set(['duration', 'bloat', 'tps', 'tracy-seconds', 'tracy-offset']);
               const refArgs = new Set(['baseline', 'feature']);
-              const stringArgs = new Set(['preset']);
-              const defaults = { preset: 'tip20', duration: '300', bloat: '1024', tps: '10000', baseline: '', feature: '' };
+              const stringArgs = new Set(['preset', 'tracy', 'baseline-hardfork', 'feature-hardfork']);
+              const boolArgs = new Set(['samply', 'force-bloat', 'no-slack']);
+              const defaults = { preset: 'tip20', duration: '300', bloat: '1024', tps: '10000', baseline: '', feature: '', samply: 'false', tracy: 'off', 'tracy-seconds': '30', 'tracy-offset': '120', 'baseline-hardfork': '', 'feature-hardfork': '', 'force-bloat': 'false', 'no-slack': 'false' };
               const unknown = [];
               const invalid = [];
               const args = body.replace(/^(?:@decofe|derek) bench\s*/, '');
               for (const part of args.split(/\s+/).filter(Boolean)) {
                 const eq = part.indexOf('=');
                 if (eq === -1) {
-                  unknown.push(part);
+                  if (boolArgs.has(part)) {
+                    defaults[part] = 'true';
+                  } else {
+                    unknown.push(part);
+                  }
                   continue;
                 }
                 const key = part.slice(0, eq);
@@ -167,7 +236,7 @@ jobs:
               if (unknown.length) errors.push(`Unknown argument(s): \`${unknown.join('`, `')}\``);
               if (invalid.length) errors.push(`Invalid value(s): ${invalid.join(', ')}`);
               if (errors.length) {
-                const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF]\``;
+                const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [force-bloat] [no-slack] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-hardfork=FORK] [feature-hardfork=FORK]\``;
                 await github.rest.issues.createComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
@@ -183,6 +252,67 @@ jobs:
               tps = defaults.tps;
               baseline = defaults.baseline;
               feature = defaults.feature;
+              samply = defaults.samply;
+              tracy = defaults.tracy;
+              tracySeconds = defaults['tracy-seconds'];
+              tracyOffset = defaults['tracy-offset'];
+              baselineHardfork = defaults['baseline-hardfork'];
+              featureHardfork = defaults['feature-hardfork'];
+              forceBloat = defaults['force-bloat'];
+              noSlack = defaults['no-slack'];
+            }
+
+            const usageStr = '**Usage:** `@decofe bench [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [force-bloat] [no-slack] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-hardfork=FORK] [feature-hardfork=FORK]`';
+
+            // Validate tracy value
+            if (!['off', 'on', 'full'].includes(tracy)) {
+              const msg = `❌ **Invalid bench command**\n\n\`tracy=${tracy}\` is not valid. Must be \`off\`, \`on\`, or \`full\`.\n\n${usageStr}`;
+              if (context.eventName === 'issue_comment') {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body: msg,
+                });
+              }
+              core.setFailed(msg);
+              return;
+            }
+
+            // Mutual exclusivity: samply and tracy cannot be used together
+            if (samply === 'true' && tracy !== 'off') {
+              const msg = '❌ **Invalid bench command**\n\n`samply` and `tracy` are mutually exclusive. Choose one.';
+              if (context.eventName === 'issue_comment') {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body: msg,
+                });
+              }
+              core.setFailed(msg);
+              return;
+            }
+
+            // Validate hardfork flags: must both be provided or both empty
+            const validForks = ['T0', 'T1', 'T1A', 'T1B', 'T1C', 'T2'];
+            if ((baselineHardfork && !featureHardfork) || (!baselineHardfork && featureHardfork)) {
+              const msg = '❌ **Invalid bench command**\n\n`baseline-hardfork` and `feature-hardfork` must both be provided.';
+              if (context.eventName === 'issue_comment') {
+                await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number, body: msg });
+              }
+              core.setFailed(msg);
+              return;
+            }
+            for (const [name, val] of [['baseline-hardfork', baselineHardfork], ['feature-hardfork', featureHardfork]]) {
+              if (val && !validForks.includes(val.toUpperCase())) {
+                const msg = `❌ **Invalid bench command**\n\n\`${name}=${val}\` is not valid. Must be one of: ${validForks.join(', ')}.\n\n${usageStr}`;
+                if (context.eventName === 'issue_comment') {
+                  await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number, body: msg });
+                }
+                core.setFailed(msg);
+                return;
+              }
             }
 
             // Resolve display names for baseline/feature
@@ -211,6 +341,14 @@ jobs:
             core.setOutput('feature', feature);
             core.setOutput('baseline-name', baselineName);
             core.setOutput('feature-name', featureName);
+            core.setOutput('samply', samply);
+            core.setOutput('tracy', tracy);
+            core.setOutput('tracy-seconds', tracySeconds);
+            core.setOutput('tracy-offset', tracyOffset);
+            core.setOutput('baseline-hardfork', baselineHardfork || '');
+            core.setOutput('feature-hardfork', featureHardfork || '');
+            core.setOutput('force-bloat', forceBloat);
+            core.setOutput('no-slack', noSlack);
 
       - name: Acknowledge request
         id: ack
@@ -239,7 +377,14 @@ jobs:
             const tps = '${{ steps.args.outputs.tps }}';
             const baseline = '${{ steps.args.outputs.baseline-name }}';
             const feature = '${{ steps.args.outputs.feature-name }}';
-            const config = `**Config:** preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} MiB\`, tps: \`${tps}\`, baseline: \`${baseline}\`, feature: \`${feature}\``;
+            const samply = '${{ steps.args.outputs.samply }}' === 'true';
+            const samplyNote = samply ? ', samply: `enabled`' : '';
+            const tracy = '${{ steps.args.outputs.tracy }}';
+            const tracyNote = tracy !== 'off' ? `, tracy: \`${tracy}\`` : '';
+            const bHf = '${{ steps.args.outputs.baseline-hardfork }}';
+            const fHf = '${{ steps.args.outputs.feature-hardfork }}';
+            const hfNote = bHf ? `, baseline-hardfork: \`${bHf}\`, feature-hardfork: \`${fHf}\`` : '';
+            const config = `**Config:** preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} MiB\`, tps: \`${tps}\`, baseline: \`${baseline}\`, feature: \`${feature}\`${samplyNote}${tracyNote}${hfNote}`;
 
             const { data: comment } = await github.rest.issues.createComment({
               owner: context.repo.owner,
@@ -261,8 +406,37 @@ jobs:
       BENCH_DURATION: ${{ needs.tempo-bench-ack.outputs.duration }}
       BENCH_BLOAT: ${{ needs.tempo-bench-ack.outputs.bloat }}
       BENCH_TPS: ${{ needs.tempo-bench-ack.outputs.tps }}
+      BENCH_SAMPLY: ${{ needs.tempo-bench-ack.outputs.samply }}
+      BENCH_TRACY: ${{ needs.tempo-bench-ack.outputs.tracy }}
+      BENCH_TRACY_SECONDS: ${{ needs.tempo-bench-ack.outputs.tracy-seconds }}
+      BENCH_TRACY_OFFSET: ${{ needs.tempo-bench-ack.outputs.tracy-offset }}
+      BENCH_BASELINE_HARDFORK: ${{ needs.tempo-bench-ack.outputs.baseline-hardfork }}
+      BENCH_FEATURE_HARDFORK: ${{ needs.tempo-bench-ack.outputs.feature-hardfork }}
+      BENCH_FORCE_BLOAT: ${{ needs.tempo-bench-ack.outputs.force-bloat }}
+      BENCH_NO_SLACK: ${{ needs.tempo-bench-ack.outputs.no-slack }}
       BENCH_COMMENT_ID: ${{ needs.tempo-bench-ack.outputs.comment-id }}
+      TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
+      GRAFANA_TEMPO: ${{ secrets.GRAFANA_TEMPO }}
+      CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
+      CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
+      CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+      SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
+      SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
     steps:
+      - name: Mask telemetry URL
+        if: env.TEMPO_TELEMETRY_URL
+        run: echo "::add-mask::$TEMPO_TELEMETRY_URL"
+
+      - name: Mask Grafana Tempo URL
+        if: env.GRAFANA_TEMPO
+        run: echo "::add-mask::$GRAFANA_TEMPO"
+
+      - name: Mask ClickHouse credentials
+        if: env.CLICKHOUSE_URL
+        run: |
+          echo "::add-mask::$CLICKHOUSE_URL"
+          echo "::add-mask::$CLICKHOUSE_PASSWORD"
+
       - name: Clean up previous results
         run: sudo rm -rf bench-results/ 2>/dev/null || true
 
@@ -319,7 +493,14 @@ jobs:
             const tps = process.env.BENCH_TPS;
             const baseline = '${{ needs.tempo-bench-ack.outputs.baseline-name }}';
             const feature = '${{ needs.tempo-bench-ack.outputs.feature-name }}';
-            core.exportVariable('BENCH_CONFIG', `**Config:** preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} MiB\`, tps: \`${tps}\`, baseline: \`${baseline}\`, feature: \`${feature}\``);
+            const samply = '${{ needs.tempo-bench-ack.outputs.samply }}' === 'true';
+            const samplyNote = samply ? ', samply: `enabled`' : '';
+            const tracy = '${{ needs.tempo-bench-ack.outputs.tracy }}';
+            const tracyNote = tracy !== 'off' ? `, tracy: \`${tracy}\`` : '';
+            const bHf2 = process.env.BENCH_BASELINE_HARDFORK || '';
+            const fHf2 = process.env.BENCH_FEATURE_HARDFORK || '';
+            const hfNote2 = bHf2 ? `, baseline-hardfork: \`${bHf2}\`, feature-hardfork: \`${fHf2}\`` : '';
+            core.exportVariable('BENCH_CONFIG', `**Config:** preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} MiB\`, tps: \`${tps}\`, baseline: \`${baseline}\`, feature: \`${feature}\`${samplyNote}${tracyNote}${hfNote2}`);
 
             const { buildBody } = require('./.github/scripts/bench-update-status.js');
             await github.rest.issues.updateComment({
@@ -423,8 +604,12 @@ jobs:
             --no-infra \
             --baseline "$BASELINE_REF" \
             --feature "$FEATURE_REF" \
-            --bench-datadir /reth-bench \
-            --tune
+            --bench-datadir "/reth-bench/tempo_${BENCH_BLOAT}mb" \
+            --tune \
+            $([ "$BENCH_SAMPLY" = "true" ] && echo "--samply" || true) \
+            $([ "$BENCH_TRACY" != "off" ] && echo "--tracy $BENCH_TRACY --tracy-seconds $BENCH_TRACY_SECONDS --tracy-offset $BENCH_TRACY_OFFSET" || true) \
+            $([ -n "$BENCH_BASELINE_HARDFORK" ] && echo "--baseline-hardfork $BENCH_BASELINE_HARDFORK --feature-hardfork $BENCH_FEATURE_HARDFORK" || true) \
+            $([ "$BENCH_FORCE_BLOAT" = "true" ] && echo "--force" || true)
 
       - name: Find results directory
         id: results-dir
@@ -445,6 +630,10 @@ jobs:
           name: tempo-bench-results
           path: bench-results/
 
+      - name: Upload results to ClickHouse
+        if: success()
+        run: bash contrib/bench/upload-clickhouse.sh "${{ steps.results-dir.outputs.path }}"
+
       - name: Post results to PR
         if: success()
         uses: actions/github-script@v8
@@ -461,7 +650,7 @@ jobs:
               summary = '⚠️ Benchmark completed but failed to read summary.';
             }
 
-            // Compute Grafana URL from summary.json
+            // Compute Grafana URLs from summary.json
             let grafanaSection = '';
             try {
               const meta = JSON.parse(fs.readFileSync(`${resultsDir}/summary.json`, 'utf8'));
@@ -471,12 +660,81 @@ jobs:
                 const fromMs = refEpoch * 1000;
                 const toMs = Date.now();
                 const grafanaUrl = `https://tempoxyz.grafana.net/d/tikv2tn/tempo-bench?orgId=1&from=${fromMs}&to=${toMs}&var-benchmark_id=${benchId}&var-job=tempo-bench`;
-                grafanaSection = `\n\n### Grafana Dashboard\n\n[View real-time metrics](${grafanaUrl})\n`;
+                const logsPane = JSON.stringify({
+                  pw4: {
+                    datasource: 'ffdsfozmb3eo0e',
+                    queries: [{
+                      refId: 'A',
+                      datasource: { type: 'victoriametrics-logs-datasource', uid: 'ffdsfozmb3eo0e' },
+                      editorMode: 'code',
+                      expr: `benchmark_id:${benchId}`,
+                      queryType: 'instant',
+                    }],
+                    range: { from: String(fromMs), to: String(toMs) },
+                    panelsState: { logs: { sortOrder: 'Descending' } },
+                    compact: false,
+                  },
+                });
+                const logsUrl = `https://tempoxyz.grafana.net/explore?schemaVersion=1&panes=${encodeURIComponent(logsPane)}&orgId=1`;
+                const tracesPane = JSON.stringify({
+                  g39: {
+                    datasource: 'cf59s9gws8z5se',
+                    queries: [{
+                      refId: 'A',
+                      datasource: { type: 'tempo', uid: 'cf59s9gws8z5se' },
+                      queryType: 'traceqlSearch',
+                      limit: 20,
+                      tableType: 'traces',
+                      metricsQueryType: 'range',
+                      serviceMapUseNativeHistograms: false,
+                      filters: [
+                        { id: '0ff61fb0', operator: '=', scope: 'resource', tag: 'benchmark_id', value: [benchId], valueType: 'string', isCustomValue: false },
+                        { id: 'service-name', tag: 'service.name', operator: '=', scope: 'resource', value: ['reth'], valueType: 'string', isCustomValue: false },
+                      ],
+                    }],
+                    range: { from: String(fromMs), to: String(toMs) },
+                    compact: false,
+                  },
+                });
+                const tracesUrl = `https://tempoxyz.grafana.net/explore?schemaVersion=1&panes=${encodeURIComponent(tracesPane)}&orgId=1`;
+                grafanaSection = `\n\n### Observability\n\n- [Metrics dashboard](${grafanaUrl})\n- [Logs](${logsUrl})\n- [Traces](${tracesUrl})\n`;
               }
             } catch (e) {}
 
+            // Samply profile links (URLs produced by tempo.nu upload-samply-profile)
+            let samplySection = '';
+            if (process.env.BENCH_SAMPLY === 'true') {
+              const runs = ['baseline-1', 'feature-1', 'feature-2', 'baseline-2'];
+              const links = [];
+              for (const run of runs) {
+                try {
+                  const url = fs.readFileSync(`${resultsDir}/profile-${run}-url.txt`, 'utf8').trim();
+                  if (url) links.push(`- **${run}**: [Firefox Profiler](${url})`);
+                } catch (e) {}
+              }
+              if (links.length > 0) {
+                samplySection = `\n\n### Samply Profiles\n\n${links.join('\n')}\n`;
+              }
+            }
+
+            // Tracy profile links (URLs produced by tempo.nu upload-tracy-profile)
+            let tracySection = '';
+            if (process.env.BENCH_TRACY && process.env.BENCH_TRACY !== 'off') {
+              const runs = ['baseline-1', 'feature-1', 'feature-2', 'baseline-2'];
+              const links = [];
+              for (const run of runs) {
+                try {
+                  const url = fs.readFileSync(`${resultsDir}/tracy-${run}-url.txt`, 'utf8').trim();
+                  if (url) links.push(`- **${run}**: [Tracy Viewer](${url})`);
+                } catch (e) {}
+              }
+              if (links.length > 0) {
+                tracySection = `\n\n### Tracy Profiles\n\n${links.join('\n')}\n`;
+              }
+            }
+
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const body = `cc @${process.env.BENCH_ACTOR}\n\n✅ Benchmark complete! [View job](${jobUrl})\n\n${summary}${grafanaSection}`;
+            const body = `cc @${process.env.BENCH_ACTOR}\n\n✅ Benchmark complete! [View job](${jobUrl})\n\n${summary}${grafanaSection}${samplySection}${tracySection}`;
             const ackCommentId = process.env.BENCH_COMMENT_ID;
 
             if (ackCommentId) {
@@ -489,6 +747,24 @@ jobs:
             } else {
               await core.summary.addRaw(body).write();
             }
+
+      - name: Send Slack notification (success)
+        if: success() && steps.results-dir.outputs.path && env.BENCH_NO_SLACK != 'true'
+        uses: actions/github-script@v8
+        env:
+          BENCH_WORK_DIR: ${{ steps.results-dir.outputs.path }}
+        with:
+          script: |
+            const notify = require('./.github/scripts/bench-slack-notify.js');
+            await notify.success({ core, context });
+
+      - name: Send Slack notification (failure)
+        if: failure() && env.BENCH_NO_SLACK != 'true'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const notify = require('./.github/scripts/bench-slack-notify.js');
+            await notify.failure({ core, context, failedStep: 'running benchmark' });
 
       - name: Update status (failed)
         if: failure() && env.BENCH_COMMENT_ID

@@ -1,46 +1,93 @@
-//! Testnet RPC transaction checks.
+//! Remote RPC transaction checks (testnet & devnet).
 //!
 //! These tests target a live RPC endpoint and cover the same core transaction
-//! matrices as the local integration tests, using the testnet faucet for funding.
+//! matrices as the local integration tests, using the faucet for funding.
+//!
+//! Uses alloy's [`RetryBackoffLayer`] to automatically retry transient RPC
+//! errors (429 rate-limits, connection errors) with backoff at the transport
+//! level, so individual call sites don't need manual retry logic.
 use alloy::{
     consensus::BlockHeader,
     primitives::{Address, B256, Bytes, U256},
     providers::Provider,
     signers::local::PrivateKeySigner,
+    transports::{
+        RpcError, TransportErrorKind,
+        layers::{RateLimitRetryPolicy, RetryBackoffLayer},
+    },
 };
 use alloy_eips::Encodable2718;
 use reth_primitives_traits::transaction::TxHashRef;
 use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
-    spec::{ANDANTINO, DEV, MODERATO, PRESTO},
+    spec::{DEV, MODERATO, PRESTO},
 };
 use tempo_primitives::{TempoTxEnvelope, transaction::tempo_transaction::Call};
 
 use super::helpers::*;
 
-/// Testnet RPC url (unpermissioned).
-const TESTNET_RPC_URL: &str = "https://rpc.moderato.tempo.xyz";
-
-/// Maximum number of 1-second poll iterations when waiting for testnet RPC state to settle.
+/// Maximum number of 1-second poll iterations when waiting for RPC state to settle.
 const RPC_POLL_RETRIES: usize = 30;
 
-pub(super) struct Testnet {
+/// Sends a raw transaction with duplicate-submission handling.
+///
+/// If the request reached the node but the response was lost, the retry layer
+/// will resend — which may return "already known". We treat that as success
+/// and fall through to `wait_for_receipt`.
+///
+/// Uses `serde_json::Value` for deserialization because `eth_sendRawTransaction`
+/// returns a `B256` hash while `eth_sendRawTransactionSync` returns a full
+/// receipt object.
+async fn send_raw_tx(
+    provider: &alloy::providers::RootProvider,
+    method: &'static str,
+    encoded: Vec<u8>,
+) -> eyre::Result<()> {
+    match provider
+        .raw_request::<_, serde_json::Value>(method.into(), [encoded])
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(e) if is_already_known(&e) => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Returns `true` if the error indicates the tx was already accepted.
+fn is_already_known(err: &RpcError<TransportErrorKind>) -> bool {
+    let msg = err.to_string().to_lowercase();
+    msg.contains("already known") || msg.contains("known transaction")
+}
+
+pub(super) struct RpcEnv {
     provider: alloy::providers::RootProvider,
     chain_id: u64,
     hardfork: TempoHardfork,
 }
 
-impl Testnet {
-    pub(super) async fn new() -> eyre::Result<Self> {
+impl RpcEnv {
+    async fn connect(rpc_url: &str) -> eyre::Result<Self> {
         reth_tracing::init_test_tracing();
-        let rpc_url = std::env::var("TEMPO_TESTNET_RPC_URL").unwrap_or(TESTNET_RPC_URL.to_string());
-        let provider = alloy::providers::RootProvider::new_http(rpc_url.parse()?);
+
+        // Extend the default rate-limit policy to also retry connection errors.
+        let policy =
+            RateLimitRetryPolicy::default().or(|err: &alloy::transports::TransportError| {
+                let msg = err.to_string();
+                msg.contains("connection error")
+                    || msg.contains("SendRequest")
+                    || msg.contains("error sending request")
+            });
+        let retry = RetryBackoffLayer::new_with_policy(4, 100, 330, policy);
+        let client = alloy::rpc::client::RpcClient::builder()
+            .layer(retry)
+            .http(rpc_url.parse()?);
+        let provider = alloy::providers::RootProvider::new(client);
+
         let chain_id = provider.get_chain_id().await?;
 
         // Chain IDs from genesis/*.json (mirrors bootnodes() in spec.rs)
         let chain_spec = match chain_id {
-            4217 => PRESTO.clone(),     // mainnet
-            42429 => ANDANTINO.clone(), // testnet
+            4217 => PRESTO.clone(), // mainnet
             42431 => MODERATO.clone(),
             _ => DEV.clone(),
         };
@@ -56,9 +103,23 @@ impl Testnet {
             hardfork,
         })
     }
+
+    pub(super) async fn testnet() -> eyre::Result<Option<Self>> {
+        match std::env::var("TEMPO_TESTNET_RPC_URL") {
+            Ok(url) => Self::connect(&url).await.map(Some),
+            Err(_) => Ok(None),
+        }
+    }
+
+    pub(super) async fn devnet() -> eyre::Result<Option<Self>> {
+        match std::env::var("TEMPO_DEVNET_RPC_URL") {
+            Ok(url) => Self::connect(&url).await.map(Some),
+            Err(_) => Ok(None),
+        }
+    }
 }
 
-impl super::types::TestEnv for Testnet {
+impl super::types::TestEnv for RpcEnv {
     type P = alloy::providers::RootProvider;
 
     fn provider(&self) -> &Self::P {
@@ -71,10 +132,6 @@ impl super::types::TestEnv for Testnet {
 
     fn hardfork(&self) -> TempoHardfork {
         self.hardfork
-    }
-
-    fn uses_legacy_keyauth_pool_validation(&self) -> bool {
-        true
     }
 
     async fn fund_account(&mut self, addr: Address) -> eyre::Result<U256> {
@@ -103,78 +160,13 @@ impl super::types::TestEnv for Testnet {
         encoded: Vec<u8>,
         tx_hash: B256,
     ) -> eyre::Result<serde_json::Value> {
-        let raw_result: B256 = self
-            .provider
-            .raw_request("eth_sendRawTransaction".into(), [encoded])
-            .await?;
-        assert_eq!(raw_result, tx_hash, "RPC should return tx hash");
+        send_raw_tx(&self.provider, "eth_sendRawTransaction", encoded).await?;
         let receipt = wait_for_receipt(&self.provider, tx_hash).await?;
         let status = receipt["status"]
             .as_str()
             .ok_or_else(|| eyre::eyre!("Receipt missing status field for {tx_hash}"))?;
         assert_eq!(status, "0x1", "Receipt status mismatch for {tx_hash}");
         Ok(receipt)
-    }
-
-    async fn submit_tx_excluded_by_builder(
-        &mut self,
-        encoded: Vec<u8>,
-        tx_hash: B256,
-    ) -> eyre::Result<()> {
-        // Pool validation may now reject txs that were previously only excluded
-        // by the builder (e.g. duplicate key_authorization). A pool rejection is
-        // a stricter form of exclusion, so treat it as success.
-        let send_result = self
-            .provider
-            .raw_request::<_, B256>("eth_sendRawTransaction".into(), [encoded])
-            .await;
-        if let Err(e) = send_result {
-            let err = e.to_string();
-            assert!(
-                err.contains("already exists") || err.contains("spending limit exceeded"),
-                "Expected pool validation rejection, got: {e}"
-            );
-            return Ok(());
-        }
-
-        // Verify the tx is known to the RPC (confirms it entered the mempool).
-        let tx_obj: Option<serde_json::Value> = self
-            .provider
-            .raw_request("eth_getTransactionByHash".into(), [tx_hash])
-            .await?;
-        assert!(
-            tx_obj.is_some(),
-            "Transaction {tx_hash} should be known to RPC after submission"
-        );
-
-        // Record the starting block to prove liveness (blocks are advancing).
-        let start_block: u64 = self.provider.get_block_number().await?;
-
-        // Poll — tx should never be included
-        for _ in 0..RPC_POLL_RETRIES {
-            let receipt: Option<serde_json::Value> = self
-                .provider
-                .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
-                .await?;
-            if let Some(receipt) = receipt {
-                let status = receipt["status"].as_str().unwrap_or("?");
-                panic!(
-                    "Transaction {tx_hash} was mined (status={status}), \
-                     expected exclusion by builder"
-                );
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        }
-
-        // Confirm blocks actually advanced (liveness check).
-        let end_block: u64 = self.provider.get_block_number().await?;
-        assert!(
-            end_block > start_block,
-            "Blocks did not advance during polling ({start_block} → {end_block}); \
-             testnet may be stalled"
-        );
-
-        Ok(())
     }
 
     async fn bump_protocol_nonce(
@@ -201,9 +193,8 @@ impl super::types::TestEnv for Testnet {
             let signature = sign_aa_tx_secp256k1(&tx, signer)?;
             let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
             let tx_hash = *envelope.tx_hash();
-            self.provider
-                .raw_request::<_, B256>("eth_sendRawTransaction".into(), [envelope.encoded_2718()])
-                .await?;
+            let encoded = envelope.encoded_2718();
+            send_raw_tx(&self.provider, "eth_sendRawTransaction", encoded).await?;
             wait_for_receipt(&self.provider, tx_hash).await?;
         }
 
@@ -220,6 +211,45 @@ impl super::types::TestEnv for Testnet {
         Ok(())
     }
 
+    async fn submit_tx_expecting_rejection(
+        &self,
+        encoded: Vec<u8>,
+        expected_reason: Option<&str>,
+    ) -> eyre::Result<()> {
+        // The retry layer handles transient errors transparently. After it
+        // exhausts retries, any remaining error is either a real RPC rejection
+        // (what we're testing for) or a persistent transport failure.
+        let result = self
+            .provider
+            .raw_request::<_, B256>("eth_sendRawTransaction".into(), [encoded])
+            .await;
+
+        match result {
+            Ok(_) => Err(eyre::eyre!(
+                "Transaction should be rejected, but was accepted"
+            )),
+            Err(RpcError::Transport(_)) => {
+                // Transport error that persisted through all retries — not a
+                // real rejection, so we must not count it as a test pass.
+                Err(eyre::eyre!(
+                    "Rejection test failed: persistent transport error after retries: {}",
+                    result.unwrap_err()
+                ))
+            }
+            Err(e) => {
+                // Non-retryable error = real RPC validation rejection.
+                if let Some(reason) = expected_reason {
+                    let err_str = e.to_string().to_lowercase();
+                    assert!(
+                        err_str.contains(&reason.to_lowercase()),
+                        "Rejection error should contain '{reason}', got: {e}"
+                    );
+                }
+                Ok(())
+            }
+        }
+    }
+
     async fn current_block_timestamp(&mut self) -> eyre::Result<u64> {
         let block = self
             .provider
@@ -234,10 +264,7 @@ impl super::types::TestEnv for Testnet {
         encoded: Vec<u8>,
         tx_hash: B256,
     ) -> eyre::Result<serde_json::Value> {
-        let _: B256 = self
-            .provider
-            .raw_request("eth_sendRawTransaction".into(), [encoded])
-            .await?;
+        send_raw_tx(&self.provider, "eth_sendRawTransaction", encoded).await?;
         wait_for_receipt(&self.provider, tx_hash).await
     }
 
@@ -246,10 +273,7 @@ impl super::types::TestEnv for Testnet {
         encoded: Vec<u8>,
         tx_hash: B256,
     ) -> eyre::Result<serde_json::Value> {
-        let _: serde_json::Value = self
-            .provider
-            .raw_request("eth_sendRawTransactionSync".into(), [encoded])
-            .await?;
+        send_raw_tx(&self.provider, "eth_sendRawTransactionSync", encoded).await?;
         let receipt = wait_for_receipt(&self.provider, tx_hash).await?;
         let status = receipt["status"]
             .as_str()
