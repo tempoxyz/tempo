@@ -311,17 +311,14 @@ where
                 digest,
                 response,
             }) => {
-                // Errors are logged inside canonicalize; head canonicalization failures
-                // are non-fatal and will be retried on the next block.
-                let _ = self
-                    .canonicalize(
-                        cause,
-                        HeadOrFinalized::Head,
-                        height,
-                        digest,
-                        JustCanonicalizeOrAlsoBuild::JustCanonicalize { response },
-                    )
-                    .await;
+                self.canonicalize(
+                    cause,
+                    HeadOrFinalized::Head,
+                    height,
+                    digest,
+                    JustCanonicalizeOrAlsoBuild::JustCanonicalize { response },
+                )
+                .await;
             }
             Command::CanonicalizeAndBuild(CanonicalizeAndBuild {
                 height,
@@ -449,14 +446,18 @@ where
     async fn finalize(&mut self, cause: Span, finalized: Update<Block>) -> eyre::Result<()> {
         match finalized {
             Update::Tip(_, height, digest) => {
+                let (response, rx) = oneshot::channel();
                 self.canonicalize(
                     Span::current(),
                     HeadOrFinalized::Finalized,
                     height,
                     digest,
-                    JustCanonicalizeOrAlsoBuild::just_canonicalize_without_response(),
+                    JustCanonicalizeOrAlsoBuild::JustCanonicalize { response },
                 )
                 .await;
+                rx.await
+                    .wrap_err("executor dropped channel")
+                    .and_then(|res| res)?;
             }
             Update::Block(block, acknowledgment) => {
                 self.forward_finalized(Span::current(), block, acknowledgment)
@@ -503,14 +504,18 @@ where
         acknowledgment: Exact,
     ) -> eyre::Result<()> {
         let height = block.height();
+        let (response, rx) = oneshot::channel();
         self.canonicalize(
             Span::current(),
             HeadOrFinalized::Finalized,
             block.height(),
             block.digest(),
-            JustCanonicalizeOrAlsoBuild::just_canonicalize_without_response(),
+            JustCanonicalizeOrAlsoBuild::JustCanonicalize { response },
         )
         .await;
+        rx.await
+            .wrap_err("executor dropped channel")
+            .and_then(|res| res)?;
 
         let block = block.into_inner();
         let payload_status = self
@@ -577,12 +582,6 @@ impl JustCanonicalizeOrAlsoBuild {
             Self::AlsoBuild { response, .. } => {
                 let _ = response.send(Err(error));
             }
-        }
-    }
-
-    fn just_canonicalize_without_response() -> Self {
-        Self::JustCanonicalize {
-            response: oneshot::channel().0,
         }
     }
 }
