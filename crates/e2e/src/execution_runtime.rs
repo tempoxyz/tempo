@@ -589,6 +589,28 @@ impl ExecutionRuntime {
                                 .unwrap();
                             let _ = response.send(receipt);
                         }
+                        Message::SetFeeRecipientV2(set_fee_recipient_v2) => {
+                            let SetFeeRecipientV2 {
+                                http_url,
+                                index,
+                                fee_recipient,
+                                response,
+                            } = set_fee_recipient_v2;
+                            let provider = ProviderBuilder::new()
+                                .wallet(wallet.clone())
+                                .connect_http(http_url);
+                            let validator_config_v2 =
+                                IValidatorConfigV2::new(VALIDATOR_CONFIG_V2_ADDRESS, provider);
+                            let receipt = validator_config_v2
+                                .setFeeRecipient(index, fee_recipient)
+                                .send()
+                                .await
+                                .unwrap()
+                                .get_receipt()
+                                .await
+                                .unwrap();
+                            let _ = response.send(receipt);
+                        }
                         Message::SetNextFullDkgCeremony(set_next_full_dkg_ceremony) => {
                             let SetNextFullDkgCeremony {
                                 http_url,
@@ -761,6 +783,28 @@ impl ExecutionRuntime {
                 DeactivateValidatorV2 {
                     http_url,
                     address: validator.chain_address,
+                    response: tx,
+                }
+                .into(),
+            )
+            .map_err(|_| eyre::eyre!("the execution runtime went away"))?;
+        rx.await
+            .wrap_err("the execution runtime dropped the response channel before sending a receipt")
+    }
+
+    pub async fn set_fee_recipient_v2(
+        &self,
+        http_url: Url,
+        index: u64,
+        fee_recipient: Address,
+    ) -> eyre::Result<TransactionReceipt> {
+        let (tx, rx) = oneshot::channel();
+        self.to_runtime
+            .send(
+                SetFeeRecipientV2 {
+                    http_url,
+                    index,
+                    fee_recipient,
                     response: tx,
                 }
                 .into(),
@@ -1169,6 +1213,7 @@ enum Message {
     InitializeIfMigrated(InitializeIfMigrated),
     MigrateValidator(MigrateValidator),
     RotateValidator(RotateValidator),
+    SetFeeRecipientV2(SetFeeRecipientV2),
     SetNextFullDkgCeremony(SetNextFullDkgCeremony),
     SetNextFullDkgCeremonyV2(SetNextFullDkgCeremonyV2),
     SpawnNode {
@@ -1233,6 +1278,12 @@ impl From<MigrateValidator> for Message {
 impl From<RotateValidator> for Message {
     fn from(value: RotateValidator) -> Self {
         Self::RotateValidator(value)
+    }
+}
+
+impl From<SetFeeRecipientV2> for Message {
+    fn from(value: SetFeeRecipientV2) -> Self {
+        Self::SetFeeRecipientV2(value)
     }
 }
 
@@ -1320,6 +1371,15 @@ struct RotateValidator {
     address: Address,
     ingress: SocketAddr,
     egress: IpAddr,
+    response: oneshot::Sender<TransactionReceipt>,
+}
+
+#[derive(Debug)]
+struct SetFeeRecipientV2 {
+    /// URL of the node to send this to.
+    http_url: Url,
+    index: u64,
+    fee_recipient: Address,
     response: oneshot::Sender<TransactionReceipt>,
 }
 
