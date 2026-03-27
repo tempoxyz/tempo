@@ -20,6 +20,7 @@ use tempo_chainspec::hardfork::TempoHardforks as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::TempoFullNode;
 use tempo_primitives::TempoHeader;
+use tempo_telemetry_util::{display_duration, display_option};
 use tracing::{Span, debug, error, info_span, instrument, warn};
 
 use crate::{
@@ -102,6 +103,7 @@ where
         let reason = 'event_loop: loop {
             tokio::select!(
                 biased;
+
 
                 msg = self.mailbox.next() => {
                     match msg {
@@ -443,11 +445,11 @@ async fn read_peer_set_if_boundary(
         tracing::warn_span!("read_peer_set_if_boundary").in_scope(|| {
             warn!(
                 attempts,
-                retry_after = %tempo_telemetry_util::display_duration(retry_after),
+                retry_after = %display_duration(retry_after),
                 is_syncing,
-                best_finalized = %tempo_telemetry_util::display_option(&best_finalized),
+                best_finalized = %display_option(&best_finalized),
                 target_height = %block.height(),
-                blocks_behind = %tempo_telemetry_util::display_option(&blocks_behind),
+                blocks_behind = %display_option(&blocks_behind),
                 "reading validator config from contract failed; will retry",
             );
         });

@@ -16,13 +16,18 @@ use futures::future::join_all;
 use rand_08::Rng;
 use tracing::debug;
 
-use crate::{CONSENSUS_NODE_PREFIX, Setup, setup_validators};
+use crate::{
+    CONSENSUS_NODE_PREFIX, Setup, connect_execution_peers, connect_execution_to_peers,
+    setup_validators,
+};
 
 /// Test configuration for restart scenarios
 #[derive(Clone)]
 struct RestartSetup {
     // Setup for the nodes to launch.
     node_setup: Setup,
+    /// Whether to connect the execution layer.
+    connect_execution_layer: bool,
     /// Height at which to shutdown a validator
     shutdown_height: u64,
     /// Height at which to restart the validator
@@ -39,6 +44,7 @@ struct RestartSetup {
 fn run_restart_test(
     RestartSetup {
         node_setup,
+        connect_execution_layer,
         shutdown_height,
         restart_height,
         final_height,
@@ -54,6 +60,9 @@ fn run_restart_test(
             setup_validators(&mut context, node_setup.clone()).await;
 
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+        if connect_execution_layer {
+            connect_execution_peers(&validators).await;
+        }
 
         debug!(
             height = shutdown_height,
@@ -87,6 +96,10 @@ fn run_restart_test(
 
         debug!("target height reached, restarting stopped validator");
         validators[idx].start(&context).await;
+        if connect_execution_layer {
+            connect_execution_to_peers(&validators[idx], &validators).await;
+        }
+
         debug!(
             public_key = %validators[idx].public_key(),
             "restarted validator",
@@ -202,69 +215,14 @@ async fn ensure_no_progress(context: &Context, tries: u32) {
 /// This is the simplest possible restart case: the network stops because we
 /// dropped below quorum. The node should be able to pick up after.
 #[test_traced]
-fn network_resumes_after_restart_with_el_p2p() {
+fn network_resumes_after_restart() {
     let _ = tempo_eyre::install();
 
     for seed in 0..3 {
         let setup = Setup::new()
             .how_many_signers(3) // quorum for 3 validators is 3.
             .seed(seed)
-            .epoch_length(100)
-            .connect_execution_layer_nodes(true);
-
-        let shutdown_height = 5;
-        let final_height = 10;
-
-        let cfg = deterministic::Config::default().with_seed(setup.seed);
-        let executor = Runner::from(cfg);
-
-        executor.start(|mut context| async move {
-            let (mut validators, _execution_runtime) =
-                setup_validators(&mut context, setup.clone()).await;
-
-            join_all(validators.iter_mut().map(|v| v.start(&context))).await;
-
-            debug!(
-                height = shutdown_height,
-                "waiting for network to reach target height before stopping a validator",
-            );
-            wait_for_height(&context, setup.how_many_signers, shutdown_height, false).await;
-
-            let idx = context.gen_range(0..validators.len());
-            validators[idx].stop().await;
-            debug!(public_key = %validators[idx].public_key(), "stopped a random validator");
-
-            // wait a bit to let the network settle; some finalizations come in later
-            context.sleep(Duration::from_secs(1)).await;
-            ensure_no_progress(&context, 5).await;
-
-            validators[idx].start(&context).await;
-            debug!(
-                public_key = %validators[idx].public_key(),
-                "restarted validator",
-            );
-
-            debug!(
-                height = final_height,
-                "waiting for reconstituted validators to reach target height to reach test success",
-            );
-            wait_for_height(&context, validators.len() as u32, final_height, false).await;
-        })
-    }
-}
-
-/// This is the simplest possible restart case: the network stops because we
-/// dropped below quorum. The node should be able to pick up after.
-#[test_traced]
-fn network_resumes_after_restart_without_el_p2p() {
-    let _ = tempo_eyre::install();
-
-    for seed in 0..3 {
-        let setup = Setup::new()
-            .how_many_signers(3) // quorum for 3 validators is 3.
-            .seed(seed)
-            .epoch_length(100)
-            .connect_execution_layer_nodes(false);
+            .epoch_length(100);
 
         let shutdown_height = 5;
         let final_height = 10;
@@ -313,6 +271,7 @@ fn validator_catches_up_to_network_during_epoch() {
 
     let setup = RestartSetup {
         node_setup: Setup::new().epoch_length(100),
+        connect_execution_layer: false,
         shutdown_height: 5,
         restart_height: 10,
         final_height: 15,
@@ -329,6 +288,7 @@ fn validator_catches_up_with_gap_of_one_epoch() {
     let epoch_length = 30;
     let setup = RestartSetup {
         node_setup: Setup::new().epoch_length(epoch_length),
+        connect_execution_layer: false,
         shutdown_height: epoch_length + 1,
         restart_height: 2 * epoch_length + 1,
         final_height: 3 * epoch_length + 1,
@@ -344,9 +304,8 @@ fn validator_catches_up_with_gap_of_three_epochs() {
 
     let epoch_length = 30;
     let setup = RestartSetup {
-        node_setup: Setup::new()
-            .epoch_length(epoch_length)
-            .connect_execution_layer_nodes(true),
+        node_setup: Setup::new().epoch_length(epoch_length),
+        connect_execution_layer: true,
         shutdown_height: epoch_length + 1,
         restart_height: 4 * epoch_length + 1,
         final_height: 5 * epoch_length + 1,

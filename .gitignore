@@ -38,3 +38,4 @@ _
 
 # LLVM coverage profraw files
 *.profraw
+__pycache__/

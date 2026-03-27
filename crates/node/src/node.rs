@@ -7,7 +7,6 @@ use crate::{
     },
 };
 use alloy_primitives::B256;
-use reth_engine_local::LocalPayloadAttributesBuilder;
 use reth_evm::revm::primitives::Address;
 use reth_node_api::{
     AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodePrimitives, NodeTypes,
@@ -34,7 +33,7 @@ use reth_rpc_eth_api::{
 };
 use reth_tracing::tracing::{debug, info};
 use reth_transaction_pool::{TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore};
-use std::{default::Default, sync::Arc};
+use std::default::Default;
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_consensus::TempoConsensus;
 use tempo_evm::TempoEvmConfig;
@@ -285,47 +284,40 @@ impl<N: FullNodeComponents<Types = Self>> DebugNode<N> for TempoNode {
     }
 
     fn local_payload_attributes_builder(
-        chain_spec: &Self::ChainSpec,
+        _chain_spec: &Self::ChainSpec,
     ) -> impl PayloadAttributesBuilder<<Self::Payload as PayloadTypes>::PayloadAttributes, TempoHeader>
     {
-        TempoPayloadAttributesBuilder::new(Arc::new(chain_spec.clone()))
+        TempoPayloadAttributesBuilder::new()
     }
 }
 
 /// The attributes builder with a restricted set of validators
-#[derive(Debug)]
+#[derive(Debug, Default)]
 #[non_exhaustive]
-pub struct TempoPayloadAttributesBuilder {
-    /// The vanilla eth payload attributes builder
-    inner: LocalPayloadAttributesBuilder<TempoChainSpec>,
-}
+pub struct TempoPayloadAttributesBuilder;
 
 impl TempoPayloadAttributesBuilder {
     /// Creates a new instance of the builder.
-    pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
-        Self {
-            inner: LocalPayloadAttributesBuilder::new(chain_spec).without_increasing_timestamp(),
-        }
+    pub const fn new() -> Self {
+        Self
     }
 }
 
 impl PayloadAttributesBuilder<TempoPayloadAttributes, TempoHeader>
     for TempoPayloadAttributesBuilder
 {
-    fn build(&self, parent: &SealedHeader<TempoHeader>) -> TempoPayloadAttributes {
-        let mut inner = self.inner.build(parent);
-        inner.suggested_fee_recipient = Address::ZERO;
-
-        let timestamp_millis_part = std::time::SystemTime::now()
+    fn build(&self, _parent: &SealedHeader<TempoHeader>) -> TempoPayloadAttributes {
+        let timestamp_millis = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_millis() as u64
-            % 1000;
+            .as_millis() as u64;
 
-        TempoPayloadAttributes {
-            inner,
-            timestamp_millis_part,
-        }
+        TempoPayloadAttributes::new(
+            Address::ZERO,
+            timestamp_millis,
+            Default::default(),
+            Vec::new,
+        )
     }
 }
 

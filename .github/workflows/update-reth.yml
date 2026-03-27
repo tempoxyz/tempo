@@ -104,7 +104,7 @@ jobs:
 
       # ── amp CLI ────────────────────────────────────────────────
       - name: Install Amp CLI
-        run: npm install -g @sourcegraph/amp
+        run: curl -fsSL https://ampcode.com/install.sh | bash
 
       # ── amp helper ────────────────────────────────────────────
       - name: Create amp wrapper
@@ -114,7 +114,7 @@ jobs:
           cat > /usr/local/bin/amp-run <<'WRAPPER'
           #!/usr/bin/env bash
           set -euo pipefail
-          OUTPUT=$(amp "$@" --stream-json 2>&1)
+          OUTPUT=$(amp "$@" --stream-json --take-me-back 2>&1)
           FIRST_LINE=$(echo "$OUTPUT" | head -1 || true)
           THREAD_ID=$(echo "$FIRST_LINE" | jq -r '.session_id // empty' 2>/dev/null || true)
           if [ -n "$THREAD_ID" ]; then
@@ -162,10 +162,6 @@ jobs:
           find . -name 'Cargo.toml' -exec sed -i "s|paradigmxyz/reth\", rev = \"${CURRENT_REV}\"|paradigmxyz/reth\", rev = \"${NEW_REV}\"|g" {} +
           echo "Updated reth rev: $CURRENT_REV -> $NEW_REV"
 
-          # Update a single reth dependency, which in turn will update all dependencies with the same `git` source.
-          # We can't just do `cargo update` because it will also do unwanted bumps.
-          cargo update -p reth-engine-tree
-
       # ── commit rev bump if changed ──────────────────────────────
       - name: Commit reth rev bump
         if: steps.update.outputs.bumped == 'true'
@@ -181,20 +177,21 @@ jobs:
         run: |
           echo "::group::Initial cargo clippy"
           set +e
-          cargo clippy --all-targets --all-features --locked 2>&1
+          cargo clippy --all-targets --all-features 2>&1
           clippy_exit=$?
           set -e
           echo "::endgroup::"
 
           if [ "$clippy_exit" -eq 0 ]; then
+            echo "clippy_passed=true" >> "$GITHUB_OUTPUT"
             echo "Cargo clippy already passes — skipping."
             exit 0
           fi
 
           AMP_PROMPT="This Rust workspace just had its reth dependencies updated to the latest commit \
-          on the paradigmxyz/reth main branch. \`cargo clippy --all-targets --all-features --locked\` is now failing with compilation errors.
+          on the paradigmxyz/reth main branch. \`cargo clippy --all-targets --all-features\` is now failing with compilation errors.
 
-          Run \`cargo clippy --all-targets --all-features --locked\` to see the errors, then fix the Rust source code and repeat \
+          Run \`cargo clippy --all-targets --all-features\` to see the errors, then fix the Rust source code and repeat \
           until cargo clippy passes. You may also bump non-reth dependency versions in Cargo.toml files \
           if needed (e.g. revm, alloy), but do NOT modify the reth rev or git source specifications \
           in any Cargo.toml — those have already been updated by the workflow.
@@ -220,7 +217,7 @@ jobs:
 
             echo "::group::Verify cargo clippy"
             set +e
-            cargo clippy --all-targets --all-features --locked 2>&1
+            cargo clippy --all-targets --all-features 2>&1
             clippy_exit=$?
             set -e
             echo "::endgroup::"
@@ -248,6 +245,7 @@ jobs:
           echo "::endgroup::"
 
           if [ "$test_exit" -eq 0 ]; then
+            echo "test_passed=true" >> "$GITHUB_OUTPUT"
             echo "Tests already compile — skipping."
             exit 0
           fi
@@ -307,6 +305,23 @@ jobs:
             echo "No source changes to commit."
           fi
 
+      # ── zepter feature lint ─────────────────────────────────────
+      - uses: taiki-e/cache-cargo-install-action@34ce5120836e5f9f1508d8713d7fdea0e8facd6f # v3.0.1
+        with:
+          tool: zepter
+      - name: Fix zepter lint
+        run: |
+          if ! zepter run check; then
+            echo "Zepter check failed — running auto-fix..."
+            zepter
+            if [ -n "$(git status --porcelain)" ]; then
+              git add -A
+              git commit -m "fix: resolve zepter feature propagation from reth update ($(date -u +%Y-%m-%d))"
+            fi
+          else
+            echo "Zepter check passed."
+          fi
+
       # ── push ───────────────────────────────────────────────────
       - name: Push working branch
         run: |
@@ -345,6 +360,7 @@ jobs:
                 RETH_SUMMARY=$(echo "$RETH_LOG" | amp-run -x "Summarize these upstream reth commit messages into a concise markdown bullet list \
                   grouped by area (e.g. Engine, RPC, Trie, DB, Perf, Bench, Testing). Use bold **Area** headers. \
                   Merge related commits into single bullets. Skip CI/doc-only changes unless significant. \
+                  When referencing PRs, use full GitHub markdown links like [#1234](https://github.com/paradigmxyz/reth/pull/1234) — never bare #1234. \
                   Do NOT include any preamble or explanation, just the grouped bullet list.")
                 echo "$RETH_SUMMARY"
                 echo ""
@@ -523,3 +539,96 @@ jobs:
               exit 1
             fi
           done
+
+      # ── Slack notification ─────────────────────────────────────
+      - name: Notify Slack
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.DEREK_PAT }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_ENG_TEMPO_WORKFLOWS_WEBHOOK_URL }}
+        run: |
+          PR_BRANCH="reth-auto-bump"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          OLD_REV="${{ steps.update.outputs.old_rev }}"
+          NEW_REV="${{ steps.update.outputs.new_rev }}"
+          BUMPED="${{ steps.update.outputs.bumped }}"
+          CLIPPY_PASSED="${{ steps.check-loop.outputs.clippy_passed }}"
+          TEST_PASSED="${{ steps.test-loop.outputs.test_passed }}"
+
+          PR_NUMBER=""
+          PR_URL=""
+          PR_INFO=$(gh pr list --head "$PR_BRANCH" --base main --state open --json number,url --jq '.[0] | select(.) | [.number, .url] | @tsv' 2>/dev/null || true)
+          if [ -n "$PR_INFO" ]; then
+            IFS=$'\t' read -r PR_NUMBER PR_URL <<< "$PR_INFO"
+          fi
+
+          # Determine overall status
+          JOB_STATUS="${{ job.status }}"
+          if [ "$JOB_STATUS" = "success" ]; then
+            EMOJI="✅"
+            STATUS="succeeded"
+            COLOR="#2eb67d"
+          elif [ "$JOB_STATUS" = "cancelled" ]; then
+            EMOJI="⚠️"
+            STATUS="cancelled"
+            COLOR="#e0a523"
+          else
+            EMOJI="❌"
+            STATUS="failed"
+            COLOR="#e01e5a"
+          fi
+
+          # Build detail lines
+          DETAILS=""
+          if [ "$BUMPED" = "true" ] && [ -n "$OLD_REV" ] && [ -n "$NEW_REV" ]; then
+            DETAILS="${DETAILS}\n• <https://github.com/paradigmxyz/reth/commit/${OLD_REV}|${OLD_REV:0:7}> → <https://github.com/paradigmxyz/reth/commit/${NEW_REV}|${NEW_REV:0:7}> (<https://github.com/paradigmxyz/reth/compare/${OLD_REV}...${NEW_REV}|diff>)"
+          elif [ "$BUMPED" = "false" ]; then
+            DETAILS="${DETAILS}\n• Already on latest reth rev"
+          fi
+
+          if [ "$CLIPPY_PASSED" = "false" ]; then
+            DETAILS="${DETAILS}\n• ⚠️ Clippy: unresolved errors"
+          fi
+
+          if [ "$TEST_PASSED" = "false" ]; then
+            DETAILS="${DETAILS}\n• ⚠️ Tests: unresolved errors"
+          fi
+
+          if [ -n "$PR_URL" ]; then
+            DETAILS="${DETAILS}\n• <${PR_URL}|PR #${PR_NUMBER}>"
+          fi
+
+          DETAILS="${DETAILS}\n• <${RUN_URL}|Workflow>"
+
+          # Post to Slack via incoming webhook
+          if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
+            echo "::warning::SLACK_WEBHOOK_URL is not set; skipping Slack notification"
+            exit 0
+          fi
+
+          DETAILS_TEXT=$(printf '%b' "$DETAILS")
+
+          PAYLOAD=$(jq -n \
+            --arg emoji "$EMOJI" \
+            --arg status "$STATUS" \
+            --arg details "$DETAILS_TEXT" \
+            --arg color "$COLOR" \
+            '{
+              attachments: [{
+                color: $color,
+                blocks: [
+                  {
+                    type: "section",
+                    text: {
+                      type: "mrkdwn",
+                      text: ($emoji + " *Reth update " + $status + "*" + $details)
+                    }
+                  }
+                ]
+              }]
+            }')
+
+          curl -sf -X POST -H 'Content-type: application/json' \
+            --data "$PAYLOAD" \
+            "$SLACK_WEBHOOK_URL" \
+            || echo "::warning::Failed to post Slack notification"
