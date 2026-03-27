@@ -808,6 +808,22 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     let b_lat = do $compute_latency_stats $baseline_blocks
     let f_lat = do $compute_latency_stats $feature_blocks
 
+    # Compute block time stats for each group
+    let compute_block_time_stats = { |blocks: list<any>|
+        let timestamps = ($blocks | get timestamp | sort)
+        let intervals = if ($timestamps | length) > 1 {
+            $timestamps | window 2 | each { |w| ($w | last) - ($w | first) }
+        } else { [] }
+        {
+            p50: (percentile $intervals 50 | math round --precision 1)
+            p95: (percentile $intervals 95 | math round --precision 1)
+            p99: (percentile $intervals 99 | math round --precision 1)
+        }
+    }
+
+    let b_bt = do $compute_block_time_stats $baseline_blocks
+    let f_bt = do $compute_block_time_stats $feature_blocks
+
     # Aggregate TPS and Mgas/s from per-run totals (total_tx / total_time)
     let baseline_runs = ($run_data | where { |r| $r.label | str starts-with "baseline" })
     let feature_runs = ($run_data | where { |r| $r.label | str starts-with "feature" })
@@ -842,6 +858,9 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         $"| Latency P50 [ms] | ($b_lat.p50) | ($f_lat.p50) | (do $delta $b_lat.p50 $f_lat.p50)% |"
         $"| Latency P90 [ms] | ($b_lat.p90) | ($f_lat.p90) | (do $delta $b_lat.p90 $f_lat.p90)% |"
         $"| Latency P99 [ms] | ($b_lat.p99) | ($f_lat.p99) | (do $delta $b_lat.p99 $f_lat.p99)% |"
+        $"| Block Time P50 [ms] | ($b_bt.p50) | ($f_bt.p50) | (do $delta $b_bt.p50 $f_bt.p50)% |"
+        $"| Block Time P95 [ms] | ($b_bt.p95) | ($f_bt.p95) | (do $delta $b_bt.p95 $f_bt.p95)% |"
+        $"| Block Time P99 [ms] | ($b_bt.p99) | ($f_bt.p99) | (do $delta $b_bt.p99 $f_bt.p99)% |"
         $"| TPS | ($b_tps) | ($f_tps) | (do $delta $b_tps $f_tps)% |"
         $"| Mgas/s | ($b_mgas) | ($f_mgas) | (do $delta $b_mgas $f_mgas)% |"
         ""
@@ -882,6 +901,9 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 latency_p99: $b_lat.p99
                 tps: $b_tps
                 mgas_s: $b_mgas
+                block_time_p50: $b_bt.p50
+                block_time_p95: $b_bt.p95
+                block_time_p99: $b_bt.p99
                 blocks: $b_lat.n
             }
             feature: {
@@ -892,6 +914,9 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 latency_p99: $f_lat.p99
                 tps: $f_tps
                 mgas_s: $f_mgas
+                block_time_p50: $f_bt.p50
+                block_time_p95: $f_bt.p95
+                block_time_p99: $f_bt.p99
                 blocks: $f_lat.n
             }
             deltas: {
@@ -902,6 +927,9 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 latency_p99: (do $delta $b_lat.p99 $f_lat.p99)
                 tps: (do $delta $b_tps $f_tps)
                 mgas_s: (do $delta $b_mgas $f_mgas)
+                block_time_p50: (do $delta $b_bt.p50 $f_bt.p50)
+                block_time_p95: (do $delta $b_bt.p95 $f_bt.p95)
+                block_time_p99: (do $delta $b_bt.p99 $f_bt.p99)
             }
         }
         per_run: $run_data

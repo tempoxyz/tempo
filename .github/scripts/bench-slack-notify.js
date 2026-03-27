@@ -89,7 +89,7 @@ function fmtDeltaInverse(pct) {
 }
 
 function verdict(deltas) {
-  const latencyDeltas = [deltas.latency_mean, deltas.latency_p50, deltas.latency_p90, deltas.latency_p99];
+  const latencyDeltas = [deltas.latency_mean, deltas.latency_p50, deltas.latency_p90, deltas.latency_p99, deltas.block_time_p50, deltas.block_time_p95, deltas.block_time_p99];
   const throughputDeltas = [deltas.tps, deltas.mgas_s];
 
   const hasBad = latencyDeltas.some(d => d != null && d > THRESHOLD_PCT) ||
@@ -104,7 +104,7 @@ function verdict(deltas) {
 }
 
 function hasSignificantChange(deltas) {
-  const all = [deltas.latency_mean, deltas.latency_p50, deltas.latency_p90, deltas.latency_p99, deltas.tps, deltas.mgas_s];
+  const all = [deltas.latency_mean, deltas.latency_p50, deltas.latency_p90, deltas.latency_p99, deltas.block_time_p50, deltas.block_time_p95, deltas.block_time_p99, deltas.tps, deltas.mgas_s];
   return all.some(d => d != null && Math.abs(d) >= THRESHOLD_PCT);
 }
 
@@ -113,13 +113,16 @@ function buildMetricRows(summary) {
   const f = summary.results.feature;
   const d = summary.results.deltas;
   return [
-    { label: 'Mean Latency', baseline: fmtMs(b.latency_mean), feature: fmtMs(f.latency_mean), change: fmtDelta(d.latency_mean) },
-    { label: 'StdDev',       baseline: fmtMs(b.latency_stddev), feature: fmtMs(f.latency_stddev), change: fmtDelta(d.latency_stddev) },
-    { label: 'P50',          baseline: fmtMs(b.latency_p50), feature: fmtMs(f.latency_p50), change: fmtDelta(d.latency_p50) },
-    { label: 'P90',          baseline: fmtMs(b.latency_p90), feature: fmtMs(f.latency_p90), change: fmtDelta(d.latency_p90) },
-    { label: 'P99',          baseline: fmtMs(b.latency_p99), feature: fmtMs(f.latency_p99), change: fmtDelta(d.latency_p99) },
-    { label: 'TPS',          baseline: fmtVal(b.tps),        feature: fmtVal(f.tps),        change: fmtDeltaInverse(d.tps) },
-    { label: 'Mgas/s',       baseline: fmtVal(b.mgas_s),     feature: fmtVal(f.mgas_s),     change: fmtDeltaInverse(d.mgas_s) },
+    { label: 'TPS',             baseline: fmtVal(b.tps),            feature: fmtVal(f.tps),            change: fmtDeltaInverse(d.tps) },
+    { label: 'Mgas/s',          baseline: fmtVal(b.mgas_s),         feature: fmtVal(f.mgas_s),         change: fmtDeltaInverse(d.mgas_s) },
+    { label: 'Block Time P50',  baseline: fmtMs(b.block_time_p50),  feature: fmtMs(f.block_time_p50),  change: fmtDelta(d.block_time_p50) },
+    { label: 'Block Time P95',  baseline: fmtMs(b.block_time_p95),  feature: fmtMs(f.block_time_p95),  change: fmtDelta(d.block_time_p95) },
+    { label: 'Block Time P99',  baseline: fmtMs(b.block_time_p99),  feature: fmtMs(f.block_time_p99),  change: fmtDelta(d.block_time_p99) },
+    { label: 'Mean Latency',    baseline: fmtMs(b.latency_mean),    feature: fmtMs(f.latency_mean),    change: fmtDelta(d.latency_mean) },
+    { label: 'StdDev',          baseline: fmtMs(b.latency_stddev),  feature: fmtMs(f.latency_stddev),  change: fmtDelta(d.latency_stddev) },
+    { label: 'P50',             baseline: fmtMs(b.latency_p50),     feature: fmtMs(f.latency_p50),     change: fmtDelta(d.latency_p50) },
+    { label: 'P90',             baseline: fmtMs(b.latency_p90),     feature: fmtMs(f.latency_p90),     change: fmtDelta(d.latency_p90) },
+    { label: 'P99',             baseline: fmtMs(b.latency_p99),     feature: fmtMs(f.latency_p99),     change: fmtDelta(d.latency_p99) },
   ];
 }
 
