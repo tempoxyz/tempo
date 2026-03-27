@@ -812,7 +812,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     let compute_block_time_stats = { |blocks: list<any>|
         let timestamps = ($blocks | get timestamp | sort)
         let intervals = if ($timestamps | length) > 1 {
-            $timestamps | window 2 | each { |w| ($w | last) - ($w | first) }
+            $timestamps | window 2 | each { |w| ($w | last) - ($w | first) } | sort
         } else { [] }
         {
             p50: (percentile $intervals 50 | math round --precision 1)
@@ -853,16 +853,16 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         ""
         "| Metric | Baseline | Feature | Delta |"
         "|--------|----------|---------|-------|"
+        $"| TPS | ($b_tps) | ($f_tps) | (do $delta $b_tps $f_tps)% |"
+        $"| Mgas/s | ($b_mgas) | ($f_mgas) | (do $delta $b_mgas $f_mgas)% |"
+        $"| Block Time P50 [ms] | ($b_bt.p50) | ($f_bt.p50) | (do $delta $b_bt.p50 $f_bt.p50)% |"
+        $"| Block Time P95 [ms] | ($b_bt.p95) | ($f_bt.p95) | (do $delta $b_bt.p95 $f_bt.p95)% |"
+        $"| Block Time P99 [ms] | ($b_bt.p99) | ($f_bt.p99) | (do $delta $b_bt.p99 $f_bt.p99)% |"
         $"| Latency Mean [ms] | ($b_lat.mean) | ($f_lat.mean) | (do $delta $b_lat.mean $f_lat.mean)% |"
         $"| Latency Std Dev [ms] | ($b_lat.stddev) | ($f_lat.stddev) | (do $delta $b_lat.stddev $f_lat.stddev)% |"
         $"| Latency P50 [ms] | ($b_lat.p50) | ($f_lat.p50) | (do $delta $b_lat.p50 $f_lat.p50)% |"
         $"| Latency P90 [ms] | ($b_lat.p90) | ($f_lat.p90) | (do $delta $b_lat.p90 $f_lat.p90)% |"
         $"| Latency P99 [ms] | ($b_lat.p99) | ($f_lat.p99) | (do $delta $b_lat.p99 $f_lat.p99)% |"
-        $"| Block Time P50 [ms] | ($b_bt.p50) | ($f_bt.p50) | (do $delta $b_bt.p50 $f_bt.p50)% |"
-        $"| Block Time P95 [ms] | ($b_bt.p95) | ($f_bt.p95) | (do $delta $b_bt.p95 $f_bt.p95)% |"
-        $"| Block Time P99 [ms] | ($b_bt.p99) | ($f_bt.p99) | (do $delta $b_bt.p99 $f_bt.p99)% |"
-        $"| TPS | ($b_tps) | ($f_tps) | (do $delta $b_tps $f_tps)% |"
-        $"| Mgas/s | ($b_mgas) | ($f_mgas) | (do $delta $b_mgas $f_mgas)% |"
         ""
         "## Per-Run Details"
         ""
