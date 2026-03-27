@@ -729,6 +729,26 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     mut feature_blocks = []
     mut baseline_intervals = []
     mut feature_intervals = []
+    mut baseline_tps_samples = []
+    mut feature_tps_samples = []
+
+    let compute_tps_stats = { |samples: list<any>|
+        let sorted_samples = ($samples | sort)
+        {
+            p50: (percentile $sorted_samples 50 | math round --precision 1)
+            p95: (percentile $sorted_samples 95 | math round --precision 1)
+            p99: (percentile $sorted_samples 99 | math round --precision 1)
+        }
+    }
+
+    let compute_block_time_stats = { |intervals: list<any>|
+        let sorted_intervals = ($intervals | sort)
+        {
+            p50: (percentile $sorted_intervals 50 | math round --precision 1)
+            p90: (percentile $sorted_intervals 90 | math round --precision 1)
+            p99: (percentile $sorted_intervals 99 | math round --precision 1)
+        }
+    }
 
     for label in $run_labels {
         let report_path = $"($results_dir)/report-($label).json"
@@ -743,18 +763,34 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             continue
         }
 
-        let timestamps = ($blocks | get timestamp | sort)
+        let sorted_blocks = ($blocks | sort-by timestamp)
+        let timestamps = ($sorted_blocks | get timestamp)
         let block_intervals = if ($timestamps | length) > 1 {
             $timestamps | window 2 | each { |w| ($w | last) - ($w | first) }
         } else { [] }
+
+        # Attribute each interval's throughput to the later block so TPS quantiles stay
+        # within a single run and avoid the inter-run gaps that skew merged samples.
+        let block_tps_samples = if ($sorted_blocks | length) > 1 {
+            $sorted_blocks | window 2 | each { |pair|
+                let earlier = ($pair | first)
+                let later = ($pair | last)
+                let interval_ms = [((($later | get timestamp) - ($earlier | get timestamp))) 1] | math max
+                (($later | get tx_count) / ($interval_ms / 1000.0))
+            }
+        } else { [] }
+        let run_tps = do $compute_tps_stats $block_tps_samples
+        let run_bt = do $compute_block_time_stats $block_intervals
 
         # Collect blocks into baseline/feature groups
         if ($label | str starts-with "baseline") {
             $baseline_blocks = ($baseline_blocks | append $blocks)
             $baseline_intervals = ($baseline_intervals | append $block_intervals)
+            $baseline_tps_samples = ($baseline_tps_samples | append $block_tps_samples)
         } else {
             $feature_blocks = ($feature_blocks | append $blocks)
             $feature_intervals = ($feature_intervals | append $block_intervals)
+            $feature_tps_samples = ($feature_tps_samples | append $block_tps_samples)
         }
 
         let total_tx = ($blocks | get tx_count | math sum)
@@ -790,7 +826,13 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             total_gas: $total_gas
             p50_latency: $p50_latency
             tps: $actual_tps
+            tps_p50: $run_tps.p50
+            tps_p95: $run_tps.p95
+            tps_p99: $run_tps.p99
             mgas_s: $mgas_per_sec
+            block_time_p50: $run_bt.p50
+            block_time_p90: $run_bt.p90
+            block_time_p99: $run_bt.p99
             success_rate: $success_rate
         }])
     }
@@ -816,18 +858,10 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     let b_lat = do $compute_latency_stats $baseline_blocks
     let f_lat = do $compute_latency_stats $feature_blocks
 
-    # Compute block time stats for each group
-    let compute_block_time_stats = { |intervals: list<any>|
-        let sorted_intervals = ($intervals | sort)
-        {
-            p50: (percentile $sorted_intervals 50 | math round --precision 1)
-            p95: (percentile $sorted_intervals 95 | math round --precision 1)
-            p99: (percentile $sorted_intervals 99 | math round --precision 1)
-        }
-    }
-
     let b_bt = do $compute_block_time_stats $baseline_intervals
     let f_bt = do $compute_block_time_stats $feature_intervals
+    let b_tps_stats = do $compute_tps_stats $baseline_tps_samples
+    let f_tps_stats = do $compute_tps_stats $feature_tps_samples
 
     # Aggregate TPS and Mgas/s from per-run totals (total_tx / total_time)
     let baseline_runs = ($run_data | where { |r| $r.label | str starts-with "baseline" })
@@ -854,15 +888,23 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         $"- Baseline blocks: ($b_lat.n)"
         $"- Feature blocks: ($f_lat.n)"
         ""
-        "## Results"
+        "## Tempo Metrics"
         ""
         "| Metric | Baseline | Feature | Delta |"
         "|--------|----------|---------|-------|"
-        $"| TPS | ($b_tps) | ($f_tps) | (do $delta $b_tps $f_tps)% |"
-        $"| Mgas/s | ($b_mgas) | ($f_mgas) | (do $delta $b_mgas $f_mgas)% |"
+        $"| Avg TPS | ($b_tps) | ($f_tps) | (do $delta $b_tps $f_tps)% |"
+        $"| TPS P50 | ($b_tps_stats.p50) | ($f_tps_stats.p50) | (do $delta $b_tps_stats.p50 $f_tps_stats.p50)% |"
+        $"| TPS P95 | ($b_tps_stats.p95) | ($f_tps_stats.p95) | (do $delta $b_tps_stats.p95 $f_tps_stats.p95)% |"
+        $"| TPS P99 | ($b_tps_stats.p99) | ($f_tps_stats.p99) | (do $delta $b_tps_stats.p99 $f_tps_stats.p99)% |"
+        $"| Gas Throughput [Mgas/s] | ($b_mgas) | ($f_mgas) | (do $delta $b_mgas $f_mgas)% |"
         $"| Block Time P50 [ms] | ($b_bt.p50) | ($f_bt.p50) | (do $delta $b_bt.p50 $f_bt.p50)% |"
-        $"| Block Time P95 [ms] | ($b_bt.p95) | ($f_bt.p95) | (do $delta $b_bt.p95 $f_bt.p95)% |"
+        $"| Block Time P90 [ms] | ($b_bt.p90) | ($f_bt.p90) | (do $delta $b_bt.p90 $f_bt.p90)% |"
         $"| Block Time P99 [ms] | ($b_bt.p99) | ($f_bt.p99) | (do $delta $b_bt.p99 $f_bt.p99)% |"
+        ""
+        "## Latency (Secondary)"
+        ""
+        "| Metric | Baseline | Feature | Delta |"
+        "|--------|----------|---------|-------|"
         $"| Latency Mean [ms] | ($b_lat.mean) | ($f_lat.mean) | (do $delta $b_lat.mean $f_lat.mean)% |"
         $"| Latency Std Dev [ms] | ($b_lat.stddev) | ($f_lat.stddev) | (do $delta $b_lat.stddev $f_lat.stddev)% |"
         $"| Latency P50 [ms] | ($b_lat.p50) | ($f_lat.p50) | (do $delta $b_lat.p50 $f_lat.p50)% |"
@@ -871,13 +913,13 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         ""
         "## Per-Run Details"
         ""
-        "| Run | Blocks | Total Tx | Success | Failed | P50 Latency | TPS | Mgas/s |"
-        "|-----|--------|----------|---------|--------|-------------|-----|--------|"
+        "| Run | Blocks | Total Tx | Success | Failed | Avg TPS | Block P50 | Mgas/s |"
+        "|-----|--------|----------|---------|--------|---------|-----------|--------|"
     ] | str join "\n")
 
     mut per_run_rows = ""
     for row in $run_data {
-        $per_run_rows = $"($per_run_rows)| ($row.label) | ($row.blocks) | ($row.total_tx) | ($row.ok) | ($row.err) | ($row.p50_latency) | ($row.tps) | ($row.mgas_s) |\n"
+        $per_run_rows = $"($per_run_rows)| ($row.label) | ($row.blocks) | ($row.total_tx) | ($row.ok) | ($row.err) | ($row.tps) | ($row.block_time_p50) | ($row.mgas_s) |\n"
     }
 
     let full_summary = $"($summary)\n($per_run_rows)"
@@ -905,9 +947,12 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 latency_p90: $b_lat.p90
                 latency_p99: $b_lat.p99
                 tps: $b_tps
+                tps_p50: $b_tps_stats.p50
+                tps_p95: $b_tps_stats.p95
+                tps_p99: $b_tps_stats.p99
                 mgas_s: $b_mgas
                 block_time_p50: $b_bt.p50
-                block_time_p95: $b_bt.p95
+                block_time_p90: $b_bt.p90
                 block_time_p99: $b_bt.p99
                 blocks: $b_lat.n
             }
@@ -918,9 +963,12 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 latency_p90: $f_lat.p90
                 latency_p99: $f_lat.p99
                 tps: $f_tps
+                tps_p50: $f_tps_stats.p50
+                tps_p95: $f_tps_stats.p95
+                tps_p99: $f_tps_stats.p99
                 mgas_s: $f_mgas
                 block_time_p50: $f_bt.p50
-                block_time_p95: $f_bt.p95
+                block_time_p90: $f_bt.p90
                 block_time_p99: $f_bt.p99
                 blocks: $f_lat.n
             }
@@ -931,9 +979,12 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 latency_p90: (do $delta $b_lat.p90 $f_lat.p90)
                 latency_p99: (do $delta $b_lat.p99 $f_lat.p99)
                 tps: (do $delta $b_tps $f_tps)
+                tps_p50: (do $delta $b_tps_stats.p50 $f_tps_stats.p50)
+                tps_p95: (do $delta $b_tps_stats.p95 $f_tps_stats.p95)
+                tps_p99: (do $delta $b_tps_stats.p99 $f_tps_stats.p99)
                 mgas_s: (do $delta $b_mgas $f_mgas)
                 block_time_p50: (do $delta $b_bt.p50 $f_bt.p50)
-                block_time_p95: (do $delta $b_bt.p95 $f_bt.p95)
+                block_time_p90: (do $delta $b_bt.p90 $f_bt.p90)
                 block_time_p99: (do $delta $b_bt.p99 $f_bt.p99)
             }
         }

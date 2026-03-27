@@ -60,7 +60,15 @@ function cell(text) {
 }
 
 function fmtMs(v) { return v != null ? v.toFixed(2) + 'ms' : '-'; }
-function fmtVal(v, suffix) { return v != null ? v.toFixed(2) + (suffix || '') : '-'; }
+function fmtVal(v, suffix = '', precision = 2) { return v != null ? v.toFixed(precision) + suffix : '-'; }
+
+function tempoBlockTimeDeltas(deltas) {
+  return [deltas.block_time_p50, deltas.block_time_p90, deltas.block_time_p99];
+}
+
+function tempoThroughputDeltas(deltas) {
+  return [deltas.tps, deltas.tps_p50, deltas.tps_p95, deltas.tps_p99, deltas.mgas_s];
+}
 
 function fmtDelta(pct) {
   if (pct == null) return '';
@@ -69,7 +77,7 @@ function fmtDelta(pct) {
   return `${sign}${pct.toFixed(2)}% ${emoji}`;
 }
 
-// For latency: negative = good (faster), positive = bad (slower)
+// For block time: negative = good (faster), positive = bad (slower)
 function classifyDelta(pct) {
   if (Math.abs(pct) < THRESHOLD_PCT) return '⚪';
   return pct < 0 ? '✅' : '❌';
@@ -89,12 +97,12 @@ function fmtDeltaInverse(pct) {
 }
 
 function verdict(deltas) {
-  const latencyDeltas = [deltas.latency_mean, deltas.latency_p50, deltas.latency_p90, deltas.latency_p99, deltas.block_time_p50, deltas.block_time_p95, deltas.block_time_p99];
-  const throughputDeltas = [deltas.tps, deltas.mgas_s];
+  const blockTimeDeltas = tempoBlockTimeDeltas(deltas);
+  const throughputDeltas = tempoThroughputDeltas(deltas);
 
-  const hasBad = latencyDeltas.some(d => d != null && d > THRESHOLD_PCT) ||
+  const hasBad = blockTimeDeltas.some(d => d != null && d > THRESHOLD_PCT) ||
                  throughputDeltas.some(d => d != null && d < -THRESHOLD_PCT);
-  const hasGood = latencyDeltas.some(d => d != null && d < -THRESHOLD_PCT) ||
+  const hasGood = blockTimeDeltas.some(d => d != null && d < -THRESHOLD_PCT) ||
                   throughputDeltas.some(d => d != null && d > THRESHOLD_PCT);
 
   if (hasBad && hasGood) return { emoji: ':warning:', label: 'Mixed Results' };
@@ -104,7 +112,7 @@ function verdict(deltas) {
 }
 
 function hasSignificantChange(deltas) {
-  const all = [deltas.latency_mean, deltas.latency_p50, deltas.latency_p90, deltas.latency_p99, deltas.block_time_p50, deltas.block_time_p95, deltas.block_time_p99, deltas.tps, deltas.mgas_s];
+  const all = [...tempoThroughputDeltas(deltas), ...tempoBlockTimeDeltas(deltas)];
   return all.some(d => d != null && Math.abs(d) >= THRESHOLD_PCT);
 }
 
@@ -126,16 +134,14 @@ function buildMetricRows(summary) {
   const f = summary.results.feature;
   const d = summary.results.deltas;
   return [
-    { label: 'TPS',             baseline: fmtVal(b.tps),            feature: fmtVal(f.tps),            change: fmtDeltaInverse(d.tps) },
-    { label: 'Mgas/s',          baseline: fmtVal(b.mgas_s),         feature: fmtVal(f.mgas_s),         change: fmtDeltaInverse(d.mgas_s) },
+    { label: 'Avg TPS',         baseline: fmtVal(b.tps, '', 0),     feature: fmtVal(f.tps, '', 0),     change: fmtDeltaInverse(d.tps) },
+    { label: 'TPS P50',         baseline: fmtVal(b.tps_p50, '', 1), feature: fmtVal(f.tps_p50, '', 1), change: fmtDeltaInverse(d.tps_p50) },
+    { label: 'TPS P95',         baseline: fmtVal(b.tps_p95, '', 1), feature: fmtVal(f.tps_p95, '', 1), change: fmtDeltaInverse(d.tps_p95) },
+    { label: 'TPS P99',         baseline: fmtVal(b.tps_p99, '', 1), feature: fmtVal(f.tps_p99, '', 1), change: fmtDeltaInverse(d.tps_p99) },
+    { label: 'Gas/s',           baseline: fmtVal(b.mgas_s, ' Mgas/s', 1), feature: fmtVal(f.mgas_s, ' Mgas/s', 1), change: fmtDeltaInverse(d.mgas_s) },
     { label: 'Block P50',       baseline: fmtMs(b.block_time_p50),  feature: fmtMs(f.block_time_p50),  change: fmtDelta(d.block_time_p50) },
-    { label: 'Block P95',       baseline: fmtMs(b.block_time_p95),  feature: fmtMs(f.block_time_p95),  change: fmtDelta(d.block_time_p95) },
+    { label: 'Block P90',       baseline: fmtMs(b.block_time_p90),  feature: fmtMs(f.block_time_p90),  change: fmtDelta(d.block_time_p90) },
     { label: 'Block P99',       baseline: fmtMs(b.block_time_p99),  feature: fmtMs(f.block_time_p99),  change: fmtDelta(d.block_time_p99) },
-    { label: 'Mean',            baseline: fmtMs(b.latency_mean),    feature: fmtMs(f.latency_mean),    change: fmtDelta(d.latency_mean) },
-    { label: 'StdDev',          baseline: fmtMs(b.latency_stddev),  feature: fmtMs(f.latency_stddev),  change: fmtDelta(d.latency_stddev) },
-    { label: 'P50',             baseline: fmtMs(b.latency_p50),     feature: fmtMs(f.latency_p50),     change: fmtDelta(d.latency_p50) },
-    { label: 'P90',             baseline: fmtMs(b.latency_p90),     feature: fmtMs(f.latency_p90),     change: fmtDelta(d.latency_p90) },
-    { label: 'P99',             baseline: fmtMs(b.latency_p99),     feature: fmtMs(f.latency_p99),     change: fmtDelta(d.latency_p99) },
   ];
 }
 
@@ -165,6 +171,7 @@ function buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, re
     `*Baseline:* ${baselineLink}`,
     `*Feature:* ${featureLink}`,
     '',
+    '*Focus:* TPS, block time, gas throughput',
     `*Preset:* \`${config.preset}\` | *Bloat:* \`${config.bloat} MiB\``,
     `*Duration:* \`${config.duration}s\` | *Target TPS:* \`${config.tps}\` | *Blocks:* ${blockCount}`,
   ].join('\n');
@@ -196,7 +203,7 @@ function buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, re
   return [
     {
       type: 'header',
-      text: { type: 'plain_text', text: `${emoji} ${label}`, emoji: true },
+      text: { type: 'plain_text', text: `${emoji} Tempo Bench ${label}`, emoji: true },
     },
     {
       type: 'section',
@@ -274,7 +281,7 @@ async function success({ core, context }) {
   const actorSlackId = slackUsers[actor];
 
   const blocks = buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, repo });
-  const text = `Bench: baseline vs feature`;
+  const text = `Tempo bench: baseline vs feature`;
 
   const deltas = summary.results.deltas;
   const channel = process.env.SLACK_BENCH_CHANNEL;
