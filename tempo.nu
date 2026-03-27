@@ -121,6 +121,30 @@ def init-bloat-into-node [tempo_bin: string, genesis_path: string, datadir: stri
     run-external $tempo_bin "generate-state-bloat" "--chain" $genesis_path "--datadir" $datadir "--size" $"($bloat_size)" ...$token_args
 }
 
+# Generate a shared state bloat file.
+# This is kept for cross-ref benchmark compatibility: older branches still
+# support `init-from-binary-dump` even if they do not have `generate-state-bloat`.
+def generate-bloat-file [bloat_size: int, profile: string, out_dir: string, source_dir: string] {
+    let bloat_file = $"($out_dir)/state_bloat.bin"
+    if ($bloat_file | path exists) {
+        print $"State bloat file already exists \(($bloat_size) MiB\)"
+        return $bloat_file
+    }
+
+    print $"Generating shared state bloat \(($bloat_size) MiB\)..."
+    let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
+    if $source_dir == "" {
+        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_size --out $bloat_file ...$token_args
+    } else {
+        do {
+            cd $source_dir
+            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_size --out $bloat_file ...$token_args
+        }
+    }
+
+    $bloat_file
+}
+
 # ============================================================================
 # Schelk / snapshot helpers
 # ============================================================================
@@ -155,15 +179,21 @@ def bench-clean-datadir [datadir: string] {
     }
 }
 
-# Initialize a database: run `tempo init`, optionally generate state bloat directly
-def bench-init-db [tempo_bin: string, genesis: string, datadir: string, bloat: int] {
+# Initialize a database: run `tempo init`, then either generate state bloat
+# directly or load it from a shared binary dump for cross-ref compatibility.
+def bench-init-db [tempo_bin: string, genesis: string, datadir: string, bloat: int, bloat_file: string = ""] {
     print $"Initializing database at ($datadir)..."
     run-external $tempo_bin "init" "--chain" $genesis "--datadir" $datadir
 
     if $bloat > 0 {
-        print $"Generating state bloat \(($bloat) MiB\) into ($datadir)..."
-        let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-        run-external $tempo_bin "generate-state-bloat" "--chain" $genesis "--datadir" $datadir "--size" $"($bloat)" ...$token_args
+        if $bloat_file != "" {
+            print $"Loading shared state bloat into ($datadir)..."
+            run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis "--datadir" $datadir $bloat_file | complete
+        } else {
+            print $"Generating state bloat \(($bloat) MiB\) into ($datadir)..."
+            let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
+            run-external $tempo_bin "generate-state-bloat" "--chain" $genesis "--datadir" $datadir "--size" $"($bloat)" ...$token_args
+        }
     }
 }
 
@@ -1722,14 +1752,23 @@ def "main bench" [
                 cp $"($feature_genesis_dir)/genesis.json" $feature_genesis_path
                 rm -rf $feature_genesis_dir
 
-                # Initialize both datadirs (bloat is generated directly into the DB)
+                let shared_bloat_file = if $bloat > 0 {
+                    let bloat_source_dir = if $baseline == "local" { "" } else { $baseline_wt }
+                    generate-bloat-file $bloat $profile $abs_localnet $bloat_source_dir
+                } else {
+                    ""
+                }
+
+                # Initialize both datadirs. Comparison mode uses a shared bloat
+                # file so older refs remain compatible and both sides start from
+                # identical prebuilt state.
                 for side in [
                     { name: "baseline", genesis: $baseline_genesis_path, dd: $baseline_datadir, tempo: $baseline_tempo }
                     { name: "feature", genesis: $feature_genesis_path, dd: $feature_datadir, tempo: $feature_tempo }
                 ] {
                     bench-clean-datadir $side.dd
                     mkdir $side.dd
-                    bench-init-db $side.tempo $side.genesis $side.dd $bloat
+                    bench-init-db $side.tempo $side.genesis $side.dd $bloat $shared_bloat_file
                 }
 
                 bench-save-and-promote $datadir $meta_dir {
@@ -1777,8 +1816,15 @@ def "main bench" [
                     }
                 }
 
+                let shared_bloat_file = if $bloat > 0 {
+                    let bloat_source_dir = if $baseline == "local" { "" } else { $baseline_wt }
+                    generate-bloat-file $bloat $profile $abs_localnet $bloat_source_dir
+                } else {
+                    ""
+                }
+
                 bench-clean-datadir $datadir
-                bench-init-db $baseline_tempo $genesis_path_std $datadir $bloat
+                bench-init-db $baseline_tempo $genesis_path_std $datadir $bloat $shared_bloat_file
 
                 bench-save-and-promote $datadir $meta_dir {
                     bloat_mib: $bloat,

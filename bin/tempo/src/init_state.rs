@@ -156,6 +156,12 @@ impl StorageLoader {
         slot: B256,
         value: U256,
     ) -> eyre::Result<()> {
+        // Zero values mean deletion, so both direct generation and binary loading
+        // must skip them to preserve the historical loader semantics.
+        if value.is_zero() {
+            return Ok(());
+        }
+
         let compact_value = CompactU256::from(value);
 
         // Plain key = address ++ slot ++ 0x01 priority suffix (genesis uses 0x00).
@@ -811,4 +817,50 @@ fn compute_mapping_slot(key: alloy_primitives::Address, base_slot: U256) -> U256
     buf[12..32].copy_from_slice(key.as_slice());
     buf[32..].copy_from_slice(&base_slot.to_be_bytes::<32>());
     U256::from_be_bytes(keccak256(buf).0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn storage_loader_skips_zero_value_entries() {
+        let mut loader = StorageLoader::new();
+
+        loader
+            .push_entry(alloy_primitives::Address::ZERO, B256::ZERO, U256::ZERO)
+            .unwrap();
+
+        assert_eq!(loader.total_entries(), 0);
+        assert_eq!(loader.plain_collector.len(), 0);
+        assert!(loader.hash_chunk.is_empty());
+    }
+
+    #[test]
+    fn load_etl_to_cursor_keeps_highest_priority_value() {
+        let mut collector = Collector::new(ETL_FILE_SIZE, None);
+        let mut winning_key = vec![0x12; 52];
+        let mut losing_key = winning_key.clone();
+        losing_key.push(0x00);
+        winning_key.push(0x01);
+
+        collector
+            .insert(losing_key, CompactU256::from(U256::from(7u64)))
+            .unwrap();
+        collector
+            .insert(winning_key, CompactU256::from(U256::from(9u64)))
+            .unwrap();
+
+        let mut written = Vec::new();
+        let total = collector.len();
+        load_etl_to_cursor(&mut collector, total, "test", |key, value| {
+            written.push((key.to_vec(), value));
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(written.len(), 1);
+        assert_eq!(written[0].0, vec![0x12; 52]);
+        assert_eq!(written[0].1, U256::from(9u64));
+    }
 }
