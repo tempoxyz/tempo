@@ -46,7 +46,7 @@ use std::{collections::BTreeMap, num::NonZeroUsize};
 use alloy_consensus::BlockHeader as _;
 use commonware_codec::ReadExt as _;
 use commonware_consensus::{
-    Reporters,
+    Reporter,
     marshal::Update,
     simplex::{self, elector, scheme::bls12381_threshold::vrf::Scheme},
     types::{Epoch, EpochDelta, Epocher as _, Height},
@@ -157,6 +157,7 @@ where
 
     pub(crate) fn start(
         mut self,
+        reporter: impl Reporter<Activity = crate::alias::simplex::Activity>,
         votes: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
@@ -170,11 +171,15 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) -> Handle<()> {
-        spawn_cell!(self.context, self.run(votes, certificates, resolver).await)
+        spawn_cell!(
+            self.context,
+            self.run(reporter, votes, certificates, resolver).await
+        )
     }
 
     async fn run(
         mut self,
+        reporter: impl Reporter<Activity = crate::alias::simplex::Activity>,
         (vote_sender, vote_receiver): (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
@@ -242,6 +247,7 @@ where
                         Content::Enter(enter) => {
                             let _: Result<_, _> = self
                                 .enter(
+                                    reporter.clone(),
                                     cause,
                                     enter,
                                     &mut vote_mux,
@@ -279,6 +285,7 @@ where
     )]
     async fn enter(
         &mut self,
+        reporter: impl Reporter<Activity = crate::alias::simplex::Activity>,
         cause: Span,
         EpochTransition {
             epoch,
@@ -336,10 +343,7 @@ where
                 blocker: self.config.blocker.clone(),
                 automaton: self.config.application.clone(),
                 relay: self.config.application.clone(),
-                reporter: Reporters::<_, crate::subblocks::Mailbox, _>::from((
-                    self.config.subblocks.clone(),
-                    Reporters::from((self.config.marshal.clone(), self.config.feed.clone())),
-                )),
+                reporter,
                 partition: format!(
                     "{partition_prefix}_consensus_epoch_{epoch}",
                     partition_prefix = self.config.partition_prefix

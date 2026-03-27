@@ -55,7 +55,7 @@ pub(crate) struct Config<TContext> {
     pub(crate) context: TContext,
     pub(crate) signer: PrivateKey,
     pub(crate) scheme_provider: SchemeProvider,
-    pub(crate) node: TempoFullNode,
+    pub(crate) node: Arc<TempoFullNode>,
     pub(crate) fee_recipient: Address,
     pub(crate) time_to_build_subblock: Duration,
     pub(crate) subblock_broadcast_interval: Duration,
@@ -89,7 +89,7 @@ pub(crate) struct Actor<TContext> {
     /// ed25519 private key used for consensus.
     signer: PrivateKey,
     /// Execution layer node.
-    node: TempoFullNode,
+    node: Arc<TempoFullNode>,
     /// Fee recipient address to set for subblocks.
     fee_recipient: Address,
     /// Timeout for building a subblock.
@@ -692,7 +692,7 @@ fn evm_at_block(
 #[instrument(skip_all, fields(parent_hash = %parent_hash))]
 async fn build_subblock(
     transactions: Arc<Mutex<IndexMap<TxHash, Arc<Recovered<TempoTxEnvelope>>>>>,
-    node: TempoFullNode,
+    node: Arc<TempoFullNode>,
     parent_hash: BlockHash,
     num_validators: usize,
     signer: PrivateKey,
@@ -792,7 +792,7 @@ async fn build_subblock(
 #[instrument(skip_all, err(level = Level::WARN), fields(sender = %sender))]
 async fn validate_subblock(
     sender: PublicKey,
-    node: TempoFullNode,
+    node: Arc<TempoFullNode>,
     subblock: SignedSubBlock,
     actions_tx: mpsc::UnboundedSender<Message>,
     scheme_provider: SchemeProvider,

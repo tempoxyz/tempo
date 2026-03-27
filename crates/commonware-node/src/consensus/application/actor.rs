@@ -32,7 +32,7 @@ use prometheus_client::metrics::counter::Counter;
 
 use commonware_utils::{SystemTimeExt, channel::oneshot};
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
-use futures::{StreamExt as _, TryFutureExt as _, channel::mpsc, future::try_join};
+use futures::{StreamExt as _, TryFutureExt as _, channel::mpsc};
 use rand_08::{CryptoRng, Rng};
 use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_node_builder::{
@@ -215,7 +215,7 @@ struct Inner<TState> {
 
     marshal: crate::alias::marshal::Mailbox,
 
-    execution_node: TempoFullNode,
+    execution_node: Arc<TempoFullNode>,
     executor: crate::executor::Mailbox,
     subblocks: Option<subblocks::Mailbox>,
     scheme_provider: SchemeProvider,
@@ -440,20 +440,6 @@ impl Inner<Init> {
 
         // 2. make the forkchoice state available && cache the block
         if let Ok((block, true)) = result {
-            // Only make the verified block canonical when not doing a
-            // re-propose at the end of an epoch.
-            if parent.1 != payload
-                && let Err(error) = self
-                    .state
-                    .executor
-                    .canonicalize_head(block.height(), block.digest())
-                    .await
-            {
-                tracing::warn!(
-                    %error,
-                    "failed making the verified proposal the head of the canonical chain",
-                );
-            }
             self.marshal.verified(round, block).await;
         }
     }
@@ -469,6 +455,7 @@ impl Inner<Init> {
     ) -> eyre::Result<Block> {
         let propose_start = Instant::now();
 
+        // TODO: We don't need the entire block, only its height.
         let parent = get_parent(
             &self.execution_node,
             round,
@@ -492,34 +479,6 @@ impl Inner<Init> {
         {
             info!("parent is last height of epoch; re-proposing parent");
             return Ok(parent);
-        }
-
-        let is_genesis_parent = parent.height().is_zero()
-            || parent_epoch_info.last() == parent.height()
-                && parent_epoch_info.epoch().next() == round.epoch();
-
-        // Send the proposal parent to execution layer to cover edge cases when we were not asked to
-        // to verify it (and hence are missing it in the EL).
-        //
-        // If proposing the first block of an epoch, its parent (genesis/boundary block) must exist and be finalized, so we can skip it.
-        if !is_genesis_parent
-            && !verify_block(
-                context.clone(),
-                parent_epoch_info.epoch(),
-                &self.epoch_strategy,
-                self.execution_node
-                    .add_ons_handle
-                    .beacon_engine_handle
-                    .clone(),
-                &parent,
-                // It is safe to not verify the parent of the parent because this block is already notarized.
-                parent.parent_digest(),
-                &self.scheme_provider,
-            )
-            .await
-            .wrap_err("failed verifying block against execution layer")?
-        {
-            bail!("the proposal parent block is not valid");
         }
 
         // Query DKG manager for ceremony data before building payload
@@ -685,27 +644,15 @@ impl Inner<Init> {
             .marshal
             .subscribe_by_digest(None, payload)
             .await
-            .map_err(|_| eyre!("syncer dropped channel before the block-to-verified was sent"));
+            .map_err(|_| {
+                eyre!("marshal actor dropped channel before the block-to-verified was sent")
+            });
 
-        let (block, parent) = try_join(
-            block_request,
-            get_parent(
-                &self.execution_node,
-                round,
-                parent_digest,
-                parent_view,
-                &self.marshal,
-            ),
-        )
-        .await
-        .wrap_err("failed getting required blocks from syncer")?;
+        let block = block_request
+            .await
+            .wrap_err("failed getting proposal block from marshal actor")?;
 
         // Can only repropose at the end of an epoch.
-        //
-        // NOTE: fetching block and parent twice (in the case block == parent)
-        // seems wasteful, but both run concurrently, should finish almost
-        // immediately, and happen very rarely. It's better to optimize for the
-        // general case.
         if payload == parent_digest {
             let epoch_info = self
                 .epoch_strategy
@@ -731,20 +678,6 @@ impl Inner<Init> {
         {
             warn!(%reason, "header could not be verified; failing block");
             return Ok((block, false));
-        }
-
-        if let Err(error) = self
-            .state
-            .executor
-            .canonicalize_head(parent.height(), parent.digest())
-            .await
-        {
-            tracing::warn!(
-                %error,
-                parent.height = %parent.height(),
-                parent.digest = %parent.digest(),
-                "failed updating canonical head to parent",
-            );
         }
 
         let is_good = verify_block(
