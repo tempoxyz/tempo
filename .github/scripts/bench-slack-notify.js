@@ -108,6 +108,19 @@ function hasSignificantChange(deltas) {
   return all.some(d => d != null && Math.abs(d) >= THRESHOLD_PCT);
 }
 
+function refLink(commitUrl, sha, refName, fallbackLabel) {
+  const label = refName || fallbackLabel;
+  return sha ? `<${commitUrl}/${sha}|${label}>` : label;
+}
+
+function fmtBlockCount(baselineBlocks, featureBlocks) {
+  if (baselineBlocks == null && featureBlocks == null) return '-';
+  if (baselineBlocks === featureBlocks) return `\`${baselineBlocks}\``;
+  if (baselineBlocks == null) return `feature \`${featureBlocks}\``;
+  if (featureBlocks == null) return `baseline \`${baselineBlocks}\``;
+  return `baseline \`${baselineBlocks}\` | feature \`${featureBlocks}\``;
+}
+
 function buildMetricRows(summary) {
   const b = summary.results.baseline;
   const f = summary.results.feature;
@@ -115,10 +128,10 @@ function buildMetricRows(summary) {
   return [
     { label: 'TPS',             baseline: fmtVal(b.tps),            feature: fmtVal(f.tps),            change: fmtDeltaInverse(d.tps) },
     { label: 'Mgas/s',          baseline: fmtVal(b.mgas_s),         feature: fmtVal(f.mgas_s),         change: fmtDeltaInverse(d.mgas_s) },
-    { label: 'Block Time P50',  baseline: fmtMs(b.block_time_p50),  feature: fmtMs(f.block_time_p50),  change: fmtDelta(d.block_time_p50) },
-    { label: 'Block Time P95',  baseline: fmtMs(b.block_time_p95),  feature: fmtMs(f.block_time_p95),  change: fmtDelta(d.block_time_p95) },
-    { label: 'Block Time P99',  baseline: fmtMs(b.block_time_p99),  feature: fmtMs(f.block_time_p99),  change: fmtDelta(d.block_time_p99) },
-    { label: 'Mean Latency',    baseline: fmtMs(b.latency_mean),    feature: fmtMs(f.latency_mean),    change: fmtDelta(d.latency_mean) },
+    { label: 'Block P50',       baseline: fmtMs(b.block_time_p50),  feature: fmtMs(f.block_time_p50),  change: fmtDelta(d.block_time_p50) },
+    { label: 'Block P95',       baseline: fmtMs(b.block_time_p95),  feature: fmtMs(f.block_time_p95),  change: fmtDelta(d.block_time_p95) },
+    { label: 'Block P99',       baseline: fmtMs(b.block_time_p99),  feature: fmtMs(f.block_time_p99),  change: fmtDelta(d.block_time_p99) },
+    { label: 'Mean',            baseline: fmtMs(b.latency_mean),    feature: fmtMs(f.latency_mean),    change: fmtDelta(d.latency_mean) },
     { label: 'StdDev',          baseline: fmtMs(b.latency_stddev),  feature: fmtMs(f.latency_stddev),  change: fmtDelta(d.latency_stddev) },
     { label: 'P50',             baseline: fmtMs(b.latency_p50),     feature: fmtMs(f.latency_p50),     change: fmtDelta(d.latency_p50) },
     { label: 'P90',             baseline: fmtMs(b.latency_p90),     feature: fmtMs(f.latency_p90),     change: fmtDelta(d.latency_p90) },
@@ -127,19 +140,24 @@ function buildMetricRows(summary) {
 }
 
 function buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, repo }) {
+  const b = summary.results.baseline;
+  const f = summary.results.feature;
   const d = summary.results.deltas;
   const { emoji, label } = verdict(d);
 
   const prUrl = prNumber ? `https://github.com/${repo}/pull/${prNumber}` : '';
   const commitUrl = `https://github.com/${repo}/commit`;
-  const baselineLink = `<${commitUrl}/${summary.baseline_ref}|baseline>`;
-  const featureLink = `<${commitUrl}/${summary.feature_ref}|feature>`;
+  const baselineName = process.env.BENCH_BASELINE_NAME || 'baseline';
+  const featureName = process.env.BENCH_FEATURE_NAME || 'feature';
+  const baselineLink = refLink(commitUrl, summary.baseline_ref, baselineName, 'baseline');
+  const featureLink = refLink(commitUrl, summary.feature_ref, featureName, 'feature');
 
   const metaParts = [];
   if (prNumber) metaParts.push(`*<${prUrl}|PR #${prNumber}>*`);
   metaParts.push(`triggered by ${actorSlackId ? `<@${actorSlackId}>` : `@${actor}`}`);
 
   const config = summary.config;
+  const blockCount = fmtBlockCount(b.blocks, f.blocks);
 
   const sectionText = [
     metaParts.join(' | '),
@@ -147,10 +165,8 @@ function buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, re
     `*Baseline:* ${baselineLink}`,
     `*Feature:* ${featureLink}`,
     '',
-    `*Preset:* \`${config.preset}\``,
-    `*Duration:* \`${config.duration}s\``,
-    `*Bloat:* \`${config.bloat} MiB\``,
-    `*TPS:* \`${config.tps}\``,
+    `*Preset:* \`${config.preset}\` | *Bloat:* \`${config.bloat} MiB\``,
+    `*Duration:* \`${config.duration}s\` | *Target TPS:* \`${config.tps}\` | *Blocks:* ${blockCount}`,
   ].join('\n');
 
   const rows = buildMetricRows(summary);
