@@ -2,7 +2,10 @@
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use syn::{Data, DeriveInput, Fields, Ident, Type};
+use syn::{
+    Attribute, Data, DataEnum, DataStruct, DeriveInput, Expr, ExprGroup, ExprLit, ExprParen,
+    Fields, Ident, Lit, LitInt, Type,
+};
 
 use crate::{
     FieldInfo,
@@ -12,31 +15,34 @@ use crate::{
     utils::{extract_mapping_types, extract_storable_array_sizes, to_snake_case},
 };
 
-/// Implements the `Storable` derive macro for structs.
+/// Implements the `Storable` derive macro for structs and `#[repr(u8)]` unit enums.
 ///
 /// Packs fields into storage slots based on their byte sizes.
 /// Fields are placed sequentially in slots, moving to a new slot when
 /// the current slot cannot fit the next field (no spanning across slots).
 pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
+    match &input.data {
+        Data::Struct(data_struct) => derive_struct_impl(&input, data_struct),
+        Data::Enum(data_enum) => derive_unit_enum_impl(&input, data_enum),
+        _ => Err(syn::Error::new_spanned(
+            &input.ident,
+            "`Storable` can only be derived for structs with named fields or unit enums",
+        )),
+    }
+}
+
+fn derive_struct_impl(input: &DeriveInput, data_struct: &DataStruct) -> syn::Result<TokenStream> {
     // Extract struct name, generics
     let strukt = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
     // Parse struct fields
-    let fields = match &input.data {
-        Data::Struct(data_struct) => match &data_struct.fields {
-            Fields::Named(fields_named) => &fields_named.named,
-            _ => {
-                return Err(syn::Error::new_spanned(
-                    &input.ident,
-                    "`Storable` can only be derived for structs with named fields",
-                ));
-            }
-        },
+    let fields = match &data_struct.fields {
+        Fields::Named(fields_named) => &fields_named.named,
         _ => {
             return Err(syn::Error::new_spanned(
                 &input.ident,
-                "`Storable` can only be derived for structs",
+                "`Storable` can only be derived for structs with named fields",
             ));
         }
     };
@@ -179,6 +185,193 @@ pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
     };
 
     Ok(combined)
+}
+
+fn derive_unit_enum_impl(input: &DeriveInput, data_enum: &DataEnum) -> syn::Result<TokenStream> {
+    if extract_storable_array_sizes(&input.attrs)?.is_some() {
+        return Err(syn::Error::new_spanned(
+            &input.ident,
+            "`storable_arrays` is only supported for structs",
+        ));
+    }
+
+    if !has_repr_u8(&input.attrs)? {
+        return Err(syn::Error::new_spanned(
+            &input.ident,
+            "`Storable` unit enums must be annotated with `#[repr(u8)]`",
+        ));
+    }
+
+    if data_enum.variants.is_empty() {
+        return Err(syn::Error::new_spanned(
+            &input.ident,
+            "`Storable` cannot be derived for empty enums",
+        ));
+    }
+
+    for variant in &data_enum.variants {
+        if !matches!(variant.fields, Fields::Unit) {
+            return Err(syn::Error::new_spanned(
+                variant,
+                "`Storable` enums must use unit variants only",
+            ));
+        }
+    }
+
+    validate_zero_discriminant(data_enum)?;
+
+    let enum_name = &input.ident;
+    let variant_names: Vec<_> = data_enum
+        .variants
+        .iter()
+        .map(|variant| &variant.ident)
+        .collect();
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+
+    Ok(quote! {
+        impl #impl_generics crate::storage::StorableType for #enum_name #ty_generics #where_clause {
+            const LAYOUT: crate::storage::Layout = crate::storage::Layout::Bytes(1);
+
+            type Handler = crate::storage::Slot<Self>;
+
+            fn handle(slot: ::alloy::primitives::U256, ctx: crate::storage::LayoutCtx, address: ::alloy::primitives::Address) -> Self::Handler {
+                crate::storage::Slot::new_with_ctx(slot, ctx, address)
+            }
+        }
+
+        impl #impl_generics crate::storage::Storable for #enum_name #ty_generics #where_clause {
+            #[inline]
+            fn load<S: crate::storage::StorageOps>(
+                storage: &S,
+                slot: ::alloy::primitives::U256,
+                ctx: crate::storage::LayoutCtx
+            ) -> crate::error::Result<Self> {
+                let value = <u8 as crate::storage::Storable>::load(storage, slot, ctx)?;
+                match value {
+                    #(discriminant if discriminant == Self::#variant_names as u8 => Ok(Self::#variant_names),)*
+                    _ => Err(crate::error::TempoPrecompileError::under_overflow()),
+                }
+            }
+
+            #[inline]
+            fn store<S: crate::storage::StorageOps>(
+                &self,
+                storage: &mut S,
+                slot: ::alloy::primitives::U256,
+                ctx: crate::storage::LayoutCtx
+            ) -> crate::error::Result<()> {
+                let value = match self {
+                    #(Self::#variant_names => Self::#variant_names as u8,)*
+                };
+
+                <u8 as crate::storage::Storable>::store(&value, storage, slot, ctx)
+            }
+        }
+    })
+}
+
+fn has_repr_u8(attrs: &[Attribute]) -> syn::Result<bool> {
+    let mut repr_u8 = false;
+
+    for attr in attrs {
+        if !attr.path().is_ident("repr") {
+            continue;
+        }
+
+        attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("u8") {
+                repr_u8 = true;
+            }
+            Ok(())
+        })?;
+    }
+
+    Ok(repr_u8)
+}
+
+fn validate_zero_discriminant(data_enum: &DataEnum) -> syn::Result<()> {
+    let mut next_discriminant = 0u16;
+    let mut has_zero_discriminant = false;
+
+    for variant in &data_enum.variants {
+        let discriminant = match &variant.discriminant {
+            Some((_, expr)) => parse_u8_discriminant(expr)?,
+            None => {
+                if next_discriminant > u8::MAX.into() {
+                    return Err(syn::Error::new_spanned(
+                        variant,
+                        "`Storable` unit enum discriminants must fit in `u8`",
+                    ));
+                }
+                next_discriminant as u8
+            }
+        };
+
+        has_zero_discriminant |= discriminant == 0;
+        next_discriminant = u16::from(discriminant) + 1;
+    }
+
+    if !has_zero_discriminant {
+        return Err(syn::Error::new_spanned(
+            &data_enum.variants,
+            "`Storable` unit enums must include a zero-valued variant so zeroed storage remains readable",
+        ));
+    }
+
+    Ok(())
+}
+
+fn parse_u8_discriminant(expr: &Expr) -> syn::Result<u8> {
+    match expr {
+        Expr::Group(ExprGroup { expr, .. }) | Expr::Paren(ExprParen { expr, .. }) => {
+            parse_u8_discriminant(expr)
+        }
+        Expr::Lit(ExprLit {
+            lit: Lit::Int(lit), ..
+        }) => parse_u8_literal(lit),
+        _ => Err(syn::Error::new_spanned(
+            expr,
+            "`Storable` unit enums only support implicit or integer-literal discriminants",
+        )),
+    }
+}
+
+fn parse_u8_literal(lit: &LitInt) -> syn::Result<u8> {
+    let literal = lit.to_string();
+    let digits = if lit.suffix().is_empty() {
+        literal.as_str()
+    } else {
+        literal
+            .strip_suffix(lit.suffix())
+            .expect("literal suffix should match token string")
+    };
+    let digits = digits.replace('_', "");
+
+    let parsed = if let Some(hex) = digits
+        .strip_prefix("0x")
+        .or_else(|| digits.strip_prefix("0X"))
+    {
+        u16::from_str_radix(hex, 16)
+    } else if let Some(bin) = digits
+        .strip_prefix("0b")
+        .or_else(|| digits.strip_prefix("0B"))
+    {
+        u16::from_str_radix(bin, 2)
+    } else if let Some(oct) = digits
+        .strip_prefix("0o")
+        .or_else(|| digits.strip_prefix("0O"))
+    {
+        u16::from_str_radix(oct, 8)
+    } else {
+        digits.parse::<u16>()
+    }
+    .map_err(|_| {
+        syn::Error::new_spanned(lit, "invalid integer discriminant for `Storable` enum")
+    })?;
+
+    u8::try_from(parsed).map_err(|_| {
+        syn::Error::new_spanned(lit, "`Storable` unit enum discriminants must fit in `u8`")
+    })
 }
 
 /// Generate a compile-time module that calculates the packing layout from IR.
@@ -490,5 +683,57 @@ fn gen_delete_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
                 )?;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use syn::parse_quote;
+
+    fn parse_enum(input: DeriveInput) -> DataEnum {
+        match input.data {
+            Data::Enum(data_enum) => data_enum,
+            _ => panic!("expected enum input"),
+        }
+    }
+
+    #[test]
+    fn validate_zero_discriminant_accepts_implicit_zero_variant() {
+        let data_enum = parse_enum(parse_quote! {
+            enum PackedStatus {
+                Pending,
+                Active,
+                Frozen,
+            }
+        });
+
+        validate_zero_discriminant(&data_enum).unwrap();
+    }
+
+    #[test]
+    fn validate_zero_discriminant_accepts_integer_literal_radices() {
+        let data_enum = parse_enum(parse_quote! {
+            enum PackedStatus {
+                Pending = 0x0,
+                Active = 0b1,
+                Frozen = 0o2,
+            }
+        });
+
+        validate_zero_discriminant(&data_enum).unwrap();
+    }
+
+    #[test]
+    fn validate_zero_discriminant_rejects_non_zero_start() {
+        let data_enum = parse_enum(parse_quote! {
+            enum PackedStatus {
+                Active = 1,
+                Frozen = 2,
+            }
+        });
+
+        let err = validate_zero_discriminant(&data_enum).unwrap_err();
+        assert!(err.to_string().contains("zero-valued variant"));
     }
 }
