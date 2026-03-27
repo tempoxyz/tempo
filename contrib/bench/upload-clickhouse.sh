@@ -43,6 +43,10 @@ for label in baseline-1 feature-1 feature-2 baseline-2; do
 
   echo "  Processing: $label"
 
+  # Derive run_name and run_type from the label
+  export BENCH_RUN_NAME="$label"
+  export BENCH_RUN_TYPE=$(echo "$label" | sed 's/-.*//')
+
   # Generate SQL statements via python (one statement per line, no internal newlines)
   QUERIES=$(REPORT_PATH="$REPORT" python3 << 'PYEOF'
 import json, uuid, os
@@ -73,6 +77,12 @@ sha = meta.get("node_commit_sha") or ""
 profile = meta.get("build_profile") or ""
 mode = meta.get("mode") or ""
 
+run_name = os.environ.get("BENCH_RUN_NAME", "")
+run_type = os.environ.get("BENCH_RUN_TYPE", "")
+pr_number = os.environ.get("BENCH_PR", "")
+trigger_type = os.environ.get("BENCH_TRIGGER_TYPE", "")
+benchmark_id_env = os.environ.get("BENCH_BENCHMARK_ID", "")
+
 print(
     f"INSERT INTO tempo_bench_runs (run_id, created_at, chain_id, start_block, end_block, "
     f"target_tps, run_duration_secs, accounts, total_connections, "
@@ -80,13 +90,15 @@ print(
     f"total_gas_used, avg_block_time_ms, avg_tps, "
     f"tip20_weight, place_order_weight, swap_weight, erc20_weight, "
     f"node_commit_sha, build_profile, benchmark_mode, "
-    f"argo_workflow_name, k8s_namespace) VALUES "
+    f"argo_workflow_name, k8s_namespace, "
+    f"run_name, run_type, pr_number, trigger_type, benchmark_id) VALUES "
     f"('{run_id}', now64(3), {meta['chain_id']}, {meta['start_block']}, {meta['end_block']}, "
     f"{meta['target_tps']}, {meta['run_duration_secs']}, {meta['accounts']}, {meta['total_connections']}, "
     f"{total_blocks}, {total_tx}, {total_ok}, {total_err}, "
     f"{total_gas}, {avg_block_time_ms}, {avg_tps}, "
     f"{meta['tip20_weight']}, {meta['place_order_weight']}, {meta['swap_weight']}, {meta['erc20_weight']}, "
-    f"'{sha}', '{profile}', '{mode}', '', '')"
+    f"'{sha}', '{profile}', '{mode}', '', '', "
+    f"'{run_name}', '{run_type}', '{pr_number}', '{trigger_type}', '{benchmark_id_env}')"
 )
 
 # Blocks insert (batch all blocks in one statement)
@@ -98,12 +110,14 @@ if blocks:
         rows.append(
             f"('{run_id}', {b['number']}, {b['timestamp']}, "
             f"{b['tx_count']}, {b['ok_count']}, {b['err_count']}, "
-            f"{b['gas_used']}, 0, {lat_val})"
+            f"{b['gas_used']}, 0, {lat_val}, "
+            f"'{run_name}', '{benchmark_id_env}')"
         )
     values = ", ".join(rows)
     print(
         f"INSERT INTO tempo_bench_blocks (run_id, block_number, timestamp_ms, "
-        f"tx_count, ok_count, err_count, gas_used, gas_limit, latency_ms) VALUES {values}"
+        f"tx_count, ok_count, err_count, gas_used, gas_limit, latency_ms, "
+        f"run_name, benchmark_id) VALUES {values}"
     )
 PYEOF
   )

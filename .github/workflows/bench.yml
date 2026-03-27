@@ -632,6 +632,9 @@ jobs:
 
       - name: Upload results to ClickHouse
         if: success()
+        env:
+          BENCH_TRIGGER_TYPE: ${{ github.event_name == 'workflow_dispatch' && 'manual' || 'pr_comment' }}
+          BENCH_BENCHMARK_ID: bench-${{ github.run_id }}
         run: bash contrib/bench/upload-clickhouse.sh "${{ steps.results-dir.outputs.path }}"
 
       - name: Post results to PR
