@@ -38,8 +38,8 @@ use crate::{
     executor::ingress::CanonicalizeAndBuild,
 };
 
-/// Tracks the last forkchoice state that the executor sent to the execution layer. -> bool {
-/// matches!(self, JustCanonicalizeOrAlsoBuild::JustCanonicalize { response }/
+/// Tracks the last forkchoice state that the executor sent to the execution layer.
+///
 /// Also tracks the corresponding heights corresponding to
 /// `forkchoice_state.head_block_hash` and
 /// `forkchoice_state.finalized_block_hash`, respectively.
