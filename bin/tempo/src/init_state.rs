@@ -47,7 +47,7 @@ const VERSION: u16 = 1;
 const ETL_FILE_SIZE: usize = 200 * 1024 * 1024;
 
 /// Maximum number of storage entries to hash per worker batch.
-const WORKER_CHUNK_SIZE: usize = 100;
+const WORKER_CHUNK_SIZE: usize = 4096;
 
 /// Bounded channel depth for the hashing worker thread.
 const HASH_WORKER_QUEUE_DEPTH: usize = 256;
@@ -92,9 +92,10 @@ impl StorageLoader {
                             last_addr = address;
                             hashed_addr = keccak256(address);
                         }
-                        let mut hashed_key = Vec::with_capacity(64);
+                        let mut hashed_key = Vec::with_capacity(65);
                         hashed_key.extend_from_slice(hashed_addr.as_slice());
                         hashed_key.extend_from_slice(keccak256(slot).as_slice());
+                        hashed_key.push(0x01);
                         hashed_collector
                             .insert(hashed_key, value)
                             .wrap_err("hashed ETL insert failed")?;
@@ -145,9 +146,13 @@ impl StorageLoader {
     ) -> eyre::Result<()> {
         let compact_value = CompactU256::from(value);
 
-        let mut plain_key = Vec::with_capacity(52);
+        // Append a 0x01 priority suffix so dump entries sort after genesis
+        // entries (which use 0x00) for the same base key. The dedup logic in
+        // `load_etl_to_cursor` keeps the last value, so dump wins.
+        let mut plain_key = Vec::with_capacity(53);
         plain_key.extend_from_slice(address.as_slice());
         plain_key.extend_from_slice(slot.as_slice());
+        plain_key.push(0x01);
         self.plain_collector
             .insert(plain_key, compact_value.clone())
             .wrap_err("ETL insert failed")?;
@@ -203,9 +208,10 @@ impl StorageLoader {
             let walker = cursor.walk(None)?;
             for row in walker {
                 let (address, entry) = row?;
-                let mut key = Vec::with_capacity(52);
+                let mut key = Vec::with_capacity(53);
                 key.extend_from_slice(address.as_slice());
                 key.extend_from_slice(entry.key.as_slice());
+                key.push(0x00); // lower priority than dump entries
                 self.plain_collector
                     .insert(key, CompactU256::from(entry.value))
                     .wrap_err("ETL insert of genesis plain storage failed")?;
@@ -226,9 +232,10 @@ impl StorageLoader {
             let walker = cursor.walk(None)?;
             for row in walker {
                 let (hashed_address, entry) = row?;
-                let mut key = Vec::with_capacity(64);
+                let mut key = Vec::with_capacity(65);
                 key.extend_from_slice(hashed_address.as_slice());
                 key.extend_from_slice(entry.key.as_slice());
+                key.push(0x00); // lower priority than dump entries
                 hashed_collector
                     .insert(key, CompactU256::from(entry.value))
                     .wrap_err("ETL insert of genesis hashed storage failed")?;
@@ -495,8 +502,10 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
     }
 }
 
-/// Iterate a sorted ETL collector, deduplicate consecutive entries with the same key
-/// (keeping the last value), and call `append` for each unique entry.
+/// Iterate a sorted ETL collector, deduplicate consecutive entries with the same
+/// base key (ignoring the trailing priority suffix byte), keeping the last value
+/// (highest priority), and call `append` for each unique entry with the suffix
+/// stripped.
 fn load_etl_to_cursor(
     collector: &mut Collector<Vec<u8>, CompactU256>,
     total: usize,
@@ -516,10 +525,11 @@ fn load_etl_to_cursor(
 
         let (key, value) = item.wrap_err("ETL iteration failed")?;
         if let Some((ref prev_key, ref prev_val)) = pending
-            && *prev_key != key
+            && prev_key[..prev_key.len() - 1] != key[..key.len() - 1]
         {
+            let base_key = &prev_key[..prev_key.len() - 1];
             append(
-                prev_key,
+                base_key,
                 CompactU256::decompress_owned(prev_val.clone())?.into(),
             )
             .wrap_err("cursor append failed")?;
@@ -527,14 +537,15 @@ fn load_etl_to_cursor(
         pending = Some((key, value));
     }
     if let Some((key, val)) = pending {
-        append(&key, CompactU256::decompress_owned(val)?.into())
+        let base_key = &key[..key.len() - 1];
+        append(base_key, CompactU256::decompress_owned(val)?.into())
             .wrap_err("cursor append failed")?;
     }
     Ok(())
 }
 
 /// Log collection progress every 5 seconds and on the final entry.
-pub(crate) fn log_collection_progress(
+fn log_collection_progress(
     address: &alloy_primitives::Address,
     index: u64,
     total: u64,

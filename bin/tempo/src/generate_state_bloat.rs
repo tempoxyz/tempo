@@ -16,8 +16,7 @@ use rayon::prelude::*;
 use reth_chainspec::EthereumHardforks;
 use reth_cli_commands::common::{AccessRights, CliNodeTypes, EnvironmentArgs};
 use reth_ethereum::{chainspec::EthChainSpec, tasks::Runtime};
-use reth_provider::{BlockNumReader, DatabaseProviderFactory};
-use reth_storage_api::DBProvider;
+use reth_provider::{BlockNumReader, DBProvider, DatabaseProviderFactory};
 use tempo_chainspec::spec::TempoChainSpecParser;
 use tempo_precompiles::tip20::tip20_slots;
 use tempo_primitives::transaction::TIP20_PAYMENT_PREFIX;
@@ -147,7 +146,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
             // Parallel address derivation + slot computation
             let parent_key_ref = Arc::clone(&parent_key);
-            let slot_bytes: Vec<(Address, [u8; 32])> = chunk_indices
+            let slot_bytes: Vec<[u8; 32]> = chunk_indices
                 .into_par_iter()
                 .map(|i| {
                     let addr = if i < actual_signable {
@@ -161,8 +160,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                     } else {
                         derive_address_fast(&seed, i as u64)
                     };
-                    let slot = compute_mapping_slot(addr, tip20_slots::BALANCES).to_be_bytes::<32>();
-                    (addr, slot)
+                    compute_mapping_slot(addr, tip20_slots::BALANCES).to_be_bytes::<32>()
                 })
                 .collect();
 
@@ -180,7 +178,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 }
 
                 // Write balance entries
-                for (_addr, slot) in &slot_bytes {
+                for slot in &slot_bytes {
                     loader.push_entry(
                         *token_addr,
                         B256::from(*slot),
