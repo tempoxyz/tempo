@@ -37,7 +37,7 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_precompiles::validator_config_v2::{VALIDATOR_NS_ADD, VALIDATOR_NS_ROTATE};
 use tempo_validator_config::ValidatorConfig;
 
-use crate::{generate_state_bloat, init_state};
+use crate::init_state;
 
 /// Passthrough args for extension management commands.
 ///
@@ -71,7 +71,7 @@ pub(crate) enum TempoSubcommand {
     ///
     /// Derives TIP20 storage slots (total_supply + balances) and writes them
     /// directly into the node's database without an intermediate binary file.
-    GenerateStateBloat(Box<generate_state_bloat::GenerateStateBloat<TempoChainSpecParser>>),
+    GenerateStateBloat(Box<init_state::GenerateStateBloat<TempoChainSpecParser>>),
 
     /// Install an extension (e.g., `tempo add wallet`).
     #[command(

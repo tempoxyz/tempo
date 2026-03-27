@@ -1,13 +1,15 @@
-//! Initialize state from a binary dump file.
+//! TIP20 state initialization commands.
 //!
-//! This command loads TIP20 storage slots from a binary file and applies them
-//! to the genesis state. The binary format is produced by `tempo-xtask generate-state-bloat`.
+//! - [`InitFromBinaryDump`]: loads TIP20 storage slots from a binary file produced
+//!   by `tempo-xtask generate-state-bloat` and applies them to the genesis state.
+//! - [`GenerateStateBloat`]: derives TIP20 storage slots directly and writes them
+//!   into the database, bypassing the intermediate binary file.
 
 use std::{
     fs::File,
     io::{BufReader, Read},
     path::PathBuf,
-    sync::mpsc,
+    sync::{Arc, mpsc},
     thread,
     time::{Duration, Instant},
 };
@@ -16,8 +18,12 @@ use alloy_primitives::{
     B256, U256, keccak256,
     map::{AddressMap, Entry},
 };
+use alloy_signer::utils::secret_key_to_address;
+use alloy_signer_local::coins_bip39::{English, Mnemonic};
 use clap::Parser;
+use coins_bip32::prelude::*;
 use eyre::{Context as _, ensure};
+use rayon::prelude::*;
 use reth_chainspec::EthereumHardforks;
 use reth_cli_commands::common::{AccessRights, CliNodeTypes, EnvironmentArgs};
 use reth_db_api::{
@@ -30,11 +36,13 @@ use reth_db_api::{
 use reth_ethereum::{chainspec::EthChainSpec, tasks::Runtime};
 use reth_etl::Collector;
 use reth_primitives_traits::{Account, StorageEntry};
-use reth_provider::{BlockNumReader, DatabaseProviderFactory, HashingWriter};
-use reth_storage_api::{DBProvider, StorageSettingsCache, TrieWriter};
+use reth_provider::{BlockNumReader, DBProvider, DatabaseProviderFactory, HashingWriter};
+use reth_storage_api::{StorageSettingsCache, TrieWriter};
 use reth_trie::{IntermediateStateRootState, StateRootProgress};
 use reth_trie_db::DatabaseStateRoot;
 use tempo_chainspec::spec::TempoChainSpecParser;
+use tempo_precompiles::tip20::tip20_slots;
+use tempo_primitives::transaction::TIP20_PAYMENT_PREFIX;
 use tracing::info;
 
 /// Magic bytes for the state bloat binary format (8 bytes)
@@ -52,57 +60,56 @@ const WORKER_CHUNK_SIZE: usize = 4096;
 /// Bounded channel depth for the hashing worker thread.
 const HASH_WORKER_QUEUE_DEPTH: usize = 256;
 
-/// Statistics returned after a storage load operation.
-pub(crate) struct LoadStats {
-    pub(crate) total_entries: u64,
-    pub(crate) state_root: B256,
-}
+/// Result type for the hash worker thread.
+type HashWorkerResult = eyre::Result<Collector<Vec<u8>, CompactU256>>;
 
 /// Encapsulates ETL collection, hashing, genesis merge, DB writes, and trie
 /// computation for bulk-loading TIP20 storage into the database.
-pub(crate) struct StorageLoader {
+struct StorageLoader {
     plain_collector: Collector<Vec<u8>, CompactU256>,
     hash_chunk: Vec<(alloy_primitives::Address, B256, CompactU256)>,
     hash_tx: mpsc::SyncSender<Vec<(alloy_primitives::Address, B256, CompactU256)>>,
-    hash_worker: Option<thread::JoinHandle<eyre::Result<Collector<Vec<u8>, CompactU256>>>>,
+    hash_worker: Option<thread::JoinHandle<HashWorkerResult>>,
+    /// Track addresses and their account data for hashing
     accounts_seen: AddressMap<Account>,
     total_entries: u64,
 }
 
 impl StorageLoader {
     /// Create a new `StorageLoader`, spawning the background hash worker.
-    pub(crate) fn new() -> Self {
-        let plain_collector: Collector<Vec<u8>, CompactU256> =
-            Collector::new(ETL_FILE_SIZE, None);
+    fn new() -> Self {
+        // ETL collectors: accumulate entries sorted, spill to disk when full
+        let plain_collector: Collector<Vec<u8>, CompactU256> = Collector::new(ETL_FILE_SIZE, None);
         let hash_chunk: Vec<(alloy_primitives::Address, B256, CompactU256)> =
             Vec::with_capacity(WORKER_CHUNK_SIZE);
 
+        // Single worker thread for keccak hashing: owns the hashed ETL collector, receives
+        // batches over a bounded channel, and returns the collector when the sender drops.
         let (hash_tx, hash_rx) = mpsc::sync_channel::<
             Vec<(alloy_primitives::Address, B256, CompactU256)>,
         >(HASH_WORKER_QUEUE_DEPTH);
-        let hash_worker =
-            thread::spawn(move || -> eyre::Result<Collector<Vec<u8>, CompactU256>> {
-                let mut hashed_collector: Collector<Vec<u8>, CompactU256> =
-                    Collector::new(ETL_FILE_SIZE, None);
-                while let Ok(chunk) = hash_rx.recv() {
-                    let mut last_addr = alloy_primitives::Address::ZERO;
-                    let mut hashed_addr = B256::ZERO;
-                    for (address, slot, value) in chunk {
-                        if address != last_addr {
-                            last_addr = address;
-                            hashed_addr = keccak256(address);
-                        }
-                        let mut hashed_key = Vec::with_capacity(65);
-                        hashed_key.extend_from_slice(hashed_addr.as_slice());
-                        hashed_key.extend_from_slice(keccak256(slot).as_slice());
-                        hashed_key.push(0x01);
-                        hashed_collector
-                            .insert(hashed_key, value)
-                            .wrap_err("hashed ETL insert failed")?;
+        let hash_worker = thread::spawn(move || -> HashWorkerResult {
+            let mut hashed_collector: Collector<Vec<u8>, CompactU256> =
+                Collector::new(ETL_FILE_SIZE, None);
+            while let Ok(chunk) = hash_rx.recv() {
+                let mut last_addr = alloy_primitives::Address::ZERO;
+                let mut hashed_addr = B256::ZERO;
+                for (address, slot, value) in chunk {
+                    if address != last_addr {
+                        last_addr = address;
+                        hashed_addr = keccak256(address);
                     }
+                    let mut hashed_key = Vec::with_capacity(65);
+                    hashed_key.extend_from_slice(hashed_addr.as_slice());
+                    hashed_key.extend_from_slice(keccak256(slot).as_slice());
+                    hashed_key.push(0x01);
+                    hashed_collector
+                        .insert(hashed_key, value)
+                        .wrap_err("hashed ETL insert failed")?;
                 }
-                Ok(hashed_collector)
-            });
+            }
+            Ok(hashed_collector)
+        });
 
         Self {
             plain_collector,
@@ -114,9 +121,14 @@ impl StorageLoader {
         }
     }
 
-    /// Ensure the given address exists in `PlainAccountState`, caching it for
-    /// later hashed-account writes. No-ops if the address has already been seen.
-    pub(crate) fn ensure_account<P>(&mut self, provider: &P, address: alloy_primitives::Address) -> eyre::Result<()>
+    /// Ensure the address has an entry in `PlainAccountState`, reading the
+    /// existing genesis account (preserving its bytecode hash) or inserting a
+    /// default. No-ops on subsequent calls for the same address.
+    fn ensure_account<P>(
+        &mut self,
+        provider: &P,
+        address: alloy_primitives::Address,
+    ) -> eyre::Result<()>
     where
         P: DBProvider<Tx: DbTxMut>,
     {
@@ -138,7 +150,7 @@ impl StorageLoader {
 
     /// Feed a single (address, slot, value) entry into the plain collector and
     /// the hash worker. Increments the total entry counter.
-    pub(crate) fn push_entry(
+    fn push_entry(
         &mut self,
         address: alloy_primitives::Address,
         slot: B256,
@@ -146,9 +158,8 @@ impl StorageLoader {
     ) -> eyre::Result<()> {
         let compact_value = CompactU256::from(value);
 
-        // Append a 0x01 priority suffix so dump entries sort after genesis
-        // entries (which use 0x00) for the same base key. The dedup logic in
-        // `load_etl_to_cursor` keeps the last value, so dump wins.
+        // Plain key = address ++ slot ++ 0x01 priority suffix (genesis uses 0x00).
+        // `load_etl_to_cursor` keeps the last value per base key, so dump wins.
         let mut plain_key = Vec::with_capacity(53);
         plain_key.extend_from_slice(address.as_slice());
         plain_key.extend_from_slice(slot.as_slice());
@@ -157,11 +168,15 @@ impl StorageLoader {
             .insert(plain_key, compact_value.clone())
             .wrap_err("ETL insert failed")?;
 
+        // Queue raw data for parallel hashing
         self.hash_chunk.push((address, slot, compact_value));
+        // Send full batches to the hashing worker thread.
         if self.hash_chunk.len() >= WORKER_CHUNK_SIZE {
             let chunk =
                 std::mem::replace(&mut self.hash_chunk, Vec::with_capacity(WORKER_CHUNK_SIZE));
-            self.hash_tx.send(chunk).wrap_err("hash worker disconnected")?;
+            self.hash_tx
+                .send(chunk)
+                .wrap_err("hash worker disconnected")?;
         }
 
         self.total_entries += 1;
@@ -169,13 +184,13 @@ impl StorageLoader {
     }
 
     /// Return the number of entries pushed so far.
-    pub(crate) fn total_entries(&self) -> u64 {
+    fn total_entries(&self) -> u64 {
         self.total_entries
     }
 
     /// Finish the load: join the hash worker, merge genesis storage, bulk-write
     /// both tables, write hashed accounts, and compute the state root.
-    pub(crate) fn finish<P>(mut self, provider_rw: &P) -> eyre::Result<LoadStats>
+    fn finish<P>(mut self, provider_rw: &P) -> eyre::Result<B256>
     where
         P: DBProvider<Tx: DbTxMut> + HashingWriter + TrieWriter + StorageSettingsCache,
     {
@@ -249,6 +264,9 @@ impl StorageLoader {
         }
 
         // Load sorted entries from each ETL collector into its database table.
+        // Strategy: iterate the sorted collector, deduplicate consecutive entries with
+        // the same composite key, and bulk-insert via append_dup.
+        // The table is cleared first so append_dup ordering is guaranteed.
         let total_plain = self.plain_collector.len();
         provider_rw.tx_ref().clear::<tables::PlainStorageState>()?;
         let mut plain_cursor = provider_rw
@@ -305,6 +323,7 @@ impl StorageLoader {
         );
 
         // Write hashed account entries using the real account metadata from plain state.
+        // This preserves bytecode_hash for genesis accounts (e.g. TIP20 tokens with 0xEF code).
         provider_rw.insert_account_for_hashing(
             self.accounts_seen
                 .iter()
@@ -317,7 +336,8 @@ impl StorageLoader {
             "Hashed accounts written, computing state root and trie nodes..."
         );
 
-        // Rebuild the merkle trie from scratch.
+        // Rebuild the merkle trie from scratch so the sparse trie cache on
+        // block 1 doesn't hit stale genesis nodes and stall on a full rebuild.
         let trie_start = Instant::now();
         provider_rw.tx_ref().clear::<tables::AccountsTrie>()?;
         provider_rw.tx_ref().clear::<tables::StoragesTrie>()?;
@@ -325,6 +345,8 @@ impl StorageLoader {
         let mut resume: Option<IntermediateStateRootState> = None;
         let mut trie_writes = 0usize;
 
+        // Incrementally compute the merkle root over all hashed accounts/storage,
+        // using the correct DB adapter (v2 vs legacy) resolved at runtime by the macro.
         let state_root = reth_trie_db::with_adapter!(provider_rw, |A| {
             use reth_trie_db::{DatabaseHashedCursorFactory, DatabaseTrieCursorFactory};
             type DbStateRoot<'a, TX, Adapter> = reth_trie::StateRoot<
@@ -332,6 +354,7 @@ impl StorageLoader {
                 DatabaseHashedCursorFactory<&'a TX>,
             >;
 
+            // Compute state root in chunks, flushing trie nodes to disk between iterations.
             loop {
                 match DbStateRoot::<_, A>::from_tx(provider_rw.tx_ref())
                     .with_intermediate_state(resume)
@@ -364,10 +387,7 @@ impl StorageLoader {
             "State root computed"
         );
 
-        Ok(LoadStats {
-            total_entries: self.total_entries,
-            state_root,
-        })
+        Ok(state_root)
     }
 }
 
@@ -485,7 +505,8 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             total_blocks += 1;
         }
 
-        let stats = loader.finish(&provider_rw)?;
+        let total_entries = loader.total_entries();
+        let state_root = loader.finish(&provider_rw)?;
 
         // Final commit
         provider_rw.commit()?;
@@ -493,8 +514,8 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         info!(
             target: "tempo::cli",
             total_blocks,
-            total_entries = stats.total_entries,
-            state_root = %stats.state_root,
+            total_entries,
+            state_root = %state_root,
             "Binary state dump loaded successfully"
         );
 
@@ -566,4 +587,228 @@ fn log_collection_progress(
         );
         *last_log = Instant::now();
     }
+}
+
+/// Default chunk size: 256k entries per chunk.
+const DEFAULT_CHUNK_SIZE: usize = 256 * 1024;
+
+/// Generate TIP20 state bloat directly into the database.
+#[derive(Debug, Parser)]
+pub(crate) struct GenerateStateBloat<C: reth_cli::chainspec::ChainSpecParser = TempoChainSpecParser>
+{
+    #[command(flatten)]
+    env: EnvironmentArgs<C>,
+
+    /// Mnemonic to use for account generation.
+    #[arg(
+        short,
+        long,
+        default_value = "test test test test test test test test test test test junk"
+    )]
+    mnemonic: String,
+
+    /// Target state size in MiB (controls number of accounts per token).
+    #[arg(short, long, default_value = "1024")]
+    size: u64,
+
+    /// Token IDs to generate storage for (can be specified multiple times).
+    /// Uses reserved TIP20 addresses: 0x20C0...{token_id}
+    #[arg(short, long, default_values_t = vec![0u64])]
+    token: Vec<u64>,
+
+    /// Balance value to assign to each account (in smallest units).
+    #[arg(long, default_value = "1000000")]
+    balance: u64,
+
+    /// Number of addresses to derive using proper BIP32 (signable).
+    /// Remaining addresses use fast keccak-based derivation (not signable).
+    #[arg(long, default_value = "10000")]
+    signable_count: usize,
+
+    /// Number of entries to process per chunk. Controls peak memory usage.
+    #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
+    chunk_size: usize,
+}
+
+impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>>
+    GenerateStateBloat<C>
+{
+    /// Execute the generate-state-bloat command.
+    pub(crate) async fn execute<N>(self, runtime: Runtime) -> eyre::Result<()>
+    where
+        N: CliNodeTypes<ChainSpec = C::ChainSpec>,
+    {
+        info!(target: "tempo::cli", "Tempo generate-state-bloat starting");
+
+        let environment = self.env.init::<N>(AccessRights::RW, runtime)?;
+        let provider_factory = environment.provider_factory;
+        let provider_rw = provider_factory.database_provider_rw()?;
+
+        // Verify we're at genesis (block 0)
+        let last_block = provider_rw.last_block_number()?;
+        ensure!(
+            last_block == 0,
+            "generate-state-bloat must be run on a freshly initialized database at block 0, \
+             but found block {last_block}"
+        );
+
+        ensure!(
+            !self.token.is_empty(),
+            "at least one token ID must be specified"
+        );
+        ensure!(self.size > 0, "size must be greater than 0");
+        ensure!(self.chunk_size > 0, "chunk_size must be greater than 0");
+
+        let target_bytes = self.size * 1024 * 1024;
+        let num_tokens = self.token.len() as u64;
+
+        // Calculate number of accounts needed (same formula as xtask).
+        let header_size = 40u64;
+        let entry_size = 64u64;
+        let overhead_per_token = header_size + entry_size;
+        let available_for_balances = target_bytes.saturating_sub(num_tokens * overhead_per_token);
+        let total_balance_entries = available_for_balances / entry_size;
+        let accounts_per_token = total_balance_entries / num_tokens;
+
+        ensure!(
+            accounts_per_token > 0,
+            "target size too small for the number of tokens"
+        );
+
+        let total_accounts = accounts_per_token as usize;
+        let actual_signable = self.signable_count.min(total_accounts);
+        let num_chunks = total_accounts.div_ceil(self.chunk_size);
+
+        // Derive parent key
+        let parent_key = derive_parent_key(&self.mnemonic)?;
+        let parent_key = Arc::new(parent_key);
+        let seed = keccak256(self.mnemonic.as_bytes());
+
+        // Generate token addresses
+        let token_addresses: Vec<alloy_primitives::Address> =
+            self.token.iter().map(|&id| token_address(id)).collect();
+
+        // Precompute constants
+        let balance_value = U256::from(self.balance);
+        let total_supply = balance_value * U256::from(total_accounts);
+
+        info!(
+            target: "tempo::cli",
+            num_tokens,
+            accounts_per_token,
+            num_chunks,
+            chunk_size = self.chunk_size,
+            "Generating state bloat"
+        );
+
+        let mut loader = StorageLoader::new();
+        let mut is_first_chunk = true;
+
+        for (chunk_idx, chunk_start) in (0..total_accounts).step_by(self.chunk_size).enumerate() {
+            let chunk_end = (chunk_start + self.chunk_size).min(total_accounts);
+            let chunk_indices: Vec<usize> = (chunk_start..chunk_end).collect();
+            let chunk_len = chunk_indices.len();
+
+            // Parallel address derivation + slot computation
+            let parent_key_ref = Arc::clone(&parent_key);
+            let slot_bytes: Vec<[u8; 32]> = chunk_indices
+                .into_par_iter()
+                .map(|i| {
+                    let addr = if i < actual_signable {
+                        let child = parent_key_ref
+                            .derive_child(i as u32)
+                            .expect("child derivation should not fail");
+                        let key: &coins_bip32::prelude::SigningKey = child.as_ref();
+                        let credential =
+                            k256::ecdsa::SigningKey::from_bytes(&key.to_bytes()).unwrap();
+                        secret_key_to_address(&credential)
+                    } else {
+                        derive_address_fast(&seed, i as u64)
+                    };
+                    compute_mapping_slot(addr, tip20_slots::BALANCES).to_be_bytes::<32>()
+                })
+                .collect();
+
+            // Write entries for each token
+            for token_addr in &token_addresses {
+                loader.ensure_account(&provider_rw, *token_addr)?;
+
+                // Only write total_supply in the first chunk
+                if is_first_chunk {
+                    loader.push_entry(
+                        *token_addr,
+                        B256::from(tip20_slots::TOTAL_SUPPLY.to_be_bytes::<32>()),
+                        total_supply,
+                    )?;
+                }
+
+                // Write balance entries
+                for slot in &slot_bytes {
+                    loader.push_entry(*token_addr, B256::from(*slot), balance_value)?;
+                }
+            }
+
+            is_first_chunk = false;
+
+            info!(
+                target: "tempo::cli",
+                chunk = chunk_idx + 1,
+                num_chunks,
+                entries = chunk_len,
+                total_entries = loader.total_entries(),
+                "Chunk processed"
+            );
+        }
+
+        let total_entries = loader.total_entries();
+        let state_root = loader.finish(&provider_rw)?;
+
+        provider_rw.commit()?;
+
+        info!(
+            target: "tempo::cli",
+            total_entries,
+            state_root = %state_root,
+            "State bloat generated successfully"
+        );
+
+        Ok(())
+    }
+}
+
+/// Compute a reserved TIP20 token address from a token ID.
+fn token_address(token_id: u64) -> alloy_primitives::Address {
+    let mut bytes = [0u8; 20];
+    bytes[..12].copy_from_slice(&TIP20_PAYMENT_PREFIX);
+    bytes[12..].copy_from_slice(&token_id.to_be_bytes());
+    alloy_primitives::Address::from(bytes)
+}
+
+/// Fast address derivation using keccak256(seed || index).
+fn derive_address_fast(seed: &[u8; 32], index: u64) -> alloy_primitives::Address {
+    let mut buf = [0u8; 40];
+    buf[..32].copy_from_slice(seed);
+    buf[32..].copy_from_slice(&index.to_be_bytes());
+    let hash = keccak256(buf);
+    alloy_primitives::Address::from_slice(&hash[12..])
+}
+
+/// Derive the parent key for BIP44 Ethereum path: m/44'/60'/0'/0
+fn derive_parent_key(mnemonic_phrase: &str) -> eyre::Result<coins_bip32::prelude::XPriv> {
+    let mnemonic = Mnemonic::<English>::new_from_phrase(mnemonic_phrase)
+        .map_err(|e| eyre::eyre!("invalid mnemonic: {e}"))?;
+
+    let master: coins_bip32::prelude::XPriv = mnemonic
+        .derive_key("m/44'/60'/0'/0", None)
+        .map_err(|e| eyre::eyre!("key derivation failed: {e}"))?;
+
+    Ok(master)
+}
+
+/// Compute a Solidity mapping slot: keccak256(pad32(key) || pad32(base_slot))
+fn compute_mapping_slot(key: alloy_primitives::Address, base_slot: U256) -> U256 {
+    let mut buf = [0u8; 64];
+    buf[12..32].copy_from_slice(key.as_slice());
+    buf[32..].copy_from_slice(&base_slot.to_be_bytes::<32>());
+    U256::from_be_bytes(keccak256(buf).0)
 }
