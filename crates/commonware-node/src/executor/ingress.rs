@@ -31,7 +31,7 @@ impl Mailbox {
             }))
             .wrap_err("failed sending canonicalize request to agent, this means it exited")?;
         rx.await
-            .wrap_err("executor dropped respone")
+            .wrap_err("executor dropped response")
             .and_then(|res| res)
     }
 
