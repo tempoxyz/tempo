@@ -54,14 +54,6 @@ pub fn is_constrained_tip20_selector(selector: [u8; 4]) -> bool {
     )
 }
 
-/// Internal token limit configuration used by handler-side key authorization.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TokenLimitConfig {
-    pub token: Address,
-    pub limit: U256,
-    pub period: u64,
-}
-
 /// Internal selector rule configuration used by handler-side key authorization.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectorRuleConfig {
@@ -314,16 +306,6 @@ impl AccountKeychain {
 
         self.keys[msg_sender][call.keyId].write(new_key)?;
 
-        let limit_configs = call
-            .limits
-            .iter()
-            .map(|limit| TokenLimitConfig {
-                token: limit.token,
-                limit: limit.amount,
-                period: limit.period,
-            })
-            .collect::<Vec<_>>();
-
         // Pre-T3 stores lifetime limits directly in the remaining-limit slot.
         if call.enforceLimits && !is_t3 {
             let limit_key = Self::spending_limit_key(msg_sender, call.keyId);
@@ -349,7 +331,7 @@ impl AccountKeychain {
                 msg_sender,
                 call.keyId,
                 if call.enforceLimits {
-                    &limit_configs
+                    &call.limits
                 } else {
                     &[]
                 },
@@ -730,7 +712,7 @@ impl AccountKeychain {
         &mut self,
         account: Address,
         key_id: Address,
-        limits: &[TokenLimitConfig],
+        limits: &[TokenLimit],
         allowed_calls: Option<&[CallScopeConfig]>,
     ) -> Result<()> {
         if !self.storage.spec().is_t3() {
@@ -752,10 +734,10 @@ impl AccountKeychain {
                 now.saturating_add(limit.period)
             };
 
-            self.spending_limits[limit_key][limit.token].write(limit.limit)?;
+            self.spending_limits[limit_key][limit.token].write(limit.amount)?;
             self.spending_limit_period_state[limit_key][limit.token].write(
                 SpendingLimitPeriodState {
-                    max: limit.limit,
+                    max: limit.amount,
                     period: limit.period,
                     period_end,
                 },
@@ -3255,9 +3237,9 @@ mod tests {
             keychain.apply_key_authorization_t3(
                 account,
                 key_id,
-                &[TokenLimitConfig {
+                &[TokenLimit {
                     token,
-                    limit: U256::from(100),
+                    amount: U256::from(100),
                     period: 60,
                 }],
                 None,
