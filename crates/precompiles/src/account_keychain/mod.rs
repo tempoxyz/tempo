@@ -13,13 +13,15 @@ use std::collections::HashSet;
 use __packing_authorized_key::{
     ENFORCE_LIMITS_LOC, EXPIRY_LOC, IS_REVOKED_LOC, SIGNATURE_TYPE_LOC,
 };
-use tempo_contracts::precompiles::{AccountKeychainError, AccountKeychainEvent};
+use alloy::sol_types::SolCall;
+use tempo_contracts::precompiles::{AccountKeychainError, AccountKeychainEvent, ITIP20};
 pub use tempo_contracts::precompiles::{
+    authorizeKeyCall, getRemainingLimitReturn,
     IAccountKeychain,
     IAccountKeychain::{
-        CallScope, KeyInfo, SelectorRule, SignatureType, TokenLimit, authorizeKeyCall,
-        getAllowedCallsCall, getKeyCall, getRemainingLimitCall, getRemainingLimitReturn,
-        getTransactionKeyCall, revokeKeyCall, setAllowedCallsCall, updateSpendingLimitCall,
+        CallScope, KeyInfo, SelectorRule, SignatureType, TokenLimit, getAllowedCallsCall,
+        getKeyCall, getRemainingLimitCall, getRemainingLimitWithPeriodCall, getTransactionKeyCall,
+        revokeKeyCall, setAllowedCallsCall, updateSpendingLimitCall,
     },
 };
 
@@ -40,10 +42,17 @@ pub const MAX_SELECTOR_RULES_PER_SCOPE: u8 = 16;
 pub const MAX_RECIPIENTS_PER_SELECTOR: u8 = 16;
 
 /// Allowed TIP-20 selectors for recipient-constrained rules.
-const TIP20_TRANSFER_SELECTOR: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
-const TIP20_APPROVE_SELECTOR: [u8; 4] = [0x09, 0x5e, 0xa7, 0xb3];
-const TIP20_TRANSFER_WITH_MEMO_SELECTOR: [u8; 4] = [0x95, 0x77, 0x7d, 0x59];
-const TIP20_APPROVE_WITH_MEMO_SELECTOR: [u8; 4] = [0xc2, 0xda, 0x9a, 0xed];
+const TIP20_TRANSFER_SELECTOR: [u8; 4] = ITIP20::transferCall::SELECTOR;
+const TIP20_APPROVE_SELECTOR: [u8; 4] = ITIP20::approveCall::SELECTOR;
+const TIP20_TRANSFER_WITH_MEMO_SELECTOR: [u8; 4] = ITIP20::transferWithMemoCall::SELECTOR;
+
+#[inline]
+pub fn is_constrained_tip20_selector(selector: [u8; 4]) -> bool {
+    matches!(
+        selector,
+        TIP20_TRANSFER_SELECTOR | TIP20_APPROVE_SELECTOR | TIP20_TRANSFER_WITH_MEMO_SELECTOR
+    )
+}
 
 /// Internal token limit configuration used by handler-side key authorization.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -241,17 +250,6 @@ impl AccountKeychain {
     #[inline]
     fn selector_from_u32(selector: u32) -> [u8; 4] {
         selector.to_be_bytes()
-    }
-
-    #[inline]
-    fn is_constrained_tip20_selector(selector: [u8; 4]) -> bool {
-        matches!(
-            selector,
-            TIP20_TRANSFER_SELECTOR
-                | TIP20_APPROVE_SELECTOR
-                | TIP20_TRANSFER_WITH_MEMO_SELECTOR
-                | TIP20_APPROVE_WITH_MEMO_SELECTOR
-        )
     }
 
     /// Initializes the account keychain precompile.
@@ -503,14 +501,18 @@ impl AccountKeychain {
     /// Returns the remaining spending limit for a key-token pair, or a blank entry if inexistent
     /// or revoked (T2+).
     pub fn get_remaining_limit(&self, call: getRemainingLimitCall) -> Result<U256> {
-        self.get_remaining_limit_with_period(call)
-            .map(|ret| ret.remaining)
+        self.get_remaining_limit_with_period(getRemainingLimitWithPeriodCall {
+            account: call.account,
+            keyId: call.keyId,
+            token: call.token,
+        })
+        .map(|ret| ret.remaining)
     }
 
     /// Returns the remaining spending limit together with the active period end timestamp.
     pub fn get_remaining_limit_with_period(
         &self,
-        call: getRemainingLimitCall,
+        call: getRemainingLimitWithPeriodCall,
     ) -> Result<getRemainingLimitReturn> {
         // T2+: return zero if key doesn't exist or has been revoked
         if self.storage.spec().is_t2() {
@@ -1026,7 +1028,7 @@ impl AccountKeychain {
             }
 
             if !TIP20Factory::new().is_tip20(target)?
-                || !Self::is_constrained_tip20_selector(rule.selector)
+                || !is_constrained_tip20_selector(rule.selector)
             {
                 return Err(AccountKeychainError::invalid_call_scope().into());
             }
@@ -3148,11 +3150,12 @@ mod tests {
                 SpendingLimitPeriodState::default()
             );
 
-            let remaining = keychain.get_remaining_limit_with_period(getRemainingLimitCall {
-                account,
-                keyId: key_id,
-                token,
-            })?;
+            let remaining =
+                keychain.get_remaining_limit_with_period(getRemainingLimitWithPeriodCall {
+                    account,
+                    keyId: key_id,
+                    token,
+                })?;
             assert_eq!(remaining.remaining, U256::ZERO);
             assert_eq!(remaining.periodEnd, 0);
 

@@ -2,6 +2,8 @@
 
 pub use IAccountKeychain::{
     IAccountKeychainErrors as AccountKeychainError, IAccountKeychainEvents as AccountKeychainEvent,
+    authorizeKey_0Call as legacyAuthorizeKeyCall, authorizeKey_1Call as authorizeKeyCall,
+    getRemainingLimitWithPeriodCall, getRemainingLimitWithPeriodReturn as getRemainingLimitReturn,
 };
 
 crate::sol! {
@@ -21,6 +23,12 @@ crate::sol! {
             Secp256k1,
             P256,
             WebAuthn,
+        }
+
+        /// Legacy token spending limit structure used before T3.
+        struct LegacyTokenLimit {
+            address token;
+            uint256 amount;
         }
 
         /// Token spending limit structure
@@ -70,7 +78,16 @@ crate::sol! {
             uint256 remainingLimit
         );
 
-        /// Authorize a new key for the caller's account
+        /// Legacy authorize-key entrypoint used before T3.
+        function authorizeKey(
+            address keyId,
+            SignatureType signatureType,
+            uint64 expiry,
+            bool enforceLimits,
+            LegacyTokenLimit[] calldata limits
+        ) external;
+
+        /// Authorize a new key for the caller's account with T3 extensions.
         /// @param keyId The key identifier (address derived from public key)
         /// @param signatureType 0: secp256k1, 1: P256, 2: WebAuthn
         /// @param expiry Block timestamp when the key expires (u64::MAX for never expires)
@@ -116,13 +133,23 @@ crate::sol! {
         /// @return Key information
         function getKey(address account, address keyId) external view returns (KeyInfo memory);
 
-        /// Get remaining spending limit
+        /// Get remaining spending limit using the legacy pre-T3 return shape.
+        /// @param account The account address
+        /// @param publicKey The public key
+        /// @param token The token address
+        function getRemainingLimit(
+            address account,
+            address keyId,
+            address token
+        ) external view returns (uint256 remaining);
+
+        /// Get remaining spending limit together with the active period end.
         /// @param account The account address
         /// @param publicKey The public key
         /// @param token The token address
         /// @return remaining Remaining spending amount
         /// @return periodEnd Period end timestamp for periodic limits (0 for one-time)
-        function getRemainingLimit(
+        function getRemainingLimitWithPeriod(
             address account,
             address keyId,
             address token
@@ -151,41 +178,6 @@ crate::sol! {
         error ScopeLimitExceeded();
         error SelectorLimitExceeded();
         error RecipientLimitExceeded();
-    }
-}
-
-crate::sol! {
-    /// Legacy Account Keychain interface exposed for pre-T3 networks.
-    ///
-    /// Current nodes before T3 still accept the original 5-argument `authorizeKey`
-    /// selector and return a single `uint256` from `getRemainingLimit`.
-    #[derive(Debug, PartialEq, Eq)]
-    #[sol(abi)]
-    interface IAccountKeychainLegacy {
-        enum SignatureType {
-            Secp256k1,
-            P256,
-            WebAuthn,
-        }
-
-        struct TokenLimit {
-            address token;
-            uint256 amount;
-        }
-
-        function authorizeKey(
-            address keyId,
-            SignatureType signatureType,
-            uint64 expiry,
-            bool enforceLimits,
-            TokenLimit[] calldata limits
-        ) external;
-
-        function getRemainingLimit(
-            address account,
-            address keyId,
-            address token
-        ) external view returns (uint256 remaining);
     }
 }
 

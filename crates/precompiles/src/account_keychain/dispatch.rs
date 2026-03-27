@@ -1,45 +1,16 @@
 //! ABI dispatch for the [`AccountKeychain`] precompile.
 
-use super::{AccountKeychain, SignatureType, TokenLimit, authorizeKeyCall};
-use crate::{
-    IntoPrecompileResult, Precompile, dispatch_call, input_cost, mutate_void, unknown_selector,
-    view,
-};
+use super::{AccountKeychain, TokenLimit, authorizeKeyCall};
+use crate::{Precompile, dispatch_call, input_cost, mutate_void, unknown_selector, view};
 use alloy::{
     primitives::Address,
     sol_types::{SolCall, SolInterface},
 };
 use revm::precompile::{PrecompileError, PrecompileResult};
-use tempo_contracts::precompiles::IAccountKeychain::{IAccountKeychainCalls, setAllowedCallsCall};
-
-mod legacy {
-    alloy::sol! {
-        enum SignatureType {
-            Secp256k1,
-            P256,
-            WebAuthn,
-        }
-
-        struct TokenLimit {
-            address token;
-            uint256 amount;
-        }
-
-        function authorizeKey(
-            address keyId,
-            SignatureType signatureType,
-            uint64 expiry,
-            bool enforceLimits,
-            TokenLimit[] calldata limits
-        ) external;
-
-        function getRemainingLimit(
-            address account,
-            address keyId,
-            address token
-        ) external view returns (uint256);
-    }
-}
+use tempo_contracts::precompiles::{
+    IAccountKeychain::{IAccountKeychainCalls, setAllowedCallsCall},
+    legacyAuthorizeKeyCall,
+};
 
 impl Precompile for AccountKeychain {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -47,52 +18,39 @@ impl Precompile for AccountKeychain {
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
 
-        // Pre-T3 compatibility: accept the legacy authorizeKey selector used before TIP-1011.
-        if !self.storage.spec().is_t3()
-            && calldata.len() >= 4
-            && calldata[..4] == legacy::authorizeKeyCall::SELECTOR
-        {
-            let legacy_call = legacy::authorizeKeyCall::abi_decode(calldata).map_err(|_| {
-                PrecompileError::Other("invalid legacy authorizeKey calldata".into())
-            })?;
-
-            let signature_type = match legacy_call.signatureType {
-                legacy::SignatureType::Secp256k1 => SignatureType::Secp256k1,
-                legacy::SignatureType::P256 => SignatureType::P256,
-                legacy::SignatureType::WebAuthn => SignatureType::WebAuthn,
-                legacy::SignatureType::__Invalid => {
-                    return Err(PrecompileError::Other(
-                        "invalid legacy signature type".into(),
-                    ));
-                }
-            };
-
-            let call = authorizeKeyCall {
-                keyId: legacy_call.keyId,
-                signatureType: signature_type,
-                expiry: legacy_call.expiry,
-                enforceLimits: legacy_call.enforceLimits,
-                limits: legacy_call
-                    .limits
-                    .into_iter()
-                    .map(|limit| TokenLimit {
-                        token: limit.token,
-                        amount: limit.amount,
-                        period: 0,
-                    })
-                    .collect(),
-                enforceAllowedCalls: false,
-                allowedCalls: vec![],
-            };
-
-            return mutate_void(call, msg_sender, |sender, c| self.authorize_key(sender, c));
-        }
-
         dispatch_call(
             calldata,
             IAccountKeychainCalls::abi_decode,
             |call| match call {
-                IAccountKeychainCalls::authorizeKey(call) => {
+                IAccountKeychainCalls::authorizeKey_0(call) => {
+                    if self.storage.spec().is_t3() {
+                        return unknown_selector(
+                            legacyAuthorizeKeyCall::SELECTOR,
+                            self.storage.gas_used(),
+                        );
+                    }
+
+                    let call = authorizeKeyCall {
+                        keyId: call.keyId,
+                        signatureType: call.signatureType,
+                        expiry: call.expiry,
+                        enforceLimits: call.enforceLimits,
+                        limits: call
+                            .limits
+                            .into_iter()
+                            .map(|limit| TokenLimit {
+                                token: limit.token,
+                                amount: limit.amount,
+                                period: 0,
+                            })
+                            .collect(),
+                        enforceAllowedCalls: false,
+                        allowedCalls: vec![],
+                    };
+
+                    mutate_void(call, msg_sender, |sender, c| self.authorize_key(sender, c))
+                }
+                IAccountKeychainCalls::authorizeKey_1(call) => {
                     if !self.storage.spec().is_t3() {
                         return unknown_selector(
                             authorizeKeyCall::SELECTOR,
@@ -122,12 +80,20 @@ impl Precompile for AccountKeychain {
                 }
                 IAccountKeychainCalls::getKey(call) => view(call, |c| self.get_key(c)),
                 IAccountKeychainCalls::getRemainingLimit(call) => {
+                    if self.storage.spec().is_t3() {
+                        return unknown_selector(
+                            tempo_contracts::precompiles::IAccountKeychain::getRemainingLimitCall::SELECTOR,
+                            self.storage.gas_used(),
+                        );
+                    }
+                    view(call, |c| self.get_remaining_limit(c))
+                }
+                IAccountKeychainCalls::getRemainingLimitWithPeriod(call) => {
                     if !self.storage.spec().is_t3() {
-                        return self
-                            .get_remaining_limit(call)
-                            .into_precompile_result(0, |ret| {
-                                legacy::getRemainingLimitCall::abi_encode_returns(&ret).into()
-                            });
+                        return unknown_selector(
+                            tempo_contracts::precompiles::getRemainingLimitWithPeriodCall::SELECTOR,
+                            self.storage.gas_used(),
+                        );
                     }
                     view(call, |c| self.get_remaining_limit_with_period(c))
                 }
@@ -153,11 +119,11 @@ mod tests {
     use super::*;
     use crate::{
         Precompile,
-        account_keychain::getRemainingLimitCall,
+        account_keychain::{getRemainingLimitCall, getRemainingLimitWithPeriodCall},
         storage::{Handler, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
     };
-    use alloy::primitives::U256;
+    use alloy::{primitives::U256, sol_types::SolCall};
     use tempo_chainspec::hardfork::TempoHardfork;
 
     #[test]
@@ -190,15 +156,18 @@ mod tests {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
 
-            let calldata = legacy::authorizeKeyCall {
+            let calldata = legacyAuthorizeKeyCall {
                 keyId: key_id,
-                signatureType: legacy::SignatureType::Secp256k1,
+                signatureType:
+                    tempo_contracts::precompiles::IAccountKeychain::SignatureType::Secp256k1,
                 expiry: u64::MAX,
                 enforceLimits: true,
-                limits: vec![legacy::TokenLimit {
-                    token,
-                    amount: U256::from(100),
-                }],
+                limits: vec![
+                    tempo_contracts::precompiles::IAccountKeychain::LegacyTokenLimit {
+                        token,
+                        amount: U256::from(100),
+                    },
+                ],
             }
             .abi_encode();
 
@@ -226,7 +195,7 @@ mod tests {
 
             let calldata = authorizeKeyCall {
                 keyId: Address::random(),
-                signatureType: SignatureType::Secp256k1,
+                signatureType: tempo_contracts::precompiles::IAccountKeychain::SignatureType::Secp256k1,
                 expiry: u64::MAX,
                 enforceLimits: true,
                 limits: vec![TokenLimit {
@@ -236,6 +205,32 @@ mod tests {
                 }],
                 enforceAllowedCalls: false,
                 allowedCalls: vec![],
+            }
+            .abi_encode();
+
+            let result = keychain.call(&calldata, account)?;
+            assert!(result.reverted);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_legacy_authorize_key_selector_rejected_post_t3() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let account = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            let calldata = legacyAuthorizeKeyCall {
+                keyId: Address::random(),
+                signatureType:
+                    tempo_contracts::precompiles::IAccountKeychain::SignatureType::Secp256k1,
+                expiry: u64::MAX,
+                enforceLimits: false,
+                limits: vec![],
             }
             .abi_encode();
 
@@ -257,15 +252,18 @@ mod tests {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
 
-            let authorize_calldata = legacy::authorizeKeyCall {
+            let authorize_calldata = legacyAuthorizeKeyCall {
                 keyId: key_id,
-                signatureType: legacy::SignatureType::Secp256k1,
+                signatureType:
+                    tempo_contracts::precompiles::IAccountKeychain::SignatureType::Secp256k1,
                 expiry: u64::MAX,
                 enforceLimits: true,
-                limits: vec![legacy::TokenLimit {
-                    token,
-                    amount: U256::from(123),
-                }],
+                limits: vec![
+                    tempo_contracts::precompiles::IAccountKeychain::LegacyTokenLimit {
+                        token,
+                        amount: U256::from(123),
+                    },
+                ],
             }
             .abi_encode();
             let _ = keychain.call(&authorize_calldata, account)?;
@@ -285,8 +283,31 @@ mod tests {
                 "pre-T3 should return legacy uint256"
             );
 
-            let remaining = legacy::getRemainingLimitCall::abi_decode_returns(&output.bytes)?;
+            let remaining = getRemainingLimitCall::abi_decode_returns(&output.bytes)?;
             assert_eq!(remaining, U256::from(123));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_get_remaining_limit_with_period_rejected_pre_t3() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
+        let account = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            let calldata = getRemainingLimitWithPeriodCall {
+                account,
+                keyId: Address::random(),
+                token: Address::random(),
+            }
+            .abi_encode();
+
+            let result = keychain.call(&calldata, account)?;
+            assert!(result.reverted);
 
             Ok(())
         })
