@@ -1327,17 +1327,19 @@ mod tests {
         provider
             .setup_storage(TempoHardfork::default(), || {
                 let mut registry = TIP403Registry::new();
-                registry.policy_records[compound_policy_id].base.write(PolicyData {
-                    policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
-                    admin: Address::ZERO,
-                })?;
-                registry.policy_records[compound_policy_id].compound.write(
-                    CompoundPolicyData {
+                registry.policy_records[compound_policy_id]
+                    .base
+                    .write(PolicyData {
+                        policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
+                        admin: Address::ZERO,
+                    })?;
+                registry.policy_records[compound_policy_id]
+                    .compound
+                    .write(CompoundPolicyData {
                         sender_policy_id: sender_sub_policy,
                         recipient_policy_id: recipient_sub_policy,
                         mint_recipient_policy_id: 0,
-                    },
-                )
+                    })
             })
             .unwrap();
 
@@ -1384,17 +1386,19 @@ mod tests {
         provider
             .setup_storage(TempoHardfork::default(), || {
                 let mut registry = TIP403Registry::new();
-                registry.policy_records[compound_policy_id].base.write(PolicyData {
-                    policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
-                    admin: Address::ZERO,
-                })?;
-                registry.policy_records[compound_policy_id].compound.write(
-                    CompoundPolicyData {
+                registry.policy_records[compound_policy_id]
+                    .base
+                    .write(PolicyData {
+                        policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
+                        admin: Address::ZERO,
+                    })?;
+                registry.policy_records[compound_policy_id]
+                    .compound
+                    .write(CompoundPolicyData {
                         sender_policy_id: sender_sub_policy,
                         recipient_policy_id: recipient_sub_policy,
                         mint_recipient_policy_id: 0,
-                    },
-                )
+                    })
             })
             .unwrap();
 
@@ -1440,17 +1444,19 @@ mod tests {
         provider
             .setup_storage(TempoHardfork::default(), || {
                 let mut registry = TIP403Registry::new();
-                registry.policy_records[compound_policy_id].base.write(PolicyData {
-                    policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
-                    admin: Address::ZERO,
-                })?;
-                registry.policy_records[compound_policy_id].compound.write(
-                    CompoundPolicyData {
+                registry.policy_records[compound_policy_id]
+                    .base
+                    .write(PolicyData {
+                        policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
+                        admin: Address::ZERO,
+                    })?;
+                registry.policy_records[compound_policy_id]
+                    .compound
+                    .write(CompoundPolicyData {
                         sender_policy_id: sender_sub,
                         recipient_policy_id: recipient_sub,
                         mint_recipient_policy_id: mint_recipient_sub,
-                    },
-                )
+                    })
             })
             .unwrap();
 
@@ -1492,17 +1498,19 @@ mod tests {
         provider
             .setup_storage(TempoHardfork::default(), || {
                 let mut registry = TIP403Registry::new();
-                registry.policy_records[compound_policy_id].base.write(PolicyData {
-                    policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
-                    admin: Address::ZERO,
-                })?;
-                registry.policy_records[compound_policy_id].compound.write(
-                    CompoundPolicyData {
+                registry.policy_records[compound_policy_id]
+                    .base
+                    .write(PolicyData {
+                        policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
+                        admin: Address::ZERO,
+                    })?;
+                registry.policy_records[compound_policy_id]
+                    .compound
+                    .write(CompoundPolicyData {
                         sender_policy_id: sender_sub,
                         recipient_policy_id: recipient_sub,
                         mint_recipient_policy_id: 0,
-                    },
-                )
+                    })
             })
             .unwrap();
 
@@ -1547,10 +1555,12 @@ mod tests {
         provider
             .setup_storage(TempoHardfork::default(), || {
                 let mut registry = TIP403Registry::new();
-                registry.policy_records[simple_policy_id].base.write(PolicyData {
-                    policy_type: ITIP403Registry::PolicyType::BLACKLIST as u8,
-                    admin: Address::ZERO,
-                })
+                registry.policy_records[simple_policy_id]
+                    .base
+                    .write(PolicyData {
+                        policy_type: ITIP403Registry::PolicyType::BLACKLIST as u8,
+                        admin: Address::ZERO,
+                    })
             })
             .unwrap();
 
