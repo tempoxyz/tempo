@@ -7,7 +7,7 @@ use commonware_runtime::{
 };
 use futures::future::join_all;
 
-use crate::{CONSENSUS_NODE_PREFIX, Setup, setup_validators};
+use crate::{CONSENSUS_NODE_PREFIX, Setup, connect_execution_peers, setup_validators};
 
 fn metric_value(metrics: &str, uid: &str, metric_suffix: &str) -> Option<u64> {
     metrics.lines().find_map(|line| {
@@ -39,8 +39,7 @@ fn validator_lost_share_but_gets_share_in_next_epoch() {
         let setup = Setup::new()
             .seed(seed)
             .epoch_length(epoch_length)
-            .t2_time(0)
-            .connect_execution_layer_nodes(true);
+            .t2_time(0);
 
         let (mut validators, _execution_runtime) =
             setup_validators(&mut context, setup.clone()).await;
@@ -58,6 +57,7 @@ fn validator_lost_share_but_gets_share_in_next_epoch() {
         };
 
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+        connect_execution_peers(&validators).await;
 
         let mut node_forgot_share = false;
 

@@ -55,7 +55,9 @@ fn subblocks_are_included_1_node() {
 
         for node in &mut nodes {
             let fee_recipient = Address::random();
-            node.consensus_config_mut().fee_recipient = fee_recipient;
+            node.consensus_config_mut()
+                .fee_recipient
+                .replace(fee_recipient);
             fee_recipients.push(fee_recipient);
         }
 
@@ -162,7 +164,9 @@ fn subblocks_are_included_4_nodes() {
 
         for node in &mut nodes {
             let fee_recipient = Address::random();
-            node.consensus_config_mut().fee_recipient = fee_recipient;
+            node.consensus_config_mut()
+                .fee_recipient
+                .replace(fee_recipient);
             fee_recipients.push(fee_recipient);
         }
 
@@ -269,7 +273,9 @@ fn subblocks_are_included_with_failing_txs_5_nodes() {
 
         for node in &mut nodes {
             let fee_recipient = Address::random();
-            node.consensus_config_mut().fee_recipient = fee_recipient;
+            node.consensus_config_mut()
+                .fee_recipient
+                .replace(fee_recipient);
             fee_recipients.push(fee_recipient);
         }
 

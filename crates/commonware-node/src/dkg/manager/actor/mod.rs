@@ -631,11 +631,29 @@ where
             .containing(block.height())
             .expect("epoch strategy is covering all block heights");
 
-        ensure!(
-            epoch_info.epoch() == round.epoch(),
-            "block was not for this epoch; must observe all blocks epoch by \
-            epoch; cannot deal with observing blocks out-of-order"
-        );
+        match round.epoch().cmp(&epoch_info.epoch()) {
+            std::cmp::Ordering::Less => {
+                bail!(
+                    "block is for a future epoch `{}`, but the current DKG \
+                    loop is for epoch `{}`; this should never happen because \
+                    the DKG actor drives which epochs are entered or skipped",
+                    epoch_info.epoch(),
+                    round.epoch(),
+                );
+            }
+            std::cmp::Ordering::Greater => {
+                warn!(
+                    "ignoring block for prior epoch; older blocks are replayed \
+                    against the DKG loop when a node was shut down right \
+                    after a boundary block completed an epoch, but before \
+                    it was fully processed by other actors"
+                );
+                return Ok(None);
+            }
+            std::cmp::Ordering::Equal => {
+                // Normal, expected behavior.
+            }
+        }
 
         match epoch_info.phase() {
             EpochPhase::Early => {
@@ -834,11 +852,33 @@ where
             .containing(block.height())
             .expect("epoch strategy is covering all block heights");
 
-        ensure!(
-            epoch_info.epoch() == round.epoch(),
-            "block was not for this epoch; must observe all blocks epoch by \
-            epoch; cannot deal with observing blocks out-of-order"
-        );
+        // This check exists to match that of `handle_finalized_block`.
+        // However, in practice it is extremely unlikely to ever be hit because
+        // it would require that the node observes the finalized network tip
+        // (from the network) before replaying a locally replayed block.
+        match round.epoch().cmp(&epoch_info.epoch()) {
+            std::cmp::Ordering::Less => {
+                bail!(
+                    "block is for a future epoch `{}`, but the current DKG \
+                    loop is for epoch `{}`; this should never happen because \
+                    the DKG actor drives which epochs are entered or skipped",
+                    epoch_info.epoch(),
+                    round.epoch(),
+                );
+            }
+            std::cmp::Ordering::Greater => {
+                warn!(
+                    "ignoring block for prior epoch; older blocks are replayed \
+                    against the DKG loop when a node was shut down right \
+                    after a boundary block completed an epoch, but before \
+                    it was fully processed by other actors"
+                );
+                return Ok(None);
+            }
+            std::cmp::Ordering::Equal => {
+                // Normal, expected behavior.
+            }
+        }
 
         if block.height() != epoch_info.last() {
             return Ok(None);

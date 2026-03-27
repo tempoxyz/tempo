@@ -77,7 +77,9 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         (_actors,) = _buildActors(5);
         _potentialValidators = _buildAddressPool(500, VALIDATOR_POOL_OFFSET);
 
-        // Add V1 validators — migration and initialization driven by the fuzzer
+        // Add V1 validators — migration and initialization driven by the fuzzer.
+        // Mix active and inactive (indices 3, 7, 11 are deactivated after adding) to exercise
+        // VALV2-25 (activity preservation) during migration.
         for (uint256 i = 0; i < V1_SETUP_COUNT; i++) {
             address addr = address(uint160(0xA000 + i));
             // Seed V1 with valid Ed25519 pubkeys so migration does not skip fixtures.
@@ -88,6 +90,10 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
                 string(abi.encodePacked("10.0.0.", _uint8ToString(uint8(100 + i)), ":9000"));
             validatorConfig.addValidator(addr, pubKey, true, ingress, egress);
         }
+        // Deactivate selected validators to test migration activity preservation
+        validatorConfig.changeValidatorStatus(address(uint160(0xA003)), false);
+        validatorConfig.changeValidatorStatus(address(uint160(0xA007)), false);
+        validatorConfig.changeValidatorStatus(address(uint160(0xA00B)), false);
 
         // V2 owner starts as address(0) — auto-set from V1 on first migrateValidator call
         _ghostOwner = address(0);
@@ -128,7 +134,9 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
                 uint64(block.chainid),
                 address(validatorConfigV2),
                 validatorAddress,
+                uint8(bytes(ingress).length),
                 ingress,
+                uint8(bytes(egress).length),
                 egress,
                 feeRecipient
             )
@@ -151,7 +159,13 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     {
         bytes32 message = keccak256(
             abi.encodePacked(
-                uint64(block.chainid), address(validatorConfigV2), validatorAddress, ingress, egress
+                uint64(block.chainid),
+                address(validatorConfigV2),
+                validatorAddress,
+                uint8(bytes(ingress).length),
+                ingress,
+                uint8(bytes(egress).length),
+                egress
             )
         );
         bytes memory ns = bytes("TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR");
@@ -163,13 +177,24 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     function _generateIngress(uint256 seed) internal pure returns (string memory) {
         uint8 lastOctet = uint8((seed % 254) + 1);
         uint16 port = uint16((seed >> 8) % 65_534) + 1;
-        if (seed % 3 == 0) {
+        uint256 mode = seed % 5;
+        if (mode == 0) {
+            // IPv4-mapped IPv6 (~20%)
             return string(
                 abi.encodePacked(
                     "[::ffff:192.168.1.", _uint8ToString(lastOctet), "]:", vm.toString(port)
                 )
             );
+        } else if (mode == 1) {
+            // Native IPv6 loopback (~20%)
+            return string(abi.encodePacked("[::1]:", vm.toString(port)));
+        } else if (mode == 2) {
+            // Native IPv6 documentation range (~20%)
+            return string(
+                abi.encodePacked("[2001:db8::", _uint8ToString(lastOctet), "]:", vm.toString(port))
+            );
         } else {
+            // IPv4 (~40%)
             return string(
                 abi.encodePacked("192.168.1.", _uint8ToString(lastOctet), ":", vm.toString(port))
             );
@@ -178,8 +203,13 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
     function _generateEgress(uint256 seed) internal pure returns (string memory) {
         uint8 lastOctet = uint8((seed % 254) + 1);
-        if (seed % 3 == 0) {
+        uint256 mode = seed % 5;
+        if (mode == 0) {
             return string(abi.encodePacked("::ffff:192.168.1.", _uint8ToString(lastOctet)));
+        } else if (mode == 1) {
+            return string(abi.encodePacked("::1"));
+        } else if (mode == 2) {
+            return string(abi.encodePacked("2001:db8::", _uint8ToString(lastOctet)));
         } else {
             return string(abi.encodePacked("192.168.1.", _uint8ToString(lastOctet)));
         }
@@ -228,6 +258,32 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         IValidatorConfig.Validator[] memory v1Vals = validatorConfig.getValidators();
         require(idx < v1Vals.length, "V1 index out of bounds");
         return v1Vals[idx];
+    }
+
+    /// @dev Selects caller for owner-only functions: 75% owner, 25% random
+    function _selectOwnerOrRandom(uint256 seed) internal view returns (address) {
+        if (seed % 4 < 3) {
+            return _ghostOwner;
+        }
+        return _selectPotentialValidator(seed);
+    }
+
+    /// @dev Selects caller for dual-auth functions: 50% owner, 25% validator, 25% random
+    function _selectDualAuthCaller(
+        uint256 seed,
+        address validatorAddr
+    )
+        internal
+        view
+        returns (address)
+    {
+        uint256 mode = seed % 4;
+        if (mode < 2) {
+            return _ghostOwner;
+        } else if (mode == 2) {
+            return validatorAddr;
+        }
+        return _selectPotentialValidator(seed);
     }
 
     function _assertKnownV2Error(bytes memory reason) internal pure {
@@ -320,6 +376,26 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     function handler_setNextDkgCeremony(uint256 callerSeed, uint64 epoch) external {
         if (!_ghostInitialized && callerSeed >> 248 != 0) return;
         _setNextDkgCeremony(callerSeed, epoch);
+    }
+
+    /// @notice Mostly post-init: setFeeRecipient (~1/256 pre-init calls verify NotInitialized guard)
+    function handler_setFeeRecipient(
+        uint256 callerSeed,
+        uint256 validatorSeed,
+        uint256 recipientSeed
+    )
+        external
+    {
+        if (!_ghostInitialized && callerSeed >> 248 != 0) return;
+        _setFeeRecipient(callerSeed, validatorSeed, recipientSeed);
+    }
+
+    /// @notice Advance block number to make height-based invariants meaningful.
+    /// @dev Without this, all ops run at the same block.number, making
+    ///      deactivatedAtHeight >= addedAtHeight trivially true.
+    function handler_advanceBlock(uint256 delta) external {
+        delta = bound(delta, 1, 100);
+        vm.roll(block.number + delta);
     }
 
     /// @notice Mostly pre-init: migrateValidator (~1/256 post-init calls verify AlreadyInitialized guard)
@@ -502,7 +578,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         // Skip addresses that were transferred away (no longer in contract's address_to_index)
         if (!_ghostAddressInUse[validatorAddr]) return;
 
-        address caller = _selectPotentialValidator(callerSeed);
+        address caller = _selectDualAuthCaller(callerSeed, validatorAddr);
         bool isAuthorized = (caller == _ghostOwner || caller == validatorAddr);
 
         // The contract looks up the LATEST entry for this address
@@ -558,7 +634,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     /// @notice Handler for ownership transfer
     /// @dev Tests TEMPO-VALV2-2 (owner-only), TEMPO-VALV2-20 (owner consistency)
     function _transferOwnership(uint256 callerSeed, uint256 newOwnerSeed) internal {
-        address caller = _selectPotentialValidator(callerSeed);
+        address caller = _selectOwnerOrRandom(callerSeed);
         bool isOwner = (caller == _ghostOwner);
 
         address newOwner = _selectPotentialValidator(newOwnerSeed);
@@ -585,7 +661,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     /// @notice Handler for setting DKG ceremony epoch
     /// @dev Tests TEMPO-VALV2-2 (owner-only), TEMPO-VALV2-21 (DKG consistency)
     function _setNextDkgCeremony(uint256 callerSeed, uint64 epoch) internal {
-        address caller = _selectPotentialValidator(callerSeed);
+        address caller = _selectOwnerOrRandom(callerSeed);
         bool isOwner = (caller == _ghostOwner);
 
         vm.startPrank(caller);
@@ -621,7 +697,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         (address validatorAddr, uint64 ghostIdx, bool found) = _selectActiveValidator(validatorSeed);
         if (!found) return;
 
-        address caller = _selectPotentialValidator(callerSeed);
+        address caller = _selectDualAuthCaller(callerSeed, validatorAddr);
         bool isAuthorized = (caller == _ghostOwner || caller == validatorAddr);
 
         string memory newIngress = _generateIngress(ipSeed);
@@ -657,6 +733,47 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         }
     }
 
+    /// @notice Handler for setting fee recipient (owner or validator)
+    /// @dev Tests TEMPO-VALV2-1 (dual-auth), TEMPO-VALV2-16 (data consistency for feeRecipient)
+    function _setFeeRecipient(
+        uint256 callerSeed,
+        uint256 validatorSeed,
+        uint256 recipientSeed
+    )
+        internal
+    {
+        (address validatorAddr, uint64 ghostIdx, bool found) = _selectActiveValidator(validatorSeed);
+        if (!found) return;
+
+        address caller = _selectDualAuthCaller(callerSeed, validatorAddr);
+        bool isAuthorized = (caller == _ghostOwner || caller == validatorAddr);
+
+        address newRecipient = _selectPotentialValidator(recipientSeed);
+
+        vm.startPrank(caller);
+        try validatorConfigV2.setFeeRecipient(ghostIdx, newRecipient) {
+            vm.stopPrank();
+            assertTrue(
+                _ghostInitialized,
+                "TEMPO-VALV2-5: setFeeRecipient must not succeed when not initialized"
+            );
+            assertTrue(isAuthorized, "TEMPO-VALV2-1: Third party should not set fee recipient");
+
+            IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByIndex(ghostIdx);
+            assertEq(
+                v.feeRecipient, newRecipient, "TEMPO-VALV2-16: Fee recipient should be updated"
+            );
+        } catch (bytes memory reason) {
+            vm.stopPrank();
+            if (bytes4(reason) == IValidatorConfigV2.NotInitialized.selector) {
+                assertFalse(
+                    _ghostInitialized, "TEMPO-VALV2-5: NotInitialized but ghost says initialized"
+                );
+            }
+            _assertKnownV2Error(reason);
+        }
+    }
+
     /// @notice Handler for transferring validator ownership (owner, validator, or third party)
     /// @dev Tests TEMPO-VALV2-1 (dual-auth), TEMPO-VALV2-11 (address uniqueness on transfer)
     function _transferValidatorOwnership(
@@ -669,7 +786,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         (address currentAddr, uint64 ghostIdx, bool found) = _selectActiveValidator(validatorSeed);
         if (!found) return;
 
-        address caller = _selectPotentialValidator(callerSeed);
+        address caller = _selectDualAuthCaller(callerSeed, currentAddr);
         bool isAuthorized = (caller == _ghostOwner || caller == currentAddr);
 
         address newAddr = _selectPotentialValidator(newAddrSeed);
@@ -721,7 +838,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
             _selectActiveValidator(validatorSeed);
         if (!found) return;
 
-        address caller = _selectPotentialValidator(callerSeed);
+        address caller = _selectDualAuthCaller(callerSeed, validatorAddr);
         bool isAuthorized = (caller == _ghostOwner || caller == validatorAddr);
 
         (bytes32 newPrivKey, bytes32 newPubKey) = _generateKeyPair(keySeed);
@@ -896,7 +1013,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
             _ghostIngress[v2Idx] = v2.ingress;
             _ghostEgress[v2Idx] = v2.egress;
             _ghostActiveIndex[v1Vals[idx].validatorAddress] = v2Idx;
-            _ghostAddressInUse[v1Vals[idx].validatorAddress] = true;
+            _ghostAddressInUse[v1Vals[idx].validatorAddress] = v1Vals[idx].active;
             _ghostPubKeyUsed[v1Vals[idx].publicKey] = true;
             _ghostV2ToV1Index[v2Idx] = idx;
             if (v1Vals[idx].active) {
@@ -1195,49 +1312,75 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     }
 
     /// @notice TEMPO-VALV2-18: Address lookup correctness
-    /// @dev validatorByAddress returns the currently active (or most recent) validator for that address.
-    ///      After rotation, old deactivated validators with the same address exist in the array,
-    ///      but lookup should return the active one (or most recent if all deactivated).
+    /// @dev validatorByAddress returns the active validator for that address.
+    ///      After rotation, the active entry stays at the original index while deactivated
+    ///      snapshots are appended — so the active entry may have a LOWER index than snapshots.
     ///      A deactivated validator's address may become unlookupable if its active successor
     ///      was transferred to a different address (which deletes the old addressToIndex mapping).
     function _invariantAddressLookupCorrectness() internal view {
         IValidatorConfigV2.Validator[] memory vals = _allValidators();
 
-        // For each unique address, check that validatorByAddress returns the expected validator
         for (uint256 i = 0; i < vals.length; i++) {
             address addr = vals[i].validatorAddress;
 
-            // Find the most recent validator for this address
-            uint256 mostRecentIdx = i;
-            for (uint256 j = i + 1; j < vals.length; j++) {
-                if (vals[j].validatorAddress == addr) {
-                    mostRecentIdx = j;
+            // Skip if we already checked this address at a lower index
+            bool alreadyChecked = false;
+            for (uint256 k = 0; k < i; k++) {
+                if (vals[k].validatorAddress == addr) {
+                    alreadyChecked = true;
+                    break;
+                }
+            }
+            if (alreadyChecked) continue;
+
+            // Find the active entry for this address (if any)
+            bool hasActive = false;
+            uint256 activeIdx = 0;
+            for (uint256 j = 0; j < vals.length; j++) {
+                if (vals[j].validatorAddress == addr && vals[j].deactivatedAtHeight == 0) {
+                    (hasActive, activeIdx) = (true, j);
+                    break;
                 }
             }
 
-            // Only check the last occurrence of each address
-            if (mostRecentIdx == i) {
-                try validatorConfigV2.validatorByAddress(addr) returns (
-                    IValidatorConfigV2.Validator memory lookedUp
-                ) {
+            try validatorConfigV2.validatorByAddress(addr) returns (
+                IValidatorConfigV2.Validator memory lookedUp
+            ) {
+                assertEq(
+                    lookedUp.validatorAddress,
+                    addr,
+                    "TEMPO-VALV2-18: Address lookup must preserve address"
+                );
+
+                if (hasActive) {
+                    // Lookup must return the active entry
                     assertEq(
                         lookedUp.index,
-                        vals[i].index,
-                        "TEMPO-VALV2-18: Address lookup must return most recent validator"
+                        vals[activeIdx].index,
+                        "TEMPO-VALV2-18: Address lookup must return the active validator"
                     );
                     assertEq(
                         lookedUp.publicKey,
-                        vals[i].publicKey,
+                        vals[activeIdx].publicKey,
                         "TEMPO-VALV2-18: Address lookup must preserve public key"
                     );
-                } catch {
-                    // Deactivated validator whose active successor was transferred away —
-                    // addressToIndex was deleted, so lookup fails. This is expected.
+                    assertEq(
+                        lookedUp.deactivatedAtHeight,
+                        0,
+                        "TEMPO-VALV2-18: Active validator lookup must not return deactivated entry"
+                    );
+                } else {
                     assertTrue(
-                        vals[i].deactivatedAtHeight != 0,
-                        "TEMPO-VALV2-18: Active validators must be lookupable by address"
+                        lookedUp.deactivatedAtHeight != 0,
+                        "TEMPO-VALV2-18: If no active validator exists, lookup must not return an active one"
                     );
                 }
+            } catch {
+                // Lookup failed — only acceptable if no active validator exists for this address
+                // (e.g., deactivated validator whose successor was transferred away)
+                assertTrue(
+                    !hasActive, "TEMPO-VALV2-18: Active validators must be lookupable by address"
+                );
             }
         }
     }
@@ -1295,9 +1438,9 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     }
 
     /// @notice TEMPO-VALV2-24: Migration preserves identity
-    /// @dev For each migrated validator: V2 pubkey matches V1 (pubkeys are immutable)
-    ///      Note: Addresses may change via transferValidatorOwnership post-migration,
-    ///      but public keys are globally unique and immutable.
+    /// @dev For each migrated validator: the V1 pubkey must still exist somewhere in V2.
+    ///      If the validator was rotated, the original pubkey lives in a deactivated snapshot
+    ///      rather than the original slot. We verify via pubkey lookup which covers both cases.
     ///      Checked in both phases — loop bounds on _ghostTotalCount so safe at count 0.
     function _invariantMigrationIdentity() internal view {
         IValidatorConfig.Validator[] memory v1Vals = validatorConfig.getValidators();
@@ -1309,11 +1452,68 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
             // forge-lint: disable-next-line(unsafe-typecast)
             uint64 v2Idx = uint64(i);
             uint64 v1Idx = _ghostV2ToV1Index[v2Idx];
+
+            // If the slot hasn't been rotated, pubkey should still match directly
+            if (_ghostPubKey[v2Idx] == v1Vals[v1Idx].publicKey) continue;
+
+            // If rotated, the original pubkey must exist in a deactivated snapshot.
+            // Verify via pubkey lookup — the contract keeps all pubkeys forever.
+            IValidatorConfigV2.Validator memory snapshotVal =
+                validatorConfigV2.validatorByPublicKey(v1Vals[v1Idx].publicKey);
             assertEq(
-                _ghostPubKey[v2Idx],
+                snapshotVal.publicKey,
                 v1Vals[v1Idx].publicKey,
-                "TEMPO-VALV2-24: Migrated validator public key must match V1"
+                "TEMPO-VALV2-24: Migrated pubkey must still exist in V2 (possibly as snapshot)"
             );
+            assertTrue(
+                snapshotVal.deactivatedAtHeight != 0,
+                "TEMPO-VALV2-24: Rotated-out migrated pubkey must be in a deactivated snapshot"
+            );
+        }
+    }
+
+    /// @notice Runs after invariant campaign to exercise edge cases unreachable during fuzzing.
+    /// @dev Covers:
+    ///   - _addValidator dupIP mode with no active validators
+    ///   - ValidatorAlreadyDeactivated revert on already-deactivated validator
+    function afterInvariant() public {
+        // Deactivate all active validators, track first deactivated index
+        uint64 firstDeactivatedIdx = type(uint64).max;
+        for (uint64 i = 0; i < _ghostTotalCount; i++) {
+            if (_ghostDeactivatedAtHeight[i] == 0) {
+                vm.startPrank(_ghostOwner);
+                try validatorConfigV2.deactivateValidator(i) {
+                    vm.stopPrank();
+                    _ghostDeactivatedAtHeight[i] = uint64(block.number);
+                    delete _ghostAddressInUse[_ghostAddress[i]];
+                    delete _ghostActiveIngressIpHashes[keccak256(bytes(_ghostIngress[i]))];
+                    if (firstDeactivatedIdx == type(uint64).max) firstDeactivatedIdx = i;
+                } catch (bytes memory reason) {
+                    vm.stopPrank();
+                    fail(
+                        string.concat(
+                            "TEMPO-VALV2-TEARDOWN: deactivateValidator reverted for active validator: ",
+                            vm.toString(reason)
+                        )
+                    );
+                }
+            }
+        }
+
+        // Now exercise: _addValidator with dupIP mode but no active validators
+        // inputMode == 3 requires (innerFnSeed / 100) % 8 == 3 → innerFnSeed = 300 works
+        // callerSeed % 100 < 75 → caller = owner
+        this.handler_addValidator(300, 0, 42, 99);
+
+        // Exercise: ValidatorAlreadyDeactivated revert by directly calling the contract
+        // on a known-deactivated index (handler would early-return via _selectActiveValidator)
+        if (firstDeactivatedIdx != type(uint64).max) {
+            vm.prank(_ghostOwner);
+            try validatorConfigV2.deactivateValidator(firstDeactivatedIdx) {
+                assertTrue(false, "expected ValidatorAlreadyDeactivated revert");
+            } catch (bytes memory reason) {
+                _assertKnownV2Error(reason);
+            }
         }
     }
 

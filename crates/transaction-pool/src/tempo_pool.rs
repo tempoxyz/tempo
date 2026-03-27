@@ -34,8 +34,13 @@ use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
 };
 use tempo_precompiles::{
-    account_keychain::AccountKeychain, error::Result as TempoPrecompileResult, nonce::NonceManager,
-    storage::Handler, tip20::TIP20Token, tip403_registry::TIP403Registry,
+    TIP_FEE_MANAGER_ADDRESS,
+    account_keychain::AccountKeychain,
+    error::Result as TempoPrecompileResult,
+    nonce::NonceManager,
+    storage::Handler,
+    tip20::TIP20Token,
+    tip403_registry::{REJECT_ALL_POLICY_ID, TIP403Registry},
 };
 use tempo_primitives::Block;
 use tempo_revm::TempoStateAccess;
@@ -181,10 +186,36 @@ where
             None
         };
 
+        // Resolve the active hardfork for storage context.
+        let tip_timestamp = self
+            .protocol_pool
+            .validator()
+            .validator()
+            .inner
+            .fork_tracker()
+            .tip_timestamp();
+        let spec = self.client().chain_spec().tempo_hardfork_at(tip_timestamp);
+
         // Cache policy lookups per fee token to avoid redundant storage reads.
         // For compound policies (TIP-1015), the cache stores all sub-policy IDs
         // so eviction matches events emitted with sub-policy IDs.
         let mut policy_cache: AddressMap<Vec<u64>> = AddressMap::default();
+
+        // Pre-collect policy IDs where TIP_FEE_MANAGER_ADDRESS (the fee recipient) was
+        // blacklisted or un-whitelisted. This is constant across all txs so we compute
+        // it once instead of re-scanning the updates list per transaction.
+        let fee_manager_blacklisted: Vec<u64> = updates
+            .blacklist_additions
+            .iter()
+            .filter(|(_, account)| *account == TIP_FEE_MANAGER_ADDRESS)
+            .map(|(policy_id, _)| *policy_id)
+            .collect();
+        let fee_manager_unwhitelisted: Vec<u64> = updates
+            .whitelist_removals
+            .iter()
+            .filter(|(_, account)| *account == TIP_FEE_MANAGER_ADDRESS)
+            .map(|(policy_id, _)| *policy_id)
+            .collect();
 
         // Re-check liquidity for all pooled txs when an active validator changes token.
         // Leverages the per-tx `has_enough_liquidity` check, which passes if ANY validator pair has
@@ -196,7 +227,7 @@ where
                 .iter()
                 .filter(|(validator, _)| amm_cache.is_active_validator(validator))
                 .filter(|(_, new_token)| !amm_cache.is_active_validator_token(new_token))
-                .map(|(_, new_token)| *new_token)
+                .map(|(_, &new_token)| new_token)
                 .collect();
             amm_cache.track_tokens(&active_new_tokens)
         };
@@ -242,15 +273,9 @@ where
             // from state for affected (account, key_id, fee_token) combos and evict if
             // the pending tx's fee cost now exceeds the remaining limit.
             if !updates.spending_limit_spends.is_empty()
-                // NOTE: sponsored txs don't consume the sender's key limits.
-                && tx
-                    .transaction
-                    .inner()
-                    .as_aa()
-                    .is_none_or(|aa| aa.tx().fee_payer_signature.is_none())
-                && let Some(ref mut provider) = state_provider
                 && let Some(ref subject) = keychain_subject
                 && subject.matches_spending_limit_update(&updates.spending_limit_spends)
+                && let Some(ref mut provider) = state_provider
                 && exceeds_spending_limit(provider, subject, tx.transaction.fee_token_cost())
             {
                 to_remove.push(*tx.hash());
@@ -294,23 +319,36 @@ where
                     .fee_payer(tx.transaction.sender())
                     .unwrap_or(tx.transaction.sender());
 
-                // Check if any blacklist addition applies to this transaction
+                // Check if any blacklist addition applies to this transaction's fee payer
+                let mut sender_evicted = false;
                 for &(blacklist_policy_id, blacklisted_account) in &updates.blacklist_additions {
                     if fee_payer != blacklisted_account {
                         continue;
                     }
 
                     let token_policies =
-                        get_sender_policy_ids(provider, fee_token, &mut policy_cache);
+                        get_sender_policy_ids(provider, fee_token, spec, &mut policy_cache);
 
                     if token_policies
                         .as_ref()
                         .is_some_and(|ids| ids.contains(&blacklist_policy_id))
                     {
-                        to_remove.push(*tx.hash());
-                        blacklisted_count += 1;
+                        sender_evicted = true;
                         break;
                     }
+                }
+
+                // Check if the fee manager (recipient) was blacklisted on this token's
+                // recipient policy — the tx would fail at execution since the fee
+                // transfer to TIP_FEE_MANAGER_ADDRESS would be rejected.
+                let recipient_evicted = !sender_evicted
+                    && !fee_manager_blacklisted.is_empty()
+                    && get_recipient_policy_ids(provider, fee_token, spec)
+                        .is_some_and(|ids| fee_manager_blacklisted.iter().any(|p| ids.contains(p)));
+
+                if sender_evicted || recipient_evicted {
+                    to_remove.push(*tx.hash());
+                    blacklisted_count += 1;
                 }
             }
 
@@ -327,22 +365,35 @@ where
                     .fee_payer(tx.transaction.sender())
                     .unwrap_or(tx.transaction.sender());
 
+                let mut sender_evicted = false;
                 for &(whitelist_policy_id, unwhitelisted_account) in &updates.whitelist_removals {
                     if fee_payer != unwhitelisted_account {
                         continue;
                     }
 
                     let token_policies =
-                        get_sender_policy_ids(provider, fee_token, &mut policy_cache);
+                        get_sender_policy_ids(provider, fee_token, spec, &mut policy_cache);
 
                     if token_policies
                         .as_ref()
                         .is_some_and(|ids| ids.contains(&whitelist_policy_id))
                     {
-                        to_remove.push(*tx.hash());
-                        unwhitelisted_count += 1;
+                        sender_evicted = true;
                         break;
                     }
+                }
+
+                // Check if the fee manager (recipient) was un-whitelisted on this
+                // token's recipient policy.
+                let recipient_evicted = !sender_evicted
+                    && !fee_manager_unwhitelisted.is_empty()
+                    && get_recipient_policy_ids(provider, fee_token, spec).is_some_and(|ids| {
+                        fee_manager_unwhitelisted.iter().any(|p| ids.contains(p))
+                    });
+
+                if sender_evicted || recipient_evicted {
+                    to_remove.push(*tx.hash());
+                    unwhitelisted_count += 1;
                 }
             }
 
@@ -1065,6 +1116,37 @@ where
     }
 }
 
+impl<Client> TransactionPoolExt for TempoTransactionPool<Client>
+where
+    Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
+{
+    type Block = Block;
+
+    fn set_block_info(&self, info: BlockInfo) {
+        self.protocol_pool.set_block_info(info)
+    }
+
+    fn on_canonical_state_change(&self, update: CanonicalStateUpdate<'_, Self::Block>) {
+        self.protocol_pool.on_canonical_state_change(update)
+    }
+
+    fn update_accounts(&self, accounts: Vec<ChangedAccount>) {
+        self.protocol_pool.update_accounts(accounts)
+    }
+
+    fn delete_blob(&self, tx: B256) {
+        self.protocol_pool.delete_blob(tx)
+    }
+
+    fn delete_blobs(&self, txs: Vec<B256>) {
+        self.protocol_pool.delete_blobs(txs)
+    }
+
+    fn cleanup_blobs(&self) {
+        self.protocol_pool.cleanup_blobs()
+    }
+}
+
 /// Checks whether a pending keychain tx exceeds its remaining spending limit.
 ///
 /// Re-reads the current remaining limit from state for the tx's (account, key_id,
@@ -1105,19 +1187,18 @@ pub(crate) fn exceeds_spending_limit(
 fn get_sender_policy_ids(
     provider: &mut impl StateProvider,
     fee_token: Address,
+    spec: TempoHardfork,
     cache: &mut AddressMap<Vec<u64>>,
 ) -> Option<Vec<u64>> {
     if let Some(cached) = cache.get(&fee_token) {
         return Some(cached.clone());
     }
 
-    // Spec doesn't affect raw storage reads (sload), so default is safe here.
-    let spec = TempoHardfork::default();
     provider.with_read_only_storage_ctx(spec, || {
         let policy_id = TIP20Token::from_address(fee_token)
             .and_then(|t| t.transfer_policy_id())
             .ok()
-            .filter(|&id| id != 0)?; // sload maps unset slots to 0; treat as None
+            .filter(|&id| id != REJECT_ALL_POLICY_ID)?;
 
         let mut ids = vec![policy_id];
 
@@ -1126,7 +1207,7 @@ fn get_sender_policy_ids(
         if let Ok(data) = registry.policy_records[policy_id].base.read()
             && data.is_compound()
             && let Ok(compound) = registry.policy_records[policy_id].compound.read()
-            && compound.sender_policy_id != 0
+            && compound.sender_policy_id != REJECT_ALL_POLICY_ID
         {
             ids.push(compound.sender_policy_id);
         }
@@ -1138,35 +1219,39 @@ fn get_sender_policy_ids(
     })
 }
 
-impl<Client> TransactionPoolExt for TempoTransactionPool<Client>
-where
-    Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
-{
-    type Block = Block;
+/// Returns the set of policy IDs that can affect recipient authorization for a token.
+///
+/// For simple (non-compound) policies, the transfer policy applies symmetrically to both
+/// sender and recipient, so the set contains just the policy ID. For compound policies
+/// (TIP-1015) it contains both the compound root and the recipient sub-policy, since
+/// fee transfer authorization checks the fee manager via `AuthRole::Recipient`.
+///
+/// Unlike `get_sender_policy_ids` this is uncached — it's only called on the rare path
+/// where the fee manager itself is blacklisted or un-whitelisted.
+fn get_recipient_policy_ids(
+    provider: &mut impl StateProvider,
+    fee_token: Address,
+    spec: TempoHardfork,
+) -> Option<Vec<u64>> {
+    provider.with_read_only_storage_ctx(spec, || {
+        let policy_id = TIP20Token::from_address(fee_token)
+            .and_then(|t| t.transfer_policy_id())
+            .ok()
+            .filter(|&id| id != REJECT_ALL_POLICY_ID)?;
 
-    fn set_block_info(&self, info: BlockInfo) {
-        self.protocol_pool.set_block_info(info)
-    }
+        let mut ids = vec![policy_id];
 
-    fn on_canonical_state_change(&self, update: CanonicalStateUpdate<'_, Self::Block>) {
-        self.protocol_pool.on_canonical_state_change(update)
-    }
+        let registry = TIP403Registry::new();
+        if let Ok(data) = registry.policy_records[policy_id].base.read()
+            && data.is_compound()
+            && let Ok(compound) = registry.policy_records[policy_id].compound.read()
+            && compound.recipient_policy_id != REJECT_ALL_POLICY_ID
+        {
+            ids.push(compound.recipient_policy_id);
+        }
 
-    fn update_accounts(&self, accounts: Vec<ChangedAccount>) {
-        self.protocol_pool.update_accounts(accounts)
-    }
-
-    fn delete_blob(&self, tx: B256) {
-        self.protocol_pool.delete_blob(tx)
-    }
-
-    fn delete_blobs(&self, txs: Vec<B256>) {
-        self.protocol_pool.delete_blobs(txs)
-    }
-
-    fn cleanup_blobs(&self) {
-        self.protocol_pool.cleanup_blobs()
-    }
+        Some(ids)
+    })
 }
 
 #[cfg(test)]
@@ -1270,8 +1355,9 @@ mod tests {
         let mut state = provider.latest().unwrap();
         let mut cache: AddressMap<Vec<u64>> = AddressMap::default();
 
-        let ids = get_sender_policy_ids(&mut state, fee_token, &mut cache)
-            .expect("should resolve policy IDs");
+        let ids =
+            get_sender_policy_ids(&mut state, fee_token, TempoHardfork::default(), &mut cache)
+                .expect("should resolve policy IDs");
 
         assert!(
             ids.contains(&compound_policy_id),
@@ -1329,8 +1415,9 @@ mod tests {
         let mut state = provider.latest().unwrap();
         let mut cache: AddressMap<Vec<u64>> = AddressMap::default();
 
-        let ids = get_sender_policy_ids(&mut state, fee_token, &mut cache)
-            .expect("should resolve policy IDs");
+        let ids =
+            get_sender_policy_ids(&mut state, fee_token, TempoHardfork::default(), &mut cache)
+                .expect("should resolve policy IDs");
 
         assert!(ids.contains(&compound_policy_id));
         assert!(ids.contains(&sender_sub_policy));
@@ -1388,13 +1475,113 @@ mod tests {
         let mut state = provider.latest().unwrap();
         let mut cache: AddressMap<Vec<u64>> = AddressMap::default();
 
-        let ids = get_sender_policy_ids(&mut state, fee_token, &mut cache)
-            .expect("should resolve policy IDs");
+        let ids =
+            get_sender_policy_ids(&mut state, fee_token, TempoHardfork::default(), &mut cache)
+                .expect("should resolve policy IDs");
 
         assert!(
             !ids.contains(&mint_recipient_sub),
             "mint_recipient must be excluded from sender policy IDs"
         );
+    }
+
+    /// `get_recipient_policy_ids` returns the compound root and recipient sub-policy.
+    #[test]
+    fn recipient_policy_ids_includes_recipient_sub_policy() {
+        let fee_token = address!("20C0000000000000000000000000000000000001");
+        let compound_policy_id: u64 = 5;
+        let sender_sub: u64 = 3;
+        let recipient_sub: u64 = 4;
+
+        let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
+            tempo_chainspec::spec::MODERATO.clone(),
+        ));
+
+        let transfer_policy_id_packed =
+            U256::from(compound_policy_id) << (tip20_slots::TRANSFER_POLICY_ID_OFFSET * 8);
+        provider.add_account(
+            fee_token,
+            ExtendedAccount::new(0, U256::ZERO).extend_storage([(
+                tip20_slots::TRANSFER_POLICY_ID.into(),
+                transfer_policy_id_packed,
+            )]),
+        );
+
+        let registry = TIP403Registry::new();
+        let policy_data = PolicyData {
+            policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
+            admin: Address::ZERO,
+        };
+        let base_slot = registry.policy_records[compound_policy_id].base.base_slot();
+        let compound_slot = registry.policy_records[compound_policy_id]
+            .compound
+            .base_slot();
+        let compound_encoded = U256::from(sender_sub) | (U256::from(recipient_sub) << 64);
+
+        provider.add_account(
+            TIP403_REGISTRY_ADDRESS,
+            ExtendedAccount::new(0, U256::ZERO).extend_storage([
+                (base_slot.into(), policy_data.encode_to_slot()),
+                (compound_slot.into(), compound_encoded),
+            ]),
+        );
+
+        let mut state = provider.latest().unwrap();
+        let ids = get_recipient_policy_ids(&mut state, fee_token, TempoHardfork::default())
+            .expect("should resolve policy IDs");
+
+        assert!(
+            ids.contains(&compound_policy_id),
+            "should contain compound policy ID"
+        );
+        assert!(
+            ids.contains(&recipient_sub),
+            "should contain recipient sub-policy"
+        );
+        assert!(
+            !ids.contains(&sender_sub),
+            "recipient policy IDs should not contain sender sub-policy"
+        );
+    }
+
+    /// For simple (non-compound) policies, `get_recipient_policy_ids` returns just the root.
+    #[test]
+    fn recipient_policy_ids_simple_policy() {
+        let fee_token = address!("20C0000000000000000000000000000000000001");
+        let simple_policy_id: u64 = 7;
+
+        let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
+            tempo_chainspec::spec::MODERATO.clone(),
+        ));
+
+        let transfer_policy_id_packed =
+            U256::from(simple_policy_id) << (tip20_slots::TRANSFER_POLICY_ID_OFFSET * 8);
+        provider.add_account(
+            fee_token,
+            ExtendedAccount::new(0, U256::ZERO).extend_storage([(
+                tip20_slots::TRANSFER_POLICY_ID.into(),
+                transfer_policy_id_packed,
+            )]),
+        );
+
+        let registry = TIP403Registry::new();
+        let policy_data = PolicyData {
+            policy_type: ITIP403Registry::PolicyType::BLACKLIST as u8,
+            admin: Address::ZERO,
+        };
+        let base_slot = registry.policy_records[simple_policy_id].base.base_slot();
+
+        provider.add_account(
+            TIP403_REGISTRY_ADDRESS,
+            ExtendedAccount::new(0, U256::ZERO)
+                .extend_storage([(base_slot.into(), policy_data.encode_to_slot())]),
+        );
+
+        let mut state = provider.latest().unwrap();
+        let ids = get_recipient_policy_ids(&mut state, fee_token, TempoHardfork::default())
+            .expect("should resolve policy IDs");
+
+        assert_eq!(ids, vec![simple_policy_id]);
     }
 
     #[test]

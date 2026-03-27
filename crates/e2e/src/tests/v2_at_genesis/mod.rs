@@ -3,6 +3,7 @@
 mod backfill;
 mod consensus_rpc;
 mod dkg;
+mod fee_recipient;
 mod restart;
 mod simple;
 mod snapshot;

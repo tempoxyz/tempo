@@ -266,7 +266,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     }
 
     /// @inheritdoc IValidatorConfigV2
-    function setFeeRecipient(uint64 idx, address feeRecipient) external {
+    function setFeeRecipient(uint64 idx, address feeRecipient) external onlyInitialized {
         if (idx >= validatorsArray.length) {
             revert ValidatorNotFound();
         }

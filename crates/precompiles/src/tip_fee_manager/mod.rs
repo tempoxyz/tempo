@@ -128,6 +128,15 @@ impl TipFeeManager {
         // Validate that the fee token is USD
         validate_usd_currency(call.token)?;
 
+        // T3+: skip write and event if the token is already set to the requested value.
+        // Prevents permissionless callers from forcing redundant pool invalidation scans.
+        if self.storage.spec().is_t3() {
+            let current = self.user_tokens[sender].read()?;
+            if current == call.token {
+                return Ok(());
+            }
+        }
+
         self.user_tokens[sender].write(call.token)?;
 
         // Emit UserTokenSet event
@@ -293,6 +302,7 @@ impl TipFeeManager {
 
 #[cfg(test)]
 mod tests {
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::TIP20Error;
 
     use super::*;
@@ -323,6 +333,57 @@ mod tests {
 
             let call = IFeeManager::userTokensCall { user };
             assert_eq!(fee_manager.user_tokens(call)?, token.address());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_user_token_noop_when_unchanged_pre_t3() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let user = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let token = TIP20Setup::create("Test", "TST", user).apply()?;
+            let mut fee_manager = TipFeeManager::new();
+
+            let call = IFeeManager::setUserTokenCall {
+                token: token.address(),
+            };
+
+            fee_manager.set_user_token(user, call.clone())?;
+            fee_manager.set_user_token(user, call)?;
+            let event_count = StorageCtx.get_events(TIP_FEE_MANAGER_ADDRESS).len();
+            assert_eq!(
+                event_count, 2,
+                "pre-T3: event emitted even when token unchanged"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_user_token_noop_when_unchanged_t3() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let user = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let token = TIP20Setup::create("Test", "TST", user).apply()?;
+            let mut fee_manager = TipFeeManager::new();
+
+            let call = IFeeManager::setUserTokenCall {
+                token: token.address(),
+            };
+
+            fee_manager.set_user_token(user, call.clone())?;
+            let event_count = StorageCtx.get_events(TIP_FEE_MANAGER_ADDRESS).len();
+            assert_eq!(event_count, 1, "first set_user_token should emit event");
+
+            fee_manager.set_user_token(user, call)?;
+            let event_count = StorageCtx.get_events(TIP_FEE_MANAGER_ADDRESS).len();
+            assert_eq!(
+                event_count, 1,
+                "T3+: repeated set_user_token with same token should not emit event"
+            );
 
             Ok(())
         })

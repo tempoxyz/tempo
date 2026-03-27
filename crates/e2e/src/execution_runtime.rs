@@ -33,23 +33,17 @@ use reth_ethereum::{
     },
     network::{
         Peers as _,
-        api::{
-            NetworkEventListenerProvider, PeersInfo,
-            events::{NetworkEvent, PeerEvent},
-        },
+        api::{NetworkEventListenerProvider, PeerKind, PeersInfo, events::NetworkEvent},
     },
     provider::providers::RocksDBProvider,
     tasks::Runtime,
 };
-use reth_network_peers::{NodeRecord, TrustedPeer};
 use reth_node_builder::{NodeBuilder, NodeConfig};
 use reth_node_core::{
-    args::{DatadirArgs, PayloadBuilderArgs, RpcServerArgs},
+    args::{DatadirArgs, PayloadBuilderArgs, RpcServerArgs, StorageArgs},
     exit::NodeExitFuture,
 };
 use reth_rpc_builder::RpcModuleSelection;
-use secp256k1::SecretKey;
-use std::net::TcpListener;
 use tempfile::TempDir;
 use tempo_chainspec::TempoChainSpec;
 use tempo_commonware_node::feed::FeedStateHandle;
@@ -272,10 +266,6 @@ impl Builder {
 pub struct ExecutionNodeConfig {
     /// Network secret key for the node's identity.
     pub secret_key: B256,
-    /// List of trusted peer enode URLs to connect to.
-    pub trusted_peers: Vec<String>,
-    /// Port for the network service.
-    pub port: u16,
     /// Validator public key for filtering subblock transactions.
     pub validator_key: Option<B256>,
     /// Feed state handle for consensus RPC (if validator).
@@ -287,13 +277,20 @@ impl ExecutionNodeConfig {
     pub fn generator() -> ExecutionNodeConfigGenerator {
         ExecutionNodeConfigGenerator::default()
     }
+
+    pub fn generate() -> Self {
+        Self {
+            secret_key: B256::random(),
+            validator_key: None,
+            feed_state: None,
+        }
+    }
 }
 
 /// Generator for creating multiple execution node configurations.
 #[derive(Default)]
 pub struct ExecutionNodeConfigGenerator {
     count: u32,
-    connect_peers: bool,
 }
 
 impl ExecutionNodeConfigGenerator {
@@ -303,71 +300,11 @@ impl ExecutionNodeConfigGenerator {
         self
     }
 
-    /// Set whether to enable peer connections between all generated nodes.
-    pub fn with_peers(mut self, connect: bool) -> Self {
-        self.connect_peers = connect;
-        self
-    }
-
     /// Generate the execution node configurations.
     pub fn generate(self) -> Vec<ExecutionNodeConfig> {
-        if !self.connect_peers {
-            // No peer connections needed, use port 0 (OS will assign)
-            return (0..self.count)
-                .map(|_| ExecutionNodeConfig {
-                    secret_key: B256::random(),
-                    trusted_peers: vec![],
-                    port: 0,
-                    validator_key: None,
-                    feed_state: None,
-                })
-                .collect();
-        }
-
-        // Reserve ports by binding to them for peer connections
-        let ports: Vec<u16> = (0..self.count)
-            .map(|_| {
-                // This should work, but there's a chance that it results in flaky tests
-                let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-                let port = listener
-                    .local_addr()
-                    .expect("failed to get local addr")
-                    .port();
-                drop(listener);
-                port
-            })
-            .collect();
-
-        let mut configs: Vec<ExecutionNodeConfig> = ports
-            .into_iter()
-            .map(|port| ExecutionNodeConfig {
-                secret_key: B256::random(),
-                trusted_peers: vec![],
-                port,
-                validator_key: None,
-                feed_state: None,
-            })
-            .collect();
-
-        let enode_urls: Vec<String> = configs
-            .iter()
-            .map(|config| {
-                let secret_key =
-                    SecretKey::from_slice(config.secret_key.as_slice()).expect("valid secret key");
-                let addr = SocketAddr::from(([127, 0, 0, 1], config.port));
-                NodeRecord::from_secret_key(addr, &secret_key).to_string()
-            })
-            .collect();
-
-        for (i, config) in configs.iter_mut().enumerate() {
-            for (j, enode_url) in enode_urls.iter().enumerate() {
-                if i != j {
-                    config.trusted_peers.push(enode_url.clone());
-                }
-            }
-        }
-
-        configs
+        (0..self.count)
+            .map(|_| ExecutionNodeConfig::generate())
+            .collect()
     }
 }
 
@@ -652,6 +589,28 @@ impl ExecutionRuntime {
                                 .unwrap();
                             let _ = response.send(receipt);
                         }
+                        Message::SetFeeRecipientV2(set_fee_recipient_v2) => {
+                            let SetFeeRecipientV2 {
+                                http_url,
+                                index,
+                                fee_recipient,
+                                response,
+                            } = set_fee_recipient_v2;
+                            let provider = ProviderBuilder::new()
+                                .wallet(wallet.clone())
+                                .connect_http(http_url);
+                            let validator_config_v2 =
+                                IValidatorConfigV2::new(VALIDATOR_CONFIG_V2_ADDRESS, provider);
+                            let receipt = validator_config_v2
+                                .setFeeRecipient(index, fee_recipient)
+                                .send()
+                                .await
+                                .unwrap()
+                                .get_receipt()
+                                .await
+                                .unwrap();
+                            let _ = response.send(receipt);
+                        }
                         Message::SetNextFullDkgCeremony(set_next_full_dkg_ceremony) => {
                             let SetNextFullDkgCeremony {
                                 http_url,
@@ -824,6 +783,28 @@ impl ExecutionRuntime {
                 DeactivateValidatorV2 {
                     http_url,
                     address: validator.chain_address,
+                    response: tx,
+                }
+                .into(),
+            )
+            .map_err(|_| eyre::eyre!("the execution runtime went away"))?;
+        rx.await
+            .wrap_err("the execution runtime dropped the response channel before sending a receipt")
+    }
+
+    pub async fn set_fee_recipient_v2(
+        &self,
+        http_url: Url,
+        index: u64,
+        fee_recipient: Address,
+    ) -> eyre::Result<TransactionReceipt> {
+        let (tx, rx) = oneshot::channel();
+        self.to_runtime
+            .send(
+                SetFeeRecipientV2 {
+                    http_url,
+                    index,
+                    fee_recipient,
                     response: tx,
                 }
                 .into(),
@@ -1074,27 +1055,40 @@ impl ExecutionNode {
     pub async fn connect_peer(&self, other: &Self) {
         let self_record = self.node.network.local_node_record();
         let other_record = other.node.network.local_node_record();
-        let mut events = self.node.network.event_listener();
 
-        self.node
+        // Skip if already connected
+        if let Ok(Some(_)) = self.node.network.get_peer_by_id(other_record.id).await {
+            return;
+        }
+
+        // Remove any stale peer entries on the other side if present.
+        other
+            .node
             .network
-            .add_trusted_peer(other_record.id, other_record.tcp_addr());
+            .remove_peer(self_record.id, PeerKind::Basic);
 
-        match events.next().await {
-            Some(NetworkEvent::Peer(PeerEvent::PeerAdded(_))) => (),
-            ev => panic!("Expected a peer added event, got: {ev:?}"),
-        }
-
-        match events.next().await {
-            Some(NetworkEvent::ActivePeerSession { .. }) => (),
-            ev => panic!("Expected an active peer session event, got: {ev:?}"),
-        }
-
-        tracing::debug!(
-            "Connected peers: {:?} -> {:?}",
-            self_record.id,
-            other_record.id
+        let mut events = self.node.network.event_listener();
+        self.node.network.connect_peer_kind(
+            other_record.id,
+            PeerKind::Basic,
+            other_record.tcp_addr(),
+            None,
         );
+
+        // Wait for the active session
+        'wait_for_session: loop {
+            match events.next().await {
+                Some(NetworkEvent::ActivePeerSession { info, .. })
+                    if info.peer_id == other_record.id =>
+                {
+                    break 'wait_for_session;
+                }
+                Some(_) => continue,
+                None => panic!("Network event stream ended unexpectedly"),
+            }
+        }
+
+        tracing::debug!("Connected: {:?} -> {:?}", self_record.id, other_record.id);
     }
 
     /// Shuts down the node and awaits until the node is terminated.
@@ -1166,17 +1160,10 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
             interval: Duration::from_millis(100),
             ..Default::default()
         })
+        .with_storage(StorageArgs { v2: false })
         .apply(|mut c| {
             c.network.discovery.disable_discovery = true;
-            c.network.trusted_peers = config
-                .trusted_peers
-                .into_iter()
-                .map(|s| {
-                    s.parse::<TrustedPeer>()
-                        .expect("invalid trusted peer enode")
-                })
-                .collect();
-            c.network.port = config.port;
+            c.network = c.network.with_unused_ports();
             c.network.p2p_secret_key_hex = Some(config.secret_key);
             c
         });
@@ -1226,6 +1213,7 @@ enum Message {
     InitializeIfMigrated(InitializeIfMigrated),
     MigrateValidator(MigrateValidator),
     RotateValidator(RotateValidator),
+    SetFeeRecipientV2(SetFeeRecipientV2),
     SetNextFullDkgCeremony(SetNextFullDkgCeremony),
     SetNextFullDkgCeremonyV2(SetNextFullDkgCeremonyV2),
     SpawnNode {
@@ -1290,6 +1278,12 @@ impl From<MigrateValidator> for Message {
 impl From<RotateValidator> for Message {
     fn from(value: RotateValidator) -> Self {
         Self::RotateValidator(value)
+    }
+}
+
+impl From<SetFeeRecipientV2> for Message {
+    fn from(value: SetFeeRecipientV2) -> Self {
+        Self::SetFeeRecipientV2(value)
     }
 }
 
@@ -1377,6 +1371,15 @@ struct RotateValidator {
     address: Address,
     ingress: SocketAddr,
     egress: IpAddr,
+    response: oneshot::Sender<TransactionReceipt>,
+}
+
+#[derive(Debug)]
+struct SetFeeRecipientV2 {
+    /// URL of the node to send this to.
+    http_url: Url,
+    index: u64,
+    fee_recipient: Address,
     response: oneshot::Sender<TransactionReceipt>,
 }
 

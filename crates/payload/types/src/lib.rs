@@ -6,14 +6,14 @@
 mod attrs;
 
 use alloy_primitives::B256;
-pub use attrs::{InterruptHandle, TempoPayloadAttributes, TempoPayloadBuilderAttributes};
+pub use attrs::{InterruptHandle, TempoPayloadAttributes};
 use std::sync::Arc;
 
 use alloy_eips::eip7685::Requests;
 use alloy_primitives::U256;
 use alloy_rpc_types_eth::Withdrawal;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
-use reth_node_api::{BlockBody, ExecutionPayload, PayloadBuilderAttributes, PayloadTypes};
+use reth_node_api::{BlockBody, ExecutionPayload, PayloadTypes};
 use reth_payload_primitives::{BuiltPayload, BuiltPayloadExecutedBlock};
 use reth_primitives_traits::{AlloyBlockHeader as _, SealedBlock};
 use serde::{Deserialize, Serialize};
@@ -123,9 +123,7 @@ impl ExecutionPayload for TempoExecutionData {
 impl PayloadTypes for TempoPayloadTypes {
     type ExecutionData = TempoExecutionData;
     type BuiltPayload = TempoBuiltPayload;
-    type PayloadAttributes =
-        <Self::PayloadBuilderAttributes as PayloadBuilderAttributes>::RpcPayloadAttributes;
-    type PayloadBuilderAttributes = TempoPayloadBuilderAttributes;
+    type PayloadAttributes = TempoPayloadAttributes;
 
     fn block_to_payload(block: SealedBlock<Block>) -> Self::ExecutionData {
         TempoExecutionData {

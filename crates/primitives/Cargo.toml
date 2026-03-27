@@ -1,5 +1,6 @@
 [package]
 name = "tempo-primitives"
+description = "Tempo primitive types"
 
 version.workspace = true
 edition.workspace = true
@@ -82,6 +83,8 @@ std = [
 	"serde_json/std",
 	"sha2/std",
 	"alloy-sol-types/std",
+	"tempo-contracts/std",
+	"reth-codecs?/std"
 ]
 reth = ["dep:reth-ethereum-primitives", "dep:reth-primitives-traits", "serde"]
 serde = [
@@ -112,8 +115,6 @@ serde-bincode-compat = [
 	"reth",
 	"serde",
 	"alloy-consensus/serde-bincode-compat",
-	"reth-primitives-traits?/serde-bincode-compat",
-	"reth-ethereum-primitives?/serde-bincode-compat",
 	"alloy-eips/serde-bincode-compat",
 	"alloy-rpc-types-eth?/serde-bincode-compat",
 ]
