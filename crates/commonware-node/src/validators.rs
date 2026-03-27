@@ -239,6 +239,33 @@ pub(crate) fn can_use_v2_at_block_hash(
             <= header.number())
 }
 
+/// Returns the fee recipient for the given validator from the V2 contract.
+///
+/// Returns `Ok(None)` if the V2 contract is not yet usable at `hash` (hardfork
+/// not active or contract not initialized). Returns `Ok(Some(addr))` if V2 is
+/// active and the lookup succeeded. Returns `Err` if V2 is active but the
+/// read failed (e.g. public key not found in the contract).
+pub(crate) fn read_fee_recipient_at_block_hash(
+    node: &TempoFullNode,
+    public_key: &PublicKey,
+    hash: B256,
+) -> eyre::Result<Option<Address>> {
+    if !can_use_v2_at_block_hash(node, hash, None)
+        .wrap_err("failed to determine validator config v2 status")?
+    {
+        return Ok(None);
+    }
+
+    read_validator_config_at_block_hash(node, hash, |config: &ValidatorConfigV2| {
+        config
+            .validator_by_public_key(public_key_to_b256(public_key))
+            .map(|validator| validator.feeRecipient)
+            .map_err(eyre::Report::new)
+    })
+    .map(|(_, _, fee_recipient)| Some(fee_recipient))
+    .wrap_err("failed reading fee recipient from validator config v2")
+}
+
 /// A ContractValidator is a peer read from the validator config smart const.
 ///
 /// The inbound and outbound addresses stored herein are guaranteed to be of the
