@@ -115,7 +115,7 @@ tempo-payload-types = { path = "crates/payload/types", default-features = false 
 tempo-precompiles = { path = "crates/precompiles", default-features = false }
 tempo-precompiles-macros = { path = "crates/precompiles-macros" }
 tempo-primitives = { path = "crates/primitives", default-features = false }
-tempo-contracts = { path = "crates/contracts", default-features = false }
+tempo-contracts = { path = "crates/contracts", default-features = false, features = ["serde"] }
 tempo-telemetry-util = { path = "crates/telemetry-util", default-features = false }
 tempo-transaction-pool = { path = "crates/transaction-pool", default-features = false }
 tempo-validator-config = { path = "crates/validator-config", default-features = false }
@@ -165,7 +165,9 @@ reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", rev = "7f
 reth-storage-api = { git = "https://github.com/paradigmxyz/reth", rev = "7f4a9a0" }
 reth-tracing = { git = "https://github.com/paradigmxyz/reth", rev = "7f4a9a0" }
 reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", rev = "7f4a9a0" }
+reth-trie = { git = "https://github.com/paradigmxyz/reth", rev = "7f4a9a0" }
 reth-trie-common = { git = "https://github.com/paradigmxyz/reth", rev = "7f4a9a0" }
+reth-trie-db = { git = "https://github.com/paradigmxyz/reth", rev = "7f4a9a0" }
 
 reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "7f4a9a0", features = [
   "std",

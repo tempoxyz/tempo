@@ -794,13 +794,6 @@ impl Decodable for TempoTransaction {
     }
 }
 
-#[cfg(feature = "reth")]
-impl reth_primitives_traits::InMemorySize for TempoTransaction {
-    fn size(&self) -> usize {
-        Self::size(self)
-    }
-}
-
 // Custom Arbitrary implementation to ensure calls is never empty and CREATE validation passes
 #[cfg(any(test, feature = "arbitrary"))]
 impl<'a> arbitrary::Arbitrary<'a> for TempoTransaction {

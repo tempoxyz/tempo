@@ -31,7 +31,9 @@ use reth_ethereum::{chainspec::EthChainSpec, tasks::Runtime};
 use reth_etl::Collector;
 use reth_primitives_traits::{Account, StorageEntry};
 use reth_provider::{BlockNumReader, DatabaseProviderFactory, HashingWriter};
-use reth_storage_api::DBProvider;
+use reth_storage_api::{DBProvider, StorageSettingsCache, TrieWriter};
+use reth_trie::{IntermediateStateRootState, StateRootProgress};
+use reth_trie_db::DatabaseStateRoot;
 use tempo_chainspec::spec::TempoChainSpecParser;
 use tracing::info;
 
@@ -375,24 +377,69 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         info!(
             target: "tempo::cli",
             addresses = accounts_seen.len(),
-            "Hashed accounts written"
+            "Hashed accounts written, computing state root and trie nodes..."
         );
 
-        // Commit the transaction
+        // Rebuild the merkle trie from scratch so the sparse trie cache on
+        // block 1 doesn't hit stale genesis nodes and stall on a full rebuild.
+        let trie_start = Instant::now();
+        provider_rw.tx_ref().clear::<tables::AccountsTrie>()?;
+        provider_rw.tx_ref().clear::<tables::StoragesTrie>()?;
+
+        let mut resume: Option<IntermediateStateRootState> = None;
+        let mut trie_writes = 0usize;
+
+        // Incrementally compute the merkle root over all hashed accounts/storage,
+        // using the correct DB adapter (v2 vs legacy) resolved at runtime by the macro.
+        let state_root = reth_trie_db::with_adapter!(provider_rw, |A| {
+            use reth_trie_db::{DatabaseHashedCursorFactory, DatabaseTrieCursorFactory};
+            type DbStateRoot<'a, TX, Adapter> = reth_trie::StateRoot<
+                DatabaseTrieCursorFactory<&'a TX, Adapter>,
+                DatabaseHashedCursorFactory<&'a TX>,
+            >;
+
+            // Compute state root in chunks, flushing trie nodes to disk between iterations.
+            loop {
+                match DbStateRoot::<_, A>::from_tx(provider_rw.tx_ref())
+                    .with_intermediate_state(resume)
+                    .root_with_progress()?
+                {
+                    StateRootProgress::Progress(state, _, updates) => {
+                        trie_writes += provider_rw.write_trie_updates(updates)?;
+                        info!(
+                            target: "tempo::cli",
+                            last_key = %state.account_root_state.last_hashed_key,
+                            trie_writes,
+                            elapsed = ?trie_start.elapsed(),
+                            "Flushing trie updates"
+                        );
+                        resume = Some(*state);
+                    }
+                    StateRootProgress::Complete(root, _, updates) => {
+                        trie_writes += provider_rw.write_trie_updates(updates)?;
+                        break root;
+                    }
+                }
+            }
+        });
+
+        info!(
+            target: "tempo::cli",
+            %state_root,
+            trie_writes,
+            elapsed = ?trie_start.elapsed(),
+            "State root computed"
+        );
+
+        // Final commit
         provider_rw.commit()?;
 
         info!(
             target: "tempo::cli",
             total_blocks,
             total_entries,
+            %state_root,
             "Binary state dump loaded successfully"
-        );
-
-        // Note: The state root will need to be recomputed.
-        // The node will compute the actual state root on startup.
-        info!(
-            target: "tempo::cli",
-            "State loaded. The node will compute the state root on startup."
         );
 
         Ok(())

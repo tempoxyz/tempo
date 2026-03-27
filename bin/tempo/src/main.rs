@@ -19,9 +19,6 @@
 // It is not used directly but must be present for the `ondemand` feature flag.
 #[cfg(feature = "tracy")]
 use tracy_client as _;
-// `tempo_cmd` uses trait methods from alloy-network via type inference; keep
-// the dependency explicitly referenced for `unused_crate_dependencies`.
-use alloy_network as _;
 
 #[global_allocator]
 static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::new_allocator();
