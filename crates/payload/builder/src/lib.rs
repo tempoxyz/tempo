@@ -189,6 +189,7 @@ where
             BuildArguments::new(
                 Default::default(),
                 None,
+                None,
                 config,
                 Default::default(),
                 Default::default(),
@@ -226,6 +227,7 @@ where
         let BuildArguments {
             mut cached_reads,
             execution_cache: _,
+            trie_handle: _,
             config,
             cancel,
             best_payload,
@@ -615,7 +617,7 @@ where
             block,
             hashed_state,
             trie_updates,
-        } = builder.finish(instrumented_provider)?;
+        } = builder.finish(instrumented_provider, None)?;
         drop(_finish_span);
         let builder_finish_elapsed = builder_finish_start.elapsed();
         self.metrics
