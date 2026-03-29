@@ -25,10 +25,16 @@ use reth_transaction_pool::{
     ValidPoolTransaction,
     blobstore::InMemoryBlobStore,
     error::{PoolError, PoolErrorKind},
-    identifier::TransactionId,
+    identifier::{SenderId, TransactionId},
 };
 use revm::database::BundleAccount;
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Instant,
+};
 use tempo_chainspec::{
     TempoChainSpec,
     hardfork::{TempoHardfork, TempoHardforks},
@@ -55,9 +61,15 @@ pub struct TempoTransactionPool<Client> {
     >,
     /// Minimal pool for 2D nonces (nonce_key > 0)
     aa_2d_pool: Arc<RwLock<AA2dPool>>,
+    /// Dedicated sender-id namespace for AA2d transactions.
+    ///
+    /// Keeping this separate prevents cross-pool invalidation keyed by `sender_id`.
+    aa_2d_sender_ids: Arc<AA2dSenderIds>,
 }
 
 impl<Client> TempoTransactionPool<Client> {
+    const AA_2D_SENDER_ID_NAMESPACE_START: u64 = 1 << 63;
+
     pub fn new(
         protocol_pool: Pool<
             TransactionValidationTaskExecutor<TempoTransactionValidator<Client>>,
@@ -69,9 +81,45 @@ impl<Client> TempoTransactionPool<Client> {
         Self {
             protocol_pool,
             aa_2d_pool: Arc::new(RwLock::new(aa_2d_pool)),
+            aa_2d_sender_ids: Arc::new(AA2dSenderIds::new(Self::AA_2D_SENDER_ID_NAMESPACE_START)),
         }
     }
+
+    fn get_aa_2d_sender_id(&self, sender: Address) -> SenderId {
+        self.aa_2d_sender_ids.get_or_create(sender)
+    }
 }
+
+#[derive(Debug)]
+struct AA2dSenderIds {
+    ids: RwLock<AddressMap<SenderId>>,
+    next: AtomicU64,
+}
+
+impl AA2dSenderIds {
+    fn new(start: u64) -> Self {
+        Self {
+            ids: Default::default(),
+            next: AtomicU64::new(start),
+        }
+    }
+
+    fn get_or_create(&self, sender: Address) -> SenderId {
+        if let Some(id) = self.ids.read().get(&sender).copied() {
+            return id;
+        }
+
+        let mut ids = self.ids.write();
+        if let Some(id) = ids.get(&sender).copied() {
+            return id;
+        }
+
+        let id = SenderId::from(self.next.fetch_add(1, Ordering::Relaxed));
+        ids.insert(sender, id);
+        id
+    }
+}
+
 impl<Client> TempoTransactionPool<Client>
 where
     Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
@@ -447,10 +495,7 @@ where
             } => {
                 if transaction.transaction().is_aa_2d() {
                     let transaction = transaction.into_transaction();
-                    let sender_id = self
-                        .protocol_pool
-                        .inner()
-                        .get_sender_id(transaction.sender());
+                    let sender_id = self.get_aa_2d_sender_id(transaction.sender());
                     let transaction_id = TransactionId::new(sender_id, transaction.nonce());
                     let tx = ValidPoolTransaction {
                         transaction,
@@ -531,6 +576,7 @@ impl<Client> Clone for TempoTransactionPool<Client> {
         Self {
             protocol_pool: self.protocol_pool.clone(),
             aa_2d_pool: Arc::clone(&self.aa_2d_pool),
+            aa_2d_sender_ids: Arc::clone(&self.aa_2d_sender_ids),
         }
     }
 }
@@ -1257,17 +1303,35 @@ fn get_recipient_policy_ids(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transaction::KeychainSubject;
-    use alloy_primitives::{U256, address};
+    use crate::{
+        amm::AmmLiquidityCache,
+        test_utils::TxBuilder,
+        transaction::KeychainSubject,
+        validator::{DEFAULT_AA_VALID_AFTER_MAX_SECS, DEFAULT_MAX_TEMPO_AUTHORIZATIONS},
+    };
+    use alloy_consensus::Header;
+    use alloy_primitives::{B256, U256, address};
+    use reth_primitives_traits::transaction::error::InvalidTransactionError;
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_storage_api::StateProviderFactory;
+    use reth_transaction_pool::{
+        BestTransactions, CoinbaseTipOrdering, Pool, PoolConfig, TransactionOrigin,
+        TransactionValidationOutcome, TransactionValidationTaskExecutor,
+        blobstore::InMemoryBlobStore,
+        error::InvalidPoolTransactionError,
+        validate::{EthTransactionValidatorBuilder, ValidTransaction},
+    };
+    use std::sync::Arc;
+    use tempo_chainspec::spec::{DEV, TEMPO_T1_TX_GAS_LIMIT_CAP};
     use tempo_contracts::precompiles::ITIP403Registry;
+    use tempo_evm::TempoEvmConfig;
     use tempo_precompiles::{
         ACCOUNT_KEYCHAIN_ADDRESS, TIP403_REGISTRY_ADDRESS,
         account_keychain::{AccountKeychain, AuthorizedKey},
         tip20::slots as tip20_slots,
         tip403_registry::PolicyData,
     };
+    use tempo_primitives::{Block, TempoHeader, TempoPrimitives};
 
     fn provider_with_spending_limit(
         account: Address,
@@ -1303,6 +1367,119 @@ mod tests {
         );
 
         provider.latest().unwrap()
+    }
+
+    fn test_pool() -> TempoTransactionPool<MockEthProvider<TempoPrimitives, TempoChainSpec>> {
+        let provider = MockEthProvider::<TempoPrimitives>::new()
+            .with_chain_spec(Arc::unwrap_or_clone(DEV.clone()));
+        provider.add_block(
+            B256::random(),
+            Block {
+                header: TempoHeader {
+                    inner: Header {
+                        gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let inner =
+            EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
+                .disable_balance_check()
+                .build(InMemoryBlobStore::default());
+        let validator = TempoTransactionValidator::new(
+            inner,
+            DEFAULT_AA_VALID_AFTER_MAX_SECS,
+            DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache"),
+        );
+        let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
+        let protocol_pool = Pool::new(
+            executor,
+            CoinbaseTipOrdering::default(),
+            InMemoryBlobStore::default(),
+            PoolConfig::default(),
+        );
+
+        TempoTransactionPool::new(protocol_pool, AA2dPool::default())
+    }
+
+    fn valid_outcome(
+        tx: crate::transaction::TempoPooledTransaction,
+        state_nonce: u64,
+    ) -> TransactionValidationOutcome<crate::transaction::TempoPooledTransaction> {
+        TransactionValidationOutcome::Valid {
+            balance: U256::from(1_000_000_000u64),
+            state_nonce,
+            bytecode_hash: None,
+            transaction: ValidTransaction::Valid(tx),
+            propagate: true,
+            authorities: None,
+        }
+    }
+
+    #[test]
+    fn aa_2d_sender_ids_are_shared_across_clones() {
+        let pool = test_pool();
+        let cloned_pool = pool.clone();
+        let sender = Address::random();
+
+        let first = pool.get_aa_2d_sender_id(sender);
+        let second = cloned_pool.get_aa_2d_sender_id(sender);
+
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn best_transactions_mark_invalid_does_not_skip_protocol_sequence() {
+        let pool = test_pool();
+        let sender = Address::random();
+
+        let protocol_tx_0 = TxBuilder::aa(sender)
+            .max_priority_fee(1_000_000_000)
+            .max_fee(21_000_000_000)
+            .build();
+        let protocol_tx_0_hash = *protocol_tx_0.hash();
+        pool.add_validated_transaction(TransactionOrigin::Local, valid_outcome(protocol_tx_0, 0))
+            .unwrap();
+
+        let protocol_tx_1 = TxBuilder::aa(sender)
+            .max_priority_fee(1_000_000_000)
+            .max_fee(21_000_000_000)
+            .nonce(1)
+            .build();
+        let protocol_tx_1_hash = *protocol_tx_1.hash();
+        pool.add_validated_transaction(TransactionOrigin::Local, valid_outcome(protocol_tx_1, 0))
+            .unwrap();
+
+        let aa_tx = TxBuilder::aa(sender)
+            .nonce_key(U256::from(1))
+            .max_priority_fee(2_000_000_000)
+            .max_fee(22_000_000_000)
+            .build();
+        let aa_tx_hash = *aa_tx.hash();
+        pool.add_validated_transaction(TransactionOrigin::Local, valid_outcome(aa_tx, 0))
+            .unwrap();
+
+        let mut best = pool.best_transactions();
+        let first = best.next().expect("AA tx should be yielded first");
+        assert_eq!(*first.hash(), aa_tx_hash);
+
+        let error =
+            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported);
+        best.mark_invalid(&first, &error);
+
+        let second = best
+            .next()
+            .expect("first protocol tx should still be yielded");
+        assert_eq!(*second.hash(), protocol_tx_0_hash);
+
+        let third = best
+            .next()
+            .expect("follow-up protocol tx should not be skipped");
+        assert_eq!(*third.hash(), protocol_tx_1_hash);
     }
 
     /// Eviction must match sub-policy IDs against compound policies.
