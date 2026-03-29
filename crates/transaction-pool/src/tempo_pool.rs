@@ -287,15 +287,13 @@ where
             // Prevents mass eviction because it only:
             // - evicts when NO validator token has enough liquidity
             // - considers active validators (protects from permissionless `setValidatorToken`)
-            if has_active_validator_token_changes && let Some(ref provider) = state_provider {
-                let user_token = tx
-                    .transaction
-                    .inner()
-                    .fee_token()
-                    .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN);
+            if has_active_validator_token_changes
+                && let Some(ref provider) = state_provider
+                && let Some(fee_context) = aa_fee_context(tx)
+            {
                 let cost = tx.transaction.fee_token_cost();
 
-                match amm_cache.has_enough_liquidity(user_token, cost, &**provider) {
+                match amm_cache.has_enough_liquidity(fee_context.fee_token, cost, &**provider) {
                     Ok(true) => {}
                     Ok(false) => {
                         to_remove.push(*tx.hash());
@@ -307,27 +305,24 @@ where
             }
 
             // Check 4: Blacklisted fee payers
-            // Only check AA transactions with a fee token (non-AA transactions don't have
-            // a fee payer that can be blacklisted via TIP403)
+            // Only check AA transactions. Non-AA transactions do not use fee-token fee payment.
             if !updates.blacklist_additions.is_empty()
                 && let Some(ref mut provider) = state_provider
-                && let Some(fee_token) = tx.transaction.inner().fee_token()
+                && let Some(fee_context) = aa_fee_context(tx)
             {
-                let fee_payer = tx
-                    .transaction
-                    .inner()
-                    .fee_payer(tx.transaction.sender())
-                    .unwrap_or(tx.transaction.sender());
-
                 // Check if any blacklist addition applies to this transaction's fee payer
                 let mut sender_evicted = false;
                 for &(blacklist_policy_id, blacklisted_account) in &updates.blacklist_additions {
-                    if fee_payer != blacklisted_account {
+                    if fee_context.fee_payer != blacklisted_account {
                         continue;
                     }
 
-                    let token_policies =
-                        get_sender_policy_ids(provider, fee_token, spec, &mut policy_cache);
+                    let token_policies = get_sender_policy_ids(
+                        provider,
+                        fee_context.fee_token,
+                        spec,
+                        &mut policy_cache,
+                    );
 
                     if token_policies
                         .as_ref()
@@ -343,7 +338,7 @@ where
                 // transfer to TIP_FEE_MANAGER_ADDRESS would be rejected.
                 let recipient_evicted = !sender_evicted
                     && !fee_manager_blacklisted.is_empty()
-                    && get_recipient_policy_ids(provider, fee_token, spec)
+                    && get_recipient_policy_ids(provider, fee_context.fee_token, spec)
                         .is_some_and(|ids| fee_manager_blacklisted.iter().any(|p| ids.contains(p)));
 
                 if sender_evicted || recipient_evicted {
@@ -357,22 +352,20 @@ where
             // will fail validation at execution time.
             if !updates.whitelist_removals.is_empty()
                 && let Some(ref mut provider) = state_provider
-                && let Some(fee_token) = tx.transaction.inner().fee_token()
+                && let Some(fee_context) = aa_fee_context(tx)
             {
-                let fee_payer = tx
-                    .transaction
-                    .inner()
-                    .fee_payer(tx.transaction.sender())
-                    .unwrap_or(tx.transaction.sender());
-
                 let mut sender_evicted = false;
                 for &(whitelist_policy_id, unwhitelisted_account) in &updates.whitelist_removals {
-                    if fee_payer != unwhitelisted_account {
+                    if fee_context.fee_payer != unwhitelisted_account {
                         continue;
                     }
 
-                    let token_policies =
-                        get_sender_policy_ids(provider, fee_token, spec, &mut policy_cache);
+                    let token_policies = get_sender_policy_ids(
+                        provider,
+                        fee_context.fee_token,
+                        spec,
+                        &mut policy_cache,
+                    );
 
                     if token_policies
                         .as_ref()
@@ -387,9 +380,9 @@ where
                 // token's recipient policy.
                 let recipient_evicted = !sender_evicted
                     && !fee_manager_unwhitelisted.is_empty()
-                    && get_recipient_policy_ids(provider, fee_token, spec).is_some_and(|ids| {
-                        fee_manager_unwhitelisted.iter().any(|p| ids.contains(p))
-                    });
+                    && get_recipient_policy_ids(provider, fee_context.fee_token, spec).is_some_and(
+                        |ids| fee_manager_unwhitelisted.iter().any(|p| ids.contains(p)),
+                    );
 
                 if sender_evicted || recipient_evicted {
                     to_remove.push(*tx.hash());
@@ -1177,6 +1170,25 @@ pub(crate) fn exceeds_spending_limit(
         .unwrap_or_default()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AaFeeContext {
+    fee_payer: Address,
+    fee_token: Address,
+}
+
+fn aa_fee_context(tx: &ValidPoolTransaction<TempoPooledTransaction>) -> Option<AaFeeContext> {
+    let fee_token = tx.transaction.effective_fee_token()?;
+    let fee_payer = tx
+        .transaction
+        .inner()
+        .fee_payer(tx.transaction.sender())
+        .unwrap_or(tx.transaction.sender());
+    Some(AaFeeContext {
+        fee_payer,
+        fee_token,
+    })
+}
+
 /// Returns the set of policy IDs that can affect fee_payer authorization for a token.
 ///
 /// For simple policies the set contains just the policy ID. For compound policies
@@ -1257,7 +1269,10 @@ fn get_recipient_policy_ids(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transaction::KeychainSubject;
+    use crate::{
+        test_utils::{TxBuilder, wrap_valid_tx},
+        transaction::KeychainSubject,
+    };
     use alloy_primitives::{U256, address};
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_storage_api::StateProviderFactory;
@@ -1303,6 +1318,29 @@ mod tests {
         );
 
         provider.latest().unwrap()
+    }
+
+    #[test]
+    fn aa_fee_context_uses_resolved_fee_token() {
+        let sender = Address::random();
+        let explicit_fee_token = Address::random();
+        let resolved_fee_token = Address::random();
+        let tx = TxBuilder::aa(sender).fee_token(explicit_fee_token).build();
+        tx.set_resolved_fee_token(resolved_fee_token);
+        let valid_tx = wrap_valid_tx(tx, TransactionOrigin::External);
+
+        let context = aa_fee_context(&valid_tx).expect("AA transactions should have fee context");
+
+        assert_eq!(context.fee_payer, sender);
+        assert_eq!(context.fee_token, resolved_fee_token);
+    }
+
+    #[test]
+    fn aa_fee_context_skips_non_aa_transactions() {
+        let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
+        let valid_tx = wrap_valid_tx(tx, TransactionOrigin::External);
+
+        assert!(aa_fee_context(&valid_tx).is_none());
     }
 
     /// Eviction must match sub-policy IDs against compound policies.

@@ -131,6 +131,19 @@ impl TempoPooledTransaction {
         self.is_expiring_nonce
     }
 
+    /// Returns the effective fee token for AA transactions.
+    ///
+    /// Prefers the token resolved during validation so maintenance uses the same fee token
+    /// admission checked, even when the transaction relied on storage or validator selection.
+    pub fn effective_fee_token(&self) -> Option<Address> {
+        self.is_aa().then(|| {
+            self.resolved_fee_token
+                .get()
+                .copied()
+                .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN))
+        })
+    }
+
     /// Extracts the keychain subject (account, key_id, fee_token) from this transaction.
     ///
     /// Returns `None` if:
@@ -143,11 +156,7 @@ impl TempoPooledTransaction {
         let aa_tx = self.inner().as_aa()?;
         let keychain_sig = aa_tx.signature().as_keychain()?;
         let key_id = keychain_sig.key_id(&aa_tx.signature_hash()).ok()?;
-        let fee_token = self
-            .resolved_fee_token
-            .get()
-            .copied()
-            .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN));
+        let fee_token = self.effective_fee_token()?;
         Some(KeychainSubject {
             account: keychain_sig.user_address,
             key_id,
@@ -828,6 +837,25 @@ mod tests {
         let slot2 = tx.nonce_key_slot();
         assert_eq!(slot2, Some(expected_slot));
         assert_eq!(slot1, slot2);
+    }
+
+    #[test]
+    fn test_effective_fee_token_prefers_resolved_value_for_aa_transaction() {
+        let sender = Address::random();
+        let explicit_fee_token = Address::random();
+        let resolved_fee_token = Address::random();
+        let tx = TxBuilder::aa(sender).fee_token(explicit_fee_token).build();
+
+        tx.set_resolved_fee_token(resolved_fee_token);
+
+        assert_eq!(tx.effective_fee_token(), Some(resolved_fee_token));
+    }
+
+    #[test]
+    fn test_effective_fee_token_is_none_for_non_aa_transaction() {
+        let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
+
+        assert_eq!(tx.effective_fee_token(), None);
     }
 
     #[test]

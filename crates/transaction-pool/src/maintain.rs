@@ -18,7 +18,9 @@ use reth_chainspec::ChainSpecProvider;
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain};
 use reth_storage_api::StateProviderFactory;
-use reth_transaction_pool::{PoolTransaction, TransactionOrigin, TransactionPool};
+use reth_transaction_pool::{
+    PoolTransaction, TransactionOrigin, TransactionPool, ValidPoolTransaction,
+};
 use std::{
     collections::{BTreeMap, btree_map::Entry},
     sync::Arc,
@@ -663,12 +665,9 @@ where
 
                     // Group transactions by fee token for efficient batch processing.
                     // This single pass over all transactions handles all pause events.
-                    let mut by_token: AddressMap<Vec<TxHash>> = AddressMap::default();
-                    for tx in all_txs.pending.iter().chain(all_txs.queued.iter()) {
-                        if let Some(fee_token) = tx.transaction.inner().fee_token() {
-                            by_token.entry(fee_token).or_default().push(*tx.hash());
-                        }
-                    }
+                    let mut by_token = group_transaction_hashes_by_fee_token(
+                        all_txs.pending.iter().chain(all_txs.queued.iter()),
+                    );
 
                     // Process each pause token
                     for token in pause_tokens {
@@ -892,6 +891,18 @@ where
     count
 }
 
+fn group_transaction_hashes_by_fee_token<'a>(
+    txs: impl Iterator<Item = &'a Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+) -> AddressMap<Vec<TxHash>> {
+    let mut by_token: AddressMap<Vec<TxHash>> = AddressMap::default();
+    for tx in txs {
+        if let Some(fee_token) = tx.transaction.effective_fee_token() {
+            by_token.entry(fee_token).or_default().push(*tx.hash());
+        }
+    }
+    by_token
+}
+
 /// Handles a reorg event by identifying orphaned AA 2D transactions from the old chain
 /// that are not in the new chain.
 ///
@@ -952,10 +963,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::TxBuilder;
+    use crate::test_utils::{TxBuilder, wrap_valid_tx};
     use alloy_primitives::{Address, TxHash, U256};
     use reth_primitives_traits::RecoveredBlock;
-    use reth_transaction_pool::PoolTransaction;
+    use reth_transaction_pool::{PoolTransaction, TransactionOrigin};
     use std::collections::HashSet;
     use tempo_primitives::{Block, BlockBody, TempoHeader, TempoTxEnvelope};
 
@@ -1257,6 +1268,24 @@ mod tests {
     /// Helper to extract a TempoTxEnvelope from a TempoPooledTransaction.
     fn extract_envelope(tx: &crate::transaction::TempoPooledTransaction) -> TempoTxEnvelope {
         tx.inner().clone().into_inner()
+    }
+
+    #[test]
+    fn group_transaction_hashes_by_fee_token_uses_resolved_fee_token() {
+        let paused_token = Address::random();
+        let aa_tx = TxBuilder::aa(Address::random()).build();
+        aa_tx.set_resolved_fee_token(paused_token);
+        let aa_tx = Arc::new(wrap_valid_tx(aa_tx, TransactionOrigin::External));
+
+        let non_aa_tx = Arc::new(wrap_valid_tx(
+            TxBuilder::eip1559(Address::random()).build_eip1559(),
+            TransactionOrigin::External,
+        ));
+
+        let grouped = group_transaction_hashes_by_fee_token([&aa_tx, &non_aa_tx].into_iter());
+
+        assert_eq!(grouped.len(), 1);
+        assert_eq!(grouped.get(&paused_token), Some(&vec![*aa_tx.hash()]));
     }
 
     /// Tests all reorg handling scenarios:
