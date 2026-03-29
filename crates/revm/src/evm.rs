@@ -2449,4 +2449,79 @@ mod tests {
 
         Ok(())
     }
+
+    /// Regression: `eth_estimateGas` must NOT add an extra 250k `new_account_cost` for AA
+    /// token transfers using the `calls` format when `nonce_key != 0` and
+    /// `caller.nonce == 0`.
+    ///
+    /// Root cause: `tx.kind()` reads `inner.to`, which is `None` for the
+    /// `calls` format, causing it to return `TxKind::Create` for a plain
+    /// transfer — incorrectly triggering a second 250k account-creation charge
+    /// on top of the legitimate 250k already charged by `validate_aa_initial_tx_gas`.
+    ///
+    /// The fix inspects `aa_calls[0].to` directly for AA transactions instead
+    /// of relying on `tx.kind()`.
+    #[test]
+    fn test_aa_tx_transfer_calls_format_no_extra_250k() -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+        let recipient = Address::with_last_byte(0xff);
+
+        // Baseline: calls-format transfer with nonce_key=0 (protocol nonce).
+        // validate_aa_initial_tx_gas charges 250k (nonce==0 branch).
+        // handler.rs does NOT fire because !nonce_key.is_zero() is false.
+        let mut evm_baseline = create_funded_evm_t1(caller);
+        let tx_baseline = TxBuilder::new()
+            .call(recipient, &[])
+            .nonce_key(U256::ZERO)
+            .nonce(0)
+            .gas_limit(500_000)
+            .build();
+        let result_baseline = evm_baseline.transact_commit(TempoTxEnv::from_recovered_tx(
+            &key_pair.sign_tx(tx_baseline)?,
+            caller,
+        ))?;
+        assert!(
+            result_baseline.is_success(),
+            "baseline transfer should succeed"
+        );
+        let gas_baseline = result_baseline.gas_used();
+
+        // Issue #3178 scenario: calls-format transfer with nonce_key != 0, caller.nonce == 0.
+        // validate_aa_initial_tx_gas still charges the same 250k (nonce==0 branch).
+        // Before fix: handler.rs also fired (tx.kind() wrongly returned Create) → extra 250k.
+        // After fix:  handler.rs does NOT fire (aa_calls[0].to is Call) → no extra 250k.
+        let nonce_key = U256::from(42);
+        let mut evm_2d = create_funded_evm_t1(caller);
+        let tx_2d = TxBuilder::new()
+            .call(recipient, &[])
+            .nonce_key(nonce_key)
+            .nonce(0)
+            .gas_limit(500_000)
+            .build();
+        let result_2d = evm_2d.transact_commit(TempoTxEnv::from_recovered_tx(
+            &key_pair.sign_tx(tx_2d)?,
+            caller,
+        ))?;
+        assert!(
+            result_2d.is_success(),
+            "calls-format transfer with 2D nonce should succeed"
+        );
+        let gas_2d = result_2d.gas_used();
+
+        // After the fix the gas should be nearly identical for both cases because
+        // both go through the same validate_aa_initial_tx_gas branch and handler.rs
+        // no longer fires for transfers.
+        // Before the fix gas_2d would have been ~250k higher than gas_baseline.
+        let diff = gas_2d.saturating_sub(gas_baseline);
+        assert!(
+            diff < 10_000,
+            "calls-format transfer with nonceKey={nonce_key} (gas={gas_2d}) must not cost \
+             ~250k more than baseline (gas={gas_baseline}, diff={diff}). \
+             A diff near 250_000 means new_account_cost is incorrectly added for \
+             transfers (issue #3178)."
+        );
+
+        Ok(())
+    }
 }
