@@ -744,7 +744,20 @@ where
 
         // add additional gas for CREATE tx with 2d nonce and account nonce is 0.
         // This case would create a new account for caller.
-        if !nonce_key.is_zero() && tx.kind().is_create() && caller_account.nonce() == 0 {
+        // For AA transactions, check aa_calls for actual CREATE operations instead of tx.kind(),
+        // because tx.kind() reads inner.to which is None when calls format is used — causing
+        // it to incorrectly return Create even for plain token transfers.
+        let is_create = tx
+            .tempo_tx_env
+            .as_ref()
+            .map(|aa| {
+                aa.aa_calls
+                    .first()
+                    .map(|c| c.to.is_create())
+                    .unwrap_or(false)
+            })
+            .unwrap_or_else(|| tx.kind().is_create());
+        if !nonce_key.is_zero() && is_create && caller_account.nonce() == 0 {
             evm.initial_gas += cfg.gas_params().get(GasId::new_account_cost());
 
             // do the gas limit check again.
