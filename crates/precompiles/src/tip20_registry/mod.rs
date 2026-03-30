@@ -43,7 +43,7 @@ pub fn is_virtual_address(addr: Address) -> bool {
 /// - MUST NOT be `address(0)`
 /// - MUST NOT itself match the virtual-address format
 /// - MUST NOT be a TIP-20 token address
-pub fn is_master_address(addr: Address) -> bool {
+pub fn is_valid_master_address(addr: Address) -> bool {
     !addr.is_zero() && !is_virtual_address(addr) && !is_tip20_prefix(addr)
 }
 
@@ -121,7 +121,7 @@ impl TIP20Registry {
         call: ITIP20Registry::registerVirtualMasterCall,
     ) -> Result<MasterId> {
         // Validate master address
-        if !is_master_address(msg_sender) {
+        if !is_valid_master_address(msg_sender) {
             return Err(TIP20RegistryError::invalid_master_address().into());
         }
 
