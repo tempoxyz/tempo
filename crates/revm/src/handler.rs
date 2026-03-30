@@ -265,6 +265,7 @@ fn adjusted_initial_gas(
 ) -> InitialAndFloorGas {
     if spec.is_t1() && init_and_floor_gas.initial_total_gas > 0 {
         let state_gas = init_and_floor_gas.initial_state_gas + evm_initial_state_gas;
+        let total_gas = evm_initial_gas + evm_initial_state_gas;
         // evm_initial_gas = init_and_floor_gas.initial_total_gas (possibly + key_auth delta).
         // In the new revm, initial_total_gas already includes initial_state_gas, so
         // evm_initial_gas already has init_and_floor_gas.initial_state_gas baked in.
@@ -272,7 +273,7 @@ fn adjusted_initial_gas(
         // We only add evm_initial_state_gas (Tempo-specific state gas from
         // validate_against_state_and_deduct_caller, e.g. 2D nonce account creation).
         InitialAndFloorGas::new_with_state_gas(
-            evm_initial_gas + evm_initial_state_gas,
+            total_gas,
             state_gas,
             init_and_floor_gas.floor_gas,
         )
@@ -1557,22 +1558,29 @@ where
             // no need for v1 fork check as gas_params would be zero
             for auth in tx.authorization_list() {
                 if auth.nonce == 0 {
-                    init_gas.initial_total_gas +=
-                        gas_params.tx_tip1000_auth_account_creation_cost();
-                    // TIP-1016: Track state gas for auth account creation
-                    init_gas.initial_state_gas +=
+                    let auth_cost = gas_params.tx_tip1000_auth_account_creation_cost();
+                    let auth_state_gas =
                         gas_params.tx_tip1000_auth_account_creation_state_gas();
+                    // Add both execution and state portions to initial_total_gas
+                    // (revm's invariant: initial_total_gas >= initial_state_gas)
+                    init_gas.initial_total_gas += auth_cost + auth_state_gas;
+                    init_gas.initial_state_gas += auth_state_gas;
                 }
             }
 
             // TIP-1000: Storage pricing updates for launch
             // Transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas.
             if spec.is_t1() && tx.nonce == 0 {
-                init_gas.initial_total_gas += gas_params.get(GasId::new_account_cost());
-                // TIP-1016: Track state gas for new account creation (T3+ only)
-                if spec.is_t3() {
-                    init_gas.initial_state_gas += gas_params.new_account_state_gas();
-                }
+                let account_cost = gas_params.get(GasId::new_account_cost());
+                let account_state_gas = if spec.is_t3() {
+                    gas_params.new_account_state_gas()
+                } else {
+                    0
+                };
+                // Add both execution and state portions to initial_total_gas
+                // (revm's invariant: initial_total_gas >= initial_state_gas)
+                init_gas.initial_total_gas += account_cost + account_state_gas;
+                init_gas.initial_state_gas += account_state_gas;
             }
 
             if evm.ctx.cfg.is_eip7623_disabled() {
@@ -1845,11 +1853,14 @@ where
         } else if tx.nonce == 0 {
             // TIP-1000: Storage pricing updates for launch
             // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas
-            batch_gas.initial_total_gas += gas_params.get(GasId::new_account_cost());
-            // TIP-1016: Track state gas for new account creation (T3+ only)
-            if spec.is_t3() {
-                batch_gas.initial_state_gas += gas_params.new_account_state_gas();
-            }
+            let account_cost = gas_params.get(GasId::new_account_cost());
+            let account_state_gas = if spec.is_t3() {
+                gas_params.new_account_state_gas()
+            } else {
+                0
+            };
+            batch_gas.initial_total_gas += account_cost + account_state_gas;
+            batch_gas.initial_state_gas += account_state_gas;
         } else if !aa_env.nonce_key.is_zero() {
             // Existing 2D nonce key usage (nonce > 0)
             // TIP-1000 Invariant 3: existing state updates must charge +5,000 gas
