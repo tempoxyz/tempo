@@ -40,18 +40,15 @@ pub fn install_prometheus_metrics(
         .try_into()
         .wrap_err("invalid metrics duration")?;
 
-    let peer_id = config.peer_id;
+    let mut extra_label = format!("peer_id={}", config.peer_id);
+    if let Some(pubkey) = config.consensus_pubkey {
+        extra_label.push_str(&format!(",consensus_pubkey={pubkey}"));
+    }
 
     let mut endpoint = config.endpoint;
     endpoint
         .query_pairs_mut()
-        .append_pair("extra_label", &format!("peer_id={peer_id}"));
-
-    if let Some(pubkey) = config.consensus_pubkey {
-        endpoint
-            .query_pairs_mut()
-            .append_pair("extra_label", &format!("consensus_pubkey={pubkey}"));
-    }
+        .append_pair("extra_label", &extra_label);
 
     let url = endpoint.to_string();
     let client = reqwest::Client::new();
