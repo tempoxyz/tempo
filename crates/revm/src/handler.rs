@@ -272,11 +272,7 @@ fn adjusted_initial_gas(
         //
         // We only add evm_initial_state_gas (Tempo-specific state gas from
         // validate_against_state_and_deduct_caller, e.g. 2D nonce account creation).
-        InitialAndFloorGas::new_with_state_gas(
-            total_gas,
-            state_gas,
-            init_and_floor_gas.floor_gas,
-        )
+        InitialAndFloorGas::new_with_state_gas(total_gas, state_gas, init_and_floor_gas.floor_gas)
     } else {
         // Pre-T1 or system calls (initial_total_gas == 0): pass through unchanged.
         *init_and_floor_gas
@@ -353,7 +349,11 @@ where
         let regular_initial_gas = init_and_floor_gas
             .initial_total_gas
             .saturating_sub(init_and_floor_gas.initial_state_gas);
-        let gas_limit = evm.ctx().tx().gas_limit().saturating_sub(regular_initial_gas);
+        let gas_limit = evm
+            .ctx()
+            .tx()
+            .gas_limit()
+            .saturating_sub(regular_initial_gas);
 
         // Create first frame action
         let first_frame_input = self.first_frame_input(evm, gas_limit, init_and_floor_gas)?;
@@ -1528,8 +1528,7 @@ where
             for auth in tx.authorization_list() {
                 if auth.nonce == 0 {
                     let auth_cost = gas_params.tx_tip1000_auth_account_creation_cost();
-                    let auth_state_gas =
-                        gas_params.tx_tip1000_auth_account_creation_state_gas();
+                    let auth_state_gas = gas_params.tx_tip1000_auth_account_creation_state_gas();
                     // Add both execution and state portions to initial_total_gas
                     // (revm's invariant: initial_total_gas >= initial_state_gas)
                     init_gas.initial_total_gas += auth_cost + auth_state_gas;
