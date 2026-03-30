@@ -6,11 +6,14 @@ import { TIP403Registry } from "./TIP403Registry.sol";
 import { TempoUtilities } from "./TempoUtilities.sol";
 import { TIP20RolesAuth } from "./abstracts/TIP20RolesAuth.sol";
 import { ITIP20 } from "./interfaces/ITIP20.sol";
+import { ITIP20Registry } from "./interfaces/ITIP20Registry.sol";
 
 contract TIP20 is ITIP20, TIP20RolesAuth {
 
     TIP403Registry internal constant TIP403_REGISTRY =
         TIP403Registry(0x403c000000000000000000000000000000000000);
+    ITIP20Registry internal constant TIP20_REGISTRY =
+        ITIP20Registry(0xfDC0000000000000000000000000000000000000);
 
     address internal constant TIP_FEE_MANAGER_ADDRESS = 0xfeEC000000000000000000000000000000000000;
     address internal constant STABLECOIN_DEX_ADDRESS = 0xDEc0000000000000000000000000000000000000;
@@ -96,6 +99,11 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         uint256 rewardBalance;
     }
 
+    struct ResolvedRecipient {
+        address target;
+        address virtualAddr;
+    }
+
     mapping(address => UserRewardInfo) public userRewardInfo;
 
     /*//////////////////////////////////////////////////////////////
@@ -160,8 +168,12 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     }
 
     function mint(address to, uint256 amount) external onlyRole(ISSUER_ROLE) {
-        _mint(to, amount);
-        emit Mint(to, amount);
+        ResolvedRecipient memory recipient = _resolveRecipient(to);
+        _mint(recipient, amount);
+        emit Mint(_eventTo(recipient), amount);
+        if (recipient.virtualAddr != address(0)) {
+            emit Transfer(recipient.virtualAddr, recipient.target, amount);
+        }
     }
 
     function burn(uint256 amount) external onlyRole(ISSUER_ROLE) {
@@ -193,9 +205,13 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     }
 
     function mintWithMemo(address to, uint256 amount, bytes32 memo) external onlyRole(ISSUER_ROLE) {
-        _mint(to, amount);
-        emit TransferWithMemo(address(0), to, amount, memo);
-        emit Mint(to, amount);
+        ResolvedRecipient memory recipient = _resolveRecipient(to);
+        _mint(recipient, amount);
+        emit TransferWithMemo(address(0), _eventTo(recipient), amount, memo);
+        emit Mint(_eventTo(recipient), amount);
+        if (recipient.virtualAddr != address(0)) {
+            emit Transfer(recipient.virtualAddr, recipient.target, amount);
+        }
     }
 
     function burnWithMemo(uint256 amount, bytes32 memo) external onlyRole(ISSUER_ROLE) {
@@ -217,23 +233,6 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         _;
     }
 
-    modifier validRecipient(address to) {
-        // Don't allow sending to the zero address not other precompiled tokens.
-        if (to == address(0) || (uint160(to) >> 64) == 0x20c000000000000000000000) {
-            revert InvalidRecipient();
-        }
-        _;
-    }
-
-    modifier transferAuthorized(address from, address to) {
-        // TIP-1015: Use directional sender/recipient authorization
-        if (
-            !TIP403_REGISTRY.isAuthorizedSender(transferPolicyId, from)
-                || !TIP403_REGISTRY.isAuthorizedRecipient(transferPolicyId, to)
-        ) revert PolicyForbids();
-        _;
-    }
-
     function transfer(
         address to,
         uint256 amount
@@ -241,11 +240,14 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         public
         virtual
         notPaused
-        validRecipient(to)
-        transferAuthorized(msg.sender, to)
         returns (bool)
     {
-        _transfer(msg.sender, to, amount);
+        ResolvedRecipient memory recipient = _resolveRecipient(to);
+        _validateTransfer(msg.sender, recipient);
+        _transfer(msg.sender, recipient, amount);
+        if (recipient.virtualAddr != address(0)) {
+            emit Transfer(recipient.virtualAddr, recipient.target, amount);
+        }
         return true;
     }
 
@@ -262,15 +264,22 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         public
         virtual
         notPaused
-        validRecipient(to)
-        transferAuthorized(from, to)
         returns (bool)
     {
-        _transferFrom(from, to, amount);
+        ResolvedRecipient memory recipient = _resolveRecipient(to);
+        _validateTransfer(from, recipient);
+        _transferFrom(from, recipient, amount);
+        if (recipient.virtualAddr != address(0)) {
+            emit Transfer(recipient.virtualAddr, recipient.target, amount);
+        }
         return true;
     }
 
     function _transferFrom(address from, address to, uint256 amount) internal {
+        _transferFrom(from, ResolvedRecipient({ target: to, virtualAddr: address(0) }), amount);
+    }
+
+    function _transferFrom(address from, ResolvedRecipient memory recipient, uint256 amount) internal {
         // Allowance check and update.
         uint256 allowed = allowance[from][msg.sender];
         if (amount > allowed) revert InsufficientAllowance();
@@ -280,7 +289,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
             }
         }
 
-        _transfer(from, to, amount);
+        _transfer(from, recipient, amount);
     }
 
     function totalSupply() public view returns (uint256) {
@@ -288,6 +297,10 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     }
 
     function _transfer(address from, address to, uint256 amount) internal {
+        _transfer(from, ResolvedRecipient({ target: to, virtualAddr: address(0) }), amount);
+    }
+
+    function _transfer(address from, ResolvedRecipient memory recipient, uint256 amount) internal {
         if (amount > balanceOf[from]) {
             revert InsufficientBalance(balanceOf[from], amount, address(this));
         }
@@ -296,7 +309,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         address fromsRewardRecipient = _updateRewardsAndGetRecipient(from);
 
         // Handle reward accounting for opted-in receiver (but not when burning)
-        address tosRewardRecipient = _updateRewardsAndGetRecipient(to);
+        address tosRewardRecipient = _updateRewardsAndGetRecipient(recipient.target);
 
         if (fromsRewardRecipient != address(0)) {
             if (tosRewardRecipient == address(0)) {
@@ -308,31 +321,32 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
 
         unchecked {
             balanceOf[from] -= amount;
-            if (to != address(0)) balanceOf[to] += amount;
+            if (recipient.target != address(0)) balanceOf[recipient.target] += amount;
         }
 
-        emit Transfer(from, to, amount);
+        emit Transfer(from, _eventTo(recipient), amount);
     }
 
-    function _mint(address to, uint256 amount) internal {
+    function _mint(ResolvedRecipient memory recipient, uint256 amount) internal {
         // TIP-1015: Use mint recipient authorization
-        if (!TIP403_REGISTRY.isAuthorizedMintRecipient(transferPolicyId, to)) {
+        _validateRecipient(recipient.target);
+        if (!TIP403_REGISTRY.isAuthorizedMintRecipient(transferPolicyId, recipient.target)) {
             revert PolicyForbids();
         }
         if (_totalSupply + amount > supplyCap) revert SupplyCapExceeded(); // Catches overflow.
 
         // Handle reward accounting for opted-in receiver
-        address tosRewardRecipient = _updateRewardsAndGetRecipient(to);
+        address tosRewardRecipient = _updateRewardsAndGetRecipient(recipient.target);
         if (tosRewardRecipient != address(0)) {
             optedInSupply += uint128(amount);
         }
 
         unchecked {
             _totalSupply += uint128(amount);
-            balanceOf[to] += amount;
+            balanceOf[recipient.target] += amount;
         }
 
-        emit Transfer(address(0), to, amount);
+        emit Transfer(address(0), _eventTo(recipient), amount);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -392,11 +406,14 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         public
         virtual
         notPaused
-        validRecipient(to)
-        transferAuthorized(msg.sender, to)
     {
-        _transfer(msg.sender, to, amount);
-        emit TransferWithMemo(msg.sender, to, amount, memo);
+        ResolvedRecipient memory recipient = _resolveRecipient(to);
+        _validateTransfer(msg.sender, recipient);
+        _transfer(msg.sender, recipient, amount);
+        emit TransferWithMemo(msg.sender, _eventTo(recipient), amount, memo);
+        if (recipient.virtualAddr != address(0)) {
+            emit Transfer(recipient.virtualAddr, recipient.target, amount);
+        }
     }
 
     function transferFromWithMemo(
@@ -408,21 +425,15 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         public
         virtual
         notPaused
-        validRecipient(to)
-        transferAuthorized(from, to)
         returns (bool)
     {
-        // Allowance check and update.
-        uint256 allowed = allowance[from][msg.sender];
-        if (amount > allowed) revert InsufficientAllowance();
-        unchecked {
-            if (allowed != type(uint256).max) {
-                allowance[from][msg.sender] = allowed - amount;
-            }
+        ResolvedRecipient memory recipient = _resolveRecipient(to);
+        _validateTransfer(from, recipient);
+        _transferFrom(from, recipient, amount);
+        emit TransferWithMemo(from, _eventTo(recipient), amount, memo);
+        if (recipient.virtualAddr != address(0)) {
+            emit Transfer(recipient.virtualAddr, recipient.target, amount);
         }
-
-        _transfer(from, to, amount);
-        emit TransferWithMemo(from, to, amount, memo);
         return true;
     }
 
@@ -437,12 +448,15 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         external
         virtual
         notPaused
-        validRecipient(to)
-        transferAuthorized(from, to)
         returns (bool)
     {
         require(msg.sender == TIP_FEE_MANAGER_ADDRESS);
-        _transfer(from, to, amount);
+        ResolvedRecipient memory recipient = _resolveRecipient(to);
+        _validateTransfer(from, recipient);
+        _transfer(from, recipient, amount);
+        if (recipient.virtualAddr != address(0)) {
+            emit Transfer(recipient.virtualAddr, recipient.target, amount);
+        }
         return true;
     }
 
@@ -517,6 +531,35 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         }
     }
 
+    function _resolveRecipient(address to) internal view returns (ResolvedRecipient memory recipient) {
+        address target = TIP20_REGISTRY.resolveRecipient(to);
+        recipient = ResolvedRecipient({
+            target: target,
+            virtualAddr: target == to ? address(0) : to
+        });
+    }
+
+    function _eventTo(ResolvedRecipient memory recipient) internal pure returns (address) {
+        return recipient.virtualAddr == address(0) ? recipient.target : recipient.virtualAddr;
+    }
+
+    function _validateRecipient(address to) internal pure {
+        if (to == address(0) || TempoUtilities.isTIP20Prefix(to)) {
+            revert InvalidRecipient();
+        }
+    }
+
+    function _validateTransfer(address from, ResolvedRecipient memory recipient) internal view {
+        _validateRecipient(recipient.target);
+
+        if (
+            !TIP403_REGISTRY.isAuthorizedSender(transferPolicyId, from)
+                || !TIP403_REGISTRY.isAuthorizedRecipient(transferPolicyId, recipient.target)
+        ) {
+            revert PolicyForbids();
+        }
+    }
+
     /// @notice Distributes rewards to opted-in token holders.
     function distributeReward(uint256 amount) external virtual notPaused {
         if (amount == 0) revert InvalidAmount();
@@ -543,6 +586,10 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     function setRewardRecipient(address newRewardRecipient) external virtual notPaused {
         // TIP-1015: Check sender/recipient authorization for reward claiming path
         if (newRewardRecipient != address(0)) {
+            if (TempoUtilities.isVirtualAddress(newRewardRecipient)) {
+                revert InvalidRecipient();
+            }
+
             if (
                 !TIP403_REGISTRY.isAuthorizedSender(transferPolicyId, msg.sender)
                     || !TIP403_REGISTRY.isAuthorizedRecipient(transferPolicyId, newRewardRecipient)
@@ -613,4 +660,4 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         }
     }
 
-    }
+}
