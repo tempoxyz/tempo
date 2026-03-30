@@ -758,6 +758,9 @@ where
                 // TIP-1000: Storage pricing updates for launch
                 // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas
                 init_and_floor_gas.initial_total_gas += gas_params.get(GasId::new_account_cost());
+                // TIP-1016: Track state gas for new account creation
+                init_and_floor_gas.initial_state_gas +=
+                    gas_params.get(GasId::new_account_state_gas());
             } else if !tx.nonce_key.is_zero() {
                 // Existing 2D nonce key (nonce > 0): cold SLOAD + warm SSTORE reset
                 // TIP-1000 Invariant 3: existing state updates charge 5,000 gas
@@ -776,6 +779,9 @@ where
                     == 0
             {
                 init_and_floor_gas.initial_total_gas += gas_params.get(GasId::new_account_cost());
+                // TIP-1016: Track state gas for caller account creation
+                init_and_floor_gas.initial_state_gas +=
+                    gas_params.get(GasId::new_account_state_gas());
             }
         } else if !tx.nonce_key.is_zero() {
             // Pre-T1: Add 2D nonce gas if nonce_key is non-zero
@@ -788,14 +794,26 @@ where
             }
         }
 
+        // TIP-1016: Cache intrinsic state gas for T3+ transactions.
+        // init_and_floor_gas.initial_state_gas accumulates state gas from:
+        // - calculate_aa_batch_intrinsic_gas (CREATE calls, auth list)
+        // - nonce=0 new account creation (above)
+        // - 2D nonce + CREATE caller account creation (above)
+        // For pre-T3, initial_state_gas is 0 (state gas GasIds are not overridden).
+        if spec.is_t3() {
+            transaction.set_intrinsic_state_gas(init_and_floor_gas.initial_state_gas);
+        }
+
         let gas_limit = tx.gas_limit;
 
-        // Check if gas limit is sufficient for initial gas
-        if gas_limit < init_and_floor_gas.initial_total_gas {
+        // Check if gas limit is sufficient for initial gas (execution + state)
+        let total_intrinsic =
+            init_and_floor_gas.initial_total_gas + init_and_floor_gas.initial_state_gas;
+        if gas_limit < total_intrinsic {
             return Err(
                 TempoPoolTransactionError::InsufficientGasForAAIntrinsicCost {
                     gas_limit,
-                    intrinsic_gas: init_and_floor_gas.initial_total_gas,
+                    intrinsic_gas: total_intrinsic,
                 },
             );
         }
@@ -1017,7 +1035,9 @@ where
                 );
             }
         } else {
-            // validate intrinsic gas with additional TIP-1000 and T1 checks
+            // validate intrinsic gas with additional TIP-1000 and T1 checks.
+            // For T3+, this also computes/caches intrinsic state gas and validates that
+            // gas_limit covers both execution gas and state gas.
             if let Err(err) = ensure_intrinsic_gas_tempo_tx(&transaction, spec) {
                 return TransactionValidationOutcome::Invalid(transaction, err);
             }
@@ -1379,6 +1399,9 @@ where
 }
 
 /// Ensures that gas limit of the transaction exceeds the intrinsic gas of the transaction.
+///
+/// For T3+ transactions, also computes and caches the intrinsic state gas, and validates
+/// that gas_limit covers both execution gas and state gas.
 pub fn ensure_intrinsic_gas_tempo_tx(
     tx: &TempoPooledTransaction,
     spec: TempoHardfork,
@@ -1416,10 +1439,36 @@ pub fn ensure_intrinsic_gas_tempo_tx(
         }
     }
 
+    // TIP-1016: For T3+, compute state gas and validate gas_limit covers both execution + state gas.
+    // State gas is tracked separately via initial_state_gas and does not count against protocol
+    // limits, but must still fit within gas_limit.
+    // For pre-T3, state gas is bundled into initial_total_gas (no split), so we clear
+    // initial_state_gas to avoid double-counting from upstream defaults in initial_tx_gas.
+    if !spec.is_t3() {
+        gas.initial_state_gas = 0;
+    } else {
+        // nonce == 0 with non-expiring nonce: potential new account creation
+        if tx.nonce() == 0 && tx.nonce_key() != Some(TEMPO_EXPIRING_NONCE_KEY) {
+            gas.initial_state_gas += gas_params.get(GasId::new_account_state_gas());
+        }
+        // EIP-7702 auth list account creation state gas
+        for auth in tx.authorization_list().unwrap_or_default() {
+            if auth.nonce == 0 {
+                gas.initial_state_gas += gas_params.tx_tip1000_auth_account_creation_state_gas();
+            }
+        }
+    }
+
     let gas_limit = tx.gas_limit();
-    if gas_limit < gas.initial_total_gas || gas_limit < gas.floor_gas {
+    // TIP-1016: gas_limit must cover both execution gas and state gas
+    let total_intrinsic = gas.initial_total_gas + gas.initial_state_gas;
+    if gas_limit < total_intrinsic || gas_limit < gas.floor_gas {
         Err(InvalidPoolTransactionError::IntrinsicGasTooLow)
     } else {
+        // TIP-1016: Cache intrinsic state gas for T3+ transactions
+        if spec.is_t3() {
+            tx.set_intrinsic_state_gas(gas.initial_state_gas);
+        }
         Ok(())
     }
 }
@@ -1427,10 +1476,7 @@ pub fn ensure_intrinsic_gas_tempo_tx(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        test_utils::{MockProviderStorageExt, TxBuilder},
-        transaction::TempoPoolTransactionError,
-    };
+    use crate::{test_utils::TxBuilder, transaction::TempoPoolTransactionError};
     use alloy_consensus::{Header, Signed, Transaction, TxLegacy};
     use alloy_primitives::{Address, B256, TxKind, U256, address, uint};
     use alloy_signer::Signature;
@@ -1440,14 +1486,15 @@ mod tests {
         PoolTransaction, blobstore::InMemoryBlobStore, validate::EthTransactionValidatorBuilder,
     };
     use std::sync::Arc;
-    use tempo_chainspec::spec::{MODERATO, TEMPO_T1_TX_GAS_LIMIT_CAP};
+    use tempo_chainspec::spec::{DEV, MODERATO, TEMPO_T1_TX_GAS_LIMIT_CAP};
+    use tempo_evm::TempoEvmConfig;
     use tempo_precompiles::{
-        PATH_USD_ADDRESS,
+        PATH_USD_ADDRESS, TIP403_REGISTRY_ADDRESS,
         tip20::{TIP20Token, slots as tip20_slots},
         tip403_registry::{ITIP403Registry, PolicyData, TIP403Registry},
     };
     use tempo_primitives::{
-        Block, TempoHeader, TempoPrimitives, TempoTxEnvelope,
+        Block, TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType,
         transaction::{
             TempoTransaction,
             envelope::TEMPO_SYSTEM_TX_SIGNATURE,
@@ -1548,6 +1595,8 @@ mod tests {
         let inner =
             EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
                 .disable_balance_check()
+                .with_custom_tx_type(TempoTxType::AA as u8)
+                .no_eip4844()
                 .build(InMemoryBlobStore::default());
         let amm_cache =
             AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
@@ -1559,6 +1608,74 @@ mod tests {
         );
 
         // Set the tip timestamp by simulating a new head block
+        let mock_block = create_mock_block(tip_timestamp);
+        validator.on_new_head_block(&mock_block);
+
+        validator
+    }
+
+    /// Like `setup_validator` but uses the DEV chain spec (which has T2 active at timestamp 0).
+    fn setup_validator_dev(
+        transaction: &TempoPooledTransaction,
+        tip_timestamp: u64,
+    ) -> TempoTransactionValidator<MockEthProvider<tempo_primitives::TempoPrimitives, TempoChainSpec>>
+    {
+        let chain_spec = DEV.clone();
+        let provider =
+            MockEthProvider::<tempo_primitives::TempoPrimitives, reth_chainspec::ChainSpec>::new()
+                .with_chain_spec(Arc::unwrap_or_clone(chain_spec.clone()));
+        provider.add_account(
+            transaction.sender(),
+            ExtendedAccount::new(transaction.nonce(), alloy_primitives::U256::ZERO),
+        );
+        let block_with_gas = Block {
+            header: TempoHeader {
+                inner: alloy_consensus::Header {
+                    gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            body: Default::default(),
+        };
+        provider.add_block(B256::random(), block_with_gas);
+
+        let usd_currency_value =
+            uint!(0x5553440000000000000000000000000000000000000000000000000000000006_U256);
+        let transfer_policy_id_packed =
+            uint!(0x0000000000000000000000010000000000000000000000000000000000000000_U256);
+        let balance_slot = TIP20Token::from_address(PATH_USD_ADDRESS)
+            .expect("PATH_USD_ADDRESS is a valid TIP20 token")
+            .balances[transaction.sender()]
+        .slot();
+        let fee_payer_balance = U256::from(1_000_000_000_000u64);
+        provider.add_account(
+            PATH_USD_ADDRESS,
+            ExtendedAccount::new(0, U256::ZERO).extend_storage([
+                (tip20_slots::CURRENCY.into(), usd_currency_value),
+                (
+                    tip20_slots::TRANSFER_POLICY_ID.into(),
+                    transfer_policy_id_packed,
+                ),
+                (balance_slot.into(), fee_payer_balance),
+            ]),
+        );
+
+        let evm_config = TempoEvmConfig::new(chain_spec);
+        let inner = EthTransactionValidatorBuilder::new(provider.clone(), evm_config)
+            .disable_balance_check()
+            .with_custom_tx_type(TempoTxType::AA as u8)
+            .no_eip4844()
+            .build(InMemoryBlobStore::default());
+        let amm_cache =
+            AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
+        let validator = TempoTransactionValidator::new(
+            inner,
+            DEFAULT_AA_VALID_AFTER_MAX_SECS,
+            DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            amm_cache,
+        );
+
         let mock_block = create_mock_block(tip_timestamp);
         validator.on_new_head_block(&mock_block);
 
@@ -1880,16 +1997,22 @@ mod tests {
         );
 
         // Add TIP403Registry with blacklist policy containing fee_payer
-        provider
-            .setup_storage(TempoHardfork::default(), || {
-                let mut registry = TIP403Registry::new();
-                registry.policy_records[policy_id].base.write(PolicyData {
-                    policy_type: ITIP403Registry::PolicyType::BLACKLIST as u8,
-                    admin: Address::ZERO,
-                })?;
-                registry.policy_set[policy_id][fee_payer].write(true)
-            })
-            .unwrap();
+        let policy_data = PolicyData {
+            policy_type: ITIP403Registry::PolicyType::BLACKLIST as u8,
+            admin: Address::ZERO,
+        };
+        let policy_data_slot = TIP403Registry::new().policy_records[policy_id]
+            .base
+            .base_slot();
+        let policy_set_slot = TIP403Registry::new().policy_set[policy_id][fee_payer].slot();
+
+        provider.add_account(
+            TIP403_REGISTRY_ADDRESS,
+            ExtendedAccount::new(0, U256::ZERO).extend_storage([
+                (policy_data_slot.into(), policy_data.encode_to_slot()),
+                (policy_set_slot.into(), U256::from(1)), // in blacklist = true
+            ]),
+        );
 
         // Create validator and validate
         let inner =
@@ -2887,13 +3010,13 @@ mod tests {
             transaction: &TempoPooledTransaction,
             user_address: Address,
             key_id: Address,
-            authorized_key: Option<AuthorizedKey>,
+            authorized_key_slot_value: Option<U256>,
         ) -> TempoTransactionValidator<MockEthProvider<TempoPrimitives, TempoChainSpec>> {
             setup_validator_with_keychain_storage_spec(
                 transaction,
                 user_address,
                 key_id,
-                authorized_key,
+                authorized_key_slot_value,
                 moderato_with_t1c(),
             )
         }
@@ -2902,7 +3025,7 @@ mod tests {
             transaction: &TempoPooledTransaction,
             user_address: Address,
             key_id: Address,
-            authorized_key: Option<AuthorizedKey>,
+            authorized_key_slot_value: Option<U256>,
             chain_spec: TempoChainSpec,
         ) -> TempoTransactionValidator<MockEthProvider<TempoPrimitives, TempoChainSpec>> {
             let provider = MockEthProvider::<TempoPrimitives>::new().with_chain_spec(chain_spec);
@@ -2914,13 +3037,14 @@ mod tests {
             );
             provider.add_block(B256::random(), Default::default());
 
-            // If authorized key provided, setup AccountKeychain storage
-            if let Some(authorized_key) = authorized_key {
-                provider
-                    .setup_storage(TempoHardfork::default(), || {
-                        AccountKeychain::new().keys[user_address][key_id].write(authorized_key)
-                    })
-                    .unwrap();
+            // If slot value provided, setup AccountKeychain storage
+            if let Some(slot_value) = authorized_key_slot_value {
+                let storage_slot = AccountKeychain::new().keys[user_address][key_id].base_slot();
+                provider.add_account(
+                    ACCOUNT_KEYCHAIN_ADDRESS,
+                    ExtendedAccount::new(0, U256::ZERO)
+                        .extend_storage([(storage_slot.into(), slot_value)]),
+                );
             }
 
             let inner =
@@ -2982,16 +3106,19 @@ mod tests {
                 create_aa_with_keychain_signature(user_address, &access_key_signer, None);
 
             // Setup storage with a valid authorized key (expiry > 0, not revoked)
+            let slot_value = AuthorizedKey {
+                signature_type: 0, // secp256k1
+                expiry: u64::MAX,  // never expires
+                enforce_limits: false,
+                is_revoked: false,
+            }
+            .encode_to_slot();
+
             let validator = setup_validator_with_keychain_storage(
                 &transaction,
                 user_address,
                 access_key_address,
-                Some(AuthorizedKey {
-                    signature_type: 0, // secp256k1
-                    expiry: u64::MAX,  // never expires
-                    enforce_limits: false,
-                    is_revoked: false,
-                }),
+                Some(slot_value),
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
@@ -3016,16 +3143,19 @@ mod tests {
                 create_aa_with_keychain_signature(user_address, &access_key_signer, None);
 
             // Setup storage with a revoked key
+            let slot_value = AuthorizedKey {
+                signature_type: 0,
+                expiry: 0, // revoked keys have expiry=0
+                enforce_limits: false,
+                is_revoked: true,
+            }
+            .encode_to_slot();
+
             let validator = setup_validator_with_keychain_storage(
                 &transaction,
                 user_address,
                 access_key_address,
-                Some(AuthorizedKey {
-                    signature_type: 0,
-                    expiry: 0, // revoked keys have expiry=0
-                    enforce_limits: false,
-                    is_revoked: true,
-                }),
+                Some(slot_value),
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
@@ -3054,16 +3184,19 @@ mod tests {
                 create_aa_with_keychain_signature(user_address, &access_key_signer, None);
 
             // Setup storage with expiry = 0 (key doesn't exist)
+            let slot_value = AuthorizedKey {
+                signature_type: 0,
+                expiry: 0, // expiry = 0 means key doesn't exist
+                enforce_limits: false,
+                is_revoked: false,
+            }
+            .encode_to_slot();
+
             let validator = setup_validator_with_keychain_storage(
                 &transaction,
                 user_address,
                 access_key_address,
-                Some(AuthorizedKey {
-                    signature_type: 0,
-                    expiry: 0, // expiry = 0 means key doesn't exist
-                    enforce_limits: false,
-                    is_revoked: false,
-                }),
+                Some(slot_value),
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
@@ -3180,16 +3313,19 @@ mod tests {
                 Some(signed_key_auth),
             );
 
+            let existing_key_slot = AuthorizedKey {
+                signature_type: 0,
+                expiry: u64::MAX,
+                enforce_limits: false,
+                is_revoked: false,
+            }
+            .encode_to_slot();
+
             let validator = setup_validator_with_keychain_storage(
                 &transaction,
                 user_address,
                 access_key_address,
-                Some(AuthorizedKey {
-                    signature_type: 0,
-                    expiry: u64::MAX,
-                    enforce_limits: false,
-                    is_revoked: false,
-                }),
+                Some(existing_key_slot),
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
@@ -4277,7 +4413,7 @@ mod tests {
             transaction: &TempoPooledTransaction,
             user_address: Address,
             key_id: Address,
-            authorized_key: Option<AuthorizedKey>,
+            authorized_key_slot_value: Option<U256>,
         ) -> TempoTransactionValidator<MockEthProvider<TempoPrimitives, TempoChainSpec>> {
             use tempo_chainspec::spec::DEV;
 
@@ -4285,7 +4421,7 @@ mod tests {
                 transaction,
                 user_address,
                 key_id,
-                authorized_key,
+                authorized_key_slot_value,
                 Arc::unwrap_or_clone(DEV.clone()),
             )
         }
@@ -4707,16 +4843,18 @@ mod tests {
             // The actual mismatch scenario would require manually constructing an invalid state.
 
             // Setup with valid key for the actual sender
+            let slot_value = AuthorizedKey {
+                signature_type: 0,
+                expiry: u64::MAX,
+                enforce_limits: false,
+                is_revoked: false,
+            }
+            .encode_to_slot();
             let validator = setup_validator_with_keychain_storage(
                 &transaction,
                 real_user,
                 access_key_address,
-                Some(AuthorizedKey {
-                    signature_type: 0,
-                    expiry: u64::MAX,
-                    enforce_limits: false,
-                    is_revoked: false,
-                }),
+                Some(slot_value),
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
@@ -4738,7 +4876,7 @@ mod tests {
             transaction: &TempoPooledTransaction,
             user_address: Address,
             key_id: Address,
-            authorized_key: Option<AuthorizedKey>,
+            authorized_key_slot_value: Option<U256>,
             tip_timestamp: u64,
         ) -> TempoTransactionValidator<MockEthProvider<TempoPrimitives, TempoChainSpec>> {
             let provider =
@@ -4764,13 +4902,14 @@ mod tests {
             };
             provider.add_block(B256::random(), block);
 
-            // If authorized key provided, setup AccountKeychain storage
-            if let Some(authorized_key) = authorized_key {
-                provider
-                    .setup_storage(TempoHardfork::default(), || {
-                        AccountKeychain::new().keys[user_address][key_id].write(authorized_key)
-                    })
-                    .unwrap();
+            // If slot value provided, setup AccountKeychain storage
+            if let Some(slot_value) = authorized_key_slot_value {
+                let storage_slot = AccountKeychain::new().keys[user_address][key_id].base_slot();
+                provider.add_account(
+                    ACCOUNT_KEYCHAIN_ADDRESS,
+                    ExtendedAccount::new(0, U256::ZERO)
+                        .extend_storage([(storage_slot.into(), slot_value)]),
+                );
             }
 
             let inner =
@@ -4803,16 +4942,19 @@ mod tests {
                 create_aa_with_keychain_signature(user_address, &access_key_signer, None);
 
             // Setup storage with an expired key (expiry in the past)
+            let slot_value = AuthorizedKey {
+                signature_type: 0,
+                expiry: current_time - 1, // Expired (in the past)
+                enforce_limits: false,
+                is_revoked: false,
+            }
+            .encode_to_slot();
+
             let validator = setup_validator_with_keychain_storage_and_timestamp(
                 &transaction,
                 user_address,
                 access_key_address,
-                Some(AuthorizedKey {
-                    signature_type: 0,
-                    expiry: current_time - 1, // Expired (in the past)
-                    enforce_limits: false,
-                    is_revoked: false,
-                }),
+                Some(slot_value),
                 current_time,
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
@@ -4842,16 +4984,19 @@ mod tests {
                 create_aa_with_keychain_signature(user_address, &access_key_signer, None);
 
             // Setup storage with expiry == current_time (edge case: expired)
+            let slot_value = AuthorizedKey {
+                signature_type: 0,
+                expiry: current_time, // Expiry at exactly current time should be rejected
+                enforce_limits: false,
+                is_revoked: false,
+            }
+            .encode_to_slot();
+
             let validator = setup_validator_with_keychain_storage_and_timestamp(
                 &transaction,
                 user_address,
                 access_key_address,
-                Some(AuthorizedKey {
-                    signature_type: 0,
-                    expiry: current_time, // Expiry at exactly current time should be rejected
-                    enforce_limits: false,
-                    is_revoked: false,
-                }),
+                Some(slot_value),
                 current_time,
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
@@ -4880,16 +5025,19 @@ mod tests {
                 create_aa_with_keychain_signature(user_address, &access_key_signer, None);
 
             // Setup storage with a future expiry
+            let slot_value = AuthorizedKey {
+                signature_type: 0,
+                expiry: current_time + 100, // Valid (in the future)
+                enforce_limits: false,
+                is_revoked: false,
+            }
+            .encode_to_slot();
+
             let validator = setup_validator_with_keychain_storage_and_timestamp(
                 &transaction,
                 user_address,
                 access_key_address,
-                Some(AuthorizedKey {
-                    signature_type: 0,
-                    expiry: current_time + 100, // Valid (in the future)
-                    enforce_limits: false,
-                    is_revoked: false,
-                }),
+                Some(slot_value),
                 current_time,
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
@@ -5479,16 +5627,19 @@ mod tests {
             let transaction =
                 create_aa_with_keychain_signature(user_address, &access_key_signer, None);
 
+            let slot_value = AuthorizedKey {
+                signature_type: 0,
+                expiry: u64::MAX,
+                enforce_limits: false,
+                is_revoked: false,
+            }
+            .encode_to_slot();
+
             let validator = setup_validator_with_keychain_storage(
                 &transaction,
                 user_address,
                 access_key_address,
-                Some(AuthorizedKey {
-                    signature_type: 0,
-                    expiry: u64::MAX,
-                    enforce_limits: false,
-                    is_revoked: false,
-                }),
+                Some(slot_value),
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
@@ -5534,6 +5685,14 @@ mod tests {
             let transaction =
                 create_aa_with_v1_keychain_signature(user_address, &access_key_signer, None);
 
+            let slot_value = AuthorizedKey {
+                signature_type: 0,
+                expiry: u64::MAX,
+                enforce_limits: false,
+                is_revoked: false,
+            }
+            .encode_to_slot();
+
             // Pre-T1C validator with keychain storage
             let provider =
                 MockEthProvider::<TempoPrimitives>::new().with_chain_spec(moderato_without_t1c());
@@ -5542,18 +5701,13 @@ mod tests {
                 ExtendedAccount::new(transaction.nonce(), U256::ZERO),
             );
             provider.add_block(B256::random(), Default::default());
-            provider
-                .setup_storage(TempoHardfork::default(), || {
-                    AccountKeychain::new().keys[user_address][access_key_address].write(
-                        AuthorizedKey {
-                            signature_type: 0,
-                            expiry: u64::MAX,
-                            enforce_limits: false,
-                            is_revoked: false,
-                        },
-                    )
-                })
-                .unwrap();
+            let storage_slot =
+                AccountKeychain::new().keys[user_address][access_key_address].base_slot();
+            provider.add_account(
+                ACCOUNT_KEYCHAIN_ADDRESS,
+                ExtendedAccount::new(0, U256::ZERO)
+                    .extend_storage([(storage_slot.into(), slot_value)]),
+            );
             let inner =
                 EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
                     .disable_balance_check()
@@ -6057,7 +6211,7 @@ mod tests {
             .validate_transaction(TransactionOrigin::External, tx)
             .await;
 
-        // Should NOT fail with CallGasCostMoreThanGasLimit (intrinsic gas check)
+        // Should NOT fail with InsufficientGasForIntrinsicCost
         if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
             assert!(
                 matches!(err, InvalidPoolTransactionError::IntrinsicGasTooLow),
@@ -6165,7 +6319,7 @@ mod tests {
         // Verify has_enough_liquidity would bypass (return true) for this token
         // because it matches a validator token. This confirms the vulnerability we're testing.
         let liquidity_result =
-            amm_cache.has_enough_liquidity(paused_validator_token, U256::from(1000), &mut state);
+            amm_cache.has_enough_liquidity(paused_validator_token, U256::from(1000), &state);
         assert!(
             liquidity_result.is_ok() && liquidity_result.unwrap(),
             "Token in unique_tokens should bypass liquidity check and return true"
@@ -6654,5 +6808,70 @@ mod tests {
             matches!(result, Err(InvalidPoolTransactionError::IntrinsicGasTooLow)),
             "Gas limit one below intrinsic gas should fail, got: {result:?}"
         );
+    }
+
+    /// Test that T2 validation caches intrinsic state gas on the pooled transaction.
+    #[tokio::test]
+    async fn test_t2_intrinsic_state_gas_cached_on_aa_tx() {
+        // DEV chain spec has T2 active at timestamp 0, chain_id=1337
+        let pooled = TxBuilder::aa(Address::random())
+            .chain_id(1337)
+            .fee_token(PATH_USD_ADDRESS)
+            .gas_limit(1_000_000)
+            .build();
+
+        let validator = setup_validator_dev(&pooled, 100);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, pooled)
+            .await;
+
+        match &outcome {
+            TransactionValidationOutcome::Valid { transaction, .. } => {
+                let state_gas = transaction.transaction().intrinsic_state_gas();
+                assert_eq!(
+                    state_gas, 225_000,
+                    "state gas should be 225k for nonce=0 T3 tx (TIP-1016 spec)"
+                );
+                assert_eq!(
+                    transaction.transaction().execution_gas_limit(),
+                    1_000_000 - 225_000,
+                    "execution gas limit should be gas_limit - state_gas"
+                );
+            }
+            other => panic!("Expected Valid outcome, got: {other:?}"),
+        }
+    }
+
+    /// Test that T1 validation does NOT set intrinsic state gas (remains 0).
+    #[tokio::test]
+    async fn test_t1_no_intrinsic_state_gas() {
+        // MODERATO has T1 active but no T2
+        let t1_timestamp = 1770303600u64 + 100;
+
+        let pooled = TxBuilder::aa(Address::random())
+            .fee_token(PATH_USD_ADDRESS)
+            .gas_limit(1_000_000)
+            .build();
+
+        let validator = setup_validator(&pooled, t1_timestamp);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, pooled)
+            .await;
+
+        match &outcome {
+            TransactionValidationOutcome::Valid { transaction, .. } => {
+                assert_eq!(
+                    transaction.transaction().intrinsic_state_gas(),
+                    0,
+                    "T1 should not set state gas"
+                );
+                assert_eq!(
+                    transaction.transaction().execution_gas_limit(),
+                    1_000_000,
+                    "T1 execution_gas_limit should equal gas_limit"
+                );
+            }
+            other => panic!("Expected Valid outcome, got: {other:?}"),
+        }
     }
 }
