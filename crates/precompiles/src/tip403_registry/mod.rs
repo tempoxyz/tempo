@@ -16,9 +16,9 @@ use tempo_precompiles_macros::{Storable, contract};
 
 use crate::{
     TIP403_REGISTRY_ADDRESS,
+    address_registry::is_virtual_address,
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
-    address_registry::is_virtual_address,
 };
 use alloy::primitives::Address;
 

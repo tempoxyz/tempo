@@ -1,9 +1,9 @@
 use crate::{
-    Precompile, dispatch_call, input_cost, mutate,
+    Precompile,
     address_registry::{
         AddressRegistry, MasterId, UserTag, decode_virtual_address, is_virtual_address,
     },
-    view,
+    dispatch_call, input_cost, mutate, view,
 };
 use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
@@ -61,9 +61,9 @@ impl Precompile for AddressRegistry {
 mod tests {
     use super::*;
     use crate::{
+        address_registry::IAddressRegistry,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
-        address_registry::IAddressRegistry,
     };
     use alloy::sol_types::{SolCall, SolValue};
     use tempo_chainspec::hardfork::TempoHardfork;
