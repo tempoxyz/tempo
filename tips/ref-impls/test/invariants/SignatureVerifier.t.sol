@@ -58,9 +58,17 @@ contract SignatureVerifierInvariantTest is Test {
     uint256 internal ghost_sv6_unknownTypeAllowed;
     uint256 internal ghost_sv7_keychainAllowed;
 
+    bool internal _precompileAvailable;
+
+    modifier onlyIfAvailable() {
+        if (!_precompileAvailable) return;
+        _;
+    }
+
     function setUp() public {
-        if (SIG_VERIFIER.code.length == 0) return;
         targetContract(address(this));
+        _precompileAvailable = SIG_VERIFIER.code.length > 0;
+        if (!_precompileAvailable) return;
 
         for (uint256 i = 0; i < 5; i++) {
             string memory label = string(abi.encodePacked("sv_secp_", vm.toString(i)));
@@ -86,7 +94,13 @@ contract SignatureVerifierInvariantTest is Test {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice SV1 (secp256k1): recover() matches ecrecover, verify() returns true
-    function handler_sv1_secpRecoverAndVerify(uint256 actorSeed, bytes32 hash) external {
+    function handler_sv1_secpRecoverAndVerify(
+        uint256 actorSeed,
+        bytes32 hash
+    )
+        external
+        onlyIfAvailable
+    {
         uint256 idx = actorSeed % _secpKeys.length;
         address expected = _secpAddrs[idx];
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(_secpKeys[idx], hash);
@@ -117,7 +131,13 @@ contract SignatureVerifierInvariantTest is Test {
     }
 
     /// @notice SV1 (secp256k1): v normalization - raw v (0/1) accepted
-    function handler_sv1_secpVNormalization(uint256 actorSeed, bytes32 hash) external {
+    function handler_sv1_secpVNormalization(
+        uint256 actorSeed,
+        bytes32 hash
+    )
+        external
+        onlyIfAvailable
+    {
         uint256 idx = actorSeed % _secpKeys.length;
         address expected = _secpAddrs[idx];
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(_secpKeys[idx], hash);
@@ -136,7 +156,13 @@ contract SignatureVerifierInvariantTest is Test {
     }
 
     /// @notice SV1 (P256): recover() + verify() match expected address
-    function handler_sv1_p256RecoverAndVerify(uint256 actorSeed, bytes32 hash) external {
+    function handler_sv1_p256RecoverAndVerify(
+        uint256 actorSeed,
+        bytes32 hash
+    )
+        external
+        onlyIfAvailable
+    {
         uint256 idx = actorSeed % _p256Keys.length;
         bytes memory sig = _signP256(idx, hash);
 
@@ -163,7 +189,13 @@ contract SignatureVerifierInvariantTest is Test {
     }
 
     /// @notice SV1 (WebAuthn): recover() + verify() match expected address
-    function handler_sv1_webauthnRecoverAndVerify(uint256 actorSeed, bytes32 hash) external {
+    function handler_sv1_webauthnRecoverAndVerify(
+        uint256 actorSeed,
+        bytes32 hash
+    )
+        external
+        onlyIfAvailable
+    {
         uint256 idx = actorSeed % _p256Keys.length;
         bytes memory sig = _signWebAuthn(idx, hash);
 
@@ -190,7 +222,13 @@ contract SignatureVerifierInvariantTest is Test {
     }
 
     /// @notice SV1: verify() with wrong signer returns false
-    function handler_sv1_verifyWrongSigner(uint256 actorSeed, bytes32 hash) external {
+    function handler_sv1_verifyWrongSigner(
+        uint256 actorSeed,
+        bytes32 hash
+    )
+        external
+        onlyIfAvailable
+    {
         uint256 idx = actorSeed % _secpKeys.length;
         uint256 wrongIdx = (idx + 1) % _secpAddrs.length;
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(_secpKeys[idx], hash);
@@ -212,7 +250,7 @@ contract SignatureVerifierInvariantTest is Test {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice SV2 (secp256k1): high-s must be rejected
-    function handler_sv2_secpHighS(uint256 actorSeed, bytes32 hash) external {
+    function handler_sv2_secpHighS(uint256 actorSeed, bytes32 hash) external onlyIfAvailable {
         uint256 idx = actorSeed % _secpKeys.length;
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(_secpKeys[idx], hash);
 
@@ -232,7 +270,7 @@ contract SignatureVerifierInvariantTest is Test {
     }
 
     /// @notice SV2 (P256): high-s must be rejected
-    function handler_sv2_p256HighS(uint256 actorSeed, bytes32 hash) external {
+    function handler_sv2_p256HighS(uint256 actorSeed, bytes32 hash) external onlyIfAvailable {
         uint256 idx = actorSeed % _p256Keys.length;
         (bytes32 r, bytes32 s) = vm.signP256(_p256Keys[idx], hash);
 
@@ -252,7 +290,7 @@ contract SignatureVerifierInvariantTest is Test {
     }
 
     /// @notice SV2 (WebAuthn): high-s on inner P256 sig must be rejected
-    function handler_sv2_webauthnHighS(uint256 actorSeed, bytes32 hash) external {
+    function handler_sv2_webauthnHighS(uint256 actorSeed, bytes32 hash) external onlyIfAvailable {
         uint256 idx = actorSeed % _p256Keys.length;
 
         bytes memory webauthnData = _buildWebAuthnData(hash);
@@ -281,7 +319,7 @@ contract SignatureVerifierInvariantTest is Test {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice SV3: wrong-sized secp256k1 sigs revert
-    function handler_sv3_secpBadSize(uint256 sizeSeed) external {
+    function handler_sv3_secpBadSize(uint256 sizeSeed) external onlyIfAvailable {
         uint256 size = bound(sizeSeed, 0, 200);
         if (size == 65) size = 66;
 
@@ -299,7 +337,7 @@ contract SignatureVerifierInvariantTest is Test {
     }
 
     /// @notice SV3: wrong-sized P256 sigs revert
-    function handler_sv3_p256BadSize(uint256 sizeSeed) external {
+    function handler_sv3_p256BadSize(uint256 sizeSeed) external onlyIfAvailable {
         uint256 size = bound(sizeSeed, 1, 250);
         if (size == 130) size = 131;
 
@@ -317,7 +355,7 @@ contract SignatureVerifierInvariantTest is Test {
     }
 
     /// @notice SV3: wrong-sized WebAuthn sigs revert
-    function handler_sv3_webauthnBadSize(uint256 sizeSeed) external {
+    function handler_sv3_webauthnBadSize(uint256 sizeSeed) external onlyIfAvailable {
         uint256 size;
         if (sizeSeed % 2 == 0) {
             size = bound(sizeSeed, 1, 128);
@@ -339,7 +377,7 @@ contract SignatureVerifierInvariantTest is Test {
     }
 
     /// @notice SV3: zero-length input reverts
-    function handler_sv3_emptyInput() external {
+    function handler_sv3_emptyInput() external onlyIfAvailable {
         if (_callBothRevert(keccak256("sv3"), new bytes(0), address(0xdead))) {
             ghost_sv3_badSizeAllowed++;
         } else {
@@ -352,7 +390,14 @@ contract SignatureVerifierInvariantTest is Test {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice SV4: garbage secp256k1 sigs revert
-    function handler_sv4_garbageSecp(bytes32 garbageR, bytes32 garbageS, uint8 garbageV) external {
+    function handler_sv4_garbageSecp(
+        bytes32 garbageR,
+        bytes32 garbageS,
+        uint8 garbageV
+    )
+        external
+        onlyIfAvailable
+    {
         garbageV = (garbageV % 2 == 0) ? 27 : 28;
         bytes memory sig = abi.encodePacked(garbageR, garbageS, garbageV);
         bytes32 hash = keccak256("sv4_secp");
@@ -415,7 +460,7 @@ contract SignatureVerifierInvariantTest is Test {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice SV6: unknown type prefix bytes revert
-    function handler_sv6_unknownType(uint8 typeByte, uint256 sizeSeed) external {
+    function handler_sv6_unknownType(uint8 typeByte, uint256 sizeSeed) external onlyIfAvailable {
         if (typeByte >= TYPE_P256 && typeByte <= TYPE_KEYCHAIN_P256) typeByte = 0x05;
         uint256 size = bound(sizeSeed, 66, 300);
 
@@ -437,7 +482,7 @@ contract SignatureVerifierInvariantTest is Test {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice SV7: 0x03 prefix (Keychain secp256k1) rejected with valid-looking envelope
-    function handler_sv7_keychainSecp(uint256 actorSeed, bytes32 hash) external {
+    function handler_sv7_keychainSecp(uint256 actorSeed, bytes32 hash) external onlyIfAvailable {
         uint256 idx = actorSeed % _secpKeys.length;
         address user = _secpAddrs[idx];
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(_secpKeys[idx], hash);
@@ -451,7 +496,7 @@ contract SignatureVerifierInvariantTest is Test {
     }
 
     /// @notice SV7: 0x04 prefix (Keychain P256) rejected with valid-looking envelope
-    function handler_sv7_keychainP256(uint256 actorSeed, bytes32 hash) external {
+    function handler_sv7_keychainP256(uint256 actorSeed, bytes32 hash) external onlyIfAvailable {
         uint256 idx = actorSeed % _p256Keys.length;
         (bytes32 r, bytes32 s) = vm.signP256(_p256Keys[idx], hash);
         s = _normalizeP256S(s);
@@ -477,7 +522,7 @@ contract SignatureVerifierInvariantTest is Test {
                         MASTER INVARIANT
     //////////////////////////////////////////////////////////////*/
 
-    function invariant_signatureVerifier() public view {
+    function invariant_signatureVerifier() public view onlyIfAvailable {
         assertEq(ghost_sv1_mismatch, 0, "SV1: recover/verify mismatch");
         assertEq(ghost_sv2_highSAllowed, 0, "SV2: high-s signature was accepted");
         assertEq(ghost_sv3_badSizeAllowed, 0, "SV3: wrong-sized signature was accepted");
@@ -486,7 +531,7 @@ contract SignatureVerifierInvariantTest is Test {
         assertEq(ghost_sv7_keychainAllowed, 0, "SV7: keychain prefix was accepted");
     }
 
-    function afterInvariant() public view {
+    function afterInvariant() public view onlyIfAvailable {
         // Bug counters
         assertEq(ghost_sv1_mismatch, 0, "SV1: mismatch count > 0");
         assertEq(ghost_sv2_highSAllowed, 0, "SV2: high-s allowed count > 0");
