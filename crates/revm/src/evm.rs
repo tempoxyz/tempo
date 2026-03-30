@@ -37,6 +37,9 @@ pub struct TempoEvm<DB: Database, I> {
     pub(crate) initial_gas: u64,
     /// The fee token used to pay fees for the current transaction.
     pub(crate) fee_token: Option<Address>,
+    /// Initial state gas accumulated during validate_against_state_and_deduct_caller.
+    /// Tracks state gas from runtime checks (e.g. 2D nonce account creation, CREATE state gas).
+    pub(crate) initial_state_gas: u64,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -70,6 +73,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             collected_fee: U256::ZERO,
             initial_gas: 0,
             fee_token: None,
+            initial_state_gas: 0,
         }
     }
 }

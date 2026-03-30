@@ -10,6 +10,10 @@ pub trait TempoGasParams {
     fn tx_tip1000_auth_account_creation_cost(&self) -> u64 {
         self.gas_params().get(GasId::new(255))
     }
+
+    fn tx_tip1000_auth_account_creation_state_gas(&self) -> u64 {
+        self.gas_params().get(GasId::new(254))
+    }
 }
 
 impl TempoGasParams for GasParams {
