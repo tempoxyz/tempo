@@ -1,5 +1,6 @@
 [package]
 name = "tempo-primitives"
+description = "Tempo primitive types"
 
 version.workspace = true
 edition.workspace = true
@@ -83,6 +84,7 @@ std = [
 	"sha2/std",
 	"alloy-sol-types/std",
 	"tempo-contracts/std",
+	"reth-codecs?/std"
 ]
 reth = ["dep:reth-ethereum-primitives", "dep:reth-primitives-traits", "serde"]
 serde = [

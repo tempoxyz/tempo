@@ -1,5 +1,6 @@
 [package]
 name = "tempo-alloy"
+description = "Tempo extensions of Alloy"
 
 version.workspace = true
 edition.workspace = true
@@ -12,10 +13,10 @@ workspace = true
 
 [dependencies]
 tempo-contracts = { workspace = true, features = ["rpc"] }
-tempo-primitives = { workspace = true, features = ["serde", "reth"] }
-tempo-chainspec = { workspace = true, optional = true }
-tempo-evm = { workspace = true, optional = true }
-tempo-revm = { workspace = true, optional = true }
+tempo-primitives = { workspace = true, features = ["serde", "rpc"] }
+tempo-chainspec.workspace = true
+tempo-evm.workspace = true
+tempo-revm.workspace = true
 
 alloy-consensus.workspace = true
 alloy-contract.workspace = true
@@ -25,14 +26,13 @@ alloy-primitives = { workspace = true, features = ["rand"] }
 alloy-provider.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy-serde.workspace = true
-alloy-signer.workspace = true
 alloy-signer-local.workspace = true
 alloy-transport.workspace = true
 
-reth-evm = { workspace = true, optional = true }
-reth-primitives-traits = { workspace = true, optional = true }
-reth-rpc-convert = { workspace = true, optional = true }
-reth-rpc-eth-types = { workspace = true, optional = true }
+reth-evm.workspace = true
+reth-primitives-traits.workspace = true
+reth-rpc-convert.workspace = true
+reth-rpc-eth-types.workspace = true
 
 dashmap.workspace = true
 derive_more.workspace = true
@@ -43,6 +43,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 alloy = { workspace = true, features = ["providers", "rpc-types-eth", "sol-types"] }
+alloy-signer.workspace = true
 eyre.workspace = true
 test-case.workspace = true
 tokio.workspace = true
@@ -52,14 +53,4 @@ default = []
 asm-keccak = [
     "alloy-primitives/asm-keccak",
     "alloy/asm-keccak",
-]
-tempo-compat = [
-    "dep:reth-evm",
-    "dep:reth-rpc-convert",
-    "dep:reth-primitives-traits",
-    "dep:reth-rpc-eth-types",
-    "dep:tempo-chainspec",
-    "dep:tempo-evm",
-    "dep:tempo-revm",
-    "tempo-primitives/rpc",
 ]
