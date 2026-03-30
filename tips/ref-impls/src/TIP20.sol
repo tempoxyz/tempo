@@ -6,14 +6,14 @@ import { TIP403Registry } from "./TIP403Registry.sol";
 import { TempoUtilities } from "./TempoUtilities.sol";
 import { TIP20RolesAuth } from "./abstracts/TIP20RolesAuth.sol";
 import { ITIP20 } from "./interfaces/ITIP20.sol";
-import { ITIP20Registry } from "./interfaces/ITIP20Registry.sol";
+import { IAddressRegistry } from "./interfaces/IAddressRegistry.sol";
 
 contract TIP20 is ITIP20, TIP20RolesAuth {
 
     TIP403Registry internal constant TIP403_REGISTRY =
         TIP403Registry(0x403c000000000000000000000000000000000000);
-    ITIP20Registry internal constant TIP20_REGISTRY =
-        ITIP20Registry(0xfDC0000000000000000000000000000000000000);
+    IAddressRegistry internal constant TIP20_REGISTRY =
+        IAddressRegistry(0xfDC0000000000000000000000000000000000000);
 
     address internal constant TIP_FEE_MANAGER_ADDRESS = 0xfeEC000000000000000000000000000000000000;
     address internal constant STABLECOIN_DEX_ADDRESS = 0xDEc0000000000000000000000000000000000000;

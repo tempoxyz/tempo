@@ -3,7 +3,7 @@ pragma solidity >=0.8.13 <0.9.0;
 
 /// @title TIP-1022 virtual address registry interface
 /// @notice Registers master addresses and resolves virtual TIP-20 recipients to their masters
-interface ITIP20Registry {
+interface IAddressRegistry {
 
     /// @notice Emitted when a new virtual master is registered.
     event MasterRegistered(bytes4 indexed masterId, address indexed masterAddress);

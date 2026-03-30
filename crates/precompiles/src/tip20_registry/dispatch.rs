@@ -1,15 +1,15 @@
 use crate::{
     Precompile, dispatch_call, input_cost, mutate,
     tip20_registry::{
-        MasterId, TIP20Registry, UserTag, decode_virtual_address, is_virtual_address,
+        AddressRegistry, MasterId, UserTag, decode_virtual_address, is_virtual_address,
     },
     view,
 };
 use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
-use tempo_contracts::precompiles::ITIP20Registry::ITIP20RegistryCalls;
+use tempo_contracts::precompiles::IAddressRegistry::IAddressRegistryCalls;
 
-impl Precompile for TIP20Registry {
+impl Precompile for AddressRegistry {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         self.storage
             .deduct_gas(input_cost(calldata.len()))
@@ -25,27 +25,27 @@ impl Precompile for TIP20Registry {
 
         dispatch_call(
             calldata,
-            ITIP20RegistryCalls::abi_decode,
+            IAddressRegistryCalls::abi_decode,
             |call| match call {
                 // Registration
-                ITIP20RegistryCalls::registerVirtualMaster(call) => {
+                IAddressRegistryCalls::registerVirtualMaster(call) => {
                     mutate(call, msg_sender, |s, c| self.register_virtual_master(s, c))
                 }
                 // View functions
-                ITIP20RegistryCalls::getMaster(call) => view(call, |c| {
+                IAddressRegistryCalls::getMaster(call) => view(call, |c| {
                     Ok(self.get_master(c.masterId)?.unwrap_or(Address::ZERO))
                 }),
-                ITIP20RegistryCalls::resolveRecipient(call) => {
+                IAddressRegistryCalls::resolveRecipient(call) => {
                     view(call, |c| self.resolve_recipient(c.to))
                 }
-                ITIP20RegistryCalls::resolveVirtualAddress(call) => {
+                IAddressRegistryCalls::resolveVirtualAddress(call) => {
                     view(call, |c| self.resolve_virtual_address(c.virtualAddr))
                 }
                 // Pure functions
-                ITIP20RegistryCalls::isVirtualAddress(call) => {
+                IAddressRegistryCalls::isVirtualAddress(call) => {
                     view(call, |c| Ok(is_virtual_address(c.addr)))
                 }
-                ITIP20RegistryCalls::decodeVirtualAddress(call) => view(call, |c| {
+                IAddressRegistryCalls::decodeVirtualAddress(call) => view(call, |c| {
                     let (is_virtual, master_id, user_tag) = match decode_virtual_address(c.addr) {
                         Some((mid, tag)) => (true, mid, tag),
                         None => (false, MasterId::ZERO, UserTag::ZERO),
@@ -63,7 +63,7 @@ mod tests {
     use crate::{
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
-        tip20_registry::ITIP20Registry,
+        tip20_registry::IAddressRegistry,
     };
     use alloy::sol_types::{SolCall, SolValue};
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -72,13 +72,13 @@ mod tests {
     fn test_selector_coverage() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP20Registry::new();
+            let mut registry = AddressRegistry::new();
 
             let unsupported = check_selector_coverage(
                 &mut registry,
-                ITIP20RegistryCalls::SELECTORS,
-                "ITIP20Registry",
-                ITIP20RegistryCalls::name_by_selector,
+                IAddressRegistryCalls::SELECTORS,
+                "IAddressRegistry",
+                IAddressRegistryCalls::name_by_selector,
             );
 
             assert_full_coverage([unsupported]);
@@ -91,10 +91,10 @@ mod tests {
     fn test_get_master_precompile() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP20Registry::new();
+            let mut registry = AddressRegistry::new();
 
             // Unregistered masterId returns address(0)
-            let call = ITIP20Registry::getMasterCall {
+            let call = IAddressRegistry::getMasterCall {
                 masterId: Default::default(),
             };
             let result = registry.call(&call.abi_encode(), Address::ZERO)?;
@@ -110,10 +110,10 @@ mod tests {
     fn test_is_virtual_address_precompile() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP20Registry::new();
+            let mut registry = AddressRegistry::new();
 
             // Non-virtual
-            let call = ITIP20Registry::isVirtualAddressCall {
+            let call = IAddressRegistry::isVirtualAddressCall {
                 addr: Address::random(),
             };
             let result = registry.call(&call.abi_encode(), Address::ZERO)?;
@@ -122,7 +122,7 @@ mod tests {
             // Virtual
             let mut bytes = [0u8; 20];
             bytes[4..14].fill(0xFD);
-            let call = ITIP20Registry::isVirtualAddressCall {
+            let call = IAddressRegistry::isVirtualAddressCall {
                 addr: Address::from(bytes),
             };
             let result = registry.call(&call.abi_encode(), Address::ZERO)?;
@@ -137,9 +137,9 @@ mod tests {
         for hardfork in [TempoHardfork::T2, TempoHardfork::T1] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
             StorageCtx::enter(&mut storage, || {
-                let mut registry = TIP20Registry::new();
+                let mut registry = AddressRegistry::new();
 
-                let call = ITIP20Registry::getMasterCall {
+                let call = IAddressRegistry::getMasterCall {
                     masterId: Default::default(),
                 };
                 let result = registry.call(&call.abi_encode(), Address::ZERO)?;

@@ -7,7 +7,7 @@ import { Nonce } from "../src/Nonce.sol";
 import { StablecoinDEX } from "../src/StablecoinDEX.sol";
 import { TIP20 } from "../src/TIP20.sol";
 import { TIP20Factory } from "../src/TIP20Factory.sol";
-import { TIP20Registry } from "../src/TIP20Registry.sol";
+import { AddressRegistry } from "../src/AddressRegistry.sol";
 import { TIP403Registry } from "../src/TIP403Registry.sol";
 import { ValidatorConfig } from "../src/ValidatorConfig.sol";
 import { ValidatorConfigV2 } from "../src/ValidatorConfigV2.sol";
@@ -56,7 +56,7 @@ contract BaseTest is Test {
     StablecoinDEX public exchange = StablecoinDEX(_STABLECOIN_DEX);
     FeeManager public amm = FeeManager(_FEE_AMM);
     TIP403Registry public registry = TIP403Registry(_TIP403REGISTRY);
-    TIP20Registry public tip20Registry = TIP20Registry(_TIP20_REGISTRY);
+    AddressRegistry public tip20Registry = AddressRegistry(_TIP20_REGISTRY);
     INonce public nonce = INonce(_NONCE);
     IValidatorConfig public validatorConfig = IValidatorConfig(_VALIDATOR_CONFIG);
     IValidatorConfigV2 public validatorConfigV2 = IValidatorConfigV2(_VALIDATOR_CONFIG_V2);
@@ -80,7 +80,7 @@ contract BaseTest is Test {
         if (!isTempo) {
             deployCodeTo("AccountKeychain", _ACCOUNT_KEYCHAIN);
             deployCodeTo("TIP403Registry", _TIP403REGISTRY);
-            deployCodeTo("TIP20Registry", _TIP20_REGISTRY);
+            deployCodeTo("AddressRegistry", _TIP20_REGISTRY);
             deployCodeTo("StablecoinDEX", _STABLECOIN_DEX);
             deployCodeTo("FeeManager", _FEE_AMM);
             deployCodeTo("TIP20Factory", _TIP20FACTORY);
@@ -105,7 +105,7 @@ contract BaseTest is Test {
                 revert MissingPrecompile("TIP403Registry", _TIP403REGISTRY);
             }
             if (_TIP20_REGISTRY.code.length == 0) {
-                revert MissingPrecompile("TIP20Registry", _TIP20_REGISTRY);
+                revert MissingPrecompile("AddressRegistry", _TIP20_REGISTRY);
             }
             if (_TIP20FACTORY.code.length == 0) {
                 revert MissingPrecompile("TIP20Factory", _TIP20FACTORY);

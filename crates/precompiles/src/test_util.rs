@@ -7,7 +7,7 @@ use crate::{
     storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
     tip20::{self, ITIP20, TIP20Token},
     tip20_factory::{self, TIP20Factory},
-    tip20_registry::{ITIP20Registry, MasterId, TIP20Registry, UserTag, VIRTUAL_MAGIC},
+    tip20_registry::{AddressRegistry, IAddressRegistry, MasterId, UserTag, VIRTUAL_MAGIC},
 };
 use alloy::{
     primitives::{Address, B256, U256, address, hex_literal::hex},
@@ -469,10 +469,10 @@ pub fn make_virtual_address(master_id: MasterId, user_tag: UserTag) -> Address {
 }
 
 /// Registers [`VIRTUAL_MASTER`] and returns `(master_id, virtual_address)`.
-pub fn register_virtual_master(registry: &mut TIP20Registry) -> Result<(MasterId, Address)> {
+pub fn register_virtual_master(registry: &mut AddressRegistry) -> Result<(MasterId, Address)> {
     let master_id = registry.register_virtual_master(
         VIRTUAL_MASTER,
-        ITIP20Registry::registerVirtualMasterCall {
+        IAddressRegistry::registerVirtualMasterCall {
             salt: VIRTUAL_SALT.into(),
         },
     )?;

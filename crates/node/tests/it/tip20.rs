@@ -1,17 +1,17 @@
 use alloy::{
     primitives::{Address, FixedBytes, U256},
-    providers::ProviderBuilder,
+    providers::{Provider, ProviderBuilder},
     signers::local::MnemonicBuilder,
     sol_types::SolEvent,
+    transports::http::reqwest::Url,
 };
 use futures::future::try_join_all;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-use tempo_contracts::precompiles::{ITIP20, ITIP20Registry, ITIP403Registry, TIP20Error};
+use tempo_contracts::precompiles::{IAddressRegistry, ITIP20, ITIP403Registry, TIP20Error};
 use tempo_precompiles::{
-    TIP20_REGISTRY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    ADDRESS_REGISTRY_ADDRESS, TIP403_REGISTRY_ADDRESS,
     test_util::{VIRTUAL_SALT, make_virtual_address},
 };
-use alloy::{providers::Provider, transports::http::reqwest::Url};
 
 use crate::utils::{TestNodeBuilder, await_receipts, setup_test_token};
 
@@ -937,9 +937,13 @@ async fn test_tip20_pause_blocks_fee_collection() -> eyre::Result<()> {
 }
 
 /// Deploys a token, registers a virtual master, and returns all handles.
-async fn setup_virtual_test(
-) -> eyre::Result<(crate::utils::HttpOnlySetup, Url, Address, ITIP20::ITIP20Instance<impl Provider + Clone>, Address)>
-{
+async fn setup_virtual_test() -> eyre::Result<(
+    crate::utils::HttpOnlySetup,
+    Url,
+    Address,
+    ITIP20::ITIP20Instance<impl Provider + Clone>,
+    Address,
+)> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url.clone();
 
@@ -953,7 +957,7 @@ async fn setup_virtual_test(
     let gas_price = TEMPO_T1_BASE_FEE as u128;
 
     let token = setup_test_token(admin_provider.clone(), admin).await?;
-    let registry = ITIP20Registry::new(TIP20_REGISTRY_ADDRESS, admin_provider);
+    let registry = IAddressRegistry::new(ADDRESS_REGISTRY_ADDRESS, admin_provider);
 
     let register_receipt = registry
         .registerVirtualMaster(VIRTUAL_SALT.into())
@@ -967,12 +971,13 @@ async fn setup_virtual_test(
     let master_event = register_receipt
         .logs()
         .iter()
-        .filter_map(|log| ITIP20Registry::MasterRegistered::decode_log(&log.inner).ok())
+        .filter_map(|log| IAddressRegistry::MasterRegistered::decode_log(&log.inner).ok())
         .next()
         .expect("MasterRegistered event should be emitted");
     assert_eq!(master_event.masterAddress, admin);
 
-    let virtual_addr = make_virtual_address(master_event.masterId, FixedBytes::from([1, 2, 3, 4, 5, 6]));
+    let virtual_addr =
+        make_virtual_address(master_event.masterId, FixedBytes::from([1, 2, 3, 4, 5, 6]));
 
     Ok((setup, http_url, admin, token, virtual_addr))
 }

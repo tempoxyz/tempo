@@ -4,7 +4,7 @@ pragma solidity ^0.8.13;
 import { TIP20 } from "../../src/TIP20.sol";
 import { TempoUtilities as Tempo } from "../../src/TempoUtilities.sol";
 import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
-import { ITIP20Registry } from "../../src/interfaces/ITIP20Registry.sol";
+import { IAddressRegistry } from "../../src/interfaces/IAddressRegistry.sol";
 import { ITIP403Registry } from "../../src/interfaces/ITIP403Registry.sol";
 import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 import { Vm } from "forge-std/Vm.sol";
@@ -385,7 +385,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         } catch (bytes memory reason) {
             assertEq(
                 bytes4(reason),
-                ITIP20Registry.VirtualAddressUnregistered.selector,
+                IAddressRegistry.VirtualAddressUnregistered.selector,
                 "TEMPO-VA6: wrong unregistered transfer error"
             );
         }
@@ -436,7 +436,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         } catch (bytes memory reason) {
             assertEq(
                 bytes4(reason),
-                ITIP20Registry.VirtualAddressUnregistered.selector,
+                IAddressRegistry.VirtualAddressUnregistered.selector,
                 "TEMPO-VA6: wrong unregistered transferFrom error"
             );
         }
@@ -473,7 +473,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         } catch (bytes memory reason) {
             assertEq(
                 bytes4(reason),
-                ITIP20Registry.VirtualAddressUnregistered.selector,
+                IAddressRegistry.VirtualAddressUnregistered.selector,
                 "TEMPO-VA6: wrong unregistered mint error"
             );
         }
