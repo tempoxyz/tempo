@@ -294,6 +294,31 @@ impl AccountKeychain {
             _ => return Err(AccountKeychainError::invalid_signature_type().into()),
         };
 
+        // TIP-1011 fields are hardfork-gated at T3, so reject them before mutating state.
+        let allowed_call_configs = if is_t3 {
+            if config.enforceAllowedCalls {
+                Some(
+                    config
+                        .allowedCalls
+                        .iter()
+                        .map(Self::abi_call_scope_to_config)
+                        .collect::<Result<Vec<_>>>()?,
+                )
+            } else {
+                None
+            }
+        } else {
+            if config.limits.iter().any(|limit| limit.period != 0) {
+                return Err(AccountKeychainError::invalid_call_scope().into());
+            }
+
+            if config.enforceAllowedCalls || !config.allowedCalls.is_empty() {
+                return Err(AccountKeychainError::invalid_call_scope().into());
+            }
+
+            None
+        };
+
         // Create and store the new key
         let new_key = AuthorizedKey {
             signature_type,
@@ -304,52 +329,18 @@ impl AccountKeychain {
 
         self.keys[msg_sender][call.keyId].write(new_key)?;
 
-        // Pre-T3 stores lifetime limits directly in the remaining-limit slot.
-        if config.enforceLimits && !is_t3 {
-            let limit_key = Self::spending_limit_key(msg_sender, call.keyId);
-            for limit in &config.limits {
-                self.spending_limits[limit_key][limit.token].write(SpendingLimitState {
-                    remaining: limit.amount,
-                    ..Default::default()
-                })?;
-            }
-        }
+        let limits = config
+            .enforceLimits
+            .then_some(config.limits.iter())
+            .into_iter()
+            .flatten();
 
-        // TIP-1011 fields are hardfork-gated at T3.
-        if is_t3 {
-            let allowed_call_configs = if config.enforceAllowedCalls {
-                Some(
-                    config
-                        .allowedCalls
-                        .iter()
-                        .map(Self::abi_call_scope_to_config)
-                        .collect::<Result<Vec<_>>>()?,
-                )
-            } else {
-                None
-            };
-
-            let limits = config
-                .enforceLimits
-                .then_some(config.limits.iter())
-                .into_iter()
-                .flatten();
-
-            self.apply_key_authorization_t3(
-                msg_sender,
-                call.keyId,
-                limits,
-                allowed_call_configs.as_deref(),
-            )?;
-        } else {
-            if config.limits.iter().any(|limit| limit.period != 0) {
-                return Err(AccountKeychainError::invalid_call_scope().into());
-            }
-
-            if config.enforceAllowedCalls || !config.allowedCalls.is_empty() {
-                return Err(AccountKeychainError::invalid_call_scope().into());
-            }
-        }
+        self.apply_key_authorization_restrictions(
+            msg_sender,
+            call.keyId,
+            limits,
+            allowed_call_configs.as_deref(),
+        )?;
 
         // Emit event
         self.emit_event(AccountKeychainEvent::KeyAuthorized(
@@ -736,27 +727,30 @@ impl AccountKeychain {
         self.tx_origin.t_write(origin)
     }
 
-    /// Applies T3 key-authorization extensions: periodic token limits and call scopes.
-    pub fn apply_key_authorization_t3<'a>(
+    fn apply_key_authorization_restrictions<'a>(
         &mut self,
         account: Address,
         key_id: Address,
         limits: impl IntoIterator<Item = &'a TokenLimit>,
         allowed_calls: Option<&[ProtocolCallScope]>,
     ) -> Result<()> {
+        let limit_key = Self::spending_limit_key(account, key_id);
+
         if !self.storage.spec().is_t3() {
+            debug_assert!(allowed_calls.is_none());
+
+            for limit in limits {
+                self.spending_limits[limit_key][limit.token].write(SpendingLimitState {
+                    remaining: limit.amount,
+                    ..Default::default()
+                })?;
+            }
+
             return Ok(());
         }
 
-        let limit_key = Self::spending_limit_key(account, key_id);
         let now = self.storage.timestamp().saturating_to::<u64>();
-
-        let mut seen_tokens = HashSet::new();
         for limit in limits {
-            if !seen_tokens.insert(limit.token) {
-                return Err(AccountKeychainError::invalid_call_scope().into());
-            }
-
             let period_end = if limit.period == 0 {
                 0
             } else {
@@ -2078,6 +2072,64 @@ mod tests {
     }
 
     #[test]
+    fn test_pre_t3_authorize_key_rejects_tip_1011_fields_without_writing_key() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
+        let account = Address::random();
+        let key_id = Address::random();
+        let token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+
+            let result = keychain.authorize_key(
+                account,
+                authorizeKeyCall {
+                    keyId: key_id,
+                    signatureType: SignatureType::Secp256k1,
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: true,
+                        limits: vec![TokenLimit {
+                            token,
+                            amount: U256::from(100u64),
+                            period: 60,
+                        }],
+                        enforceAllowedCalls: false,
+                        allowedCalls: vec![],
+                    },
+                },
+            );
+
+            assert!(
+                matches!(
+                    result,
+                    Err(TempoPrecompileError::AccountKeychainError(
+                        AccountKeychainError::InvalidCallScope(_)
+                    ))
+                ),
+                "expected InvalidCallScope, got {result:?}"
+            );
+
+            assert_eq!(
+                keychain.keys[account][key_id].read()?,
+                AuthorizedKey::default(),
+                "pre-T3 invalid TIP-1011 fields must not leave behind a key"
+            );
+
+            let limit_key = AccountKeychain::spending_limit_key(account, key_id);
+            assert_eq!(
+                keychain.spending_limits[limit_key][token].read()?,
+                SpendingLimitState::default(),
+                "pre-T3 invalid TIP-1011 fields must not initialize limits"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_different_key_id_can_be_authorized_after_revocation() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let account = Address::random();
@@ -3350,7 +3402,7 @@ mod tests {
             )?;
 
             let err = keychain
-                .apply_key_authorization_t3(
+                .apply_key_authorization_restrictions(
                     account,
                     key_id,
                     &[],
@@ -3410,7 +3462,7 @@ mod tests {
                 },
             )?;
 
-            keychain.apply_key_authorization_t3(
+            keychain.apply_key_authorization_restrictions(
                 account,
                 key_id,
                 &[TokenLimit {
@@ -3479,7 +3531,7 @@ mod tests {
                 },
             )?;
 
-            keychain.apply_key_authorization_t3(account, key_id, &[], Some(&[]))?;
+            keychain.apply_key_authorization_restrictions(account, key_id, &[], Some(&[]))?;
 
             let scopes = keychain.get_allowed_calls(getAllowedCallsCall {
                 account,
@@ -3658,7 +3710,7 @@ mod tests {
                 },
             )?;
 
-            keychain.apply_key_authorization_t3(
+            keychain.apply_key_authorization_restrictions(
                 account,
                 key_id,
                 &[],

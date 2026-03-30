@@ -164,17 +164,6 @@ where
         &self,
         auth: &tempo_primitives::transaction::SignedKeyAuthorization,
     ) -> Result<(), TempoPoolTransactionError> {
-        if let Some(limits) = auth.limits.as_ref() {
-            let mut seen_tokens = HashSet::with_capacity(limits.len());
-            for limit in limits {
-                if !seen_tokens.insert(limit.token) {
-                    return Err(TempoPoolTransactionError::Keychain(
-                        "duplicate token limits are not allowed",
-                    ));
-                }
-            }
-        }
-
         let Some(scopes) = auth.allowed_calls.as_ref() else {
             return Ok(());
         };
