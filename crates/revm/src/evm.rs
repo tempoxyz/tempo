@@ -50,6 +50,9 @@ pub struct TempoEvm<DB: Database, I> {
     /// The transaction pool sets this because it performs its own liquidity
     /// validation against a cached view of the AMM state.
     pub skip_liquidity_check: bool,
+    /// Initial state gas accumulated during validate_against_state_and_deduct_caller.
+    /// Tracks state gas from runtime checks (e.g. 2D nonce account creation, CREATE state gas).
+    pub(crate) initial_state_gas: u64,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -86,6 +89,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             key_expiry: None,
             skip_valid_after_check: false,
             skip_liquidity_check: false,
+            initial_state_gas: 0,
         }
     }
 }
