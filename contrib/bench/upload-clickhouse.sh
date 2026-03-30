@@ -82,8 +82,12 @@ baseline_ref = esc(os.environ.get("BENCH_BASELINE_REF", ""))
 feature_ref = esc(os.environ.get("BENCH_FEATURE_REF", ""))
 triggered_by = esc(os.environ.get("BENCH_ACTOR", ""))
 run_type = esc(os.environ.get("BENCH_RUN_TYPE", "manual"))
-github_run_id = esc(os.environ.get("GITHUB_RUN_ID", ""))
-github_run_url = esc(os.environ.get("BENCH_JOB_URL", ""))
+github_run_id_raw = os.environ.get("GITHUB_RUN_ID", "")
+default_run_url = ""
+if github_run_id_raw and os.environ.get("GITHUB_SERVER_URL") and os.environ.get("GITHUB_REPOSITORY"):
+    default_run_url = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{github_run_id_raw}"
+github_run_id = esc(github_run_id_raw)
+github_run_url = esc(os.environ.get("BENCH_JOB_URL") or default_run_url)
 
 print(
     f"INSERT INTO tempo_bench_runs (run_id, created_at, chain_id, start_block, end_block, "

@@ -84,6 +84,14 @@ on:
         required: false
         default: ""
         type: string
+      run-type:
+        description: "Attribution for this benchmark run"
+        required: false
+        default: "manual"
+        type: choice
+        options:
+          - "manual"
+          - "nightly"
       no_slack:
         description: "Suppress Slack notifications for benchmark results"
         required: false
@@ -124,6 +132,7 @@ jobs:
       tracy-offset: ${{ steps.args.outputs.tracy-offset }}
       baseline-hardfork: ${{ steps.args.outputs.baseline-hardfork }}
       feature-hardfork: ${{ steps.args.outputs.feature-hardfork }}
+      run-type: ${{ steps.args.outputs.run-type }}
       force-bloat: ${{ steps.args.outputs.force-bloat }}
       no-slack: ${{ steps.args.outputs.no-slack }}
       comment-id: ${{ steps.ack.outputs.comment-id }}
@@ -153,7 +162,7 @@ jobs:
         with:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |
-            let pr, actor, preset, duration, bloat, tps, baseline, feature, samply, tracy, tracySeconds, tracyOffset, baselineHardfork, featureHardfork, forceBloat, noSlack;
+            let pr, actor, preset, duration, bloat, tps, baseline, feature, samply, tracy, tracySeconds, tracyOffset, baselineHardfork, featureHardfork, runType, forceBloat, noSlack;
 
             if (context.eventName === 'workflow_dispatch') {
               actor = '${{ github.actor }}';
@@ -169,6 +178,7 @@ jobs:
               tracyOffset = '${{ github.event.inputs.tracy-offset }}' || '120';
               baselineHardfork = '${{ github.event.inputs.baseline-hardfork }}' || '';
               featureHardfork = '${{ github.event.inputs.feature-hardfork }}' || '';
+              runType = '${{ github.event.inputs.run-type }}' || 'manual';
               forceBloat = '${{ github.event.inputs.force-bloat }}' === 'true' ? 'true' : 'false';
               noSlack = '${{ github.event.inputs.no_slack }}' !== 'false' ? 'true' : 'false';
 
@@ -258,6 +268,7 @@ jobs:
               tracyOffset = defaults['tracy-offset'];
               baselineHardfork = defaults['baseline-hardfork'];
               featureHardfork = defaults['feature-hardfork'];
+              runType = 'manual';
               forceBloat = defaults['force-bloat'];
               noSlack = defaults['no-slack'];
             }
@@ -315,6 +326,12 @@ jobs:
               }
             }
 
+            if (!['manual', 'nightly'].includes(runType)) {
+              const msg = `❌ **Invalid benchmark type**\n\n\`run-type=${runType}\` is not valid. Must be \`manual\` or \`nightly\`.`;
+              core.setFailed(msg);
+              return;
+            }
+
             // Resolve display names for baseline/feature
             let baselineName = baseline || 'main';
             let featureName = feature;
@@ -347,6 +364,7 @@ jobs:
             core.setOutput('tracy-offset', tracyOffset);
             core.setOutput('baseline-hardfork', baselineHardfork || '');
             core.setOutput('feature-hardfork', featureHardfork || '');
+            core.setOutput('run-type', runType);
             core.setOutput('force-bloat', forceBloat);
             core.setOutput('no-slack', noSlack);
 
@@ -412,6 +430,7 @@ jobs:
       BENCH_TRACY_OFFSET: ${{ needs.tempo-bench-ack.outputs.tracy-offset }}
       BENCH_BASELINE_HARDFORK: ${{ needs.tempo-bench-ack.outputs.baseline-hardfork }}
       BENCH_FEATURE_HARDFORK: ${{ needs.tempo-bench-ack.outputs.feature-hardfork }}
+      BENCH_RUN_TYPE: ${{ needs.tempo-bench-ack.outputs.run-type }}
       BENCH_FORCE_BLOAT: ${{ needs.tempo-bench-ack.outputs.force-bloat }}
       BENCH_NO_SLACK: ${{ needs.tempo-bench-ack.outputs.no-slack }}
       BENCH_COMMENT_ID: ${{ needs.tempo-bench-ack.outputs.comment-id }}
@@ -635,7 +654,7 @@ jobs:
         env:
           BENCH_BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
           BENCH_FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
-          BENCH_RUN_TYPE: ${{ github.event_name == 'schedule' && 'nightly' || github.event_name == 'issue_comment' && 'pr_comment' || 'manual' }}
+          BENCH_RUN_TYPE: ${{ env.BENCH_RUN_TYPE }}
           BENCH_JOB_URL: ${{ env.BENCH_JOB_URL }}
         run: bash contrib/bench/upload-clickhouse.sh "${{ steps.results-dir.outputs.path }}"
 
