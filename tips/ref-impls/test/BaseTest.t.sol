@@ -69,11 +69,10 @@ contract BaseTest is Test {
 
     function setUp() public virtual {
         // Only use native precompiles when the full Tempo surface needed by the specs exists.
-        isTempo = _ACCOUNT_KEYCHAIN.code.length > 0 && _TIP403REGISTRY.code.length > 0
-            && _TIP20_REGISTRY.code.length > 0 && _TIP20FACTORY.code.length > 0
-            && _PATH_USD.code.length > 0 && _STABLECOIN_DEX.code.length > 0
-            && _FEE_AMM.code.length > 0 && _NONCE.code.length > 0
-            && _VALIDATOR_CONFIG.code.length > 0 && _VALIDATOR_CONFIG_V2.code.length > 0;
+        isTempo = _ACCOUNT_KEYCHAIN.code.length + _TIP403REGISTRY.code.length
+                + _TIP20_REGISTRY.code.length + _TIP20FACTORY.code.length + _PATH_USD.code.length
+                + _STABLECOIN_DEX.code.length + _FEE_AMM.code.length + _NONCE.code.length
+                + _VALIDATOR_CONFIG.code.length + _VALIDATOR_CONFIG_V2.code.length > 0;
 
         console.log("Tests running with isTempo =", isTempo);
 
