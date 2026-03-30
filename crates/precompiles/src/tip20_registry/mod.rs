@@ -37,24 +37,19 @@ pub fn is_virtual_address(addr: Address) -> bool {
     addr.as_slice()[4..14] == VIRTUAL_MAGIC
 }
 
-/// Returns `true` if `addr` is eligible to be a virtual-address master per [TIP-1022].
+/// Returns `true` if `addr` is eligible to be a virtual-address master per TIP-1022.
 ///
 /// A valid master address:
 /// - MUST NOT be `address(0)`
 /// - MUST NOT itself match the virtual-address format
-/// - MUST NOT be a [TIP-20] token address
-///
-/// [TIP-20]: <https://docs.tempo.xyz/protocol/tip20>
-/// [TIP-1022]: <https://docs.tempo.xyz/protocol/tip1022>
+/// - MUST NOT be a TIP-20 token address
 pub fn is_master_address(addr: Address) -> bool {
     !addr.is_zero() && !is_virtual_address(addr) && !is_tip20_prefix(addr)
 }
 
 /// Decodes a virtual address into its `(masterId, userTag)` components.
 ///
-/// Returns `None` if the address does not match the [TIP-1022] virtual-address format.
-///
-/// [TIP-1022]: <https://docs.tempo.xyz/protocol/tip1022>
+/// Returns `None` if the address does not match [`is_virtual_address`] format.
 pub fn decode_virtual_address(addr: Address) -> Option<(MasterId, UserTag)> {
     if !is_virtual_address(addr) {
         return None;
@@ -171,15 +166,13 @@ impl TIP20Registry {
         Ok(self.data[master_id].read()?.master_address())
     }
 
-    /// Resolves a transfer recipient using [TIP-1022] semantics.
+    /// Resolves a transfer recipient using virtual address semantics.
     ///
     /// Non-virtual addresses are returned unchanged.
     /// Virtual addresses are resolved to their registered master.
     ///
     /// # Errors
     /// - `VirtualAddressUnregistered` — `to` is a virtual address whose `masterId` is not registered
-    ///
-    /// [TIP-1022]: <https://docs.tempo.xyz/protocol/tip1022>
     pub fn resolve_recipient(&self, to: Address) -> Result<Address> {
         // Explicit check because it isn't exclusibly a view function.
         // It is also used by `tip20::Recipient`.
