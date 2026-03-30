@@ -551,10 +551,9 @@ contract StablecoinDEX is IStablecoinDEX {
     }
 
     /// @notice Fill an order and handle cleanup when fully filled
-    /// @dev Maker transfer policy authorization is intentionally NOT checked here.
-    /// Fills must never fail due to unexecutable orders from blacklisted makers, as that
-    /// would force takers to pay gas eating through stale liquidity. Instead, anyone can
-    /// call `cancelStaleOrder` to remove orders from blacklisted makers before they are filled.
+    /// @dev Maker transfer policy is not enforced here to not block swaps on the pair.
+    /// Note that TIP403 checks on order placement and withdraws are enforced.
+    /// `cancelStaleOrder` can be used to remove orders.
     /// @param orderId The order ID to fill
     /// @param fillAmount The amount to fill
     /// @return nextOrderAtTick The next order ID to process (0 if no more liquidity at this tick)

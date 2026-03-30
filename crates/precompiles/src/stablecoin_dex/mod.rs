@@ -767,11 +767,9 @@ impl StablecoinDEX {
 
     /// Fill an order and delete from storage. Returns the next best order and price level.
     ///
-    /// NOTE: Maker transfer policy authorization is intentionally NOT checked here.
-    /// Fills must never fail due to unexecutable orders from blacklisted makers, as that
-    /// would force takers to pay gas eating through stale liquidity. Instead, anyone can
-    /// call [`cancel_stale_order`](Self::cancel_stale_order) to remove orders from
-    /// blacklisted makers before they are filled.
+    /// NOTE: Maker transfer policy is not enforced here to not block swaps on the pair.
+    /// Note that TIP403 checks on order placement and withdraws are enforced.
+    /// [`cancel_stale_order`](Self::cancel_stale_order) can be used to remove orders.
     fn fill_order(
         &mut self,
         book_key: B256,
