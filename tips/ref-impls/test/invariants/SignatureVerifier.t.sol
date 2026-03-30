@@ -2,15 +2,15 @@
 pragma solidity ^0.8.13;
 
 import { ISignatureVerifier } from "../../src/interfaces/ISignatureVerifier.sol";
-import { Test } from "forge-std/Test.sol";
+import { BaseTest } from "../BaseTest.t.sol";
 
 /// @title SignatureVerifier Invariant Tests
 /// @notice Fuzz-based invariant tests for the TIP-1020 Signature Verification Precompile
 /// @dev Tests invariants SV1-SV4, SV6, SV7 from the TIP-1020 spec. The precompile is
 ///      stateless, so each handler tests a specific property via direct calls.
 ///      SV5 (gas schedule) requires dedicated low-level gas tests and is NOT covered here.
-/// forge-config: default.hardfork = "tempo:T2"
-contract SignatureVerifierInvariantTest is Test {
+/// forge-config: default.hardfork = "tempo:T3"
+contract SignatureVerifierInvariantTest is BaseTest {
 
     address internal constant SIG_VERIFIER = 0x5165300000000000000000000000000000000000;
 
@@ -58,7 +58,10 @@ contract SignatureVerifierInvariantTest is Test {
     uint256 internal ghost_sv6_unknownTypeAllowed;
     uint256 internal ghost_sv7_keychainAllowed;
 
-    function setUp() public {
+    function setUp() public override {
+        super.setUp();
+        if (!isTempo) return;
+
         targetContract(address(this));
 
         for (uint256 i = 0; i < 5; i++) {
@@ -86,6 +89,7 @@ contract SignatureVerifierInvariantTest is Test {
 
     /// @notice SV1 (secp256k1): recover() matches ecrecover, verify() returns true
     function handler_sv1_secpRecoverAndVerify(uint256 actorSeed, bytes32 hash) external {
+        if (!isTempo) return;
         uint256 idx = actorSeed % _secpKeys.length;
         address expected = _secpAddrs[idx];
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(_secpKeys[idx], hash);
@@ -117,6 +121,7 @@ contract SignatureVerifierInvariantTest is Test {
 
     /// @notice SV1 (secp256k1): v normalization - raw v (0/1) accepted
     function handler_sv1_secpVNormalization(uint256 actorSeed, bytes32 hash) external {
+        if (!isTempo) return;
         uint256 idx = actorSeed % _secpKeys.length;
         address expected = _secpAddrs[idx];
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(_secpKeys[idx], hash);
@@ -136,6 +141,7 @@ contract SignatureVerifierInvariantTest is Test {
 
     /// @notice SV1 (P256): recover() + verify() match expected address
     function handler_sv1_p256RecoverAndVerify(uint256 actorSeed, bytes32 hash) external {
+        if (!isTempo) return;
         uint256 idx = actorSeed % _p256Keys.length;
         bytes memory sig = _signP256(idx, hash);
 
@@ -163,6 +169,7 @@ contract SignatureVerifierInvariantTest is Test {
 
     /// @notice SV1 (WebAuthn): recover() + verify() match expected address
     function handler_sv1_webauthnRecoverAndVerify(uint256 actorSeed, bytes32 hash) external {
+        if (!isTempo) return;
         uint256 idx = actorSeed % _p256Keys.length;
         bytes memory sig = _signWebAuthn(idx, hash);
 
@@ -190,6 +197,7 @@ contract SignatureVerifierInvariantTest is Test {
 
     /// @notice SV1: verify() with wrong signer returns false
     function handler_sv1_verifyWrongSigner(uint256 actorSeed, bytes32 hash) external {
+        if (!isTempo) return;
         uint256 idx = actorSeed % _secpKeys.length;
         uint256 wrongIdx = (idx + 1) % _secpAddrs.length;
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(_secpKeys[idx], hash);
@@ -212,6 +220,7 @@ contract SignatureVerifierInvariantTest is Test {
 
     /// @notice SV2 (secp256k1): high-s must be rejected
     function handler_sv2_secpHighS(uint256 actorSeed, bytes32 hash) external {
+        if (!isTempo) return;
         uint256 idx = actorSeed % _secpKeys.length;
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(_secpKeys[idx], hash);
 
@@ -232,6 +241,7 @@ contract SignatureVerifierInvariantTest is Test {
 
     /// @notice SV2 (P256): high-s must be rejected
     function handler_sv2_p256HighS(uint256 actorSeed, bytes32 hash) external {
+        if (!isTempo) return;
         uint256 idx = actorSeed % _p256Keys.length;
         (bytes32 r, bytes32 s) = vm.signP256(_p256Keys[idx], hash);
 
@@ -252,6 +262,7 @@ contract SignatureVerifierInvariantTest is Test {
 
     /// @notice SV2 (WebAuthn): high-s on inner P256 sig must be rejected
     function handler_sv2_webauthnHighS(uint256 actorSeed, bytes32 hash) external {
+        if (!isTempo) return;
         uint256 idx = actorSeed % _p256Keys.length;
 
         bytes memory webauthnData = _buildWebAuthnData(hash);
@@ -281,6 +292,7 @@ contract SignatureVerifierInvariantTest is Test {
 
     /// @notice SV3: wrong-sized secp256k1 sigs revert
     function handler_sv3_secpBadSize(uint256 sizeSeed) external {
+        if (!isTempo) return;
         uint256 size = bound(sizeSeed, 0, 200);
         if (size == 65) size = 66;
 
@@ -299,6 +311,7 @@ contract SignatureVerifierInvariantTest is Test {
 
     /// @notice SV3: wrong-sized P256 sigs revert
     function handler_sv3_p256BadSize(uint256 sizeSeed) external {
+        if (!isTempo) return;
         uint256 size = bound(sizeSeed, 1, 250);
         if (size == 130) size = 131;
 
@@ -317,6 +330,7 @@ contract SignatureVerifierInvariantTest is Test {
 
     /// @notice SV3: wrong-sized WebAuthn sigs revert
     function handler_sv3_webauthnBadSize(uint256 sizeSeed) external {
+        if (!isTempo) return;
         uint256 size;
         if (sizeSeed % 2 == 0) {
             size = bound(sizeSeed, 1, 128);
@@ -339,6 +353,7 @@ contract SignatureVerifierInvariantTest is Test {
 
     /// @notice SV3: zero-length input reverts
     function handler_sv3_emptyInput() external {
+        if (!isTempo) return;
         if (_callBothRevert(keccak256("sv3"), new bytes(0), address(0xdead))) {
             ghost_sv3_badSizeAllowed++;
         } else {
@@ -352,6 +367,7 @@ contract SignatureVerifierInvariantTest is Test {
 
     /// @notice SV4: garbage secp256k1 sigs revert
     function handler_sv4_garbageSecp(bytes32 garbageR, bytes32 garbageS, uint8 garbageV) external {
+        if (!isTempo) return;
         garbageV = (garbageV % 2 == 0) ? 27 : 28;
         bytes memory sig = abi.encodePacked(garbageR, garbageS, garbageV);
         bytes32 hash = keccak256("sv4_secp");
@@ -375,6 +391,7 @@ contract SignatureVerifierInvariantTest is Test {
     )
         external
     {
+        if (!isTempo) return;
         uint256 idx = actorSeed % _p256Keys.length;
         bytes memory sig = abi.encodePacked(
             TYPE_P256, garbageR, garbageS, _p256PubX[idx], _p256PubY[idx], uint8(0)
@@ -395,6 +412,7 @@ contract SignatureVerifierInvariantTest is Test {
     )
         external
     {
+        if (!isTempo) return;
         uint256 idx = actorSeed % _p256Keys.length;
         bytes32 hash = keccak256("sv4_webauthn");
         bytes memory webauthnData = _buildWebAuthnData(hash);
@@ -415,6 +433,7 @@ contract SignatureVerifierInvariantTest is Test {
 
     /// @notice SV6: unknown type prefix bytes revert
     function handler_sv6_unknownType(uint8 typeByte, uint256 sizeSeed) external {
+        if (!isTempo) return;
         if (typeByte >= TYPE_P256 && typeByte <= TYPE_KEYCHAIN_P256) typeByte = 0x05;
         uint256 size = bound(sizeSeed, 66, 300);
 
@@ -437,6 +456,7 @@ contract SignatureVerifierInvariantTest is Test {
 
     /// @notice SV7: 0x03 prefix (Keychain secp256k1) rejected with valid-looking envelope
     function handler_sv7_keychainSecp(uint256 actorSeed, bytes32 hash) external {
+        if (!isTempo) return;
         uint256 idx = actorSeed % _secpKeys.length;
         address user = _secpAddrs[idx];
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(_secpKeys[idx], hash);
@@ -451,6 +471,7 @@ contract SignatureVerifierInvariantTest is Test {
 
     /// @notice SV7: 0x04 prefix (Keychain P256) rejected with valid-looking envelope
     function handler_sv7_keychainP256(uint256 actorSeed, bytes32 hash) external {
+        if (!isTempo) return;
         uint256 idx = actorSeed % _p256Keys.length;
         (bytes32 r, bytes32 s) = vm.signP256(_p256Keys[idx], hash);
         s = _normalizeP256S(s);
@@ -486,6 +507,8 @@ contract SignatureVerifierInvariantTest is Test {
     }
 
     function afterInvariant() public view {
+        if (!isTempo) return;
+
         // Bug counters
         assertEq(ghost_sv1_mismatch, 0, "SV1: mismatch count > 0");
         assertEq(ghost_sv2_highSAllowed, 0, "SV2: high-s allowed count > 0");
