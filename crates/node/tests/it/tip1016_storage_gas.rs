@@ -227,13 +227,13 @@ async fn test_tip1016_sstore_zero_to_nonzero_exempts_storage_gas() -> eyre::Resu
     let receipts_total_gas = total_receipt_gas_for_block(&provider, call_block_number).await?;
 
     // TIP-1016: block gas_used should be less than receipt gas because
-    // the SSTORE zero->non-zero has 245,000 storage creation gas exempted.
+    // the SSTORE zero->non-zero has 230,000 storage creation gas exempted.
     //
-    // sstore_set_state_gas = 250,000 - 5,000 = 245,000
+    // sstore_set_state_gas = 250,000 - 20,000 = 230,000 per TIP-1016 spec
     let storage_creation_gas = receipts_total_gas - block_gas_used;
     assert_eq!(
-        storage_creation_gas, 245_000,
-        "storage creation gas should be exactly 245,000 (sstore_set_state_gas), \
+        storage_creation_gas, 230_000,
+        "storage creation gas should be exactly 230,000 (sstore_set_state_gas), \
          got {storage_creation_gas} (block_gas_used={block_gas_used}, receipts_total_gas={receipts_total_gas})"
     );
 
@@ -545,12 +545,12 @@ async fn test_tip1016_multiple_sstore_zero_to_nonzero_additive() -> eyre::Result
     let block_gas_used = call_payload.block().header().inner.gas_used;
     let receipts_total_gas = total_receipt_gas_for_block(&provider, call_blk).await?;
 
-    // 3 SSTOREs zero->non-zero: 3 x 245,000 = 735,000 storage creation gas exempted
+    // 3 SSTOREs zero->non-zero: 3 x 230,000 = 690,000 storage creation gas exempted
     let storage_creation_gas = receipts_total_gas - block_gas_used;
     assert_eq!(
         storage_creation_gas,
-        3 * 245_000,
-        "storage creation gas should be 3 x 245,000 = 735,000, \
+        3 * 230_000,
+        "storage creation gas should be 3 x 230,000 = 690,000, \
          got {storage_creation_gas} (block_gas_used={block_gas_used}, receipts_total_gas={receipts_total_gas})"
     );
 
@@ -560,7 +560,7 @@ async fn test_tip1016_multiple_sstore_zero_to_nonzero_additive() -> eyre::Result
 /// Corner case: two storage-creating transactions in the same block.
 ///
 /// Each tx does SSTORE zero->non-zero. The block's cumulative storage creation gas
-/// should be the sum of both (2 x 245,000 = 490,000). This tests that the inner
+/// should be the sum of both (2 x 230,000 = 460,000). This tests that the inner
 /// executor's `block_regular_gas_used` correctly excludes state gas across
 /// multiple transactions.
 #[tokio::test(flavor = "multi_thread")]
@@ -645,12 +645,12 @@ async fn test_tip1016_two_storage_txs_same_block() -> eyre::Result<()> {
         "both SSTORE txs should be included in block, got {user_tx_count} user txs"
     );
 
-    // Two SSTOREs zero->non-zero: 2 x 245,000 = 490,000 storage creation gas
+    // Two SSTOREs zero->non-zero: 2 x 230,000 = 460,000 storage creation gas
     let storage_creation_gas = receipts_total_gas - block_gas_used;
     assert_eq!(
         storage_creation_gas,
-        2 * 245_000,
-        "storage creation gas should be 2 x 245,000 = 490,000 for two txs in same block, \
+        2 * 230_000,
+        "storage creation gas should be 2 x 230,000 = 460,000 for two txs in same block, \
          got {storage_creation_gas} (block_gas_used={block_gas_used}, receipts_total_gas={receipts_total_gas})"
     );
 

@@ -18,7 +18,10 @@ use reth_transaction_pool::{
 use std::{
     convert::Infallible,
     fmt::Debug,
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 use tempo_precompiles::{DEFAULT_FEE_TOKEN, nonce::NonceManager};
 use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
@@ -28,7 +31,7 @@ use thiserror::Error;
 /// Tempo pooled transaction representation.
 ///
 /// This is a wrapper around the regular ethereum [`EthPooledTransaction`], but with tempo specific implementations.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct TempoPooledTransaction {
     inner: EthPooledTransaction<TempoTxEnvelope>,
     /// Cached payment classification for efficient block building
@@ -51,6 +54,23 @@ pub struct TempoPooledTransaction {
     /// Used by `keychain_subject()` so pool maintenance matches against the same token
     /// that was validated without requiring state access.
     resolved_fee_token: OnceLock<Address>,
+    /// TIP-1016: Cached intrinsic state gas computed during validation.
+    intrinsic_state_gas: AtomicU64,
+}
+
+impl Clone for TempoPooledTransaction {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            is_payment: self.is_payment,
+            is_expiring_nonce: self.is_expiring_nonce,
+            nonce_key_slot: self.nonce_key_slot.clone(),
+            tx_env: self.tx_env.clone(),
+            key_expiry: self.key_expiry.clone(),
+            resolved_fee_token: self.resolved_fee_token.clone(),
+            intrinsic_state_gas: AtomicU64::new(self.intrinsic_state_gas.load(Ordering::Relaxed)),
+        }
+    }
 }
 
 impl TempoPooledTransaction {
@@ -79,7 +99,18 @@ impl TempoPooledTransaction {
             tx_env: OnceLock::new(),
             key_expiry: OnceLock::new(),
             resolved_fee_token: OnceLock::new(),
+            intrinsic_state_gas: AtomicU64::new(0),
         }
+    }
+
+    /// Returns the cached intrinsic state gas computed during validation.
+    pub fn intrinsic_state_gas(&self) -> u64 {
+        self.intrinsic_state_gas.load(Ordering::Relaxed)
+    }
+
+    /// Sets the intrinsic state gas (called during validation).
+    pub fn set_intrinsic_state_gas(&self, gas: u64) {
+        self.intrinsic_state_gas.store(gas, Ordering::Relaxed);
     }
 
     /// Get the cost of the transaction in the fee token.
