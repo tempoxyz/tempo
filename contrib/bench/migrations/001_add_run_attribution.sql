@@ -9,7 +9,3 @@ ALTER TABLE tempo_bench_runs ADD COLUMN IF NOT EXISTS triggered_by String DEFAUL
 ALTER TABLE tempo_bench_runs ADD COLUMN IF NOT EXISTS run_type String DEFAULT 'manual' AFTER triggered_by;
 ALTER TABLE tempo_bench_runs ADD COLUMN IF NOT EXISTS github_run_id String DEFAULT '' AFTER run_type;
 ALTER TABLE tempo_bench_runs ADD COLUMN IF NOT EXISTS github_run_url String DEFAULT '' AFTER github_run_id;
-
--- Drop legacy unused columns (optional, can keep for backward compat)
--- ALTER TABLE tempo_bench_runs DROP COLUMN IF EXISTS argo_workflow_name;
--- ALTER TABLE tempo_bench_runs DROP COLUMN IF EXISTS k8s_namespace;
