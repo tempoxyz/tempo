@@ -454,9 +454,10 @@ pub fn gen_word_from(values: &[&str]) -> U256 {
 // ────────────────── TIP-1022 Virtual Address Helpers ──────────────────
 
 /// Pre-computed (address, salt) pair satisfying the 32-bit PoW.
-pub const VIRTUAL_MASTER: Address = address!("713db2d03ed9b46b09702f038129e2c9158fa87b");
+/// Uses the standard test mnemonic index-0 address so it works in both unit and integration tests.
+pub const VIRTUAL_MASTER: Address = address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
 pub const VIRTUAL_SALT: [u8; 32] =
-    hex!("000000000000000000000000000000000000000000000000000000002058bec4");
+    hex!("000000000000000000000000000000000000000000000000000000021171a0bf");
 
 /// Builds a virtual address from a `masterId` and `userTag`.
 pub fn make_virtual_address(master_id: MasterId, user_tag: UserTag) -> Address {
