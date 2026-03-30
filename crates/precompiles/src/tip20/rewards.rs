@@ -9,7 +9,7 @@
 use crate::{
     error::{Result, TempoPrecompileError},
     storage::Handler,
-    tip20::{Recipient, TIP20Token},
+    tip20::TIP20Token,
     tip20_registry,
 };
 use alloy::primitives::{Address, U256, uint};
@@ -46,7 +46,7 @@ impl TIP20Token {
         self.ensure_transfer_authorized(msg_sender, token_address)?;
         self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
-        self._transfer(msg_sender, &Recipient::direct(token_address), call.amount)?;
+        self._transfer(msg_sender, token_address, call.amount)?;
 
         let opted_in_supply = U256::from(self.get_opted_in_supply()?);
         if opted_in_supply.is_zero() {
