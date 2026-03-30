@@ -405,6 +405,11 @@ impl TIP20Token {
         let to = TIP20Registry::new().resolve_recipient(call.to)?;
         self._mint(msg_sender, to, call.amount)?;
 
+        self.emit_event(TIP20Event::Transfer(ITIP20::Transfer {
+            from: Address::ZERO,
+            to: call.to,
+            amount: call.amount,
+        }))?;
         self.emit_event(TIP20Event::Mint(ITIP20::Mint {
             to: call.to,
             amount: call.amount,
@@ -429,6 +434,11 @@ impl TIP20Token {
         let to = TIP20Registry::new().resolve_recipient(call.to)?;
         self._mint(msg_sender, to, call.amount)?;
 
+        self.emit_event(TIP20Event::Transfer(ITIP20::Transfer {
+            from: Address::ZERO,
+            to: call.to,
+            amount: call.amount,
+        }))?;
         self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
             from: Address::ZERO,
             to: call.to,
@@ -480,11 +490,7 @@ impl TIP20Token {
             .ok_or(TempoPrecompileError::under_overflow())?;
         self.set_balance(to, new_to_balance)?;
 
-        self.emit_event(TIP20Event::Transfer(ITIP20::Transfer {
-            from: Address::ZERO,
-            to,
-            amount,
-        }))
+        Ok(())
     }
 
     /// Burns `amount` from the caller's balance and reduces total supply.
@@ -740,7 +746,7 @@ impl TIP20Token {
         let to = TIP20Registry::new().resolve_recipient(call.to)?;
         self._transfer_from(msg_sender, call.from, to, call.amount)?;
         if is_virtual_address(call.to) {
-            self.transfer_virtual(call.from, call.to, to, call.amount)?;
+            self.emit_virtual_hop(call.to, to, call.amount)?;
         }
         Ok(true)
     }
@@ -761,7 +767,7 @@ impl TIP20Token {
             memo: call.memo,
         }))?;
         if is_virtual_address(call.to) {
-            self.transfer_virtual(call.from, call.to, to, call.amount)?;
+            self.emit_virtual_hop(call.to, to, call.amount)?;
         }
         Ok(true)
     }
@@ -931,8 +937,7 @@ impl TIP20Token {
         Ok(())
     }
 
-    /// Checks pause state, validates the effective recipient, and ensures the transfer
-    /// is authorized. Shared by public entrypoints that resolve a [`Recipient`] up front.
+    /// Validates the transfer is not paused, the recipient is valid, and [TIP-403] authorizes it.
     fn validate_transfer(&self, from: Address, to: Address) -> Result<()> {
         self.check_not_paused()?;
         if to.is_zero() || is_tip20_prefix(to) {
@@ -978,8 +983,8 @@ impl TIP20Token {
         AccountKeychain::new().authorize_transfer(from, self.address, amount)
     }
 
-    /// Core transfer: debits `from`, credits `to`, emits `Transfer(from, to, amount)`.
-    fn _transfer(&mut self, from: Address, to: Address, amount: U256) -> Result<()> {
+    /// Transfers balance from `from` to `to` and updates reward accumulators. No events emitted.
+    fn transfer_balance(&mut self, from: Address, to: Address, amount: U256) -> Result<()> {
         let from_balance = self.get_balance(from)?;
         if amount > from_balance {
             return Err(
@@ -989,7 +994,6 @@ impl TIP20Token {
 
         self.handle_rewards_on_transfer(from, to, amount)?;
 
-        // Adjust balances
         let new_from_balance = from_balance
             .checked_sub(amount)
             .ok_or(TempoPrecompileError::under_overflow())?;
@@ -1005,10 +1009,17 @@ impl TIP20Token {
             self.set_balance(to, new_to_balance)?;
         }
 
+        Ok(())
+    }
+
+    /// Transfers balance and emits a `Transfer` event.
+    fn _transfer(&mut self, from: Address, to: Address, amount: U256) -> Result<()> {
+        self.transfer_balance(from, to, amount)?;
         self.emit_event(TIP20Event::Transfer(ITIP20::Transfer { from, to, amount }))
     }
 
-    /// Virtual transfer: credits the resolved master, emits two-hop Transfer events.
+    /// [TIP-1022] virtual transfer. Transfers balance to the master address and emits two
+    /// transfer events.
     fn transfer_virtual(
         &mut self,
         from: Address,
@@ -1016,7 +1027,27 @@ impl TIP20Token {
         resolved: Address,
         amount: U256,
     ) -> Result<()> {
-        todo!("TIP-1022: implement virtual transfer")
+        self.transfer_balance(from, resolved, amount)?;
+        self.emit_event(TIP20Event::Transfer(ITIP20::Transfer {
+            from,
+            to: virtual_addr,
+            amount,
+        }))?;
+        self.emit_virtual_hop(virtual_addr, resolved, amount)
+    }
+
+    /// [TIP-1022] emits the second-hop `Transfer(virtual_addr, resolved, amount)` event.
+    fn emit_virtual_hop(
+        &mut self,
+        virtual_addr: Address,
+        resolved: Address,
+        amount: U256,
+    ) -> Result<()> {
+        self.emit_event(TIP20Event::Transfer(ITIP20::Transfer {
+            from: virtual_addr,
+            to: resolved,
+            amount,
+        }))
     }
 
     /// Transfers fee tokens from `from` to the fee manager before transaction execution.
@@ -3217,5 +3248,153 @@ pub(crate) mod tests {
 
             Ok(())
         }
+    }
+
+    // ────────────────── transfer_balance tests ──────────────────
+
+    #[test]
+    fn test_transfer_balance_debits_and_credits() -> eyre::Result<()> {
+        let (mut storage, admin) = setup_storage();
+        let from = Address::random();
+        let to = Address::random();
+        let amount = U256::from(1000);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(from, amount)
+                .clear_events()
+                .apply()?;
+
+            token.transfer_balance(from, to, amount)?;
+
+            assert_eq!(token.get_balance(from)?, U256::ZERO);
+            assert_eq!(token.get_balance(to)?, amount);
+            assert_eq!(token.total_supply()?, amount);
+
+            // transfer_balance emits no events
+            token.assert_emitted_events(Vec::<TIP20Event>::new());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_transfer_balance_insufficient_balance_fails() -> eyre::Result<()> {
+        let (mut storage, admin) = setup_storage();
+        let from = Address::random();
+        let to = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(from, U256::from(100))
+                .apply()?;
+
+            let result = token.transfer_balance(from, to, U256::from(200));
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(
+                    TIP20Error::InsufficientBalance(_)
+                ))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_transfer_balance_to_zero_burns() -> eyre::Result<()> {
+        let (mut storage, admin) = setup_storage();
+        let from = Address::random();
+        let amount = U256::from(500);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(from, amount)
+                .clear_events()
+                .apply()?;
+
+            token.transfer_balance(from, Address::ZERO, amount)?;
+
+            assert_eq!(token.get_balance(from)?, U256::ZERO);
+            // Zero address balance is not incremented
+            assert_eq!(token.get_balance(Address::ZERO)?, U256::ZERO);
+
+            Ok(())
+        })
+    }
+
+    // ────────────────── transfer_virtual tests ──────────────────
+
+    #[test]
+    fn test_transfer_virtual_credits_resolved_and_emits_two_hops() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let admin = Address::random();
+        let sender = Address::random();
+        let amount = U256::from(500);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP20Registry::new();
+            let (_, virtual_addr) = register_virtual_master(&mut registry)?;
+
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(sender, amount)
+                .clear_events()
+                .apply()?;
+
+            token.transfer_virtual(sender, virtual_addr, VIRTUAL_MASTER, amount)?;
+
+            // Balance goes to resolved master, not virtual address
+            assert_eq!(token.get_balance(sender)?, U256::ZERO);
+            assert_eq!(token.get_balance(VIRTUAL_MASTER)?, amount);
+            assert_eq!(token.get_balance(virtual_addr)?, U256::ZERO);
+
+            // Two-hop events: sender→virtual, virtual→master
+            token.assert_emitted_events(vec![
+                TIP20Event::Transfer(ITIP20::Transfer {
+                    from: sender,
+                    to: virtual_addr,
+                    amount,
+                }),
+                TIP20Event::Transfer(ITIP20::Transfer {
+                    from: virtual_addr,
+                    to: VIRTUAL_MASTER,
+                    amount,
+                }),
+            ]);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_transfer_virtual_insufficient_balance_fails() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let admin = Address::random();
+        let sender = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP20Registry::new();
+            let (_, virtual_addr) = register_virtual_master(&mut registry)?;
+
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(sender, U256::from(100))
+                .apply()?;
+
+            let result =
+                token.transfer_virtual(sender, virtual_addr, VIRTUAL_MASTER, U256::from(200));
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(
+                    TIP20Error::InsufficientBalance(_)
+                ))
+            ));
+
+            Ok(())
+        })
     }
 }
