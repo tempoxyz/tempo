@@ -305,16 +305,7 @@ impl AA2dPool {
         }
 
         // Call discard for queued transactions too
-        let discarded = self.discard();
-        if discarded
-            .iter()
-            .any(|discarded_tx| *discarded_tx.hash() == *transaction.hash())
-        {
-            return Err(PoolError::new(
-                *transaction.hash(),
-                PoolErrorKind::DiscardedOnInsert,
-            ));
-        }
+        let _ = self.discard();
 
         Ok(AddedTransaction::Parked {
             transaction,
@@ -4050,12 +4041,7 @@ mod tests {
                 0,
                 TempoHardfork::T1,
             );
-            if i < 2 {
-                assert!(result.is_ok(), "Transaction {i} should be added");
-            } else {
-                let err = result.expect_err("Transaction {i} should be discarded on insert");
-                assert!(matches!(err.kind, PoolErrorKind::DiscardedOnInsert));
-            }
+            assert!(result.is_ok(), "Transaction {i} should be added");
         }
 
         let (pending, queued) = pool.pending_and_queued_txn_count();

@@ -26,6 +26,7 @@ use reth_transaction_pool::{
     blobstore::InMemoryBlobStore,
     error::{PoolError, PoolErrorKind},
     identifier::TransactionId,
+    pool::AddedTransaction,
 };
 use revm::database::BundleAccount;
 use std::{sync::Arc, time::Instant};
@@ -44,6 +45,17 @@ use tempo_precompiles::{
 };
 use tempo_primitives::Block;
 use tempo_revm::TempoStateAccess;
+
+fn aa_2d_tx_was_discarded_on_insert(
+    added: &AddedTransaction<TempoPooledTransaction>,
+    aa_2d_pool: &AA2dPool,
+) -> bool {
+    let hash = *added.hash();
+    match added.as_pending() {
+        Some(pending) => pending.discarded.iter().any(|tx| *tx.hash() == hash),
+        None => !aa_2d_pool.contains(&hash),
+    }
+}
 
 /// Tempo transaction pool that routes based on nonce_key
 pub struct TempoTransactionPool<Client> {
@@ -472,16 +484,19 @@ where
                         .tip_timestamp();
                     let hardfork = self.client().chain_spec().tempo_hardfork_at(tip_timestamp);
 
-                    let added = self.aa_2d_pool.write().add_transaction(
-                        Arc::new(tx),
-                        state_nonce,
-                        hardfork,
-                    )?;
+                    let (added, discarded_on_insert) = {
+                        let mut aa_2d_pool = self.aa_2d_pool.write();
+                        let added =
+                            aa_2d_pool.add_transaction(Arc::new(tx), state_nonce, hardfork)?;
+                        let discarded_on_insert =
+                            aa_2d_tx_was_discarded_on_insert(&added, &aa_2d_pool);
+                        (added, discarded_on_insert)
+                    };
                     let hash = *added.hash();
+                    if discarded_on_insert {
+                        return Err(PoolError::new(hash, PoolErrorKind::DiscardedOnInsert));
+                    }
                     if let Some(pending) = added.as_pending() {
-                        if pending.discarded.iter().any(|tx| *tx.hash() == hash) {
-                            return Err(PoolError::new(hash, PoolErrorKind::DiscardedOnInsert));
-                        }
                         self.protocol_pool
                             .inner()
                             .on_new_pending_transaction(pending);
@@ -1257,10 +1272,18 @@ fn get_recipient_policy_ids(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transaction::KeychainSubject;
+    use crate::{
+        test_utils::{TxBuilder, wrap_valid_tx},
+        transaction::KeychainSubject,
+        tt_2d_pool::AA2dPoolConfig,
+    };
     use alloy_primitives::{U256, address};
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_storage_api::StateProviderFactory;
+    use reth_transaction_pool::{
+        SubPool,
+        pool::{AddedTransaction, QueuedReason},
+    };
     use tempo_contracts::precompiles::ITIP403Registry;
     use tempo_precompiles::{
         ACCOUNT_KEYCHAIN_ADDRESS, TIP403_REGISTRY_ADDRESS,
@@ -1303,6 +1326,23 @@ mod tests {
         );
 
         provider.latest().unwrap()
+    }
+
+    #[test]
+    fn parked_aa2d_tx_removed_from_pool_is_discarded_on_insert() {
+        let tx = Arc::new(wrap_valid_tx(
+            TxBuilder::aa(Address::random()).nonce_key(U256::from(1)).nonce(1000).build(),
+            TransactionOrigin::Local,
+        ));
+        let added = AddedTransaction::Parked {
+            transaction: Arc::clone(&tx),
+            replaced: None,
+            subpool: SubPool::Queued,
+            queued_reason: Some(QueuedReason::NonceGap),
+        };
+        let pool = AA2dPool::new(AA2dPoolConfig::default());
+
+        assert!(aa_2d_tx_was_discarded_on_insert(&added, &pool));
     }
 
     /// Eviction must match sub-policy IDs against compound policies.
