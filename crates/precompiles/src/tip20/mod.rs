@@ -69,38 +69,42 @@ pub fn validate_usd_currency(token: Address) -> Result<()> {
     Ok(())
 }
 
-/// Resolved transfer recipient carrying both the literal (event) and effective (target) addresses.
+/// Resolved transfer recipient for [TIP-1022] virtual address support.
 ///
-/// For non-virtual recipients both fields are equal. For [TIP-1022] virtual addresses, `event` is
-/// used in `Transfer` events while `target` is the resolved master whose balance is updated.
+/// `to` is always the effective (resolved) address where the balance is credited. For virtual
+/// recipients, `virtual_addr` carries the original virtual address for event emission.
 ///
 /// [TIP-1022]: <https://docs.tempo.xyz/protocol/tip1022>
 pub struct Recipient {
-    /// Address used in `Transfer` events — the literal recipient supplied by the caller.
-    pub event: Address,
-    /// Address whose balance is actually credited.
+    /// The effective (resolved) address where the balance is credited.
     pub target: Address,
+    /// The virtual address, if registered.
+    pub virtual_addr: Option<Address>,
 }
 
 impl Recipient {
-    /// Creates a [`Recipient`] where both addresses are the same.
+    /// Creates a [`Recipient`] with no virtual indirection.
     #[inline]
     pub fn direct(addr: Address) -> Self {
         Self {
-            event: addr,
             target: addr,
+            virtual_addr: None,
         }
     }
 
     /// Resolves a recipient via the [`TIP20Registry`].
     ///
-    /// If `addr` is a virtual address its registered master is looked up.
-    /// Otherwise, both fields are set to `addr`.
+    /// If `addr` is a virtual address its registered master is looked up and stored in `target`,
+    /// with the original virtual address preserved in `virtual_addr`.
     pub fn resolve(addr: Address) -> Result<Self> {
         let effective = TIP20Registry::new().resolve_recipient(addr)?;
-        Ok(Self {
-            event: addr,
-            target: effective,
+        Ok(if effective == addr {
+            Self::direct(addr)
+        } else {
+            Self {
+                target: effective,
+                virtual_addr: Some(addr),
+            }
         })
     }
 
@@ -112,12 +116,6 @@ impl Recipient {
         Ok(())
     }
 
-    /// Returns `true` when the event address differs from the target one.
-    #[inline]
-    pub fn is_virtual(&self) -> bool {
-        self.event != self.target
-    }
-
     /// Builds the primary `Transfer(from, to, amount)` event.
     ///
     /// For virtual recipients `to` is the virtual address (first hop); for regular
@@ -125,7 +123,7 @@ impl Recipient {
     pub fn transfer(&self, from: Address, amount: U256) -> TIP20Event {
         TIP20Event::Transfer(ITIP20::Transfer {
             from,
-            to: self.event,
+            to: self.virtual_addr.unwrap_or(self.target),
             amount,
         })
     }
@@ -133,12 +131,13 @@ impl Recipient {
     /// Builds the forwarding `Transfer(virtual, master, amount)` event for virtual recipients.
     /// Returns `None` for non-virtual recipients.
     pub fn virtual_transfer(&self, amount: U256) -> Option<TIP20Event> {
-        self.is_virtual()
-            .then_some(TIP20Event::Transfer(ITIP20::Transfer {
-                from: self.event,
+        self.virtual_addr.map(|virtual_addr| {
+            TIP20Event::Transfer(ITIP20::Transfer {
+                from: virtual_addr,
                 to: self.target,
                 amount,
-            }))
+            })
+        })
     }
 }
 
@@ -1035,10 +1034,10 @@ impl TIP20Token {
         AccountKeychain::new().authorize_transfer(from, self.address, amount)
     }
 
-    /// Core transfer: debits `from`, credits `to.target`, emits `Transfer(from, to.event, amount)`.
+    /// Core transfer: debits `from`, credits `to.target`, emits `Transfer(from, event_addr, amount)`.
     ///
-    /// - For non-virtual transfers `to.event == to.target`.
-    /// - For virtual recipients, `to.event` is the virtual and `to.target` is the resolved master.
+    /// For virtual recipients the event address is the virtual alias; the balance update always
+    /// targets `to.target` (the resolved master).
     fn _transfer(&mut self, from: Address, to: &Recipient, amount: U256) -> Result<()> {
         let from_balance = self.get_balance(from)?;
         if amount > from_balance {
@@ -1196,7 +1195,11 @@ pub(crate) mod tests {
         },
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{TIP20Setup, setup_storage},
+        test_util::{
+            TIP20Setup, VIRTUAL_MASTER, make_virtual_address, register_virtual_master,
+            setup_storage,
+        },
+        tip20_registry::{MasterId, TIP20Registry, UserTag},
     };
     use rand_08::{Rng, distributions::Alphanumeric, thread_rng};
     use tempo_chainspec::hardfork::TempoHardfork;
