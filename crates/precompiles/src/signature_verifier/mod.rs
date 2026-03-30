@@ -28,7 +28,7 @@ impl SignatureVerifier {
         let sig = PrimitiveSignature::from_bytes(&signature)
             .map_err(|_| SignatureVerifierError::invalid_format())?;
 
-        // Charge verification gas before crypto (SV5).
+        // Charge verification gas before performing verification (SV5).
         let verify_gas = match sig.signature_type() {
             SignatureType::Secp256k1 => SECP256K1_VERIFY_GAS,
             SignatureType::P256 => P256_VERIFY_GAS,
@@ -36,7 +36,10 @@ impl SignatureVerifier {
         };
         self.storage.deduct_gas(verify_gas)?;
 
-        // Verify and recover signer (SV1, SV2, SV4).
+        // Verify and recover signer:
+        // - SV1: transaction-equivalent verification rules
+        // - SV2: low-s malleability resistance
+        // - SV4: revert on invalid signature
         sig.recover_signer(&hash)
             .map_err(|_| SignatureVerifierError::invalid_signature().into())
     }
