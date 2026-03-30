@@ -699,15 +699,21 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
         KeySetup::ZeroPubKey => {
             use tempo_precompiles::{
                 ACCOUNT_KEYCHAIN_ADDRESS,
-                account_keychain::{SignatureType as KCSignatureType, authorizeKeyCall},
+                account_keychain::{
+                    KeyRestrictions, SignatureType as KCSignatureType, authorizeKeyCall,
+                },
             };
 
             let authorize_call = authorizeKeyCall {
                 keyId: Address::ZERO,
                 signatureType: KCSignatureType::P256,
-                expiry: u64::MAX,
-                enforceLimits: true,
-                limits: vec![],
+                config: KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![],
+                    enforceAllowedCalls: false,
+                    allowedCalls: vec![],
+                },
             };
             tx.calls = vec![Call {
                 to: ACCOUNT_KEYCHAIN_ADDRESS.into(),
@@ -735,6 +741,7 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
                 SpendingLimits::Custom(amount) => Some(vec![TokenLimit {
                     token: DEFAULT_FEE_TOKEN,
                     limit: *amount,
+                    period: 0,
                 }]),
             };
 
@@ -867,6 +874,7 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
                         key_id: access_addr,
                         expiry: None,
                         limits: None,
+                        allowed_calls: None,
                     };
                     let wrong_sig = wrong_root.sign_hash_sync(&key_auth.signature_hash())?;
                     let invalid_key_auth =
@@ -895,6 +903,7 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
                         key_id: addr_3,
                         expiry: None,
                         limits: None,
+                        allowed_calls: None,
                     }
                     .signature_hash();
 
@@ -912,6 +921,7 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
                         key_id: addr_3,
                         expiry: None,
                         limits: None,
+                        allowed_calls: None,
                     }
                     .into_signed(PrimitiveSignature::P256(P256SignatureWithPreHash {
                         r: B256::from_slice(&wrong_sig_bytes[0..32]),
