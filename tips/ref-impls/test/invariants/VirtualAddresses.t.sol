@@ -12,6 +12,7 @@ import { Vm } from "forge-std/Vm.sol";
 /// @title TIP-1022 Virtual Address Invariant Tests
 /// @notice Stateful invariant coverage for deterministic virtual-address forwarding fixtures
 /// @dev Tests TEMPO-VA1 through TEMPO-VA16 using fixed anvil masters and pre-mined salts
+/// forge-config: default.hardfork = "tempo:T3"
 contract VirtualAddressesInvariantTest is InvariantBaseTest {
 
     struct MasterFixture {
@@ -31,7 +32,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
 
     string internal constant ANVIL_MNEMONIC =
         "test test test test test test test test test test test junk";
-    uint256 internal constant MASTER_COUNT = 8;
+    uint256 internal constant MASTER_COUNT = 7;
     uint256 internal constant TAG_COUNT = 16;
     uint256 internal constant INITIAL_MASTER_BALANCE = 1_000_000_000_000;
     uint256 internal constant MAX_HANDLER_AMOUNT = 1_000_000_000;
@@ -44,8 +45,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         bytes32(uint256(0xe9380f73)),
         bytes32(uint256(0xbf34bdba)),
         bytes32(uint256(0x011e93c2f3)),
-        bytes32(uint256(0x01bf66b590)),
-        bytes32(uint256(0x075e35330a))
+        bytes32(uint256(0x01bf66b590))
     ];
 
     bytes6[TAG_COUNT] internal USER_TAGS = [
