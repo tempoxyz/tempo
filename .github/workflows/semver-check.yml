@@ -1,0 +1,49 @@
+name: Semver check
+
+permissions: {}
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - crates/contracts/**
+      - crates/primitives/**
+      - crates/alloy/**
+      - scripts/publish-crates.sh
+      - scripts/sanitize_source.py
+      - scripts/sanitize_toml.py
+      - Cargo.toml
+  merge_group:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+  RUSTC_WRAPPER: "sccache"
+
+jobs:
+  semver-check:
+    name: semver check
+    runs-on: depot-ubuntu-latest-4
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+
+      - name: Install cargo-binstall
+        run: curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+
+      - name: Install cargo-semver-checks
+        run: cargo binstall -y cargo-semver-checks
+
+      - name: Run semver checks on sanitized crates
+        run: ./scripts/publish-crates.sh --semver-check

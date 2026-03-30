@@ -62,7 +62,7 @@ use tempo_node::{
     telemetry::{PrometheusMetricsConfig, install_prometheus_metrics},
 };
 use tokio::sync::oneshot;
-use tracing::{info, info_span};
+use tracing::{info, info_span, warn};
 
 type TempoCli =
     Cli<TempoChainSpecParser, TempoArgs, DefaultRpcModuleValidator, tempo_cmd::TempoSubcommand>;
@@ -346,6 +346,15 @@ fn main() -> eyre::Result<()> {
                         prometheus_config,
                     )
                     .wrap_err("failed to start Prometheus metrics exporter")?;
+                }
+
+                if args.consensus.fee_recipient.is_some() {
+                    warn!(
+                        "`--consensus.fee-recipient` is deprecated and will be \
+                         removed. It is only used pre-T2 hardfork, if validator \
+                         config v2 is not yet activated, or if the on-chain fee \
+                         recipient is set to the zero address",
+                    );
                 }
 
                 let consensus_stack =
