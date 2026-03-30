@@ -1,6 +1,6 @@
 use crate::{
     Precompile, dispatch_call, input_cost, mutate,
-    tip20_registry::{
+    address_registry::{
         AddressRegistry, MasterId, UserTag, decode_virtual_address, is_virtual_address,
     },
     view,
@@ -63,7 +63,7 @@ mod tests {
     use crate::{
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
-        tip20_registry::IAddressRegistry,
+        address_registry::IAddressRegistry,
     };
     use alloy::sol_types::{SolCall, SolValue};
     use tempo_chainspec::hardfork::TempoHardfork;
