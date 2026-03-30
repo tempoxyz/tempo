@@ -1174,9 +1174,7 @@ mod tests {
 
         executor.apply_pre_execution_changes().unwrap();
 
-        let acc = db
-            .load_cache_account(SIGNATURE_VERIFIER_ADDRESS)
-            .unwrap();
+        let acc = db.load_cache_account(SIGNATURE_VERIFIER_ADDRESS).unwrap();
         let info = acc.account_info().unwrap();
         assert!(!info.is_empty_code_hash());
     }
@@ -1192,9 +1190,7 @@ mod tests {
 
         executor.apply_pre_execution_changes().unwrap();
 
-        let acc = db
-            .load_cache_account(SIGNATURE_VERIFIER_ADDRESS)
-            .unwrap();
+        let acc = db.load_cache_account(SIGNATURE_VERIFIER_ADDRESS).unwrap();
         let info = acc.account_info();
         assert!(
             info.is_none() || info.unwrap().is_empty_code_hash(),

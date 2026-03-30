@@ -98,7 +98,7 @@ mod tests {
             let s = normalize_p256_s(&signature.s().to_bytes());
 
             // Build encoded P256 signature: 0x01 || r || s || x || y || prehash(0)
-            let mut sig_bytes = Vec::with_capacity(130);
+            let mut sig_bytes = Vec::new();
             sig_bytes.push(SIGNATURE_TYPE_P256);
             sig_bytes.extend_from_slice(r.as_slice());
             sig_bytes.extend_from_slice(s.as_slice());
