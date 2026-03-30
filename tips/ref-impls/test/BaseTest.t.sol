@@ -68,7 +68,7 @@ contract BaseTest is Test {
     error CallShouldHaveReverted();
 
     function setUp() public virtual {
-        // Only use native precompiles when the full Tempo surface needed by the specs exists.
+        // Is this tempo chain?
         isTempo = _ACCOUNT_KEYCHAIN.code.length + _TIP403REGISTRY.code.length
                 + _TIP20_REGISTRY.code.length + _TIP20FACTORY.code.length + _PATH_USD.code.length
                 + _STABLECOIN_DEX.code.length + _FEE_AMM.code.length + _NONCE.code.length
