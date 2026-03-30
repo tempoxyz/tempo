@@ -64,7 +64,7 @@ impl TIP20Token {
             .ok_or(TempoPrecompileError::under_overflow())?;
         self.set_global_reward_per_token(new_rpt)?;
 
-        // Emit distributed reward event for immediate payout
+        // Emit distributed reward event (recipients claim accrued rewards separately)
         self.emit_event(TIP20Event::RewardDistributed(ITIP20::RewardDistributed {
             funder: msg_sender,
             amount: call.amount,
@@ -185,8 +185,8 @@ impl TIP20Token {
 
     /// Claims accumulated rewards for a recipient.
     ///
-    /// This function allows a reward recipient to claim their accumulated rewards
-    /// and receive them as token transfers to their own balance.
+    /// Pays out the lesser of the accrued reward balance and the contract's token
+    /// balance. Any remainder stays stored for future claims.
     ///
     /// # Errors
     /// - `Paused` — token transfers are currently paused
@@ -326,8 +326,8 @@ impl TIP20Token {
     /// 1. The stored reward balance from previous updates
     /// 2. Newly accrued rewards based on the current global reward per token
     ///
-    /// For accounts that have delegated their rewards to another recipient, this returns 0
-    /// since their rewards accrue to their delegate instead.
+    /// For accounts that have delegated their rewards to another recipient, only the stored
+    /// reward balance is returned (new accrual is skipped since it goes to the delegate).
     pub fn get_pending_rewards(&self, account: Address) -> Result<u128> {
         let info = self.user_reward_info[account].read()?;
 

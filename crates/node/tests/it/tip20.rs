@@ -1,8 +1,9 @@
 use alloy::{
     primitives::{Address, FixedBytes, U256},
-    providers::ProviderBuilder,
+    providers::{Provider, ProviderBuilder},
     signers::local::MnemonicBuilder,
     sol_types::SolEvent,
+    transports::http::reqwest::Url,
 };
 use futures::future::try_join_all;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
@@ -11,7 +12,6 @@ use tempo_precompiles::{
     TIP20_REGISTRY_ADDRESS, TIP403_REGISTRY_ADDRESS,
     test_util::{VIRTUAL_SALT, make_virtual_address},
 };
-use alloy::{providers::Provider, transports::http::reqwest::Url};
 
 use crate::utils::{TestNodeBuilder, await_receipts, setup_test_token};
 
@@ -937,9 +937,13 @@ async fn test_tip20_pause_blocks_fee_collection() -> eyre::Result<()> {
 }
 
 /// Deploys a token, registers a virtual master, and returns all handles.
-async fn setup_virtual_test(
-) -> eyre::Result<(crate::utils::HttpOnlySetup, Url, Address, ITIP20::ITIP20Instance<impl Provider + Clone>, Address)>
-{
+async fn setup_virtual_test() -> eyre::Result<(
+    crate::utils::HttpOnlySetup,
+    Url,
+    Address,
+    ITIP20::ITIP20Instance<impl Provider + Clone>,
+    Address,
+)> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url.clone();
 
@@ -972,7 +976,8 @@ async fn setup_virtual_test(
         .expect("MasterRegistered event should be emitted");
     assert_eq!(master_event.masterAddress, admin);
 
-    let virtual_addr = make_virtual_address(master_event.masterId, FixedBytes::from([1, 2, 3, 4, 5, 6]));
+    let virtual_addr =
+        make_virtual_address(master_event.masterId, FixedBytes::from([1, 2, 3, 4, 5, 6]));
 
     Ok((setup, http_url, admin, token, virtual_addr))
 }

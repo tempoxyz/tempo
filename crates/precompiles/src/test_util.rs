@@ -180,7 +180,7 @@ impl TIP20Setup {
         }
     }
 
-    /// Clears emitted events for the token after applying the configuration.
+    /// Clear the emitted events of the token when `apply()` is called.
     ///
     /// SAFETY: the caller must ensure the test uses `HashMapStorageProvider`.
     pub fn clear_events(mut self) -> Self {
