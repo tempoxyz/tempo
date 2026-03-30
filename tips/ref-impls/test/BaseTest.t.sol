@@ -7,7 +7,10 @@ import { Nonce } from "../src/Nonce.sol";
 import { StablecoinDEX } from "../src/StablecoinDEX.sol";
 import { TIP20 } from "../src/TIP20.sol";
 import { TIP20Factory } from "../src/TIP20Factory.sol";
+import { TIP20Registry } from "../src/TIP20Registry.sol";
 import { TIP403Registry } from "../src/TIP403Registry.sol";
+import { ValidatorConfig } from "../src/ValidatorConfig.sol";
+import { ValidatorConfigV2 } from "../src/ValidatorConfigV2.sol";
 import { IAccountKeychain } from "../src/interfaces/IAccountKeychain.sol";
 import { INonce } from "../src/interfaces/INonce.sol";
 import { ITIP20 } from "../src/interfaces/ITIP20.sol";
@@ -22,6 +25,7 @@ contract BaseTest is Test {
     // Registry precompiles
     address internal constant _ACCOUNT_KEYCHAIN = 0xaAAAaaAA00000000000000000000000000000000;
     address internal constant _TIP403REGISTRY = 0x403c000000000000000000000000000000000000;
+    address internal constant _TIP20_REGISTRY = 0xfDC0000000000000000000000000000000000000;
     address internal constant _TIP20FACTORY = 0x20Fc000000000000000000000000000000000000;
     address internal constant _PATH_USD = 0x20C0000000000000000000000000000000000000;
     address internal constant _STABLECOIN_DEX = 0xDEc0000000000000000000000000000000000000;
@@ -52,6 +56,7 @@ contract BaseTest is Test {
     StablecoinDEX public exchange = StablecoinDEX(_STABLECOIN_DEX);
     FeeManager public amm = FeeManager(_FEE_AMM);
     TIP403Registry public registry = TIP403Registry(_TIP403REGISTRY);
+    TIP20Registry public tip20Registry = TIP20Registry(_TIP20_REGISTRY);
     INonce public nonce = INonce(_NONCE);
     IValidatorConfig public validatorConfig = IValidatorConfig(_VALIDATOR_CONFIG);
     IValidatorConfigV2 public validatorConfigV2 = IValidatorConfigV2(_VALIDATOR_CONFIG_V2);
@@ -63,10 +68,12 @@ contract BaseTest is Test {
     error CallShouldHaveReverted();
 
     function setUp() public virtual {
-        // Is this tempo chain?
-        isTempo = _TIP403REGISTRY.code.length + _TIP20FACTORY.code.length + _PATH_USD.code.length
-                + _STABLECOIN_DEX.code.length + _NONCE.code.length + _ACCOUNT_KEYCHAIN.code.length
-            > 0;
+        // Only use native precompiles when the full Tempo surface needed by the specs exists.
+        isTempo = _ACCOUNT_KEYCHAIN.code.length > 0 && _TIP403REGISTRY.code.length > 0
+            && _TIP20_REGISTRY.code.length > 0 && _TIP20FACTORY.code.length > 0
+            && _PATH_USD.code.length > 0 && _STABLECOIN_DEX.code.length > 0
+            && _FEE_AMM.code.length > 0 && _NONCE.code.length > 0
+            && _VALIDATOR_CONFIG.code.length > 0 && _VALIDATOR_CONFIG_V2.code.length > 0;
 
         console.log("Tests running with isTempo =", isTempo);
 
@@ -74,6 +81,7 @@ contract BaseTest is Test {
         if (!isTempo) {
             deployCodeTo("AccountKeychain", _ACCOUNT_KEYCHAIN);
             deployCodeTo("TIP403Registry", _TIP403REGISTRY);
+            deployCodeTo("TIP20Registry", _TIP20_REGISTRY);
             deployCodeTo("StablecoinDEX", _STABLECOIN_DEX);
             deployCodeTo("FeeManager", _FEE_AMM);
             deployCodeTo("TIP20Factory", _TIP20FACTORY);
@@ -97,6 +105,9 @@ contract BaseTest is Test {
             if (_TIP403REGISTRY.code.length == 0) {
                 revert MissingPrecompile("TIP403Registry", _TIP403REGISTRY);
             }
+            if (_TIP20_REGISTRY.code.length == 0) {
+                revert MissingPrecompile("TIP20Registry", _TIP20_REGISTRY);
+            }
             if (_TIP20FACTORY.code.length == 0) {
                 revert MissingPrecompile("TIP20Factory", _TIP20FACTORY);
             }
@@ -114,6 +125,9 @@ contract BaseTest is Test {
             }
             if (_VALIDATOR_CONFIG.code.length == 0) {
                 revert MissingPrecompile("ValidatorConfig", _VALIDATOR_CONFIG);
+            }
+            if (_VALIDATOR_CONFIG_V2.code.length == 0) {
+                revert MissingPrecompile("ValidatorConfigV2", _VALIDATOR_CONFIG_V2);
             }
             // Set ValidatorConfig owner to admin via direct storage write
             // owner is at slot 0 in ValidatorConfig
