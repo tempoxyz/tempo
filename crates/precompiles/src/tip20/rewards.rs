@@ -7,10 +7,10 @@
 //! [Reward system]: <https://docs.tempo.xyz/protocol/tip20-rewards/overview>
 
 use crate::{
+    address_registry,
     error::{Result, TempoPrecompileError},
     storage::Handler,
     tip20::{Recipient, TIP20Token},
-    tip20_registry,
 };
 use alloy::primitives::{Address, U256, uint};
 use tempo_contracts::precompiles::{ITIP20, TIP20Error, TIP20Event};
@@ -136,7 +136,7 @@ impl TIP20Token {
         self.check_not_paused()?;
 
         // TIP-1022: reject virtual addresses as reward recipients
-        if self.storage.spec().is_t3() && tip20_registry::is_virtual_address(call.recipient) {
+        if self.storage.spec().is_t3() && address_registry::is_virtual_address(call.recipient) {
             return Err(TIP20Error::invalid_recipient().into());
         }
 
@@ -386,10 +386,10 @@ impl From<UserRewardInfo> for ITIP20::UserRewardInfo {
 mod tests {
     use super::*;
     use crate::{
+        address_registry::{MasterId, UserTag},
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, make_virtual_address},
-        tip20_registry::{MasterId, UserTag},
         tip403_registry::TIP403Registry,
     };
     use alloy::primitives::{Address, U256};

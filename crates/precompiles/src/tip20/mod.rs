@@ -23,11 +23,11 @@ pub use slots as tip20_slots;
 use crate::{
     PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
+    address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
-    tip20_registry::AddressRegistry,
     tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
 };
 use alloy::{
@@ -1194,13 +1194,13 @@ pub(crate) mod tests {
         account_keychain::{
             AccountKeychain, SignatureType, TokenLimit, authorizeKeyCall, getRemainingLimitCall,
         },
+        address_registry::{AddressRegistry, MasterId, UserTag},
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{
             TIP20Setup, VIRTUAL_MASTER, make_virtual_address, register_virtual_master,
             setup_storage,
         },
-        tip20_registry::{AddressRegistry, MasterId, UserTag},
     };
     use rand_08::{Rng, distributions::Alphanumeric, thread_rng};
     use tempo_chainspec::hardfork::TempoHardfork;

@@ -4,10 +4,10 @@
 use crate::error::TempoPrecompileError;
 use crate::{
     PATH_USD_ADDRESS, Precompile, Result,
+    address_registry::{AddressRegistry, IAddressRegistry, MasterId, UserTag, VIRTUAL_MAGIC},
     storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
     tip20::{self, ITIP20, TIP20Token},
     tip20_factory::{self, TIP20Factory},
-    tip20_registry::{AddressRegistry, IAddressRegistry, MasterId, UserTag, VIRTUAL_MAGIC},
 };
 use alloy::{
     primitives::{Address, B256, U256, address, hex_literal::hex},

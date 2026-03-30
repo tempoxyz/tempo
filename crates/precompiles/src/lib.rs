@@ -10,11 +10,11 @@ pub mod storage;
 pub(crate) mod ip_validation;
 
 pub mod account_keychain;
+pub mod address_registry;
 pub mod nonce;
 pub mod stablecoin_dex;
 pub mod tip20;
 pub mod tip20_factory;
-pub mod tip20_registry;
 pub mod tip403_registry;
 pub mod tip_fee_manager;
 pub mod validator_config;
@@ -25,13 +25,13 @@ pub mod test_util;
 
 use crate::{
     account_keychain::AccountKeychain,
+    address_registry::AddressRegistry,
     nonce::NonceManager,
     stablecoin_dex::StablecoinDEX,
     storage::StorageCtx,
     tip_fee_manager::TipFeeManager,
     tip20::{TIP20Token, is_tip20_prefix},
     tip20_factory::TIP20Factory,
-    tip20_registry::AddressRegistry,
     tip403_registry::TIP403Registry,
     validator_config::ValidatorConfig,
     validator_config_v2::ValidatorConfigV2,

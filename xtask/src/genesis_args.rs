@@ -50,13 +50,13 @@ use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
     PATH_USD_ADDRESS,
     account_keychain::AccountKeychain,
+    address_registry::AddressRegistry,
     nonce::NonceManager,
     stablecoin_dex::StablecoinDEX,
     storage::{ContractStorage, StorageCtx},
     tip_fee_manager::{IFeeManager, TipFeeManager},
     tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
     tip20_factory::TIP20Factory,
-    tip20_registry::TIP20Registry,
     tip403_registry::TIP403Registry,
     validator_config::ValidatorConfig,
     validator_config_v2::ValidatorConfigV2,
@@ -418,7 +418,7 @@ impl GenesisArgs {
         initialize_account_keychain(&mut evm)?;
 
         println!("Initializing TIP20 registry");
-        initialize_tip20_registry(&mut evm)?;
+        initialize_address_registry(&mut evm)?;
 
         if !self.no_pairwise_liquidity {
             if let (Some(alpha), Some(beta), Some(theta)) =
@@ -897,14 +897,14 @@ fn initialize_account_keychain(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Re
     Ok(())
 }
 
-fn initialize_tip20_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
+fn initialize_address_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
     StorageCtx::enter_evm(
         &mut ctx.journaled_state,
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
-        || TIP20Registry::new().initialize(),
+        || AddressRegistry::new().initialize(),
     )?;
 
     Ok(())

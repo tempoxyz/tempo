@@ -18,7 +18,7 @@ use crate::{
     TIP403_REGISTRY_ADDRESS,
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
-    tip20_registry::is_virtual_address,
+    address_registry::is_virtual_address,
 };
 use alloy::primitives::Address;
 
@@ -2272,7 +2272,7 @@ mod tests {
 
     /// Builds a virtual address from a `masterId` and `userTag`.
     fn make_virtual_address() -> Address {
-        use crate::tip20_registry::VIRTUAL_MAGIC;
+        use crate::address_registry::VIRTUAL_MAGIC;
         let mut bytes = [0u8; 20];
         bytes[4..14].copy_from_slice(&VIRTUAL_MAGIC);
         Address::from(bytes)

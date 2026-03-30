@@ -12,7 +12,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
 
     TIP403Registry internal constant TIP403_REGISTRY =
         TIP403Registry(0x403c000000000000000000000000000000000000);
-    IAddressRegistry internal constant TIP20_REGISTRY =
+    IAddressRegistry internal constant ADDRESS_REGISTRY =
         IAddressRegistry(0xfDC0000000000000000000000000000000000000);
 
     address internal constant TIP_FEE_MANAGER_ADDRESS = 0xfeEC000000000000000000000000000000000000;
@@ -526,7 +526,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         view
         returns (ResolvedRecipient memory recipient)
     {
-        address target = TIP20_REGISTRY.resolveRecipient(to);
+        address target = ADDRESS_REGISTRY.resolveRecipient(to);
         recipient =
             ResolvedRecipient({ target: target, virtualAddr: target == to ? address(0) : to });
     }
