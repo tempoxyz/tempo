@@ -45,7 +45,6 @@ pub const MAX_RECIPIENTS_PER_SELECTOR: u8 = 16;
 const TIP20_TRANSFER_SELECTOR: [u8; 4] = ITIP20::transferCall::SELECTOR;
 const TIP20_APPROVE_SELECTOR: [u8; 4] = ITIP20::approveCall::SELECTOR;
 const TIP20_TRANSFER_WITH_MEMO_SELECTOR: [u8; 4] = ITIP20::transferWithMemoCall::SELECTOR;
-type SelectorKey = FixedBytes<4>;
 
 #[inline]
 pub fn is_constrained_tip20_selector(selector: [u8; 4]) -> bool {
@@ -90,8 +89,8 @@ pub struct SelectorScope {
 #[derive(Debug, Clone, Storable, Default)]
 pub struct TargetScope {
     pub mode: u8,
-    pub selectors: Vec<SelectorKey>,
-    pub selector_scopes: Mapping<SelectorKey, SelectorScope>,
+    pub selectors: Vec<FixedBytes<4>>,
+    pub selector_scopes: Mapping<FixedBytes<4>, SelectorScope>,
 }
 
 /// Key-level call scope.
@@ -271,7 +270,7 @@ impl AccountKeychain {
         &self,
         account_key: B256,
         target: Address,
-        selector: SelectorKey,
+        selector: FixedBytes<4>,
     ) -> Result<u8> {
         if !self.key_scopes[account_key].target_scopes[target]
             .selectors
@@ -304,7 +303,7 @@ impl AccountKeychain {
         &mut self,
         account_key: B256,
         target: Address,
-        selector: SelectorKey,
+        selector: FixedBytes<4>,
     ) -> Result<()> {
         if !self.key_scopes[account_key].target_scopes[target]
             .selectors
@@ -867,7 +866,7 @@ impl AccountKeychain {
             return Err(AccountKeychainError::call_not_allowed().into());
         }
 
-        let selector: SelectorKey = [input[0], input[1], input[2], input[3]].into();
+        let selector: FixedBytes<4> = [input[0], input[1], input[2], input[3]].into();
         let selector_mode = self.indexed_selector_mode(key_hash, target, selector)?;
         if selector_mode == 1 {
             return Ok(());
@@ -1030,7 +1029,7 @@ impl AccountKeychain {
                     .write(2)?;
 
                 for rule in rules {
-                    let selector: SelectorKey = rule.selector.into();
+                    let selector: FixedBytes<4> = rule.selector.into();
                     self.push_unique_selector(account_key, target, selector)?;
 
                     match rule.recipients {
