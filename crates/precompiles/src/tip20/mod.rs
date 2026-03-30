@@ -2540,6 +2540,195 @@ pub(crate) mod tests {
     }
 
     // ═══════════════════════════════════════════════════════════
+    //  TIP-1022 Virtual Address Tests
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_mint_to_virtual_address_credits_master() -> eyre::Result<()> {
+        let amount = U256::from(1000);
+
+        for hardfork in [TempoHardfork::T2, TempoHardfork::T3] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
+            let admin = Address::random();
+
+            StorageCtx::enter(&mut storage, || {
+                let mut registry = TIP20Registry::new();
+                let (_, virtual_addr) = register_virtual_master(&mut registry)?;
+
+                let mut token = TIP20Setup::create("Test", "TST", admin)
+                    .with_issuer(admin)
+                    .clear_events()
+                    .apply()?;
+
+                token.mint(
+                    admin,
+                    ITIP20::mintCall {
+                        to: virtual_addr,
+                        amount,
+                    },
+                )?;
+
+                if hardfork.is_t3() {
+                    // T3: master is credited, virtual balance stays zero
+                    assert_eq!(token.get_balance(VIRTUAL_MASTER)?, amount);
+                    assert_eq!(token.get_balance(virtual_addr)?, U256::ZERO);
+                    assert_eq!(token.total_supply()?, amount);
+
+                    // Events: Transfer(0→virtual) + Mint(virtual) + Transfer(virtual→master)
+                    token.assert_emitted_events(vec![
+                        TIP20Event::Transfer(ITIP20::Transfer {
+                            from: Address::ZERO,
+                            to: virtual_addr,
+                            amount,
+                        }),
+                        TIP20Event::Mint(ITIP20::Mint {
+                            to: virtual_addr,
+                            amount,
+                        }),
+                        TIP20Event::Transfer(ITIP20::Transfer {
+                            from: virtual_addr,
+                            to: VIRTUAL_MASTER,
+                            amount,
+                        }),
+                    ]);
+                } else {
+                    // Pre-T3: virtual address treated as literal, balance goes there
+                    assert_eq!(token.get_balance(virtual_addr)?, amount);
+                    assert_eq!(token.get_balance(VIRTUAL_MASTER)?, U256::ZERO);
+                }
+
+                Ok::<_, TempoPrecompileError>(())
+            })?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_transfer_to_virtual_address_credits_master() -> eyre::Result<()> {
+        let amount = U256::from(500);
+
+        for hardfork in [TempoHardfork::T2, TempoHardfork::T3] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
+            let admin = Address::random();
+            let sender = Address::random();
+
+            StorageCtx::enter(&mut storage, || {
+                let mut registry = TIP20Registry::new();
+                let (_, virtual_addr) = register_virtual_master(&mut registry)?;
+
+                let mut token = TIP20Setup::create("Test", "TST", admin)
+                    .with_issuer(admin)
+                    .with_mint(sender, amount)
+                    .clear_events()
+                    .apply()?;
+
+                token.transfer(
+                    sender,
+                    ITIP20::transferCall {
+                        to: virtual_addr,
+                        amount,
+                    },
+                )?;
+
+                if hardfork.is_t3() {
+                    assert_eq!(token.get_balance(sender)?, U256::ZERO);
+                    assert_eq!(token.get_balance(VIRTUAL_MASTER)?, amount);
+                    assert_eq!(token.get_balance(virtual_addr)?, U256::ZERO);
+
+                    // Events: Transfer(sender→virtual) + Transfer(virtual→master)
+                    token.assert_emitted_events(vec![
+                        TIP20Event::Transfer(ITIP20::Transfer {
+                            from: sender,
+                            to: virtual_addr,
+                            amount,
+                        }),
+                        TIP20Event::Transfer(ITIP20::Transfer {
+                            from: virtual_addr,
+                            to: VIRTUAL_MASTER,
+                            amount,
+                        }),
+                    ]);
+                } else {
+                    assert_eq!(token.get_balance(virtual_addr)?, amount);
+                    assert_eq!(token.get_balance(VIRTUAL_MASTER)?, U256::ZERO);
+                }
+
+                Ok::<_, TempoPrecompileError>(())
+            })?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_transfer_from_to_virtual_address_credits_master() -> eyre::Result<()> {
+        let amount = U256::from(300);
+
+        for hardfork in [TempoHardfork::T2, TempoHardfork::T3] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
+            let admin = Address::random();
+            let owner = Address::random();
+            let spender = Address::random();
+
+            StorageCtx::enter(&mut storage, || {
+                let mut registry = TIP20Registry::new();
+                let (_, virtual_addr) = register_virtual_master(&mut registry)?;
+
+                let mut token = TIP20Setup::create("Test", "TST", admin)
+                    .with_issuer(admin)
+                    .with_mint(owner, amount)
+                    .with_approval(owner, spender, amount)
+                    .clear_events()
+                    .apply()?;
+
+                token.transfer_from(
+                    spender,
+                    ITIP20::transferFromCall {
+                        from: owner,
+                        to: virtual_addr,
+                        amount,
+                    },
+                )?;
+
+                if hardfork.is_t3() {
+                    assert_eq!(token.get_balance(owner)?, U256::ZERO);
+                    assert_eq!(token.get_balance(VIRTUAL_MASTER)?, amount);
+                    assert_eq!(token.get_balance(virtual_addr)?, U256::ZERO);
+                } else {
+                    assert_eq!(token.get_balance(virtual_addr)?, amount);
+                    assert_eq!(token.get_balance(VIRTUAL_MASTER)?, U256::ZERO);
+                }
+
+                Ok::<_, TempoPrecompileError>(())
+            })?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_mint_to_unregistered_virtual_reverts_on_t3() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let admin = Address::random();
+        let unregistered_virtual = make_virtual_address(MasterId::ZERO, UserTag::ZERO);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .apply()?;
+
+            let result = token.mint(
+                admin,
+                ITIP20::mintCall {
+                    to: unregistered_virtual,
+                    amount: U256::from(100),
+                },
+            );
+            assert!(result.is_err());
+
+            Ok(())
+        })
+    }
+
+    // ═══════════════════════════════════════════════════════════
     //  EIP-2612 Permit Tests (TIP-1004)
     // ═══════════════════════════════════════════════════════════
 

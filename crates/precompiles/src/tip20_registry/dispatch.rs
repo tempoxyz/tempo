@@ -131,4 +131,24 @@ mod tests {
             Ok(())
         })
     }
+
+    #[test]
+    fn test_pre_t3_calls_return_empty() -> eyre::Result<()> {
+        for hardfork in [TempoHardfork::T2, TempoHardfork::T1] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
+            StorageCtx::enter(&mut storage, || {
+                let mut registry = TIP20Registry::new();
+
+                let call = ITIP20Registry::getMasterCall {
+                    masterId: Default::default(),
+                };
+                let result = registry.call(&call.abi_encode(), Address::ZERO)?;
+                assert!(!result.reverted);
+                assert!(result.bytes.is_empty());
+
+                Ok::<_, revm::precompile::PrecompileError>(())
+            })?;
+        }
+        Ok(())
+    }
 }

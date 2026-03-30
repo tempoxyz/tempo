@@ -388,10 +388,12 @@ mod tests {
     use crate::{
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::TIP20Setup,
+        test_util::{TIP20Setup, make_virtual_address},
+        tip20_registry::{MasterId, UserTag},
         tip403_registry::TIP403Registry,
     };
     use alloy::primitives::{Address, U256};
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{ITIP403Registry, TIP20Error};
 
     #[test]
@@ -723,5 +725,43 @@ mod tests {
 
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_set_reward_recipient_rejects_virtual_on_t3() -> eyre::Result<()> {
+        let virtual_addr = make_virtual_address(MasterId::ZERO, UserTag::ZERO);
+
+        for hardfork in [TempoHardfork::T2, TempoHardfork::T3] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
+            let admin = Address::random();
+            let alice = Address::random();
+
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("Test", "TST", admin)
+                    .with_issuer(admin)
+                    .with_mint(alice, U256::from(1000))
+                    .apply()?;
+
+                let result = token.set_reward_recipient(
+                    alice,
+                    ITIP20::setRewardRecipientCall {
+                        recipient: virtual_addr,
+                    },
+                );
+
+                if hardfork.is_t3() {
+                    assert!(matches!(
+                        result.unwrap_err(),
+                        TempoPrecompileError::TIP20(TIP20Error::InvalidRecipient(_))
+                    ));
+                } else {
+                    // Pre-T3: virtual addresses are accepted
+                    assert!(result.is_ok());
+                }
+
+                Ok::<_, TempoPrecompileError>(())
+            })?;
+        }
+        Ok(())
     }
 }

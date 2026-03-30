@@ -212,28 +212,15 @@ mod tests {
     use crate::{
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        test_util::{VIRTUAL_MASTER, VIRTUAL_SALT, make_virtual_address},
     };
-    use alloy::primitives::address;
     use alloy_primitives::hex_literal::hex;
     use tempo_chainspec::hardfork::TempoHardfork;
-
-    /// Pre-computed (address, salt) pair satisfying the 32-bit PoW.
-    const MASTER: Address = address!("713db2d03ed9b46b09702f038129e2c9158fa87b");
-    const SALT: [u8; 32] = hex!("000000000000000000000000000000000000000000000000000000002058bec4");
-
-    /// Builds a virtual address from a `masterId` and `userTag`.
-    fn make_virtual_address(master_id: MasterId, user_tag: UserTag) -> Address {
-        let mut bytes = [0u8; 20];
-        bytes[0..4].copy_from_slice(master_id.as_slice());
-        bytes[4..14].copy_from_slice(&VIRTUAL_MAGIC);
-        bytes[14..20].copy_from_slice(user_tag.as_slice());
-        Address::from(bytes)
-    }
 
     #[test]
     fn test_register_virtual_master() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
-        let (master, salt) = (MASTER, SALT.into());
+        let (master, salt) = (VIRTUAL_MASTER, VIRTUAL_SALT.into());
 
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP20Registry::new();
@@ -349,7 +336,7 @@ mod tests {
     #[test]
     fn test_register_duplicate_reverts_with_collision() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
-        let (master, salt) = (MASTER, SALT.into());
+        let (master, salt) = (VIRTUAL_MASTER, VIRTUAL_SALT.into());
 
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP20Registry::new();
@@ -437,7 +424,7 @@ mod tests {
     #[test]
     fn test_resolve_recipient_virtual_registered() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
-        let (master, salt) = (MASTER, SALT.into());
+        let (master, salt) = (VIRTUAL_MASTER, VIRTUAL_SALT.into());
 
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP20Registry::new();
