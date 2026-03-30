@@ -265,15 +265,25 @@ impl HashMapStorageProvider {
             .and_modify(|v| v.clear())
             .or_default();
     }
-
+  
+    /// Returns all storage entries as `(address, slot, value)`.
+    pub fn into_storage(self) -> impl Iterator<Item = (Address, U256, U256)> {
+        self.internals
+            .into_iter()
+            .map(|((addr, slot), value)| (addr, slot, value))
+    }
+  
+    /// Returns the amount of counted SLOADs.
     pub fn counter_sload(&self) -> u64 {
         self.counter_sload
     }
 
+    /// Returns the amount of counted SSTOREs.
     pub fn counter_sstore(&self) -> u64 {
         self.counter_sstore
     }
 
+    /// Resets the SLOAD and SSTORE counters.
     pub fn reset_counters(&mut self) {
         self.counter_sload = 0;
         self.counter_sstore = 0;
