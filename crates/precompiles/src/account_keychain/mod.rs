@@ -126,9 +126,14 @@ pub struct AuthorizedKey {
     pub is_revoked: bool,
 }
 
-/// Per-token periodic spending limit state (T3+).
+/// Per-token spending limit state.
+///
+/// `remaining` stays in the first slot so the legacy `spending_limits` layout remains intact.
+/// T3+ extends the same row with period metadata in later slots.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Storable)]
-pub struct SpendingLimitPeriodState {
+pub struct SpendingLimitState {
+    /// Remaining amount currently available to spend.
+    pub remaining: U256,
     /// Maximum amount allowed per period, capped to TIP-20's `u128` supply range.
     pub max: u128,
     /// Duration of each period in seconds. `0` means non-periodic.
@@ -197,11 +202,9 @@ impl AuthorizedKey {
 pub struct AccountKeychain {
     // keys[account][keyId] -> AuthorizedKey
     keys: Mapping<Address, Mapping<Address, AuthorizedKey>>,
-    // spendingLimits[(account, keyId)][token] -> amount
+    // spendingLimits[(account, keyId)][token] -> { remaining, max, period, period_end }
     // Using a hash of account and keyId as the key to avoid triple nesting
-    spending_limits: Mapping<B256, Mapping<Address, U256>>,
-    // spendingLimitPeriodState[(account, keyId)][token] -> { max, period, period_end }
-    spending_limit_period_state: Mapping<B256, Mapping<Address, SpendingLimitPeriodState>>,
+    spending_limits: Mapping<B256, Mapping<Address, SpendingLimitState>>,
 
     // key_scopes[(account, keyId)] -> call scoping configuration.
     key_scopes: Mapping<B256, KeyScope>,
@@ -314,7 +317,10 @@ impl AccountKeychain {
         if config.enforceLimits && !is_t3 {
             let limit_key = Self::spending_limit_key(msg_sender, call.keyId);
             for limit in &config.limits {
-                self.spending_limits[limit_key][limit.token].write(limit.amount)?;
+                self.spending_limits[limit_key][limit.token].write(SpendingLimitState {
+                    remaining: limit.amount,
+                    ..Default::default()
+                })?;
             }
         }
 
@@ -432,15 +438,14 @@ impl AccountKeychain {
 
         // Update the spending limit
         let limit_key = Self::spending_limit_key(msg_sender, call.keyId);
-        self.spending_limits[limit_key][call.token].write(call.newLimit)?;
+        let mut limit_state = self.spending_limits[limit_key][call.token].read()?;
+        limit_state.remaining = call.newLimit;
         if self.storage.spec().is_t3() {
             // T3: newLimit updates both the configured cap and current remaining amount,
             // while preserving period + period_end.
-            let mut period_state =
-                self.spending_limit_period_state[limit_key][call.token].read()?;
-            period_state.max = Self::t3_spending_limit_cap(call.newLimit)?;
-            self.spending_limit_period_state[limit_key][call.token].write(period_state)?;
+            limit_state.max = Self::t3_spending_limit_cap(call.newLimit)?;
         }
+        self.spending_limits[limit_key][call.token].write(limit_state)?;
 
         // Emit event
         self.emit_event(AccountKeychainEvent::SpendingLimitUpdated(
@@ -527,7 +532,9 @@ impl AccountKeychain {
         }
 
         let limit_key = Self::spending_limit_key(call.account, call.keyId);
-        let remaining = self.spending_limits[limit_key][call.token].read()?;
+        let remaining = self.spending_limits[limit_key][call.token]
+            .read()?
+            .remaining;
         Ok(getRemainingLimitReturn {
             remaining,
             periodEnd: 0,
@@ -732,14 +739,12 @@ impl AccountKeychain {
                 now.saturating_add(limit.period)
             };
 
-            self.spending_limits[limit_key][limit.token].write(limit.amount)?;
-            self.spending_limit_period_state[limit_key][limit.token].write(
-                SpendingLimitPeriodState {
-                    max: Self::t3_spending_limit_cap(limit.amount)?,
-                    period: limit.period,
-                    period_end,
-                },
-            )?;
+            self.spending_limits[limit_key][limit.token].write(SpendingLimitState {
+                remaining: limit.amount,
+                max: Self::t3_spending_limit_cap(limit.amount)?,
+                period: limit.period,
+                period_end,
+            })?;
         }
 
         let key_hash = Self::spending_limit_key(account, key_id);
@@ -1174,28 +1179,28 @@ impl AccountKeychain {
         current_timestamp: u64,
     ) -> Result<(U256, u64)> {
         let limit_key = Self::spending_limit_key(account, key_id);
-        let remaining = self.spending_limits[limit_key][token].read()?;
+        let limit_state = self.spending_limits[limit_key][token].read()?;
+        let remaining = limit_state.remaining;
 
         if !self.storage.spec().is_t3() {
             return Ok((remaining, 0));
         }
 
-        let period_state = self.spending_limit_period_state[limit_key][token].read()?;
-        if period_state.period == 0 {
+        if limit_state.period == 0 {
             return Ok((remaining, 0));
         }
 
-        if current_timestamp < period_state.period_end {
-            return Ok((remaining, period_state.period_end));
+        if current_timestamp < limit_state.period_end {
+            return Ok((remaining, limit_state.period_end));
         }
 
         let next_end = Self::compute_next_period_end(
-            period_state.period_end,
-            period_state.period,
+            limit_state.period_end,
+            limit_state.period,
             current_timestamp,
         );
 
-        Ok((U256::from(period_state.max), next_end))
+        Ok((U256::from(limit_state.max), next_end))
     }
 
     /// Computes the period end for the current rollover window, saturating on
@@ -1235,23 +1240,22 @@ impl AccountKeychain {
 
         // Check and update spending limit
         let limit_key = Self::spending_limit_key(account, key_id);
-        let mut remaining = self.spending_limits[limit_key][token].read()?;
+        let mut limit_state = self.spending_limits[limit_key][token].read()?;
+        let mut remaining = limit_state.remaining;
 
         if self.storage.spec().is_t3() {
-            let mut period_state = self.spending_limit_period_state[limit_key][token].read()?;
-            if period_state.period > 0 {
+            if limit_state.period > 0 {
                 let now = self.storage.timestamp().saturating_to::<u64>();
-                if now >= period_state.period_end {
+                if now >= limit_state.period_end {
                     let next_end = Self::compute_next_period_end(
-                        period_state.period_end,
-                        period_state.period,
+                        limit_state.period_end,
+                        limit_state.period,
                         now,
                     );
 
-                    remaining = U256::from(period_state.max);
-                    self.spending_limits[limit_key][token].write(remaining)?;
-                    period_state.period_end = next_end;
-                    self.spending_limit_period_state[limit_key][token].write(period_state)?;
+                    remaining = U256::from(limit_state.max);
+                    limit_state.remaining = remaining;
+                    limit_state.period_end = next_end;
                 }
             }
         }
@@ -1262,7 +1266,8 @@ impl AccountKeychain {
 
         // Update remaining limit
         let new_remaining = remaining - amount;
-        self.spending_limits[limit_key][token].write(new_remaining)?;
+        limit_state.remaining = new_remaining;
+        self.spending_limits[limit_key][token].write(limit_state)?;
 
         if self.storage.spec().is_t3() {
             self.emit_event(AccountKeychainEvent::AccessKeySpend(
@@ -1313,11 +1318,10 @@ impl AccountKeychain {
         }
 
         let limit_key = Self::spending_limit_key(account, transaction_key);
-        let remaining = self.spending_limits[limit_key][token].read()?;
+        let mut limit_state = self.spending_limits[limit_key][token].read()?;
+        limit_state.remaining = limit_state.remaining.saturating_add(amount);
 
-        let new_remaining = remaining.saturating_add(amount);
-
-        self.spending_limits[limit_key][token].write(new_remaining)
+        self.spending_limits[limit_key][token].write(limit_state)
     }
 
     /// Authorize a token transfer with access key spending limits.
@@ -3170,11 +3174,7 @@ mod tests {
             let limit_key = AccountKeychain::spending_limit_key(account, key_id);
             assert_eq!(
                 keychain.spending_limits[limit_key][token].read()?,
-                U256::ZERO
-            );
-            assert_eq!(
-                keychain.spending_limit_period_state[limit_key][token].read()?,
-                SpendingLimitPeriodState::default()
+                SpendingLimitState::default()
             );
 
             let remaining =
@@ -3270,6 +3270,36 @@ mod tests {
                     ))
                 ),
                 "expected InvalidSpendingLimit, got {update_result:?}"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_spending_limit_state_preserves_legacy_remaining_slot() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let account = Address::random();
+        let key_id = Address::random();
+        let token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            let limit_key = AccountKeychain::spending_limit_key(account, key_id);
+            let handler = &mut keychain.spending_limits[limit_key][token];
+            let remaining = U256::from(123u64);
+            handler.write(SpendingLimitState {
+                remaining,
+                max: 456,
+                period: 60,
+                period_end: 120,
+            })?;
+
+            assert_eq!(
+                StorageCtx.sload(ACCOUNT_KEYCHAIN_ADDRESS, handler.as_slot().slot())?,
+                remaining
             );
 
             Ok(())

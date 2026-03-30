@@ -164,9 +164,9 @@ fn calculate_key_authorization_gas(
             gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
 
         let limit_slots = if spec.is_t3() {
-            // T3 periodic limits write 3 storage slots per token:
-            // spending_limits[token] + period_state.max + packed {period,period_end}
-            num_limits.saturating_mul(3)
+            // T3 periodic limits write 2 storage slots per token:
+            // spending_limits[token].remaining + packed {max, period, period_end}
+            num_limits.saturating_mul(2)
         } else {
             num_limits
         };
@@ -2644,7 +2644,7 @@ mod tests {
                 &t1b_gas_params,
                 TempoHardfork::T3,
             );
-            let expected = ECRECOVER_GAS + sload + sstore * (1 + 3 * num_limits as u64) + BUFFER;
+            let expected = ECRECOVER_GAS + sload + sstore * (1 + 2 * num_limits as u64) + BUFFER;
             assert_eq!(gas, expected, "T3 with {num_limits} limits");
         }
 

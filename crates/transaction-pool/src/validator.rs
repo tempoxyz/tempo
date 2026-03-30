@@ -23,7 +23,7 @@ use tempo_chainspec::{
 };
 use tempo_evm::TempoEvmConfig;
 #[cfg(test)]
-use tempo_precompiles::account_keychain::AuthorizedKey;
+use tempo_precompiles::account_keychain::{AuthorizedKey, SpendingLimitState};
 use tempo_precompiles::{
     account_keychain::{
         AccountKeychain, MAX_CALL_SCOPES, MAX_RECIPIENTS_PER_SELECTOR,
@@ -4778,7 +4778,10 @@ mod tests {
                     })?;
                     if let Some((token, limit)) = spending_limit {
                         let limit_key = AccountKeychain::spending_limit_key(user_address, key_id);
-                        keychain.spending_limits[limit_key][token].write(limit)?;
+                        keychain.spending_limits[limit_key][token].write(SpendingLimitState {
+                            remaining: limit,
+                            ..Default::default()
+                        })?;
                     }
                     Ok::<(), TempoPrecompileError>(())
                 })

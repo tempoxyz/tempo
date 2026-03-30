@@ -179,7 +179,7 @@ mod tests {
             assert_eq!(key.expiry, u64::MAX);
 
             let limit_key = AccountKeychain::spending_limit_key(account, key_id);
-            let remaining = keychain.spending_limits[limit_key][token].read()?;
+            let remaining = keychain.spending_limits[limit_key][token].read()?.remaining;
             assert_eq!(remaining, U256::from(100));
 
             Ok(())
