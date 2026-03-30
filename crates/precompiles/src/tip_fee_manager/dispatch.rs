@@ -44,7 +44,7 @@ impl Precompile for TipFeeManager {
                 view(call, |c| self.user_tokens(c))
             }
             TipFeeManagerCall::FeeManager(IFeeManagerCalls::validatorTokens(call)) => {
-                view(call, |c| self.validator_tokens(c))
+                view(call, |c| self.get_validator_token(c.validator))
             }
             TipFeeManagerCall::FeeManager(IFeeManagerCalls::collectedFees(call)) => {
                 view(call, |c| self.collected_fees[c.validator][c.token].read())
@@ -84,20 +84,12 @@ impl Precompile for TipFeeManager {
             TipFeeManagerCall::Amm(ITIPFeeAMMCalls::getPoolId(call)) => {
                 view(call, |c| Ok(self.pool_id(c.userToken, c.validatorToken)))
             }
-            TipFeeManagerCall::Amm(ITIPFeeAMMCalls::getPool(call)) => view(call, |c| {
-                let pool = self.get_pool(c)?;
-                Ok(ITIPFeeAMM::Pool {
-                    reserveUserToken: pool.reserve_user_token,
-                    reserveValidatorToken: pool.reserve_validator_token,
-                })
-            }),
-            TipFeeManagerCall::Amm(ITIPFeeAMMCalls::pools(call)) => view(call, |c| {
-                let pool = self.pools[c.poolId].read()?;
-                Ok(ITIPFeeAMM::Pool {
-                    reserveUserToken: pool.reserve_user_token,
-                    reserveValidatorToken: pool.reserve_validator_token,
-                })
-            }),
+            TipFeeManagerCall::Amm(ITIPFeeAMMCalls::getPool(call)) => {
+                view(call, |c| Ok(self.get_pool(c)?.into()))
+            }
+            TipFeeManagerCall::Amm(ITIPFeeAMMCalls::pools(call)) => {
+                view(call, |c| Ok(self.pools[c.poolId].read()?.into()))
+            }
             TipFeeManagerCall::Amm(ITIPFeeAMMCalls::totalSupply(call)) => {
                 view(call, |c| self.total_supply[c.poolId].read())
             }

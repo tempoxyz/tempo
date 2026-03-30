@@ -60,7 +60,15 @@ function cell(text) {
 }
 
 function fmtMs(v) { return v != null ? v.toFixed(2) + 'ms' : '-'; }
-function fmtVal(v, suffix) { return v != null ? v.toFixed(2) + (suffix || '') : '-'; }
+function fmtVal(v, suffix = '', precision = 2) { return v != null ? v.toFixed(precision) + suffix : '-'; }
+
+function tempoBlockTimeDeltas(deltas) {
+  return [deltas.block_time_p50, deltas.block_time_p90, deltas.block_time_p99];
+}
+
+function tempoThroughputDeltas(deltas) {
+  return [deltas.tps, deltas.tps_p50, deltas.tps_p90, deltas.tps_p99, deltas.mgas_s];
+}
 
 function fmtDelta(pct) {
   if (pct == null) return '';
@@ -89,12 +97,12 @@ function fmtDeltaInverse(pct) {
 }
 
 function verdict(deltas) {
-  const latencyDeltas = [deltas.latency_mean, deltas.latency_p50, deltas.latency_p90, deltas.latency_p99];
-  const throughputDeltas = [deltas.tps, deltas.mgas_s];
+  const blockTimeDeltas = tempoBlockTimeDeltas(deltas);
+  const throughputDeltas = tempoThroughputDeltas(deltas);
 
-  const hasBad = latencyDeltas.some(d => d != null && d > THRESHOLD_PCT) ||
+  const hasBad = blockTimeDeltas.some(d => d != null && d > THRESHOLD_PCT) ||
                  throughputDeltas.some(d => d != null && d < -THRESHOLD_PCT);
-  const hasGood = latencyDeltas.some(d => d != null && d < -THRESHOLD_PCT) ||
+  const hasGood = blockTimeDeltas.some(d => d != null && d < -THRESHOLD_PCT) ||
                   throughputDeltas.some(d => d != null && d > THRESHOLD_PCT);
 
   if (hasBad && hasGood) return { emoji: ':warning:', label: 'Mixed Results' };
@@ -104,8 +112,21 @@ function verdict(deltas) {
 }
 
 function hasSignificantChange(deltas) {
-  const all = [deltas.latency_mean, deltas.latency_p50, deltas.latency_p90, deltas.latency_p99, deltas.tps, deltas.mgas_s];
+  const all = [...tempoThroughputDeltas(deltas), ...tempoBlockTimeDeltas(deltas)];
   return all.some(d => d != null && Math.abs(d) >= THRESHOLD_PCT);
+}
+
+function refLink(commitUrl, sha, refName, fallbackLabel) {
+  const label = refName || fallbackLabel;
+  return sha ? `<${commitUrl}/${sha}|${label}>` : label;
+}
+
+function fmtBlockCount(baselineBlocks, featureBlocks) {
+  if (baselineBlocks == null && featureBlocks == null) return '-';
+  if (baselineBlocks === featureBlocks) return `\`${baselineBlocks}\``;
+  if (baselineBlocks == null) return `feature \`${featureBlocks}\``;
+  if (featureBlocks == null) return `baseline \`${baselineBlocks}\``;
+  return `baseline \`${baselineBlocks}\` | feature \`${featureBlocks}\``;
 }
 
 function buildMetricRows(summary) {
@@ -113,30 +134,36 @@ function buildMetricRows(summary) {
   const f = summary.results.feature;
   const d = summary.results.deltas;
   return [
-    { label: 'Mean Latency', baseline: fmtMs(b.latency_mean), feature: fmtMs(f.latency_mean), change: fmtDelta(d.latency_mean) },
-    { label: 'StdDev',       baseline: fmtMs(b.latency_stddev), feature: fmtMs(f.latency_stddev), change: fmtDelta(d.latency_stddev) },
-    { label: 'P50',          baseline: fmtMs(b.latency_p50), feature: fmtMs(f.latency_p50), change: fmtDelta(d.latency_p50) },
-    { label: 'P90',          baseline: fmtMs(b.latency_p90), feature: fmtMs(f.latency_p90), change: fmtDelta(d.latency_p90) },
-    { label: 'P99',          baseline: fmtMs(b.latency_p99), feature: fmtMs(f.latency_p99), change: fmtDelta(d.latency_p99) },
-    { label: 'TPS',          baseline: fmtVal(b.tps),        feature: fmtVal(f.tps),        change: fmtDeltaInverse(d.tps) },
-    { label: 'Mgas/s',       baseline: fmtVal(b.mgas_s),     feature: fmtVal(f.mgas_s),     change: fmtDeltaInverse(d.mgas_s) },
+    { label: 'Avg TPS',         baseline: fmtVal(b.tps, '', 0),     feature: fmtVal(f.tps, '', 0),     change: fmtDeltaInverse(d.tps) },
+    { label: 'TPS P50',         baseline: fmtVal(b.tps_p50, '', 1), feature: fmtVal(f.tps_p50, '', 1), change: fmtDeltaInverse(d.tps_p50) },
+    { label: 'TPS P90',         baseline: fmtVal(b.tps_p90, '', 1), feature: fmtVal(f.tps_p90, '', 1), change: fmtDeltaInverse(d.tps_p90) },
+    { label: 'TPS P99',         baseline: fmtVal(b.tps_p99, '', 1), feature: fmtVal(f.tps_p99, '', 1), change: fmtDeltaInverse(d.tps_p99) },
+    { label: 'Gas/s',           baseline: fmtVal(b.mgas_s, ' Mgas/s', 1), feature: fmtVal(f.mgas_s, ' Mgas/s', 1), change: fmtDeltaInverse(d.mgas_s) },
+    { label: 'Block P50',       baseline: fmtMs(b.block_time_p50),  feature: fmtMs(f.block_time_p50),  change: fmtDelta(d.block_time_p50) },
+    { label: 'Block P90',       baseline: fmtMs(b.block_time_p90),  feature: fmtMs(f.block_time_p90),  change: fmtDelta(d.block_time_p90) },
+    { label: 'Block P99',       baseline: fmtMs(b.block_time_p99),  feature: fmtMs(f.block_time_p99),  change: fmtDelta(d.block_time_p99) },
   ];
 }
 
 function buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, repo }) {
+  const b = summary.results.baseline;
+  const f = summary.results.feature;
   const d = summary.results.deltas;
   const { emoji, label } = verdict(d);
 
   const prUrl = prNumber ? `https://github.com/${repo}/pull/${prNumber}` : '';
   const commitUrl = `https://github.com/${repo}/commit`;
-  const baselineLink = `<${commitUrl}/${summary.baseline_ref}|baseline>`;
-  const featureLink = `<${commitUrl}/${summary.feature_ref}|feature>`;
+  const baselineName = process.env.BENCH_BASELINE_NAME || 'baseline';
+  const featureName = process.env.BENCH_FEATURE_NAME || 'feature';
+  const baselineLink = refLink(commitUrl, summary.baseline_ref, baselineName, 'baseline');
+  const featureLink = refLink(commitUrl, summary.feature_ref, featureName, 'feature');
 
   const metaParts = [];
   if (prNumber) metaParts.push(`*<${prUrl}|PR #${prNumber}>*`);
   metaParts.push(`triggered by ${actorSlackId ? `<@${actorSlackId}>` : `@${actor}`}`);
 
   const config = summary.config;
+  const blockCount = fmtBlockCount(b.blocks, f.blocks);
 
   const sectionText = [
     metaParts.join(' | '),
@@ -144,10 +171,8 @@ function buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, re
     `*Baseline:* ${baselineLink}`,
     `*Feature:* ${featureLink}`,
     '',
-    `*Preset:* \`${config.preset}\``,
-    `*Duration:* \`${config.duration}s\``,
-    `*Bloat:* \`${config.bloat} MiB\``,
-    `*TPS:* \`${config.tps}\``,
+    `*Preset:* \`${config.preset}\` | *Bloat:* \`${config.bloat} MiB\``,
+    `*Duration:* \`${config.duration}s\` | *Target TPS:* \`${config.tps}\` | *Blocks:* ${blockCount}`,
   ].join('\n');
 
   const rows = buildMetricRows(summary);
@@ -177,7 +202,7 @@ function buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, re
   return [
     {
       type: 'header',
-      text: { type: 'plain_text', text: `${emoji} ${label}`, emoji: true },
+      text: { type: 'plain_text', text: `${emoji} Tempo Bench ${label}`, emoji: true },
     },
     {
       type: 'section',
@@ -255,7 +280,7 @@ async function success({ core, context }) {
   const actorSlackId = slackUsers[actor];
 
   const blocks = buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, repo });
-  const text = `Bench: baseline vs feature`;
+  const text = `Tempo bench: baseline vs feature`;
 
   const deltas = summary.results.deltas;
   const channel = process.env.SLACK_BENCH_CHANNEL;

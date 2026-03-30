@@ -40,8 +40,7 @@ use tracing::trace;
 /// u128::MAX as U256
 pub const U128_MAX: U256 = uint!(0xffffffffffffffffffffffffffffffff_U256);
 
-/// Decimal precision for TIP-20 tokens
-const TIP20_DECIMALS: u8 = 6;
+use tempo_contracts::precompiles::DECIMALS as TIP20_DECIMALS;
 
 /// TIP20 token address prefix (12 bytes)
 /// The full address is: TIP20_TOKEN_PREFIX (12 bytes) || derived_bytes (8 bytes)
@@ -130,7 +129,7 @@ pub static PAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"PAUSE_ROLE"
 pub static UNPAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"UNPAUSE_ROLE"));
 /// Role hash for minting new tokens.
 pub static ISSUER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"ISSUER_ROLE"));
-/// Role hash that prevents an account from burning tokens.
+/// Role hash that authorizes burning tokens from blocked accounts.
 pub static BURN_BLOCKED_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"BURN_BLOCKED_ROLE"));
 
 impl TIP20Token {
@@ -856,7 +855,7 @@ impl TIP20Token {
         self.next_quote_token.write(quote_token)?;
 
         // Set default values
-        self.supply_cap.write(U256::from(u128::MAX))?;
+        self.supply_cap.write(U128_MAX)?;
         self.transfer_policy_id.write(1)?;
 
         // Initialize roles system and grant admin role
@@ -893,7 +892,7 @@ impl TIP20Token {
 
     /// Validates that the recipient is not:
     /// - the zero address (preventing accidental burns)
-    /// - another TIP20 token
+    /// - an address with the TIP-20 prefix (preventing transfers to token contracts)
     fn check_recipient(&self, to: Address) -> Result<()> {
         if to.is_zero() || is_tip20_prefix(to) {
             return Err(TIP20Error::invalid_recipient().into());

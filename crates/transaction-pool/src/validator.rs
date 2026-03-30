@@ -23,7 +23,7 @@ use tempo_chainspec::{
 };
 use tempo_evm::TempoEvmConfig;
 #[cfg(test)]
-use tempo_precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, account_keychain::AuthorizedKey};
+use tempo_precompiles::account_keychain::AuthorizedKey;
 use tempo_precompiles::{
     account_keychain::{
         AccountKeychain, MAX_CALL_SCOPES, MAX_RECIPIENTS_PER_SELECTOR,
@@ -1141,7 +1141,7 @@ where
 
         match self
             .amm_liquidity_cache
-            .has_enough_liquidity(fee_token, cost, &state_provider)
+            .has_enough_liquidity(fee_token, cost, &mut state_provider)
         {
             Ok(true) => {}
             Ok(false) => {
@@ -1421,7 +1421,10 @@ pub fn ensure_intrinsic_gas_tempo_tx(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{test_utils::TxBuilder, transaction::TempoPoolTransactionError};
+    use crate::{
+        test_utils::{MockProviderStorageExt, TxBuilder},
+        transaction::TempoPoolTransactionError,
+    };
     use alloy_consensus::{Header, Signed, Transaction, TxLegacy};
     use alloy_primitives::{Address, B256, TxKind, U256, address, uint};
     use alloy_signer::Signature;
@@ -1433,7 +1436,7 @@ mod tests {
     use std::sync::Arc;
     use tempo_chainspec::spec::{MODERATO, TEMPO_T1_TX_GAS_LIMIT_CAP};
     use tempo_precompiles::{
-        PATH_USD_ADDRESS, TIP403_REGISTRY_ADDRESS,
+        PATH_USD_ADDRESS,
         tip20::{TIP20Token, slots as tip20_slots},
         tip403_registry::{ITIP403Registry, PolicyData, TIP403Registry},
     };
@@ -1871,22 +1874,16 @@ mod tests {
         );
 
         // Add TIP403Registry with blacklist policy containing fee_payer
-        let policy_data = PolicyData {
-            policy_type: ITIP403Registry::PolicyType::BLACKLIST as u8,
-            admin: Address::ZERO,
-        };
-        let policy_data_slot = TIP403Registry::new().policy_records[policy_id]
-            .base
-            .base_slot();
-        let policy_set_slot = TIP403Registry::new().policy_set[policy_id][fee_payer].slot();
-
-        provider.add_account(
-            TIP403_REGISTRY_ADDRESS,
-            ExtendedAccount::new(0, U256::ZERO).extend_storage([
-                (policy_data_slot.into(), policy_data.encode_to_slot()),
-                (policy_set_slot.into(), U256::from(1)), // in blacklist = true
-            ]),
-        );
+        provider
+            .setup_storage(TempoHardfork::default(), || {
+                let mut registry = TIP403Registry::new();
+                registry.policy_records[policy_id].base.write(PolicyData {
+                    policy_type: ITIP403Registry::PolicyType::BLACKLIST as u8,
+                    admin: Address::ZERO,
+                })?;
+                registry.policy_set[policy_id][fee_payer].write(true)
+            })
+            .unwrap();
 
         // Create validator and validate
         let inner =
@@ -2613,6 +2610,7 @@ mod tests {
         use reth_primitives_traits::Recovered;
         use reth_transaction_pool::error::PoolTransactionError;
         use tempo_chainspec::hardfork::TempoHardfork;
+        use tempo_precompiles::error::TempoPrecompileError;
         use tempo_primitives::transaction::{
             CallScope, KeyAuthorization, SignatureType, SignedKeyAuthorization, TempoTransaction,
             TokenLimit,
@@ -2762,13 +2760,13 @@ mod tests {
             transaction: &TempoPooledTransaction,
             user_address: Address,
             key_id: Address,
-            authorized_key_slot_value: Option<U256>,
+            authorized_key: Option<AuthorizedKey>,
         ) -> TempoTransactionValidator<MockEthProvider<TempoPrimitives, TempoChainSpec>> {
             setup_validator_with_keychain_storage_spec(
                 transaction,
                 user_address,
                 key_id,
-                authorized_key_slot_value,
+                authorized_key,
                 moderato_with_t1c(),
             )
         }
@@ -2777,7 +2775,7 @@ mod tests {
             transaction: &TempoPooledTransaction,
             user_address: Address,
             key_id: Address,
-            authorized_key_slot_value: Option<U256>,
+            authorized_key: Option<AuthorizedKey>,
             chain_spec: TempoChainSpec,
         ) -> TempoTransactionValidator<MockEthProvider<TempoPrimitives, TempoChainSpec>> {
             let provider = MockEthProvider::<TempoPrimitives>::new().with_chain_spec(chain_spec);
@@ -2789,14 +2787,13 @@ mod tests {
             );
             provider.add_block(B256::random(), Default::default());
 
-            // If slot value provided, setup AccountKeychain storage
-            if let Some(slot_value) = authorized_key_slot_value {
-                let storage_slot = AccountKeychain::new().keys[user_address][key_id].base_slot();
-                provider.add_account(
-                    ACCOUNT_KEYCHAIN_ADDRESS,
-                    ExtendedAccount::new(0, U256::ZERO)
-                        .extend_storage([(storage_slot.into(), slot_value)]),
-                );
+            // If authorized key provided, setup AccountKeychain storage
+            if let Some(authorized_key) = authorized_key {
+                provider
+                    .setup_storage(TempoHardfork::default(), || {
+                        AccountKeychain::new().keys[user_address][key_id].write(authorized_key)
+                    })
+                    .unwrap();
             }
 
             let inner =
@@ -2858,19 +2855,16 @@ mod tests {
                 create_aa_with_keychain_signature(user_address, &access_key_signer, None);
 
             // Setup storage with a valid authorized key (expiry > 0, not revoked)
-            let slot_value = AuthorizedKey {
-                signature_type: 0, // secp256k1
-                expiry: u64::MAX,  // never expires
-                enforce_limits: false,
-                is_revoked: false,
-            }
-            .encode_to_slot();
-
             let validator = setup_validator_with_keychain_storage(
                 &transaction,
                 user_address,
                 access_key_address,
-                Some(slot_value),
+                Some(AuthorizedKey {
+                    signature_type: 0, // secp256k1
+                    expiry: u64::MAX,  // never expires
+                    enforce_limits: false,
+                    is_revoked: false,
+                }),
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
@@ -2895,19 +2889,16 @@ mod tests {
                 create_aa_with_keychain_signature(user_address, &access_key_signer, None);
 
             // Setup storage with a revoked key
-            let slot_value = AuthorizedKey {
-                signature_type: 0,
-                expiry: 0, // revoked keys have expiry=0
-                enforce_limits: false,
-                is_revoked: true,
-            }
-            .encode_to_slot();
-
             let validator = setup_validator_with_keychain_storage(
                 &transaction,
                 user_address,
                 access_key_address,
-                Some(slot_value),
+                Some(AuthorizedKey {
+                    signature_type: 0,
+                    expiry: 0, // revoked keys have expiry=0
+                    enforce_limits: false,
+                    is_revoked: true,
+                }),
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
@@ -2936,19 +2927,16 @@ mod tests {
                 create_aa_with_keychain_signature(user_address, &access_key_signer, None);
 
             // Setup storage with expiry = 0 (key doesn't exist)
-            let slot_value = AuthorizedKey {
-                signature_type: 0,
-                expiry: 0, // expiry = 0 means key doesn't exist
-                enforce_limits: false,
-                is_revoked: false,
-            }
-            .encode_to_slot();
-
             let validator = setup_validator_with_keychain_storage(
                 &transaction,
                 user_address,
                 access_key_address,
-                Some(slot_value),
+                Some(AuthorizedKey {
+                    signature_type: 0,
+                    expiry: 0, // expiry = 0 means key doesn't exist
+                    enforce_limits: false,
+                    is_revoked: false,
+                }),
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
@@ -3077,19 +3065,16 @@ mod tests {
                 Some(signed_key_auth),
             );
 
-            let existing_key_slot = AuthorizedKey {
-                signature_type: 0,
-                expiry: u64::MAX,
-                enforce_limits: false,
-                is_revoked: false,
-            }
-            .encode_to_slot();
-
             let validator = setup_validator_with_keychain_storage(
                 &transaction,
                 user_address,
                 access_key_address,
-                Some(existing_key_slot),
+                Some(AuthorizedKey {
+                    signature_type: 0,
+                    expiry: u64::MAX,
+                    enforce_limits: false,
+                    is_revoked: false,
+                }),
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
@@ -3855,7 +3840,7 @@ mod tests {
             transaction: &TempoPooledTransaction,
             user_address: Address,
             key_id: Address,
-            authorized_key_slot_value: Option<U256>,
+            authorized_key: Option<AuthorizedKey>,
         ) -> TempoTransactionValidator<MockEthProvider<TempoPrimitives, TempoChainSpec>> {
             use tempo_chainspec::spec::DEV;
 
@@ -3863,7 +3848,7 @@ mod tests {
                 transaction,
                 user_address,
                 key_id,
-                authorized_key_slot_value,
+                authorized_key,
                 Arc::unwrap_or_clone(DEV.clone()),
             )
         }
@@ -4306,18 +4291,16 @@ mod tests {
             // The actual mismatch scenario would require manually constructing an invalid state.
 
             // Setup with valid key for the actual sender
-            let slot_value = AuthorizedKey {
-                signature_type: 0,
-                expiry: u64::MAX,
-                enforce_limits: false,
-                is_revoked: false,
-            }
-            .encode_to_slot();
             let validator = setup_validator_with_keychain_storage(
                 &transaction,
                 real_user,
                 access_key_address,
-                Some(slot_value),
+                Some(AuthorizedKey {
+                    signature_type: 0,
+                    expiry: u64::MAX,
+                    enforce_limits: false,
+                    is_revoked: false,
+                }),
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
@@ -4339,7 +4322,7 @@ mod tests {
             transaction: &TempoPooledTransaction,
             user_address: Address,
             key_id: Address,
-            authorized_key_slot_value: Option<U256>,
+            authorized_key: Option<AuthorizedKey>,
             tip_timestamp: u64,
         ) -> TempoTransactionValidator<MockEthProvider<TempoPrimitives, TempoChainSpec>> {
             let provider =
@@ -4365,14 +4348,13 @@ mod tests {
             };
             provider.add_block(B256::random(), block);
 
-            // If slot value provided, setup AccountKeychain storage
-            if let Some(slot_value) = authorized_key_slot_value {
-                let storage_slot = AccountKeychain::new().keys[user_address][key_id].base_slot();
-                provider.add_account(
-                    ACCOUNT_KEYCHAIN_ADDRESS,
-                    ExtendedAccount::new(0, U256::ZERO)
-                        .extend_storage([(storage_slot.into(), slot_value)]),
-                );
+            // If authorized key provided, setup AccountKeychain storage
+            if let Some(authorized_key) = authorized_key {
+                provider
+                    .setup_storage(TempoHardfork::default(), || {
+                        AccountKeychain::new().keys[user_address][key_id].write(authorized_key)
+                    })
+                    .unwrap();
             }
 
             let inner =
@@ -4405,19 +4387,16 @@ mod tests {
                 create_aa_with_keychain_signature(user_address, &access_key_signer, None);
 
             // Setup storage with an expired key (expiry in the past)
-            let slot_value = AuthorizedKey {
-                signature_type: 0,
-                expiry: current_time - 1, // Expired (in the past)
-                enforce_limits: false,
-                is_revoked: false,
-            }
-            .encode_to_slot();
-
             let validator = setup_validator_with_keychain_storage_and_timestamp(
                 &transaction,
                 user_address,
                 access_key_address,
-                Some(slot_value),
+                Some(AuthorizedKey {
+                    signature_type: 0,
+                    expiry: current_time - 1, // Expired (in the past)
+                    enforce_limits: false,
+                    is_revoked: false,
+                }),
                 current_time,
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
@@ -4447,19 +4426,16 @@ mod tests {
                 create_aa_with_keychain_signature(user_address, &access_key_signer, None);
 
             // Setup storage with expiry == current_time (edge case: expired)
-            let slot_value = AuthorizedKey {
-                signature_type: 0,
-                expiry: current_time, // Expiry at exactly current time should be rejected
-                enforce_limits: false,
-                is_revoked: false,
-            }
-            .encode_to_slot();
-
             let validator = setup_validator_with_keychain_storage_and_timestamp(
                 &transaction,
                 user_address,
                 access_key_address,
-                Some(slot_value),
+                Some(AuthorizedKey {
+                    signature_type: 0,
+                    expiry: current_time, // Expiry at exactly current time should be rejected
+                    enforce_limits: false,
+                    is_revoked: false,
+                }),
                 current_time,
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
@@ -4488,19 +4464,16 @@ mod tests {
                 create_aa_with_keychain_signature(user_address, &access_key_signer, None);
 
             // Setup storage with a future expiry
-            let slot_value = AuthorizedKey {
-                signature_type: 0,
-                expiry: current_time + 100, // Valid (in the future)
-                enforce_limits: false,
-                is_revoked: false,
-            }
-            .encode_to_slot();
-
             let validator = setup_validator_with_keychain_storage_and_timestamp(
                 &transaction,
                 user_address,
                 access_key_address,
-                Some(slot_value),
+                Some(AuthorizedKey {
+                    signature_type: 0,
+                    expiry: current_time + 100, // Valid (in the future)
+                    enforce_limits: false,
+                    is_revoked: false,
+                }),
                 current_time,
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
@@ -4793,30 +4766,23 @@ mod tests {
             );
             provider.add_block(B256::random(), Default::default());
 
-            // Setup AccountKeychain storage with AuthorizedKey
-            let slot_value = AuthorizedKey {
-                signature_type: 0,
-                expiry: u64::MAX,
-                enforce_limits,
-                is_revoked: false,
-            }
-            .encode_to_slot();
-
-            let key_storage_slot = AccountKeychain::new().keys[user_address][key_id].base_slot();
-            let mut storage = vec![(key_storage_slot.into(), slot_value)];
-
-            // Add spending limit if provided
-            if let Some((token, limit)) = spending_limit {
-                let limit_key = AccountKeychain::spending_limit_key(user_address, key_id);
-                let limit_slot: U256 =
-                    AccountKeychain::new().spending_limits[limit_key][token].slot();
-                storage.push((limit_slot.into(), limit));
-            }
-
-            provider.add_account(
-                ACCOUNT_KEYCHAIN_ADDRESS,
-                ExtendedAccount::new(0, U256::ZERO).extend_storage(storage),
-            );
+            // Setup `AccountKeychain` storage with `AuthorizedKey` and optional spending limit
+            provider
+                .setup_storage(TempoHardfork::default(), || {
+                    let mut keychain = AccountKeychain::new();
+                    keychain.keys[user_address][key_id].write(AuthorizedKey {
+                        signature_type: 0,
+                        expiry: u64::MAX,
+                        enforce_limits,
+                        is_revoked: false,
+                    })?;
+                    if let Some((token, limit)) = spending_limit {
+                        let limit_key = AccountKeychain::spending_limit_key(user_address, key_id);
+                        keychain.spending_limits[limit_key][token].write(limit)?;
+                    }
+                    Ok::<(), TempoPrecompileError>(())
+                })
+                .unwrap();
 
             let inner =
                 EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
@@ -5120,19 +5086,16 @@ mod tests {
             let transaction =
                 create_aa_with_keychain_signature(user_address, &access_key_signer, None);
 
-            let slot_value = AuthorizedKey {
-                signature_type: 0,
-                expiry: u64::MAX,
-                enforce_limits: false,
-                is_revoked: false,
-            }
-            .encode_to_slot();
-
             let validator = setup_validator_with_keychain_storage(
                 &transaction,
                 user_address,
                 access_key_address,
-                Some(slot_value),
+                Some(AuthorizedKey {
+                    signature_type: 0,
+                    expiry: u64::MAX,
+                    enforce_limits: false,
+                    is_revoked: false,
+                }),
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
@@ -5178,14 +5141,6 @@ mod tests {
             let transaction =
                 create_aa_with_v1_keychain_signature(user_address, &access_key_signer, None);
 
-            let slot_value = AuthorizedKey {
-                signature_type: 0,
-                expiry: u64::MAX,
-                enforce_limits: false,
-                is_revoked: false,
-            }
-            .encode_to_slot();
-
             // Pre-T1C validator with keychain storage
             let provider =
                 MockEthProvider::<TempoPrimitives>::new().with_chain_spec(moderato_without_t1c());
@@ -5194,13 +5149,18 @@ mod tests {
                 ExtendedAccount::new(transaction.nonce(), U256::ZERO),
             );
             provider.add_block(B256::random(), Default::default());
-            let storage_slot =
-                AccountKeychain::new().keys[user_address][access_key_address].base_slot();
-            provider.add_account(
-                ACCOUNT_KEYCHAIN_ADDRESS,
-                ExtendedAccount::new(0, U256::ZERO)
-                    .extend_storage([(storage_slot.into(), slot_value)]),
-            );
+            provider
+                .setup_storage(TempoHardfork::default(), || {
+                    AccountKeychain::new().keys[user_address][access_key_address].write(
+                        AuthorizedKey {
+                            signature_type: 0,
+                            expiry: u64::MAX,
+                            enforce_limits: false,
+                            is_revoked: false,
+                        },
+                    )
+                })
+                .unwrap();
             let inner =
                 EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
                     .disable_balance_check()
@@ -5812,7 +5772,7 @@ mod tests {
         // Verify has_enough_liquidity would bypass (return true) for this token
         // because it matches a validator token. This confirms the vulnerability we're testing.
         let liquidity_result =
-            amm_cache.has_enough_liquidity(paused_validator_token, U256::from(1000), &state);
+            amm_cache.has_enough_liquidity(paused_validator_token, U256::from(1000), &mut state);
         assert!(
             liquidity_result.is_ok() && liquidity_result.unwrap(),
             "Token in unique_tokens should bypass liquidity check and return true"

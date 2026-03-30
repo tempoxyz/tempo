@@ -753,6 +753,8 @@ jobs:
         uses: actions/github-script@v8
         env:
           BENCH_WORK_DIR: ${{ steps.results-dir.outputs.path }}
+          BENCH_BASELINE_NAME: ${{ steps.refs.outputs.baseline-name }}
+          BENCH_FEATURE_NAME: ${{ steps.refs.outputs.feature-name }}
         with:
           script: |
             const notify = require('./.github/scripts/bench-slack-notify.js');
