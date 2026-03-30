@@ -142,9 +142,11 @@ impl AA2dPool {
             transaction.transaction.is_aa(),
             "only AA transactions are supported"
         );
-        let tx_hash = *transaction.hash();
-        if self.contains(&tx_hash) {
-            return Err(PoolError::new(tx_hash, PoolErrorKind::AlreadyImported));
+        if self.contains(transaction.hash()) {
+            return Err(PoolError::new(
+                *transaction.hash(),
+                PoolErrorKind::AlreadyImported,
+            ));
         }
 
         // Handle expiring nonce transactions separately - they use expiring nonce hash as unique ID
@@ -161,7 +163,7 @@ impl AA2dPool {
         if transaction.nonce() < on_chain_nonce {
             // outdated transaction
             return Err(PoolError::new(
-                tx_hash,
+                *transaction.hash(),
                 PoolErrorKind::InvalidTransaction(InvalidPoolTransactionError::Consensus(
                     InvalidTransactionError::NonceNotConsistent {
                         tx: transaction.nonce(),
@@ -195,7 +197,7 @@ impl AA2dPool {
                     .is_underpriced(&tx.inner.transaction, &self.config.price_bump_config)
                 {
                     return Err(PoolError::new(
-                        tx_hash,
+                        *transaction.hash(),
                         PoolErrorKind::ReplacementUnderpriced,
                     ));
                 }
@@ -207,7 +209,7 @@ impl AA2dPool {
                 let sender_count = self.txs_by_sender.get(&sender).copied().unwrap_or(0);
                 if sender_count >= self.config.max_txs_per_sender {
                     return Err(PoolError::new(
-                        tx_hash,
+                        *transaction.hash(),
                         PoolErrorKind::SpammerExceededCapacity(sender),
                     ));
                 }
@@ -306,9 +308,12 @@ impl AA2dPool {
         let discarded = self.discard();
         if discarded
             .iter()
-            .any(|discarded_tx| *discarded_tx.hash() == tx_hash)
+            .any(|discarded_tx| *discarded_tx.hash() == *transaction.hash())
         {
-            return Err(PoolError::new(tx_hash, PoolErrorKind::DiscardedOnInsert));
+            return Err(PoolError::new(
+                *transaction.hash(),
+                PoolErrorKind::DiscardedOnInsert,
+            ));
         }
 
         Ok(AddedTransaction::Parked {
@@ -4033,8 +4038,7 @@ mod tests {
         };
         let mut pool = AA2dPool::new(config);
 
-        // Add 5 transactions each with a LARGE nonce gap so they are all queued.
-        // Only the first 2 should survive; later inserts are immediately discarded.
+        // Add 5 transactions each with a LARGE nonce gap so they are all queued
         for i in 0..5usize {
             let sender = Address::from_word(B256::from(U256::from(i)));
             let tx = TxBuilder::aa(sender)
