@@ -599,6 +599,30 @@ jobs:
             core.setOutput('feature-ref', featureRef);
             core.setOutput('feature-name', featureName);
 
+      - name: Resolve PR attribution
+        uses: actions/github-script@v8
+        with:
+          script: |
+            let pr = process.env.BENCH_PR || '';
+            if (!pr) {
+              const featureRef = '${{ steps.refs.outputs.feature-ref }}';
+              try {
+                const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  commit_sha: featureRef,
+                });
+                const openPr = prs.find(candidate => candidate.state === 'open');
+                if (openPr) {
+                  pr = String(openPr.number);
+                  core.info(`Using PR #${pr} for feature ref ${featureRef}`);
+                }
+              } catch (error) {
+                core.info(`No PR associated with feature ref ${featureRef}: ${error.message}`);
+              }
+            }
+            core.exportVariable('BENCH_PR', pr);
+
       - name: Update status (running benchmark)
         if: success() && env.BENCH_COMMENT_ID
         uses: actions/github-script@v8
