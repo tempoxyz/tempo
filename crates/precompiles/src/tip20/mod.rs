@@ -1090,7 +1090,8 @@ pub(crate) mod tests {
     use crate::{
         PATH_USD_ADDRESS,
         account_keychain::{
-            AccountKeychain, SignatureType, TokenLimit, authorizeKeyCall, getRemainingLimitCall,
+            AccountKeychain, KeyRestrictions, SignatureType, TokenLimit, authorizeKeyCall,
+            getRemainingLimitCall,
         },
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
@@ -1439,12 +1440,17 @@ pub(crate) mod tests {
                 authorizeKeyCall {
                     keyId: access_key,
                     signatureType: SignatureType::Secp256k1,
-                    expiry: u64::MAX,
-                    enforceLimits: true,
-                    limits: vec![TokenLimit {
-                        token: token_address,
-                        amount: spending_limit,
-                    }],
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: true,
+                        limits: vec![TokenLimit {
+                            token: token_address,
+                            amount: spending_limit,
+                            period: 0,
+                        }],
+                        enforceAllowedCalls: false,
+                        allowedCalls: vec![],
+                    },
                 },
             )?;
 
@@ -1507,12 +1513,17 @@ pub(crate) mod tests {
                 authorizeKeyCall {
                     keyId: access_key,
                     signatureType: SignatureType::Secp256k1,
-                    expiry: u64::MAX,
-                    enforceLimits: true,
-                    limits: vec![TokenLimit {
-                        token: token_address,
-                        amount: spending_limit,
-                    }],
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: true,
+                        limits: vec![TokenLimit {
+                            token: token_address,
+                            amount: spending_limit,
+                            period: 0,
+                        }],
+                        enforceAllowedCalls: false,
+                        allowedCalls: vec![],
+                    },
                 },
             )?;
 

@@ -35,7 +35,7 @@ use tempo_chainspec::{
 };
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
-    account_keychain::AccountKeychain,
+    account_keychain::{AccountKeychain, SpendingLimitState},
     error::Result as TempoPrecompileResult,
     nonce::NonceManager,
     storage::Handler,
@@ -1171,7 +1171,9 @@ pub(crate) fn exceeds_spending_limit(
                 return Ok(false);
             }
 
-            let remaining = keychain.spending_limits[limit_key][subject.fee_token].read()?;
+            let remaining = keychain.spending_limits[limit_key][subject.fee_token]
+                .read()?
+                .remaining;
             Ok(fee_token_cost > remaining)
         })
         .unwrap_or_default()
@@ -1290,7 +1292,10 @@ mod tests {
                     is_revoked: false,
                 })?;
                 let limit_key = AccountKeychain::spending_limit_key(account, key_id);
-                keychain.spending_limits[limit_key][fee_token].write(remaining_limit)?;
+                keychain.spending_limits[limit_key][fee_token].write(SpendingLimitState {
+                    remaining: remaining_limit,
+                    ..Default::default()
+                })?;
                 Ok::<(), tempo_precompiles::error::TempoPrecompileError>(())
             })
             .unwrap();
