@@ -7,6 +7,7 @@ use alloy_provider::{
 use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     IAccountKeychain::{IAccountKeychainInstance, KeyInfo},
+    getRemainingLimitReturn,
 };
 
 use crate::{
@@ -40,14 +41,20 @@ pub trait TempoProviderExt: Provider<TempoNetwork> {
         account: Address,
         key_id: Address,
         token: Address,
-    ) -> ContractResult<U256>
+    ) -> ContractResult<(U256, u64)>
     where
         Self: Sized,
     {
-        self.account_keychain()
-            .getRemainingLimit(account, key_id, token)
+        let getRemainingLimitReturn {
+            remaining,
+            periodEnd,
+        } = self
+            .account_keychain()
+            .getRemainingLimitWithPeriod(account, key_id, token)
             .call()
-            .await
+            .await?;
+
+        Ok((remaining, periodEnd))
     }
 
     /// Returns the key ID used in the current transaction context.
@@ -140,8 +147,12 @@ mod tests {
     use alloy::sol_types::SolCall;
     use alloy_primitives::{Address, Bytes, U256};
     use alloy_provider::{Identity, ProviderBuilder, fillers::JoinFill, mock::Asserter};
-    use tempo_contracts::precompiles::IAccountKeychain::{
-        KeyInfo, SignatureType, getKeyCall, getRemainingLimitCall, getTransactionKeyCall,
+    use tempo_contracts::precompiles::{
+        IAccountKeychain::{
+            KeyInfo, SignatureType, getKeyCall, getRemainingLimitWithPeriodCall,
+            getTransactionKeyCall,
+        },
+        getRemainingLimitReturn,
     };
 
     use crate::{
@@ -203,11 +214,14 @@ mod tests {
         let account = Address::repeat_byte(0x11);
         let key_id = Address::repeat_byte(0x22);
         let token = Address::repeat_byte(0x33);
-        let expected = U256::from(42_u64);
+        let expected = (U256::from(42_u64), 1337_u64);
 
-        asserter.push_success(&Bytes::from(getRemainingLimitCall::abi_encode_returns(
-            &expected,
-        )));
+        asserter.push_success(&Bytes::from(
+            getRemainingLimitWithPeriodCall::abi_encode_returns(&getRemainingLimitReturn {
+                remaining: expected.0,
+                periodEnd: expected.1,
+            }),
+        ));
 
         let actual = provider
             .get_keychain_remaining_limit(account, key_id, token)
