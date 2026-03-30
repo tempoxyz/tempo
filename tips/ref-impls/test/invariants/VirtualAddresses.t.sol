@@ -3,8 +3,8 @@ pragma solidity ^0.8.13;
 
 import { TIP20 } from "../../src/TIP20.sol";
 import { TempoUtilities as Tempo } from "../../src/TempoUtilities.sol";
-import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
 import { IAddressRegistry } from "../../src/interfaces/IAddressRegistry.sol";
+import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
 import { ITIP403Registry } from "../../src/interfaces/ITIP403Registry.sol";
 import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 import { Vm } from "forge-std/Vm.sol";

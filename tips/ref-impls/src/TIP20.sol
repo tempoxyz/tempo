@@ -5,8 +5,8 @@ import { TIP20Factory } from "./TIP20Factory.sol";
 import { TIP403Registry } from "./TIP403Registry.sol";
 import { TempoUtilities } from "./TempoUtilities.sol";
 import { TIP20RolesAuth } from "./abstracts/TIP20RolesAuth.sol";
-import { ITIP20 } from "./interfaces/ITIP20.sol";
 import { IAddressRegistry } from "./interfaces/IAddressRegistry.sol";
+import { ITIP20 } from "./interfaces/ITIP20.sol";
 
 contract TIP20 is ITIP20, TIP20RolesAuth {
 

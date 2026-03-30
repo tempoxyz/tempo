@@ -2,12 +2,12 @@
 pragma solidity >=0.8.13 <0.9.0;
 
 import { AccountKeychain } from "../src/AccountKeychain.sol";
+import { AddressRegistry } from "../src/AddressRegistry.sol";
 import { FeeManager } from "../src/FeeManager.sol";
 import { Nonce } from "../src/Nonce.sol";
 import { StablecoinDEX } from "../src/StablecoinDEX.sol";
 import { TIP20 } from "../src/TIP20.sol";
 import { TIP20Factory } from "../src/TIP20Factory.sol";
-import { AddressRegistry } from "../src/AddressRegistry.sol";
 import { TIP403Registry } from "../src/TIP403Registry.sol";
 import { ValidatorConfig } from "../src/ValidatorConfig.sol";
 import { ValidatorConfigV2 } from "../src/ValidatorConfigV2.sol";
