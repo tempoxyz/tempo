@@ -31,7 +31,7 @@ use crate::{
     storage::{Handler, Mapping, Set, packing::insert_into_word},
     tip20_factory::TIP20Factory,
 };
-use alloy::primitives::{Address, B256, TxKind, U256, keccak256};
+use alloy::primitives::{Address, B256, FixedBytes, TxKind, U256, keccak256};
 use tempo_precompiles_macros::{Storable, contract};
 
 /// Maximum number of call scopes per account key.
@@ -89,8 +89,8 @@ pub struct SelectorScope {
 #[derive(Debug, Clone, Storable, Default)]
 pub struct TargetScope {
     pub mode: u8,
-    pub selectors: Set<u32>,
-    pub selector_scopes: Mapping<u32, SelectorScope>,
+    pub selectors: Set<FixedBytes<4>>,
+    pub selector_scopes: Mapping<FixedBytes<4>, SelectorScope>,
 }
 
 /// Key-level call scope.
@@ -228,16 +228,6 @@ impl AccountKeychain {
         data[..20].copy_from_slice(account.as_slice());
         data[20..].copy_from_slice(key_id.as_slice());
         keccak256(data)
-    }
-
-    #[inline]
-    fn selector_key(selector: [u8; 4]) -> u32 {
-        u32::from_be_bytes(selector)
-    }
-
-    #[inline]
-    fn selector_from_u32(selector: u32) -> [u8; 4] {
-        selector.to_be_bytes()
     }
 
     #[inline]
@@ -640,16 +630,16 @@ impl AccountKeychain {
                     let selectors = self.key_scopes[key_hash].target_scopes[target]
                         .selectors
                         .read()?;
-                    for selector_u32 in selectors {
+                    for selector in selectors {
                         let selector_mode = self.key_scopes[key_hash].target_scopes[target]
-                            .selector_scopes[selector_u32]
+                            .selector_scopes[selector]
                             .mode
                             .read()?;
 
                         let recipients = if selector_mode == 2 {
                             let recipients: Vec<Address> = self.key_scopes[key_hash].target_scopes
                                 [target]
-                                .selector_scopes[selector_u32]
+                                .selector_scopes[selector]
                                 .recipients
                                 .read()?
                                 .into();
@@ -661,7 +651,7 @@ impl AccountKeychain {
                         };
 
                         rules.push(SelectorRule {
-                            selector: Self::selector_from_u32(selector_u32).into(),
+                            selector,
                             recipients,
                         });
                     }
@@ -798,7 +788,7 @@ impl AccountKeychain {
             return Err(AccountKeychainError::call_not_allowed().into());
         }
 
-        let selector = u32::from_be_bytes([input[0], input[1], input[2], input[3]]);
+        let selector = FixedBytes::<4>::from([input[0], input[1], input[2], input[3]]);
         if !self.key_scopes[key_hash].target_scopes[target]
             .selectors
             .contains(&selector)?
@@ -959,7 +949,7 @@ impl AccountKeychain {
                     .write(2)?;
 
                 for rule in rules {
-                    let selector = Self::selector_key(rule.selector);
+                    let selector = FixedBytes::<4>::from(rule.selector);
                     self.key_scopes[account_key].target_scopes[target]
                         .selectors
                         .insert(selector)?;
