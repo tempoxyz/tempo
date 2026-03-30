@@ -77,7 +77,7 @@ function fmtDelta(pct) {
   return `${sign}${pct.toFixed(2)}% ${emoji}`;
 }
 
-// For block time: negative = good (faster), positive = bad (slower)
+// For latency: negative = good (faster), positive = bad (slower)
 function classifyDelta(pct) {
   if (Math.abs(pct) < THRESHOLD_PCT) return '⚪';
   return pct < 0 ? '✅' : '❌';
