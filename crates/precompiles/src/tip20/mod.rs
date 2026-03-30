@@ -402,22 +402,17 @@ impl TIP20Token {
     /// - `Unauthorized` — caller does not hold the `ISSUER_ROLE` role
     /// - `SupplyCapExceeded` — minting would push total supply above the cap
     pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
-        let to = TIP20Registry::new().resolve_recipient(call.to)?;
-        self._mint(msg_sender, to, call.amount)?;
+        self._mint(msg_sender, call.to, call.amount)?;
 
-        self.emit_event(TIP20Event::Transfer(ITIP20::Transfer {
-            from: Address::ZERO,
-            to: call.to,
-            amount: call.amount,
-        }))?;
         self.emit_event(TIP20Event::Mint(ITIP20::Mint {
             to: call.to,
             amount: call.amount,
         }))?;
         if is_virtual_address(call.to) {
+            let resolved = TIP20Registry::new().resolve_recipient(call.to)?;
             self.emit_event(TIP20Event::Transfer(ITIP20::Transfer {
                 from: call.to,
-                to,
+                to: resolved,
                 amount: call.amount,
             }))?;
         }
@@ -431,14 +426,8 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::mintWithMemoCall,
     ) -> Result<()> {
-        let to = TIP20Registry::new().resolve_recipient(call.to)?;
-        self._mint(msg_sender, to, call.amount)?;
+        self._mint(msg_sender, call.to, call.amount)?;
 
-        self.emit_event(TIP20Event::Transfer(ITIP20::Transfer {
-            from: Address::ZERO,
-            to: call.to,
-            amount: call.amount,
-        }))?;
         self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
             from: Address::ZERO,
             to: call.to,
@@ -450,22 +439,25 @@ impl TIP20Token {
             amount: call.amount,
         }))?;
         if is_virtual_address(call.to) {
+            let resolved = TIP20Registry::new().resolve_recipient(call.to)?;
             self.emit_event(TIP20Event::Transfer(ITIP20::Transfer {
                 from: call.to,
-                to,
+                to: resolved,
                 amount: call.amount,
             }))?;
         }
         Ok(())
     }
 
+    /// Validates role/cap/policy, credits the resolved recipient, emits `Transfer`.
     fn _mint(&mut self, msg_sender: Address, to: Address, amount: U256) -> Result<()> {
         self.check_role(msg_sender, *ISSUER_ROLE)?;
+        let resolved = TIP20Registry::new().resolve_recipient(to)?;
         let total_supply = self.total_supply()?;
 
         if !TIP403Registry::new().is_authorized_as(
             self.transfer_policy_id()?,
-            to,
+            resolved,
             AuthRole::mint_recipient(),
         )? {
             return Err(TIP20Error::policy_forbids().into());
@@ -480,16 +472,20 @@ impl TIP20Token {
             return Err(TIP20Error::supply_cap_exceeded().into());
         }
 
-        self.handle_rewards_on_mint(to, amount)?;
+        self.handle_rewards_on_mint(resolved, amount)?;
 
         self.set_total_supply(new_supply)?;
-        let to_balance = self.get_balance(to)?;
+        let to_balance = self.get_balance(resolved)?;
         let new_to_balance: alloy::primitives::Uint<256, 4> = to_balance
             .checked_add(amount)
             .ok_or(TempoPrecompileError::under_overflow())?;
-        self.set_balance(to, new_to_balance)?;
+        self.set_balance(resolved, new_to_balance)?;
 
-        Ok(())
+        self.emit_event(TIP20Event::Transfer(ITIP20::Transfer {
+            from: Address::ZERO,
+            to,
+            amount,
+        }))
     }
 
     /// Burns `amount` from the caller's balance and reduces total supply.
