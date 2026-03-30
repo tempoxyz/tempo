@@ -233,15 +233,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         _;
     }
 
-    function transfer(
-        address to,
-        uint256 amount
-    )
-        public
-        virtual
-        notPaused
-        returns (bool)
-    {
+    function transfer(address to, uint256 amount) public virtual notPaused returns (bool) {
         ResolvedRecipient memory recipient = _resolveRecipient(to);
         _validateTransfer(msg.sender, recipient);
         _transfer(msg.sender, recipient, amount);
@@ -279,7 +271,13 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         _transferFrom(from, ResolvedRecipient({ target: to, virtualAddr: address(0) }), amount);
     }
 
-    function _transferFrom(address from, ResolvedRecipient memory recipient, uint256 amount) internal {
+    function _transferFrom(
+        address from,
+        ResolvedRecipient memory recipient,
+        uint256 amount
+    )
+        internal
+    {
         // Allowance check and update.
         uint256 allowed = allowance[from][msg.sender];
         if (amount > allowed) revert InsufficientAllowance();
@@ -398,15 +396,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
                         TIP20 EXTENSION FUNCTIONS
     //////////////////////////////////////////////////////////////*/
 
-    function transferWithMemo(
-        address to,
-        uint256 amount,
-        bytes32 memo
-    )
-        public
-        virtual
-        notPaused
-    {
+    function transferWithMemo(address to, uint256 amount, bytes32 memo) public virtual notPaused {
         ResolvedRecipient memory recipient = _resolveRecipient(to);
         _validateTransfer(msg.sender, recipient);
         _transfer(msg.sender, recipient, amount);
@@ -531,12 +521,14 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         }
     }
 
-    function _resolveRecipient(address to) internal view returns (ResolvedRecipient memory recipient) {
+    function _resolveRecipient(address to)
+        internal
+        view
+        returns (ResolvedRecipient memory recipient)
+    {
         address target = TIP20_REGISTRY.resolveRecipient(to);
-        recipient = ResolvedRecipient({
-            target: target,
-            virtualAddr: target == to ? address(0) : to
-        });
+        recipient =
+            ResolvedRecipient({ target: target, virtualAddr: target == to ? address(0) : to });
     }
 
     function _eventTo(ResolvedRecipient memory recipient) internal pure returns (address) {
@@ -660,4 +652,4 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         }
     }
 
-}
+    }

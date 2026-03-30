@@ -2,10 +2,10 @@
 pragma solidity ^0.8.13;
 
 import { TIP20 } from "../../src/TIP20.sol";
+import { TempoUtilities as Tempo } from "../../src/TempoUtilities.sol";
 import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
 import { ITIP20Registry } from "../../src/interfaces/ITIP20Registry.sol";
 import { ITIP403Registry } from "../../src/interfaces/ITIP403Registry.sol";
-import { TempoUtilities as Tempo } from "../../src/TempoUtilities.sol";
 import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 import { Vm } from "forge-std/Vm.sol";
 
@@ -175,8 +175,12 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
 
         assertTrue(success, "TEMPO-VA8: transferFrom should succeed");
         assertEq(token.balanceOf(owner), snapshot.fromBalance - amount, "TEMPO-VA8: owner debit");
-        assertEq(token.balanceOf(master), snapshot.masterBalance + amount, "TEMPO-VA8: master credit");
-        assertEq(token.balanceOf(virtualAddr), snapshot.virtualBalance, "TEMPO-VA10: virtual balance");
+        assertEq(
+            token.balanceOf(master), snapshot.masterBalance + amount, "TEMPO-VA8: master credit"
+        );
+        assertEq(
+            token.balanceOf(virtualAddr), snapshot.virtualBalance, "TEMPO-VA10: virtual balance"
+        );
         assertEq(token.totalSupply(), snapshot.totalSupply, "TEMPO-VA8: transferFrom supply change");
 
         if (snapshot.allowance == type(uint256).max) {
@@ -271,9 +275,15 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
 
         assertTrue(success, "TEMPO-VA8: transferFromWithMemo should succeed");
         assertEq(token.balanceOf(owner), snapshot.fromBalance - amount, "TEMPO-VA8: owner debit");
-        assertEq(token.balanceOf(master), snapshot.masterBalance + amount, "TEMPO-VA8: master credit");
-        assertEq(token.balanceOf(virtualAddr), snapshot.virtualBalance, "TEMPO-VA10: virtual balance");
-        assertEq(token.totalSupply(), snapshot.totalSupply, "TEMPO-VA8: transferFromWithMemo supply");
+        assertEq(
+            token.balanceOf(master), snapshot.masterBalance + amount, "TEMPO-VA8: master credit"
+        );
+        assertEq(
+            token.balanceOf(virtualAddr), snapshot.virtualBalance, "TEMPO-VA10: virtual balance"
+        );
+        assertEq(
+            token.totalSupply(), snapshot.totalSupply, "TEMPO-VA8: transferFromWithMemo supply"
+        );
 
         if (snapshot.allowance == type(uint256).max) {
             assertEq(
@@ -434,7 +444,9 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         assertEq(token.balanceOf(owner), snapshot.fromBalance, "TEMPO-VA6: owner changed");
         assertEq(token.balanceOf(virtualAddr), snapshot.virtualBalance, "TEMPO-VA6: alias changed");
         assertEq(token.totalSupply(), snapshot.totalSupply, "TEMPO-VA6: supply changed");
-        assertEq(token.allowance(owner, spender), snapshot.allowance, "TEMPO-VA6: allowance changed");
+        assertEq(
+            token.allowance(owner, spender), snapshot.allowance, "TEMPO-VA6: allowance changed"
+        );
 
         _assertNoRelevantTokenLogs(token, "TEMPO-VA6: transferFrom emitted token logs");
     }
@@ -498,7 +510,9 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         bool success = token.transfer(virtualAddr, amount);
 
         assertTrue(success, "TEMPO-VA13: self-forward should succeed");
-        assertEq(token.balanceOf(fixture.master), masterBalanceBefore, "TEMPO-VA13: net balance changed");
+        assertEq(
+            token.balanceOf(fixture.master), masterBalanceBefore, "TEMPO-VA13: net balance changed"
+        );
         assertEq(token.balanceOf(virtualAddr), virtualBalanceBefore, "TEMPO-VA10: virtual balance");
         assertEq(token.totalSupply(), supplyBefore, "TEMPO-VA13: supply changed");
 
@@ -533,9 +547,17 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         if (allowMaster) {
             bool success = token.transfer(virtualAddr, amount);
             assertTrue(success, "TEMPO-VA14: transfer should succeed for allowed master");
-            assertEq(token.balanceOf(sender), snapshot.fromBalance - amount, "TEMPO-VA14: sender debit");
-            assertEq(token.balanceOf(master), snapshot.masterBalance + amount, "TEMPO-VA14: master credit");
-            assertEq(token.balanceOf(virtualAddr), snapshot.virtualBalance, "TEMPO-VA10: virtual balance");
+            assertEq(
+                token.balanceOf(sender), snapshot.fromBalance - amount, "TEMPO-VA14: sender debit"
+            );
+            assertEq(
+                token.balanceOf(master),
+                snapshot.masterBalance + amount,
+                "TEMPO-VA14: master credit"
+            );
+            assertEq(
+                token.balanceOf(virtualAddr), snapshot.virtualBalance, "TEMPO-VA10: virtual balance"
+            );
             assertEq(token.totalSupply(), snapshot.totalSupply, "TEMPO-VA14: supply change");
             _assertTransferSequence(token, sender, virtualAddr, master, amount);
         } else {
@@ -551,7 +573,9 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
 
             assertEq(token.balanceOf(sender), snapshot.fromBalance, "TEMPO-VA14: sender changed");
             assertEq(token.balanceOf(master), snapshot.masterBalance, "TEMPO-VA14: master changed");
-            assertEq(token.balanceOf(virtualAddr), snapshot.virtualBalance, "TEMPO-VA10: virtual balance");
+            assertEq(
+                token.balanceOf(virtualAddr), snapshot.virtualBalance, "TEMPO-VA10: virtual balance"
+            );
             assertEq(token.totalSupply(), snapshot.totalSupply, "TEMPO-VA14: supply changed");
             _assertNoRelevantTokenLogs(token, "TEMPO-VA14: blocked transfer emitted logs");
         }
@@ -583,8 +607,12 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         if (allowMaster) {
             token.mint(virtualAddr, amount);
 
-            assertEq(token.balanceOf(master), masterBalanceBefore + amount, "TEMPO-VA14: master credit");
-            assertEq(token.balanceOf(virtualAddr), virtualBalanceBefore, "TEMPO-VA10: virtual balance");
+            assertEq(
+                token.balanceOf(master), masterBalanceBefore + amount, "TEMPO-VA14: master credit"
+            );
+            assertEq(
+                token.balanceOf(virtualAddr), virtualBalanceBefore, "TEMPO-VA10: virtual balance"
+            );
             assertEq(token.totalSupply(), supplyBefore + amount, "TEMPO-VA14: supply increase");
             _assertMintSequence(token, virtualAddr, master, amount);
         } else {
@@ -599,7 +627,9 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
             }
 
             assertEq(token.balanceOf(master), masterBalanceBefore, "TEMPO-VA14: master changed");
-            assertEq(token.balanceOf(virtualAddr), virtualBalanceBefore, "TEMPO-VA10: virtual balance");
+            assertEq(
+                token.balanceOf(virtualAddr), virtualBalanceBefore, "TEMPO-VA10: virtual balance"
+            );
             assertEq(token.totalSupply(), supplyBefore, "TEMPO-VA14: supply changed");
             _assertNoRelevantTokenLogs(token, "TEMPO-VA14: blocked mint emitted logs");
         }
@@ -627,9 +657,13 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
 
         try registry.createPolicyWithAccounts(
             admin,
-            useBlacklist ? ITIP403Registry.PolicyType.BLACKLIST : ITIP403Registry.PolicyType.WHITELIST,
+            useBlacklist
+                ? ITIP403Registry.PolicyType.BLACKLIST
+                : ITIP403Registry.PolicyType.WHITELIST,
             accounts
-        ) returns (uint64) {
+        ) returns (
+            uint64
+        ) {
             revert("TEMPO-VA15: createPolicyWithAccounts unexpectedly succeeded");
         } catch (bytes memory reason) {
             assertEq(
@@ -702,7 +736,9 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         }
 
         (address rewardRecipientAfter,,) = token.userRewardInfo(actor);
-        assertEq(rewardRecipientAfter, rewardRecipientBefore, "TEMPO-VA16: reward recipient changed");
+        assertEq(
+            rewardRecipientAfter, rewardRecipientBefore, "TEMPO-VA16: reward recipient changed"
+        );
         assertEq(token.optedInSupply(), optedInSupplyBefore, "TEMPO-VA16: optedInSupply changed");
         assertEq(vm.getRecordedLogs().length, 0, "TEMPO-VA16: reward rejection emitted logs");
     }
@@ -719,7 +755,11 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
 
             assertEq(bytes4(registrationHash), bytes4(0), "TEMPO-VA1: fixture PoW invalid");
             assertEq(derivedMasterId, fixture.masterId, "TEMPO-VA1: masterId derivation mismatch");
-            assertEq(tip20Registry.getMaster(fixture.masterId), fixture.master, "TEMPO-VA1: registry mismatch");
+            assertEq(
+                tip20Registry.getMaster(fixture.masterId),
+                fixture.master,
+                "TEMPO-VA1: registry mismatch"
+            );
 
             for (uint256 j = i + 1; j < _masters.length; j++) {
                 assertTrue(
@@ -731,7 +771,8 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
 
         for (uint256 i = 0; i < _virtualPool.length; i++) {
             address virtualAddr = _virtualPool[i];
-            (bool isVirtual, bytes4 masterId, bytes6 userTag) = tip20Registry.decodeVirtualAddress(virtualAddr);
+            (bool isVirtual, bytes4 masterId, bytes6 userTag) =
+                tip20Registry.decodeVirtualAddress(virtualAddr);
 
             assertTrue(isVirtual, "TEMPO-VA3: tracked alias not virtual");
             assertEq(masterId, _masterIdByVirtual[virtualAddr], "TEMPO-VA3: masterId mismatch");
@@ -758,7 +799,9 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
 
         for (uint256 i = 0; i < _nonVirtualPool.length; i++) {
             address account = _nonVirtualPool[i];
-            assertFalse(tip20Registry.isVirtualAddress(account), "TEMPO-VA5: non-virtual pool polluted");
+            assertFalse(
+                tip20Registry.isVirtualAddress(account), "TEMPO-VA5: non-virtual pool polluted"
+            );
             assertEq(
                 tip20Registry.resolveRecipient(account),
                 account,
@@ -778,15 +821,18 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
             uint64 recipientPolicyId =
                 registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
             uint64 mintPolicyId = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
-            uint64 compoundPolicyId = registry.createCompoundPolicy(1, recipientPolicyId, mintPolicyId);
+            uint64 compoundPolicyId =
+                registry.createCompoundPolicy(1, recipientPolicyId, mintPolicyId);
 
             token.changeTransferPolicyId(compoundPolicyId);
             _recipientPolicyIds[address(token)] = recipientPolicyId;
             _mintPolicyIds[address(token)] = mintPolicyId;
         }
 
-        _policyRejectWhitelistId = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
-        _policyRejectBlacklistId = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
+        _policyRejectWhitelistId =
+            registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
+        _policyRejectBlacklistId =
+            registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
         vm.stopPrank();
     }
 
@@ -805,7 +851,9 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
             bytes4 registeredId = tip20Registry.registerVirtualMaster(salt);
 
             assertEq(registeredId, masterId, "TEMPO-VA1: registration returned wrong masterId");
-            assertEq(tip20Registry.getMaster(masterId), master, "TEMPO-VA1: registry stored wrong master");
+            assertEq(
+                tip20Registry.getMaster(masterId), master, "TEMPO-VA1: registry stored wrong master"
+            );
 
             _masters.push(MasterFixture({ master: master, pk: pk, salt: salt, masterId: masterId }));
             _masterById[masterId] = master;
@@ -869,7 +917,14 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         return _virtualPool[seed % _virtualPool.length];
     }
 
-    function _virtualForMaster(uint256 masterIndex, uint256 tagSeed) internal view returns (address) {
+    function _virtualForMaster(
+        uint256 masterIndex,
+        uint256 tagSeed
+    )
+        internal
+        view
+        returns (address)
+    {
         return _virtualPool[(masterIndex * TAG_COUNT) + (tagSeed % TAG_COUNT)];
     }
 
@@ -881,7 +936,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         view
         returns (address virtualAddr, bytes4 masterId)
     {
-        for (uint256 i = 0; ; i++) {
+        for (uint256 i = 0;; i++) {
             masterId = bytes4(keccak256(abi.encodePacked(masterSeed, i)));
             if (tip20Registry.getMaster(masterId) == address(0)) {
                 return (_makeVirtualAddress(masterId, USER_TAGS[tagSeed % TAG_COUNT]), masterId);
@@ -938,7 +993,11 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         snapshot.totalSupply = token.totalSupply();
     }
 
-    function _maxTransferFromAmount(BalanceSnapshot memory snapshot) internal pure returns (uint256) {
+    function _maxTransferFromAmount(BalanceSnapshot memory snapshot)
+        internal
+        pure
+        returns (uint256)
+    {
         return snapshot.allowance == type(uint256).max
             ? _boundedAmount(snapshot.fromBalance)
             : _min(_boundedAmount(snapshot.fromBalance), snapshot.allowance);
@@ -1040,7 +1099,8 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
     }
 
     function _isRelevantTokenEvent(bytes32 topic0) internal pure returns (bool) {
-        return topic0 == Tempo.TRANSFER_EVENT || topic0 == Tempo.TRANSFER_WITH_MEMO_EVENT || topic0 == Tempo.MINT_EVENT;
+        return topic0 == Tempo.TRANSFER_EVENT || topic0 == Tempo.TRANSFER_WITH_MEMO_EVENT
+            || topic0 == Tempo.MINT_EVENT;
     }
 
     function _assertTransferLog(

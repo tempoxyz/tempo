@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 pragma solidity >=0.8.13 <0.9.0;
 
-import { ITIP20Registry } from "./interfaces/ITIP20Registry.sol";
 import { TempoUtilities } from "./TempoUtilities.sol";
+import { ITIP20Registry } from "./interfaces/ITIP20Registry.sol";
 
 /// @title TIP-1022 virtual address registry
 /// @notice Registers virtual masters and resolves virtual TIP-20 recipients to their masters
