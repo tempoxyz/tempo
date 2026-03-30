@@ -12,13 +12,11 @@ use crate::{
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
     tip20_factory::TIP20Factory,
 };
-use alloy::primitives::B256;
+use alloy::primitives::{Address, B256, U256, uint};
 pub use tempo_contracts::precompiles::{
     DEFAULT_FEE_TOKEN, FeeManagerError, FeeManagerEvent, IFeeManager, ITIPFeeAMM,
     TIP_FEE_MANAGER_ADDRESS, TIPFeeAMMError, TIPFeeAMMEvent,
 };
-// Re-export PoolKey for backward compatibility with tests
-use alloy::primitives::{Address, U256, uint};
 use tempo_precompiles_macros::contract;
 
 /// Fee manager precompile that handles transaction fee collection and distribution.
@@ -209,12 +207,9 @@ impl TipFeeManager {
         // Execute fee swap and track collected fees
         let validator_token = self.get_validator_token(beneficiary)?;
 
-        if fee_token != validator_token {
-            // Record the pool if there was a non-zero swap
-            if !actual_spending.is_zero() {
-                // Execute fee swap immediately and accumulate fees
-                self.execute_fee_swap(fee_token, validator_token, actual_spending)?;
-            }
+        if fee_token != validator_token && !actual_spending.is_zero() {
+            // Execute fee swap immediately and accumulate fees
+            self.execute_fee_swap(fee_token, validator_token, actual_spending)?;
         }
 
         let amount = if fee_token == validator_token {
@@ -286,17 +281,6 @@ impl TipFeeManager {
     /// Reads the stored fee token preference for a user.
     pub fn user_tokens(&self, call: IFeeManager::userTokensCall) -> Result<Address> {
         self.user_tokens[call.user].read()
-    }
-
-    /// Reads the stored fee token preference for a validator, defaulting to [`DEFAULT_FEE_TOKEN`].
-    pub fn validator_tokens(&self, call: IFeeManager::validatorTokensCall) -> Result<Address> {
-        let token = self.validator_tokens[call.validator].read()?;
-
-        if token.is_zero() {
-            Ok(DEFAULT_FEE_TOKEN)
-        } else {
-            Ok(token)
-        }
     }
 }
 
@@ -416,8 +400,7 @@ mod tests {
             let result = fee_manager.set_validator_token(validator, call, beneficiary);
             assert!(result.is_ok());
 
-            let query_call = IFeeManager::validatorTokensCall { validator };
-            let returned_token = fee_manager.validator_tokens(query_call)?;
+            let returned_token = fee_manager.get_validator_token(validator)?;
             assert_eq!(returned_token, token.address());
 
             Ok(())
