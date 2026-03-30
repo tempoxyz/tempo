@@ -1,6 +1,6 @@
 //! ABI dispatch for the [`AccountKeychain`] precompile.
 
-use super::{AccountKeychain, TokenLimit, authorizeKeyCall};
+use super::{AccountKeychain, KeyRestrictions, TokenLimit, authorizeKeyCall};
 use crate::{Precompile, dispatch_call, input_cost, mutate_void, unknown_selector, view};
 use alloy::{
     primitives::Address,
@@ -33,19 +33,21 @@ impl Precompile for AccountKeychain {
                     let call = authorizeKeyCall {
                         keyId: call.keyId,
                         signatureType: call.signatureType,
-                        expiry: call.expiry,
-                        enforceLimits: call.enforceLimits,
-                        limits: call
-                            .limits
-                            .into_iter()
-                            .map(|limit| TokenLimit {
-                                token: limit.token,
-                                amount: limit.amount,
-                                period: 0,
-                            })
-                            .collect(),
-                        enforceAllowedCalls: false,
-                        allowedCalls: vec![],
+                        config: KeyRestrictions {
+                            expiry: call.expiry,
+                            enforceLimits: call.enforceLimits,
+                            limits: call
+                                .limits
+                                .into_iter()
+                                .map(|limit| TokenLimit {
+                                    token: limit.token,
+                                    amount: limit.amount,
+                                    period: 0,
+                                })
+                                .collect(),
+                            enforceAllowedCalls: false,
+                            allowedCalls: vec![],
+                        },
                     };
 
                     mutate_void(call, msg_sender, |sender, c| self.authorize_key(sender, c))
@@ -197,15 +199,17 @@ mod tests {
                 keyId: Address::random(),
                 signatureType:
                     tempo_contracts::precompiles::IAccountKeychain::SignatureType::Secp256k1,
-                expiry: u64::MAX,
-                enforceLimits: true,
-                limits: vec![TokenLimit {
-                    token: Address::random(),
-                    amount: U256::from(100),
-                    period: 0,
-                }],
-                enforceAllowedCalls: false,
-                allowedCalls: vec![],
+                config: KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![TokenLimit {
+                        token: Address::random(),
+                        amount: U256::from(100),
+                        period: 0,
+                    }],
+                    enforceAllowedCalls: false,
+                    allowedCalls: vec![],
+                },
             }
             .abi_encode();
 

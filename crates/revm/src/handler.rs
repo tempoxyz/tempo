@@ -37,7 +37,7 @@ use tempo_contracts::precompiles::{
 };
 use tempo_precompiles::{
     ECRECOVER_GAS,
-    account_keychain::{AccountKeychain, TokenLimit, authorizeKeyCall},
+    account_keychain::{AccountKeychain, KeyRestrictions, TokenLimit, authorizeKeyCall},
     error::TempoPrecompileError,
     nonce::{EXPIRING_NONCE_MAX_EXPIRY_SECS, INonce::getNonceCall, NonceManager},
     storage::{PrecompileStorageProvider, StorageCtx, evm::EvmPrecompileStorageProvider},
@@ -1067,7 +1067,6 @@ where
                                             .map(|rule| {
                                                 tempo_precompiles::account_keychain::SelectorRule {
                                                     selector: rule.selector.into(),
-                                                    allowAllRecipients: rule.recipients.is_none(),
                                                     recipients: rule
                                                         .recipients
                                                         .clone()
@@ -1088,11 +1087,13 @@ where
                 let authorize_call = authorizeKeyCall {
                     keyId: access_key_addr,
                     signatureType: signature_type,
-                    expiry,
-                    enforceLimits: enforce_limits,
-                    limits: precompile_limits,
-                    enforceAllowedCalls: enforce_allowed_calls,
-                    allowedCalls: precompile_allowed_calls,
+                    config: KeyRestrictions {
+                        expiry,
+                        enforceLimits: enforce_limits,
+                        limits: precompile_limits,
+                        enforceAllowedCalls: enforce_allowed_calls,
+                        allowedCalls: precompile_allowed_calls,
+                    },
                 };
 
                 // Call precompile to authorize the key (same phase as nonce increment)

@@ -41,7 +41,8 @@ crate::sol! {
         /// Selector-level recipient rule.
         struct SelectorRule {
             bytes4 selector;
-            bool allowAllRecipients;
+            /// Empty means no recipient restriction for this selector.
+            /// To block the selector entirely, remove the selector rule instead of passing `[]`.
             address[] recipients;
         }
 
@@ -50,6 +51,15 @@ crate::sol! {
             address target;
             bool allowAllSelectors;
             SelectorRule[] selectorRules;
+        }
+
+        /// Optional access-key restrictions configured at authorization time.
+        struct KeyRestrictions {
+            uint64 expiry;
+            bool enforceLimits;
+            TokenLimit[] limits;
+            bool enforceAllowedCalls;
+            CallScope[] allowedCalls;
         }
 
         /// Key information structure
@@ -90,19 +100,11 @@ crate::sol! {
         /// Authorize a new key for the caller's account with T3 extensions.
         /// @param keyId The key identifier (address derived from public key)
         /// @param signatureType 0: secp256k1, 1: P256, 2: WebAuthn
-        /// @param expiry Block timestamp when the key expires (u64::MAX for never expires)
-        /// @param enforceLimits Whether to enforce spending limits for this key
-        /// @param limits Initial spending limits for tokens (only used if enforceLimits is true)
-        /// @param enforceAllowedCalls Whether call scope restrictions are enabled for this key
-        /// @param allowedCalls Initial call scopes for this key
+        /// @param config Access-key expiry and optional limits / call restrictions
         function authorizeKey(
             address keyId,
             SignatureType signatureType,
-            uint64 expiry,
-            bool enforceLimits,
-            TokenLimit[] calldata limits,
-            bool enforceAllowedCalls,
-            CallScope[] calldata allowedCalls
+            KeyRestrictions calldata config
         ) external;
 
         /// Revoke an authorized key
@@ -120,11 +122,11 @@ crate::sol! {
         ) external;
 
         /// Set or replace allowed calls for a key+target pair.
+        /// @dev Warning: `scope.selectorRules[i].recipients = []` does NOT block that selector; it allows any recipient.
+        /// @dev To block a selector entirely, remove that selector rule from `scope.selectorRules`.
         function setAllowedCalls(
             address keyId,
-            address target,
-            bool allowAllSelectors,
-            SelectorRule[] calldata selectorRules
+            CallScope calldata scope
         ) external;
 
         /// Get key information

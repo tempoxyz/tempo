@@ -699,17 +699,21 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
         KeySetup::ZeroPubKey => {
             use tempo_precompiles::{
                 ACCOUNT_KEYCHAIN_ADDRESS,
-                account_keychain::{SignatureType as KCSignatureType, authorizeKeyCall},
+                account_keychain::{
+                    KeyRestrictions, SignatureType as KCSignatureType, authorizeKeyCall,
+                },
             };
 
             let authorize_call = authorizeKeyCall {
                 keyId: Address::ZERO,
                 signatureType: KCSignatureType::P256,
-                expiry: u64::MAX,
-                enforceLimits: true,
-                limits: vec![],
-                enforceAllowedCalls: false,
-                allowedCalls: vec![],
+                config: KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![],
+                    enforceAllowedCalls: false,
+                    allowedCalls: vec![],
+                },
             };
             tx.calls = vec![Call {
                 to: ACCOUNT_KEYCHAIN_ADDRESS.into(),

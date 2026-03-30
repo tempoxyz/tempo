@@ -3,7 +3,7 @@ use crate::transaction::PrimitiveSignature;
 use alloc::vec::Vec;
 use alloy_consensus::crypto::RecoveryError;
 use alloy_primitives::{Address, B256, U256, keccak256};
-use alloy_rlp::{Buf, EMPTY_STRING_CODE, Encodable};
+use alloy_rlp::{Buf, Decodable, EMPTY_STRING_CODE, Encodable};
 
 /// Token spending limit for access keys
 ///
@@ -28,7 +28,7 @@ pub struct TokenLimit {
     pub period: u64,
 }
 
-impl alloy_rlp::Decodable for TokenLimit {
+impl Decodable for TokenLimit {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let header = alloy_rlp::Header::decode(buf)?;
         if !header.list {
@@ -42,13 +42,13 @@ impl alloy_rlp::Decodable for TokenLimit {
 
         let mut fields = &buf[..header.payload_length];
 
-        let token = alloy_rlp::Decodable::decode(&mut fields)?;
-        let limit = alloy_rlp::Decodable::decode(&mut fields)?;
+        let token = Decodable::decode(&mut fields)?;
+        let limit = Decodable::decode(&mut fields)?;
         // Backward-compatible decode: legacy payloads omit period and map to one-time limits.
         let period = if fields.is_empty() {
             0
         } else {
-            let period: u64 = alloy_rlp::Decodable::decode(&mut fields)?;
+            let period: u64 = Decodable::decode(&mut fields)?;
             if period == 0 {
                 return Err(alloy_rlp::Error::Custom(
                     "token limit period=0 must be encoded in legacy two-field form",
@@ -192,11 +192,9 @@ pub struct KeyAuthorization {
     pub allowed_calls: Option<Vec<CallScope>>,
 }
 
-impl alloy_rlp::Decodable for KeyAuthorization {
+impl Decodable for KeyAuthorization {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        fn decode_optional_field<T: alloy_rlp::Decodable>(
-            fields: &mut &[u8],
-        ) -> alloy_rlp::Result<Option<T>> {
+        fn decode_optional_field<T: Decodable>(fields: &mut &[u8]) -> alloy_rlp::Result<Option<T>> {
             if fields.is_empty() {
                 return Ok(None);
             }
@@ -205,7 +203,7 @@ impl alloy_rlp::Decodable for KeyAuthorization {
                 return Ok(None);
             }
 
-            Ok(Some(alloy_rlp::Decodable::decode(fields)?))
+            Ok(Some(Decodable::decode(fields)?))
         }
 
         let header = alloy_rlp::Header::decode(buf)?;
@@ -220,9 +218,9 @@ impl alloy_rlp::Decodable for KeyAuthorization {
 
         let mut fields = &buf[..header.payload_length];
 
-        let chain_id = alloy_rlp::Decodable::decode(&mut fields)?;
-        let key_type = alloy_rlp::Decodable::decode(&mut fields)?;
-        let key_id = alloy_rlp::Decodable::decode(&mut fields)?;
+        let chain_id = Decodable::decode(&mut fields)?;
+        let key_type = Decodable::decode(&mut fields)?;
+        let key_id = Decodable::decode(&mut fields)?;
 
         let expiry: Option<u64> = decode_optional_field(&mut fields)?;
         let limits: Option<Vec<TokenLimit>> = decode_optional_field(&mut fields)?;
@@ -236,7 +234,7 @@ impl alloy_rlp::Decodable for KeyAuthorization {
                 ));
             }
 
-            Some(alloy_rlp::Decodable::decode(&mut fields)?)
+            Some(Decodable::decode(&mut fields)?)
         };
 
         if !fields.is_empty() {
@@ -562,8 +560,8 @@ mod tests {
         token.encode(&mut encoded);
         limit.encode(&mut encoded);
 
-        let decoded: TokenLimit = alloy_rlp::Decodable::decode(&mut encoded.as_slice())
-            .expect("decode legacy token limit");
+        let decoded: TokenLimit =
+            Decodable::decode(&mut encoded.as_slice()).expect("decode legacy token limit");
         assert_eq!(decoded.token, token);
         assert_eq!(decoded.limit, limit);
         assert_eq!(decoded.period, 0);
@@ -606,7 +604,7 @@ mod tests {
         period.encode(&mut encoded);
 
         let err: alloy_rlp::Error =
-            <TokenLimit as alloy_rlp::Decodable>::decode(&mut encoded.as_slice()).unwrap_err();
+            <TokenLimit as Decodable>::decode(&mut encoded.as_slice()).unwrap_err();
         assert!(matches!(err, alloy_rlp::Error::Custom(_)));
     }
 
@@ -631,8 +629,7 @@ mod tests {
         encoded.extend_from_slice(&payload);
 
         let err: alloy_rlp::Error =
-            <KeyAuthorization as alloy_rlp::Decodable>::decode(&mut encoded.as_slice())
-                .unwrap_err();
+            <KeyAuthorization as Decodable>::decode(&mut encoded.as_slice()).unwrap_err();
         assert!(matches!(err, alloy_rlp::Error::Custom(_)));
     }
 

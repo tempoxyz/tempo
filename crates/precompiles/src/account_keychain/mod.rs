@@ -18,9 +18,9 @@ use tempo_contracts::precompiles::{AccountKeychainError, AccountKeychainEvent, I
 pub use tempo_contracts::precompiles::{
     IAccountKeychain,
     IAccountKeychain::{
-        CallScope, KeyInfo, SelectorRule, SignatureType, TokenLimit, getAllowedCallsCall,
-        getKeyCall, getRemainingLimitCall, getRemainingLimitWithPeriodCall, getTransactionKeyCall,
-        revokeKeyCall, setAllowedCallsCall, updateSpendingLimitCall,
+        CallScope, KeyInfo, KeyRestrictions, SelectorRule, SignatureType, TokenLimit,
+        getAllowedCallsCall, getKeyCall, getRemainingLimitCall, getRemainingLimitWithPeriodCall,
+        getTransactionKeyCall, revokeKeyCall, setAllowedCallsCall, updateSpendingLimitCall,
     },
     authorizeKeyCall, getRemainingLimitReturn,
 };
@@ -261,6 +261,8 @@ impl AccountKeychain {
     /// - `KeyAlreadyRevoked` — revoked keys cannot be re-authorized
     /// - `InvalidSignatureType` — must be Secp256k1, P256, or WebAuthn
     pub fn authorize_key(&mut self, msg_sender: Address, call: authorizeKeyCall) -> Result<()> {
+        let config = &call.config;
+
         self.ensure_admin_caller(msg_sender)?;
         let is_t3 = self.storage.spec().is_t3();
 
@@ -272,7 +274,7 @@ impl AccountKeychain {
         // T0+: Expiry must be in the future (also catches expiry == 0 which means "key doesn't exist")
         if self.storage.spec().is_t0() {
             let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
-            if call.expiry <= current_timestamp {
+            if config.expiry <= current_timestamp {
                 return Err(AccountKeychainError::expiry_in_past().into());
             }
         }
@@ -299,26 +301,27 @@ impl AccountKeychain {
         // Create and store the new key
         let new_key = AuthorizedKey {
             signature_type,
-            expiry: call.expiry,
-            enforce_limits: call.enforceLimits,
+            expiry: config.expiry,
+            enforce_limits: config.enforceLimits,
             is_revoked: false,
         };
 
         self.keys[msg_sender][call.keyId].write(new_key)?;
 
         // Pre-T3 stores lifetime limits directly in the remaining-limit slot.
-        if call.enforceLimits && !is_t3 {
+        if config.enforceLimits && !is_t3 {
             let limit_key = Self::spending_limit_key(msg_sender, call.keyId);
-            for limit in &call.limits {
+            for limit in &config.limits {
                 self.spending_limits[limit_key][limit.token].write(limit.amount)?;
             }
         }
 
         // TIP-1011 fields are hardfork-gated at T3.
         if is_t3 {
-            let allowed_call_configs = if call.enforceAllowedCalls {
+            let allowed_call_configs = if config.enforceAllowedCalls {
                 Some(
-                    call.allowedCalls
+                    config
+                        .allowedCalls
                         .iter()
                         .map(Self::abi_call_scope_to_config)
                         .collect::<Result<Vec<_>>>()?,
@@ -330,19 +333,19 @@ impl AccountKeychain {
             self.apply_key_authorization_t3(
                 msg_sender,
                 call.keyId,
-                if call.enforceLimits {
-                    &call.limits
+                if config.enforceLimits {
+                    &config.limits
                 } else {
                     &[]
                 },
                 allowed_call_configs.as_deref(),
             )?;
         } else {
-            if call.limits.iter().any(|limit| limit.period != 0) {
+            if config.limits.iter().any(|limit| limit.period != 0) {
                 return Err(AccountKeychainError::invalid_call_scope().into());
             }
 
-            if call.enforceAllowedCalls || !call.allowedCalls.is_empty() {
+            if config.enforceAllowedCalls || !config.allowedCalls.is_empty() {
                 return Err(AccountKeychainError::invalid_call_scope().into());
             }
         }
@@ -353,7 +356,7 @@ impl AccountKeychain {
                 account: msg_sender,
                 publicKey: call.keyId,
                 signatureType: signature_type,
-                expiry: call.expiry,
+                expiry: config.expiry,
             },
         ))
     }
@@ -548,32 +551,26 @@ impl AccountKeychain {
         }
 
         let account_key = Self::account_key(msg_sender, call.keyId);
+        let scope = call.scope;
 
-        if call.allowAllSelectors {
+        if scope.allowAllSelectors {
             // TIP-1011 precedence: allow-all selectors ignores selectorRules entirely.
-            self.upsert_target_scope(account_key, call.target, None)?;
+            self.upsert_target_scope(account_key, scope.target, None)?;
         } else {
             let mut selector_rules = Vec::new();
-            for rule in call.selectorRules {
-                if rule.allowAllRecipients {
-                    if !rule.recipients.is_empty() {
-                        return Err(AccountKeychainError::invalid_call_scope().into());
-                    }
-                    selector_rules.push(SelectorRuleConfig {
-                        selector: *rule.selector,
-                        recipients: None,
-                    });
-                } else {
-                    if rule.recipients.is_empty() {
-                        return Err(AccountKeychainError::invalid_call_scope().into());
-                    }
-                    selector_rules.push(SelectorRuleConfig {
-                        selector: *rule.selector,
-                        recipients: Some(rule.recipients),
-                    });
-                }
+            for rule in scope.selectorRules {
+                // Empty recipients is the canonical "no recipient restriction" encoding.
+                // Callers must remove the selector rule entirely to block that selector.
+                selector_rules.push(SelectorRuleConfig {
+                    selector: *rule.selector,
+                    recipients: if rule.recipients.is_empty() {
+                        None
+                    } else {
+                        Some(rule.recipients)
+                    },
+                });
             }
-            self.upsert_target_scope(account_key, call.target, Some(selector_rules))?;
+            self.upsert_target_scope(account_key, scope.target, Some(selector_rules))?;
         }
 
         let mode = if self.key_scopes[account_key].targets.is_empty()? {
@@ -640,23 +637,22 @@ impl AccountKeychain {
                             .mode
                             .read()?;
 
-                        let (allow_all_recipients, recipients) = if selector_mode == 2 {
+                        let recipients = if selector_mode == 2 {
                             let recipients: Vec<Address> = self.key_scopes[account_key]
                                 .target_scopes[target]
                                 .selector_scopes[selector_u32]
                                 .recipients
                                 .read()?
                                 .into();
-                            (false, recipients)
+                            recipients
                         } else if selector_mode == 1 {
-                            (true, Vec::new())
+                            Vec::new()
                         } else {
                             continue;
                         };
 
                         rules.push(SelectorRule {
                             selector: Self::selector_from_u32(selector_u32).into(),
-                            allowAllRecipients: allow_all_recipients,
                             recipients,
                         });
                     }
@@ -1028,12 +1024,6 @@ impl AccountKeychain {
 
     fn abi_call_scope_to_config(scope: &CallScope) -> Result<CallScopeConfig> {
         if scope.allowAllSelectors {
-            for rule in &scope.selectorRules {
-                if !rule.allowAllRecipients || !rule.recipients.is_empty() {
-                    return Err(AccountKeychainError::invalid_call_scope().into());
-                }
-            }
-
             Ok(CallScopeConfig {
                 target: scope.target,
                 selector_rules: None,
@@ -1043,25 +1033,14 @@ impl AccountKeychain {
                 .selectorRules
                 .iter()
                 .map(|rule| {
-                    if rule.allowAllRecipients {
-                        if !rule.recipients.is_empty() {
-                            return Err(AccountKeychainError::invalid_call_scope().into());
-                        }
-
-                        Ok(SelectorRuleConfig {
-                            selector: *rule.selector,
-                            recipients: None,
-                        })
-                    } else {
-                        if rule.recipients.is_empty() {
-                            return Err(AccountKeychainError::invalid_call_scope().into());
-                        }
-
-                        Ok(SelectorRuleConfig {
-                            selector: *rule.selector,
-                            recipients: Some(rule.recipients.clone()),
-                        })
-                    }
+                    Ok(SelectorRuleConfig {
+                        selector: *rule.selector,
+                        recipients: if rule.recipients.is_empty() {
+                            None
+                        } else {
+                            Some(rule.recipients.clone())
+                        },
+                    })
                 })
                 .collect::<Result<Vec<_>>>()?;
 
@@ -1514,11 +1493,13 @@ mod tests {
             let setup_call = authorizeKeyCall {
                 keyId: existing_key,
                 signatureType: SignatureType::Secp256k1,
-                expiry: u64::MAX,
-                enforceLimits: true,
-                limits: vec![],
-                enforceAllowedCalls: false,
-                allowedCalls: vec![],
+                config: KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![],
+                    enforceAllowedCalls: false,
+                    allowedCalls: vec![],
+                },
             };
             keychain.authorize_key(msg_sender, setup_call)?;
 
@@ -1529,11 +1510,13 @@ mod tests {
             let auth_call = authorizeKeyCall {
                 keyId: other,
                 signatureType: SignatureType::P256,
-                expiry: u64::MAX,
-                enforceLimits: true,
-                limits: vec![],
-                enforceAllowedCalls: false,
-                allowedCalls: vec![],
+                config: KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![],
+                    enforceAllowedCalls: false,
+                    allowedCalls: vec![],
+                },
             };
             let auth_result = keychain.authorize_key(msg_sender, auth_call);
             assert!(
@@ -1596,11 +1579,13 @@ mod tests {
                 authorizeKeyCall {
                     keyId: existing_key,
                     signatureType: SignatureType::Secp256k1,
-                    expiry: u64::MAX,
-                    enforceLimits: true,
-                    limits: vec![],
-                    enforceAllowedCalls: false,
-                    allowedCalls: vec![],
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: true,
+                        limits: vec![],
+                        enforceAllowedCalls: false,
+                        allowedCalls: vec![],
+                    },
                 },
             )?;
 
@@ -1612,11 +1597,13 @@ mod tests {
                 authorizeKeyCall {
                     keyId: other,
                     signatureType: SignatureType::P256,
-                    expiry: u64::MAX,
-                    enforceLimits: true,
-                    limits: vec![],
-                    enforceAllowedCalls: false,
-                    allowedCalls: vec![],
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: true,
+                        limits: vec![],
+                        enforceAllowedCalls: false,
+                        allowedCalls: vec![],
+                    },
                 },
             );
             assert!(auth_result.is_err());
@@ -1671,15 +1658,17 @@ mod tests {
                 authorizeKeyCall {
                     keyId: key_id,
                     signatureType: SignatureType::Secp256k1,
-                    expiry: u64::MAX,
-                    enforceLimits: true,
-                    limits: vec![TokenLimit {
-                        token,
-                        amount: U256::from(100),
-                        period: 0,
-                    }],
-                    enforceAllowedCalls: false,
-                    allowedCalls: vec![],
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: true,
+                        limits: vec![TokenLimit {
+                            token,
+                            amount: U256::from(100),
+                            period: 0,
+                        }],
+                        enforceAllowedCalls: false,
+                        allowedCalls: vec![],
+                    },
                 },
             )?;
 
@@ -1734,15 +1723,17 @@ mod tests {
                 authorizeKeyCall {
                     keyId: key_id,
                     signatureType: SignatureType::Secp256k1,
-                    expiry: u64::MAX,
-                    enforceLimits: true,
-                    limits: vec![TokenLimit {
-                        token,
-                        amount: U256::from(100),
-                        period: 0,
-                    }],
-                    enforceAllowedCalls: false,
-                    allowedCalls: vec![],
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: true,
+                        limits: vec![TokenLimit {
+                            token,
+                            amount: U256::from(100),
+                            period: 0,
+                        }],
+                        enforceAllowedCalls: false,
+                        allowedCalls: vec![],
+                    },
                 },
             )?;
 
@@ -1787,15 +1778,17 @@ mod tests {
                 authorizeKeyCall {
                     keyId: key_id,
                     signatureType: SignatureType::Secp256k1,
-                    expiry: u64::MAX,
-                    enforceLimits: true,
-                    limits: vec![TokenLimit {
-                        token,
-                        amount: U256::from(100),
-                        period: 0,
-                    }],
-                    enforceAllowedCalls: false,
-                    allowedCalls: vec![],
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: true,
+                        limits: vec![TokenLimit {
+                            token,
+                            amount: U256::from(100),
+                            period: 0,
+                        }],
+                        enforceAllowedCalls: false,
+                        allowedCalls: vec![],
+                    },
                 },
             )?;
 
@@ -1839,15 +1832,17 @@ mod tests {
                 authorizeKeyCall {
                     keyId: key_id,
                     signatureType: SignatureType::Secp256k1,
-                    expiry: u64::MAX,
-                    enforceLimits: true,
-                    limits: vec![TokenLimit {
-                        token,
-                        amount: U256::from(100),
-                        period: 0,
-                    }],
-                    enforceAllowedCalls: false,
-                    allowedCalls: vec![],
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: true,
+                        limits: vec![TokenLimit {
+                            token,
+                            amount: U256::from(100),
+                            period: 0,
+                        }],
+                        enforceAllowedCalls: false,
+                        allowedCalls: vec![],
+                    },
                 },
             )?;
 
@@ -1861,11 +1856,13 @@ mod tests {
                 authorizeKeyCall {
                     keyId: other_key,
                     signatureType: SignatureType::P256,
-                    expiry: u64::MAX,
-                    enforceLimits: false,
-                    limits: vec![],
-                    enforceAllowedCalls: false,
-                    allowedCalls: vec![],
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: false,
+                        limits: vec![],
+                        enforceAllowedCalls: false,
+                        allowedCalls: vec![],
+                    },
                 },
             );
             assert!(
@@ -1919,15 +1916,17 @@ mod tests {
             let auth_call = authorizeKeyCall {
                 keyId: key_id,
                 signatureType: SignatureType::Secp256k1,
-                expiry: u64::MAX,
-                enforceLimits: true,
-                limits: vec![TokenLimit {
-                    token,
-                    amount: U256::from(100),
-                    period: 0,
-                }],
-                enforceAllowedCalls: false,
-                allowedCalls: vec![],
+                config: KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![TokenLimit {
+                        token,
+                        amount: U256::from(100),
+                        period: 0,
+                    }],
+                    enforceAllowedCalls: false,
+                    allowedCalls: vec![],
+                },
             };
             keychain.authorize_key(account, auth_call.clone())?;
 
@@ -2006,11 +2005,13 @@ mod tests {
             let auth_call = authorizeKeyCall {
                 keyId: key_id,
                 signatureType: SignatureType::Secp256k1,
-                expiry: 0, // Zero expiry is in the past - should fail
-                enforceLimits: false,
-                limits: vec![],
-                enforceAllowedCalls: false,
-                allowedCalls: vec![],
+                config: KeyRestrictions {
+                    expiry: 0, // Zero expiry is in the past - should fail
+                    enforceLimits: false,
+                    limits: vec![],
+                    enforceAllowedCalls: false,
+                    allowedCalls: vec![],
+                },
             };
             let result = keychain.authorize_key(account, auth_call);
             assert!(
@@ -2033,11 +2034,13 @@ mod tests {
             let auth_call_past = authorizeKeyCall {
                 keyId: key_id,
                 signatureType: SignatureType::Secp256k1,
-                expiry: 1, // Very old timestamp - should fail
-                enforceLimits: false,
-                limits: vec![],
-                enforceAllowedCalls: false,
-                allowedCalls: vec![],
+                config: KeyRestrictions {
+                    expiry: 1, // Very old timestamp - should fail
+                    enforceLimits: false,
+                    limits: vec![],
+                    enforceAllowedCalls: false,
+                    allowedCalls: vec![],
+                },
             };
             let result_past = keychain.authorize_key(account, auth_call_past);
             assert!(
@@ -2071,11 +2074,13 @@ mod tests {
             let auth_call_1 = authorizeKeyCall {
                 keyId: key_id_1,
                 signatureType: SignatureType::Secp256k1,
-                expiry: u64::MAX,
-                enforceLimits: false,
-                limits: vec![],
-                enforceAllowedCalls: false,
-                allowedCalls: vec![],
+                config: KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: false,
+                    limits: vec![],
+                    enforceAllowedCalls: false,
+                    allowedCalls: vec![],
+                },
             };
             keychain.authorize_key(account, auth_call_1)?;
 
@@ -2086,11 +2091,13 @@ mod tests {
             let auth_call_2 = authorizeKeyCall {
                 keyId: key_id_2,
                 signatureType: SignatureType::P256,
-                expiry: u64::MAX,
-                enforceLimits: true,
-                limits: vec![],
-                enforceAllowedCalls: false,
-                allowedCalls: vec![],
+                config: KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![],
+                    enforceAllowedCalls: false,
+                    allowedCalls: vec![],
+                },
             };
             keychain.authorize_key(account, auth_call_2)?;
 
@@ -2126,15 +2133,17 @@ mod tests {
             let auth_call = authorizeKeyCall {
                 keyId: access_key,
                 signatureType: SignatureType::Secp256k1,
-                expiry: u64::MAX,
-                enforceLimits: true,
-                limits: vec![TokenLimit {
-                    token,
-                    amount: U256::from(100),
-                    period: 0,
-                }],
-                enforceAllowedCalls: false,
-                allowedCalls: vec![],
+                config: KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![TokenLimit {
+                        token,
+                        amount: U256::from(100),
+                        period: 0,
+                    }],
+                    enforceAllowedCalls: false,
+                    allowedCalls: vec![],
+                },
             };
             keychain.authorize_key(eoa, auth_call)?;
 
@@ -2241,15 +2250,17 @@ mod tests {
             let auth_call = authorizeKeyCall {
                 keyId: access_key,
                 signatureType: SignatureType::Secp256k1,
-                expiry: u64::MAX,
-                enforceLimits: true,
-                limits: vec![TokenLimit {
-                    token,
-                    amount: U256::from(100),
-                    period: 0,
-                }],
-                enforceAllowedCalls: false,
-                allowedCalls: vec![],
+                config: KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![TokenLimit {
+                        token,
+                        amount: U256::from(100),
+                        period: 0,
+                    }],
+                    enforceAllowedCalls: false,
+                    allowedCalls: vec![],
+                },
             };
             keychain.authorize_key(eoa_alice, auth_call)?;
 
@@ -2376,11 +2387,13 @@ mod tests {
             let auth_call = authorizeKeyCall {
                 keyId: key_id,
                 signatureType: SignatureType::Secp256k1,
-                expiry: 1, // Minimal positive expiry
-                enforceLimits: false,
-                limits: vec![],
-                enforceAllowedCalls: false,
-                allowedCalls: vec![],
+                config: KeyRestrictions {
+                    expiry: 1, // Minimal positive expiry
+                    enforceLimits: false,
+                    limits: vec![],
+                    enforceAllowedCalls: false,
+                    allowedCalls: vec![],
+                },
             };
             keychain.authorize_key(account, auth_call.clone())?;
 
@@ -2463,13 +2476,14 @@ mod tests {
             let auth_call = authorizeKeyCall {
                 keyId: key_id,
                 signatureType: SignatureType::Secp256k1,
-                expiry: u64::MAX,
-                enforceLimits: false,
-                limits: vec![],
-                enforceAllowedCalls: false,
-                allowedCalls: vec![],
+                config: KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: false,
+                    limits: vec![],
+                    enforceAllowedCalls: false,
+                    allowedCalls: vec![],
+                },
             };
-
             // This would fail if initialize didn't set up storage properly
             keychain.authorize_key(account, auth_call)?;
 
@@ -2498,11 +2512,13 @@ mod tests {
             let auth_call = authorizeKeyCall {
                 keyId: key_id,
                 signatureType: SignatureType::WebAuthn,
-                expiry: u64::MAX,
-                enforceLimits: false,
-                limits: vec![],
-                enforceAllowedCalls: false,
-                allowedCalls: vec![],
+                config: KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: false,
+                    limits: vec![],
+                    enforceAllowedCalls: false,
+                    allowedCalls: vec![],
+                },
             };
             keychain.authorize_key(account, auth_call)?;
 
@@ -2547,15 +2563,17 @@ mod tests {
             let auth_call = authorizeKeyCall {
                 keyId: key_id,
                 signatureType: SignatureType::Secp256k1,
-                expiry: u64::MAX,
-                enforceLimits: true,
-                limits: vec![TokenLimit {
-                    token,
-                    amount: U256::from(100),
-                    period: 0,
-                }],
-                enforceAllowedCalls: false,
-                allowedCalls: vec![],
+                config: KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![TokenLimit {
+                        token,
+                        amount: U256::from(100),
+                        period: 0,
+                    }],
+                    enforceAllowedCalls: false,
+                    allowedCalls: vec![],
+                },
             };
             keychain.authorize_key(account, auth_call)?;
 
@@ -2598,11 +2616,13 @@ mod tests {
             let auth_call = authorizeKeyCall {
                 keyId: key_id,
                 signatureType: SignatureType::Secp256k1,
-                expiry: u64::MAX,
-                enforceLimits: false, // Initially no limits
-                limits: vec![],
-                enforceAllowedCalls: false,
-                allowedCalls: vec![],
+                config: KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: false, // Initially no limits
+                    limits: vec![],
+                    enforceAllowedCalls: false,
+                    allowedCalls: vec![],
+                },
             };
             keychain.authorize_key(account, auth_call)?;
 
@@ -2662,11 +2682,13 @@ mod tests {
             let auth_call = authorizeKeyCall {
                 keyId: key_id_revoked,
                 signatureType: SignatureType::P256,
-                expiry: u64::MAX,
-                enforceLimits: false,
-                limits: vec![],
-                enforceAllowedCalls: false,
-                allowedCalls: vec![],
+                config: KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: false,
+                    limits: vec![],
+                    enforceAllowedCalls: false,
+                    allowedCalls: vec![],
+                },
             };
             keychain.authorize_key(account, auth_call)?;
             keychain.revoke_key(
@@ -2680,11 +2702,13 @@ mod tests {
             let auth_valid = authorizeKeyCall {
                 keyId: key_id_valid,
                 signatureType: SignatureType::Secp256k1,
-                expiry: u64::MAX,
-                enforceLimits: false,
-                limits: vec![],
-                enforceAllowedCalls: false,
-                allowedCalls: vec![],
+                config: KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: false,
+                    limits: vec![],
+                    enforceAllowedCalls: false,
+                    allowedCalls: vec![],
+                },
             };
             keychain.authorize_key(account, auth_valid)?;
 
@@ -2756,11 +2780,13 @@ mod tests {
                 authorizeKeyCall {
                     keyId: key_secp,
                     signatureType: SignatureType::Secp256k1, // type 0
-                    expiry: u64::MAX,
-                    enforceLimits: false,
-                    limits: vec![],
-                    enforceAllowedCalls: false,
-                    allowedCalls: vec![],
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: false,
+                        limits: vec![],
+                        enforceAllowedCalls: false,
+                        allowedCalls: vec![],
+                    },
                 },
             )?;
 
@@ -2769,11 +2795,13 @@ mod tests {
                 authorizeKeyCall {
                     keyId: key_p256,
                     signatureType: SignatureType::P256, // type 1
-                    expiry: u64::MAX,
-                    enforceLimits: false,
-                    limits: vec![],
-                    enforceAllowedCalls: false,
-                    allowedCalls: vec![],
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: false,
+                        limits: vec![],
+                        enforceAllowedCalls: false,
+                        allowedCalls: vec![],
+                    },
                 },
             )?;
 
@@ -2782,11 +2810,13 @@ mod tests {
                 authorizeKeyCall {
                     keyId: key_webauthn,
                     signatureType: SignatureType::WebAuthn, // type 2
-                    expiry: u64::MAX,
-                    enforceLimits: false,
-                    limits: vec![],
-                    enforceAllowedCalls: false,
-                    allowedCalls: vec![],
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: false,
+                        limits: vec![],
+                        enforceAllowedCalls: false,
+                        allowedCalls: vec![],
+                    },
                 },
             )?;
 
@@ -2846,11 +2876,13 @@ mod tests {
             let auth_call = authorizeKeyCall {
                 keyId: key_id,
                 signatureType: SignatureType::P256,
-                expiry: u64::MAX,
-                enforceLimits: false,
-                limits: vec![],
-                enforceAllowedCalls: false,
-                allowedCalls: vec![],
+                config: KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: false,
+                    limits: vec![],
+                    enforceAllowedCalls: false,
+                    allowedCalls: vec![],
+                },
             };
             keychain.authorize_key(account, auth_call)?;
 
@@ -2913,15 +2945,17 @@ mod tests {
             let auth_call = authorizeKeyCall {
                 keyId: access_key,
                 signatureType: SignatureType::Secp256k1,
-                expiry: u64::MAX,
-                enforceLimits: true,
-                limits: vec![TokenLimit {
-                    token,
-                    amount: U256::from(100),
-                    period: 0,
-                }],
-                enforceAllowedCalls: false,
-                allowedCalls: vec![],
+                config: KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![TokenLimit {
+                        token,
+                        amount: U256::from(100),
+                        period: 0,
+                    }],
+                    enforceAllowedCalls: false,
+                    allowedCalls: vec![],
+                },
             };
             keychain.authorize_key(eoa, auth_call)?;
 
@@ -2986,15 +3020,17 @@ mod tests {
             let auth_call = authorizeKeyCall {
                 keyId: access_key,
                 signatureType: SignatureType::Secp256k1,
-                expiry: u64::MAX,
-                enforceLimits: true,
-                limits: vec![TokenLimit {
-                    token,
-                    amount: U256::from(100),
-                    period: 0,
-                }],
-                enforceAllowedCalls: false,
-                allowedCalls: vec![],
+                config: KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![TokenLimit {
+                        token,
+                        amount: U256::from(100),
+                        period: 0,
+                    }],
+                    enforceAllowedCalls: false,
+                    allowedCalls: vec![],
+                },
             };
             keychain.authorize_key(eoa, auth_call)?;
 
@@ -3050,15 +3086,17 @@ mod tests {
             let auth_call = authorizeKeyCall {
                 keyId: access_key,
                 signatureType: SignatureType::Secp256k1,
-                expiry: u64::MAX,
-                enforceLimits: true,
-                limits: vec![TokenLimit {
-                    token,
-                    amount: original_limit,
-                    period: 0,
-                }],
-                enforceAllowedCalls: false,
-                allowedCalls: vec![],
+                config: KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![TokenLimit {
+                        token,
+                        amount: original_limit,
+                        period: 0,
+                    }],
+                    enforceAllowedCalls: false,
+                    allowedCalls: vec![],
+                },
             };
             keychain.authorize_key(eoa, auth_call)?;
 
@@ -3103,22 +3141,23 @@ mod tests {
             keychain.initialize()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
-            TIP20Setup::path_usd(account).apply()?;
 
             keychain.authorize_key(
                 account,
                 authorizeKeyCall {
                     keyId: key_id,
                     signatureType: SignatureType::Secp256k1,
-                    expiry: u64::MAX,
-                    enforceLimits: false,
-                    limits: vec![TokenLimit {
-                        token,
-                        amount: U256::from(100),
-                        period: 60,
-                    }],
-                    enforceAllowedCalls: false,
-                    allowedCalls: vec![],
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: false,
+                        limits: vec![TokenLimit {
+                            token,
+                            amount: U256::from(100),
+                            period: 60,
+                        }],
+                        enforceAllowedCalls: false,
+                        allowedCalls: vec![],
+                    },
                 },
             )?;
 
@@ -3168,11 +3207,13 @@ mod tests {
                 authorizeKeyCall {
                     keyId: key_id,
                     signatureType: SignatureType::Secp256k1,
-                    expiry: u64::MAX,
-                    enforceLimits: false,
-                    limits: vec![],
-                    enforceAllowedCalls: false,
-                    allowedCalls: vec![],
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: false,
+                        limits: vec![],
+                        enforceAllowedCalls: false,
+                        allowedCalls: vec![],
+                    },
                 },
             )?;
 
@@ -3216,21 +3257,24 @@ mod tests {
             keychain.initialize()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
+            TIP20Setup::path_usd(account).apply()?;
 
             keychain.authorize_key(
                 account,
                 authorizeKeyCall {
                     keyId: key_id,
                     signatureType: SignatureType::Secp256k1,
-                    expiry: u64::MAX,
-                    enforceLimits: true,
-                    limits: vec![TokenLimit {
-                        token,
-                        amount: U256::from(100),
-                        period: 0,
-                    }],
-                    enforceAllowedCalls: false,
-                    allowedCalls: vec![],
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: true,
+                        limits: vec![TokenLimit {
+                            token,
+                            amount: U256::from(100),
+                            period: 0,
+                        }],
+                        enforceAllowedCalls: false,
+                        allowedCalls: vec![],
+                    },
                 },
             )?;
 
@@ -3293,11 +3337,13 @@ mod tests {
                 authorizeKeyCall {
                     keyId: key_id,
                     signatureType: SignatureType::Secp256k1,
-                    expiry: u64::MAX,
-                    enforceLimits: false,
-                    limits: vec![],
-                    enforceAllowedCalls: false,
-                    allowedCalls: vec![],
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: false,
+                        limits: vec![],
+                        enforceAllowedCalls: false,
+                        allowedCalls: vec![],
+                    },
                 },
             )?;
 
@@ -3334,11 +3380,13 @@ mod tests {
                 authorizeKeyCall {
                     keyId: key_id,
                     signatureType: SignatureType::Secp256k1,
-                    expiry: u64::MAX,
-                    enforceLimits: false,
-                    limits: vec![],
-                    enforceAllowedCalls: false,
-                    allowedCalls: vec![],
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: false,
+                        limits: vec![],
+                        enforceAllowedCalls: false,
+                        allowedCalls: vec![],
+                    },
                 },
             )?;
 
@@ -3346,13 +3394,14 @@ mod tests {
                 account,
                 setAllowedCallsCall {
                     keyId: key_id,
-                    target,
-                    allowAllSelectors: false,
-                    selectorRules: vec![SelectorRule {
-                        selector: TIP20_TRANSFER_SELECTOR.into(),
-                        allowAllRecipients: true,
-                        recipients: vec![],
-                    }],
+                    scope: CallScope {
+                        target,
+                        allowAllSelectors: false,
+                        selectorRules: vec![SelectorRule {
+                            selector: TIP20_TRANSFER_SELECTOR.into(),
+                            recipients: vec![],
+                        }],
+                    },
                 },
             )?;
 
@@ -3368,16 +3417,17 @@ mod tests {
                 *scopes[0].selectorRules[0].selector,
                 TIP20_TRANSFER_SELECTOR
             );
-            assert!(scopes[0].selectorRules[0].allowAllRecipients);
             assert!(scopes[0].selectorRules[0].recipients.is_empty());
 
             keychain.set_allowed_calls(
                 account,
                 setAllowedCallsCall {
                     keyId: key_id,
-                    target,
-                    allowAllSelectors: false,
-                    selectorRules: vec![],
+                    scope: CallScope {
+                        target,
+                        allowAllSelectors: false,
+                        selectorRules: vec![],
+                    },
                 },
             )?;
 
@@ -3412,11 +3462,13 @@ mod tests {
                 authorizeKeyCall {
                     keyId: key_id,
                     signatureType: SignatureType::Secp256k1,
-                    expiry: u64::MAX,
-                    enforceLimits: false,
-                    limits: vec![],
-                    enforceAllowedCalls: false,
-                    allowedCalls: vec![],
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: false,
+                        limits: vec![],
+                        enforceAllowedCalls: false,
+                        allowedCalls: vec![],
+                    },
                 },
             )?;
 
@@ -3424,13 +3476,14 @@ mod tests {
                 account,
                 setAllowedCallsCall {
                     keyId: key_id,
-                    target,
-                    allowAllSelectors: true,
-                    selectorRules: vec![SelectorRule {
-                        selector: TIP20_TRANSFER_SELECTOR.into(),
-                        allowAllRecipients: false,
-                        recipients: vec![Address::repeat_byte(0x99)],
-                    }],
+                    scope: CallScope {
+                        target,
+                        allowAllSelectors: true,
+                        selectorRules: vec![SelectorRule {
+                            selector: TIP20_TRANSFER_SELECTOR.into(),
+                            recipients: vec![Address::repeat_byte(0x99)],
+                        }],
+                    },
                 },
             )?;
 
@@ -3461,17 +3514,20 @@ mod tests {
             keychain.initialize()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
+            TIP20Setup::path_usd(account).apply()?;
 
             keychain.authorize_key(
                 account,
                 authorizeKeyCall {
                     keyId: key_id,
                     signatureType: SignatureType::Secp256k1,
-                    expiry: u64::MAX,
-                    enforceLimits: false,
-                    limits: vec![],
-                    enforceAllowedCalls: false,
-                    allowedCalls: vec![],
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: false,
+                        limits: vec![],
+                        enforceAllowedCalls: false,
+                        allowedCalls: vec![],
+                    },
                 },
             )?;
 
@@ -3546,11 +3602,13 @@ mod tests {
                 authorizeKeyCall {
                     keyId: key_id,
                     signatureType: SignatureType::Secp256k1,
-                    expiry: u64::MAX,
-                    enforceLimits: false,
-                    limits: vec![],
-                    enforceAllowedCalls: false,
-                    allowedCalls: vec![],
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: false,
+                        limits: vec![],
+                        enforceAllowedCalls: false,
+                        allowedCalls: vec![],
+                    },
                 },
             )?;
 
