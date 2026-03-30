@@ -37,7 +37,7 @@ use tempo_contracts::precompiles::{
 };
 use tempo_precompiles::{
     ECRECOVER_GAS,
-    account_keychain::{AccountKeychain, TokenLimit, authorizeKeyCall},
+    account_keychain::{AccountKeychain, KeyRestrictions, TokenLimit, authorizeKeyCall},
     error::TempoPrecompileError,
     nonce::{EXPIRING_NONCE_MAX_EXPIRY_SECS, INonce::getNonceCall, NonceManager},
     storage::{PrecompileStorageProvider, StorageCtx, evm::EvmPrecompileStorageProvider},
@@ -163,7 +163,24 @@ fn calculate_key_authorization_gas(
         let sload_cost =
             gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
 
-        sig_gas + sload_cost + sstore_cost * (1 + num_limits) + BUFFER
+        let limit_slots = if spec.is_t3() {
+            // T3 periodic limits write 2 storage slots per token:
+            // spending_limits[token].remaining + packed {max, period, period_end}
+            num_limits.saturating_mul(2)
+        } else {
+            num_limits
+        };
+
+        let mut total = sig_gas + sload_cost + sstore_cost * (1 + limit_slots) + BUFFER;
+
+        // T3+: include scoped-call storage rows in intrinsic gas.
+        if spec.is_t3() {
+            total = total.saturating_add(
+                sstore_cost.saturating_mul(key_auth.authorization.call_scope_storage_slots()),
+            );
+        }
+
+        total
     } else {
         // Pre-T1B: Original heuristic constants
         KEY_AUTH_BASE_GAS + sig_gas + num_limits * KEY_AUTH_PER_LIMIT_GAS
@@ -927,6 +944,24 @@ where
                 .validate_chain_id(cfg.chain_id(), spec.is_t1c())
                 .map_err(TempoInvalidTransaction::from)?;
 
+            // T3 gates all TIP-1011 fields. Before activation, transaction semantics must stay
+            // unchanged, so periodic limits and call scopes are rejected.
+            if !spec.is_t3() {
+                if key_auth.has_periodic_limits() {
+                    return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                        reason: "periodic token limits are not active before T3".to_string(),
+                    }
+                    .into());
+                }
+
+                if key_auth.has_call_scopes() {
+                    return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                        reason: "call scopes are not active before T3".to_string(),
+                    }
+                    .into());
+                }
+            }
+
             let keychain_checkpoint = if spec.is_t1() {
                 Some(journal.checkpoint())
             } else {
@@ -1008,18 +1043,59 @@ where
                             .map(|limit| TokenLimit {
                                 token: limit.token,
                                 amount: limit.limit,
+                                period: limit.period,
                             })
                             .collect()
                     })
                     .unwrap_or_default();
 
+                let precompile_allowed_calls = key_auth
+                    .allowed_calls
+                    .as_ref()
+                    .map(|scopes| {
+                        scopes
+                            .iter()
+                            .filter_map(|scope| match scope.selector_rules.as_ref() {
+                                Some(rules) if rules.is_empty() => None,
+                                _ => Some(tempo_precompiles::account_keychain::CallScope {
+                                    target: scope.target,
+                                    selectorRules: scope
+                                        .selector_rules
+                                        .as_ref()
+                                        .map(|rules| {
+                                            rules
+                                                .iter()
+                                                .map(|rule| {
+                                                    tempo_precompiles::account_keychain::SelectorRule {
+                                                        selector: rule.selector.into(),
+                                                        recipients: rule
+                                                            .recipients
+                                                            .clone()
+                                                            .unwrap_or_default(),
+                                                    }
+                                                })
+                                                .collect()
+                                        })
+                                        .unwrap_or_default(),
+                                }),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                let enforce_allowed_calls = key_auth.allowed_calls.is_some();
+
                 // Create the authorize key call
                 let authorize_call = authorizeKeyCall {
                     keyId: access_key_addr,
                     signatureType: signature_type,
-                    expiry,
-                    enforceLimits: enforce_limits,
-                    limits: precompile_limits,
+                    config: KeyRestrictions {
+                        expiry,
+                        enforceLimits: enforce_limits,
+                        limits: precompile_limits,
+                        enforceAllowedCalls: enforce_allowed_calls,
+                        allowedCalls: precompile_allowed_calls,
+                    },
                 };
 
                 // Call precompile to authorize the key (same phase as nonce increment)
@@ -1084,8 +1160,9 @@ where
                     .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
             };
 
-            // Check if this transaction includes a KeyAuthorization for the same key
-            // If so, skip keychain validation here - the key was just validated and authorized
+            // Check if this transaction includes a KeyAuthorization for the same key.
+            // Same-tx auth+use still needs key-type parity checks, but we avoid a full keychain
+            // existence lookup here to preserve the pre-T1B out-of-gas behavior.
             let is_authorizing_this_key = tempo_tx_env
                 .key_authorization
                 .as_ref()
@@ -1099,8 +1176,22 @@ where
                 cfg,
                 tx,
                 |mut keychain: AccountKeychain| {
-                    // Skip keychain validation when authorizing this key in the same tx
-                    if !is_authorizing_this_key {
+                    if is_authorizing_this_key {
+                        if spec.is_t1()
+                            && tempo_tx_env
+                                .key_authorization
+                                .as_ref()
+                                .is_some_and(|key_auth| {
+                                    key_auth.key_type != keychain_sig.signature.signature_type()
+                                })
+                        {
+                            return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                                reason: "key authorization key_type does not match the keychain signature type"
+                                    .to_string(),
+                            }
+                            .into());
+                        }
+                    } else {
                         // Validate that user_address has authorized this access key in the keychain
                         let user_address = &keychain_sig.user_address;
 
@@ -1130,7 +1221,25 @@ where
                     // The TIP20 precompile will read this during execution to enforce spending limits
                     keychain
                         .set_transaction_key(access_key_addr)
-                        .map_err(|e| EVMError::Custom(e.to_string()))
+                        .map_err(|e| EVMError::Custom(e.to_string()))?;
+
+                    if spec.is_t3() {
+                        let user_address = keychain_sig.user_address;
+                        for (to, input) in tx.calls() {
+                            keychain
+                                .validate_call_scope_for_transaction(
+                                    user_address,
+                                    access_key_addr,
+                                    to,
+                                    input,
+                                )
+                                .map_err(|e| TempoInvalidTransaction::KeychainValidationFailed {
+                                    reason: format!("{e:?}"),
+                                })?;
+                        }
+                    }
+
+                    Ok::<(), EVMError<DB::Error, TempoInvalidTransaction>>(())
                 },
             )?;
         }
@@ -2303,10 +2412,12 @@ mod tests {
             TokenLimit {
                 token: Address::random(),
                 limit: U256::from(100),
+                period: 0,
             },
             TokenLimit {
                 token: Address::random(),
                 limit: U256::from(200),
+                period: 0,
             },
         ];
 
@@ -2317,6 +2428,7 @@ mod tests {
             key_id,
             expiry: Some(expiry),
             limits: Some(limits.clone()),
+            allowed_calls: None,
         }
         .signature_hash();
 
@@ -2327,6 +2439,7 @@ mod tests {
             key_id,
             expiry: Some(expiry),
             limits: Some(limits.clone()),
+            allowed_calls: None,
         }
         .signature_hash();
 
@@ -2339,6 +2452,7 @@ mod tests {
             key_id,
             expiry: Some(expiry),
             limits: Some(limits),
+            allowed_calls: None,
         }
         .signature_hash();
         assert_ne!(
@@ -2439,6 +2553,7 @@ mod tests {
                         .map(|_| TokenLimit {
                             token: Address::random(),
                             limit: U256::from(1000),
+                            period: 0,
                         })
                         .collect(),
                 )
@@ -2451,6 +2566,7 @@ mod tests {
                     key_id: Address::random(),
                     expiry: None,
                     limits,
+                    allowed_calls: None,
                 },
                 signature: PrimitiveSignature::Secp256k1(
                     alloy_primitives::Signature::test_signature(),
@@ -2523,6 +2639,41 @@ mod tests {
             let expected = ECRECOVER_GAS + sload + sstore * (1 + num_limits as u64) + BUFFER;
             assert_eq!(gas, expected, "T1B with {num_limits} limits");
         }
+
+        for num_limits in 0..=3 {
+            let gas = calculate_key_authorization_gas(
+                &create_key_auth(num_limits),
+                &t1b_gas_params,
+                TempoHardfork::T3,
+            );
+            let expected = ECRECOVER_GAS + sload + sstore * (1 + 2 * num_limits as u64) + BUFFER;
+            assert_eq!(gas, expected, "T3 with {num_limits} limits");
+        }
+
+        let scoped = SignedKeyAuthorization {
+            authorization: KeyAuthorization {
+                chain_id: 1,
+                key_type: SignatureType::Secp256k1,
+                key_id: Address::random(),
+                expiry: None,
+                limits: None,
+                allowed_calls: Some(vec![tempo_primitives::transaction::CallScope {
+                    target: Address::random(),
+                    selector_rules: Some(vec![tempo_primitives::transaction::SelectorRule {
+                        selector: [0xa9, 0x05, 0x9c, 0xbb],
+                        recipients: Some(vec![Address::random(), Address::random()]),
+                    }]),
+                }]),
+            },
+            signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+        };
+
+        let gas = calculate_key_authorization_gas(&scoped, &t1b_gas_params, TempoHardfork::T3);
+        // 1 key write + 14 scope slots:
+        // account mode(1) + target insert+mode(4) + selector insert+mode(4)
+        // + constrained selector recipient-length(1) + recipients values+positions(2*2).
+        let expected = ECRECOVER_GAS + sload + sstore * (1 + 14) + BUFFER;
+        assert_eq!(gas, expected, "T3 scope writes should be fully charged");
     }
 
     #[test]
@@ -2554,12 +2705,15 @@ mod tests {
                     TokenLimit {
                         token: Address::random(),
                         limit: U256::from(1000),
+                        period: 0,
                     },
                     TokenLimit {
                         token: Address::random(),
                         limit: U256::from(2000),
+                        period: 0,
                     },
                 ]),
+                allowed_calls: None,
             },
             signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
         };
@@ -3247,6 +3401,7 @@ mod tests {
                     Some((0..num_limits).map(|i| PrimTokenLimit {
                         token: Address::with_last_byte(i as u8),
                         limit: U256::from(1000),
+                        period: 0,
                     }).collect())
                 };
 
@@ -3257,6 +3412,7 @@ mod tests {
                         key_id: Address::ZERO,
                         expiry: None,
                         limits,
+                        allowed_calls: None,
                     },
                     signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
                 }
@@ -3315,8 +3471,10 @@ mod tests {
                         Some((0..num_limits).map(|i| PrimTokenLimit {
                             token: Address::with_last_byte(i as u8),
                             limit: U256::from(1000),
+                            period: 0,
                         }).collect())
                     },
+                    allowed_calls: None,
                 },
                 signature,
             };
