@@ -34,6 +34,7 @@ fn build_create_key_auth_tx(
         key_id: Address::random(),
         expiry: None,
         limits: None,
+        allowed_calls: None,
     };
     let sig = signer.sign_hash_sync(&key_auth.signature_hash())?;
     let signed_key_auth = key_auth.into_signed(PrimitiveSignature::Secp256k1(sig));

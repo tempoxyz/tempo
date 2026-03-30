@@ -1681,6 +1681,7 @@ async fn test_aa_keychain_spending_limit_toctou_dos() -> eyre::Result<()> {
         Some(vec![tempo_primitives::transaction::TokenLimit {
             token: DEFAULT_FEE_TOKEN,
             limit: initial_spending_limit,
+            period: 0,
         }]),
     )?;
 
