@@ -785,6 +785,53 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         assertEq(vm.getRecordedLogs().length, 0, "TEMPO-VA16: reward rejection emitted logs");
     }
 
+    function registerWithInvalidInputs(
+        uint256 callerTypeSeed,
+        bytes32 salt
+    )
+        external
+    {
+        address caller;
+        uint256 callerType = callerTypeSeed % 4;
+
+        if (callerType == 0) {
+            caller = address(0);
+        } else if (callerType == 1) {
+            caller = _selectVirtual(callerTypeSeed);
+        } else if (callerType == 2) {
+            caller = address(_selectBaseToken(callerTypeSeed));
+        } else {
+            caller = _selectActor(callerTypeSeed);
+        }
+
+        uint256 masterCountBefore = _masters.length;
+
+        vm.recordLogs();
+        vm.prank(caller);
+        try tip20Registry.registerVirtualMaster(salt) returns (bytes4) {
+            // Extremely unlikely for a random salt to pass PoW (~1 in 2^32),
+            // but if it does and the caller is valid, that's fine — not an error.
+            // For invalid callers (type 0/1/2) this should never happen.
+            assertTrue(
+                callerType == 3,
+                "TEMPO-VA1: invalid caller registration unexpectedly succeeded"
+            );
+        } catch (bytes memory reason) {
+            bytes4 selector = bytes4(reason);
+            assertTrue(
+                selector == IAddressRegistry.InvalidMasterAddress.selector
+                    || selector == IAddressRegistry.ProofOfWorkFailed.selector
+                    || selector == IAddressRegistry.MasterIdCollision.selector,
+                "TEMPO-VA1: unexpected registration error"
+            );
+        }
+
+        assertEq(_masters.length, masterCountBefore, "TEMPO-VA1: fixture array changed");
+        _assertNoRelevantTokenLogs(
+            _selectBaseToken(0), "TEMPO-VA1: registration failure emitted token logs"
+        );
+    }
+
     /*//////////////////////////////////////////////////////////////
                            GLOBAL INVARIANTS
     //////////////////////////////////////////////////////////////*/
