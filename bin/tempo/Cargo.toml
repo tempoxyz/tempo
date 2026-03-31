@@ -28,7 +28,6 @@ tempo-evm.workspace = true
 tempo-faucet.workspace = true
 
 alloy-consensus.workspace = true
-alloy-network.workspace = true
 alloy-primitives.workspace = true
 alloy-provider = { workspace = true, features = [
 	"reqwest",
@@ -57,13 +56,18 @@ reth-cli-runner.workspace = true
 reth-cli-util.workspace = true
 rustls.workspace = true
 reth-db-api.workspace = true
+reth-etl.workspace = true
 reth-ethereum = { workspace = true, features = ["full", "cli"] }
 reth-ethereum-cli.workspace = true
+reth-network-peers.workspace = true
 reth-node-builder.workspace = true
 reth-primitives-traits.workspace = true
 reth-provider.workspace = true
 reth-rpc-server-types.workspace = true
+secp256k1.workspace = true
 reth-storage-api.workspace = true
+reth-trie.workspace = true
+reth-trie-db.workspace = true
 clap.workspace = true
 eyre.workspace = true
 jiff.workspace = true

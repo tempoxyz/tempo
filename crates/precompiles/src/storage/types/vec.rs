@@ -45,8 +45,7 @@ where
         debug_assert_eq!(ctx, LayoutCtx::FULL, "Dynamic arrays cannot be packed");
 
         // Read length from base slot
-        let length_value = storage.load(len_slot)?;
-        let length = length_value.to::<usize>();
+        let length = load_checked_len(storage, len_slot)?;
 
         if length == 0 {
             return Ok(Self::new());
@@ -85,8 +84,7 @@ where
         debug_assert_eq!(ctx, LayoutCtx::FULL, "Dynamic arrays cannot be packed");
 
         // Read length from base slot to determine how many slots to clear
-        let length_value = storage.load(len_slot)?;
-        let length = length_value.to::<usize>();
+        let length = load_checked_len(storage, len_slot)?;
 
         // Clear base slot (length)
         storage.store(len_slot, U256::ZERO)?;
@@ -134,10 +132,10 @@ where
 ///
 /// // Full vector operations
 /// let vec = handler.read()?;
-/// handler.write(&mut storage, vec![1, 2, 3])?;
+/// handler.write(vec![1, 2, 3])?;
 ///
-/// // Individual element operations
-/// if let Some(slot) = handler[0]? {
+/// // Individual element operations (at() returns Option, [] panics on OOB)
+/// if let Some(slot) = handler.at(0) {
 ///     let elem = slot.read()?;
 ///     slot.write(42)?;
 /// }
@@ -209,7 +207,8 @@ where
         }
     }
 
-    /// Max valid index to prevent arithmetic overflow in slot calculations.
+    /// Maximum valid index for this element type, preventing arithmetic overflow
+    /// in slot address computation (`index * T::SLOTS` or `index * T::BYTES`).
     const fn max_index() -> usize {
         if T::BYTES <= 16 {
             u32::MAX as usize / T::BYTES
@@ -243,7 +242,7 @@ where
     #[inline]
     pub fn len(&self) -> Result<usize> {
         let slot = Slot::<U256>::new(self.len_slot, self.address);
-        Ok(slot.read()?.to::<usize>())
+        load_checked_len(&slot, self.len_slot)
     }
 
     /// Returns whether the vector is empty.
@@ -377,6 +376,16 @@ where
     }
 }
 
+/// Loads a raw U256 from storage and interprets it as a length.
+#[inline]
+fn load_checked_len<S: StorageOps>(storage: &S, slot: U256) -> Result<usize> {
+    let raw = storage.load(slot)?;
+    if raw > U256::from(u32::MAX) {
+        return Err(TempoPrecompileError::under_overflow());
+    }
+    Ok(raw.to::<usize>())
+}
+
 /// Calculate the starting slot for dynamic array data.
 ///
 /// For Solidity compatibility, dynamic array data is stored at `keccak256(len_slot)`.
@@ -405,7 +414,7 @@ where
     let elements_per_slot = 32 / byte_count;
     let slot_count = calc_packed_slot_count(length, byte_count);
 
-    let mut result = Vec::with_capacity(length);
+    let mut result = Vec::new();
     let mut current_offset = 0;
 
     for slot_idx in 0..slot_count {
@@ -504,7 +513,7 @@ where
     T: Storable,
     S: StorageOps,
 {
-    let mut result = Vec::with_capacity(length);
+    let mut result = Vec::new();
     for index in 0..length {
         // Use T::SLOTS for proper multi-slot element addressing
         let elem_slot = data_start + U256::from(index * T::SLOTS);
@@ -1615,52 +1624,68 @@ mod tests {
         })
     }
 
+    // -- LENGTH OVERFLOW TESTS -------------------------------------------------
+
     #[test]
-    fn test_vec_push_at_max_capacity() -> eyre::Result<()> {
+    fn test_vec_length_overflow() -> eyre::Result<()> {
+        let (mut storage, address) = setup_storage();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut len_slot = Slot::<U256>::new(U256::ZERO, address);
+            let handler = VecHandler::<u32>::new(U256::ZERO, address);
+
+            // PoC value from audit: must be rejected with under_overflow
+            len_slot.write(U256::from(0x0004000000000000u64))?;
+            assert_eq!(handler.len(), Err(TempoPrecompileError::under_overflow()));
+
+            // Boundary: u32::MAX is accepted
+            len_slot.write(U256::from(u32::MAX))?;
+            assert_eq!(handler.len()?, u32::MAX as usize);
+
+            // Boundary: u32::MAX + 1 is rejected with under_overflow
+            len_slot.write(U256::from(u32::MAX as u64 + 1))?;
+            assert_eq!(handler.len(), Err(TempoPrecompileError::under_overflow()));
+
+            // Large but valid values below u32::MAX are accepted (no arbitrary cap)
+            len_slot.write(U256::from(100_000u64))?;
+            assert_eq!(handler.len()?, 100_000);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_vec_push_at_max_index() -> eyre::Result<()> {
         let (mut storage, address) = setup_storage();
 
         StorageCtx::enter(&mut storage, || {
             let mut len_slot = Slot::<U256>::new(U256::ZERO, address);
 
-            // Test packed type
+            // -- packed type (u32: 4 bytes) --
             let handler = VecHandler::<u32>::new(U256::ZERO, address);
             let max_index = u32::MAX as usize / u32::BYTES;
 
-            // Manually write max_index - 1 to length slot
             len_slot.write(U256::from(max_index - 1))?;
-
-            // Push should succeed once (length becomes max_index)
             handler.push(1)?;
             assert_eq!(handler.len()?, max_index);
 
-            // Can read element at len - 1
             let elem = handler.at(max_index - 1)?;
-            assert_eq!(elem.unwrap().read()?, 1);
+            assert_eq!(elem.map(|e| e.read()).transpose()?, Some(1));
 
-            // Next push should fail
-            let result = handler.push(1);
-            assert!(result.is_err());
+            assert!(handler.push(1).is_err());
 
-            // Test unpacked type (U256: 32 bytes, max_index = u32::MAX / 1)
+            // -- unpacked type (U256: 32 bytes) --
             let handler = VecHandler::<U256>::new(U256::ZERO, address);
             let max_index = u32::MAX as usize;
             let value = U256::random();
 
-            // Manually write max_index - 1 to length slot
             len_slot.write(U256::from(max_index - 1))?;
-
-            // Push should succeed once (length becomes max_index)
             handler.push(value)?;
             assert_eq!(handler.len()?, max_index);
 
-            // Can read element at len - 1
             let elem = handler.at(max_index - 1)?;
-            assert!(elem.is_some());
-            assert_eq!(elem.unwrap().read()?, value);
-
-            // Next push should fail
-            let result = handler.push(value);
-            assert!(result.is_err());
+            assert_eq!(elem.map(|e| e.read()).transpose()?, Some(value));
+            assert!(handler.push(value).is_err());
 
             Ok(())
         })

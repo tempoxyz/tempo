@@ -138,7 +138,7 @@ impl NonceManager {
     ) -> Result<()> {
         let now: u64 = self.storage.timestamp().saturating_to();
 
-        // 1. Validate expiry window: must be in (now, now + max_skew]
+        // 1. Validate expiry window: must be in (now, now + EXPIRING_NONCE_MAX_EXPIRY_SECS]
         if valid_before <= now || valid_before > now.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS)
         {
             return Err(NonceError::invalid_expiring_nonce_expiry().into());
@@ -353,7 +353,7 @@ mod tests {
                 TempoPrecompileError::NonceError(NonceError::invalid_expiring_nonce_expiry())
             );
 
-            // valid_before at exactly max_skew should succeed
+            // valid_before at exactly EXPIRING_NONCE_MAX_EXPIRY_SECS should succeed
             mgr.check_and_mark_expiring_nonce(tx_hash, now + 30)?;
 
             Ok(())
