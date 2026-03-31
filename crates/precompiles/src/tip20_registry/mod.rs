@@ -38,11 +38,6 @@ pub fn is_virtual_address(addr: Address) -> bool {
 }
 
 /// Returns `true` if `addr` is eligible to be a virtual-address master per TIP-1022.
-///
-/// A valid master address:
-/// - MUST NOT be `address(0)`
-/// - MUST NOT itself match the virtual-address format
-/// - MUST NOT be a TIP-20 token address
 pub fn is_valid_master_address(addr: Address) -> bool {
     !addr.is_zero() && !is_virtual_address(addr) && !is_tip20_prefix(addr)
 }

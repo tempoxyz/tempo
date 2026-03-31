@@ -121,7 +121,7 @@ impl Recipient {
     ///
     /// For virtual recipients `to` is the virtual address (first hop); for regular
     /// recipients this is the only `Transfer` event needed.
-    pub fn transfer(&self, from: Address, amount: U256) -> TIP20Event {
+    pub fn build_transfer_event(&self, from: Address, amount: U256) -> TIP20Event {
         TIP20Event::Transfer(ITIP20::Transfer {
             from,
             to: self.virtual_addr.unwrap_or(self.target),
@@ -131,7 +131,7 @@ impl Recipient {
 
     /// Builds the forwarding `Transfer(virtual, master, amount)` event for virtual recipients.
     /// Returns `None` for non-virtual recipients.
-    pub fn virtual_transfer(&self, amount: U256) -> Option<TIP20Event> {
+    pub fn build_virtual_transfer_event(&self, amount: U256) -> Option<TIP20Event> {
         self.virtual_addr.map(|virtual_addr| {
             TIP20Event::Transfer(ITIP20::Transfer {
                 from: virtual_addr,
@@ -483,7 +483,7 @@ impl TIP20Token {
             to: call.to,
             amount: call.amount,
         }))?;
-        if let Some(hop) = to.virtual_transfer(call.amount) {
+        if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
             self.emit_event(hop)?;
         }
 
@@ -509,7 +509,7 @@ impl TIP20Token {
             to: call.to,
             amount: call.amount,
         }))?;
-        if let Some(hop) = to.virtual_transfer(call.amount) {
+        if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
             self.emit_event(hop)?;
         }
         Ok(())
@@ -547,7 +547,7 @@ impl TIP20Token {
             .ok_or(TempoPrecompileError::under_overflow())?;
         self.set_balance(to.target, new_to_balance)?;
 
-        self.emit_event(to.transfer(Address::ZERO, amount))
+        self.emit_event(to.build_transfer_event(Address::ZERO, amount))
     }
 
     /// Burns `amount` from the caller's balance and reduces total supply.
@@ -779,7 +779,7 @@ impl TIP20Token {
         self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
         self._transfer(msg_sender, &to, call.amount)?;
-        if let Some(hop) = to.virtual_transfer(call.amount) {
+        if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
             self.emit_event(hop)?;
         }
         Ok(true)
@@ -801,7 +801,7 @@ impl TIP20Token {
     ) -> Result<bool> {
         let to = Recipient::resolve(call.to)?;
         self._transfer_from(msg_sender, call.from, &to, call.amount)?;
-        if let Some(hop) = to.virtual_transfer(call.amount) {
+        if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
             self.emit_event(hop)?;
         }
         Ok(true)
@@ -822,7 +822,7 @@ impl TIP20Token {
             amount: call.amount,
             memo: call.memo,
         }))?;
-        if let Some(hop) = to.virtual_transfer(call.amount) {
+        if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
             self.emit_event(hop)?;
         }
         Ok(true)
@@ -849,7 +849,7 @@ impl TIP20Token {
         self.check_and_update_spending_limit(from, amount)?;
 
         self._transfer(from, &to, amount)?;
-        if let Some(hop) = to.virtual_transfer(amount) {
+        if let Some(hop) = to.build_virtual_transfer_event(amount) {
             self.emit_event(hop)?;
         }
 
@@ -900,7 +900,7 @@ impl TIP20Token {
             amount: call.amount,
             memo: call.memo,
         }))?;
-        if let Some(hop) = to.virtual_transfer(call.amount) {
+        if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
             self.emit_event(hop)?;
         }
         Ok(())
@@ -1065,7 +1065,7 @@ impl TIP20Token {
             self.set_balance(to.target, new_to_balance)?;
         }
 
-        self.emit_event(to.transfer(from, amount))
+        self.emit_event(to.build_transfer_event(from, amount))
     }
 
     /// Transfers fee tokens from `from` to the fee manager before transaction execution.
