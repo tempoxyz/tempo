@@ -1141,13 +1141,19 @@ async fn test_tip20_virtual_transfer_from() -> eyre::Result<()> {
 async fn test_tip20_registry_deployed_at_t3_activation() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // Set t3Time into the future so genesis (timestamp 0) is pre-T3.
+    // Set t3Time into the future and remove the registry from genesis alloc
+    // so the 0xEF marker is only deployed by the block executor at T3.
     let genesis_str = include_str!("../assets/test-genesis.json");
     let mut genesis: serde_json::Value = serde_json::from_str(genesis_str)?;
     genesis["config"].as_object_mut().unwrap().insert(
         "t3Time".to_string(),
         serde_json::Value::Number(serde_json::Number::from(2u64)),
     );
+    let registry_key = format!("{TIP20_REGISTRY_ADDRESS:#x}");
+    genesis["alloc"]
+        .as_object_mut()
+        .unwrap()
+        .remove(&registry_key);
 
     let mut setup = TestNodeBuilder::new()
         .with_genesis(serde_json::to_string(&genesis)?)
