@@ -1049,6 +1049,21 @@ where
                     })
                     .unwrap_or_default();
 
+                if let Some(scopes) = key_auth.allowed_calls.as_ref() {
+                    for scope in scopes {
+                        if let Some(rules) = scope.selector_rules.as_ref() {
+                            for rule in rules {
+                                if matches!(rule.recipients.as_deref(), Some([])) {
+                                    return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                                        reason: "recipient-constrained selector rule requires non-empty recipients".to_string(),
+                                    }
+                                    .into());
+                                }
+                            }
+                        }
+                    }
+                }
+
                 let precompile_allowed_calls = key_auth
                     .allowed_calls
                     .as_ref()
