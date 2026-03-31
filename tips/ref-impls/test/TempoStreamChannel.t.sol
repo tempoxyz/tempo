@@ -3,7 +3,9 @@ pragma solidity ^0.8.20;
 
 import { TIP20 } from "../src/TIP20.sol";
 import { TempoStreamChannel } from "../src/TempoStreamChannel.sol";
+import { ITempoStreamChannel } from "../src/interfaces/ITempoStreamChannel.sol";
 import { BaseTest } from "./BaseTest.t.sol";
+import { MockTIP20 } from "./mocks/MockTIP20.sol";
 
 contract TempoStreamChannelTest is BaseTest {
 
@@ -69,7 +71,7 @@ contract TempoStreamChannelTest is BaseTest {
         _openChannel();
 
         vm.prank(payer);
-        vm.expectRevert(TempoStreamChannel.ChannelAlreadyExists.selector);
+        vm.expectRevert(ITempoStreamChannel.ChannelAlreadyExists.selector);
         channel.open(payee, address(token), DEPOSIT, SALT, address(0));
     }
 
@@ -113,7 +115,7 @@ contract TempoStreamChannelTest is BaseTest {
 
         bytes memory sig2 = _signVoucher(channelId, 400_000);
         vm.prank(payee);
-        vm.expectRevert(TempoStreamChannel.AmountNotIncreasing.selector);
+        vm.expectRevert(ITempoStreamChannel.AmountNotIncreasing.selector);
         channel.settle(channelId, 400_000, sig2);
     }
 
@@ -122,7 +124,7 @@ contract TempoStreamChannelTest is BaseTest {
 
         bytes memory sig = _signVoucher(channelId, DEPOSIT + 1);
         vm.prank(payee);
-        vm.expectRevert(TempoStreamChannel.AmountExceedsDeposit.selector);
+        vm.expectRevert(ITempoStreamChannel.AmountExceedsDeposit.selector);
         channel.settle(channelId, DEPOSIT + 1, sig);
     }
 
@@ -135,7 +137,7 @@ contract TempoStreamChannelTest is BaseTest {
         bytes memory sig = abi.encodePacked(r, s, v);
 
         vm.prank(payee);
-        vm.expectRevert(TempoStreamChannel.InvalidSignature.selector);
+        vm.expectRevert(ITempoStreamChannel.InvalidSignature.selector);
         channel.settle(channelId, 500_000, sig);
     }
 
@@ -155,7 +157,7 @@ contract TempoStreamChannelTest is BaseTest {
         bytes32 channelId = _openChannel();
 
         vm.prank(payee);
-        vm.expectRevert(TempoStreamChannel.NotPayer.selector);
+        vm.expectRevert(ITempoStreamChannel.NotPayer.selector);
         channel.topUp(channelId, 500_000);
     }
 
@@ -174,7 +176,7 @@ contract TempoStreamChannelTest is BaseTest {
         bytes32 channelId = _openChannel();
 
         vm.prank(payee);
-        vm.expectRevert(TempoStreamChannel.NotPayer.selector);
+        vm.expectRevert(ITempoStreamChannel.NotPayer.selector);
         channel.requestClose(channelId);
     }
 
@@ -214,7 +216,7 @@ contract TempoStreamChannelTest is BaseTest {
         bytes32 channelId = _openChannel();
 
         vm.prank(payer);
-        vm.expectRevert(TempoStreamChannel.NotPayee.selector);
+        vm.expectRevert(ITempoStreamChannel.NotPayee.selector);
         channel.close(channelId, 0, "");
     }
 
@@ -243,7 +245,7 @@ contract TempoStreamChannelTest is BaseTest {
         channel.requestClose(channelId);
 
         vm.prank(payer);
-        vm.expectRevert(TempoStreamChannel.CloseNotReady.selector);
+        vm.expectRevert(ITempoStreamChannel.CloseNotReady.selector);
         channel.withdraw(channelId);
     }
 
@@ -251,7 +253,7 @@ contract TempoStreamChannelTest is BaseTest {
         bytes32 channelId = _openChannel();
 
         vm.prank(payer);
-        vm.expectRevert(TempoStreamChannel.CloseNotReady.selector);
+        vm.expectRevert(ITempoStreamChannel.CloseNotReady.selector);
         channel.withdraw(channelId);
     }
 
@@ -266,7 +268,7 @@ contract TempoStreamChannelTest is BaseTest {
         channel.withdraw(channelId);
 
         vm.prank(payer);
-        vm.expectRevert(TempoStreamChannel.ChannelFinalized.selector);
+        vm.expectRevert(ITempoStreamChannel.ChannelFinalized.selector);
         channel.withdraw(channelId);
     }
 
@@ -324,7 +326,7 @@ contract TempoStreamChannelTest is BaseTest {
         bytes memory sig = abi.encodePacked(r, s, v);
 
         vm.prank(payee);
-        vm.expectRevert(TempoStreamChannel.InvalidSignature.selector);
+        vm.expectRevert(ITempoStreamChannel.InvalidSignature.selector);
         channel.settle(channelId, 500_000, sig);
     }
 
@@ -384,12 +386,22 @@ contract TempoStreamChannelTest is BaseTest {
     function test_topUp_zeroAmount() public {
         bytes32 channelId = _openChannel();
 
-        uint256 balanceBefore = token.balanceOf(address(channel));
         vm.prank(payer);
+        vm.expectRevert(ITempoStreamChannel.ZeroDeposit.selector);
+        channel.topUp(channelId, 0);
+    }
+
+    function test_topUp_zeroAmount_doesNotCancelCloseRequest() public {
+        bytes32 channelId = _openChannel();
+
+        vm.prank(payer);
+        channel.requestClose(channelId);
+
+        vm.prank(payer);
+        vm.expectRevert(ITempoStreamChannel.ZeroDeposit.selector);
         channel.topUp(channelId, 0);
 
-        assertEq(channel.getChannel(channelId).deposit, DEPOSIT);
-        assertEq(token.balanceOf(address(channel)), balanceBefore);
+        assertEq(channel.getChannel(channelId).closeRequestedAt, block.timestamp);
     }
 
     function test_topUp_cancelsCloseRequest() public {
@@ -412,7 +424,7 @@ contract TempoStreamChannelTest is BaseTest {
         channel.close(channelId, 0, "");
 
         vm.prank(payer);
-        vm.expectRevert(TempoStreamChannel.ChannelFinalized.selector);
+        vm.expectRevert(ITempoStreamChannel.ChannelFinalized.selector);
         channel.topUp(channelId, 100_000);
     }
 
@@ -576,7 +588,7 @@ contract TempoStreamChannelTest is BaseTest {
         channel.close(channelId, 0, "");
 
         vm.prank(payer);
-        vm.expectRevert(TempoStreamChannel.ChannelFinalized.selector);
+        vm.expectRevert(ITempoStreamChannel.ChannelFinalized.selector);
         channel.requestClose(channelId);
     }
 
@@ -590,7 +602,7 @@ contract TempoStreamChannelTest is BaseTest {
 
         bytes memory sig = _signVoucher(channelId, 100_000);
         vm.prank(payee);
-        vm.expectRevert(TempoStreamChannel.ChannelFinalized.selector);
+        vm.expectRevert(ITempoStreamChannel.ChannelFinalized.selector);
         channel.settle(channelId, 100_000, sig);
     }
 
@@ -599,7 +611,7 @@ contract TempoStreamChannelTest is BaseTest {
         bytes memory sig = _signVoucher(fakeId, 100_000);
 
         vm.prank(payee);
-        vm.expectRevert(TempoStreamChannel.ChannelNotFound.selector);
+        vm.expectRevert(ITempoStreamChannel.ChannelNotFound.selector);
         channel.settle(fakeId, 100_000, sig);
     }
 
@@ -612,7 +624,7 @@ contract TempoStreamChannelTest is BaseTest {
 
         bytes memory sig2 = _signVoucher(channelId, 500_000);
         vm.prank(payee);
-        vm.expectRevert(TempoStreamChannel.AmountNotIncreasing.selector);
+        vm.expectRevert(ITempoStreamChannel.AmountNotIncreasing.selector);
         channel.settle(channelId, 500_000, sig2);
     }
 
@@ -623,7 +635,7 @@ contract TempoStreamChannelTest is BaseTest {
         bytes memory sig = _signVoucher(channelId, 500_000);
 
         vm.prank(randomCaller);
-        vm.expectRevert(TempoStreamChannel.NotPayee.selector);
+        vm.expectRevert(ITempoStreamChannel.NotPayee.selector);
         channel.settle(channelId, 500_000, sig);
     }
 
@@ -653,7 +665,7 @@ contract TempoStreamChannelTest is BaseTest {
         bytes memory sig = _signVoucher(channelId, 500_000);
 
         vm.prank(payer);
-        vm.expectRevert(TempoStreamChannel.NotPayee.selector);
+        vm.expectRevert(ITempoStreamChannel.NotPayee.selector);
         channel.settle(channelId, 500_000, sig);
     }
 
@@ -663,7 +675,7 @@ contract TempoStreamChannelTest is BaseTest {
 
         address stranger = makeAddr("stranger");
         vm.prank(stranger);
-        vm.expectRevert(TempoStreamChannel.NotPayee.selector);
+        vm.expectRevert(ITempoStreamChannel.NotPayee.selector);
         channel.settle(channelId, 500_000, sig);
     }
 
@@ -690,7 +702,7 @@ contract TempoStreamChannelTest is BaseTest {
         bytes32 channelId2 = channel2.open(payee, address(token2), DEPOSIT, SALT, address(0));
 
         vm.prank(payee);
-        vm.expectRevert(TempoStreamChannel.InvalidSignature.selector);
+        vm.expectRevert(ITempoStreamChannel.InvalidSignature.selector);
         channel2.settle(channelId2, 500_000, sig);
     }
 
@@ -718,7 +730,7 @@ contract TempoStreamChannelTest is BaseTest {
         bytes32 channelId2 = channel2.open(payee, address(token2), DEPOSIT, SALT, address(0));
 
         vm.prank(payee);
-        vm.expectRevert(TempoStreamChannel.InvalidSignature.selector);
+        vm.expectRevert(ITempoStreamChannel.InvalidSignature.selector);
         channel2.settle(channelId2, 500_000, sig);
 
         vm.chainId(originalChainId);
@@ -728,22 +740,8 @@ contract TempoStreamChannelTest is BaseTest {
 
     function test_open_zeroDeposit() public {
         vm.prank(payer);
-        bytes32 channelId = channel.open(payee, address(token), 0, bytes32(uint256(99)), address(0));
-
-        TempoStreamChannel.Channel memory ch = channel.getChannel(channelId);
-        assertEq(ch.deposit, 0);
-        assertEq(ch.settled, 0);
-        assertFalse(ch.finalized);
-
-        bytes memory sig = _signVoucher(channelId, 1);
-        vm.prank(payee);
-        vm.expectRevert(TempoStreamChannel.AmountExceedsDeposit.selector);
-        channel.settle(channelId, 1, sig);
-
-        vm.prank(payee);
-        channel.close(channelId, 0, "");
-        assertTrue(channel.getChannel(channelId).finalized);
-        assertEq(token.balanceOf(payer), 10_000_000);
+        vm.expectRevert(ITempoStreamChannel.ZeroDeposit.selector);
+        channel.open(payee, address(token), 0, bytes32(uint256(99)), address(0));
     }
 
     // --- Close No-Op Settlement Path ---
@@ -831,7 +829,7 @@ contract TempoStreamChannelTest is BaseTest {
 
         uint256 tooLarge = uint256(type(uint128).max);
         vm.prank(payer);
-        vm.expectRevert(TempoStreamChannel.DepositOverflow.selector);
+        vm.expectRevert(ITempoStreamChannel.DepositOverflow.selector);
         channel.topUp(channelId, tooLarge);
     }
 
@@ -840,7 +838,7 @@ contract TempoStreamChannelTest is BaseTest {
 
         uint256 maxAdditional = uint256(type(uint128).max) - DEPOSIT;
         vm.prank(payer);
-        vm.expectRevert(TempoStreamChannel.DepositOverflow.selector);
+        vm.expectRevert(ITempoStreamChannel.DepositOverflow.selector);
         channel.topUp(channelId, maxAdditional + 1);
     }
 
@@ -858,11 +856,127 @@ contract TempoStreamChannelTest is BaseTest {
         assertEq(token.balanceOf(address(channel)), 0);
     }
 
+    // --- Token Validation ---
+
+    function test_open_revert_invalidToken_nonTIP20() public {
+        MockTIP20 mockToken = new MockTIP20("Mock Token", "MOCK", 10_000_000);
+
+        mockToken.transfer(payer, DEPOSIT);
+        vm.prank(payer);
+        mockToken.approve(address(channel), type(uint256).max);
+
+        vm.prank(payer);
+        vm.expectRevert(ITempoStreamChannel.InvalidToken.selector);
+        channel.open(payee, address(mockToken), DEPOSIT, SALT, address(0));
+    }
+
+    // --- Channel Finalization and Cleanup ---
+
+    function test_close_marksFinalized_andClearsChannelFields() public {
+        bytes32 channelId = _openChannel();
+
+        vm.prank(payee);
+        channel.close(channelId, 0, "");
+
+        (
+            bool rawFinalized,
+            uint64 rawCloseRequestedAt,
+            address rawPayer,
+            address rawPayee,
+            address rawToken,
+            address rawSigner,
+            uint128 rawDeposit,
+            uint128 rawSettled
+        ) = channel.channels(channelId);
+
+        assertEq(rawPayer, address(0));
+        assertEq(rawPayee, address(0));
+        assertEq(rawToken, address(0));
+        assertEq(rawSigner, address(0));
+        assertEq(rawDeposit, 0);
+        assertEq(rawSettled, 0);
+        assertEq(rawCloseRequestedAt, 0);
+        assertTrue(rawFinalized);
+
+        assertTrue(channel.getChannel(channelId).finalized);
+
+        vm.prank(payer);
+        vm.expectRevert(ITempoStreamChannel.ChannelAlreadyExists.selector);
+        channel.open(payee, address(token), DEPOSIT, SALT, address(0));
+    }
+
+    function test_withdraw_marksFinalized_andClearsChannelFields() public {
+        bytes32 channelId = _openChannel();
+
+        vm.prank(payer);
+        channel.requestClose(channelId);
+        vm.warp(block.timestamp + channel.CLOSE_GRACE_PERIOD() + 1);
+
+        vm.prank(payer);
+        channel.withdraw(channelId);
+
+        assertTrue(channel.getChannel(channelId).finalized);
+
+        vm.prank(payer);
+        vm.expectRevert(ITempoStreamChannel.ChannelAlreadyExists.selector);
+        channel.open(payee, address(token), DEPOSIT, SALT, address(0));
+    }
+
+    function test_closedChannel_operationsRevertFinalized() public {
+        bytes32 channelId = _openChannel();
+
+        vm.prank(payee);
+        channel.close(channelId, 0, "");
+
+        bytes memory sig = _signVoucher(channelId, 1);
+
+        vm.prank(payee);
+        vm.expectRevert(ITempoStreamChannel.ChannelFinalized.selector);
+        channel.settle(channelId, 1, sig);
+
+        vm.prank(payer);
+        vm.expectRevert(ITempoStreamChannel.ChannelFinalized.selector);
+        channel.topUp(channelId, 1);
+
+        vm.prank(payer);
+        vm.expectRevert(ITempoStreamChannel.ChannelFinalized.selector);
+        channel.requestClose(channelId);
+
+        vm.prank(payee);
+        vm.expectRevert(ITempoStreamChannel.ChannelFinalized.selector);
+        channel.close(channelId, 0, "");
+
+        vm.prank(payer);
+        vm.expectRevert(ITempoStreamChannel.ChannelFinalized.selector);
+        channel.withdraw(channelId);
+    }
+
+    function test_getChannelsBatch_marksFinalizedForTombstonedChannel() public {
+        bytes32 channelId1 = _openChannel();
+
+        vm.prank(payer);
+        bytes32 channelId2 =
+            channel.open(payee, address(token), DEPOSIT, bytes32(uint256(2)), address(0));
+
+        vm.prank(payee);
+        channel.close(channelId1, 0, "");
+
+        bytes32[] memory ids = new bytes32[](2);
+        ids[0] = channelId1;
+        ids[1] = channelId2;
+
+        TempoStreamChannel.Channel[] memory states = channel.getChannelsBatch(ids);
+
+        assertTrue(states[0].finalized);
+        assertFalse(states[1].finalized);
+        assertEq(states[1].payer, payer);
+    }
+
     // --- InvalidPayee Tests ---
 
     function test_open_revert_zeroPayee() public {
         vm.prank(payer);
-        vm.expectRevert(TempoStreamChannel.InvalidPayee.selector);
+        vm.expectRevert(ITempoStreamChannel.InvalidPayee.selector);
         channel.open(address(0), address(token), DEPOSIT, SALT, address(0));
     }
 

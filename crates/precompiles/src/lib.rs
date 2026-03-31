@@ -11,6 +11,7 @@ pub(crate) mod ip_validation;
 
 pub mod account_keychain;
 pub mod nonce;
+pub mod signature_verifier;
 pub mod stablecoin_dex;
 pub mod tip20;
 pub mod tip20_factory;
@@ -25,6 +26,7 @@ pub mod test_util;
 use crate::{
     account_keychain::AccountKeychain,
     nonce::NonceManager,
+    signature_verifier::SignatureVerifier,
     stablecoin_dex::StablecoinDEX,
     storage::StorageCtx,
     tip_fee_manager::TipFeeManager,
@@ -53,8 +55,9 @@ use revm::{
 
 pub use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
-    STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
-    TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
+    VALIDATOR_CONFIG_V2_ADDRESS,
 };
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
@@ -65,7 +68,10 @@ pub use account_keychain::AuthorizedKey;
 /// Being careful and pricing it twice as COPY_COST to mitigate different abi decodings.
 pub const INPUT_PER_WORD_COST: u64 = 6;
 
-/// Returns the gas cost for decoding calldata of the given length.
+/// Gas cost for `ecrecover` signature verification (used by KeyAuthorization and Permit).
+pub const ECRECOVER_GAS: u64 = 3_000;
+
+/// Returns the gas cost for decoding calldata of the given length, rounded up to word boundaries.
 #[inline]
 pub fn input_cost(calldata_len: usize) -> u64 {
     calldata_len
@@ -131,6 +137,8 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
             Some(AccountKeychain::create_precompile(&cfg))
         } else if *address == VALIDATOR_CONFIG_V2_ADDRESS {
             Some(ValidatorConfigV2::create_precompile(&cfg))
+        } else if *address == SIGNATURE_VERIFIER_ADDRESS && cfg.spec.is_t3() {
+            Some(SignatureVerifier::create_precompile(&cfg))
         } else {
             None
         }
@@ -232,16 +240,28 @@ impl ValidatorConfigV2 {
     }
 }
 
+impl SignatureVerifier {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
+        tempo_precompile!("SignatureVerifier", cfg, |input| { Self::new() })
+    }
+}
+
+/// Dispatches a parameterless view call, encoding the return via `T`.
 #[inline]
 fn metadata<T: SolCall>(f: impl FnOnce() -> Result<T::Return>) -> PrecompileResult {
     f().into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
 }
 
+/// Dispatches a read-only call with decoded arguments, encoding the return via `T`.
 #[inline]
 fn view<T: SolCall>(call: T, f: impl FnOnce(T) -> Result<T::Return>) -> PrecompileResult {
     f(call).into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
 }
 
+/// Dispatches a state-mutating call that returns ABI-encoded data.
+///
+/// Rejects static calls with [`StaticCallNotAllowed`].
 #[inline]
 fn mutate<T: SolCall>(
     call: T,
@@ -257,6 +277,9 @@ fn mutate<T: SolCall>(
     f(sender, call).into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
 }
 
+/// Dispatches a state-mutating call that returns no data (e.g. `approve`, `transfer`).
+///
+/// Rejects static calls with [`StaticCallNotAllowed`].
 #[inline]
 fn mutate_void<T: SolCall>(
     call: T,
@@ -272,6 +295,7 @@ fn mutate_void<T: SolCall>(
     f(sender, call).into_precompile_result(0, |()| Bytes::new())
 }
 
+/// Fills gas accounting fields on a [`PrecompileOutput`] from the storage context.
 #[inline]
 fn fill_precompile_output(mut output: PrecompileOutput, storage: &StorageCtx) -> PrecompileOutput {
     output.gas_used = storage.gas_used();
@@ -283,14 +307,18 @@ fn fill_precompile_output(mut output: PrecompileOutput, storage: &StorageCtx) ->
     output
 }
 
-/// Helper function to return an unknown function selector error.
-/// Returns an ABI-encoded UnknownFunctionSelector error with the selector.
+/// Returns an ABI-encoded `UnknownFunctionSelector` revert for the given 4-byte selector.
 #[inline]
 pub fn unknown_selector(selector: [u8; 4], gas: u64) -> PrecompileResult {
     error::TempoPrecompileError::UnknownFunctionSelector(selector).into_precompile_result(gas)
 }
 
-/// Helper function to decode calldata and dispatch it.
+/// Decodes calldata via `decode`, then dispatches to `f`.
+///
+/// Handles missing selectors (revert on T1+, error on earlier forks), unknown selectors
+/// (ABI-encoded `UnknownFunctionSelector`), and malformed ABI data (empty revert).
+///
+/// Gas accounting is applied via [`fill_precompile_output`].
 #[inline]
 fn dispatch_call<T>(
     calldata: &[u8],
@@ -326,6 +354,7 @@ fn dispatch_call<T>(
     }
 }
 
+/// Asserts that `result` is a reverted output whose bytes decode to `expected_error`.
 #[cfg(test)]
 pub fn expect_precompile_revert<E>(result: &PrecompileResult, expected_error: E)
 where
@@ -559,7 +588,8 @@ mod tests {
 
     #[test]
     fn test_extend_tempo_precompiles_registers_precompiles() {
-        let cfg = CfgEnv::<TempoHardfork>::default();
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.set_spec(TempoHardfork::T3);
         let precompiles = tempo_precompiles(&cfg);
 
         // TIP20Factory should be registered
@@ -618,6 +648,13 @@ mod tests {
             "AccountKeychain should be registered"
         );
 
+        // SignatureVerifier should be registered at T3
+        let sig_verifier_precompile = precompiles.get(&SIGNATURE_VERIFIER_ADDRESS);
+        assert!(
+            sig_verifier_precompile.is_some(),
+            "SignatureVerifier should be registered at T3"
+        );
+
         // TIP20 tokens with prefix should be registered
         let tip20_precompile = precompiles.get(&PATH_USD_ADDRESS);
         assert!(
@@ -631,6 +668,17 @@ mod tests {
         assert!(
             random_precompile.is_none(),
             "Random address should not be a precompile"
+        );
+    }
+
+    #[test]
+    fn test_signature_verifier_not_registered_pre_t3() {
+        let cfg = CfgEnv::<TempoHardfork>::default();
+        let precompiles = tempo_precompiles(&cfg);
+
+        assert!(
+            precompiles.get(&SIGNATURE_VERIFIER_ADDRESS).is_none(),
+            "SignatureVerifier should NOT be registered before T3"
         );
     }
 

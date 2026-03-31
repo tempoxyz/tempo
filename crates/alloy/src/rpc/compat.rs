@@ -103,13 +103,13 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
         let fee_payer = if self.fee_payer_signature.is_some() {
             // Try to recover the fee payer address from the signature.
             // If recovery fails (e.g. dummy signature during gas estimation / fill),
-            // fall back to the caller address so gas estimation still works.
+            // keep it unresolved so estimation/fill can continue with sender-paid semantics.
             let recovered = self
                 .clone()
                 .build_aa()
                 .ok()
                 .and_then(|tx| tx.recover_fee_payer(caller_addr).ok());
-            Some(Some(recovered.unwrap_or(caller_addr)))
+            Some(recovered)
         } else {
             None
         };
@@ -151,7 +151,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
                     key_data.as_ref(),
                     key_id,
                     caller_addr,
-                    is_t1c_active(evm_env.spec_id()),
+                    evm_env.spec_id().is_t1c(),
                 );
 
                 let mut calls = calls;
@@ -195,23 +195,6 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
             inner: inner.try_into_tx_env(evm_env)?,
         })
     }
-}
-
-/// Returns `true` if the generic `Spec` represents T1C or later.
-///
-/// The [`TryIntoTxEnv`] trait has an unconstrained `Spec` generic that prevents adding
-/// a `'static` bound needed for `Any` downcast. At runtime `Spec` is always [`TempoHardfork`].
-/// We read a single `u8` discriminant and compare it to avoid ever creating an invalid enum value.
-/// Defaults to `true` (latest behavior) if the type doesn't match.
-///
-/// NOTE: the `unsafe` block will be removed with the reth release of: <https://github.com/alloy-rs/evm/pull/306>
-fn is_t1c_active<Spec>(spec: &Spec) -> bool {
-    if std::mem::size_of::<Spec>() != std::mem::size_of::<TempoHardfork>() {
-        return true;
-    }
-    // SAFETY: reading a single u8 is always valid for any type with size >= 1.
-    let discriminant = unsafe { std::ptr::read(spec as *const Spec as *const u8) };
-    discriminant >= TempoHardfork::T1C as u8
 }
 
 /// Creates a mock AA signature for gas estimation based on key type hints
@@ -360,7 +343,7 @@ impl FromConsensusHeader<TempoHeader> for TempoHeaderResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{TxKind, address};
+    use alloy_primitives::{TxKind, U256, address};
     use alloy_rpc_types_eth::TransactionRequest;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
@@ -403,20 +386,6 @@ mod tests {
         let estimated_calls = tx_env.tempo_tx_env.expect("tempo_tx_env").aa_calls;
 
         assert_eq!(estimated_calls, built_calls);
-    }
-
-    #[test]
-    fn test_is_t1c_active() {
-        // pre-T1C (false)
-        assert!(!is_t1c_active(&TempoHardfork::Genesis));
-        assert!(!is_t1c_active(&TempoHardfork::T0));
-        assert!(!is_t1c_active(&TempoHardfork::T1));
-        assert!(!is_t1c_active(&TempoHardfork::T1A));
-        assert!(!is_t1c_active(&TempoHardfork::T1B));
-
-        // T1C and later (true)
-        assert!(is_t1c_active(&TempoHardfork::T1C));
-        assert!(is_t1c_active(&TempoHardfork::T2));
     }
 
     #[test]
@@ -527,6 +496,79 @@ mod tests {
             tx_env.fee_payer,
             Some(Some(sponsor.address())),
             "fee_payer should recover sponsor address"
+        );
+    }
+
+    #[test]
+    fn test_aa_roundtrip_via_tx_env() {
+        use alloy_primitives::U256;
+
+        let calls = vec![
+            Call {
+                to: address!("0x1111111111111111111111111111111111111111").into(),
+                value: U256::ZERO,
+                input: Bytes::from(vec![0xaa]),
+            },
+            Call {
+                to: address!("0x2222222222222222222222222222222222222222").into(),
+                value: U256::ZERO,
+                input: Bytes::from(vec![0xbb]),
+            },
+        ];
+
+        let tx = TempoTransaction {
+            chain_id: 4217,
+            nonce: 1,
+            gas_limit: 100_000,
+            max_fee_per_gas: 1_000_000_000,
+            max_priority_fee_per_gas: 1_000_000,
+            calls: calls.clone(),
+            ..Default::default()
+        };
+
+        let req: TempoTransactionRequest = tx.into();
+
+        let evm_env = EvmEnv::default();
+        let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
+        let aa_calls = tx_env.tempo_tx_env.expect("tempo_tx_env").aa_calls;
+
+        assert_eq!(
+            aa_calls, calls,
+            "roundtrip via try_into_tx_env must preserve exact call list"
+        );
+    }
+
+    #[test]
+    fn test_estimate_gas_invalid_fee_payer_signature_keeps_unresolved_fee_payer() {
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let target = address!("0x2222222222222222222222222222222222222222");
+
+        let req = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(sender),
+                to: Some(TxKind::Call(target)),
+                nonce: Some(0),
+                gas: Some(100_000),
+                max_fee_per_gas: Some(1_000_000_000),
+                max_priority_fee_per_gas: Some(1_000_000),
+                chain_id: Some(4217),
+                ..Default::default()
+            },
+            fee_payer_signature: Some(Signature::new(U256::ZERO, U256::ZERO, false)),
+            ..Default::default()
+        };
+
+        let evm_env = EvmEnv::default();
+        let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
+
+        assert!(
+            tx_env.tempo_tx_env.is_some(),
+            "fee_payer_signature alone must produce an AA tx env"
+        );
+        assert_eq!(
+            tx_env.fee_payer,
+            Some(None),
+            "invalid fee_payer_signature should remain unresolved"
         );
     }
 

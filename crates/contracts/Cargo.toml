@@ -1,6 +1,6 @@
 [package]
 name = "tempo-contracts"
-description = "TODO:"
+description = "Tempo blockchain contract bindings and ABI definitions"
 
 version.workspace = true
 edition.workspace = true
@@ -23,6 +23,7 @@ alloy-provider = { workspace = true, features = ["reqwest", "reqwest-rustls-tls"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [features]
-default = ["rpc"]
+default = ["std", "rpc"]
+std = ["alloy-primitives/std", "alloy-sol-types/std", "serde?/std"]
 rpc = ["dep:alloy-contract"]
 serde = ["dep:serde", "alloy-primitives/serde"]

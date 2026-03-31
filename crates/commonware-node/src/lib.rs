@@ -85,12 +85,8 @@ pub async fn run_consensus_stack(
     // through this subchannel.
     let subblocks = network.register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, message_backlog);
 
-    let fee_recipient = config
-        .fee_recipient
-        .ok_or_eyre("required option `consensus.fee-recipient` not set")?;
-
     let consensus_engine = crate::consensus::engine::Builder {
-        fee_recipient,
+        fee_recipient: config.fee_recipient,
 
         execution_node: Some(execution_node),
         blocker: oracle.clone(),

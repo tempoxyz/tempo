@@ -89,6 +89,9 @@ interface IValidatorConfigV2 {
     /// @notice Thrown when migration is not complete (not all V1 validators migrated)
     error MigrationNotComplete();
 
+    /// @notice Thrown when V1 has no validators to migrate
+    error EmptyV1ValidatorSet();
+
     /// @notice Thrown when migration index is out of order
     error InvalidMigrationIndex();
 
