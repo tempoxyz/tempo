@@ -409,9 +409,6 @@ where
         }
         if self.inner.spec.is_t3_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(SIGNATURE_VERIFIER_ADDRESS)?;
-        }
-
-        if self.inner.spec.is_t3_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(ADDRESS_REGISTRY_ADDRESS)?;
         }
 
