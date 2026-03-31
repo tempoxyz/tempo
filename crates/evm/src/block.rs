@@ -4,7 +4,7 @@ use alloy_evm::{
     Database, Evm, RecoveredTx,
     block::{
         BlockExecutionError, BlockExecutionResult, BlockExecutor, BlockValidationError,
-        ExecutableTx, OnStateHook, TxResult,
+        ExecutableTx, OnStateHook, StateChangePreBlockSource, StateChangeSource, TxResult,
     },
     eth::{
         EthBlockExecutor, EthTxResult,
@@ -22,7 +22,6 @@ use reth_evm::block::StateDB;
 use reth_revm::{
     Inspector,
     context::result::ResultAndState,
-    context_interface::JournalTr,
     state::{Account, Bytecode, EvmState},
 };
 use std::collections::{HashMap, HashSet};
@@ -153,22 +152,33 @@ where
     }
 
     /// Deploys `0xEF` marker bytecode to a precompile address if it doesn't already have code.
+    ///
+    /// This also dispatches the state change to the system caller's state hook so that the
+    /// sparse trie task is aware of the change.
     fn deploy_precompile_at_boundary(
         &mut self,
         address: Address,
     ) -> Result<(), BlockExecutionError> {
-        let db = self.evm_mut().ctx_mut().journaled_state.db_mut();
-        let mut info = db
+        let info = self
+            .inner
+            .evm
+            .db_mut()
             .basic(address)
             .map_err(BlockExecutionError::other)?
             .unwrap_or_default();
         if info.is_empty_code_hash() {
             let code = Bytecode::new_legacy([0xef].into());
-            info.code_hash = code.hash_slow();
-            info.code = Some(code);
-            let mut account: Account = info.into();
+            let mut new_info = info;
+            new_info.code_hash = code.hash_slow();
+            new_info.code = Some(code);
+            let mut account: Account = new_info.into();
             account.mark_touch();
-            db.commit(EvmState::from_iter([(address, account)]));
+            let state = EvmState::from_iter([(address, account)]);
+            self.inner.system_caller.on_state(
+                StateChangeSource::PreBlock(StateChangePreBlockSource::BlockHashesContract),
+                &state,
+            );
+            self.inner.evm.db_mut().commit(state);
         }
         Ok(())
     }
@@ -390,9 +400,8 @@ where
     fn apply_pre_execution_changes(&mut self) -> Result<(), alloy_evm::block::BlockExecutionError> {
         self.inner.apply_pre_execution_changes()?;
 
-        let timestamp = self.evm().block().timestamp.to::<u64>();
-
         // Deploy 0xEF marker bytecode to precompiles at their activation hardforks.
+        let timestamp = self.evm().block().timestamp.to::<u64>();
         if self.inner.spec.is_t2_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(VALIDATOR_CONFIG_V2_ADDRESS)?;
         }
@@ -1195,6 +1204,45 @@ mod tests {
         assert!(
             info.is_none() || info.unwrap().is_empty_code_hash(),
             "SignatureVerifier code should not be deployed before T3"
+        );
+    }
+
+    #[test]
+    fn test_deploy_precompile_at_boundary_dispatches_state_hook() {
+        use std::sync::{Arc, Mutex};
+
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        let hook_calls: Arc<Mutex<Vec<(StateChangeSource, EvmState)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let hook_calls_clone = hook_calls.clone();
+        executor.set_state_hook(Some(Box::new(
+            move |source: StateChangeSource, state: &EvmState| {
+                hook_calls_clone
+                    .lock()
+                    .unwrap()
+                    .push((source, state.clone()));
+            },
+        )));
+
+        let addr = Address::with_last_byte(0xff);
+        executor.deploy_precompile_at_boundary(addr).unwrap();
+
+        // Verify code was deployed.
+        let acc = db.load_cache_account(addr).unwrap();
+        let info = acc.account_info().unwrap();
+        assert!(!info.is_empty_code_hash());
+
+        // Verify the state hook was called exactly once with the correct address.
+        let calls = hook_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "state hook should be called exactly once");
+        assert!(
+            calls[0].1.contains_key(&addr),
+            "state hook should contain the deployed address"
         );
     }
 }
