@@ -3,7 +3,7 @@ use crate::transaction::PrimitiveSignature;
 use alloc::vec::Vec;
 use alloy_consensus::crypto::RecoveryError;
 use alloy_primitives::{Address, B256, U256, keccak256};
-use alloy_rlp::{Buf, Decodable, EMPTY_STRING_CODE, Encodable};
+use alloy_rlp::{Decodable, EMPTY_STRING_CODE, Encodable};
 
 /// Token spending limit for access keys
 ///
@@ -134,8 +134,9 @@ impl SelectorRule {
 /// - Non-optional fields come first, followed by optional (trailing) fields
 /// - `expiry`: `None` (omitted or 0x80) = key never expires, `Some(timestamp)` = expires at timestamp
 /// - `limits`: `None` (omitted or 0x80) = unlimited spending, `Some([])` = no spending, `Some([...])` = specific limits
-/// - `allowed_calls`: `None` = unrestricted, `Some([])` = deny-all, `Some([...])` = scoped calls
-#[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable)]
+/// - `allowed_calls`: `None` (canonically omitted, explicit 0x80 accepted) = unrestricted,
+///   `Some([])` = deny-all, `Some([...])` = scoped calls
+#[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
 #[rlp(trailing)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
@@ -165,72 +166,10 @@ pub struct KeyAuthorization {
     pub limits: Option<Vec<TokenLimit>>,
 
     /// Optional call scopes for this key.
-    /// - `None` (omitted on wire) = unrestricted calls
+    /// - `None` (canonically omitted, explicit 0x80 accepted) = unrestricted calls
     /// - `Some([])` = scoped mode with no allowed calls (deny-all)
     /// - `Some([CallScope{...}])` = explicit target/selector scope list
     pub allowed_calls: Option<Vec<CallScope>>,
-}
-
-impl Decodable for KeyAuthorization {
-    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        fn decode_optional_field<T: Decodable>(fields: &mut &[u8]) -> alloy_rlp::Result<Option<T>> {
-            if fields.is_empty() {
-                return Ok(None);
-            }
-            if fields.first() == Some(&EMPTY_STRING_CODE) {
-                fields.advance(1);
-                return Ok(None);
-            }
-
-            Ok(Some(Decodable::decode(fields)?))
-        }
-
-        let header = alloy_rlp::Header::decode(buf)?;
-        if !header.list {
-            return Err(alloy_rlp::Error::UnexpectedString);
-        }
-
-        let remaining = buf.len();
-        if header.payload_length > remaining {
-            return Err(alloy_rlp::Error::InputTooShort);
-        }
-
-        let mut fields = &buf[..header.payload_length];
-
-        let chain_id = Decodable::decode(&mut fields)?;
-        let key_type = Decodable::decode(&mut fields)?;
-        let key_id = Decodable::decode(&mut fields)?;
-
-        let expiry: Option<u64> = decode_optional_field(&mut fields)?;
-        let limits: Option<Vec<TokenLimit>> = decode_optional_field(&mut fields)?;
-
-        let allowed_calls = if fields.is_empty() {
-            None
-        } else {
-            if fields.first() == Some(&EMPTY_STRING_CODE) {
-                return Err(alloy_rlp::Error::Custom(
-                    "key authorization allowed_calls=None must be omitted on wire",
-                ));
-            }
-
-            Some(Decodable::decode(&mut fields)?)
-        };
-
-        if !fields.is_empty() {
-            return Err(alloy_rlp::Error::UnexpectedLength);
-        }
-
-        buf.advance(header.payload_length);
-
-        Ok(Self {
-            chain_id,
-            key_type,
-            key_id,
-            expiry,
-            limits,
-            allowed_calls,
-        })
-    }
 }
 
 impl KeyAuthorization {
@@ -720,7 +659,7 @@ mod tests {
     }
 
     #[test]
-    fn test_key_authorization_decode_rejects_explicit_unrestricted_allowed_calls_field() {
+    fn test_key_authorization_decode_accepts_explicit_unrestricted_allowed_calls_field() {
         let chain_id = 1u64;
         let key_type = SignatureType::Secp256k1;
         let key_id = Address::random();
@@ -739,9 +678,18 @@ mod tests {
         .encode(&mut encoded);
         encoded.extend_from_slice(&payload);
 
-        let err: alloy_rlp::Error =
-            <KeyAuthorization as Decodable>::decode(&mut encoded.as_slice()).unwrap_err();
-        assert!(matches!(err, alloy_rlp::Error::Custom(_)));
+        let decoded =
+            <KeyAuthorization as Decodable>::decode(&mut encoded.as_slice()).expect("decode auth");
+        assert_eq!(decoded.chain_id, chain_id);
+        assert_eq!(decoded.key_type, key_type);
+        assert_eq!(decoded.key_id, key_id);
+        assert_eq!(decoded.expiry, None);
+        assert_eq!(decoded.limits, None);
+        assert_eq!(decoded.allowed_calls, None);
+
+        let mut reencoded = Vec::new();
+        decoded.encode(&mut reencoded);
+        assert!(reencoded.len() < encoded.len());
     }
 
     #[test]
