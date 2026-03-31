@@ -1145,7 +1145,7 @@ mod tests {
         let tx = TxBuilder::new()
             .call_identity(&[0x01])
             .key_authorization(signed_key_auth)
-            .gas_limit(1_000_000)
+            .gas_limit(5_000_000)
             .build();
 
         // Use keychain signature so call-scope validation runs in the same tx.
@@ -1164,6 +1164,77 @@ mod tests {
                 )
             ),
             "expected KeychainValidationFailed, got: {err:?}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_t3_key_authorization_rejects_empty_recipient_allowlist() -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+
+        let mut evm = create_funded_evm_t3(caller);
+
+        let block = TempoBlockEnv::default();
+        {
+            let ctx = &mut evm.ctx;
+            let internals = EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
+            let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
+
+            StorageCtx::enter(&mut provider, || {
+                TIP20Setup::path_usd(caller)
+                    .with_issuer(caller)
+                    .with_mint(caller, U256::from(10_000_000))
+                    .apply()
+            })?;
+        }
+
+        let transfer_to = Address::repeat_byte(0xaa);
+        let transfer_input = ITIP20::transferCall {
+            to: transfer_to,
+            amount: U256::from(1_u64),
+        }
+        .abi_encode();
+
+        let key_auth = KeyAuthorization {
+            chain_id: 1,
+            key_type: SignatureType::WebAuthn,
+            key_id: caller,
+            expiry: None,
+            limits: None,
+            allowed_calls: Some(vec![tempo_primitives::transaction::CallScope {
+                target: PATH_USD_ADDRESS,
+                selector_rules: Some(vec![tempo_primitives::transaction::SelectorRule {
+                    selector: ITIP20::transferCall::SELECTOR,
+                    recipients: Some(Vec::new()),
+                }]),
+            }]),
+        };
+        let key_auth_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
+        let signed_key_auth = key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig));
+
+        let tx = TxBuilder::new()
+            .call(PATH_USD_ADDRESS, &transfer_input)
+            .key_authorization(signed_key_auth)
+            .gas_limit(5_000_000)
+            .build();
+
+        let signed_tx = key_pair.sign_tx_keychain(tx)?;
+        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+
+        let err = evm
+            .transact_commit(tx_env)
+            .expect_err("empty recipient allowlist should reject the transaction");
+
+        assert!(
+            matches!(
+                err,
+                revm::context::result::EVMError::Transaction(
+                    TempoInvalidTransaction::KeychainValidationFailed { ref reason }
+                ) if reason == "recipient-constrained selector rule requires non-empty recipients"
+            ),
+            "expected empty recipient rejection, got: {err:?}"
         );
 
         Ok(())
@@ -1190,7 +1261,7 @@ mod tests {
         let tx = TxBuilder::new()
             .call_identity(&[0x01])
             .key_authorization(signed_key_auth)
-            .gas_limit(1_000_000)
+            .gas_limit(5_000_000)
             .build();
 
         let signed_tx = key_pair.sign_tx_keychain(tx)?;

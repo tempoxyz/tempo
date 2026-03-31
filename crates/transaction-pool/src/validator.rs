@@ -164,6 +164,23 @@ where
         &self,
         auth: &tempo_primitives::transaction::SignedKeyAuthorization,
     ) -> Result<(), TempoPoolTransactionError> {
+        if let Some(limits) = auth.limits.as_ref() {
+            let mut seen_tokens = HashSet::with_capacity(limits.len());
+            for limit in limits {
+                if !seen_tokens.insert(limit.token) {
+                    return Err(TempoPoolTransactionError::Keychain(
+                        "duplicate token limits are not allowed",
+                    ));
+                }
+
+                if limit.limit > U256::from(u128::MAX) {
+                    return Err(TempoPoolTransactionError::Keychain(
+                        "spending limit exceeds u128::MAX",
+                    ));
+                }
+            }
+        }
+
         let Some(scopes) = auth.allowed_calls.as_ref() else {
             return Ok(());
         };
@@ -3256,7 +3273,7 @@ mod tests {
         }
 
         #[test]
-        fn test_key_authorization_duplicate_token_limits_uses_last_value()
+        fn test_key_authorization_pre_t3_duplicate_token_limits_use_last_value()
         -> Result<(), ProviderError> {
             let (access_key_signer, access_key_address) = generate_keypair();
             let (user_signer, user_address) = generate_keypair();
@@ -3317,6 +3334,73 @@ mod tests {
                 result.is_ok(),
                 "Inline key authorization should use the last duplicate token limit"
             );
+            Ok(())
+        }
+
+        #[test]
+        fn test_key_authorization_t3_rejects_duplicate_token_limits() -> Result<(), ProviderError> {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+            let fee_token = address!("0000000000000000000000000000000000000002");
+
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: Some(vec![
+                    TokenLimit {
+                        token: fee_token,
+                        limit: U256::from(100_u64),
+                        period: 0,
+                    },
+                    TokenLimit {
+                        token: fee_token,
+                        limit: U256::from(200_u64),
+                        period: 60,
+                    },
+                ]),
+                allowed_calls: None,
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage_spec(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+                moderato_with_t3(),
+            );
+            let mut state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )?;
+
+            assert!(
+                matches!(
+                    result,
+                    Err(TempoPoolTransactionError::Keychain(
+                        "duplicate token limits are not allowed"
+                    ))
+                ),
+                "Expected duplicate token limits rejection, got: {result:?}"
+            );
+
             Ok(())
         }
 
@@ -3490,6 +3574,65 @@ mod tests {
                     ))
                 ),
                 "Expected too many call scopes rejection, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_key_authorization_t3_rejects_spending_limit_above_u128_max() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+            let fee_token = address!("0000000000000000000000000000000000000002");
+
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: Some(vec![TokenLimit {
+                    token: fee_token,
+                    limit: U256::from(u128::MAX) + U256::from(1_u8),
+                    period: 0,
+                }]),
+                allowed_calls: None,
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage_spec(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+                moderato_with_t3(),
+            );
+            let mut state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )
+            .expect("should not be a provider error");
+
+            assert!(
+                matches!(
+                    result,
+                    Err(TempoPoolTransactionError::Keychain(
+                        "spending limit exceeds u128::MAX"
+                    ))
+                ),
+                "Expected oversized spending limit rejection, got: {result:?}"
             );
         }
 
