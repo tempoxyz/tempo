@@ -1005,11 +1005,19 @@ async fn test_tip20_virtual_mint() -> eyre::Result<()> {
     assert_eq!(transfers.len(), 2);
     assert_eq!(
         transfers[0].data,
-        ITIP20::Transfer { from: Address::ZERO, to: virtual_addr, amount: mint_amount }
+        ITIP20::Transfer {
+            from: Address::ZERO,
+            to: virtual_addr,
+            amount: mint_amount
+        }
     );
     assert_eq!(
         transfers[1].data,
-        ITIP20::Transfer { from: virtual_addr, to: admin, amount: mint_amount }
+        ITIP20::Transfer {
+            from: virtual_addr,
+            to: admin,
+            amount: mint_amount
+        }
     );
 
     Ok(())
@@ -1063,11 +1071,19 @@ async fn test_tip20_virtual_transfer() -> eyre::Result<()> {
     assert_eq!(transfers.len(), 2);
     assert_eq!(
         transfers[0].data,
-        ITIP20::Transfer { from: sender, to: virtual_addr, amount }
+        ITIP20::Transfer {
+            from: sender,
+            to: virtual_addr,
+            amount
+        }
     );
     assert_eq!(
         transfers[1].data,
-        ITIP20::Transfer { from: virtual_addr, to: admin, amount }
+        ITIP20::Transfer {
+            from: virtual_addr,
+            to: admin,
+            amount
+        }
     );
 
     Ok(())
@@ -1128,7 +1144,11 @@ async fn test_tip20_registry_deployed_at_t3() -> eyre::Result<()> {
     let provider = ProviderBuilder::new().connect_http(setup.http_url);
 
     let code = provider.get_code_at(TIP20_REGISTRY_ADDRESS).await?;
-    assert_eq!(code.as_ref(), &[0xef], "TIP20Registry should have 0xEF marker bytecode at T3");
+    assert_eq!(
+        code.as_ref(),
+        &[0xef],
+        "TIP20Registry should have 0xEF marker bytecode at T3"
+    );
 
     Ok(())
 }
