@@ -1138,23 +1138,37 @@ async fn test_tip20_virtual_transfer_from() -> eyre::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_tip20_registry_not_deployed_before_t3() -> eyre::Result<()> {
+async fn test_tip20_registry_deployed_at_t3_activation() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
+    // Set t3Time into the future so genesis (timestamp 0) is pre-T3.
     let genesis_str = include_str!("../assets/test-genesis.json");
     let mut genesis: serde_json::Value = serde_json::from_str(genesis_str)?;
-    genesis["config"].as_object_mut().unwrap().remove("t3Time");
+    genesis["config"].as_object_mut().unwrap().insert(
+        "t3Time".to_string(),
+        serde_json::Value::Number(serde_json::Number::from(2u64)),
+    );
 
-    let setup = TestNodeBuilder::new()
+    let mut setup = TestNodeBuilder::new()
         .with_genesis(serde_json::to_string(&genesis)?)
-        .build_http_only()
+        .build_with_node_access()
         .await?;
-    let provider = ProviderBuilder::new().connect_http(setup.http_url);
+    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
 
+    // Pre-T3: registry should have no code.
     let code = provider.get_code_at(TIP20_REGISTRY_ADDRESS).await?;
-    assert!(
-        code.is_empty(),
-        "TIP20Registry should have no code before T3"
+    assert!(code.is_empty(), "registry should have no code before T3");
+
+    // Advance past t3Time to trigger T3 activation.
+    setup.node.advance_block().await?;
+    setup.node.advance_block().await?;
+
+    // Post-T3: registry should have 0xEF marker bytecode.
+    let code = provider.get_code_at(TIP20_REGISTRY_ADDRESS).await?;
+    assert_eq!(
+        code.as_ref(),
+        &[0xef],
+        "registry should have 0xEF marker after T3"
     );
 
     Ok(())
