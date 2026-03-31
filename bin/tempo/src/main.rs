@@ -44,6 +44,7 @@ use eyre::WrapErr as _;
 use futures::{FutureExt as _, future::FusedFuture as _};
 use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands, evm::revm::primitives::B256};
 use reth_ethereum_cli::Cli;
+use reth_network_peers::pk2id;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
 use reth_rpc_server_types::DefaultRpcModuleValidator;
 use std::{sync::Arc, thread};
@@ -128,6 +129,23 @@ fn install_crypto_provider() {
     rustls::crypto::ring::default_provider()
         .install_default()
         .expect("Failed to install default rustls crypto provider");
+}
+
+trait NodeCommandExt {
+    /// Derive the peer id from the p2p secret key without starting the network.
+    fn peer_id(&self) -> reth_network_peers::PeerId;
+}
+
+impl NodeCommandExt for reth_cli_commands::node::NodeCommand<TempoChainSpecParser, TempoArgs> {
+    fn peer_id(&self) -> reth_network_peers::PeerId {
+        let data_dir = self.datadir.clone().resolve_datadir(self.chain.chain());
+        let sk = self
+            .network
+            .secret_key(data_dir.p2p_secret())
+            .expect("unable to derive peer id from p2p secret");
+
+        pk2id(&sk.public_key(secp256k1::SECP256K1))
+    }
 }
 
 /// Print installed extensions as a footer after root help output.
@@ -235,15 +253,22 @@ fn main() -> eyre::Result<()> {
             .wrap_err("failed parsing consensus key")?
             .map(|k| k.to_string());
 
+        let peer_id = format!("{:x}", node_cmd.peer_id());
+
+        // VictoriaMetrics does not support merging `extra_fields` query args like `extra_labels` for
+        // metrics. A workaround for now is to directly hook into the `OTEL_RESOURCE_ATTRIBUTES` env var
+        // used at startup to capture contextual information.
+        let mut extra_attrs = vec![format!("peer_id={peer_id}")];
         if let Some(pubkey) = &consensus_pubkey {
-            // VictoriaMetrics does not support merging `extra_fields` query args like `extra_labels` for
-            // metrics. A workaround for now is to directly hook into the `OTEL_RESOURCE_ATTRIBUTES` env var
-            // used at startup to capture contextual information.
+            extra_attrs.push(format!("consensus_pubkey={pubkey}"));
+        }
+
+        if !extra_attrs.is_empty() {
             let current = std::env::var("OTEL_RESOURCE_ATTRIBUTES").unwrap_or_default();
             let new_attrs = if current.is_empty() {
-                format!("consensus_pubkey={pubkey}")
+                extra_attrs.join(",")
             } else {
-                format!("{current},consensus_pubkey={pubkey}")
+                format!("{current},{}", extra_attrs.join(","))
             };
 
             // SAFETY: called at startup before the OTEL SDK is initialised
@@ -339,6 +364,7 @@ fn main() -> eyre::Result<()> {
                         interval: config.metrics_prometheus_interval,
                         auth_header: config.metrics_auth_header,
                         consensus_pubkey,
+                        peer_id: format!("{:x}", node.network.peer_id()),
                     };
 
                     install_prometheus_metrics(

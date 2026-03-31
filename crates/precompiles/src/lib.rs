@@ -123,7 +123,7 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
             Some(TIP20Token::create_precompile(*address, &cfg))
         } else if *address == TIP20_FACTORY_ADDRESS {
             Some(TIP20Factory::create_precompile(&cfg))
-        } else if *address == ADDRESS_REGISTRY_ADDRESS {
+        } else if *address == ADDRESS_REGISTRY_ADDRESS && cfg.spec.is_t3() {
             Some(AddressRegistry::create_precompile(&cfg))
         } else if *address == TIP403_REGISTRY_ADDRESS {
             Some(TIP403Registry::create_precompile(&cfg))

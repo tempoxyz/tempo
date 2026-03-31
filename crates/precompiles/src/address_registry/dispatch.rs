@@ -6,7 +6,7 @@ use crate::{
     dispatch_call, input_cost, mutate, view,
 };
 use alloy::{primitives::Address, sol_types::SolInterface};
-use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
+use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_contracts::precompiles::IAddressRegistry::IAddressRegistryCalls;
 
 impl Precompile for AddressRegistry {
@@ -14,14 +14,6 @@ impl Precompile for AddressRegistry {
         self.storage
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
-
-        // Pre-T3: behave like an empty contract (call succeeds, no execution)
-        if !self.storage.spec().is_t3() {
-            return Ok(PrecompileOutput::new(
-                self.storage.gas_used(),
-                Default::default(),
-            ));
-        }
 
         dispatch_call(
             calldata,
@@ -130,25 +122,5 @@ mod tests {
 
             Ok(())
         })
-    }
-
-    #[test]
-    fn test_pre_t3_calls_return_empty() -> eyre::Result<()> {
-        for hardfork in [TempoHardfork::T2, TempoHardfork::T1] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
-            StorageCtx::enter(&mut storage, || {
-                let mut registry = AddressRegistry::new();
-
-                let call = IAddressRegistry::getMasterCall {
-                    masterId: Default::default(),
-                };
-                let result = registry.call(&call.abi_encode(), Address::ZERO)?;
-                assert!(!result.reverted);
-                assert!(result.bytes.is_empty());
-
-                Ok::<_, revm::precompile::PrecompileError>(())
-            })?;
-        }
-        Ok(())
     }
 }
