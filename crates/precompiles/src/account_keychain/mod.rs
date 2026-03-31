@@ -104,6 +104,8 @@ pub struct AuthorizedKey {
 /// Per-token spending limit state.
 ///
 /// `remaining` stays in the first slot so the legacy `spending_limits` layout remains intact.
+/// It remains `U256` for the same reason, even though T3 caps `max` to TIP-20's `u128` supply
+/// range and runtime logic maintains `remaining <= max` for periodic limits.
 /// T3+ extends the same row with period metadata in later slots.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Storable)]
 pub struct SpendingLimitState {
