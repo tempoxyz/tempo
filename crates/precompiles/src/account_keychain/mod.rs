@@ -254,7 +254,7 @@ impl AccountKeychain {
             }
         } else {
             if config.limits.iter().any(|limit| limit.period != 0) {
-                return Err(AccountKeychainError::invalid_call_scope().into());
+                return Err(AccountKeychainError::invalid_spending_limit().into());
             }
 
             if config.enforceAllowedCalls || !config.allowedCalls.is_empty() {
@@ -1170,19 +1170,30 @@ impl AccountKeychain {
 
         // Check and update spending limit
         let limit_key = Self::spending_limit_key(account, key_id);
+        if !self.storage.spec().is_t3() {
+            let remaining = self.spending_limits[limit_key][token].remaining.read()?;
+            if amount > remaining {
+                return Err(AccountKeychainError::spending_limit_exceeded().into());
+            }
+
+            let new_remaining = remaining - amount;
+            self.spending_limits[limit_key][token]
+                .remaining
+                .write(new_remaining)?;
+            return Ok(());
+        }
+
         let mut limit_state = self.spending_limits[limit_key][token].read()?;
         let mut remaining = limit_state.remaining;
 
-        if self.storage.spec().is_t3() {
-            if limit_state.period > 0 {
-                let now = self.storage.timestamp().saturating_to::<u64>();
-                if now >= limit_state.period_end {
-                    let next_end = limit_state.compute_next_period_end(now);
+        if limit_state.period > 0 {
+            let now = self.storage.timestamp().saturating_to::<u64>();
+            if now >= limit_state.period_end {
+                let next_end = limit_state.compute_next_period_end(now);
 
-                    remaining = U256::from(limit_state.max);
-                    limit_state.remaining = remaining;
-                    limit_state.period_end = next_end;
-                }
+                remaining = U256::from(limit_state.max);
+                limit_state.remaining = remaining;
+                limit_state.period_end = next_end;
             }
         }
 
@@ -1212,8 +1223,7 @@ impl AccountKeychain {
 
     /// Refund spending limit after a fee refund.
     ///
-    /// Restores the spending limit by the refunded amount, clamped so it never
-    /// exceeds the limit that was set when the key was authorized.
+    /// Restores the spending limit by the refunded amount.
     /// Should be called after a fee refund to avoid permanently reducing the spending limit.
     pub fn refund_spending_limit(
         &mut self,
@@ -1244,6 +1254,14 @@ impl AccountKeychain {
         }
 
         let limit_key = Self::spending_limit_key(account, transaction_key);
+        if !self.storage.spec().is_t3() {
+            let remaining = self.spending_limits[limit_key][token].remaining.read()?;
+            let refunded = remaining.saturating_add(amount);
+            return self.spending_limits[limit_key][token]
+                .remaining
+                .write(refunded);
+        }
+
         let mut limit_state = self.spending_limits[limit_key][token].read()?;
         limit_state.remaining = limit_state.remaining.saturating_add(amount);
 
@@ -2028,10 +2046,10 @@ mod tests {
                 matches!(
                     result,
                     Err(TempoPrecompileError::AccountKeychainError(
-                        AccountKeychainError::InvalidCallScope(_)
+                        AccountKeychainError::InvalidSpendingLimit(_)
                     ))
                 ),
-                "expected InvalidCallScope, got {result:?}"
+                "expected InvalidSpendingLimit, got {result:?}"
             );
 
             assert_eq!(
