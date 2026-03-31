@@ -5,7 +5,7 @@ use crate::{
     handler::TempoEvmHandler,
 };
 use alloy_evm::Database;
-use reth_evm::TransactionEnv;
+use reth_evm::TransactionEnvMut;
 use revm::{
     DatabaseCommit, ExecuteCommitEvm, ExecuteEvm,
     context::{ContextSetters, TxEnv, result::ExecResultAndState},

@@ -19,7 +19,7 @@ use crate::{
 /// pub mod slots {
 ///     pub const NAME: U256 = uint!(2_U256);
 /// }
-/// let name_slot = Slot::<String>::new(slots::NAME);
+/// let name_slot = Slot::<String>::new(slots::NAME, address);
 /// ```
 ///
 /// The actual storage operations are handled by generated accessor methods
