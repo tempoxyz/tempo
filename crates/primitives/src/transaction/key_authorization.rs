@@ -25,6 +25,7 @@ pub struct TokenLimit {
     /// Period duration in seconds.
     ///
     /// `0` means one-time limit. `>0` means the limit resets periodically.
+    #[cfg_attr(feature = "serde", serde(default, with = "alloy_serde::quantity"))]
     pub period: u64,
 }
 
@@ -636,6 +637,35 @@ mod tests {
         let err: alloy_rlp::Error =
             <TokenLimit as Decodable>::decode(&mut encoded.as_slice()).unwrap_err();
         assert!(matches!(err, alloy_rlp::Error::Custom(_)));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_token_limit_json_defaults_period_to_zero() {
+        let token = Address::repeat_byte(0x11);
+
+        let decoded: TokenLimit = serde_json::from_value(serde_json::json!({
+            "token": token,
+            "limit": "0x2a",
+        }))
+        .expect("deserialize legacy JSON token limit");
+
+        assert_eq!(decoded.token, token);
+        assert_eq!(decoded.limit, U256::from(42));
+        assert_eq!(decoded.period, 0);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_token_limit_json_serializes_period_as_quantity() {
+        let value = serde_json::to_value(TokenLimit {
+            token: Address::repeat_byte(0x11),
+            limit: U256::from(42),
+            period: 7,
+        })
+        .expect("serialize token limit");
+
+        assert_eq!(value["period"], serde_json::json!("0x7"));
     }
 
     #[test]
