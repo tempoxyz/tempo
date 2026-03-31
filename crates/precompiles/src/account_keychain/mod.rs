@@ -1037,24 +1037,30 @@ impl AccountKeychain {
         current_timestamp: u64,
     ) -> Result<(U256, u64)> {
         let limit_key = Self::spending_limit_key(account, key_id);
-        let limit_state = self.spending_limits[limit_key][token].read()?;
-        let remaining = limit_state.remaining;
+        let remaining = self.spending_limits[limit_key][token].remaining.read()?;
 
         if !self.storage.spec().is_t3() {
             return Ok((remaining, 0));
         }
 
-        if limit_state.period == 0 {
+        let period = self.spending_limits[limit_key][token].period.read()?;
+        if period == 0 {
             return Ok((remaining, 0));
         }
 
-        if current_timestamp < limit_state.period_end {
-            return Ok((remaining, limit_state.period_end));
+        let period_end = self.spending_limits[limit_key][token].period_end.read()?;
+        if current_timestamp < period_end {
+            return Ok((remaining, period_end));
         }
 
-        let next_end = limit_state.compute_next_period_end(current_timestamp);
+        let elapsed = current_timestamp.saturating_sub(period_end);
+        let periods_elapsed = (elapsed / period).saturating_add(1);
+        let advance = period.saturating_mul(periods_elapsed);
+        let next_end = period_end.saturating_add(advance);
 
-        Ok((U256::from(limit_state.max), next_end))
+        let max = self.spending_limits[limit_key][token].max.read()?;
+
+        Ok((U256::from(max), next_end))
     }
 
     /// Deducts `amount` from the key's remaining spending limit for `token`, failing if exceeded.
