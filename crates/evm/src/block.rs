@@ -406,21 +406,8 @@ where
             self.deploy_precompile_at_boundary(VALIDATOR_CONFIG_V2_ADDRESS)?;
         }
 
-        // Deploy 0xEF marker bytecode to AddressRegistry when T3 activates.
         if self.inner.spec.is_t3_active_at_timestamp(timestamp) {
-            let db = self.evm_mut().ctx_mut().journaled_state.db_mut();
-            let mut info = db
-                .basic(ADDRESS_REGISTRY_ADDRESS)
-                .map_err(BlockExecutionError::other)?
-                .unwrap_or_default();
-            if info.is_empty_code_hash() {
-                let code = Bytecode::new_legacy([0xef].into());
-                info.code_hash = code.hash_slow();
-                info.code = Some(code);
-                let mut account: Account = info.into();
-                account.mark_touch();
-                db.commit(EvmState::from_iter([(ADDRESS_REGISTRY_ADDRESS, account)]));
-            }
+            self.deploy_precompile_at_boundary(ADDRESS_REGISTRY_ADDRESS)?;
         }
 
         Ok(())
