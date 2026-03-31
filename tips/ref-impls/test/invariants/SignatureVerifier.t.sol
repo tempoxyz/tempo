@@ -60,9 +60,10 @@ contract SignatureVerifierInvariantTest is BaseTest {
 
     function setUp() public override {
         super.setUp();
-        if (!isTempo) return;
 
         targetContract(address(this));
+
+        if (!isTempo) return;
 
         for (uint256 i = 0; i < 5; i++) {
             string memory label = string(abi.encodePacked("sv_secp_", vm.toString(i)));
