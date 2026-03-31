@@ -296,6 +296,15 @@ impl AccountKeychain {
 
         // TIP-1011 fields are hardfork-gated at T3, so reject them before mutating state.
         let allowed_call_configs = if is_t3 {
+            if config.enforceLimits {
+                let mut seen_tokens = HashSet::with_capacity(config.limits.len());
+                for limit in &config.limits {
+                    if !seen_tokens.insert(limit.token) {
+                        return Err(AccountKeychainError::invalid_spending_limit().into());
+                    }
+                }
+            }
+
             if config.enforceAllowedCalls {
                 Some(
                     config
@@ -3333,6 +3342,62 @@ mod tests {
                 ),
                 "expected InvalidSpendingLimit, got {update_result:?}"
             );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t3_rejects_duplicate_token_limits() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let account = Address::random();
+        let key_id = Address::random();
+        let token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
+
+            let result = keychain.authorize_key(
+                account,
+                authorizeKeyCall {
+                    keyId: key_id,
+                    signatureType: SignatureType::Secp256k1,
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: true,
+                        limits: vec![
+                            TokenLimit {
+                                token,
+                                amount: U256::from(100_u64),
+                                period: 0,
+                            },
+                            TokenLimit {
+                                token,
+                                amount: U256::from(200_u64),
+                                period: 60,
+                            },
+                        ],
+                        enforceAllowedCalls: false,
+                        allowedCalls: vec![],
+                    },
+                },
+            );
+
+            assert!(
+                matches!(
+                    result,
+                    Err(TempoPrecompileError::AccountKeychainError(
+                        AccountKeychainError::InvalidSpendingLimit(_)
+                    ))
+                ),
+                "expected duplicate token limits to be rejected, got: {result:?}"
+            );
+
+            let stored_key = keychain.keys[account][key_id].read()?;
+            assert_eq!(stored_key.expiry, 0, "duplicate rejection must not persist the key");
 
             Ok(())
         })
