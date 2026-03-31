@@ -163,3 +163,4 @@ min-trace-logs = [
 	"reth-ethereum-cli/min-trace-logs",
 	"tempo-node/min-trace-logs",
 ]
+trie-debug = ["tempo-node/trie-debug"]
