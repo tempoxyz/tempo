@@ -8,9 +8,10 @@ use tempo_contracts::precompiles::{
 use tempo_primitives::MAX_WEBAUTHN_SIGNATURE_LENGTH;
 
 /// Maximum valid calldata size: `verify(address,bytes32,bytes)` with a WebAuthn signature is the
-/// worst case (4 + 32 + 32 + 32 + 32 + [1 + MAX_WEBAUTHN_SIGNATURE_LENGTH] = 2181).
+/// worst case. ABI encoding pads the dynamic `bytes` field independently, so only round the
+/// dynamic portion: selector(4) + args(4×32) + padded_sig_bytes.
 const MAX_CALLDATA_LEN: usize =
-    (4 + 32 * 4 + MAX_WEBAUTHN_SIGNATURE_LENGTH + 1).next_multiple_of(32);
+    4 + 32 * 4 + (MAX_WEBAUTHN_SIGNATURE_LENGTH + 1).next_multiple_of(32);
 
 impl Precompile for SignatureVerifier {
     fn call(&mut self, calldata: &[u8], _msg_sender: Address) -> PrecompileResult {
@@ -126,6 +127,32 @@ mod tests {
             let result = SignatureVerifier::new().call(&calldata, Address::ZERO);
 
             expect_precompile_revert(&result, SignatureVerifierError::invalid_format());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_max_webauthn_verify_passes_size_guard() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        StorageCtx::enter(&mut storage, || {
+            let mut sig = vec![0x02u8];
+            sig.extend_from_slice(&[0u8; MAX_WEBAUTHN_SIGNATURE_LENGTH]);
+
+            let calldata = ISignatureVerifier::verifyCall {
+                signer: Address::ZERO,
+                hash: B256::ZERO,
+                signature: sig.into(),
+            }
+            .abi_encode();
+
+            let result = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
+            // Should NOT be rejected by the size guard, should fail later at signature validation
+            assert!(
+                SignatureVerifierError::abi_decode(&result.bytes)
+                    .map(|e| e != SignatureVerifierError::invalid_format())
+                    .unwrap_or(true),
+                "max-size WebAuthn calldata was wrongly rejected by size guard"
+            );
             Ok(())
         })
     }
