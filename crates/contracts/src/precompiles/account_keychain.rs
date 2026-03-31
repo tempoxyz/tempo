@@ -81,7 +81,6 @@ crate::sol! {
         /// Emitted when a spending limit is updated
         event SpendingLimitUpdated(address indexed account, address indexed publicKey, address indexed token, uint256 newLimit);
 
-        /// Emitted when an access key spends against a token limit.
         event AccessKeySpend(
             address indexed account,
             address indexed publicKey,

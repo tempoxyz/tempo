@@ -29,86 +29,47 @@ pub struct TokenLimit {
     pub period: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
+#[rlp(trailing)]
+struct TokenLimitWire {
+    token: Address,
+    limit: U256,
+    period: Option<u64>,
+}
+
+impl From<TokenLimitWire> for TokenLimit {
+    fn from(value: TokenLimitWire) -> Self {
+        Self {
+            token: value.token,
+            limit: value.limit,
+            period: value.period.unwrap_or(0),
+        }
+    }
+}
+
+impl From<&TokenLimit> for TokenLimitWire {
+    fn from(value: &TokenLimit) -> Self {
+        Self {
+            token: value.token,
+            limit: value.limit,
+            period: (value.period != 0).then_some(value.period),
+        }
+    }
+}
+
 impl Decodable for TokenLimit {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let header = alloy_rlp::Header::decode(buf)?;
-        if !header.list {
-            return Err(alloy_rlp::Error::UnexpectedString);
-        }
-
-        let remaining = buf.len();
-        if header.payload_length > remaining {
-            return Err(alloy_rlp::Error::InputTooShort);
-        }
-
-        let mut fields = &buf[..header.payload_length];
-
-        let token = Decodable::decode(&mut fields)?;
-        let limit = Decodable::decode(&mut fields)?;
-        // Backward-compatible decode: legacy payloads omit period and map to one-time limits.
-        let period = if fields.is_empty() {
-            0
-        } else {
-            let period: u64 = Decodable::decode(&mut fields)?;
-            if period == 0 {
-                return Err(alloy_rlp::Error::Custom(
-                    "token limit period=0 must be encoded in legacy two-field form",
-                ));
-            }
-            period
-        };
-
-        if !fields.is_empty() {
-            return Err(alloy_rlp::Error::UnexpectedLength);
-        }
-
-        buf.advance(header.payload_length);
-
-        Ok(Self {
-            token,
-            limit,
-            period,
-        })
+        Ok(TokenLimitWire::decode(buf)?.into())
     }
 }
 
 impl Encodable for TokenLimit {
     fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-        let payload_length = self.token.length()
-            + self.limit.length()
-            + if self.period == 0 {
-                0
-            } else {
-                self.period.length()
-            };
-
-        alloy_rlp::Header {
-            list: true,
-            payload_length,
-        }
-        .encode(out);
-
-        self.token.encode(out);
-        self.limit.encode(out);
-        if self.period != 0 {
-            self.period.encode(out);
-        }
+        TokenLimitWire::from(self).encode(out)
     }
 
     fn length(&self) -> usize {
-        let payload_length = self.token.length()
-            + self.limit.length()
-            + if self.period == 0 {
-                0
-            } else {
-                self.period.length()
-            };
-
-        alloy_rlp::Header {
-            list: true,
-            payload_length,
-        }
-        .length_with_payload()
+        TokenLimitWire::from(self).length()
     }
 }
 
@@ -130,6 +91,15 @@ pub struct CallScope {
     pub selector_rules: Option<Vec<SelectorRule>>,
 }
 
+impl CallScope {
+    fn heap_size(&self) -> usize {
+        self.selector_rules.as_ref().map_or(0, |rules| {
+            rules.capacity() * size_of::<SelectorRule>()
+                + rules.iter().map(SelectorRule::heap_size).sum::<usize>()
+        })
+    }
+}
+
 /// Selector-level rule within a [`CallScope`].
 ///
 /// `recipients` semantics:
@@ -145,6 +115,14 @@ pub struct SelectorRule {
     pub selector: [u8; 4],
     /// Optional recipient allowlist.
     pub recipients: Option<Vec<Address>>,
+}
+
+impl SelectorRule {
+    fn heap_size(&self) -> usize {
+        self.recipients
+            .as_ref()
+            .map_or(0, |recipients| recipients.capacity() * size_of::<Address>())
+    }
 }
 
 /// Key authorization for provisioning access keys
@@ -187,7 +165,7 @@ pub struct KeyAuthorization {
     pub limits: Option<Vec<TokenLimit>>,
 
     /// Optional call scopes for this key.
-    /// - `None` (RLP 0x80) = unrestricted calls
+    /// - `None` (omitted on wire) = unrestricted calls
     /// - `Some([])` = scoped mode with no allowed calls (deny-all)
     /// - `Some([CallScope{...}])` = explicit target/selector scope list
     pub allowed_calls: Option<Vec<CallScope>>,
@@ -363,22 +341,7 @@ impl KeyAuthorization {
                 .map_or(0, |limits| limits.capacity() * size_of::<TokenLimit>())
             + self.allowed_calls.as_ref().map_or(0, |scopes| {
                 scopes.capacity() * size_of::<CallScope>()
-                    + scopes
-                        .iter()
-                        .map(|scope| {
-                            scope.selector_rules.as_ref().map_or(0, |rules| {
-                                rules.capacity() * size_of::<SelectorRule>()
-                                    + rules
-                                        .iter()
-                                        .map(|rule| {
-                                            rule.recipients.as_ref().map_or(0, |recipients| {
-                                                recipients.capacity() * size_of::<Address>()
-                                            })
-                                        })
-                                        .sum::<usize>()
-                            })
-                        })
-                        .sum::<usize>()
+                    + scopes.iter().map(CallScope::heap_size).sum::<usize>()
             })
     }
 }
@@ -619,7 +582,7 @@ mod tests {
     }
 
     #[test]
-    fn test_token_limit_decode_rejects_explicit_zero_period_field() {
+    fn test_token_limit_decode_accepts_explicit_zero_period_field() {
         let token = Address::random();
         let limit = U256::from(42);
         let period = 0u64;
@@ -634,9 +597,97 @@ mod tests {
         limit.encode(&mut encoded);
         period.encode(&mut encoded);
 
-        let err: alloy_rlp::Error =
-            <TokenLimit as Decodable>::decode(&mut encoded.as_slice()).unwrap_err();
-        assert!(matches!(err, alloy_rlp::Error::Custom(_)));
+        let decoded: TokenLimit =
+            <TokenLimit as Decodable>::decode(&mut encoded.as_slice()).expect("decode token limit");
+        assert_eq!(decoded.token, token);
+        assert_eq!(decoded.limit, limit);
+        assert_eq!(decoded.period, 0);
+    }
+
+    #[test]
+    fn test_key_authorization_roundtrip_preserves_nested_optional_list_markers() {
+        let auth = KeyAuthorization {
+            chain_id: 1,
+            key_type: SignatureType::Secp256k1,
+            key_id: Address::repeat_byte(0x11),
+            expiry: None,
+            limits: None,
+            allowed_calls: Some(vec![
+                CallScope {
+                    target: Address::repeat_byte(0x22),
+                    selector_rules: None,
+                },
+                CallScope {
+                    target: Address::repeat_byte(0x33),
+                    selector_rules: Some(vec![SelectorRule {
+                        selector: [0xaa, 0xbb, 0xcc, 0xdd],
+                        recipients: None,
+                    }]),
+                },
+            ]),
+        };
+
+        let mut encoded = Vec::new();
+        auth.encode(&mut encoded);
+
+        let decoded =
+            <KeyAuthorization as Decodable>::decode(&mut encoded.as_slice()).expect("decode auth");
+
+        let mut reencoded = Vec::new();
+        decoded.encode(&mut reencoded);
+
+        assert_eq!(reencoded, encoded);
+    }
+
+    #[test]
+    fn test_call_scope_decode_accepts_omitted_none_selector_rules() {
+        let target = Address::repeat_byte(0x11);
+
+        let mut encoded = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: target.length(),
+        }
+        .encode(&mut encoded);
+        target.encode(&mut encoded);
+
+        let decoded =
+            <CallScope as Decodable>::decode(&mut encoded.as_slice()).expect("decode scope");
+        assert_eq!(decoded.target, target);
+        assert_eq!(decoded.selector_rules, None);
+    }
+
+    #[test]
+    fn test_selector_rule_decode_accepts_omitted_none_recipients() {
+        let selector = [0xaa, 0xbb, 0xcc, 0xdd];
+
+        let mut encoded = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: selector.length(),
+        }
+        .encode(&mut encoded);
+        selector.encode(&mut encoded);
+
+        let decoded =
+            <SelectorRule as Decodable>::decode(&mut encoded.as_slice()).expect("decode rule");
+        assert_eq!(decoded.selector, selector);
+        assert_eq!(decoded.recipients, None);
+    }
+
+    #[test]
+    fn test_selector_rule_decode_accepts_empty_recipient_list_for_downstream_validation() {
+        let rule = SelectorRule {
+            selector: [0xaa, 0xbb, 0xcc, 0xdd],
+            recipients: Some(Vec::new()),
+        };
+
+        let mut encoded = Vec::new();
+        rule.encode(&mut encoded);
+
+        let decoded =
+            <SelectorRule as Decodable>::decode(&mut encoded.as_slice()).expect("decode rule");
+        assert_eq!(decoded, rule);
     }
 
     #[cfg(feature = "serde")]
