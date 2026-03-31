@@ -546,8 +546,6 @@ TIP20 is the Tempo token standard that extends ERC-20 with transfer policies, me
 
 ## TIP-1022 Virtual Addresses
 
-See [virtual_addresses_invariants.md](./virtual_addresses_invariants.md) for the detailed fixture plan, handler split, and event-ordering assertions.
-
 ### Registry & Address Invariants
 
 - **TEMPO-VA1**: Registration determinism - each fixed `(master, salt)` fixture registers exactly the `masterId` implied by `bytes4(keccak256(abi.encodePacked(master, salt))[4:8])`.
