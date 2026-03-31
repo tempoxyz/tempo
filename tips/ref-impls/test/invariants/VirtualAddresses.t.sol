@@ -32,7 +32,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
 
     string internal constant ANVIL_MNEMONIC =
         "test test test test test test test test test test test junk";
-    uint256 internal constant MASTER_COUNT = 7;
+    uint256 internal constant MASTER_COUNT = 8;
     uint256 internal constant TAG_COUNT = 16;
     uint256 internal constant INITIAL_MASTER_BALANCE = 1_000_000_000_000;
     uint256 internal constant MAX_HANDLER_AMOUNT = 1_000_000_000;
@@ -45,7 +45,11 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         bytes32(uint256(0xe9380f73)),
         bytes32(uint256(0xbf34bdba)),
         bytes32(uint256(0x011e93c2f3)),
-        bytes32(uint256(0x01bf66b590))
+        bytes32(uint256(0x01bf66b590)),
+        // Second salt for master index 0 (same address, different masterId 0x66937001).
+        // Exercises the spec's many-to-one property: "The same address MAY register
+        // multiple masterIds using different salts."
+        bytes32(uint256(0x10e1ea97a))
     ];
 
     bytes6[TAG_COUNT] internal USER_TAGS = [
@@ -927,7 +931,10 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
 
     function _registerVirtualMasters() internal {
         for (uint256 i = 0; i < MASTER_COUNT; i++) {
-            uint256 pk = vm.deriveKey(ANVIL_MNEMONIC, uint32(i));
+            // Index 7 reuses master index 0's address with a different salt,
+            // exercising the many-to-one property (same master, different masterId).
+            uint256 keyIndex = i < 7 ? i : 0;
+            uint256 pk = vm.deriveKey(ANVIL_MNEMONIC, uint32(keyIndex));
             address master = vm.rememberKey(pk);
             bytes32 salt = POW_SALTS[i];
             bytes32 registrationHash = keccak256(abi.encodePacked(master, salt));
