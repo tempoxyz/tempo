@@ -750,6 +750,19 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         }
     }
 
+    let compute_mean_stddev_stats = { |samples: list<any>|
+        let count = ($samples | length)
+        let mean = if $count > 0 { $samples | math avg } else { 0 }
+        let stddev = if $count > 1 { $samples | math stddev } else { 0 }
+        {
+            mean: ($mean | math round --precision 2)
+            stddev: ($stddev | math round --precision 2)
+            rel_stddev_pct: (if $count > 1 and $mean != 0 {
+                ((($stddev / $mean) * 100) | math round --precision 2)
+            } else { 0 })
+        }
+    }
+
     for label in $run_labels {
         let report_path = $"($results_dir)/report-($label).json"
         if not ($report_path | path exists) {
@@ -822,6 +835,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             ok: $total_ok
             err: $total_err
             total_gas: $total_gas
+            wall_clock_s: ($time_span_s | math round --precision 2)
             tps: $actual_tps
             tps_p50: $run_tps.p50
             tps_p90: $run_tps.p90
@@ -850,6 +864,11 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     # Aggregate TPS and Mgas/s from per-run totals (total_tx / total_time)
     let baseline_runs = ($run_data | where { |r| $r.label | str starts-with "baseline" })
     let feature_runs = ($run_data | where { |r| $r.label | str starts-with "feature" })
+    let b_wall_samples = if ($baseline_runs | length) > 0 { $baseline_runs | get wall_clock_s } else { [] }
+    let f_wall_samples = if ($feature_runs | length) > 0 { $feature_runs | get wall_clock_s } else { [] }
+    let b_wall = do $compute_mean_stddev_stats $b_wall_samples
+    let f_wall = do $compute_mean_stddev_stats $f_wall_samples
+    let wall_clock_uncertainty_pct = (((($b_wall.rel_stddev_pct * $b_wall.rel_stddev_pct) + ($f_wall.rel_stddev_pct * $f_wall.rel_stddev_pct)) | math sqrt) | math round --precision 2)
 
     let b_tps = if ($baseline_runs | length) > 0 { $baseline_runs | get tps | math avg | math round --precision 0 } else { 0 }
     let f_tps = if ($feature_runs | length) > 0 { $feature_runs | get tps | math avg | math round --precision 0 } else { 0 }
@@ -876,7 +895,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         ""
         "| Metric | Baseline | Feature | Delta |"
         "|--------|----------|---------|-------|"
-        $"| Wall Clock TPS | ($b_tps) | ($f_tps) | (do $delta $b_tps $f_tps)% |"
+        $"| Wall Clock [s] | ($b_wall.mean) | ($f_wall.mean) | (do $delta $b_wall.mean $f_wall.mean)% (±($wall_clock_uncertainty_pct)%) |"
         $"| TPS P50 | ($b_tps_stats.p50) | ($f_tps_stats.p50) | (do $delta $b_tps_stats.p50 $f_tps_stats.p50)% |"
         $"| TPS P90 | ($b_tps_stats.p90) | ($f_tps_stats.p90) | (do $delta $b_tps_stats.p90 $f_tps_stats.p90)% |"
         $"| TPS P99 | ($b_tps_stats.p99) | ($f_tps_stats.p99) | (do $delta $b_tps_stats.p99 $f_tps_stats.p99)% |"
@@ -887,13 +906,13 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         ""
         "## Per-Run Details"
         ""
-        "| Run | Blocks | Total Tx | Success | Failed | Wall Clock TPS | Block Time | Mgas/s |"
+        "| Run | Blocks | Total Tx | Success | Failed | Wall Clock [s] | Block Time | Mgas/s |"
         "|-----|--------|----------|---------|--------|---------|-----------|--------|"
     ] | str join "\n")
 
     mut per_run_rows = ""
     for row in $run_data {
-        $per_run_rows = $"($per_run_rows)| ($row.label) | ($row.blocks) | ($row.total_tx) | ($row.ok) | ($row.err) | ($row.tps) | ($row.block_time_p50) | ($row.mgas_s) |\n"
+        $per_run_rows = $"($per_run_rows)| ($row.label) | ($row.blocks) | ($row.total_tx) | ($row.ok) | ($row.err) | ($row.wall_clock_s) | ($row.block_time_p50) | ($row.mgas_s) |\n"
     }
 
     let full_summary = $"($summary)\n($per_run_rows)"
@@ -915,6 +934,8 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         }
         results: {
             baseline: {
+                wall_clock_s: $b_wall.mean
+                wall_clock_stddev_s: $b_wall.stddev
                 tps: $b_tps
                 tps_p50: $b_tps_stats.p50
                 tps_p90: $b_tps_stats.p90
@@ -926,6 +947,8 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 blocks: $b_num_blocks
             }
             feature: {
+                wall_clock_s: $f_wall.mean
+                wall_clock_stddev_s: $f_wall.stddev
                 tps: $f_tps
                 tps_p50: $f_tps_stats.p50
                 tps_p90: $f_tps_stats.p90
@@ -937,6 +960,8 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 blocks: $f_num_blocks
             }
             deltas: {
+                wall_clock_s: (do $delta $b_wall.mean $f_wall.mean)
+                wall_clock_uncertainty_pct: $wall_clock_uncertainty_pct
                 tps: (do $delta $b_tps $f_tps)
                 tps_p50: (do $delta $b_tps_stats.p50 $f_tps_stats.p50)
                 tps_p90: (do $delta $b_tps_stats.p90 $f_tps_stats.p90)

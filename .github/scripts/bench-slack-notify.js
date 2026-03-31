@@ -60,14 +60,15 @@ function cell(text) {
 }
 
 function fmtMs(v) { return v != null ? v.toFixed(2) + 'ms' : '-'; }
+function fmtSeconds(v) { return v != null ? v.toFixed(2) + 's' : '-'; }
 function fmtVal(v, suffix = '', precision = 2) { return v != null ? v.toFixed(precision) + suffix : '-'; }
 
-function tempoBlockTimeDeltas(deltas) {
-  return [deltas.block_time_p50, deltas.block_time_p90, deltas.block_time_p99];
+function tempoTimingDeltas(deltas) {
+  return [deltas.wall_clock_s, deltas.block_time_p50, deltas.block_time_p90, deltas.block_time_p99];
 }
 
 function tempoThroughputDeltas(deltas) {
-  return [deltas.tps, deltas.tps_p50, deltas.tps_p90, deltas.tps_p99, deltas.mgas_s];
+  return [deltas.tps_p50, deltas.tps_p90, deltas.tps_p99, deltas.mgas_s];
 }
 
 function fmtDelta(pct) {
@@ -75,6 +76,14 @@ function fmtDelta(pct) {
   const sign = pct >= 0 ? '+' : '';
   const emoji = classifyDelta(pct);
   return `${sign}${pct.toFixed(2)}% ${emoji}`;
+}
+
+function fmtDeltaWithUncertainty(pct, uncertaintyPct) {
+  if (pct == null) return '';
+  const sign = pct >= 0 ? '+' : '';
+  const emoji = classifyDelta(pct);
+  const uncertainty = uncertaintyPct != null ? ` (±${uncertaintyPct.toFixed(2)}%)` : '';
+  return `${sign}${pct.toFixed(2)}%${uncertainty} ${emoji}`;
 }
 
 // For latency: negative = good (faster), positive = bad (slower)
@@ -97,12 +106,12 @@ function fmtDeltaInverse(pct) {
 }
 
 function verdict(deltas) {
-  const blockTimeDeltas = tempoBlockTimeDeltas(deltas);
+  const timingDeltas = tempoTimingDeltas(deltas);
   const throughputDeltas = tempoThroughputDeltas(deltas);
 
-  const hasBad = blockTimeDeltas.some(d => d != null && d > THRESHOLD_PCT) ||
+  const hasBad = timingDeltas.some(d => d != null && d > THRESHOLD_PCT) ||
                  throughputDeltas.some(d => d != null && d < -THRESHOLD_PCT);
-  const hasGood = blockTimeDeltas.some(d => d != null && d < -THRESHOLD_PCT) ||
+  const hasGood = timingDeltas.some(d => d != null && d < -THRESHOLD_PCT) ||
                   throughputDeltas.some(d => d != null && d > THRESHOLD_PCT);
 
   if (hasBad && hasGood) return { emoji: ':warning:', label: 'Mixed Results' };
@@ -112,7 +121,7 @@ function verdict(deltas) {
 }
 
 function hasSignificantChange(deltas) {
-  const all = [...tempoThroughputDeltas(deltas), ...tempoBlockTimeDeltas(deltas)];
+  const all = [...tempoThroughputDeltas(deltas), ...tempoTimingDeltas(deltas)];
   return all.some(d => d != null && Math.abs(d) >= THRESHOLD_PCT);
 }
 
@@ -134,7 +143,7 @@ function buildMetricRows(summary) {
   const f = summary.results.feature;
   const d = summary.results.deltas;
   return [
-    { label: 'Wall Clock TPS',  baseline: fmtVal(b.tps, '', 0),     feature: fmtVal(f.tps, '', 0),     change: fmtDeltaInverse(d.tps) },
+    { label: 'Wall Clock',      baseline: fmtSeconds(b.wall_clock_s), feature: fmtSeconds(f.wall_clock_s), change: fmtDeltaWithUncertainty(d.wall_clock_s, d.wall_clock_uncertainty_pct) },
     { label: 'TPS P50',         baseline: fmtVal(b.tps_p50, '', 1), feature: fmtVal(f.tps_p50, '', 1), change: fmtDeltaInverse(d.tps_p50) },
     { label: 'TPS P90',         baseline: fmtVal(b.tps_p90, '', 1), feature: fmtVal(f.tps_p90, '', 1), change: fmtDeltaInverse(d.tps_p90) },
     { label: 'TPS P99',         baseline: fmtVal(b.tps_p99, '', 1), feature: fmtVal(f.tps_p99, '', 1), change: fmtDeltaInverse(d.tps_p99) },
