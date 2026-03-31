@@ -1117,15 +1117,15 @@ impl TIP20Token {
 /// [TIP-1022]: <https://docs.tempo.xyz/protocol/tip1022>
 pub(crate) struct Recipient {
     /// The effective (resolved) address where the balance is credited.
-    pub target: Address,
+    pub(crate) target: Address,
     /// The virtual address, if registered.
-    pub virtual_addr: Option<Address>,
+    pub(crate) virtual_addr: Option<Address>,
 }
 
 impl Recipient {
     /// Creates a [`Recipient`] with no virtual indirection.
     #[inline]
-    pub fn direct(addr: Address) -> Self {
+    pub(crate) fn direct(addr: Address) -> Self {
         Self {
             target: addr,
             virtual_addr: None,
@@ -1136,7 +1136,7 @@ impl Recipient {
     ///
     /// If `addr` is a virtual address its registered master is looked up and stored in `target`,
     /// with the original virtual address preserved in `virtual_addr`.
-    pub fn resolve(addr: Address) -> Result<Self> {
+    pub(crate) fn resolve(addr: Address) -> Result<Self> {
         let effective = AddressRegistry::new().resolve_recipient(addr)?;
         Ok(if effective == addr {
             Self::direct(addr)
@@ -1151,7 +1151,7 @@ impl Recipient {
     /// Validates that the recipient is not:
     /// - the zero address (preventing accidental burns)
     /// - an address with the TIP-20 prefix (preventing transfers to token contracts)
-    pub fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         if self.target.is_zero() || is_tip20_prefix(self.target) {
             return Err(TIP20Error::invalid_recipient().into());
         }
@@ -1162,7 +1162,7 @@ impl Recipient {
     ///
     /// For virtual recipients `to` is the virtual address (first hop); for regular
     /// recipients this is the only `Transfer` event needed.
-    pub fn build_transfer_event(&self, from: Address, amount: U256) -> TIP20Event {
+    pub(crate) fn build_transfer_event(&self, from: Address, amount: U256) -> TIP20Event {
         TIP20Event::Transfer(ITIP20::Transfer {
             from,
             to: self.virtual_addr.unwrap_or(self.target),
@@ -1172,7 +1172,7 @@ impl Recipient {
 
     /// Builds the forwarding `Transfer(virtual, master, amount)` event for virtual recipients.
     /// Returns `None` for non-virtual recipients.
-    pub fn build_virtual_transfer_event(&self, amount: U256) -> Option<TIP20Event> {
+    pub(crate) fn build_virtual_transfer_event(&self, amount: U256) -> Option<TIP20Event> {
         self.virtual_addr.map(|virtual_addr| {
             TIP20Event::Transfer(ITIP20::Transfer {
                 from: virtual_addr,
