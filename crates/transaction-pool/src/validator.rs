@@ -4920,7 +4920,7 @@ mod tests {
             .validate_transaction(TransactionOrigin::External, tx)
             .await;
 
-        // Should NOT fail with InsufficientGasForIntrinsicCost
+        // Should NOT fail with CallGasCostMoreThanGasLimit (intrinsic gas check)
         if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
             assert!(
                 matches!(err, InvalidPoolTransactionError::IntrinsicGasTooLow),

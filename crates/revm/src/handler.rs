@@ -749,9 +749,9 @@ where
 
             // do the gas limit check again.
             if tx.gas_limit() < evm.initial_gas {
-                return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+                return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
                     gas_limit: tx.gas_limit(),
-                    intrinsic_gas: evm.initial_gas,
+                    initial_gas: evm.initial_gas,
                 }
                 .into());
             }
@@ -1384,18 +1384,18 @@ where
 
             // Validate gas limit is sufficient for initial gas
             if gas_limit < init_gas.initial_gas {
-                return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+                return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
                     gas_limit,
-                    intrinsic_gas: init_gas.initial_gas,
+                    initial_gas: init_gas.initial_gas,
                 }
                 .into());
             }
 
             // Validate floor gas (Prague+)
             if !evm.ctx.cfg.is_eip7623_disabled() && gas_limit < init_gas.floor_gas {
-                return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+                return Err(InvalidTransaction::GasFloorMoreThanGasLimit {
                     gas_limit,
-                    intrinsic_gas: init_gas.floor_gas,
+                    gas_floor: init_gas.floor_gas,
                 }
                 .into());
             }
@@ -1633,11 +1633,10 @@ where
         batch_gas.initial_gas += nonce_2d_gas;
     }
 
-    // Validate gas limit is sufficient for initial gas
     if gas_limit < batch_gas.initial_gas {
-        return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+        return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
             gas_limit,
-            intrinsic_gas: batch_gas.initial_gas,
+            initial_gas: batch_gas.initial_gas,
         }
         .into());
     }
@@ -1650,9 +1649,9 @@ where
 
     // Validate floor gas (Prague+)
     if !evm.ctx.cfg.is_eip7623_disabled() && gas_limit < batch_gas.floor_gas {
-        return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+        return Err(InvalidTransaction::GasFloorMoreThanGasLimit {
             gas_limit,
-            intrinsic_gas: batch_gas.floor_gas,
+            gas_floor: batch_gas.floor_gas,
         }
         .into());
     }
@@ -2798,9 +2797,12 @@ mod tests {
                     assert!(
                         matches!(
                             err.as_invalid_tx_err(),
-                            Some(TempoInvalidTransaction::InsufficientGasForIntrinsicCost { .. })
+                            Some(TempoInvalidTransaction::EthInvalidTransaction(
+                                InvalidTransaction::CallGasCostMoreThanGasLimit { .. }
+                                    | InvalidTransaction::GasFloorMoreThanGasLimit { .. }
+                            ))
                         ),
-                        "Expected InsufficientGasForIntrinsicCost, got: {err:?}"
+                        "Expected CallGasCostMoreThanGasLimit or GasFloorMoreThanGasLimit, got: {err:?}"
                     );
                 }
             }

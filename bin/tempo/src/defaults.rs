@@ -87,8 +87,32 @@ impl TelemetryArgs {
 }
 
 /// A `Url` with username and password set.
-#[derive(Clone, Debug)]
+///
+/// `Debug` redacts credentials so they don't leak in clap error output or logs.
+#[derive(Clone)]
 pub(crate) struct UrlWithAuth(Url);
+
+impl UrlWithAuth {
+    /// Returns a copy of the URL with the password replaced by `***`.
+    fn redacted(&self) -> Url {
+        let mut url = self.0.clone();
+        url.set_password(Some("***")).ok();
+        url
+    }
+}
+
+impl std::fmt::Debug for UrlWithAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.redacted())
+    }
+}
+
+impl std::fmt::Display for UrlWithAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.redacted())
+    }
+}
+
 impl FromStr for UrlWithAuth {
     type Err = Box<dyn std::error::Error + Send + Sync + 'static>;
 
