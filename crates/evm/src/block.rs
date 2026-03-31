@@ -385,14 +385,9 @@ where
                 new_info.code = Some(code);
                 let mut account: Account = new_info.into();
                 account.mark_touch();
-                let state = EvmState::from_iter([(
-                    VALIDATOR_CONFIG_V2_ADDRESS,
-                    account,
-                )]);
+                let state = EvmState::from_iter([(VALIDATOR_CONFIG_V2_ADDRESS, account)]);
                 self.inner.system_caller.on_state(
-                    StateChangeSource::PreBlock(
-                        StateChangePreBlockSource::BlockHashesContract,
-                    ),
+                    StateChangeSource::PreBlock(StateChangePreBlockSource::BlockHashesContract),
                     &state,
                 );
                 self.inner.evm.db_mut().commit(state);
