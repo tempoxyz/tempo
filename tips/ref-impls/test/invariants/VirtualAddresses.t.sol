@@ -387,7 +387,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         vm.recordLogs();
         vm.prank(sender);
         if (useMemo) {
-            try token.transferWithMemo(virtualAddr, amount, memo) returns (bool) {
+            try token.transferWithMemo(virtualAddr, amount, memo) {
                 revert("TEMPO-VA6: unregistered transferWithMemo unexpectedly succeeded");
             } catch (bytes memory reason) {
                 assertEq(
@@ -789,12 +789,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         assertEq(vm.getRecordedLogs().length, 0, "TEMPO-VA16: reward rejection emitted logs");
     }
 
-    function registerWithInvalidInputs(
-        uint256 callerTypeSeed,
-        bytes32 salt
-    )
-        external
-    {
+    function registerWithInvalidInputs(uint256 callerTypeSeed, bytes32 salt) external {
         address caller;
         uint256 callerType = callerTypeSeed % 4;
 
@@ -817,8 +812,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
             // but if it does and the caller is valid, that's fine — not an error.
             // For invalid callers (type 0/1/2) this should never happen.
             assertTrue(
-                callerType == 3,
-                "TEMPO-VA1: invalid caller registration unexpectedly succeeded"
+                callerType == 3, "TEMPO-VA1: invalid caller registration unexpectedly succeeded"
             );
         } catch (bytes memory reason) {
             bytes4 selector = bytes4(reason);
