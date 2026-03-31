@@ -59,10 +59,12 @@ reth-db-api.workspace = true
 reth-etl.workspace = true
 reth-ethereum = { workspace = true, features = ["full", "cli"] }
 reth-ethereum-cli.workspace = true
+reth-network-peers.workspace = true
 reth-node-builder.workspace = true
 reth-primitives-traits.workspace = true
 reth-provider.workspace = true
 reth-rpc-server-types.workspace = true
+secp256k1.workspace = true
 reth-storage-api.workspace = true
 reth-trie.workspace = true
 reth-trie-db.workspace = true
