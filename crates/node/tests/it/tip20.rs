@@ -1138,16 +1138,23 @@ async fn test_tip20_virtual_transfer_from() -> eyre::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_tip20_registry_deployed_at_t3() -> eyre::Result<()> {
+async fn test_tip20_registry_not_deployed_before_t3() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+
+    let genesis_str = include_str!("../assets/test-genesis.json");
+    let mut genesis: serde_json::Value = serde_json::from_str(genesis_str)?;
+    genesis["config"].as_object_mut().unwrap().remove("t3Time");
+
+    let setup = TestNodeBuilder::new()
+        .with_genesis(serde_json::to_string(&genesis)?)
+        .build_http_only()
+        .await?;
     let provider = ProviderBuilder::new().connect_http(setup.http_url);
 
     let code = provider.get_code_at(TIP20_REGISTRY_ADDRESS).await?;
-    assert_eq!(
-        code.as_ref(),
-        &[0xef],
-        "TIP20Registry should have 0xEF marker bytecode at T3"
+    assert!(
+        code.is_empty(),
+        "TIP20Registry should have no code before T3"
     );
 
     Ok(())
