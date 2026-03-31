@@ -38,6 +38,9 @@ interface ITIP403Registry {
     /// @notice Error when policy has an invalid type
     error InvalidPolicyType();
 
+    /// @notice TIP-1022 virtual addresses cannot be used as literal policy members
+    error VirtualAddressNotAllowed();
+
     /// @notice Emitted when a policy's admin is updated
     /// @param policyId The ID of the policy that was updated
     /// @param updater The address that performed the update

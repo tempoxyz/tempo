@@ -4,10 +4,10 @@
 use crate::error::TempoPrecompileError;
 use crate::{
     PATH_USD_ADDRESS, Precompile, Result,
+    address_registry::{AddressRegistry, IAddressRegistry, MasterId, UserTag, VIRTUAL_MAGIC},
     storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
     tip20::{self, ITIP20, TIP20Token},
     tip20_factory::{self, TIP20Factory},
-    tip20_registry::{ITIP20Registry, MasterId, TIP20Registry, UserTag, VIRTUAL_MAGIC},
 };
 use alloy::{
     primitives::{Address, B256, U256, address, hex_literal::hex},
@@ -457,7 +457,7 @@ pub fn gen_word_from(values: &[&str]) -> U256 {
 /// Uses the standard test mnemonic index-0 address so it works in both unit and integration tests.
 pub const VIRTUAL_MASTER: Address = address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
 pub const VIRTUAL_SALT: [u8; 32] =
-    hex!("000000000000000000000000000000000000000000000000000000021171a0bf");
+    hex!("00000000000000000000000000000000000000000000000000000000abf52baf");
 
 /// Builds a virtual address from a `masterId` and `userTag`.
 pub fn make_virtual_address(master_id: MasterId, user_tag: UserTag) -> Address {
@@ -469,10 +469,10 @@ pub fn make_virtual_address(master_id: MasterId, user_tag: UserTag) -> Address {
 }
 
 /// Registers [`VIRTUAL_MASTER`] and returns `(master_id, virtual_address)`.
-pub fn register_virtual_master(registry: &mut TIP20Registry) -> Result<(MasterId, Address)> {
+pub fn register_virtual_master(registry: &mut AddressRegistry) -> Result<(MasterId, Address)> {
     let master_id = registry.register_virtual_master(
         VIRTUAL_MASTER,
-        ITIP20Registry::registerVirtualMasterCall {
+        IAddressRegistry::registerVirtualMasterCall {
             salt: VIRTUAL_SALT.into(),
         },
     )?;

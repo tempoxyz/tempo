@@ -1,5 +1,5 @@
-pub use ITIP20Registry::{
-    ITIP20RegistryErrors as TIP20RegistryError, ITIP20RegistryEvents as TIP20RegistryEvent,
+pub use IAddressRegistry::{
+    IAddressRegistryErrors as AddrRegistryError, IAddressRegistryEvents as AddrRegistryEvent,
 };
 use alloy_primitives::Address;
 
@@ -13,7 +13,7 @@ crate::sol! {
     /// [TIP-1022]: <https://docs.tempo.xyz/protocol/tip1022>
     #[derive(Debug, PartialEq, Eq)]
     #[sol(abi)]
-    interface ITIP20Registry {
+    interface IAddressRegistry {
         // Registration
         function registerVirtualMaster(bytes32 salt) external returns (bytes4 masterId);
 
@@ -37,24 +37,24 @@ crate::sol! {
     }
 }
 
-impl TIP20RegistryError {
+impl AddrRegistryError {
     /// The computed `masterId` is already registered to the given `master` address.
     pub const fn master_id_collision(master: Address) -> Self {
-        Self::MasterIdCollision(ITIP20Registry::MasterIdCollision { master })
+        Self::MasterIdCollision(IAddressRegistry::MasterIdCollision { master })
     }
 
     /// The caller address is not eligible to be a virtual-address master.
     pub const fn invalid_master_address() -> Self {
-        Self::InvalidMasterAddress(ITIP20Registry::InvalidMasterAddress {})
+        Self::InvalidMasterAddress(IAddressRegistry::InvalidMasterAddress {})
     }
 
     /// The registration hash does not satisfy the 32-bit proof-of-work requirement.
     pub const fn proof_of_work_failed() -> Self {
-        Self::ProofOfWorkFailed(ITIP20Registry::ProofOfWorkFailed {})
+        Self::ProofOfWorkFailed(IAddressRegistry::ProofOfWorkFailed {})
     }
 
     /// The virtual address has a valid format but its `masterId` is not registered.
     pub const fn virtual_address_unregistered() -> Self {
-        Self::VirtualAddressUnregistered(ITIP20Registry::VirtualAddressUnregistered {})
+        Self::VirtualAddressUnregistered(IAddressRegistry::VirtualAddressUnregistered {})
     }
 }

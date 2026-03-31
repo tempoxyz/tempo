@@ -23,11 +23,11 @@ pub use slots as tip20_slots;
 use crate::{
     PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
+    address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
-    tip20_registry::TIP20Registry,
     tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
 };
 use alloy::{
@@ -91,12 +91,12 @@ impl Recipient {
         }
     }
 
-    /// Resolves a recipient via the [`TIP20Registry`].
+    /// Resolves a recipient via the [`AddressRegistry`].
     ///
     /// If `addr` is a virtual address its registered master is looked up and stored in `target`,
     /// with the original virtual address preserved in `virtual_addr`.
     pub fn resolve(addr: Address) -> Result<Self> {
-        let effective = TIP20Registry::new().resolve_recipient(addr)?;
+        let effective = AddressRegistry::new().resolve_recipient(addr)?;
         Ok(if effective == addr {
             Self::direct(addr)
         } else {
@@ -468,7 +468,7 @@ impl TIP20Token {
 
     /// Mints `amount` tokens to the resolved target `to` address:
     /// - Enforces mint-recipient compliance via [`TIP403Registry`] and validates against supply cap
-    /// - Resolves `to` via the [`TIP20Registry`]. If `to` is a virtual address, credits the
+    /// - Resolves `to` via the [`AddressRegistry`]. If `to` is a virtual address, credits the
     ///   resolved master and emits a two-hop `Transfer` and `Mint(virtual, amount)` events
     ///
     /// # Errors
@@ -1194,13 +1194,13 @@ pub(crate) mod tests {
         account_keychain::{
             AccountKeychain, SignatureType, TokenLimit, authorizeKeyCall, getRemainingLimitCall,
         },
+        address_registry::{AddressRegistry, MasterId, UserTag},
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{
             TIP20Setup, VIRTUAL_MASTER, make_virtual_address, register_virtual_master,
             setup_storage,
         },
-        tip20_registry::{MasterId, TIP20Registry, UserTag},
     };
     use rand_08::{Rng, distributions::Alphanumeric, thread_rng};
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -2553,7 +2553,7 @@ pub(crate) mod tests {
             let admin = Address::random();
 
             StorageCtx::enter(&mut storage, || {
-                let mut registry = TIP20Registry::new();
+                let mut registry = AddressRegistry::new();
                 let (_, virtual_addr) = register_virtual_master(&mut registry)?;
 
                 let mut token = TIP20Setup::create("Test", "TST", admin)
@@ -2614,7 +2614,7 @@ pub(crate) mod tests {
             let sender = Address::random();
 
             StorageCtx::enter(&mut storage, || {
-                let mut registry = TIP20Registry::new();
+                let mut registry = AddressRegistry::new();
                 let (_, virtual_addr) = register_virtual_master(&mut registry)?;
 
                 let mut token = TIP20Setup::create("Test", "TST", admin)
@@ -2671,7 +2671,7 @@ pub(crate) mod tests {
             let spender = Address::random();
 
             StorageCtx::enter(&mut storage, || {
-                let mut registry = TIP20Registry::new();
+                let mut registry = AddressRegistry::new();
                 let (_, virtual_addr) = register_virtual_master(&mut registry)?;
 
                 let mut token = TIP20Setup::create("Test", "TST", admin)

@@ -10,11 +10,11 @@ pub mod storage;
 pub(crate) mod ip_validation;
 
 pub mod account_keychain;
+pub mod address_registry;
 pub mod nonce;
 pub mod stablecoin_dex;
 pub mod tip20;
 pub mod tip20_factory;
-pub mod tip20_registry;
 pub mod tip403_registry;
 pub mod tip_fee_manager;
 pub mod validator_config;
@@ -25,13 +25,13 @@ pub mod test_util;
 
 use crate::{
     account_keychain::AccountKeychain,
+    address_registry::AddressRegistry,
     nonce::NonceManager,
     stablecoin_dex::StablecoinDEX,
     storage::StorageCtx,
     tip_fee_manager::TipFeeManager,
     tip20::{TIP20Token, is_tip20_prefix},
     tip20_factory::TIP20Factory,
-    tip20_registry::TIP20Registry,
     tip403_registry::TIP403Registry,
     validator_config::ValidatorConfig,
     validator_config_v2::ValidatorConfigV2,
@@ -54,9 +54,10 @@ use revm::{
 };
 
 pub use tempo_contracts::precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
-    STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, TIP20_REGISTRY_ADDRESS,
-    TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, DEFAULT_FEE_TOKEN,
+    NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
+    VALIDATOR_CONFIG_V2_ADDRESS,
 };
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
@@ -122,8 +123,8 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
             Some(TIP20Token::create_precompile(*address, &cfg))
         } else if *address == TIP20_FACTORY_ADDRESS {
             Some(TIP20Factory::create_precompile(&cfg))
-        } else if *address == TIP20_REGISTRY_ADDRESS {
-            Some(TIP20Registry::create_precompile(&cfg))
+        } else if *address == ADDRESS_REGISTRY_ADDRESS {
+            Some(AddressRegistry::create_precompile(&cfg))
         } else if *address == TIP403_REGISTRY_ADDRESS {
             Some(TIP403Registry::create_precompile(&cfg))
         } else if *address == TIP_FEE_MANAGER_ADDRESS {
@@ -181,10 +182,10 @@ impl TipFeeManager {
     }
 }
 
-impl TIP20Registry {
+impl AddressRegistry {
     /// Creates the EVM precompile for this type.
     pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("TIP20Registry", cfg, |input| { Self::new() })
+        tempo_precompile!("AddressRegistry", cfg, |input| { Self::new() })
     }
 }
 

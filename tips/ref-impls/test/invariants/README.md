@@ -543,3 +543,30 @@ TIP20 is the Tempo token standard that extends ERC-20 with transfer policies, me
 - **TEMPO-TIP33**: A permit signature can only be used once (enforced by nonce increment).
 - **TEMPO-TIP34**: A permit with a deadline in the past must always revert.
 - **TEMPO-TIP35**: The recovered signer from a valid permit signature must exactly match the `owner` parameter.
+
+## TIP-1022 Virtual Addresses
+
+### Registry & Address Invariants
+
+- **TEMPO-VA1**: Registration determinism - each fixed `(master, salt)` fixture registers exactly the `masterId` implied by `bytes4(keccak256(abi.encodePacked(master, salt))[4:8])`.
+- **TEMPO-VA2**: Master ID uniqueness - no two registered fixtures share a `masterId`.
+- **TEMPO-VA3**: Decode round-trip - `decodeVirtualAddress(makeVirtualAddress(masterId, userTag))` returns the original `masterId` and `userTag`.
+- **TEMPO-VA4**: Registered resolution - `resolveRecipient(virtual)` and `resolveVirtualAddress(virtual)` both return the registered master for every tracked alias.
+- **TEMPO-VA5**: Non-virtual passthrough - `resolveRecipient(nonVirtual)` returns the literal address unchanged.
+
+### TIP-20 Forwarding Invariants
+
+- **TEMPO-VA6**: Unregistered resolution is atomic - calls to unregistered virtual aliases revert with no balance, allowance, supply, or event changes.
+- **TEMPO-VA7**: Transfer forwarding exactness - `transfer` and `transferWithMemo` debit the sender exactly once and credit the resolved master exactly once.
+- **TEMPO-VA8**: Allowance forwarding exactness - `transferFrom` and `transferFromWithMemo` apply forwarding without changing allowance semantics.
+- **TEMPO-VA9**: Mint forwarding exactness - `mint` and `mintWithMemo` credit only the resolved master and increase total supply by exactly `amount`.
+- **TEMPO-VA10**: Zero-balance invariant - `balanceOf(virtual) == 0` for every tracked alias after every run.
+- **TEMPO-VA11**: Two-hop transfer events - plain transfer paths emit `Transfer(sender, virtual, amount)` followed by `Transfer(virtual, master, amount)`.
+- **TEMPO-VA12**: Memo and mint event attribution - memo events and `Mint` events use the virtual alias as the recipient-facing address, with the forwarding hop emitted last.
+- **TEMPO-VA13**: Self-forward neutrality - master-to-own-alias transfers have zero net balance effect on the master while still emitting both hops.
+
+### Policy & Reward Invariants
+
+- **TEMPO-VA14**: Policy-on-master semantics - recipient and mint-recipient authorization is evaluated on the resolved master, not the alias.
+- **TEMPO-VA15**: Policy-operation rejection - TIP-403 configuration APIs reject virtual aliases as literal policy members.
+- **TEMPO-VA16**: Reward-recipient rejection - `setRewardRecipient` rejects virtual aliases.

@@ -8,7 +8,7 @@
 pub mod dispatch;
 
 use crate::{
-    TIP20_REGISTRY_ADDRESS,
+    ADDRESS_REGISTRY_ADDRESS,
     error::Result,
     storage::{Handler, Mapping},
     tip20::is_tip20_prefix,
@@ -17,7 +17,7 @@ use alloy::{
     primitives::{Address, FixedBytes, keccak256},
     sol_types::SolValue,
 };
-pub use tempo_contracts::precompiles::{ITIP20Registry, TIP20RegistryError, TIP20RegistryEvent};
+pub use tempo_contracts::precompiles::{AddrRegistryError, AddrRegistryEvent, IAddressRegistry};
 use tempo_precompiles_macros::{Storable, contract};
 
 /// 4-byte master identifier derived from the registration hash.
@@ -66,8 +66,8 @@ pub fn decode_virtual_address(addr: Address) -> Option<(MasterId, UserTag)> {
 /// storage handlers which provide an ergonomic way to interact with the EVM state.
 ///
 /// [TIP-1022]: <https://docs.tempo.xyz/protocol/tip1022>
-#[contract(addr = TIP20_REGISTRY_ADDRESS)]
-pub struct TIP20Registry {
+#[contract(addr = ADDRESS_REGISTRY_ADDRESS)]
+pub struct AddressRegistry {
     /// Maps `masterId → RegistryData` (master address + metadata).
     data: Mapping<MasterId, RegistryData>,
 }
@@ -93,7 +93,7 @@ impl RegistryData {
     }
 }
 
-impl TIP20Registry {
+impl AddressRegistry {
     /// Initializes the registry contract by setting its bytecode marker.
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
@@ -113,11 +113,11 @@ impl TIP20Registry {
     pub fn register_virtual_master(
         &mut self,
         msg_sender: Address,
-        call: ITIP20Registry::registerVirtualMasterCall,
+        call: IAddressRegistry::registerVirtualMasterCall,
     ) -> Result<MasterId> {
         // Validate master address
         if !is_valid_master_address(msg_sender) {
-            return Err(TIP20RegistryError::invalid_master_address().into());
+            return Err(AddrRegistryError::invalid_master_address().into());
         }
 
         // Compute registration hash: keccak256(abi.encodePacked(msg.sender, salt))
@@ -125,7 +125,7 @@ impl TIP20Registry {
 
         // 32-bit PoW: first 4 bytes must be zero
         if registration_hash[0..4] != [0u8; 4] {
-            return Err(TIP20RegistryError::proof_of_work_failed().into());
+            return Err(AddrRegistryError::proof_of_work_failed().into());
         }
 
         // masterId = bytes [4:8]
@@ -133,7 +133,7 @@ impl TIP20Registry {
 
         // Ensure no collisions
         if let Some(master) = self.data[master_id].read()?.master_address() {
-            return Err(TIP20RegistryError::master_id_collision(master).into());
+            return Err(AddrRegistryError::master_id_collision(master).into());
         }
 
         // Store the registration
@@ -144,8 +144,8 @@ impl TIP20Registry {
         })?;
 
         // Emit event
-        self.emit_event(TIP20RegistryEvent::MasterRegistered(
-            ITIP20Registry::MasterRegistered {
+        self.emit_event(AddrRegistryEvent::MasterRegistered(
+            IAddressRegistry::MasterRegistered {
                 masterId: master_id,
                 masterAddress: msg_sender,
             },
@@ -179,7 +179,7 @@ impl TIP20Registry {
             None => Ok(to),
             Some((master_id, _)) => self
                 .get_master(master_id)?
-                .ok_or(TIP20RegistryError::virtual_address_unregistered().into()),
+                .ok_or(AddrRegistryError::virtual_address_unregistered().into()),
         }
     }
 
@@ -211,11 +211,11 @@ mod tests {
         let (master, salt) = (VIRTUAL_MASTER, VIRTUAL_SALT.into());
 
         StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP20Registry::new();
+            let mut registry = AddressRegistry::new();
 
             let master_id = registry.register_virtual_master(
                 master,
-                ITIP20Registry::registerVirtualMasterCall { salt },
+                IAddressRegistry::registerVirtualMasterCall { salt },
             )?;
 
             assert_eq!(registry.get_master(master_id)?, Some(master));
@@ -231,15 +231,15 @@ mod tests {
         let bad_salt = FixedBytes::<32>::ZERO;
 
         StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP20Registry::new();
+            let mut registry = AddressRegistry::new();
 
             let result = registry.register_virtual_master(
                 master,
-                ITIP20Registry::registerVirtualMasterCall { salt: bad_salt },
+                IAddressRegistry::registerVirtualMasterCall { salt: bad_salt },
             );
             assert!(matches!(
                 result.unwrap_err(),
-                TempoPrecompileError::TIP20RegistryError(TIP20RegistryError::ProofOfWorkFailed(_))
+                TempoPrecompileError::AddrRegistryError(AddrRegistryError::ProofOfWorkFailed(_))
             ));
 
             Ok(())
@@ -251,19 +251,17 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
 
         StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP20Registry::new();
+            let mut registry = AddressRegistry::new();
 
             let result = registry.register_virtual_master(
                 Address::ZERO,
-                ITIP20Registry::registerVirtualMasterCall {
+                IAddressRegistry::registerVirtualMasterCall {
                     salt: FixedBytes::ZERO,
                 },
             );
             assert!(matches!(
                 result.unwrap_err(),
-                TempoPrecompileError::TIP20RegistryError(TIP20RegistryError::InvalidMasterAddress(
-                    _
-                ))
+                TempoPrecompileError::AddrRegistryError(AddrRegistryError::InvalidMasterAddress(_))
             ));
 
             Ok(())
@@ -277,19 +275,17 @@ mod tests {
         let virtual_addr = make_virtual_address(MasterId::ZERO, UserTag::ZERO);
 
         StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP20Registry::new();
+            let mut registry = AddressRegistry::new();
 
             let result = registry.register_virtual_master(
                 virtual_addr,
-                ITIP20Registry::registerVirtualMasterCall {
+                IAddressRegistry::registerVirtualMasterCall {
                     salt: FixedBytes::ZERO,
                 },
             );
             assert!(matches!(
                 result.unwrap_err(),
-                TempoPrecompileError::TIP20RegistryError(TIP20RegistryError::InvalidMasterAddress(
-                    _
-                ))
+                TempoPrecompileError::AddrRegistryError(AddrRegistryError::InvalidMasterAddress(_))
             ));
 
             Ok(())
@@ -302,19 +298,17 @@ mod tests {
         let tip20_addr = crate::PATH_USD_ADDRESS;
 
         StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP20Registry::new();
+            let mut registry = AddressRegistry::new();
 
             let result = registry.register_virtual_master(
                 tip20_addr,
-                ITIP20Registry::registerVirtualMasterCall {
+                IAddressRegistry::registerVirtualMasterCall {
                     salt: FixedBytes::ZERO,
                 },
             );
             assert!(matches!(
                 result.unwrap_err(),
-                TempoPrecompileError::TIP20RegistryError(TIP20RegistryError::InvalidMasterAddress(
-                    _
-                ))
+                TempoPrecompileError::AddrRegistryError(AddrRegistryError::InvalidMasterAddress(_))
             ));
 
             Ok(())
@@ -327,22 +321,22 @@ mod tests {
         let (master, salt) = (VIRTUAL_MASTER, VIRTUAL_SALT.into());
 
         StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP20Registry::new();
+            let mut registry = AddressRegistry::new();
 
             // First registration succeeds
             registry.register_virtual_master(
                 master,
-                ITIP20Registry::registerVirtualMasterCall { salt },
+                IAddressRegistry::registerVirtualMasterCall { salt },
             )?;
 
             // Second registration with same (address, salt) reverts
             let result = registry.register_virtual_master(
                 master,
-                ITIP20Registry::registerVirtualMasterCall { salt },
+                IAddressRegistry::registerVirtualMasterCall { salt },
             );
             assert!(matches!(
                 result.unwrap_err(),
-                TempoPrecompileError::TIP20RegistryError(TIP20RegistryError::MasterIdCollision(_))
+                TempoPrecompileError::AddrRegistryError(AddrRegistryError::MasterIdCollision(_))
             ));
 
             Ok(())
@@ -380,7 +374,7 @@ mod tests {
         let normal_addr = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let registry = TIP20Registry::new();
+            let registry = AddressRegistry::new();
 
             let resolved = registry.resolve_recipient(normal_addr)?;
             assert_eq!(resolved, normal_addr);
@@ -395,13 +389,13 @@ mod tests {
         let virtual_addr = make_virtual_address(MasterId::ZERO, UserTag::ZERO);
 
         StorageCtx::enter(&mut storage, || {
-            let registry = TIP20Registry::new();
+            let registry = AddressRegistry::new();
 
             let result = registry.resolve_recipient(virtual_addr);
             assert!(matches!(
                 result.unwrap_err(),
-                TempoPrecompileError::TIP20RegistryError(
-                    TIP20RegistryError::VirtualAddressUnregistered(_)
+                TempoPrecompileError::AddrRegistryError(
+                    AddrRegistryError::VirtualAddressUnregistered(_)
                 )
             ));
 
@@ -415,11 +409,11 @@ mod tests {
         let (master, salt) = (VIRTUAL_MASTER, VIRTUAL_SALT.into());
 
         StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP20Registry::new();
+            let mut registry = AddressRegistry::new();
 
             let master_id = registry.register_virtual_master(
                 master,
-                ITIP20Registry::registerVirtualMasterCall { salt },
+                IAddressRegistry::registerVirtualMasterCall { salt },
             )?;
 
             let virtual_addr = make_virtual_address(master_id, UserTag::new(hex!("010203040506")));

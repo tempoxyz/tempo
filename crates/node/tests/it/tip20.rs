@@ -7,9 +7,9 @@ use alloy::{
 };
 use futures::future::try_join_all;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-use tempo_contracts::precompiles::{ITIP20, ITIP20Registry, ITIP403Registry, TIP20Error};
+use tempo_contracts::precompiles::{IAddressRegistry, ITIP20, ITIP403Registry, TIP20Error};
 use tempo_precompiles::{
-    TIP20_REGISTRY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    ADDRESS_REGISTRY_ADDRESS, TIP403_REGISTRY_ADDRESS,
     test_util::{VIRTUAL_SALT, make_virtual_address},
 };
 
@@ -954,7 +954,7 @@ async fn setup_virtual_test() -> eyre::Result<(
         .connect_http(http_url.clone());
 
     let token = setup_test_token(admin_provider.clone(), admin).await?;
-    let registry = ITIP20Registry::new(TIP20_REGISTRY_ADDRESS, admin_provider);
+    let registry = IAddressRegistry::new(ADDRESS_REGISTRY_ADDRESS, admin_provider);
 
     let register_receipt = registry
         .registerVirtualMaster(VIRTUAL_SALT.into())
@@ -966,7 +966,7 @@ async fn setup_virtual_test() -> eyre::Result<(
     let master_event = register_receipt
         .logs()
         .iter()
-        .filter_map(|log| ITIP20Registry::MasterRegistered::decode_log(&log.inner).ok())
+        .filter_map(|log| IAddressRegistry::MasterRegistered::decode_log(&log.inner).ok())
         .next()
         .expect("MasterRegistered event should be emitted");
     assert_eq!(master_event.masterAddress, admin);
@@ -1149,7 +1149,7 @@ async fn test_tip20_registry_deployed_at_t3_activation() -> eyre::Result<()> {
         "t3Time".to_string(),
         serde_json::Value::Number(serde_json::Number::from(2u64)),
     );
-    let registry_key = format!("{TIP20_REGISTRY_ADDRESS:#x}");
+    let registry_key = format!("{ADDRESS_REGISTRY_ADDRESS:#x}");
     genesis["alloc"]
         .as_object_mut()
         .unwrap()
@@ -1162,7 +1162,7 @@ async fn test_tip20_registry_deployed_at_t3_activation() -> eyre::Result<()> {
     let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
 
     // Pre-T3: registry should have no code.
-    let code = provider.get_code_at(TIP20_REGISTRY_ADDRESS).await?;
+    let code = provider.get_code_at(ADDRESS_REGISTRY_ADDRESS).await?;
     assert!(code.is_empty(), "registry should have no code before T3");
 
     // Advance past t3Time to trigger T3 activation.
@@ -1170,7 +1170,7 @@ async fn test_tip20_registry_deployed_at_t3_activation() -> eyre::Result<()> {
     setup.node.advance_block().await?;
 
     // Post-T3: registry should have 0xEF marker bytecode.
-    let code = provider.get_code_at(TIP20_REGISTRY_ADDRESS).await?;
+    let code = provider.get_code_at(ADDRESS_REGISTRY_ADDRESS).await?;
     assert_eq!(
         code.as_ref(),
         &[0xef],
