@@ -1181,7 +1181,10 @@ mod tests {
         let hook_calls_clone = hook_calls.clone();
         executor.set_state_hook(Some(Box::new(
             move |source: StateChangeSource, state: &EvmState| {
-                hook_calls_clone.lock().unwrap().push((source, state.clone()));
+                hook_calls_clone
+                    .lock()
+                    .unwrap()
+                    .push((source, state.clone()));
             },
         )));
 
