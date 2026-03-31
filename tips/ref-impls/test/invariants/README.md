@@ -562,7 +562,7 @@ The SignatureVerifier precompile (`0x5165300000000000000000000000000000000000`) 
 
 ### Failure Handling Invariants
 
-- **SV4**: Revert on failure - structurally valid but cryptographically invalid (garbage) signatures must cause both `recover()` and `verify()` to revert for all signature types (secp256k1, P256, WebAuthn).
+- **SV4**: Revert on failure - structurally valid but cryptographically invalid (garbage) signatures must cause both `recover()` and `verify()` to revert for all signature types (secp256k1, P256, WebAuthn). Additionally, when `ecrecover` returns `address(0)` for a secp256k1 input, the precompile must revert rather than return a zero address. All reverts must use one of the two defined errors: `InvalidFormat()` (encoding/size issues) or `InvalidSignature()` (cryptographic verification failure).
 
 ### Gas Schedule Invariants
 
@@ -574,4 +574,4 @@ The SignatureVerifier precompile (`0x5165300000000000000000000000000000000000`) 
 
 ### Keychain Rejection Invariants
 
-- **SV7**: Keychain signature rejection - signatures with `0x03` (Keychain secp256k1) or `0x04` (Keychain P256) prefixes must be rejected, even when containing valid-looking inner signatures. Both `recover()` and `verify()` must revert.
+- **SV7**: Keychain signature rejection - signatures with `0x03` (Keychain secp256k1) or `0x04` (Keychain P256) prefixes must be rejected, even when containing valid-looking inner signatures. Both `recover()` and `verify()` must revert. The precompile may return either `InvalidFormat()` (when the keychain prefix is rejected at the parsing layer as an unsupported type) or `InvalidSignature()` (if parsing succeeds but verification rejects it).

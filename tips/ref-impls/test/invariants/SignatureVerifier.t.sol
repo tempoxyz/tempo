@@ -10,6 +10,7 @@ import { BaseTest } from "../BaseTest.t.sol";
 ///      stateless, so each handler tests a specific property via direct calls.
 ///      SV5 (gas schedule) requires dedicated low-level gas tests and is NOT covered here.
 /// forge-config: default.hardfork = "tempo:T3"
+/// forge-config: ci.invariant.depth = 100
 contract SignatureVerifierInvariantTest is BaseTest {
 
     address internal constant SIG_VERIFIER = 0x5165300000000000000000000000000000000000;
@@ -47,6 +48,7 @@ contract SignatureVerifierInvariantTest is BaseTest {
     uint256 internal ghost_sv2_webauthnHighSRejected;
     uint256 internal ghost_sv3_sizeRejected;
     uint256 internal ghost_sv4_garbageRejected;
+    uint256 internal ghost_sv4_ecrecoverDiffOk;
     uint256 internal ghost_sv6_unknownTypeRejected;
     uint256 internal ghost_sv7_keychainRejected;
 
@@ -55,6 +57,8 @@ contract SignatureVerifierInvariantTest is BaseTest {
     uint256 internal ghost_sv2_highSAllowed;
     uint256 internal ghost_sv3_badSizeAllowed;
     uint256 internal ghost_sv4_garbageAllowed;
+    uint256 internal ghost_sv4_ecrecoverDiffFailed;
+    uint256 internal ghost_sv4_wrongError;
     uint256 internal ghost_sv6_unknownTypeAllowed;
     uint256 internal ghost_sv7_keychainAllowed;
 
@@ -362,6 +366,24 @@ contract SignatureVerifierInvariantTest is BaseTest {
         }
     }
 
+    /// @notice SV3: oversized calldata (exceeding ABI-encoded max for verify) must revert
+    function handler_sv3_oversizedCalldata(uint256 sizeSeed) external {
+        if (!isTempo) return;
+        // MAX_CALLDATA_LEN = 4 + 32*4 + ceil((2048+1)/32)*32 = 2212
+        uint256 sigSize = bound(sizeSeed, 2050, 3000);
+        bytes memory sig = new bytes(sigSize);
+        sig[0] = bytes1(TYPE_WEBAUTHN);
+        for (uint256 i = 1; i < sigSize; i++) {
+            sig[i] = bytes1(uint8(i % 256));
+        }
+
+        if (_callBothRevert(keccak256("sv3"), sig, address(0xdead))) {
+            ghost_sv3_badSizeAllowed++;
+        } else {
+            ghost_sv3_sizeRejected++;
+        }
+    }
+
     /*//////////////////////////////////////////////////////////////
                      SV4: REVERT ON FAILURE
     //////////////////////////////////////////////////////////////*/
@@ -425,6 +447,32 @@ contract SignatureVerifierInvariantTest is BaseTest {
             ghost_sv4_garbageAllowed++;
         } else {
             ghost_sv4_garbageRejected++;
+        }
+    }
+
+    /// @notice SV4: ecrecover returns address(0) → precompile must revert (not return zero)
+    function handler_sv4_ecrecoverDifferential(
+        bytes32 hash,
+        bytes32 fuzzR,
+        bytes32 fuzzS,
+        uint8 fuzzV
+    )
+        external
+    {
+        if (!isTempo) return;
+        fuzzV = (fuzzV % 2 == 0) ? 27 : 28;
+
+        address ecResult = ecrecover(hash, fuzzV, fuzzR, fuzzS);
+        if (ecResult != address(0)) return;
+
+        bytes memory sig = abi.encodePacked(fuzzR, fuzzS, fuzzV);
+        bytes memory cd = abi.encodeCall(verifier.recover, (hash, sig));
+        (bool ok,) = SIG_VERIFIER.staticcall(cd);
+
+        if (ok) {
+            ghost_sv4_ecrecoverDiffFailed++;
+        } else {
+            ghost_sv4_ecrecoverDiffOk++;
         }
     }
 
@@ -503,6 +551,12 @@ contract SignatureVerifierInvariantTest is BaseTest {
         assertEq(ghost_sv2_highSAllowed, 0, "SV2: high-s signature was accepted");
         assertEq(ghost_sv3_badSizeAllowed, 0, "SV3: wrong-sized signature was accepted");
         assertEq(ghost_sv4_garbageAllowed, 0, "SV4: garbage signature was accepted");
+        assertEq(
+            ghost_sv4_ecrecoverDiffFailed,
+            0,
+            "SV4: precompile accepted where ecrecover returned address(0)"
+        );
+        assertEq(ghost_sv4_wrongError, 0, "SV4: wrong error selector returned");
         assertEq(ghost_sv6_unknownTypeAllowed, 0, "SV6: unknown type prefix was accepted");
         assertEq(ghost_sv7_keychainAllowed, 0, "SV7: keychain prefix was accepted");
     }
@@ -515,6 +569,8 @@ contract SignatureVerifierInvariantTest is BaseTest {
         assertEq(ghost_sv2_highSAllowed, 0, "SV2: high-s allowed count > 0");
         assertEq(ghost_sv3_badSizeAllowed, 0, "SV3: bad size allowed count > 0");
         assertEq(ghost_sv4_garbageAllowed, 0, "SV4: garbage allowed count > 0");
+        assertEq(ghost_sv4_ecrecoverDiffFailed, 0, "SV4: ecrecover diff failed count > 0");
+        assertEq(ghost_sv4_wrongError, 0, "SV4: wrong error count > 0");
         assertEq(ghost_sv6_unknownTypeAllowed, 0, "SV6: unknown type allowed count > 0");
         assertEq(ghost_sv7_keychainAllowed, 0, "SV7: keychain allowed count > 0");
 
@@ -535,7 +591,12 @@ contract SignatureVerifierInvariantTest is BaseTest {
                           INTERNAL HELPERS
     //////////////////////////////////////////////////////////////*/
 
-    /// @dev Returns true if either recover() or verify() accepted (bug), false if both reverted
+    bytes4 internal constant _INVALID_FORMAT_SEL = ISignatureVerifier.InvalidFormat.selector;
+    bytes4 internal constant _INVALID_SIG_SEL = ISignatureVerifier.InvalidSignature.selector;
+
+    /// @dev Returns true if either recover() or verify() accepted (bug), false if both reverted.
+    ///      Also checks that recover()'s revert error is one of the two known selectors
+    ///      (InvalidFormat or InvalidSignature); increments ghost_sv4_wrongError otherwise.
     function _callBothRevert(
         bytes32 hash,
         bytes memory sig,
@@ -544,12 +605,21 @@ contract SignatureVerifierInvariantTest is BaseTest {
         internal
         returns (bool accepted)
     {
-        try verifier.recover(hash, sig) {
+        bytes memory recoverCd = abi.encodeCall(verifier.recover, (hash, sig));
+        (bool recoverOk, bytes memory recoverRet) = SIG_VERIFIER.staticcall(recoverCd);
+        if (recoverOk) {
             accepted = true;
-        } catch { }
-        try verifier.verify(signer, hash, sig) returns (bool) {
-            accepted = true;
-        } catch { }
+        } else if (recoverRet.length >= 4) {
+            bytes4 sel;
+            assembly {
+                sel := mload(add(recoverRet, 32))
+            }
+            if (sel != _INVALID_FORMAT_SEL && sel != _INVALID_SIG_SEL) ghost_sv4_wrongError++;
+        }
+
+        bytes memory verifyCd = abi.encodeCall(verifier.verify, (signer, hash, sig));
+        (bool verifyOk,) = SIG_VERIFIER.staticcall(verifyCd);
+        if (verifyOk) accepted = true;
     }
 
     function _signP256(uint256 idx, bytes32 hash) internal view returns (bytes memory) {
