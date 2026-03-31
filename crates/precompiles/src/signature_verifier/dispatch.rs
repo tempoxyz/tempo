@@ -19,14 +19,6 @@ impl Precompile for SignatureVerifier {
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
 
-        // Pre-T3: behave like an empty contract (call succeeds, no execution)
-        if !self.storage.spec().is_t3() {
-            return Ok(PrecompileOutput::new(
-                self.storage.gas_used(),
-                Default::default(),
-            ));
-        }
-
         if calldata.len() > MAX_CALLDATA_LEN {
             return Ok(PrecompileOutput::new_reverted(
                 self.storage.gas_used(),

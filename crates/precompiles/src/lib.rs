@@ -137,7 +137,7 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
             Some(AccountKeychain::create_precompile(&cfg))
         } else if *address == VALIDATOR_CONFIG_V2_ADDRESS {
             Some(ValidatorConfigV2::create_precompile(&cfg))
-        } else if *address == SIGNATURE_VERIFIER_ADDRESS {
+        } else if *address == SIGNATURE_VERIFIER_ADDRESS && cfg.spec.is_t3() {
             Some(SignatureVerifier::create_precompile(&cfg))
         } else {
             None
@@ -588,7 +588,8 @@ mod tests {
 
     #[test]
     fn test_extend_tempo_precompiles_registers_precompiles() {
-        let cfg = CfgEnv::<TempoHardfork>::default();
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.set_spec(TempoHardfork::T3);
         let precompiles = tempo_precompiles(&cfg);
 
         // TIP20Factory should be registered
@@ -647,11 +648,11 @@ mod tests {
             "AccountKeychain should be registered"
         );
 
-        // SignatureVerifier should be registered
+        // SignatureVerifier should be registered at T3
         let sig_verifier_precompile = precompiles.get(&SIGNATURE_VERIFIER_ADDRESS);
         assert!(
             sig_verifier_precompile.is_some(),
-            "SignatureVerifier should be registered"
+            "SignatureVerifier should be registered at T3"
         );
 
         // TIP20 tokens with prefix should be registered
@@ -667,6 +668,17 @@ mod tests {
         assert!(
             random_precompile.is_none(),
             "Random address should not be a precompile"
+        );
+    }
+
+    #[test]
+    fn test_signature_verifier_not_registered_pre_t3() {
+        let cfg = CfgEnv::<TempoHardfork>::default();
+        let precompiles = tempo_precompiles(&cfg);
+
+        assert!(
+            precompiles.get(&SIGNATURE_VERIFIER_ADDRESS).is_none(),
+            "SignatureVerifier should NOT be registered before T3"
         );
     }
 
