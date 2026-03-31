@@ -52,6 +52,50 @@ pub fn is_constrained_tip20_selector(selector: [u8; 4]) -> bool {
     )
 }
 
+/// Key information stored in the precompile
+///
+/// Storage layout (packed into single slot, right-aligned):
+/// - byte 0: signature_type (u8)
+/// - bytes 1-8: expiry (u64, little-endian)
+/// - byte 9: enforce_limits (bool)
+/// - byte 10: is_revoked (bool)
+#[derive(Debug, Clone, Default, PartialEq, Eq, Storable)]
+pub struct AuthorizedKey {
+    /// Signature type: 0 = secp256k1, 1 = P256, 2 = WebAuthn
+    pub signature_type: u8,
+    /// Block timestamp when key expires
+    pub expiry: u64,
+    /// Whether to enforce spending limits for this key
+    pub enforce_limits: bool,
+    /// Whether this key has been revoked. Once revoked, a key cannot be re-authorized
+    /// with the same key_id. This prevents replay attacks.
+    pub is_revoked: bool,
+}
+
+/// Account Keychain contract for managing authorized keys (session keys, spending limits).
+///
+/// The struct fields define the on-chain storage layout; the `#[contract]` macro generates the
+/// storage handlers which provide an ergonomic way to interact with the EVM state.
+#[contract(addr = ACCOUNT_KEYCHAIN_ADDRESS)]
+pub struct AccountKeychain {
+    // keys[account][keyId] -> AuthorizedKey
+    keys: Mapping<Address, Mapping<Address, AuthorizedKey>>,
+    // spendingLimits[(account, keyId)][token] -> { remaining, max, period, period_end }
+    // Using a hash of account and keyId as the key to avoid triple nesting
+    spending_limits: Mapping<B256, Mapping<Address, SpendingLimitState>>,
+
+    // key_scopes[(account, keyId)] -> call scoping configuration.
+    key_scopes: Mapping<B256, KeyScope>,
+
+    // WARNING(rusowsky): transient storage slots must always be placed at the very end until the `contract`
+    // macro is refactored and has 2 independent layouts (persistent and transient).
+    // If new (persistent) storage fields need to be added to the precompile, they must go above this one.
+    transaction_key: Address,
+    // The transaction origin (tx.origin) - the EOA that signed the transaction.
+    // Used to ensure spending limits only apply when msg_sender == tx_origin.
+    tx_origin: Address,
+}
+
 /// Key-level call scope.
 #[derive(Debug, Clone, Storable, Default)]
 pub struct KeyScope {
@@ -81,26 +125,6 @@ pub struct SelectorScope {
     pub recipients: Set<Address>,
 }
 
-/// Key information stored in the precompile
-///
-/// Storage layout (packed into single slot, right-aligned):
-/// - byte 0: signature_type (u8)
-/// - bytes 1-8: expiry (u64, little-endian)
-/// - byte 9: enforce_limits (bool)
-/// - byte 10: is_revoked (bool)
-#[derive(Debug, Clone, Default, PartialEq, Eq, Storable)]
-pub struct AuthorizedKey {
-    /// Signature type: 0 = secp256k1, 1 = P256, 2 = WebAuthn
-    pub signature_type: u8,
-    /// Block timestamp when key expires
-    pub expiry: u64,
-    /// Whether to enforce spending limits for this key
-    pub enforce_limits: bool,
-    /// Whether this key has been revoked. Once revoked, a key cannot be re-authorized
-    /// with the same key_id. This prevents replay attacks.
-    pub is_revoked: bool,
-}
-
 /// Per-token spending limit state.
 ///
 /// `remaining` stays in the first slot so the legacy `spending_limits` layout remains intact.
@@ -128,30 +152,6 @@ impl SpendingLimitState {
         let advance = self.period.saturating_mul(periods_elapsed);
         self.period_end.saturating_add(advance)
     }
-}
-
-/// Account Keychain contract for managing authorized keys (session keys, spending limits).
-///
-/// The struct fields define the on-chain storage layout; the `#[contract]` macro generates the
-/// storage handlers which provide an ergonomic way to interact with the EVM state.
-#[contract(addr = ACCOUNT_KEYCHAIN_ADDRESS)]
-pub struct AccountKeychain {
-    // keys[account][keyId] -> AuthorizedKey
-    keys: Mapping<Address, Mapping<Address, AuthorizedKey>>,
-    // spendingLimits[(account, keyId)][token] -> { remaining, max, period, period_end }
-    // Using a hash of account and keyId as the key to avoid triple nesting
-    spending_limits: Mapping<B256, Mapping<Address, SpendingLimitState>>,
-
-    // key_scopes[(account, keyId)] -> call scoping configuration.
-    key_scopes: Mapping<B256, KeyScope>,
-
-    // WARNING(rusowsky): transient storage slots must always be placed at the very end until the `contract`
-    // macro is refactored and has 2 independent layouts (persistent and transient).
-    // If new (persistent) storage fields need to be added to the precompile, they must go above this one.
-    transaction_key: Address,
-    // The transaction origin (tx.origin) - the EOA that signed the transaction.
-    // Used to ensure spending limits only apply when msg_sender == tx_origin.
-    tx_origin: Address,
 }
 
 impl AccountKeychain {
