@@ -122,13 +122,13 @@ crate::sol! {
             uint256 newLimit
         ) external;
 
-        /// Set or replace allowed calls for a key+target pair.
+        /// Set or replace allowed calls for one or more key+target pairs.
         /// @dev `scope.selectorRules = []` does NOT block the target; it allows any selector on that target.
         /// @dev To block the target entirely, call `removeAllowedCalls`. To block one selector,
         ///      omit that selector rule from `scope.selectorRules`.
         function setAllowedCalls(
             address keyId,
-            CallScope calldata scope
+            CallScope[] calldata scopes
         ) external;
 
         /// Remove any configured call scope for a key+target pair.
