@@ -362,7 +362,9 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         uint256 tokenSeed,
         uint256 masterSeed,
         uint256 tagSeed,
-        uint256 amount
+        uint256 amount,
+        bytes32 memo,
+        bool useMemo
     )
         external
     {
@@ -380,14 +382,26 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
 
         vm.recordLogs();
         vm.prank(sender);
-        try token.transfer(virtualAddr, amount) returns (bool) {
-            revert("TEMPO-VA6: unregistered transfer unexpectedly succeeded");
-        } catch (bytes memory reason) {
-            assertEq(
-                bytes4(reason),
-                IAddressRegistry.VirtualAddressUnregistered.selector,
-                "TEMPO-VA6: wrong unregistered transfer error"
-            );
+        if (useMemo) {
+            try token.transferWithMemo(virtualAddr, amount, memo) returns (bool) {
+                revert("TEMPO-VA6: unregistered transferWithMemo unexpectedly succeeded");
+            } catch (bytes memory reason) {
+                assertEq(
+                    bytes4(reason),
+                    IAddressRegistry.VirtualAddressUnregistered.selector,
+                    "TEMPO-VA6: wrong unregistered transferWithMemo error"
+                );
+            }
+        } else {
+            try token.transfer(virtualAddr, amount) returns (bool) {
+                revert("TEMPO-VA6: unregistered transfer unexpectedly succeeded");
+            } catch (bytes memory reason) {
+                assertEq(
+                    bytes4(reason),
+                    IAddressRegistry.VirtualAddressUnregistered.selector,
+                    "TEMPO-VA6: wrong unregistered transfer error"
+                );
+            }
         }
 
         assertEq(token.balanceOf(sender), senderBalanceBefore, "TEMPO-VA6: sender changed");
@@ -404,7 +418,9 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         uint256 masterSeed,
         uint256 tagSeed,
         uint256 approvalSeed,
-        uint256 amount
+        uint256 amount,
+        bytes32 memo,
+        bool useMemo
     )
         external
     {
@@ -431,14 +447,26 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
 
         vm.recordLogs();
         vm.prank(spender);
-        try token.transferFrom(owner, virtualAddr, amount) returns (bool) {
-            revert("TEMPO-VA6: unregistered transferFrom unexpectedly succeeded");
-        } catch (bytes memory reason) {
-            assertEq(
-                bytes4(reason),
-                IAddressRegistry.VirtualAddressUnregistered.selector,
-                "TEMPO-VA6: wrong unregistered transferFrom error"
-            );
+        if (useMemo) {
+            try token.transferFromWithMemo(owner, virtualAddr, amount, memo) returns (bool) {
+                revert("TEMPO-VA6: unregistered transferFromWithMemo unexpectedly succeeded");
+            } catch (bytes memory reason) {
+                assertEq(
+                    bytes4(reason),
+                    IAddressRegistry.VirtualAddressUnregistered.selector,
+                    "TEMPO-VA6: wrong unregistered transferFromWithMemo error"
+                );
+            }
+        } else {
+            try token.transferFrom(owner, virtualAddr, amount) returns (bool) {
+                revert("TEMPO-VA6: unregistered transferFrom unexpectedly succeeded");
+            } catch (bytes memory reason) {
+                assertEq(
+                    bytes4(reason),
+                    IAddressRegistry.VirtualAddressUnregistered.selector,
+                    "TEMPO-VA6: wrong unregistered transferFrom error"
+                );
+            }
         }
 
         assertEq(token.balanceOf(owner), snapshot.fromBalance, "TEMPO-VA6: owner changed");
@@ -455,7 +483,9 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         uint256 tokenSeed,
         uint256 masterSeed,
         uint256 tagSeed,
-        uint256 amount
+        uint256 amount,
+        bytes32 memo,
+        bool useMemo
     )
         external
     {
@@ -468,14 +498,26 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
 
         vm.recordLogs();
         vm.prank(admin);
-        try token.mint(virtualAddr, amount) {
-            revert("TEMPO-VA6: unregistered mint unexpectedly succeeded");
-        } catch (bytes memory reason) {
-            assertEq(
-                bytes4(reason),
-                IAddressRegistry.VirtualAddressUnregistered.selector,
-                "TEMPO-VA6: wrong unregistered mint error"
-            );
+        if (useMemo) {
+            try token.mintWithMemo(virtualAddr, amount, memo) {
+                revert("TEMPO-VA6: unregistered mintWithMemo unexpectedly succeeded");
+            } catch (bytes memory reason) {
+                assertEq(
+                    bytes4(reason),
+                    IAddressRegistry.VirtualAddressUnregistered.selector,
+                    "TEMPO-VA6: wrong unregistered mintWithMemo error"
+                );
+            }
+        } else {
+            try token.mint(virtualAddr, amount) {
+                revert("TEMPO-VA6: unregistered mint unexpectedly succeeded");
+            } catch (bytes memory reason) {
+                assertEq(
+                    bytes4(reason),
+                    IAddressRegistry.VirtualAddressUnregistered.selector,
+                    "TEMPO-VA6: wrong unregistered mint error"
+                );
+            }
         }
 
         assertEq(token.balanceOf(virtualAddr), virtualBalanceBefore, "TEMPO-VA6: alias changed");
