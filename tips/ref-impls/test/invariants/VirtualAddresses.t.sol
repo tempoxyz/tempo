@@ -32,7 +32,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
 
     string internal constant ANVIL_MNEMONIC =
         "test test test test test test test test test test test junk";
-    uint256 internal constant MASTER_COUNT = 7;
+    uint256 internal constant MASTER_COUNT = 8;
     uint256 internal constant TAG_COUNT = 16;
     uint256 internal constant INITIAL_MASTER_BALANCE = 1_000_000_000_000;
     uint256 internal constant MAX_HANDLER_AMOUNT = 1_000_000_000;
@@ -45,7 +45,11 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         bytes32(uint256(0xe9380f73)),
         bytes32(uint256(0xbf34bdba)),
         bytes32(uint256(0x011e93c2f3)),
-        bytes32(uint256(0x01bf66b590))
+        bytes32(uint256(0x01bf66b590)),
+        // Second salt for master index 0 (same address, different masterId 0x66937001).
+        // Exercises the spec's many-to-one property: "The same address MAY register
+        // multiple masterIds using different salts."
+        bytes32(uint256(0x10e1ea97a))
     ];
 
     bytes6[TAG_COUNT] internal USER_TAGS = [
@@ -362,7 +366,9 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         uint256 tokenSeed,
         uint256 masterSeed,
         uint256 tagSeed,
-        uint256 amount
+        uint256 amount,
+        bytes32 memo,
+        bool useMemo
     )
         external
     {
@@ -380,14 +386,26 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
 
         vm.recordLogs();
         vm.prank(sender);
-        try token.transfer(virtualAddr, amount) returns (bool) {
-            revert("TEMPO-VA6: unregistered transfer unexpectedly succeeded");
-        } catch (bytes memory reason) {
-            assertEq(
-                bytes4(reason),
-                IAddressRegistry.VirtualAddressUnregistered.selector,
-                "TEMPO-VA6: wrong unregistered transfer error"
-            );
+        if (useMemo) {
+            try token.transferWithMemo(virtualAddr, amount, memo) {
+                revert("TEMPO-VA6: unregistered transferWithMemo unexpectedly succeeded");
+            } catch (bytes memory reason) {
+                assertEq(
+                    bytes4(reason),
+                    IAddressRegistry.VirtualAddressUnregistered.selector,
+                    "TEMPO-VA6: wrong unregistered transferWithMemo error"
+                );
+            }
+        } else {
+            try token.transfer(virtualAddr, amount) returns (bool) {
+                revert("TEMPO-VA6: unregistered transfer unexpectedly succeeded");
+            } catch (bytes memory reason) {
+                assertEq(
+                    bytes4(reason),
+                    IAddressRegistry.VirtualAddressUnregistered.selector,
+                    "TEMPO-VA6: wrong unregistered transfer error"
+                );
+            }
         }
 
         assertEq(token.balanceOf(sender), senderBalanceBefore, "TEMPO-VA6: sender changed");
@@ -404,7 +422,9 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         uint256 masterSeed,
         uint256 tagSeed,
         uint256 approvalSeed,
-        uint256 amount
+        uint256 amount,
+        bytes32 memo,
+        bool useMemo
     )
         external
     {
@@ -431,14 +451,26 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
 
         vm.recordLogs();
         vm.prank(spender);
-        try token.transferFrom(owner, virtualAddr, amount) returns (bool) {
-            revert("TEMPO-VA6: unregistered transferFrom unexpectedly succeeded");
-        } catch (bytes memory reason) {
-            assertEq(
-                bytes4(reason),
-                IAddressRegistry.VirtualAddressUnregistered.selector,
-                "TEMPO-VA6: wrong unregistered transferFrom error"
-            );
+        if (useMemo) {
+            try token.transferFromWithMemo(owner, virtualAddr, amount, memo) returns (bool) {
+                revert("TEMPO-VA6: unregistered transferFromWithMemo unexpectedly succeeded");
+            } catch (bytes memory reason) {
+                assertEq(
+                    bytes4(reason),
+                    IAddressRegistry.VirtualAddressUnregistered.selector,
+                    "TEMPO-VA6: wrong unregistered transferFromWithMemo error"
+                );
+            }
+        } else {
+            try token.transferFrom(owner, virtualAddr, amount) returns (bool) {
+                revert("TEMPO-VA6: unregistered transferFrom unexpectedly succeeded");
+            } catch (bytes memory reason) {
+                assertEq(
+                    bytes4(reason),
+                    IAddressRegistry.VirtualAddressUnregistered.selector,
+                    "TEMPO-VA6: wrong unregistered transferFrom error"
+                );
+            }
         }
 
         assertEq(token.balanceOf(owner), snapshot.fromBalance, "TEMPO-VA6: owner changed");
@@ -455,7 +487,9 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         uint256 tokenSeed,
         uint256 masterSeed,
         uint256 tagSeed,
-        uint256 amount
+        uint256 amount,
+        bytes32 memo,
+        bool useMemo
     )
         external
     {
@@ -468,14 +502,26 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
 
         vm.recordLogs();
         vm.prank(admin);
-        try token.mint(virtualAddr, amount) {
-            revert("TEMPO-VA6: unregistered mint unexpectedly succeeded");
-        } catch (bytes memory reason) {
-            assertEq(
-                bytes4(reason),
-                IAddressRegistry.VirtualAddressUnregistered.selector,
-                "TEMPO-VA6: wrong unregistered mint error"
-            );
+        if (useMemo) {
+            try token.mintWithMemo(virtualAddr, amount, memo) {
+                revert("TEMPO-VA6: unregistered mintWithMemo unexpectedly succeeded");
+            } catch (bytes memory reason) {
+                assertEq(
+                    bytes4(reason),
+                    IAddressRegistry.VirtualAddressUnregistered.selector,
+                    "TEMPO-VA6: wrong unregistered mintWithMemo error"
+                );
+            }
+        } else {
+            try token.mint(virtualAddr, amount) {
+                revert("TEMPO-VA6: unregistered mint unexpectedly succeeded");
+            } catch (bytes memory reason) {
+                assertEq(
+                    bytes4(reason),
+                    IAddressRegistry.VirtualAddressUnregistered.selector,
+                    "TEMPO-VA6: wrong unregistered mint error"
+                );
+            }
         }
 
         assertEq(token.balanceOf(virtualAddr), virtualBalanceBefore, "TEMPO-VA6: alias changed");
@@ -743,6 +789,47 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         assertEq(vm.getRecordedLogs().length, 0, "TEMPO-VA16: reward rejection emitted logs");
     }
 
+    function registerWithInvalidInputs(uint256 callerTypeSeed, bytes32 salt) external {
+        address caller;
+        uint256 callerType = callerTypeSeed % 4;
+
+        if (callerType == 0) {
+            caller = address(0);
+        } else if (callerType == 1) {
+            caller = _selectVirtual(callerTypeSeed);
+        } else if (callerType == 2) {
+            caller = address(_selectBaseToken(callerTypeSeed));
+        } else {
+            caller = _selectActor(callerTypeSeed);
+        }
+
+        uint256 masterCountBefore = _masters.length;
+
+        vm.recordLogs();
+        vm.prank(caller);
+        try tip20Registry.registerVirtualMaster(salt) returns (bytes4) {
+            // Extremely unlikely for a random salt to pass PoW (~1 in 2^32),
+            // but if it does and the caller is valid, that's fine — not an error.
+            // For invalid callers (type 0/1/2) this should never happen.
+            assertTrue(
+                callerType == 3, "TEMPO-VA1: invalid caller registration unexpectedly succeeded"
+            );
+        } catch (bytes memory reason) {
+            bytes4 selector = bytes4(reason);
+            assertTrue(
+                selector == IAddressRegistry.InvalidMasterAddress.selector
+                    || selector == IAddressRegistry.ProofOfWorkFailed.selector
+                    || selector == IAddressRegistry.MasterIdCollision.selector,
+                "TEMPO-VA1: unexpected registration error"
+            );
+        }
+
+        assertEq(_masters.length, masterCountBefore, "TEMPO-VA1: fixture array changed");
+        _assertNoRelevantTokenLogs(
+            _selectBaseToken(0), "TEMPO-VA1: registration failure emitted token logs"
+        );
+    }
+
     /*//////////////////////////////////////////////////////////////
                            GLOBAL INVARIANTS
     //////////////////////////////////////////////////////////////*/
@@ -838,7 +925,10 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
 
     function _registerVirtualMasters() internal {
         for (uint256 i = 0; i < MASTER_COUNT; i++) {
-            uint256 pk = vm.deriveKey(ANVIL_MNEMONIC, uint32(i));
+            // Index 7 reuses master index 0's address with a different salt,
+            // exercising the many-to-one property (same master, different masterId).
+            uint256 keyIndex = i < 7 ? i : 0;
+            uint256 pk = vm.deriveKey(ANVIL_MNEMONIC, uint32(keyIndex));
             address master = vm.rememberKey(pk);
             bytes32 salt = POW_SALTS[i];
             bytes32 registrationHash = keccak256(abi.encodePacked(master, salt));
