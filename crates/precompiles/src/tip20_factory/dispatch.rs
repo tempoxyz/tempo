@@ -1,3 +1,5 @@
+//! ABI dispatch for the [`TIP20Factory`] precompile.
+
 use crate::{Precompile, dispatch_call, input_cost, mutate, tip20_factory::TIP20Factory, view};
 use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::{PrecompileError, PrecompileResult};

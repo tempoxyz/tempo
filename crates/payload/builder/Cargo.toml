@@ -41,3 +41,6 @@ alloy-rlp.workspace = true
 either.workspace = true
 metrics.workspace = true
 tracing.workspace = true
+
+[features]
+trie-debug = ["reth-engine-tree/trie-debug"]

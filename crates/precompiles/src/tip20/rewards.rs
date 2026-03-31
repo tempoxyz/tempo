@@ -1,3 +1,11 @@
+//! Opt-in staking [rewards system] for TIP-20 tokens.
+//!
+//! Token holders opt in by setting a reward recipient via [`TIP20Token::set_reward_recipient`].
+//! Rewards are distributed pro-rata across the opted-in supply and tracked via a global
+//! reward-per-token accumulator scaled by [`ACC_PRECISION`].
+//!
+//! [Reward system]: <https://docs.tempo.xyz/protocol/tip20-rewards/overview>
+
 use crate::{
     error::{Result, TempoPrecompileError},
     storage::Handler,
@@ -11,7 +19,17 @@ use tempo_precompiles_macros::Storable;
 pub const ACC_PRECISION: U256 = uint!(1000000000000000000_U256);
 
 impl TIP20Token {
-    /// Allows an authorized user to distribute reward tokens to opted-in recipients.
+    /// Distributes `amount` of reward tokens from the caller into the opted-in reward pool.
+    /// Transfers tokens to the contract and increases the global reward-per-token accumulator
+    /// proportionally to the opted-in supply.
+    ///
+    /// # Errors
+    /// - `Paused` — token transfers are currently paused
+    /// - `InvalidAmount` — `amount` is zero
+    /// - `PolicyForbids` — TIP-403 policy rejects the transfer
+    /// - `SpendingLimitExceeded` — access key spending limit exceeded
+    /// - `InsufficientBalance` — caller balance lower than `amount`
+    /// - `NoOptedInSupply` — no tokens are currently opted into rewards
     pub fn distribute_reward(
         &mut self,
         msg_sender: Address,
@@ -45,7 +63,7 @@ impl TIP20Token {
             .ok_or(TempoPrecompileError::under_overflow())?;
         self.set_global_reward_per_token(new_rpt)?;
 
-        // Emit distributed reward event for immediate payout
+        // Emit distributed reward event (recipients claim accrued rewards separately)
         self.emit_event(TIP20Event::RewardDistributed(ITIP20::RewardDistributed {
             funder: msg_sender,
             amount: call.amount,
@@ -104,6 +122,10 @@ impl TIP20Token {
     ///
     /// This function allows a token holder to designate who should receive their
     /// share of rewards. Setting to zero address opts out of rewards.
+    ///
+    /// # Errors
+    /// - `Paused` — token transfers are currently paused
+    /// - `PolicyForbids` — TIP-403 policy rejects the sender→recipient transfer authorization
     pub fn set_reward_recipient(
         &mut self,
         msg_sender: Address,
@@ -155,8 +177,12 @@ impl TIP20Token {
 
     /// Claims accumulated rewards for a recipient.
     ///
-    /// This function allows a reward recipient to claim their accumulated rewards
-    /// and receive them as token transfers to their own balance.
+    /// Pays out the lesser of the accrued reward balance and the contract's token
+    /// balance. Any remainder stays stored for future claims.
+    ///
+    /// # Errors
+    /// - `Paused` — token transfers are currently paused
+    /// - `PolicyForbids` — TIP-403 policy rejects the contract→caller transfer authorization
     pub fn claim_rewards(&mut self, msg_sender: Address) -> Result<U256> {
         self.check_not_paused()?;
         self.ensure_transfer_authorized(self.address, msg_sender)?;
@@ -223,7 +249,7 @@ impl TIP20Token {
         self.opted_in_supply.read()
     }
 
-    /// Sets the total supply of tokens opted into rewards in storage.
+    /// Sets the total supply of tokens opted into rewards.
     pub fn set_opted_in_supply(&mut self, value: u128) -> Result<()> {
         self.opted_in_supply.write(value)
     }
@@ -292,8 +318,8 @@ impl TIP20Token {
     /// 1. The stored reward balance from previous updates
     /// 2. Newly accrued rewards based on the current global reward per token
     ///
-    /// For accounts that have delegated their rewards to another recipient, this returns 0
-    /// since their rewards accrue to their delegate instead.
+    /// For accounts that have delegated their rewards to another recipient, only the stored
+    /// reward balance is returned (new accrual is skipped since it goes to the delegate).
     pub fn get_pending_rewards(&self, account: Address) -> Result<u128> {
         let info = self.user_reward_info[account].read()?;
 
@@ -330,8 +356,11 @@ impl TIP20Token {
 /// Per-user reward tracking state for the opt-in staking rewards system.
 #[derive(Debug, Clone, Storable)]
 pub struct UserRewardInfo {
+    /// Address that receives this user's accrued rewards (`Address::ZERO` = opted out).
     pub reward_recipient: Address,
+    /// Snapshot of the global reward-per-token at the user's last update.
     pub reward_per_token: U256,
+    /// Accumulated but unclaimed reward balance.
     pub reward_balance: U256,
 }
 

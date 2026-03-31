@@ -520,7 +520,7 @@ impl MaxTpsArgs {
                                 }
                                 Err(_) => {
                                     counters.sent.fetch_add(1, Ordering::Relaxed);
-                                    counters.failed.fetch_add(1, Ordering::Relaxed);
+                                    counters.timed_out.fetch_add(1, Ordering::Relaxed);
                                     debug!("Transaction sending timed out");
                                     None
                                 }
@@ -541,6 +541,7 @@ impl MaxTpsArgs {
             mpp_open_close = counters.mpp_open_close.load(Ordering::Relaxed),
             success = counters.success.load(Ordering::Relaxed),
             failed = counters.failed.load(Ordering::Relaxed),
+            timed_out = counters.timed_out.load(Ordering::Relaxed),
             "Finished sending transactions"
         );
 
@@ -632,6 +633,7 @@ struct TransactionCounters {
     sent: Arc<AtomicUsize>,
     success: Arc<AtomicUsize>,
     failed: Arc<AtomicUsize>,
+    timed_out: Arc<AtomicUsize>,
 }
 
 #[derive(Clone)]
@@ -965,7 +967,8 @@ pub async fn generate_report(
 
     let mut benchmarked_blocks = Vec::new();
 
-    for number in start_block..=end_block {
+    // Skip start_block — it was the chain head before any transactions were sent
+    for number in (start_block + 1)..=end_block {
         let block = provider
             .get_block(number.into())
             .await?
@@ -1000,6 +1003,16 @@ pub async fn generate_report(
         });
 
         last_block_timestamp = Some(timestamp);
+    }
+
+    // Remove leading ramp-up blocks (system-only, no gas used)
+    while benchmarked_blocks.first().is_some_and(|b| b.gas_used == 0) {
+        benchmarked_blocks.remove(0);
+    }
+
+    // Reset latency_ms for the new first block (its latency was relative to a stripped block)
+    if let Some(first) = benchmarked_blocks.first_mut() {
+        first.latency_ms = None;
     }
 
     let metadata = BenchmarkMetadata {
@@ -1046,7 +1059,13 @@ async fn monitor_tps(counters: TransactionCounters, target_count: usize, token: 
                 let tps = current_count - last_count;
                 last_count = current_count;
 
-                info!(tps, total = current_count, "Status");
+                info!(
+                    tps,
+                    total = current_count,
+                    failed = counters.failed.load(Ordering::Relaxed),
+                    timed_out = counters.timed_out.load(Ordering::Relaxed),
+                    "Status"
+                );
                 tokio::time::sleep(Duration::from_secs(1)).await;
 
                 if current_count == target_count {

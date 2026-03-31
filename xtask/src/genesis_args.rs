@@ -51,6 +51,7 @@ use tempo_precompiles::{
     PATH_USD_ADDRESS,
     account_keychain::AccountKeychain,
     nonce::NonceManager,
+    signature_verifier::SignatureVerifier,
     stablecoin_dex::StablecoinDEX,
     storage::{ContractStorage, StorageCtx},
     tip_fee_manager::{IFeeManager, TipFeeManager},
@@ -168,6 +169,10 @@ pub(crate) struct GenesisArgs {
     /// T2 hardfork activation time.
     #[arg(long, default_value = "0")]
     t2_time: u64,
+
+    /// T3 hardfork activation time.
+    #[arg(long, default_value = "0")]
+    t3_time: u64,
 
     /// Whether to skip initializing validator config v1
     #[arg(long)]
@@ -412,6 +417,11 @@ impl GenesisArgs {
         println!("Initializing account keychain");
         initialize_account_keychain(&mut evm)?;
 
+        if self.t3_time == 0 {
+            println!("Initializing signature verifier (T3 active at genesis)");
+            initialize_signature_verifier(&mut evm)?;
+        }
+
         if !self.no_pairwise_liquidity {
             if let (Some(alpha), Some(beta), Some(theta)) =
                 (alpha_token_address, beta_token_address, theta_token_address)
@@ -537,6 +547,9 @@ impl GenesisArgs {
         chain_config
             .extra_fields
             .insert_value("t2Time".to_string(), self.t2_time)?;
+        chain_config
+            .extra_fields
+            .insert_value("t3Time".to_string(), self.t3_time)?;
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
@@ -881,6 +894,19 @@ fn initialize_account_keychain(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Re
         &ctx.cfg,
         &ctx.tx,
         || AccountKeychain::new().initialize(),
+    )?;
+
+    Ok(())
+}
+
+fn initialize_signature_verifier(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
+    let ctx = evm.ctx_mut();
+    StorageCtx::enter_evm(
+        &mut ctx.journaled_state,
+        &ctx.block,
+        &ctx.cfg,
+        &ctx.tx,
+        || SignatureVerifier::new().initialize(),
     )?;
 
     Ok(())

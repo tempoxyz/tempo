@@ -4,7 +4,7 @@ use alloy_evm::{
     Database, Evm, RecoveredTx,
     block::{
         BlockExecutionError, BlockExecutionResult, BlockExecutor, BlockValidationError,
-        ExecutableTx, OnStateHook, TxResult,
+        ExecutableTx, OnStateHook, StateChangePreBlockSource, StateChangeSource, TxResult,
     },
     eth::{
         EthBlockExecutor, EthTxResult,
@@ -22,12 +22,11 @@ use reth_evm::block::StateDB;
 use reth_revm::{
     Inspector,
     context::result::ResultAndState,
-    context_interface::JournalTr,
     state::{Account, Bytecode, EvmState},
 };
 use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
+use tempo_contracts::precompiles::{SIGNATURE_VERIFIER_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS};
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
     subblock::PartialValidatorKey,
@@ -150,6 +149,38 @@ where
             seen_subblocks: Vec::new(),
             subblock_fee_recipients: ctx.subblock_fee_recipients,
         }
+    }
+
+    /// Deploys `0xEF` marker bytecode to a precompile address if it doesn't already have code.
+    ///
+    /// This also dispatches the state change to the system caller's state hook so that the
+    /// sparse trie task is aware of the change.
+    fn deploy_precompile_at_boundary(
+        &mut self,
+        address: Address,
+    ) -> Result<(), BlockExecutionError> {
+        let info = self
+            .inner
+            .evm
+            .db_mut()
+            .basic(address)
+            .map_err(BlockExecutionError::other)?
+            .unwrap_or_default();
+        if info.is_empty_code_hash() {
+            let code = Bytecode::new_legacy([0xef].into());
+            let mut new_info = info;
+            new_info.code_hash = code.hash_slow();
+            new_info.code = Some(code);
+            let mut account: Account = new_info.into();
+            account.mark_touch();
+            let state = EvmState::from_iter([(address, account)]);
+            self.inner.system_caller.on_state(
+                StateChangeSource::PreBlock(StateChangePreBlockSource::BlockHashesContract),
+                &state,
+            );
+            self.inner.evm.db_mut().commit(state);
+        }
+        Ok(())
     }
 
     /// Validates a system transaction.
@@ -329,7 +360,7 @@ where
             match self.section {
                 BlockSection::StartOfBlock | BlockSection::NonShared => {
                     if gas_used > self.non_shared_gas_left
-                        || (!tx.is_payment() && gas_used > self.non_payment_gas_left)
+                        || (!tx.is_payment_v1() && gas_used > self.non_payment_gas_left)
                     {
                         // Assume that this transaction wants to make use of gas incentive section
                         //
@@ -369,25 +400,13 @@ where
     fn apply_pre_execution_changes(&mut self) -> Result<(), alloy_evm::block::BlockExecutionError> {
         self.inner.apply_pre_execution_changes()?;
 
-        // Deploy 0xEF marker bytecode to ValidatorConfigV2 when T2 activates.
+        // Deploy 0xEF marker bytecode to precompiles at their activation hardforks.
         let timestamp = self.evm().block().timestamp.to::<u64>();
         if self.inner.spec.is_t2_active_at_timestamp(timestamp) {
-            let db = self.evm_mut().ctx_mut().journaled_state.db_mut();
-            let mut info = db
-                .basic(VALIDATOR_CONFIG_V2_ADDRESS)
-                .map_err(BlockExecutionError::other)?
-                .unwrap_or_default();
-            if info.is_empty_code_hash() {
-                let code = Bytecode::new_legacy([0xef].into());
-                info.code_hash = code.hash_slow();
-                info.code = Some(code);
-                let mut account: Account = info.into();
-                account.mark_touch();
-                db.commit(EvmState::from_iter([(
-                    VALIDATOR_CONFIG_V2_ADDRESS,
-                    account,
-                )]));
-            }
+            self.deploy_precompile_at_boundary(VALIDATOR_CONFIG_V2_ADDRESS)?;
+        }
+        if self.inner.spec.is_t3_active_at_timestamp(timestamp) {
+            self.deploy_precompile_at_boundary(SIGNATURE_VERIFIER_ADDRESS)?;
         }
 
         Ok(())
@@ -425,7 +444,7 @@ where
         Ok(TempoTxResult {
             inner,
             next_section,
-            is_payment: recovered.tx().is_payment(),
+            is_payment: recovered.tx().is_payment_v1(),
             tx: matches!(next_section, BlockSection::SubBlock { .. })
                 .then(|| recovered.tx().clone()),
         })
@@ -1148,5 +1167,82 @@ mod tests {
         let acc = db.load_cache_account(VALIDATOR_CONFIG_V2_ADDRESS).unwrap();
         let info = acc.account_info().unwrap();
         assert!(!info.is_empty_code_hash());
+    }
+
+    #[test]
+    fn test_apply_pre_execution_deploys_signature_verifier_code() {
+        use std::sync::Arc;
+        use tempo_chainspec::spec::DEV;
+
+        // Dev chainspec has t3Time: 0, so T3 is active at any timestamp.
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+
+        let acc = db.load_cache_account(SIGNATURE_VERIFIER_ADDRESS).unwrap();
+        let info = acc.account_info().unwrap();
+        assert!(!info.is_empty_code_hash());
+    }
+
+    #[test]
+    fn test_pre_t3_does_not_deploy_signature_verifier_code() {
+        // Moderato does not have T3 active (no t3Time set), so the code should NOT be deployed.
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+
+        let acc = db.load_cache_account(SIGNATURE_VERIFIER_ADDRESS).unwrap();
+        let info = acc.account_info();
+        assert!(
+            info.is_none() || info.unwrap().is_empty_code_hash(),
+            "SignatureVerifier code should not be deployed before T3"
+        );
+    }
+
+    #[test]
+    fn test_deploy_precompile_at_boundary_dispatches_state_hook() {
+        use std::sync::{Arc, Mutex};
+
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        let hook_calls: Arc<Mutex<Vec<(StateChangeSource, EvmState)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let hook_calls_clone = hook_calls.clone();
+        executor.set_state_hook(Some(Box::new(
+            move |source: StateChangeSource, state: &EvmState| {
+                hook_calls_clone
+                    .lock()
+                    .unwrap()
+                    .push((source, state.clone()));
+            },
+        )));
+
+        let addr = Address::with_last_byte(0xff);
+        executor.deploy_precompile_at_boundary(addr).unwrap();
+
+        // Verify code was deployed.
+        let acc = db.load_cache_account(addr).unwrap();
+        let info = acc.account_info().unwrap();
+        assert!(!info.is_empty_code_hash());
+
+        // Verify the state hook was called exactly once with the correct address.
+        let calls = hook_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "state hook should be called exactly once");
+        assert!(
+            calls[0].1.contains_key(&addr),
+            "state hook should contain the deployed address"
+        );
     }
 }

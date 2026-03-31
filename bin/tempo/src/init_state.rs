@@ -4,26 +4,36 @@
 //! to the genesis state. The binary format is produced by `tempo-xtask generate-state-bloat`.
 
 use std::{
-    collections::HashMap,
     fs::File,
     io::{BufReader, Read},
     path::PathBuf,
+    sync::mpsc,
+    thread,
+    time::{Duration, Instant},
 };
 
-use alloy_primitives::{B256, U256, map::HashSet};
+use alloy_primitives::{
+    B256, U256, keccak256,
+    map::{AddressMap, Entry},
+};
 use clap::Parser;
 use eyre::{Context as _, ensure};
 use reth_chainspec::EthereumHardforks;
 use reth_cli_commands::common::{AccessRights, CliNodeTypes, EnvironmentArgs};
 use reth_db_api::{
-    cursor::{DbCursorRO, DbCursorRW},
+    cursor::{DbCursorRO, DbCursorRW, DbDupCursorRW},
+    models::CompactU256,
+    table::Decompress,
     tables,
-    transaction::DbTxMut,
+    transaction::{DbTx, DbTxMut},
 };
 use reth_ethereum::{chainspec::EthChainSpec, tasks::Runtime};
+use reth_etl::Collector;
 use reth_primitives_traits::{Account, StorageEntry};
 use reth_provider::{BlockNumReader, DatabaseProviderFactory, HashingWriter};
-use reth_storage_api::DBProvider;
+use reth_storage_api::{DBProvider, StorageSettingsCache, TrieWriter};
+use reth_trie::{IntermediateStateRootState, StateRootProgress};
+use reth_trie_db::DatabaseStateRoot;
 use tempo_chainspec::spec::TempoChainSpecParser;
 use tracing::info;
 
@@ -32,6 +42,15 @@ const MAGIC: &[u8; 8] = b"TEMPOSB\x00";
 
 /// Expected format version
 const VERSION: u16 = 1;
+
+/// ETL collector file size (200 MiB per temp file before spilling a new one).
+const ETL_FILE_SIZE: usize = 200 * 1024 * 1024;
+
+/// Maximum number of storage entries to hash per worker batch.
+const WORKER_CHUNK_SIZE: usize = 100;
+
+/// Bounded channel depth for the hashing worker thread.
+const HASH_WORKER_QUEUE_DEPTH: usize = 256;
 
 /// Initialize state from a binary dump file.
 #[derive(Debug, Parser)]
@@ -77,18 +96,48 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         let mut reader = BufReader::with_capacity(64 * 1024 * 1024, file);
 
         let mut total_entries = 0u64;
-        let mut total_tokens = 0u64;
+        let mut total_blocks = 0u64;
 
-        // Collect storage entries per address for hashing
-        let mut storage_for_hashing: HashMap<alloy_primitives::Address, Vec<StorageEntry>> =
-            HashMap::new();
+        // Track addresses and their account data for hashing
+        let mut accounts_seen: AddressMap<Account> = AddressMap::default();
 
-        // Track addresses for account hashing (we need to create empty accounts)
-        let mut addresses_seen: HashSet<alloy_primitives::Address> = HashSet::default();
+        // ETL collectors: accumulate entries sorted, spill to disk when full
+        let mut plain_collector: Collector<Vec<u8>, CompactU256> =
+            Collector::new(ETL_FILE_SIZE, None);
+        let mut hash_chunk: Vec<(alloy_primitives::Address, B256, CompactU256)> =
+            Vec::with_capacity(WORKER_CHUNK_SIZE);
+
+        // Single worker thread for keccak hashing: owns the hashed ETL collector, receives
+        // batches over a bounded channel, and returns the collector when the sender drops.
+        let (hash_tx, hash_rx) = mpsc::sync_channel::<
+            Vec<(alloy_primitives::Address, B256, CompactU256)>,
+        >(HASH_WORKER_QUEUE_DEPTH);
+        let hash_worker =
+            thread::spawn(move || -> eyre::Result<Collector<Vec<u8>, CompactU256>> {
+                let mut hashed_collector: Collector<Vec<u8>, CompactU256> =
+                    Collector::new(ETL_FILE_SIZE, None);
+                while let Ok(chunk) = hash_rx.recv() {
+                    let mut last_addr = alloy_primitives::Address::ZERO;
+                    let mut hashed_addr = B256::ZERO;
+                    for (address, slot, value) in chunk {
+                        if address != last_addr {
+                            last_addr = address;
+                            hashed_addr = keccak256(address);
+                        }
+                        let mut hashed_key = Vec::with_capacity(64);
+                        hashed_key.extend_from_slice(hashed_addr.as_slice());
+                        hashed_key.extend_from_slice(keccak256(slot).as_slice());
+                        hashed_collector
+                            .insert(hashed_key, value)
+                            .wrap_err("hashed ETL insert failed")?;
+                    }
+                }
+                Ok(hashed_collector)
+            });
 
         // Process blocks from binary file
         loop {
-            // Try to read header
+            // Read next block header; EOF means no more blocks.
             let mut header_buf = [0u8; 40];
             match reader.read_exact(&mut header_buf) {
                 Ok(()) => {}
@@ -123,29 +172,35 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 target: "tempo::cli",
                 %address,
                 pair_count,
-                "Processing token storage"
+                "Processing token storage block"
             );
 
-            addresses_seen.insert(address);
-
-            // Get cursors for plain state tables
-            let tx = provider_rw.tx_ref();
-            let mut storage_cursor = tx.cursor_dup_write::<tables::PlainStorageState>()?;
-            let mut account_cursor = tx.cursor_write::<tables::PlainAccountState>()?;
-
-            // Insert empty account for this address (required for storage to be included in trie)
-            // Only insert if the account doesn't already exist from genesis
-            if account_cursor.seek_exact(address)?.is_none() {
-                account_cursor.upsert(address, &Account::default())?;
+            // Ensure account exists in plain state (only on first encounter).
+            // The binary dump is chunked: generate-state-bloat writes one block per token
+            // per chunk, so the same token address appears in multiple blocks. This entry
+            // is Vacant on the first chunk and Occupied on subsequent ones.
+            // Preserving the genesis account is critical: TIP20 tokens have bytecode (0xEF)
+            // set during genesis, and overwriting with Account::default() would clear the
+            // code hash, making the token appear uninitialized.
+            if let Entry::Vacant(e) = accounts_seen.entry(address) {
+                let tx = provider_rw.tx_ref();
+                let mut account_cursor = tx.cursor_write::<tables::PlainAccountState>()?;
+                let account = match account_cursor.seek_exact(address)? {
+                    Some((_, account)) => account,
+                    None => {
+                        let account = Account::default();
+                        account_cursor.upsert(address, &account)?;
+                        account
+                    }
+                };
+                e.insert(account);
             }
 
-            // Collect storage for hashing
-            let storage_entries = storage_for_hashing.entry(address).or_default();
-
-            // Read and insert entries
+            // Read entries into both ETL collectors
             let mut entry_buf = [0u8; 64];
-            let start = std::time::Instant::now();
+            let start = Instant::now();
             let mut last_log = start;
+
             for i in 0..pair_count {
                 reader
                     .read_exact(&mut entry_buf)
@@ -159,87 +214,296 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                     continue;
                 }
 
-                let entry = StorageEntry { key: slot, value };
+                let compact_value = CompactU256::from(value);
 
-                // Insert into plain storage state
-                storage_cursor.upsert(address, &entry)?;
+                // Collect plain entry: key = address ++ slot
+                let mut plain_key = Vec::with_capacity(52);
+                plain_key.extend_from_slice(address.as_slice());
+                plain_key.extend_from_slice(slot.as_slice());
+                plain_collector
+                    .insert(plain_key, compact_value.clone())
+                    .wrap_err("ETL insert failed")?;
 
-                // Collect for hashed storage
-                storage_entries.push(entry);
+                // Queue raw data for parallel hashing
+                hash_chunk.push((address, slot, compact_value));
+
+                // Send full batches to the hashing worker thread.
+                if hash_chunk.len() >= WORKER_CHUNK_SIZE {
+                    let chunk =
+                        std::mem::replace(&mut hash_chunk, Vec::with_capacity(WORKER_CHUNK_SIZE));
+                    hash_tx.send(chunk).wrap_err("hash worker disconnected")?;
+                }
 
                 total_entries += 1;
 
-                let now = std::time::Instant::now();
-                if now.duration_since(last_log) >= std::time::Duration::from_secs(5)
-                    || i + 1 == pair_count
-                {
-                    let pct = ((i + 1) as f64 / pair_count as f64) * 100.0;
-                    let elapsed = start.elapsed();
-                    let pairs_per_sec = (i + 1) as f64 / elapsed.as_secs_f64();
-                    info!(
-                        target: "tempo::cli",
-                        %address,
-                        progress = format_args!("{}/{} ({pct:.0}%)", i + 1, pair_count),
-                        elapsed = ?elapsed,
-                        pairs_per_sec = pairs_per_sec as u64,
-                        "Inserting storage"
-                    );
-                    last_log = now;
-                }
+                log_collection_progress(&address, i, pair_count, start, &mut last_log);
             }
 
-            total_tokens += 1;
+            total_blocks += 1;
         }
 
+        // Send any remaining entries to the worker and join.
+        if !hash_chunk.is_empty() {
+            hash_tx
+                .send(std::mem::take(&mut hash_chunk))
+                .wrap_err("hash worker disconnected")?;
+        }
+        drop(hash_tx);
+        let mut hashed_collector = hash_worker
+            .join()
+            .map_err(|_| eyre::eyre!("hash worker panicked"))??;
+
         info!(
             target: "tempo::cli",
-            total_tokens,
+            total_blocks,
             total_entries,
-            "Plain storage state written, now writing hashed state..."
+            "Entries collected, merging genesis storage into ETL collectors..."
         );
 
-        // Write hashed account entries for addresses that have storage.
-        // We create empty accounts (zero balance, zero nonce, no code) for precompile addresses.
-        // This is required for the storage to be included in the state trie computation.
-        let empty_account = Account::default();
+        // Merge existing genesis plain storage into the collector so it survives
+        // the clear + append_dup bulk load.
+        {
+            let tx = provider_rw.tx_ref();
+            let mut cursor = tx.cursor_read::<tables::PlainStorageState>()?;
+            let mut genesis_count = 0usize;
+            let walker = cursor.walk(None)?;
+            for row in walker {
+                let (address, entry) = row?;
+                let mut key = Vec::with_capacity(52);
+                key.extend_from_slice(address.as_slice());
+                key.extend_from_slice(entry.key.as_slice());
+                plain_collector
+                    .insert(key, CompactU256::from(entry.value))
+                    .wrap_err("ETL insert of genesis plain storage failed")?;
+                genesis_count += 1;
+            }
+            info!(
+                target: "tempo::cli",
+                genesis_count,
+                "Genesis plain storage entries merged into collector"
+            );
+        }
+
+        // Merge existing genesis hashed storage into the collector.
+        {
+            let tx = provider_rw.tx_ref();
+            let mut cursor = tx.cursor_read::<tables::HashedStorages>()?;
+            let mut genesis_count = 0usize;
+            let walker = cursor.walk(None)?;
+            for row in walker {
+                let (hashed_address, entry) = row?;
+                let mut key = Vec::with_capacity(64);
+                key.extend_from_slice(hashed_address.as_slice());
+                key.extend_from_slice(entry.key.as_slice());
+                hashed_collector
+                    .insert(key, CompactU256::from(entry.value))
+                    .wrap_err("ETL insert of genesis hashed storage failed")?;
+                genesis_count += 1;
+            }
+            info!(
+                target: "tempo::cli",
+                genesis_count,
+                "Genesis hashed storage entries merged into collector"
+            );
+        }
+
+        // Load sorted entries from each ETL collector into its database table.
+        // Strategy: iterate the sorted collector, deduplicate consecutive entries with
+        // the same composite key, and bulk-insert via append_dup.
+        // The table is cleared first so append_dup ordering is guaranteed.
+        let total_plain = plain_collector.len();
+        provider_rw.tx_ref().clear::<tables::PlainStorageState>()?;
+        let mut plain_cursor = provider_rw
+            .tx_ref()
+            .cursor_dup_write::<tables::PlainStorageState>()?;
+        load_etl_to_cursor(
+            &mut plain_collector,
+            total_plain,
+            "plain storage",
+            |k, v| {
+                plain_cursor.append_dup(
+                    alloy_primitives::Address::from_slice(&k[..20]),
+                    StorageEntry {
+                        key: B256::from_slice(&k[20..]),
+                        value: v,
+                    },
+                )
+            },
+        )?;
+        drop(plain_cursor);
+
+        info!(
+            target: "tempo::cli",
+            total_plain,
+            "Plain storage written, loading hashed storage from ETL..."
+        );
+
+        let total_hashes = hashed_collector.len();
+        provider_rw.tx_ref().clear::<tables::HashedStorages>()?;
+        let mut hashed_cursor = provider_rw
+            .tx_ref()
+            .cursor_dup_write::<tables::HashedStorages>()?;
+        load_etl_to_cursor(
+            &mut hashed_collector,
+            total_hashes,
+            "hashed storage",
+            |k, v| {
+                hashed_cursor.append_dup(
+                    B256::from_slice(&k[..32]),
+                    StorageEntry {
+                        key: B256::from_slice(&k[32..]),
+                        value: v,
+                    },
+                )
+            },
+        )?;
+        drop(hashed_cursor);
+
+        info!(
+            target: "tempo::cli",
+            total_plain,
+            total_hashes,
+            "Storage written, writing hashed accounts..."
+        );
+
+        // Write hashed account entries using the real account metadata from plain state.
+        // This preserves bytecode_hash for genesis accounts (e.g. TIP20 tokens with 0xEF code).
         provider_rw.insert_account_for_hashing(
-            addresses_seen
+            accounts_seen
                 .iter()
-                .map(|addr| (*addr, Some(empty_account))),
+                .map(|(addr, account)| (*addr, Some(*account))),
         )?;
 
         info!(
             target: "tempo::cli",
-            addresses = addresses_seen.len(),
-            "Hashed accounts written"
+            addresses = accounts_seen.len(),
+            "Hashed accounts written, computing state root and trie nodes..."
         );
 
-        // Write hashed storage entries for trie computation
-        provider_rw.insert_storage_for_hashing(
-            storage_for_hashing
-                .into_iter()
-                .map(|(addr, entries)| (addr, entries.into_iter())),
-        )?;
+        // Rebuild the merkle trie from scratch so the sparse trie cache on
+        // block 1 doesn't hit stale genesis nodes and stall on a full rebuild.
+        let trie_start = Instant::now();
+        provider_rw.tx_ref().clear::<tables::AccountsTrie>()?;
+        provider_rw.tx_ref().clear::<tables::StoragesTrie>()?;
 
-        info!(target: "tempo::cli", "Hashed storage written");
+        let mut resume: Option<IntermediateStateRootState> = None;
+        let mut trie_writes = 0usize;
 
-        // Commit the transaction
+        // Incrementally compute the merkle root over all hashed accounts/storage,
+        // using the correct DB adapter (v2 vs legacy) resolved at runtime by the macro.
+        let state_root = reth_trie_db::with_adapter!(provider_rw, |A| {
+            use reth_trie_db::{DatabaseHashedCursorFactory, DatabaseTrieCursorFactory};
+            type DbStateRoot<'a, TX, Adapter> = reth_trie::StateRoot<
+                DatabaseTrieCursorFactory<&'a TX, Adapter>,
+                DatabaseHashedCursorFactory<&'a TX>,
+            >;
+
+            // Compute state root in chunks, flushing trie nodes to disk between iterations.
+            loop {
+                match DbStateRoot::<_, A>::from_tx(provider_rw.tx_ref())
+                    .with_intermediate_state(resume)
+                    .root_with_progress()?
+                {
+                    StateRootProgress::Progress(state, _, updates) => {
+                        trie_writes += provider_rw.write_trie_updates(updates)?;
+                        info!(
+                            target: "tempo::cli",
+                            last_key = %state.account_root_state.last_hashed_key,
+                            trie_writes,
+                            elapsed = ?trie_start.elapsed(),
+                            "Flushing trie updates"
+                        );
+                        resume = Some(*state);
+                    }
+                    StateRootProgress::Complete(root, _, updates) => {
+                        trie_writes += provider_rw.write_trie_updates(updates)?;
+                        break root;
+                    }
+                }
+            }
+        });
+
+        info!(
+            target: "tempo::cli",
+            %state_root,
+            trie_writes,
+            elapsed = ?trie_start.elapsed(),
+            "State root computed"
+        );
+
+        // Final commit
         provider_rw.commit()?;
 
         info!(
             target: "tempo::cli",
-            total_tokens,
+            total_blocks,
             total_entries,
+            %state_root,
             "Binary state dump loaded successfully"
         );
 
-        // Note: The state root will need to be recomputed.
-        // The node will compute the actual state root on startup.
+        Ok(())
+    }
+}
+
+/// Iterate a sorted ETL collector, deduplicate consecutive entries with the same key
+/// (keeping the last value), and call `append` for each unique entry.
+fn load_etl_to_cursor(
+    collector: &mut Collector<Vec<u8>, CompactU256>,
+    total: usize,
+    label: &str,
+    mut append: impl FnMut(&[u8], U256) -> Result<(), reth_db_api::DatabaseError>,
+) -> eyre::Result<()> {
+    let interval = (total / 10).max(1);
+    let mut pending: Option<(Vec<u8>, Vec<u8>)> = None;
+    for (index, item) in collector.iter()?.enumerate() {
+        if index > 0 && index % interval == 0 {
+            info!(
+                target: "tempo::cli",
+                progress = format_args!("{:.2}%", (index as f64 / total as f64) * 100.0),
+                "Inserting {label}"
+            );
+        }
+
+        let (key, value) = item.wrap_err("ETL iteration failed")?;
+        if let Some((ref prev_key, ref prev_val)) = pending
+            && *prev_key != key
+        {
+            append(
+                prev_key,
+                CompactU256::decompress_owned(prev_val.clone())?.into(),
+            )
+            .wrap_err("cursor append failed")?;
+        }
+        pending = Some((key, value));
+    }
+    if let Some((key, val)) = pending {
+        append(&key, CompactU256::decompress_owned(val)?.into())
+            .wrap_err("cursor append failed")?;
+    }
+    Ok(())
+}
+
+/// Log collection progress every 5 seconds and on the final entry.
+fn log_collection_progress(
+    address: &alloy_primitives::Address,
+    index: u64,
+    total: u64,
+    start: Instant,
+    last_log: &mut Instant,
+) {
+    if last_log.elapsed() >= Duration::from_secs(5) || index + 1 == total {
+        let pct = ((index + 1) as f64 / total as f64) * 100.0;
+        let elapsed = start.elapsed();
+        let pairs_per_sec = (index + 1) as f64 / elapsed.as_secs_f64();
         info!(
             target: "tempo::cli",
-            "State loaded. The node will compute the state root on startup."
+            %address,
+            progress = format_args!("{}/{} ({pct:.0}%)", index + 1, total),
+            elapsed = ?elapsed,
+            pairs_per_sec = pairs_per_sec as u64,
+            "Collecting storage"
         );
-
-        Ok(())
+        *last_log = Instant::now();
     }
 }

@@ -7,6 +7,7 @@ use revm::{
 
 /// Tempo block environment.
 #[derive(Debug, Clone, Default, derive_more::Deref, derive_more::DerefMut)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TempoBlockEnv {
     /// Inner [`BlockEnv`].
     #[deref]
