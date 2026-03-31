@@ -887,7 +887,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         ""
         "## Per-Run Details"
         ""
-        "| Run | Blocks | Total Tx | Success | Failed | Avg TPS | Block P50 | Mgas/s |"
+        "| Run | Blocks | Total Tx | Success | Failed | Avg TPS | Block Time | Mgas/s |"
         "|-----|--------|----------|---------|--------|---------|-----------|--------|"
     ] | str join "\n")
 

@@ -139,9 +139,9 @@ function buildMetricRows(summary) {
     { label: 'TPS P90',         baseline: fmtVal(b.tps_p90, '', 1), feature: fmtVal(f.tps_p90, '', 1), change: fmtDeltaInverse(d.tps_p90) },
     { label: 'TPS P99',         baseline: fmtVal(b.tps_p99, '', 1), feature: fmtVal(f.tps_p99, '', 1), change: fmtDeltaInverse(d.tps_p99) },
     { label: 'Gas/s',           baseline: fmtVal(b.mgas_s, ' Mgas/s', 1), feature: fmtVal(f.mgas_s, ' Mgas/s', 1), change: fmtDeltaInverse(d.mgas_s) },
-    { label: 'Block P50',       baseline: fmtMs(b.block_time_p50),  feature: fmtMs(f.block_time_p50),  change: fmtDelta(d.block_time_p50) },
-    { label: 'Block P90',       baseline: fmtMs(b.block_time_p90),  feature: fmtMs(f.block_time_p90),  change: fmtDelta(d.block_time_p90) },
-    { label: 'Block P99',       baseline: fmtMs(b.block_time_p99),  feature: fmtMs(f.block_time_p99),  change: fmtDelta(d.block_time_p99) },
+    { label: 'Block Time P50',  baseline: fmtMs(b.block_time_p50),  feature: fmtMs(f.block_time_p50),  change: fmtDelta(d.block_time_p50) },
+    { label: 'Block Time P90',  baseline: fmtMs(b.block_time_p90),  feature: fmtMs(f.block_time_p90),  change: fmtDelta(d.block_time_p90) },
+    { label: 'Block Time P99',  baseline: fmtMs(b.block_time_p99),  feature: fmtMs(f.block_time_p99),  change: fmtDelta(d.block_time_p99) },
   ];
 }
 
