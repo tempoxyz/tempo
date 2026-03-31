@@ -152,6 +152,27 @@ where
         }
     }
 
+    /// Deploys `0xEF` marker bytecode to a precompile address if it doesn't already have code.
+    fn deploy_precompile_at_boundary(
+        &mut self,
+        address: Address,
+    ) -> Result<(), BlockExecutionError> {
+        let db = self.evm_mut().ctx_mut().journaled_state.db_mut();
+        let mut info = db
+            .basic(address)
+            .map_err(BlockExecutionError::other)?
+            .unwrap_or_default();
+        if info.is_empty_code_hash() {
+            let code = Bytecode::new_legacy([0xef].into());
+            info.code_hash = code.hash_slow();
+            info.code = Some(code);
+            let mut account: Account = info.into();
+            account.mark_touch();
+            db.commit(EvmState::from_iter([(address, account)]));
+        }
+        Ok(())
+    }
+
     /// Validates a system transaction.
     pub(crate) fn validate_system_tx(
         &self,
@@ -369,42 +390,14 @@ where
     fn apply_pre_execution_changes(&mut self) -> Result<(), alloy_evm::block::BlockExecutionError> {
         self.inner.apply_pre_execution_changes()?;
 
-        // Deploy 0xEF marker bytecode to ValidatorConfigV2 when T2 activates.
         let timestamp = self.evm().block().timestamp.to::<u64>();
-        if self.inner.spec.is_t2_active_at_timestamp(timestamp) {
-            let db = self.evm_mut().ctx_mut().journaled_state.db_mut();
-            let mut info = db
-                .basic(VALIDATOR_CONFIG_V2_ADDRESS)
-                .map_err(BlockExecutionError::other)?
-                .unwrap_or_default();
-            if info.is_empty_code_hash() {
-                let code = Bytecode::new_legacy([0xef].into());
-                info.code_hash = code.hash_slow();
-                info.code = Some(code);
-                let mut account: Account = info.into();
-                account.mark_touch();
-                db.commit(EvmState::from_iter([(
-                    VALIDATOR_CONFIG_V2_ADDRESS,
-                    account,
-                )]));
-            }
-        }
 
-        // Deploy 0xEF marker bytecode to SignatureVerifier when T3 activates.
+        // Deploy 0xEF marker bytecode to precompiles at their activation hardforks.
+        if self.inner.spec.is_t2_active_at_timestamp(timestamp) {
+            self.deploy_precompile_at_boundary(VALIDATOR_CONFIG_V2_ADDRESS)?;
+        }
         if self.inner.spec.is_t3_active_at_timestamp(timestamp) {
-            let db = self.evm_mut().ctx_mut().journaled_state.db_mut();
-            let mut info = db
-                .basic(SIGNATURE_VERIFIER_ADDRESS)
-                .map_err(BlockExecutionError::other)?
-                .unwrap_or_default();
-            if info.is_empty_code_hash() {
-                let code = Bytecode::new_legacy([0xef].into());
-                info.code_hash = code.hash_slow();
-                info.code = Some(code);
-                let mut account: Account = info.into();
-                account.mark_touch();
-                db.commit(EvmState::from_iter([(SIGNATURE_VERIFIER_ADDRESS, account)]));
-            }
+            self.deploy_precompile_at_boundary(SIGNATURE_VERIFIER_ADDRESS)?;
         }
 
         Ok(())
@@ -1165,5 +1158,43 @@ mod tests {
         let acc = db.load_cache_account(VALIDATOR_CONFIG_V2_ADDRESS).unwrap();
         let info = acc.account_info().unwrap();
         assert!(!info.is_empty_code_hash());
+    }
+
+    #[test]
+    fn test_apply_pre_execution_deploys_signature_verifier_code() {
+        use std::sync::Arc;
+        use tempo_chainspec::spec::DEV;
+
+        // Dev chainspec has t3Time: 0, so T3 is active at any timestamp.
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+
+        let acc = db.load_cache_account(SIGNATURE_VERIFIER_ADDRESS).unwrap();
+        let info = acc.account_info().unwrap();
+        assert!(!info.is_empty_code_hash());
+    }
+
+    #[test]
+    fn test_pre_t3_does_not_deploy_signature_verifier_code() {
+        // Moderato does not have T3 active (no t3Time set), so the code should NOT be deployed.
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+
+        let acc = db.load_cache_account(SIGNATURE_VERIFIER_ADDRESS).unwrap();
+        let info = acc.account_info();
+        assert!(
+            info.is_none() || info.unwrap().is_empty_code_hash(),
+            "SignatureVerifier code should not be deployed before T3"
+        );
     }
 }
