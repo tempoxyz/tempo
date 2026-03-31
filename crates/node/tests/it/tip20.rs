@@ -1120,3 +1120,15 @@ async fn test_tip20_virtual_transfer_from() -> eyre::Result<()> {
 
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip20_registry_deployed_at_t3() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let provider = ProviderBuilder::new().connect_http(setup.http_url);
+
+    let code = provider.get_code_at(TIP20_REGISTRY_ADDRESS).await?;
+    assert_eq!(code.as_ref(), &[0xef], "TIP20Registry should have 0xEF marker bytecode at T3");
+
+    Ok(())
+}
