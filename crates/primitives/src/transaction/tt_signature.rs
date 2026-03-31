@@ -6,19 +6,8 @@ use alloy_primitives::{Address, B256, Bytes, Signature, U256, keccak256, uint};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
 
-#[cfg(feature = "std")]
-use aws_lc_rs::{
-    digest::{Digest as AwsLcDigest, SHA256 as AwsLcSha256},
-    signature::{ECDSA_P256_SHA256_FIXED, ParsedPublicKey as AwsLcParsedPublicKey},
-};
-
 // Always mark `p256` as used to avoid `unused_crate_dependencies` warnings in `std` builds.
 use p256 as _;
-#[cfg(any(test, not(feature = "std")))]
-use p256::{
-    EncodedPoint,
-    ecdsa::{Signature as P256Signature, VerifyingKey, signature::hazmat::PrehashVerifier},
-};
 
 #[cfg(not(feature = "std"))]
 use once_cell::race::OnceBox as OnceLock;
@@ -823,6 +812,11 @@ fn verify_p256_signature_with_aws_lc(
     pub_key_y: &[u8],
     message_hash: &B256,
 ) -> Result<(), &'static str> {
+    use aws_lc_rs::{
+        digest::{Digest as AwsLcDigest, SHA256 as AwsLcSha256},
+        signature::{ECDSA_P256_SHA256_FIXED, ParsedPublicKey as AwsLcParsedPublicKey},
+    };
+
     let encoded_point = concat::<65>(&[&[0x04], pub_key_x, pub_key_y]);
     let verifying_key = AwsLcParsedPublicKey::new(&ECDSA_P256_SHA256_FIXED, encoded_point)
         .map_err(|_| "Invalid P256 public key")?;
@@ -847,6 +841,11 @@ fn verify_p256_signature_with_p256(
     pub_key_y: &[u8],
     message_hash: &B256,
 ) -> Result<(), &'static str> {
+    use p256::{
+        EncodedPoint,
+        ecdsa::{Signature as P256Signature, VerifyingKey, signature::hazmat::PrehashVerifier},
+    };
+
     let encoded_point =
         EncodedPoint::from_affine_coordinates(pub_key_x.into(), pub_key_y.into(), false);
     let verifying_key =
