@@ -102,10 +102,6 @@ impl<H> TxResult for TempoTxResult<H> {
     fn result(&self) -> &ResultAndState<Self::HaltReason> {
         self.inner.result()
     }
-
-    fn into_result(self) -> ResultAndState<Self::HaltReason> {
-        self.inner.into_result()
-    }
 }
 
 /// Block executor for Tempo.
