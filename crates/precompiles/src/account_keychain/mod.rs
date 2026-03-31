@@ -58,42 +58,33 @@ pub fn is_constrained_tip20_selector(selector: [u8; 4]) -> bool {
     )
 }
 
-/// Selector-level scope for one selector under one target.
-///
-/// mode:
-/// - 0 => unset/disabled
-/// - 1 => selector allowed for any recipient
-/// - 2 => selector allowed only for recipients in the set
+/// Key-level call scope.
 #[derive(Debug, Clone, Storable, Default)]
-pub struct SelectorScope {
-    pub mode: u8,
-    pub recipients: Set<Address>,
+pub struct KeyScope {
+    pub is_scoped: bool,
+    pub targets: Set<Address>,
+    pub target_scopes: Mapping<Address, TargetScope>,
 }
 
 /// Target-level scope for one target under one account key.
 ///
-/// mode:
-/// - 0 => unset/disabled
-/// - 1 => all selectors allowed
-/// - 2 => only selectors in the set are allowed
+/// Only persisted for targets present in the parent `targets` set. There is intentionally no
+/// inner "deny all selectors" mode; deleting the target from `targets` removes the scope.
 #[derive(Debug, Clone, Storable, Default)]
 pub struct TargetScope {
-    pub mode: u8,
+    pub is_scoped: bool,
     pub selectors: Set<FixedBytes<4>>,
     pub selector_scopes: Mapping<FixedBytes<4>, SelectorScope>,
 }
 
-/// Key-level call scope.
+/// Selector-level scope for one selector under one target.
 ///
-/// mode:
-/// - 0 => unrestricted
-/// - 1 => scoped
-/// - 2 => deny-all
+/// Only persisted for selectors present in the parent `selectors` set. There is intentionally no
+/// inner "deny all recipients" mode; deleting the selector from `selectors` removes the scope.
 #[derive(Debug, Clone, Storable, Default)]
-pub struct KeyScope {
-    pub mode: u8,
-    pub targets: Set<Address>,
-    pub target_scopes: Mapping<Address, TargetScope>,
+pub struct SelectorScope {
+    pub is_scoped: bool,
+    pub recipients: Set<Address>,
 }
 
 /// Key information stored in the precompile
@@ -576,12 +567,7 @@ impl AccountKeychain {
 
         self.upsert_target_scope(key_hash, scope.target, selector_rules)?;
 
-        let mode = if self.key_scopes[key_hash].targets.is_empty()? {
-            2
-        } else {
-            1
-        };
-        self.key_scopes[key_hash].mode.write(mode)
+        self.key_scopes[key_hash].is_scoped.write(true)
     }
 
     /// Root-only removal of one target call scope.
@@ -603,24 +589,19 @@ impl AccountKeychain {
         }
 
         let key_hash = Self::spending_limit_key(msg_sender, call.keyId);
-        let current_mode = self.key_scopes[key_hash].mode.read()?;
-        if current_mode == 0 {
+        let current_mode = self.key_scopes[key_hash].is_scoped.read()?;
+        if !current_mode {
             return Ok(());
         }
 
         self.remove_target_scope(key_hash, call.target)?;
 
-        let mode = if self.key_scopes[key_hash].targets.is_empty()? {
-            2
-        } else {
-            1
-        };
-        self.key_scopes[key_hash].mode.write(mode)
+        self.key_scopes[key_hash].is_scoped.write(true)
     }
 
     /// Returns call scopes configured for an account key.
     ///
-    /// When the key is in explicit deny-all mode (`allowed_calls = Some([])`), returns a
+    /// When the key is in scoped mode with no targets (`allowed_calls = Some([])`), returns a
     /// sentinel entry `{target: address(0), selectorRules: []}` so callers can distinguish it
     /// from unrestricted mode (`[]`).
     pub fn get_allowed_calls(&self, call: getAllowedCallsCall) -> Result<Vec<CallScope>> {
@@ -629,20 +610,14 @@ impl AccountKeychain {
         }
 
         let key_hash = Self::spending_limit_key(call.account, call.keyId);
-        let mode = self.key_scopes[key_hash].mode.read()?;
-        if mode == 0 {
+        let mode = self.key_scopes[key_hash].is_scoped.read()?;
+        if !mode {
             return Ok(Vec::new());
-        }
-        if mode == 2 {
-            // Explicit deny-all marker to preserve round-tripping for `allowed_calls = Some([])`.
-            return Ok(vec![CallScope {
-                target: Address::ZERO,
-                selectorRules: Vec::new(),
-            }]);
         }
 
         let targets = self.key_scopes[key_hash].targets.read()?;
         if targets.is_empty() {
+            // Preserve round-tripping for explicit `allowed_calls = Some([])`.
             return Ok(vec![CallScope {
                 target: Address::ZERO,
                 selectorRules: Vec::new(),
@@ -652,51 +627,62 @@ impl AccountKeychain {
         let mut scopes = Vec::new();
         for target in targets {
             let target_mode = self.key_scopes[key_hash].target_scopes[target]
-                .mode
+                .is_scoped
                 .read()?;
 
-            let scope = match target_mode {
-                1 => CallScope {
+            let scope = if !target_mode {
+                CallScope {
                     target,
                     selectorRules: Vec::new(),
-                },
-                2 => {
-                    let mut rules = Vec::new();
-                    let selectors = self.key_scopes[key_hash].target_scopes[target]
-                        .selectors
-                        .read()?;
-                    for selector in selectors {
-                        let selector_mode = self.key_scopes[key_hash].target_scopes[target]
-                            .selector_scopes[selector]
-                            .mode
-                            .read()?;
-
-                        let recipients = if selector_mode == 2 {
-                            let recipients: Vec<Address> = self.key_scopes[key_hash].target_scopes
-                                [target]
-                                .selector_scopes[selector]
-                                .recipients
-                                .read()?
-                                .into();
-                            recipients
-                        } else if selector_mode == 1 {
-                            Vec::new()
-                        } else {
-                            continue;
-                        };
-
-                        rules.push(SelectorRule {
-                            selector,
-                            recipients,
-                        });
-                    }
-
-                    CallScope {
-                        target,
-                        selectorRules: rules,
-                    }
                 }
-                _ => continue,
+            } else {
+                let mut rules = Vec::new();
+                let selectors = self.key_scopes[key_hash].target_scopes[target]
+                    .selectors
+                    .read()?;
+                debug_assert!(
+                    !selectors.is_empty(),
+                    "scoped target scopes should always carry selectors"
+                );
+                if selectors.is_empty() {
+                    continue;
+                }
+
+                for selector in selectors {
+                    let selector_mode = self.key_scopes[key_hash].target_scopes[target]
+                        .selector_scopes[selector]
+                        .is_scoped
+                        .read()?;
+
+                    let recipients = if selector_mode {
+                        let recipients: Vec<Address> = self.key_scopes[key_hash].target_scopes
+                            [target]
+                            .selector_scopes[selector]
+                            .recipients
+                            .read()?
+                            .into();
+                        debug_assert!(
+                            !recipients.is_empty(),
+                            "scoped selector scopes should always carry recipients"
+                        );
+                        if recipients.is_empty() {
+                            continue;
+                        }
+                        recipients
+                    } else {
+                        Vec::new()
+                    };
+
+                    rules.push(SelectorRule {
+                        selector,
+                        recipients,
+                    });
+                }
+
+                CallScope {
+                    target,
+                    selectorRules: rules,
+                }
             };
 
             scopes.push(scope);
@@ -794,14 +780,11 @@ impl AccountKeychain {
         }
 
         let key_hash = Self::spending_limit_key(account, key_id);
-        let mode = self.key_scopes[key_hash].mode.read()?;
+        let mode = self.key_scopes[key_hash].is_scoped.read()?;
 
         // Unrestricted mode.
-        if mode == 0 {
+        if !mode {
             return Ok(());
-        }
-        if mode == 2 {
-            return Err(AccountKeychainError::call_not_allowed().into());
         }
 
         let target = match to {
@@ -809,15 +792,15 @@ impl AccountKeychain {
             TxKind::Create => return Err(AccountKeychainError::call_not_allowed().into()),
         };
 
-        let target_mode = self.key_scopes[key_hash].target_scopes[target]
-            .mode
-            .read()?;
-        if target_mode == 1 {
-            return Ok(());
+        if !self.key_scopes[key_hash].targets.contains(&target)? {
+            return Err(AccountKeychainError::call_not_allowed().into());
         }
 
-        if target_mode != 2 {
-            return Err(AccountKeychainError::call_not_allowed().into());
+        let target_mode = self.key_scopes[key_hash].target_scopes[target]
+            .is_scoped
+            .read()?;
+        if !target_mode {
+            return Ok(());
         }
 
         if input.len() < 4 {
@@ -834,13 +817,10 @@ impl AccountKeychain {
 
         let selector_mode = self.key_scopes[key_hash].target_scopes[target].selector_scopes
             [selector]
-            .mode
+            .is_scoped
             .read()?;
-        if selector_mode == 1 {
+        if !selector_mode {
             return Ok(());
-        }
-        if selector_mode != 2 {
-            return Err(AccountKeychainError::call_not_allowed().into());
         }
 
         if input.len() < 36 {
@@ -876,13 +856,13 @@ impl AccountKeychain {
 
         match allowed_calls {
             None => {
-                self.key_scopes[account_key].mode.write(0)?;
+                self.key_scopes[account_key].is_scoped.write(false)?;
                 Ok(())
             }
             Some(scopes) => {
+                self.key_scopes[account_key].is_scoped.write(true)?;
+
                 if scopes.is_empty() {
-                    // Canonical deny-all state for `allowed_calls = Some([])`.
-                    self.key_scopes[account_key].mode.write(2)?;
                     return Ok(());
                 }
 
@@ -897,7 +877,6 @@ impl AccountKeychain {
                     }
                 }
 
-                self.key_scopes[account_key].mode.write(1)?;
                 for scope in scopes {
                     self.upsert_target_scope(
                         account_key,
@@ -925,10 +904,7 @@ impl AccountKeychain {
             return Ok(());
         }
 
-        self.clear_target_selectors(account_key, target)?;
-        self.key_scopes[account_key].target_scopes[target]
-            .mode
-            .write(0)
+        self.clear_target_selectors(account_key, target)
     }
 
     fn clear_target_selectors(&mut self, account_key: B256, target: Address) -> Result<()> {
@@ -939,9 +915,6 @@ impl AccountKeychain {
             self.key_scopes[account_key].target_scopes[target].selector_scopes[selector]
                 .recipients
                 .delete()?;
-            self.key_scopes[account_key].target_scopes[target].selector_scopes[selector]
-                .mode
-                .write(0)?;
         }
 
         self.key_scopes[account_key].target_scopes[target]
@@ -976,13 +949,13 @@ impl AccountKeychain {
         match selector_rules {
             None => {
                 self.key_scopes[account_key].target_scopes[target]
-                    .mode
-                    .write(1)?;
+                    .is_scoped
+                    .write(false)?;
             }
             Some(rules) => {
                 self.key_scopes[account_key].target_scopes[target]
-                    .mode
-                    .write(2)?;
+                    .is_scoped
+                    .write(true)?;
 
                 for rule in rules {
                     let selector = FixedBytes::<4>::from(rule.selector);
@@ -994,8 +967,8 @@ impl AccountKeychain {
                         None => {
                             self.key_scopes[account_key].target_scopes[target].selector_scopes
                                 [selector]
-                                .mode
-                                .write(1)?;
+                                .is_scoped
+                                .write(false)?;
                             self.key_scopes[account_key].target_scopes[target].selector_scopes
                                 [selector]
                                 .recipients
@@ -1004,8 +977,8 @@ impl AccountKeychain {
                         Some(recipients) => {
                             self.key_scopes[account_key].target_scopes[target].selector_scopes
                                 [selector]
-                                .mode
-                                .write(2)?;
+                                .is_scoped
+                                .write(true)?;
                             self.key_scopes[account_key].target_scopes[target].selector_scopes
                                 [selector]
                                 .recipients
@@ -3397,7 +3370,10 @@ mod tests {
             );
 
             let stored_key = keychain.keys[account][key_id].read()?;
-            assert_eq!(stored_key.expiry, 0, "duplicate rejection must not persist the key");
+            assert_eq!(
+                stored_key.expiry, 0,
+                "duplicate rejection must not persist the key"
+            );
 
             Ok(())
         })
@@ -3665,6 +3641,14 @@ mod tests {
             );
             assert!(scopes[0].selectorRules[0].recipients.is_empty());
 
+            let allow = keychain.validate_call_scope_for_transaction(
+                account,
+                key_id,
+                &TxKind::Call(target),
+                &TIP20_TRANSFER_SELECTOR,
+            );
+            assert!(allow.is_ok());
+
             keychain.remove_allowed_calls(
                 account,
                 removeAllowedCallsCall {
@@ -3680,6 +3664,16 @@ mod tests {
             assert_eq!(removed.len(), 1);
             assert_eq!(removed[0].target, Address::ZERO);
             assert!(removed[0].selectorRules.is_empty());
+
+            let denied = keychain
+                .validate_call_scope_for_transaction(
+                    account,
+                    key_id,
+                    &TxKind::Call(target),
+                    &TIP20_TRANSFER_SELECTOR,
+                )
+                .expect_err("unexpected success for removed target scope");
+            assert_call_not_allowed(denied);
 
             Ok(())
         })
