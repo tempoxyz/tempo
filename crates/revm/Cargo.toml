@@ -49,4 +49,15 @@ test-case.workspace = true
 [features]
 reth = ["dep:reth-storage-api"]
 rpc = ["dep:reth-rpc-eth-types"]
-serde = ["dep:serde", "revm/serde"]
+serde = [
+	"dep:serde",
+	"revm/serde",
+	"alloy-consensus/serde",
+	"alloy-eips/serde",
+	"alloy-primitives/serde",
+	"p256/serde",
+	"reth-storage-api?/serde",
+	"tempo-chainspec/serde",
+	"tempo-contracts/serde",
+	"tempo-primitives/serde"
+]
