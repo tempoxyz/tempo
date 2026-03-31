@@ -10,9 +10,6 @@ pub mod dispatch;
 
 use std::collections::HashSet;
 
-use __packing_authorized_key::{
-    ENFORCE_LIMITS_LOC, EXPIRY_LOC, IS_REVOKED_LOC, SIGNATURE_TYPE_LOC,
-};
 use alloy::sol_types::SolCall;
 use tempo_contracts::precompiles::{AccountKeychainError, AccountKeychainEvent, ITIP20};
 pub use tempo_contracts::precompiles::{
@@ -32,7 +29,7 @@ use tempo_primitives::transaction::{
 use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     error::Result,
-    storage::{Handler, Mapping, Set, packing::insert_into_word},
+    storage::{Handler, Mapping, Set},
     tip20_factory::TIP20Factory,
 };
 use alloy::primitives::{Address, B256, FixedBytes, TxKind, U256, keccak256};
@@ -131,58 +128,6 @@ impl SpendingLimitState {
         let periods_elapsed = (elapsed / self.period).saturating_add(1);
         let advance = self.period.saturating_mul(periods_elapsed);
         self.period_end.saturating_add(advance)
-    }
-}
-
-// TODO(rusowsky): remove this and create a read-only wrapper that is callable from read-only ctx with db access
-impl AuthorizedKey {
-    /// Decode AuthorizedKey from a storage slot value
-    ///
-    /// This is useful for read-only contexts (like pool validation) that don't have
-    /// access to PrecompileStorageProvider but need to decode the packed struct.
-    pub fn decode_from_slot(slot_value: U256) -> Self {
-        use crate::storage::{LayoutCtx, Storable, packing::PackedSlot};
-
-        // NOTE: fine to expect, as `StorageOps` on `PackedSlot` are infallible
-        Self::load(&PackedSlot(slot_value), U256::ZERO, LayoutCtx::FULL)
-            .expect("unable to decode AuthorizedKey from slot")
-    }
-
-    /// Encode AuthorizedKey to a storage slot value
-    ///
-    /// This is useful for tests that need to set up storage state directly.
-    pub fn encode_to_slot(&self) -> U256 {
-        let encoded = insert_into_word(
-            U256::ZERO,
-            &self.signature_type,
-            SIGNATURE_TYPE_LOC.offset_bytes,
-            SIGNATURE_TYPE_LOC.size,
-        )
-        .expect("unable to insert 'signature_type'");
-
-        let encoded = insert_into_word(
-            encoded,
-            &self.expiry,
-            EXPIRY_LOC.offset_bytes,
-            EXPIRY_LOC.size,
-        )
-        .expect("unable to insert 'expiry'");
-
-        let encoded = insert_into_word(
-            encoded,
-            &self.enforce_limits,
-            ENFORCE_LIMITS_LOC.offset_bytes,
-            ENFORCE_LIMITS_LOC.size,
-        )
-        .expect("unable to insert 'enforce_limits'");
-
-        insert_into_word(
-            encoded,
-            &self.is_revoked,
-            IS_REVOKED_LOC.offset_bytes,
-            IS_REVOKED_LOC.size,
-        )
-        .expect("unable to insert 'is_revoked'")
     }
 }
 
@@ -422,14 +367,18 @@ impl AccountKeychain {
 
         // Update the spending limit
         let limit_key = Self::spending_limit_key(msg_sender, call.keyId);
-        let mut limit_state = self.spending_limits[limit_key][call.token].read()?;
-        limit_state.remaining = call.newLimit;
         if self.storage.spec().is_t3() {
             // T3: newLimit updates both the configured cap and current remaining amount,
             // while preserving period + period_end.
+            let mut limit_state = self.spending_limits[limit_key][call.token].read()?;
+            limit_state.remaining = call.newLimit;
             limit_state.max = Self::t3_spending_limit_cap(call.newLimit)?;
+            self.spending_limits[limit_key][call.token].write(limit_state)?;
+        } else {
+            self.spending_limits[limit_key][call.token]
+                .remaining
+                .write(call.newLimit)?;
         }
-        self.spending_limits[limit_key][call.token].write(limit_state)?;
 
         // Emit event
         self.emit_event(AccountKeychainEvent::SpendingLimitUpdated(
@@ -517,8 +466,8 @@ impl AccountKeychain {
 
         let limit_key = Self::spending_limit_key(call.account, call.keyId);
         let remaining = self.spending_limits[limit_key][call.token]
-            .read()?
-            .remaining;
+            .remaining
+            .read()?;
         Ok(getRemainingLimitReturn {
             remaining,
             periodEnd: 0,
@@ -576,10 +525,6 @@ impl AccountKeychain {
         msg_sender: Address,
         call: removeAllowedCallsCall,
     ) -> Result<()> {
-        if !self.storage.spec().is_t3() {
-            return Err(AccountKeychainError::invalid_call_scope().into());
-        }
-
         self.ensure_admin_caller(msg_sender)?;
 
         let key = self.load_active_key(msg_sender, call.keyId)?;
@@ -605,10 +550,6 @@ impl AccountKeychain {
     /// sentinel entry `{target: address(0), selectorRules: []}` so callers can distinguish it
     /// from unrestricted mode (`[]`).
     pub fn get_allowed_calls(&self, call: getAllowedCallsCall) -> Result<Vec<CallScope>> {
-        if !self.storage.spec().is_t3() {
-            return Ok(Vec::new());
-        }
-
         let key_hash = Self::spending_limit_key(call.account, call.keyId);
         let mode = self.key_scopes[key_hash].is_scoped.read()?;
         if !mode {
@@ -735,10 +676,9 @@ impl AccountKeychain {
             debug_assert!(allowed_calls.is_none());
 
             for limit in limits {
-                self.spending_limits[limit_key][limit.token].write(SpendingLimitState {
-                    remaining: limit.amount,
-                    ..Default::default()
-                })?;
+                self.spending_limits[limit_key][limit.token]
+                    .remaining
+                    .write(limit.amount)?;
             }
 
             return Ok(());
@@ -2395,35 +2335,6 @@ mod tests {
 
             Ok(())
         })
-    }
-
-    #[test]
-    fn test_authorized_key_encode_decode_roundtrip() {
-        let original = AuthorizedKey {
-            signature_type: 2,  // WebAuthn
-            expiry: 1234567890, // some timestamp
-            enforce_limits: true,
-            is_revoked: false,
-        };
-
-        let encoded = original.encode_to_slot();
-        let decoded = AuthorizedKey::decode_from_slot(encoded);
-
-        assert_eq!(
-            decoded, original,
-            "encode/decode roundtrip should be lossless"
-        );
-
-        // Test with revoked key
-        let revoked = AuthorizedKey {
-            signature_type: 0,
-            expiry: 0,
-            enforce_limits: false,
-            is_revoked: true,
-        };
-        let encoded = revoked.encode_to_slot();
-        let decoded = AuthorizedKey::decode_from_slot(encoded);
-        assert_eq!(decoded, revoked);
     }
 
     #[test]

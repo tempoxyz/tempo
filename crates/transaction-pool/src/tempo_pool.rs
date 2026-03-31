@@ -1172,8 +1172,8 @@ pub(crate) fn exceeds_spending_limit(
             }
 
             let remaining = keychain.spending_limits[limit_key][subject.fee_token]
-                .read()?
-                .remaining;
+                .remaining
+                .read()?;
             Ok(fee_token_cost > remaining)
         })
         .unwrap_or_default()
