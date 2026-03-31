@@ -1,15 +1,18 @@
 //! ABI dispatch for the [`AccountKeychain`] precompile.
 
 use super::{AccountKeychain, KeyRestrictions, TokenLimit, authorizeKeyCall};
-use crate::{Precompile, dispatch_call, input_cost, mutate_void, unknown_selector, view};
+use crate::{
+    Precompile, dispatch_call, error::TempoPrecompileError, input_cost, mutate_void,
+    unknown_selector, view,
+};
 use alloy::{
     primitives::Address,
     sol_types::{SolCall, SolInterface},
 };
 use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_contracts::precompiles::{
+    AccountKeychainError,
     IAccountKeychain::{IAccountKeychainCalls, removeAllowedCallsCall, setAllowedCallsCall},
-    legacyAuthorizeKeyCall,
 };
 
 impl Precompile for AccountKeychain {
@@ -24,10 +27,12 @@ impl Precompile for AccountKeychain {
             |call| match call {
                 IAccountKeychainCalls::authorizeKey_0(call) => {
                     if self.storage.spec().is_t3() {
-                        return unknown_selector(
-                            legacyAuthorizeKeyCall::SELECTOR,
-                            self.storage.gas_used(),
-                        );
+                        return TempoPrecompileError::AccountKeychainError(
+                            AccountKeychainError::legacy_authorize_key_selector_changed(
+                                authorizeKeyCall::SELECTOR,
+                            ),
+                        )
+                        .into_precompile_result(self.storage.gas_used());
                     }
 
                     let call = authorizeKeyCall {
@@ -138,6 +143,7 @@ mod tests {
     };
     use alloy::{primitives::U256, sol_types::SolCall};
     use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_contracts::precompiles::legacyAuthorizeKeyCall;
 
     #[test]
     fn test_account_keychain_selector_coverage() -> eyre::Result<()> {
@@ -252,6 +258,8 @@ mod tests {
 
             let result = keychain.call(&calldata, account)?;
             assert!(result.reverted);
+            let decoded = tempo_contracts::precompiles::IAccountKeychain::LegacyAuthorizeKeySelectorChanged::abi_decode(&result.bytes)?;
+            assert_eq!(decoded.newSelector, authorizeKeyCall::SELECTOR.into());
 
             Ok(())
         })

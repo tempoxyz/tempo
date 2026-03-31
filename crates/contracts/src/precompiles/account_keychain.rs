@@ -186,6 +186,7 @@ crate::sol! {
         error ScopeLimitExceeded();
         error SelectorLimitExceeded();
         error RecipientLimitExceeded();
+        error LegacyAuthorizeKeySelectorChanged(bytes4 newSelector);
     }
 }
 
@@ -270,5 +271,14 @@ impl AccountKeychainError {
     /// Creates an error for recipient count limit violations.
     pub const fn recipient_limit_exceeded() -> Self {
         Self::RecipientLimitExceeded(IAccountKeychain::RecipientLimitExceeded {})
+    }
+
+    /// Creates an error for the legacy authorize-key selector being unavailable on T3+.
+    pub fn legacy_authorize_key_selector_changed(new_selector: [u8; 4]) -> Self {
+        Self::LegacyAuthorizeKeySelectorChanged(
+            IAccountKeychain::LegacyAuthorizeKeySelectorChanged {
+                newSelector: new_selector.into(),
+            },
+        )
     }
 }
