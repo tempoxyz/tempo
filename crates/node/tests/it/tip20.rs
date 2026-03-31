@@ -1005,11 +1005,19 @@ async fn test_tip20_virtual_mint() -> eyre::Result<()> {
     assert_eq!(transfers.len(), 2);
     assert_eq!(
         transfers[0].data,
-        ITIP20::Transfer { from: Address::ZERO, to: virtual_addr, amount: mint_amount }
+        ITIP20::Transfer {
+            from: Address::ZERO,
+            to: virtual_addr,
+            amount: mint_amount
+        }
     );
     assert_eq!(
         transfers[1].data,
-        ITIP20::Transfer { from: virtual_addr, to: admin, amount: mint_amount }
+        ITIP20::Transfer {
+            from: virtual_addr,
+            to: admin,
+            amount: mint_amount
+        }
     );
 
     Ok(())
@@ -1063,11 +1071,19 @@ async fn test_tip20_virtual_transfer() -> eyre::Result<()> {
     assert_eq!(transfers.len(), 2);
     assert_eq!(
         transfers[0].data,
-        ITIP20::Transfer { from: sender, to: virtual_addr, amount }
+        ITIP20::Transfer {
+            from: sender,
+            to: virtual_addr,
+            amount
+        }
     );
     assert_eq!(
         transfers[1].data,
-        ITIP20::Transfer { from: virtual_addr, to: admin, amount }
+        ITIP20::Transfer {
+            from: virtual_addr,
+            to: admin,
+            amount
+        }
     );
 
     Ok(())
