@@ -132,3 +132,8 @@ min-warn-logs = ["reth-node-core/min-warn-logs"]
 min-info-logs = ["reth-node-core/min-info-logs"]
 min-debug-logs = ["reth-node-core/min-debug-logs"]
 min-trace-logs = ["reth-node-core/min-trace-logs"]
+trie-debug = [
+	"reth-node-builder/trie-debug",
+	"reth-node-core/trie-debug",
+	"tempo-payload-builder/trie-debug",
+]

@@ -425,6 +425,7 @@ impl Inner<Init> {
                     .state
                     .executor
                     .canonicalize_head(block.height(), block.digest())
+                    .await
             {
                 tracing::warn!(
                     %error,
@@ -741,6 +742,7 @@ impl Inner<Init> {
             .state
             .executor
             .canonicalize_head(parent.height(), parent.digest())
+            .await
         {
             tracing::warn!(
                 %error,
