@@ -136,6 +136,38 @@ fn tempo_signature_verification_gas(signature: &TempoSignature) -> u64 {
 /// T1B+: Gas = signature verification + SLOAD (existing key check) +
 ///   SSTORE (write key) + N × SSTORE (per spending limit)
 ///   This is the sole gas accounting — the precompile runs with unlimited gas.
+fn call_scope_storage_slots(auth: &tempo_primitives::transaction::KeyAuthorization) -> u64 {
+    match auth.allowed_calls.as_ref() {
+        None => 0,
+        Some(scopes) if scopes.is_empty() => 1,
+        Some(scopes) => {
+            let mut selectors = 0u64;
+            let mut constrained_selectors = 0u64;
+            let mut recipients = 0u64;
+
+            for scope in scopes {
+                if let Some(rules) = scope.selector_rules.as_ref() {
+                    selectors += rules.len() as u64;
+                    for rule in rules {
+                        if let Some(rule_recipients) = rule.recipients.as_ref() {
+                            constrained_selectors += 1;
+                            recipients += rule_recipients.len() as u64;
+                        }
+                    }
+                }
+            }
+
+            // Storage write accounting:
+            // - account mode write: 1
+            // - each target insertion + target mode write: 3 + 1
+            // - each selector insertion + selector mode write: 3 + 1
+            // - recipient-constrained selectors also write recipient set length: +1 per selector
+            // - recipient set values+positions: +2 per recipient
+            1 + scopes.len() as u64 * 4 + selectors * 4 + constrained_selectors + recipients * 2
+        }
+    }
+}
+
 #[inline]
 fn calculate_key_authorization_gas(
     key_auth: &tempo_primitives::transaction::SignedKeyAuthorization,
@@ -176,7 +208,7 @@ fn calculate_key_authorization_gas(
         // T3+: include scoped-call storage rows in intrinsic gas.
         if spec.is_t3() {
             total = total.saturating_add(
-                sstore_cost.saturating_mul(key_auth.authorization.call_scope_storage_slots()),
+                sstore_cost.saturating_mul(call_scope_storage_slots(&key_auth.authorization)),
             );
         }
 
