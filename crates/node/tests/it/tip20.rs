@@ -1148,6 +1148,11 @@ async fn test_tip20_registry_deployed_at_t3_activation() -> eyre::Result<()> {
         "t3Time".to_string(),
         serde_json::Value::Number(serde_json::Number::from(2u64)),
     );
+    let registry_key = format!("{ADDRESS_REGISTRY_ADDRESS:#x}");
+    genesis["alloc"]
+        .as_object_mut()
+        .unwrap()
+        .remove(&registry_key);
 
     let mut setup = TestNodeBuilder::new()
         .with_genesis(serde_json::to_string(&genesis)?)
@@ -1156,7 +1161,7 @@ async fn test_tip20_registry_deployed_at_t3_activation() -> eyre::Result<()> {
     let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
 
     // Pre-T3: registry should have no code.
-    let code = provider.get_code_at(TIP20_REGISTRY_ADDRESS).await?;
+    let code = provider.get_code_at(ADDRESS_REGISTRY_ADDRESS).await?;
     assert!(code.is_empty(), "registry should have no code before T3");
 
     // Advance past t3Time to trigger T3 activation.
@@ -1164,7 +1169,7 @@ async fn test_tip20_registry_deployed_at_t3_activation() -> eyre::Result<()> {
     setup.node.advance_block().await?;
 
     // Post-T3: registry should have 0xEF marker bytecode.
-    let code = provider.get_code_at(TIP20_REGISTRY_ADDRESS).await?;
+    let code = provider.get_code_at(ADDRESS_REGISTRY_ADDRESS).await?;
     assert_eq!(
         code.as_ref(),
         &[0xef],
