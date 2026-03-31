@@ -52,6 +52,7 @@ use tempo_precompiles::{
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
     nonce::NonceManager,
+    signature_verifier::SignatureVerifier,
     stablecoin_dex::StablecoinDEX,
     storage::{ContractStorage, StorageCtx},
     tip_fee_manager::{IFeeManager, TipFeeManager},
@@ -419,6 +420,11 @@ impl GenesisArgs {
 
         println!("Initializing TIP20 registry");
         initialize_address_registry(&mut evm)?;
+
+        if self.t3_time == 0 {
+            println!("Initializing signature verifier (T3 active at genesis)");
+            initialize_signature_verifier(&mut evm)?;
+        }
 
         if !self.no_pairwise_liquidity {
             if let (Some(alpha), Some(beta), Some(theta)) =
@@ -905,6 +911,19 @@ fn initialize_address_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Re
         &ctx.cfg,
         &ctx.tx,
         || AddressRegistry::new().initialize(),
+    )?;
+
+    Ok(())
+}
+
+fn initialize_signature_verifier(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
+    let ctx = evm.ctx_mut();
+    StorageCtx::enter_evm(
+        &mut ctx.journaled_state,
+        &ctx.block,
+        &ctx.cfg,
+        &ctx.tx,
+        || SignatureVerifier::new().initialize(),
     )?;
 
     Ok(())
