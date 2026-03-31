@@ -129,6 +129,11 @@ impl TempoPrecompileError {
         Self::Panic(PanicKind::UnderOverflow)
     }
 
+    /// Creates an enum conversion error panic (Solidity Panic `0x21`).
+    pub fn enum_conversion_error() -> Self {
+        Self::Panic(PanicKind::EnumConversionError)
+    }
+
     /// Creates an array out-of-bounds panic error.
     pub fn array_oob() -> Self {
         Self::Panic(PanicKind::ArrayOutOfBounds)
