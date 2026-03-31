@@ -151,6 +151,38 @@ where
         }
     }
 
+    /// Deploys `0xEF` marker bytecode to a precompile address if it doesn't already have code.
+    ///
+    /// This also dispatches the state change to the system caller's state hook so that the
+    /// sparse trie task is aware of the change.
+    fn deploy_precompile_at_boundary(
+        &mut self,
+        address: Address,
+    ) -> Result<(), BlockExecutionError> {
+        let info = self
+            .inner
+            .evm
+            .db_mut()
+            .basic(address)
+            .map_err(BlockExecutionError::other)?
+            .unwrap_or_default();
+        if info.is_empty_code_hash() {
+            let code = Bytecode::new_legacy([0xef].into());
+            let mut new_info = info;
+            new_info.code_hash = code.hash_slow();
+            new_info.code = Some(code);
+            let mut account: Account = new_info.into();
+            account.mark_touch();
+            let state = EvmState::from_iter([(address, account)]);
+            self.inner.system_caller.on_state(
+                StateChangeSource::PreBlock(StateChangePreBlockSource::BlockHashesContract),
+                &state,
+            );
+            self.inner.evm.db_mut().commit(state);
+        }
+        Ok(())
+    }
+
     /// Validates a system transaction.
     pub(crate) fn validate_system_tx(
         &self,
@@ -368,30 +400,10 @@ where
     fn apply_pre_execution_changes(&mut self) -> Result<(), alloy_evm::block::BlockExecutionError> {
         self.inner.apply_pre_execution_changes()?;
 
-        // Deploy 0xEF marker bytecode to ValidatorConfigV2 when T2 activates.
+        // Deploy 0xEF marker bytecode to precompiles at their activation hardforks.
         let timestamp = self.evm().block().timestamp.to::<u64>();
         if self.inner.spec.is_t2_active_at_timestamp(timestamp) {
-            let info = self
-                .inner
-                .evm
-                .db_mut()
-                .basic(VALIDATOR_CONFIG_V2_ADDRESS)
-                .map_err(BlockExecutionError::other)?
-                .unwrap_or_default();
-            if info.is_empty_code_hash() {
-                let code = Bytecode::new_legacy([0xef].into());
-                let mut new_info = info;
-                new_info.code_hash = code.hash_slow();
-                new_info.code = Some(code);
-                let mut account: Account = new_info.into();
-                account.mark_touch();
-                let state = EvmState::from_iter([(VALIDATOR_CONFIG_V2_ADDRESS, account)]);
-                self.inner.system_caller.on_state(
-                    StateChangeSource::PreBlock(StateChangePreBlockSource::BlockHashesContract),
-                    &state,
-                );
-                self.inner.evm.db_mut().commit(state);
-            }
+            self.deploy_precompile_at_boundary(VALIDATOR_CONFIG_V2_ADDRESS)?;
         }
 
         Ok(())
@@ -1152,5 +1164,41 @@ mod tests {
         let acc = db.load_cache_account(VALIDATOR_CONFIG_V2_ADDRESS).unwrap();
         let info = acc.account_info().unwrap();
         assert!(!info.is_empty_code_hash());
+    }
+
+    #[test]
+    fn test_deploy_precompile_at_boundary_dispatches_state_hook() {
+        use std::sync::{Arc, Mutex};
+
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        let hook_calls: Arc<Mutex<Vec<(StateChangeSource, EvmState)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let hook_calls_clone = hook_calls.clone();
+        executor.set_state_hook(Some(Box::new(
+            move |source: StateChangeSource, state: &EvmState| {
+                hook_calls_clone.lock().unwrap().push((source, state.clone()));
+            },
+        )));
+
+        let addr = Address::with_last_byte(0xff);
+        executor.deploy_precompile_at_boundary(addr).unwrap();
+
+        // Verify code was deployed.
+        let acc = db.load_cache_account(addr).unwrap();
+        let info = acc.account_info().unwrap();
+        assert!(!info.is_empty_code_hash());
+
+        // Verify the state hook was called exactly once with the correct address.
+        let calls = hook_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "state hook should be called exactly once");
+        assert!(
+            calls[0].1.contains_key(&addr),
+            "state hook should contain the deployed address"
+        );
     }
 }
