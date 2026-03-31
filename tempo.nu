@@ -876,7 +876,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         ""
         "| Metric | Baseline | Feature | Delta |"
         "|--------|----------|---------|-------|"
-        $"| Avg TPS | ($b_tps) | ($f_tps) | (do $delta $b_tps $f_tps)% |"
+        $"| Wall Clock TPS | ($b_tps) | ($f_tps) | (do $delta $b_tps $f_tps)% |"
         $"| TPS P50 | ($b_tps_stats.p50) | ($f_tps_stats.p50) | (do $delta $b_tps_stats.p50 $f_tps_stats.p50)% |"
         $"| TPS P90 | ($b_tps_stats.p90) | ($f_tps_stats.p90) | (do $delta $b_tps_stats.p90 $f_tps_stats.p90)% |"
         $"| TPS P99 | ($b_tps_stats.p99) | ($f_tps_stats.p99) | (do $delta $b_tps_stats.p99 $f_tps_stats.p99)% |"
@@ -887,7 +887,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         ""
         "## Per-Run Details"
         ""
-        "| Run | Blocks | Total Tx | Success | Failed | Avg TPS | Block Time | Mgas/s |"
+        "| Run | Blocks | Total Tx | Success | Failed | Wall Clock TPS | Block Time | Mgas/s |"
         "|-----|--------|----------|---------|--------|---------|-----------|--------|"
     ] | str join "\n")
 

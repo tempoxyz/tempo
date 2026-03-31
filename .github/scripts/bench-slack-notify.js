@@ -134,7 +134,7 @@ function buildMetricRows(summary) {
   const f = summary.results.feature;
   const d = summary.results.deltas;
   return [
-    { label: 'Avg TPS',         baseline: fmtVal(b.tps, '', 0),     feature: fmtVal(f.tps, '', 0),     change: fmtDeltaInverse(d.tps) },
+    { label: 'Wall Clock TPS',  baseline: fmtVal(b.tps, '', 0),     feature: fmtVal(f.tps, '', 0),     change: fmtDeltaInverse(d.tps) },
     { label: 'TPS P50',         baseline: fmtVal(b.tps_p50, '', 1), feature: fmtVal(f.tps_p50, '', 1), change: fmtDeltaInverse(d.tps_p50) },
     { label: 'TPS P90',         baseline: fmtVal(b.tps_p90, '', 1), feature: fmtVal(f.tps_p90, '', 1), change: fmtDeltaInverse(d.tps_p90) },
     { label: 'TPS P99',         baseline: fmtVal(b.tps_p99, '', 1), feature: fmtVal(f.tps_p99, '', 1), change: fmtDeltaInverse(d.tps_p99) },
