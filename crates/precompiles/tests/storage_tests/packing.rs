@@ -256,7 +256,7 @@ fn test_unit_enum_storage_rejects_invalid_discriminant() {
         let enum_slot = Slot::<PackedStatus>::new(base_slot, address);
         assert_eq!(
             enum_slot.read().unwrap_err(),
-            error::TempoPrecompileError::under_overflow()
+            error::TempoPrecompileError::enum_conversion_error()
         );
     });
 }

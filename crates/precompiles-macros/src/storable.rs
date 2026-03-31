@@ -2,10 +2,7 @@
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use syn::{
-    Attribute, Data, DataEnum, DataStruct, DeriveInput, Expr, ExprGroup, ExprLit, ExprParen,
-    Fields, Ident, Lit, LitInt, Type,
-};
+use syn::{Attribute, Data, DataEnum, DataStruct, DeriveInput, Fields, Ident, Type};
 
 use crate::{
     FieldInfo,
@@ -218,7 +215,7 @@ fn derive_unit_enum_impl(input: &DeriveInput, data_enum: &DataEnum) -> syn::Resu
         }
     }
 
-    validate_zero_discriminant(data_enum)?;
+    validate_sequential_discriminants(data_enum)?;
 
     let enum_name = &input.ident;
     let variant_names: Vec<_> = data_enum
@@ -249,7 +246,7 @@ fn derive_unit_enum_impl(input: &DeriveInput, data_enum: &DataEnum) -> syn::Resu
                 let value = <u8 as crate::storage::Storable>::load(storage, slot, ctx)?;
                 match value {
                     #(discriminant if discriminant == Self::#variant_names as u8 => Ok(Self::#variant_names),)*
-                    _ => Err(crate::error::TempoPrecompileError::under_overflow()),
+                    _ => Err(crate::error::TempoPrecompileError::enum_conversion_error()),
                 }
             }
 
@@ -289,89 +286,25 @@ fn has_repr_u8(attrs: &[Attribute]) -> syn::Result<bool> {
     Ok(repr_u8)
 }
 
-fn validate_zero_discriminant(data_enum: &DataEnum) -> syn::Result<()> {
-    let mut next_discriminant = 0u16;
-    let mut has_zero_discriminant = false;
-
-    for variant in &data_enum.variants {
-        let discriminant = match &variant.discriminant {
-            Some((_, expr)) => parse_u8_discriminant(expr)?,
-            None => {
-                if next_discriminant > u8::MAX.into() {
-                    return Err(syn::Error::new_spanned(
-                        variant,
-                        "`Storable` unit enum discriminants must fit in `u8`",
-                    ));
-                }
-                next_discriminant as u8
-            }
-        };
-
-        has_zero_discriminant |= discriminant == 0;
-        next_discriminant = u16::from(discriminant) + 1;
-    }
-
-    if !has_zero_discriminant {
+fn validate_sequential_discriminants(data_enum: &DataEnum) -> syn::Result<()> {
+    if data_enum.variants.len() > usize::from(u8::MAX) + 1 {
         return Err(syn::Error::new_spanned(
             &data_enum.variants,
-            "`Storable` unit enums must include a zero-valued variant so zeroed storage remains readable",
+            "`Storable` unit enums must have at most 256 variants to fit in `u8`",
         ));
     }
 
-    Ok(())
-}
-
-fn parse_u8_discriminant(expr: &Expr) -> syn::Result<u8> {
-    match expr {
-        Expr::Group(ExprGroup { expr, .. }) | Expr::Paren(ExprParen { expr, .. }) => {
-            parse_u8_discriminant(expr)
+    for variant in &data_enum.variants {
+        if variant.discriminant.is_some() {
+            return Err(syn::Error::new_spanned(
+                variant,
+                "`Storable` unit enums must not use explicit discriminants; \
+                 variants are assigned sequential values starting from 0, matching Solidity enum semantics",
+            ));
         }
-        Expr::Lit(ExprLit {
-            lit: Lit::Int(lit), ..
-        }) => parse_u8_literal(lit),
-        _ => Err(syn::Error::new_spanned(
-            expr,
-            "`Storable` unit enums only support implicit or integer-literal discriminants",
-        )),
     }
-}
 
-fn parse_u8_literal(lit: &LitInt) -> syn::Result<u8> {
-    let literal = lit.to_string();
-    let digits = if lit.suffix().is_empty() {
-        literal.as_str()
-    } else {
-        literal
-            .strip_suffix(lit.suffix())
-            .expect("literal suffix should match token string")
-    };
-    let digits = digits.replace('_', "");
-
-    let parsed = if let Some(hex) = digits
-        .strip_prefix("0x")
-        .or_else(|| digits.strip_prefix("0X"))
-    {
-        u16::from_str_radix(hex, 16)
-    } else if let Some(bin) = digits
-        .strip_prefix("0b")
-        .or_else(|| digits.strip_prefix("0B"))
-    {
-        u16::from_str_radix(bin, 2)
-    } else if let Some(oct) = digits
-        .strip_prefix("0o")
-        .or_else(|| digits.strip_prefix("0O"))
-    {
-        u16::from_str_radix(oct, 8)
-    } else {
-        digits.parse::<u16>()
-    }
-    .map_err(|_| {
-        syn::Error::new_spanned(lit, "invalid integer discriminant for `Storable` enum")
-    })?;
-
-    u8::try_from(parsed).map_err(|_| {
-        syn::Error::new_spanned(lit, "`Storable` unit enum discriminants must fit in `u8`")
-    })
+    Ok(())
 }
 
 /// Generate a compile-time module that calculates the packing layout from IR.
@@ -699,7 +632,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_zero_discriminant_accepts_implicit_zero_variant() {
+    fn validate_sequential_discriminants_accepts_implicit_variants() {
         let data_enum = parse_enum(parse_quote! {
             enum PackedStatus {
                 Pending,
@@ -708,32 +641,33 @@ mod tests {
             }
         });
 
-        validate_zero_discriminant(&data_enum).unwrap();
+        validate_sequential_discriminants(&data_enum).unwrap();
     }
 
     #[test]
-    fn validate_zero_discriminant_accepts_integer_literal_radices() {
+    fn validate_sequential_discriminants_rejects_explicit_discriminants() {
         let data_enum = parse_enum(parse_quote! {
             enum PackedStatus {
-                Pending = 0x0,
-                Active = 0b1,
-                Frozen = 0o2,
-            }
-        });
-
-        validate_zero_discriminant(&data_enum).unwrap();
-    }
-
-    #[test]
-    fn validate_zero_discriminant_rejects_non_zero_start() {
-        let data_enum = parse_enum(parse_quote! {
-            enum PackedStatus {
+                Pending = 0,
                 Active = 1,
                 Frozen = 2,
             }
         });
 
-        let err = validate_zero_discriminant(&data_enum).unwrap_err();
-        assert!(err.to_string().contains("zero-valued variant"));
+        let err = validate_sequential_discriminants(&data_enum).unwrap_err();
+        assert!(err.to_string().contains("explicit discriminants"));
+    }
+
+    #[test]
+    fn validate_sequential_discriminants_rejects_gaps() {
+        let data_enum = parse_enum(parse_quote! {
+            enum PackedStatus {
+                Pending = 0,
+                Active = 5,
+            }
+        });
+
+        let err = validate_sequential_discriminants(&data_enum).unwrap_err();
+        assert!(err.to_string().contains("explicit discriminants"));
     }
 }
