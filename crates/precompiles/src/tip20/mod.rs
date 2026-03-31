@@ -68,80 +68,6 @@ pub fn validate_usd_currency(token: Address) -> Result<()> {
     Ok(())
 }
 
-/// Resolved transfer recipient for [TIP-1022] virtual address support.
-///
-/// `to` is always the effective (resolved) address where the balance is credited. For virtual
-/// recipients, `virtual_addr` carries the original virtual address for event emission.
-///
-/// [TIP-1022]: <https://docs.tempo.xyz/protocol/tip1022>
-pub struct Recipient {
-    /// The effective (resolved) address where the balance is credited.
-    pub target: Address,
-    /// The virtual address, if registered.
-    pub virtual_addr: Option<Address>,
-}
-
-impl Recipient {
-    /// Creates a [`Recipient`] with no virtual indirection.
-    #[inline]
-    pub fn direct(addr: Address) -> Self {
-        Self {
-            target: addr,
-            virtual_addr: None,
-        }
-    }
-
-    /// Resolves a recipient via the [`AddressRegistry`].
-    ///
-    /// If `addr` is a virtual address its registered master is looked up and stored in `target`,
-    /// with the original virtual address preserved in `virtual_addr`.
-    pub fn resolve(addr: Address) -> Result<Self> {
-        let effective = AddressRegistry::new().resolve_recipient(addr)?;
-        Ok(if effective == addr {
-            Self::direct(addr)
-        } else {
-            Self {
-                target: effective,
-                virtual_addr: Some(addr),
-            }
-        })
-    }
-
-    /// Validates that the recipient is not:
-    /// - the zero address (preventing accidental burns)
-    /// - an address with the TIP-20 prefix (preventing transfers to token contracts)
-    pub fn validate(&self) -> Result<()> {
-        if self.target.is_zero() || is_tip20_prefix(self.target) {
-            return Err(TIP20Error::invalid_recipient().into());
-        }
-        Ok(())
-    }
-
-    /// Builds the primary `Transfer(from, to, amount)` event.
-    ///
-    /// For virtual recipients `to` is the virtual address (first hop); for regular
-    /// recipients this is the only `Transfer` event needed.
-    pub fn build_transfer_event(&self, from: Address, amount: U256) -> TIP20Event {
-        TIP20Event::Transfer(ITIP20::Transfer {
-            from,
-            to: self.virtual_addr.unwrap_or(self.target),
-            amount,
-        })
-    }
-
-    /// Builds the forwarding `Transfer(virtual, master, amount)` event for virtual recipients.
-    /// Returns `None` for non-virtual recipients.
-    pub fn build_virtual_transfer_event(&self, amount: U256) -> Option<TIP20Event> {
-        self.virtual_addr.map(|virtual_addr| {
-            TIP20Event::Transfer(ITIP20::Transfer {
-                from: virtual_addr,
-                to: self.target,
-                amount,
-            })
-        })
-    }
-}
-
 /// TIP-20 token contract — the native token standard on Tempo.
 ///
 /// Implements ERC-20-like functionality (balances, allowances, transfers) with additional
@@ -1180,6 +1106,80 @@ impl TIP20Token {
             .checked_add(refund)
             .ok_or(TIP20Error::supply_cap_exceeded())?;
         self.set_balance(to, new_to_balance)
+    }
+}
+
+/// Resolved transfer recipient for [TIP-1022] virtual address support.
+///
+/// `to` is always the effective (resolved) address where the balance is credited. For virtual
+/// recipients, `virtual_addr` carries the original virtual address for event emission.
+///
+/// [TIP-1022]: <https://docs.tempo.xyz/protocol/tip1022>
+pub(crate) struct Recipient {
+    /// The effective (resolved) address where the balance is credited.
+    pub target: Address,
+    /// The virtual address, if registered.
+    pub virtual_addr: Option<Address>,
+}
+
+impl Recipient {
+    /// Creates a [`Recipient`] with no virtual indirection.
+    #[inline]
+    pub fn direct(addr: Address) -> Self {
+        Self {
+            target: addr,
+            virtual_addr: None,
+        }
+    }
+
+    /// Resolves a recipient via the [`AddressRegistry`].
+    ///
+    /// If `addr` is a virtual address its registered master is looked up and stored in `target`,
+    /// with the original virtual address preserved in `virtual_addr`.
+    pub fn resolve(addr: Address) -> Result<Self> {
+        let effective = AddressRegistry::new().resolve_recipient(addr)?;
+        Ok(if effective == addr {
+            Self::direct(addr)
+        } else {
+            Self {
+                target: effective,
+                virtual_addr: Some(addr),
+            }
+        })
+    }
+
+    /// Validates that the recipient is not:
+    /// - the zero address (preventing accidental burns)
+    /// - an address with the TIP-20 prefix (preventing transfers to token contracts)
+    pub fn validate(&self) -> Result<()> {
+        if self.target.is_zero() || is_tip20_prefix(self.target) {
+            return Err(TIP20Error::invalid_recipient().into());
+        }
+        Ok(())
+    }
+
+    /// Builds the primary `Transfer(from, to, amount)` event.
+    ///
+    /// For virtual recipients `to` is the virtual address (first hop); for regular
+    /// recipients this is the only `Transfer` event needed.
+    pub fn build_transfer_event(&self, from: Address, amount: U256) -> TIP20Event {
+        TIP20Event::Transfer(ITIP20::Transfer {
+            from,
+            to: self.virtual_addr.unwrap_or(self.target),
+            amount,
+        })
+    }
+
+    /// Builds the forwarding `Transfer(virtual, master, amount)` event for virtual recipients.
+    /// Returns `None` for non-virtual recipients.
+    pub fn build_virtual_transfer_event(&self, amount: U256) -> Option<TIP20Event> {
+        self.virtual_addr.map(|virtual_addr| {
+            TIP20Event::Transfer(ITIP20::Transfer {
+                from: virtual_addr,
+                to: self.target,
+                amount,
+            })
+        })
     }
 }
 
