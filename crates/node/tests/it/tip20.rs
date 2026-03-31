@@ -953,16 +953,11 @@ async fn setup_virtual_test() -> eyre::Result<(
         .wallet(admin_wallet)
         .connect_http(http_url.clone());
 
-    let gas = 2_000_000u64;
-    let gas_price = TEMPO_T1_BASE_FEE as u128;
-
     let token = setup_test_token(admin_provider.clone(), admin).await?;
     let registry = IAddressRegistry::new(ADDRESS_REGISTRY_ADDRESS, admin_provider);
 
     let register_receipt = registry
         .registerVirtualMaster(VIRTUAL_SALT.into())
-        .gas(gas)
-        .gas_price(gas_price)
         .send()
         .await?
         .get_receipt()
@@ -987,14 +982,9 @@ async fn test_tip20_virtual_mint() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
     let (_setup, _http_url, admin, token, virtual_addr) = setup_virtual_test().await?;
 
-    let gas = 2_000_000u64;
-    let gas_price = TEMPO_T1_BASE_FEE as u128;
-
     let mint_amount = U256::from(5000);
     let mint_receipt = token
         .mint(virtual_addr, mint_amount)
-        .gas(gas)
-        .gas_price(gas_price)
         .send()
         .await?
         .get_receipt()
@@ -1013,10 +1003,14 @@ async fn test_tip20_virtual_mint() -> eyre::Result<()> {
         .filter_map(|log| ITIP20::Transfer::decode_log(&log.inner).ok())
         .collect();
     assert_eq!(transfers.len(), 2);
-    assert_eq!(transfers[0].from, Address::ZERO);
-    assert_eq!(transfers[0].to, virtual_addr);
-    assert_eq!(transfers[1].from, virtual_addr);
-    assert_eq!(transfers[1].to, admin);
+    assert_eq!(
+        transfers[0].data,
+        ITIP20::Transfer { from: Address::ZERO, to: virtual_addr, amount: mint_amount }
+    );
+    assert_eq!(
+        transfers[1].data,
+        ITIP20::Transfer { from: virtual_addr, to: admin, amount: mint_amount }
+    );
 
     Ok(())
 }
@@ -1025,9 +1019,6 @@ async fn test_tip20_virtual_mint() -> eyre::Result<()> {
 async fn test_tip20_virtual_transfer() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
     let (_setup, http_url, admin, token, virtual_addr) = setup_virtual_test().await?;
-
-    let gas = 2_000_000u64;
-    let gas_price = TEMPO_T1_BASE_FEE as u128;
 
     let sender_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
         .index(1)?
@@ -1040,8 +1031,6 @@ async fn test_tip20_virtual_transfer() -> eyre::Result<()> {
     let amount = U256::from(1000);
     token
         .mint(sender, amount)
-        .gas(gas)
-        .gas_price(gas_price)
         .send()
         .await?
         .get_receipt()
@@ -1051,8 +1040,6 @@ async fn test_tip20_virtual_transfer() -> eyre::Result<()> {
     let sender_token = ITIP20::new(*token.address(), sender_provider);
     let receipt = sender_token
         .transfer(virtual_addr, amount)
-        .gas(gas)
-        .gas_price(gas_price)
         .send()
         .await?
         .get_receipt()
@@ -1074,10 +1061,14 @@ async fn test_tip20_virtual_transfer() -> eyre::Result<()> {
         .filter_map(|log| ITIP20::Transfer::decode_log(&log.inner).ok())
         .collect();
     assert_eq!(transfers.len(), 2);
-    assert_eq!(transfers[0].from, sender);
-    assert_eq!(transfers[0].to, virtual_addr);
-    assert_eq!(transfers[1].from, virtual_addr);
-    assert_eq!(transfers[1].to, admin);
+    assert_eq!(
+        transfers[0].data,
+        ITIP20::Transfer { from: sender, to: virtual_addr, amount }
+    );
+    assert_eq!(
+        transfers[1].data,
+        ITIP20::Transfer { from: virtual_addr, to: admin, amount }
+    );
 
     Ok(())
 }
@@ -1086,9 +1077,6 @@ async fn test_tip20_virtual_transfer() -> eyre::Result<()> {
 async fn test_tip20_virtual_transfer_from() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
     let (_setup, http_url, admin, token, virtual_addr) = setup_virtual_test().await?;
-
-    let gas = 2_000_000u64;
-    let gas_price = TEMPO_T1_BASE_FEE as u128;
 
     let sender_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
         .index(1)?
@@ -1101,8 +1089,6 @@ async fn test_tip20_virtual_transfer_from() -> eyre::Result<()> {
     let amount = U256::from(500);
     token
         .mint(sender, amount)
-        .gas(gas)
-        .gas_price(gas_price)
         .send()
         .await?
         .get_receipt()
@@ -1111,8 +1097,6 @@ async fn test_tip20_virtual_transfer_from() -> eyre::Result<()> {
     let sender_token = ITIP20::new(*token.address(), sender_provider);
     sender_token
         .approve(admin, amount)
-        .gas(gas)
-        .gas_price(gas_price)
         .send()
         .await?
         .get_receipt()
@@ -1121,8 +1105,6 @@ async fn test_tip20_virtual_transfer_from() -> eyre::Result<()> {
     let admin_balance_before = token.balanceOf(admin).call().await?;
     let receipt = token
         .transferFrom(sender, virtual_addr, amount)
-        .gas(gas)
-        .gas_price(gas_price)
         .send()
         .await?
         .get_receipt()
