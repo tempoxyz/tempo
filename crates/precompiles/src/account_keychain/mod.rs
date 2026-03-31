@@ -22,9 +22,6 @@ pub use tempo_contracts::precompiles::{
     },
     authorizeKeyCall, getRemainingLimitReturn,
 };
-use tempo_primitives::transaction::{
-    CallScope as ProtocolCallScope, SelectorRule as ProtocolSelectorRule,
-};
 
 use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
@@ -242,13 +239,7 @@ impl AccountKeychain {
             }
 
             if config.enforceAllowedCalls {
-                Some(
-                    config
-                        .allowedCalls
-                        .iter()
-                        .map(Self::abi_call_scope_to_config)
-                        .collect::<Result<Vec<_>>>()?,
-                )
+                Some(config.allowedCalls.as_slice())
             } else {
                 None
             }
@@ -495,26 +486,7 @@ impl AccountKeychain {
         let key_hash = Self::spending_limit_key(msg_sender, call.keyId);
         let scope = call.scope;
 
-        let selector_rules = if scope.selectorRules.is_empty() {
-            None
-        } else {
-            let mut selector_rules = Vec::new();
-            for rule in scope.selectorRules {
-                // Empty recipients is the canonical "no recipient restriction" encoding.
-                // Callers must remove the selector rule entirely to block that selector.
-                selector_rules.push(ProtocolSelectorRule {
-                    selector: *rule.selector,
-                    recipients: if rule.recipients.is_empty() {
-                        None
-                    } else {
-                        Some(rule.recipients)
-                    },
-                });
-            }
-            Some(selector_rules)
-        };
-
-        self.upsert_target_scope(key_hash, scope.target, selector_rules)?;
+        self.upsert_target_scope(key_hash, &scope)?;
 
         self.key_scopes[key_hash].is_scoped.write(true)
     }
@@ -668,7 +640,7 @@ impl AccountKeychain {
         account: Address,
         key_id: Address,
         limits: impl IntoIterator<Item = &'a TokenLimit>,
-        allowed_calls: Option<&[ProtocolCallScope]>,
+        allowed_calls: Option<&[CallScope]>,
     ) -> Result<()> {
         let limit_key = Self::spending_limit_key(account, key_id);
 
@@ -786,7 +758,7 @@ impl AccountKeychain {
     fn replace_allowed_calls(
         &mut self,
         account_key: B256,
-        allowed_calls: Option<&[ProtocolCallScope]>,
+        allowed_calls: Option<&[CallScope]>,
     ) -> Result<()> {
         // Fresh authorizations should not have any pre-existing call-scope rows because
         // `authorize_key` rejects both existing and previously revoked keys before reaching this
@@ -818,11 +790,7 @@ impl AccountKeychain {
                 }
 
                 for scope in scopes {
-                    self.upsert_target_scope(
-                        account_key,
-                        scope.target,
-                        scope.selector_rules.clone(),
-                    )?;
+                    self.upsert_target_scope(account_key, scope)?;
                 }
 
                 Ok(())
@@ -862,17 +830,11 @@ impl AccountKeychain {
             .delete()
     }
 
-    fn upsert_target_scope(
-        &mut self,
-        account_key: B256,
-        target: Address,
-        selector_rules: Option<Vec<ProtocolSelectorRule>>,
-    ) -> Result<()> {
-        if let Some(rules) = selector_rules.as_ref() {
-            if rules.is_empty() {
-                return self.remove_target_scope(account_key, target);
-            }
-            self.validate_selector_rules(target, rules)?;
+    fn upsert_target_scope(&mut self, account_key: B256, scope: &CallScope) -> Result<()> {
+        let target = scope.target;
+
+        if !scope.selectorRules.is_empty() {
+            self.validate_selector_rules(target, &scope.selectorRules)?;
         }
 
         if !self.key_scopes[account_key].targets.contains(&target)? {
@@ -886,45 +848,35 @@ impl AccountKeychain {
 
         self.clear_target_selectors(account_key, target)?;
 
-        match selector_rules {
-            None => {
-                self.key_scopes[account_key].target_scopes[target]
-                    .is_scoped
-                    .write(false)?;
-            }
-            Some(rules) => {
-                self.key_scopes[account_key].target_scopes[target]
-                    .is_scoped
-                    .write(true)?;
+        if scope.selectorRules.is_empty() {
+            self.key_scopes[account_key].target_scopes[target]
+                .is_scoped
+                .write(false)?;
+        } else {
+            self.key_scopes[account_key].target_scopes[target]
+                .is_scoped
+                .write(true)?;
 
-                for rule in rules {
-                    let selector = FixedBytes::<4>::from(rule.selector);
-                    self.key_scopes[account_key].target_scopes[target]
-                        .selectors
-                        .insert(selector)?;
+            for rule in &scope.selectorRules {
+                let selector = rule.selector;
+                self.key_scopes[account_key].target_scopes[target]
+                    .selectors
+                    .insert(selector)?;
 
-                    match rule.recipients {
-                        None => {
-                            self.key_scopes[account_key].target_scopes[target].selector_scopes
-                                [selector]
-                                .is_scoped
-                                .write(false)?;
-                            self.key_scopes[account_key].target_scopes[target].selector_scopes
-                                [selector]
-                                .recipients
-                                .delete()?;
-                        }
-                        Some(recipients) => {
-                            self.key_scopes[account_key].target_scopes[target].selector_scopes
-                                [selector]
-                                .is_scoped
-                                .write(true)?;
-                            self.key_scopes[account_key].target_scopes[target].selector_scopes
-                                [selector]
-                                .recipients
-                                .write(Set::from(recipients))?;
-                        }
-                    }
+                if rule.recipients.is_empty() {
+                    self.key_scopes[account_key].target_scopes[target].selector_scopes[selector]
+                        .is_scoped
+                        .write(false)?;
+                    self.key_scopes[account_key].target_scopes[target].selector_scopes[selector]
+                        .recipients
+                        .delete()?;
+                } else {
+                    self.key_scopes[account_key].target_scopes[target].selector_scopes[selector]
+                        .is_scoped
+                        .write(true)?;
+                    self.key_scopes[account_key].target_scopes[target].selector_scopes[selector]
+                        .recipients
+                        .write(Set::from(rule.recipients.clone()))?;
                 }
             }
         }
@@ -932,11 +884,7 @@ impl AccountKeychain {
         Ok(())
     }
 
-    fn validate_selector_rules(
-        &self,
-        target: Address,
-        rules: &[ProtocolSelectorRule],
-    ) -> Result<()> {
+    fn validate_selector_rules(&self, target: Address, rules: &[SelectorRule]) -> Result<()> {
         if rules.len() > MAX_SELECTOR_RULES_PER_SCOPE as usize {
             return Err(AccountKeychainError::selector_limit_exceeded().into());
         }
@@ -947,26 +895,22 @@ impl AccountKeychain {
                 return Err(AccountKeychainError::invalid_call_scope().into());
             }
 
-            let Some(recipients) = &rule.recipients else {
+            if rule.recipients.is_empty() {
                 continue;
-            };
-
-            if recipients.is_empty() {
-                return Err(AccountKeychainError::invalid_call_scope().into());
             }
 
-            if recipients.len() > MAX_RECIPIENTS_PER_SELECTOR as usize {
+            if rule.recipients.len() > MAX_RECIPIENTS_PER_SELECTOR as usize {
                 return Err(AccountKeychainError::recipient_limit_exceeded().into());
             }
 
             if !TIP20Factory::new().is_tip20(target)?
-                || !is_constrained_tip20_selector(rule.selector)
+                || !is_constrained_tip20_selector(*rule.selector)
             {
                 return Err(AccountKeychainError::invalid_call_scope().into());
             }
 
             let mut unique_recipients = HashSet::new();
-            for recipient in recipients {
+            for recipient in &rule.recipients {
                 if recipient.is_zero() || !unique_recipients.insert(*recipient) {
                     return Err(AccountKeychainError::invalid_call_scope().into());
                 }
@@ -974,35 +918,6 @@ impl AccountKeychain {
         }
 
         Ok(())
-    }
-
-    fn abi_call_scope_to_config(scope: &CallScope) -> Result<ProtocolCallScope> {
-        if scope.selectorRules.is_empty() {
-            Ok(ProtocolCallScope {
-                target: scope.target,
-                selector_rules: None,
-            })
-        } else {
-            let selector_rules = scope
-                .selectorRules
-                .iter()
-                .map(|rule| {
-                    Ok(ProtocolSelectorRule {
-                        selector: *rule.selector,
-                        recipients: if rule.recipients.is_empty() {
-                            None
-                        } else {
-                            Some(rule.recipients.clone())
-                        },
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?;
-
-            Ok(ProtocolCallScope {
-                target: scope.target,
-                selector_rules: Some(selector_rules),
-            })
-        }
     }
 
     /// Ensures admin operations are authorized for this caller.
@@ -3376,12 +3291,12 @@ mod tests {
                     account,
                     key_id,
                     &[],
-                    Some(&[ProtocolCallScope {
+                    Some(&[CallScope {
                         target: undeployed_tip20,
-                        selector_rules: Some(vec![ProtocolSelectorRule {
-                            selector: TIP20_TRANSFER_SELECTOR,
-                            recipients: Some(vec![recipient]),
-                        }]),
+                        selectorRules: vec![SelectorRule {
+                            selector: TIP20_TRANSFER_SELECTOR.into(),
+                            recipients: vec![recipient],
+                        }],
                     }]),
                 )
                 .expect_err("unexpected success for undeployed TIP-20 target");
@@ -3702,12 +3617,12 @@ mod tests {
                 account,
                 key_id,
                 &[],
-                Some(&[ProtocolCallScope {
+                Some(&[CallScope {
                     target,
-                    selector_rules: Some(vec![ProtocolSelectorRule {
-                        selector: TIP20_TRANSFER_SELECTOR,
-                        recipients: Some(vec![allowed_recipient]),
-                    }]),
+                    selectorRules: vec![SelectorRule {
+                        selector: TIP20_TRANSFER_SELECTOR.into(),
+                        recipients: vec![allowed_recipient],
+                    }],
                 }]),
             )?;
 
