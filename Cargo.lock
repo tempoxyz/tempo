@@ -12332,6 +12332,7 @@ dependencies = [
  "reth-rpc-eth-types",
  "reth-storage-api",
  "revm",
+ "serde",
  "sha2 0.10.9",
  "tempo-chainspec",
  "tempo-contracts",
