@@ -16,6 +16,7 @@ use tempo_precompiles_macros::{Storable, contract};
 
 use crate::{
     TIP403_REGISTRY_ADDRESS,
+    address_registry::is_virtual_address,
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
 };
@@ -278,9 +279,10 @@ impl TIP403Registry {
     /// Creates a simple policy and pre-populates it with an initial set of accounts.
     ///
     /// # Errors
+    /// - `UnderOverflow` — policy ID counter overflows
     /// - `IncompatiblePolicyType` — `policyType` is not `WHITELIST` or `BLACKLIST` (T2+), or
     ///   accounts are non-empty for compound/invalid types (pre-T2)
-    /// - `UnderOverflow` — policy ID counter overflows
+    /// - `VirtualAddressNotAllowed` — virtual addresses are forbidden (T3+)
     pub fn create_policy_with_accounts(
         &mut self,
         msg_sender: Address,
@@ -288,6 +290,15 @@ impl TIP403Registry {
     ) -> Result<u64> {
         let admin = call.admin;
         let policy_type = call.policyType.ensure_is_simple()?;
+
+        // TIP-1022: reject virtual addresses in initial account set (spec T3+)
+        if self.storage.spec().is_t3() {
+            for account in call.accounts.iter() {
+                if is_virtual_address(*account) {
+                    return Err(TIP403RegistryError::virtual_address_not_allowed().into());
+                }
+            }
+        }
 
         let new_policy_id = self.policy_id_counter()?;
 
@@ -394,11 +405,17 @@ impl TIP403Registry {
     /// - `Unauthorized` — `msg_sender` is not the policy admin
     /// - `IncompatiblePolicyType` — the policy is not a whitelist
     /// - `PolicyNotFound` — the policy ID does not exist (T2+)
+    /// - `VirtualAddressNotAllowed` — virtual addresses are forbidden (T3+)
     pub fn modify_policy_whitelist(
         &mut self,
         msg_sender: Address,
         call: ITIP403Registry::modifyPolicyWhitelistCall,
     ) -> Result<()> {
+        // TIP-1022: virtual addresses are forwarding aliases, not valid policy members (spec: T3+)
+        if self.storage.spec().is_t3() && is_virtual_address(call.account) {
+            return Err(TIP403RegistryError::virtual_address_not_allowed().into());
+        }
+
         let data = self.get_policy_data(call.policyId)?;
 
         // Check authorization
@@ -429,11 +446,17 @@ impl TIP403Registry {
     /// - `Unauthorized` — `msg_sender` is not the policy admin
     /// - `IncompatiblePolicyType` — the policy is not a blacklist
     /// - `PolicyNotFound` — the policy ID does not exist (T2+)
+    /// - `VirtualAddressNotAllowed` — virtual addresses are forbidden (T3+)
     pub fn modify_policy_blacklist(
         &mut self,
         msg_sender: Address,
         call: ITIP403Registry::modifyPolicyBlacklistCall,
     ) -> Result<()> {
+        // TIP-1022: virtual addresses are forwarding aliases, not valid policy members (spec: T3+)
+        if self.storage.spec().is_t3() && is_virtual_address(call.account) {
+            return Err(TIP403RegistryError::virtual_address_not_allowed().into());
+        }
+
         let data = self.get_policy_data(call.policyId)?;
 
         // Check authorization
@@ -2241,6 +2264,114 @@ mod tests {
                     .unwrap_err(),
                 TIP403RegistryError::policy_not_found().into()
             );
+            Ok(())
+        })
+    }
+
+    // ────────────────── TIP-1022 Virtual Address Rejection ──────────────────
+
+    /// Builds a virtual address from a `masterId` and `userTag`.
+    fn make_virtual_address() -> Address {
+        use crate::address_registry::VIRTUAL_MAGIC;
+        let mut bytes = [0u8; 20];
+        bytes[4..14].copy_from_slice(&VIRTUAL_MAGIC);
+        Address::from(bytes)
+    }
+
+    #[test]
+    fn test_modify_whitelist_rejects_virtual_address() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: PolicyType::WHITELIST,
+                },
+            )?;
+
+            let result = registry.modify_policy_whitelist(
+                admin,
+                ITIP403Registry::modifyPolicyWhitelistCall {
+                    policyId: policy_id,
+                    account: make_virtual_address(),
+                    allowed: true,
+                },
+            );
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP403RegistryError(
+                    TIP403RegistryError::VirtualAddressNotAllowed(_)
+                )
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_modify_blacklist_rejects_virtual_address() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: PolicyType::BLACKLIST,
+                },
+            )?;
+
+            let result = registry.modify_policy_blacklist(
+                admin,
+                ITIP403Registry::modifyPolicyBlacklistCall {
+                    policyId: policy_id,
+                    account: make_virtual_address(),
+                    restricted: true,
+                },
+            );
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP403RegistryError(
+                    TIP403RegistryError::VirtualAddressNotAllowed(_)
+                )
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_create_policy_with_accounts_rejects_virtual_address() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            let result = registry.create_policy_with_accounts(
+                admin,
+                ITIP403Registry::createPolicyWithAccountsCall {
+                    admin,
+                    policyType: PolicyType::WHITELIST,
+                    accounts: vec![Address::random(), make_virtual_address()],
+                },
+            );
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP403RegistryError(
+                    TIP403RegistryError::VirtualAddressNotAllowed(_)
+                )
+            ));
+
+            // Verify counter was not incremented (no policy created)
+            assert_eq!(registry.policy_id_counter()?, 2);
+
             Ok(())
         })
     }
