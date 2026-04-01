@@ -1,7 +1,8 @@
 use super::SignatureVerifier;
 use crate::{Precompile, dispatch_call, input_cost, view};
 use alloy::{primitives::Address, sol_types::SolInterface};
-use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
+use alloy_evm::precompiles::{PrecompileOutputExt, PrecompileResultExt};
+use revm::{interpreter::gas::GasTracker, precompile::PrecompileError};
 use tempo_contracts::precompiles::{
     ISignatureVerifier::ISignatureVerifierCalls as ISVCalls, SignatureVerifierError,
 };
@@ -14,16 +15,19 @@ const MAX_CALLDATA_LEN: usize =
     4 + 32 * 4 + (MAX_WEBAUTHN_SIGNATURE_LENGTH + 1).next_multiple_of(32);
 
 impl Precompile for SignatureVerifier {
-    fn call(&mut self, calldata: &[u8], _msg_sender: Address) -> PrecompileResult {
+    fn call(&mut self, calldata: &[u8], _msg_sender: Address) -> PrecompileResultExt {
         self.storage
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
 
         if calldata.len() > MAX_CALLDATA_LEN {
-            return Ok(PrecompileOutput::new_reverted(
-                self.storage.gas_used(),
-                SignatureVerifierError::invalid_format().abi_encode().into(),
-            ));
+            let gas_used = self.storage.gas_used();
+            let gas_limit = self.storage.gas_limit();
+            return Ok(PrecompileOutputExt {
+                gas: GasTracker::new(gas_limit, gas_limit - gas_used, 0),
+                bytes: SignatureVerifierError::invalid_format().abi_encode().into(),
+                reverted: true,
+            });
         }
 
         dispatch_call(calldata, ISVCalls::abi_decode, |call| match call {

@@ -182,7 +182,7 @@ where
                 );
             };
 
-            *gas = ResultGas::default().with_limit(tx.inner.gas_limit);
+            *gas = ResultGas::default();
 
             Ok(result)
         } else if self.inspect {
@@ -286,7 +286,7 @@ mod tests {
 
         let result = result.unwrap();
         assert!(result.result.is_success());
-        assert_eq!(result.result.gas_used(), 21000);
+        assert_eq!(result.result.tx_gas_used(), 21000);
     }
 
     #[test]
@@ -312,7 +312,7 @@ mod tests {
         let result = result.unwrap();
         assert!(result.result.is_success());
         // System transactions should not consume gas
-        assert_eq!(result.result.gas_used(), 0);
+        assert_eq!(result.result.tx_gas_used(), 0);
     }
 
     #[test]

@@ -2,15 +2,12 @@ use base64::{Engine, prelude::BASE64_STANDARD};
 use eyre::Context as _;
 use jiff::SignedDuration;
 use reth_cli_commands::download::DownloadDefaults;
-use reth_ethereum::node::core::args::{
-    DefaultPayloadBuilderValues, DefaultStorageValues, DefaultTxPoolValues,
-};
+use reth_ethereum::node::core::args::{DefaultPayloadBuilderValues, DefaultTxPoolValues};
 use std::{borrow::Cow, str::FromStr, time::Duration};
 use tempo_chainspec::hardfork::TempoHardfork;
 use url::Url;
 
 pub(crate) const DEFAULT_DOWNLOAD_URL: &str = "https://snapshots.tempoxyz.dev/4217";
-const SNAPSHOT_API_URL: &str = "https://snapshots.tempoxyz.dev/api/snapshots";
 
 /// Default OTLP logs filter level for telemetry.
 const DEFAULT_LOGS_OTLP_FILTER: &str = "debug";
@@ -156,7 +153,6 @@ fn init_download_urls() {
         ],
         default_base_url: Cow::Borrowed(DEFAULT_DOWNLOAD_URL),
         default_chain_aware_base_url: None,
-        snapshot_api_url: Cow::Borrowed(SNAPSHOT_API_URL),
         long_help: None,
     };
 
@@ -197,16 +193,7 @@ fn init_txpool_defaults() {
         .expect("failed to initialize txpool defaults");
 }
 
-fn init_storage_defaults() {
-    DefaultStorageValues::default()
-        // NOTE: when changing, don't forget to change in `e2e::launch_execution_node`
-        .with_v2(false)
-        .try_init()
-        .expect("failed to initialize storage defaults");
-}
-
 pub(crate) fn init_defaults() {
-    init_storage_defaults();
     init_download_urls();
     init_payload_builder_defaults();
     init_txpool_defaults();

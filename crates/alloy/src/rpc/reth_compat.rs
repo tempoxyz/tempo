@@ -5,7 +5,8 @@ use alloy_primitives::{Address, B256, Bytes, Signature};
 use reth_evm::EvmEnv;
 use reth_primitives_traits::SealedHeader;
 use reth_rpc_convert::{
-    FromConsensusHeader, SignTxRequestError, SignableTxRequest, TryIntoSimTx, TryIntoTxEnv,
+    SignTxRequestError, SignableTxRequest, TryIntoSimTx, TryIntoTxEnv,
+    transaction::FromConsensusHeader,
 };
 use reth_rpc_eth_types::EthApiError;
 use tempo_chainspec::hardfork::TempoHardfork;

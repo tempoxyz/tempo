@@ -4,7 +4,8 @@ use alloy_evm::{
     Database, Evm, RecoveredTx,
     block::{
         BlockExecutionError, BlockExecutionResult, BlockExecutor, BlockValidationError,
-        ExecutableTx, OnStateHook, StateChangePreBlockSource, StateChangeSource, TxResult,
+        ExecutableTx, GasOutput, OnStateHook, StateChangePreBlockSource, StateChangeSource,
+        TxResult,
     },
     eth::{
         EthBlockExecutor, EthTxResult,
@@ -447,7 +448,7 @@ where
 
         let inner = result?;
 
-        let next_section = self.validate_tx(recovered.tx(), inner.result.result.gas_used())?;
+        let next_section = self.validate_tx(recovered.tx(), inner.result.result.tx_gas_used())?;
         Ok(TempoTxResult {
             inner,
             next_section,
@@ -457,7 +458,10 @@ where
         })
     }
 
-    fn commit_transaction(&mut self, output: Self::Result) -> Result<u64, BlockExecutionError> {
+    fn commit_transaction(
+        &mut self,
+        output: Self::Result,
+    ) -> Result<GasOutput, BlockExecutionError> {
         let TempoTxResult {
             inner,
             next_section,
@@ -465,7 +469,8 @@ where
             tx,
         } = output;
 
-        let gas_used = self.inner.commit_transaction(inner)?;
+        let gas_output = self.inner.commit_transaction(inner)?;
+        let gas_used = gas_output.tx_gas_used();
 
         // TODO: remove once revm supports emitting logs for reverted transactions
         //
@@ -516,13 +521,21 @@ where
             }
         }
 
-        Ok(gas_used)
+        Ok(gas_output)
     }
 
     fn finish(
         self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
-        self.inner.finish()
+        let tx_gas_used = self.inner.cumulative_tx_gas_used;
+        let (evm, mut result) = self.inner.finish()?;
+        // The upstream `EthBlockExecutor::finish()` sets `gas_used` to
+        // `max_block_gas_used()` (the pre-refund `block_regular_gas_used`),
+        // but receipts accumulate the post-refund `tx_gas_used`. Override so
+        // `header.gas_used` matches `cumulative_gas_used` in the last receipt,
+        // which is required by post-execution validation.
+        result.gas_used = tx_gas_used;
+        Ok((evm, result))
     }
 
     fn set_state_hook(&mut self, hook: Option<Box<dyn OnStateHook>>) {
@@ -618,7 +631,7 @@ mod tests {
         )];
         let result: ExecutionResult<TempoHaltReason> = ExecutionResult::Success {
             reason: revm::context::result::SuccessReason::Return,
-            gas: ResultGas::default().with_limit(21000).with_spent(21000),
+            gas: ResultGas::new_with_state_gas(21000, 0, 0, 0),
             logs,
             output: revm::context::result::Output::Call(Bytes::new()),
         };
@@ -1127,7 +1140,7 @@ mod tests {
                 result: ResultAndState {
                     result: revm::context::result::ExecutionResult::Success {
                         reason: revm::context::result::SuccessReason::Return,
-                        gas: ResultGas::default().with_limit(21000).with_spent(21000),
+                        gas: ResultGas::new_with_state_gas(21000, 0, 0, 0),
                         logs: vec![],
                         output: revm::context::result::Output::Call(Bytes::new()),
                     },
@@ -1141,9 +1154,9 @@ mod tests {
             tx: None,
         };
 
-        let gas_used = executor.commit_transaction(output).unwrap();
+        let gas_output = executor.commit_transaction(output).unwrap();
 
-        assert_eq!(gas_used, 21000);
+        assert_eq!(gas_output.tx_gas_used(), 21000);
         assert_eq!(executor.section(), BlockSection::NonShared);
     }
 
@@ -1250,6 +1263,49 @@ mod tests {
         assert!(
             calls[0].1.contains_key(&addr),
             "state hook should contain the deployed address"
+        );
+    }
+
+    /// Regression test: when a transaction earns a gas refund (e.g. clearing
+    /// storage), `finish()` must return a `gas_used` that matches the last
+    /// receipt's `cumulative_gas_used` (the post-refund / tx_gas_used value).
+    ///
+    /// Without the fix, `finish()` returns `max_block_gas_used()` which is the
+    /// pre-refund `block_regular_gas_used`, causing post-execution validation
+    /// to reject the block with `BlockGasUsed` mismatch.
+    #[test]
+    fn test_finish_gas_used_matches_receipt_cumulative_gas_with_refund() {
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+
+        // Simulate a transaction that spent 50_000 gas but received a 10_000
+        // refund, so tx_gas_used = 40_000 while block_regular_gas_used = 50_000.
+        let tx_gas = 40_000u64;
+        let regular_gas = 50_000u64;
+        executor.inner.cumulative_tx_gas_used = tx_gas;
+        executor.inner.block_regular_gas_used = regular_gas;
+
+        // Also add a matching receipt so the output is self-consistent.
+        executor.inner.receipts.push(TempoReceipt {
+            tx_type: TempoTxType::Legacy,
+            success: true,
+            cumulative_gas_used: tx_gas,
+            logs: vec![],
+        });
+
+        let (_evm, result) = executor.finish().expect("finish should succeed");
+
+        let last_cumulative = result.receipts.last().unwrap().cumulative_gas_used;
+        assert_eq!(
+            result.gas_used, last_cumulative,
+            "header gas_used ({}) must equal last receipt cumulative_gas_used ({}) \
+             to pass post-execution validation",
+            result.gas_used, last_cumulative
         );
     }
 }

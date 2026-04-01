@@ -47,11 +47,14 @@ use alloy::{
     sol,
     sol_types::{SolCall, SolError},
 };
-use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
+use alloy_evm::precompiles::{
+    DynPrecompile, PrecompileOutputExt, PrecompileResultExt, PrecompilesMap,
+};
 use revm::{
     context::CfgEnv,
     handler::EthPrecompiles,
-    precompile::{PrecompileError, PrecompileId, PrecompileOutput, PrecompileResult},
+    interpreter::gas::GasTracker,
+    precompile::{PrecompileError, PrecompileId},
     primitives::hardfork::SpecId,
 };
 
@@ -92,9 +95,10 @@ pub trait Precompile {
     /// 4-byte function selector from `calldata` and route to the matching method using
     /// `dispatch_call` combined with the `view`, `mutate`, or `mutate_void` helpers.
     ///
-    /// Business-logic errors are returned as reverted [`PrecompileOutput`]s with ABI-encoded
-    /// error data, while fatal failures (e.g. out-of-gas) are returned as [`PrecompileError`].
-    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult;
+    /// Business-logic errors are returned as reverted [`PrecompileOutputExt`]s with ABI-encoded
+    /// error data, while fatal failures (e.g. out-of-gas) are returned as
+    /// [`PrecompileErrorExt`](alloy_evm::precompiles::PrecompileErrorExt).
+    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResultExt;
 }
 
 /// Returns the full Tempo precompiles for the given config.
@@ -160,10 +164,11 @@ macro_rules! tempo_precompile {
         let gas_params = $cfg.gas_params.clone();
         DynPrecompile::new_stateful(PrecompileId::Custom($id.into()), move |$input| {
             if !$input.is_direct_call() {
-                return Ok(PrecompileOutput::new_reverted(
-                    0,
-                    DelegateCallNotAllowed {}.abi_encode().into(),
-                ));
+                return Ok(PrecompileOutputExt {
+                    gas: GasTracker::new($input.gas, $input.gas, 0),
+                    bytes: DelegateCallNotAllowed {}.abi_encode().into(),
+                    reverted: true,
+                });
             }
             let mut storage = crate::storage::evm::EvmPrecompileStorageProvider::new(
                 $input.internals,
@@ -260,14 +265,14 @@ impl SignatureVerifier {
 
 /// Dispatches a parameterless view call, encoding the return via `T`.
 #[inline]
-fn metadata<T: SolCall>(f: impl FnOnce() -> Result<T::Return>) -> PrecompileResult {
-    f().into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
+fn metadata<T: SolCall>(f: impl FnOnce() -> Result<T::Return>) -> PrecompileResultExt {
+    f().into_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
 }
 
 /// Dispatches a read-only call with decoded arguments, encoding the return via `T`.
 #[inline]
-fn view<T: SolCall>(call: T, f: impl FnOnce(T) -> Result<T::Return>) -> PrecompileResult {
-    f(call).into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
+fn view<T: SolCall>(call: T, f: impl FnOnce(T) -> Result<T::Return>) -> PrecompileResultExt {
+    f(call).into_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
 }
 
 /// Dispatches a state-mutating call that returns ABI-encoded data.
@@ -278,14 +283,15 @@ fn mutate<T: SolCall>(
     call: T,
     sender: Address,
     f: impl FnOnce(Address, T) -> Result<T::Return>,
-) -> PrecompileResult {
+) -> PrecompileResultExt {
     if StorageCtx.is_static() {
-        return Ok(PrecompileOutput::new_reverted(
-            0,
-            StaticCallNotAllowed {}.abi_encode().into(),
-        ));
+        return Ok(PrecompileOutputExt {
+            gas: GasTracker::new(0, 0, 0),
+            bytes: StaticCallNotAllowed {}.abi_encode().into(),
+            reverted: true,
+        });
     }
-    f(sender, call).into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
+    f(sender, call).into_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
 }
 
 /// Dispatches a state-mutating call that returns no data (e.g. `approve`, `transfer`).
@@ -296,32 +302,39 @@ fn mutate_void<T: SolCall>(
     call: T,
     sender: Address,
     f: impl FnOnce(Address, T) -> Result<()>,
-) -> PrecompileResult {
+) -> PrecompileResultExt {
     if StorageCtx.is_static() {
-        return Ok(PrecompileOutput::new_reverted(
-            0,
-            StaticCallNotAllowed {}.abi_encode().into(),
-        ));
+        return Ok(PrecompileOutputExt {
+            gas: GasTracker::new(0, 0, 0),
+            bytes: StaticCallNotAllowed {}.abi_encode().into(),
+            reverted: true,
+        });
     }
-    f(sender, call).into_precompile_result(0, |()| Bytes::new())
+    f(sender, call).into_precompile_result(0, 0, |()| Bytes::new())
 }
 
-/// Fills gas accounting fields on a [`PrecompileOutput`] from the storage context.
+/// Fills gas accounting fields on a [`PrecompileOutputExt`] from the storage context.
 #[inline]
-fn fill_precompile_output(mut output: PrecompileOutput, storage: &StorageCtx) -> PrecompileOutput {
-    output.gas_used = storage.gas_used();
+fn fill_precompile_output(
+    mut output: PrecompileOutputExt,
+    storage: &StorageCtx,
+) -> PrecompileOutputExt {
+    let gas_limit = storage.gas_limit();
+    let gas_used = storage.gas_used();
+    output.gas = GasTracker::new(gas_limit, gas_limit - gas_used, 0);
 
     // add refund only if it is not reverted
     if !output.reverted {
-        output.gas_refunded = storage.gas_refunded();
+        output.gas.set_refunded(storage.gas_refunded());
     }
     output
 }
 
 /// Returns an ABI-encoded `UnknownFunctionSelector` revert for the given 4-byte selector.
 #[inline]
-pub fn unknown_selector(selector: [u8; 4], gas: u64) -> PrecompileResult {
-    error::TempoPrecompileError::UnknownFunctionSelector(selector).into_precompile_result(gas)
+pub fn unknown_selector(selector: [u8; 4], gas_limit: u64, gas_used: u64) -> PrecompileResultExt {
+    error::TempoPrecompileError::UnknownFunctionSelector(selector)
+        .into_precompile_result(gas_limit, gas_used)
 }
 
 /// Decodes calldata via `decode`, then dispatches to `f`.
@@ -334,20 +347,24 @@ pub fn unknown_selector(selector: [u8; 4], gas: u64) -> PrecompileResult {
 fn dispatch_call<T>(
     calldata: &[u8],
     decode: impl FnOnce(&[u8]) -> core::result::Result<T, alloy::sol_types::Error>,
-    f: impl FnOnce(T) -> PrecompileResult,
-) -> PrecompileResult {
+    f: impl FnOnce(T) -> PrecompileResultExt,
+) -> PrecompileResultExt {
     let storage = StorageCtx::default();
 
     if calldata.len() < 4 {
         if storage.spec().is_t1() {
             return Ok(fill_precompile_output(
-                PrecompileOutput::new_reverted(0, Bytes::new()),
+                PrecompileOutputExt {
+                    gas: GasTracker::new(0, 0, 0),
+                    bytes: Bytes::new(),
+                    reverted: true,
+                },
                 &storage,
             ));
         } else {
-            return Err(PrecompileError::Other(
-                "Invalid input: missing function selector".into(),
-            ));
+            return Err(
+                PrecompileError::Other("Invalid input: missing function selector".into()).into(),
+            );
         }
     }
     let result = decode(calldata);
@@ -355,11 +372,15 @@ fn dispatch_call<T>(
     match result {
         Ok(call) => f(call).map(|res| fill_precompile_output(res, &storage)),
         Err(alloy::sol_types::Error::UnknownSelector { selector, .. }) => {
-            unknown_selector(*selector, storage.gas_used())
+            unknown_selector(*selector, storage.gas_limit(), storage.gas_used())
                 .map(|res| fill_precompile_output(res, &storage))
         }
         Err(_) => Ok(fill_precompile_output(
-            PrecompileOutput::new_reverted(0, Bytes::new()),
+            PrecompileOutputExt {
+                gas: GasTracker::new(0, 0, 0),
+                bytes: Bytes::new(),
+                reverted: true,
+            },
             &storage,
         )),
     }
@@ -367,7 +388,7 @@ fn dispatch_call<T>(
 
 /// Asserts that `result` is a reverted output whose bytes decode to `expected_error`.
 #[cfg(test)]
-pub fn expect_precompile_revert<E>(result: &PrecompileResult, expected_error: E)
+pub fn expect_precompile_revert<E>(result: &PrecompileResultExt, expected_error: E)
 where
     E: SolInterface + PartialEq + std::fmt::Debug,
 {
@@ -423,6 +444,7 @@ mod tests {
             is_static: false,
             target_address,
             bytecode_address,
+            reservoir: 0,
         };
 
         let result = AlloyEvmPrecompile::call(&precompile, input);
@@ -469,6 +491,7 @@ mod tests {
                 value: U256::ZERO,
                 target_address: token_address,
                 bytecode_address: token_address,
+                reservoir: 0,
             };
 
             AlloyEvmPrecompile::call(&precompile, input)
@@ -543,6 +566,7 @@ mod tests {
                 value: U256::ZERO,
                 target_address: PATH_USD_ADDRESS,
                 bytecode_address: PATH_USD_ADDRESS,
+                reservoir: 0,
             };
 
             AlloyEvmPrecompile::call(&precompile, input)
@@ -553,8 +577,9 @@ mod tests {
             .expect("T1: expected Ok with reverted output");
         assert!(empty.reverted, "T1: expected reverted output");
         assert!(empty.bytes.is_empty());
-        assert!(empty.gas_used != 0);
-        assert_eq!(empty.gas_refunded, 0);
+        // Gas was consumed (remaining < gas_limit)
+        assert!(empty.gas.remaining() < 1_000_000);
+        assert_eq!(empty.gas.refunded(), 0);
 
         // T1: unknown selector should return a reverted output with UnknownFunctionSelector error
         let unknown = call_with_spec(Bytes::from([0xAA; 4]), TempoHardfork::T1)
@@ -568,15 +593,15 @@ mod tests {
         assert_eq!(decoded.selector.as_slice(), &[0xAA, 0xAA, 0xAA, 0xAA]);
 
         // Verify gas is tracked for both cases (unknown selector may cost slightly more due `INPUT_PER_WORD_COST`)
-        assert!(unknown.gas_used >= empty.gas_used);
-        assert_eq!(unknown.gas_refunded, empty.gas_refunded);
+        assert!(unknown.gas.remaining() <= empty.gas.remaining());
+        assert_eq!(unknown.gas.refunded(), empty.gas.refunded());
 
         // Pre-T1 (T0): invalid calldata should return PrecompileError
         let result = call_with_spec(Bytes::new(), TempoHardfork::T0);
         assert!(
             matches!(
                 &result,
-                Err(PrecompileError::Other(msg)) if msg.contains("missing function selector")
+                Err(failure) if matches!(&failure.precompile_error, PrecompileError::Other(msg) if msg.contains("missing function selector"))
             ),
             "T0: expected PrecompileError for invalid calldata, got {result:?}"
         );

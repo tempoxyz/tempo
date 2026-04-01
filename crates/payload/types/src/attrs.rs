@@ -138,12 +138,6 @@ impl From<EthPayloadAttributes> for TempoPayloadAttributes {
 
 impl PayloadAttributes for TempoPayloadAttributes {
     fn payload_id(&self, parent_hash: &B256) -> PayloadId {
-        // XXX: derives the payload ID from the parent so that
-        // overlong payload builds will eventually succeed on the
-        // next iteration: if all other nodes take equally as long,
-        // the consensus engine will kill the proposal task. Then eventually
-        // consensus will circle back to an earlier node, which then
-        // has the chance of picking up the old payload.
         payload_id_from_block_hash(parent_hash)
     }
 
@@ -161,7 +155,7 @@ impl PayloadAttributes for TempoPayloadAttributes {
 }
 
 /// Constructs a [`PayloadId`] from the first 8 bytes of `block_hash`.
-fn payload_id_from_block_hash(block_hash: &B256) -> PayloadId {
+pub(crate) fn payload_id_from_block_hash(block_hash: &B256) -> PayloadId {
     PayloadId::new(
         <[u8; 8]>::try_from(&block_hash[0..8])
             .expect("a 32 byte array always has more than 8 bytes"),
@@ -235,7 +229,6 @@ mod tests {
 
     #[test]
     fn test_builder_attributes_construction() {
-        let parent = B256::random();
         let recipient = Address::random();
         let extra_data = Bytes::from(vec![1, 2, 3, 4, 5]);
         let timestamp_millis = 1500; // 1s + 500ms
@@ -245,10 +238,6 @@ mod tests {
             TempoPayloadAttributes::new(recipient, timestamp_millis, extra_data.clone(), Vec::new);
         assert_eq!(attrs.extra_data(), &extra_data);
         assert_eq!(attrs.suggested_fee_recipient, recipient);
-        assert_eq!(
-            attrs.payload_id(&parent),
-            payload_id_from_block_hash(&parent)
-        );
         assert_eq!(attrs.timestamp(), 1);
         assert_eq!(attrs.timestamp_millis_part(), 500);
 
@@ -349,11 +338,6 @@ mod tests {
         let tempo_attrs: TempoPayloadAttributes = eth_attrs.clone().into();
 
         // Inner fields preserved
-        let parent = B256::random();
-        assert_eq!(
-            tempo_attrs.payload_id(&parent),
-            payload_id_from_block_hash(&parent)
-        );
         assert_eq!(tempo_attrs.timestamp(), eth_attrs.timestamp);
         assert_eq!(
             tempo_attrs.suggested_fee_recipient,

@@ -210,7 +210,7 @@ where
         target = "payload_builder",
         skip_all,
         fields(
-            id = %args.config.payload_id,
+            id = %args.config.payload_id(),
             parent_number = %args.config.parent_header.number(),
             parent_hash = %args.config.parent_header.hash()
         )
@@ -234,7 +234,7 @@ where
         let PayloadConfig {
             parent_header,
             attributes,
-            payload_id: _,
+            ..
         } = config;
 
         let start = Instant::now();
