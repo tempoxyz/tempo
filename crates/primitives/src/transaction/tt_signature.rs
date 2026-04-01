@@ -870,6 +870,11 @@ fn verify_p256_signature_with_p256(
 /// ECDSA signature (r, s), a second valid signature (r, n-s) exists. By
 /// requiring s <= n/2 (the "low-s" requirement), we ensure only one canonical
 /// form is accepted, preventing transaction hash malleability attacks.
+///
+/// NOTE: this function conditionally compiles based on the cfg
+/// - !std → p256
+/// - std && !test → aws-lc-rs (best performance)
+/// - std && test → both (ensures verification backend alignment)
 fn verify_p256_signature_internal(
     r: &[u8],
     s: &[u8],
