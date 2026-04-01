@@ -105,14 +105,18 @@ impl RpcEnv {
     }
 
     pub(super) async fn testnet() -> eyre::Result<Option<Self>> {
-        match std::env::var("TEMPO_TESTNET_RPC_URL") {
+        match std::env::var("TEMPO_TESTNET_RPC_URL")
+            .and_then(|u| if u.is_empty() { Err(std::env::VarError::NotPresent) } else { Ok(u) })
+        {
             Ok(url) => Self::connect(&url).await.map(Some),
             Err(_) => Ok(None),
         }
     }
 
     pub(super) async fn devnet() -> eyre::Result<Option<Self>> {
-        match std::env::var("TEMPO_DEVNET_RPC_URL") {
+        match std::env::var("TEMPO_DEVNET_RPC_URL")
+            .and_then(|u| if u.is_empty() { Err(std::env::VarError::NotPresent) } else { Ok(u) })
+        {
             Ok(url) => Self::connect(&url).await.map(Some),
             Err(_) => Ok(None),
         }
