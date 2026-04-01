@@ -890,9 +890,12 @@ contract TIP20InvariantTest is InvariantBaseTest {
         vm.startPrank(admin);
         token.grantRole(_BURN_BLOCKED_ROLE, admin);
 
-        // Determine expected error based on pause state (read after prank to match execution context)
-        bytes4 expectedSelector =
-            token.paused() ? ITIP20.ContractPaused.selector : ITIP20.ProtectedAddress.selector;
+        // The precompile checks pause before protected-address, so when running
+        // against the precompile (isTempo) and the token is paused, we expect
+        // ContractPaused; the Solidity ref-impl always returns ProtectedAddress.
+        bytes4 expectedSelector = (isTempo && token.paused())
+            ? ITIP20.ContractPaused.selector
+            : ITIP20.ProtectedAddress.selector;
 
         // Try to burn from FeeManager - should revert
         try token.burnBlocked(feeManager, amount) {
