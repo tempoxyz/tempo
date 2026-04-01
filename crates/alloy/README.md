@@ -11,6 +11,14 @@ To use `tempo-alloy`, add the crate as a dependency in your `Cargo.toml` file:
 tempo-alloy = { git = "https://github.com/tempoxyz/tempo" }
 ```
 
+If you need the Reth RPC conversion/compatibility impls used by Tempo node-side code,
+enable the `reth` feature explicitly:
+
+```toml
+[dependencies]
+tempo-alloy = { git = "https://github.com/tempoxyz/tempo", features = ["reth"] }
+```
+
 ## Development Status
 
 `tempo-alloy` is currently in development and is not yet ready for production use.
