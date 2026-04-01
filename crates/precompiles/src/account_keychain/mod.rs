@@ -20,7 +20,7 @@ pub use tempo_contracts::precompiles::{
         getTransactionKeyCall, removeAllowedCallsCall, revokeKeyCall, setAllowedCallsCall,
         updateSpendingLimitCall,
     },
-    authorizeKeyCall, getRemainingLimitReturn,
+    authorizeKeyCall, getAllowedCallsReturn, getRemainingLimitReturn,
 };
 
 use crate::{
@@ -520,27 +520,22 @@ impl AccountKeychain {
         self.key_scopes[key_hash].is_scoped.write(true)
     }
 
-    /// Returns call scopes configured for an account key.
+    /// Returns whether an account key is call-scoped together with its configured call scopes.
     ///
-    /// When the key is in scoped mode with no targets (`allowed_calls = Some([])`), returns a
-    /// sentinel entry `{target: address(0), selectorRules: []}` so callers can distinguish it
-    /// from unrestricted mode (`[]`).
-    pub fn get_allowed_calls(&self, call: getAllowedCallsCall) -> Result<Vec<CallScope>> {
+    /// `isScoped = false` means unrestricted. `isScoped = true` with an empty `scopes` vec means
+    /// the key is scoped but currently allows no targets.
+    pub fn get_allowed_calls(&self, call: getAllowedCallsCall) -> Result<getAllowedCallsReturn> {
         let key_hash = Self::spending_limit_key(call.account, call.keyId);
-        let mode = self.key_scopes[key_hash].is_scoped.read()?;
-        if !mode {
-            return Ok(Vec::new());
+        let is_scoped = self.key_scopes[key_hash].is_scoped.read()?;
+
+        if !is_scoped {
+            return Ok(getAllowedCallsReturn {
+                isScoped: false,
+                scopes: Vec::new(),
+            });
         }
 
         let targets = self.key_scopes[key_hash].targets.read()?;
-        if targets.is_empty() {
-            // Preserve round-tripping for explicit `allowed_calls = Some([])`.
-            return Ok(vec![CallScope {
-                target: Address::ZERO,
-                selectorRules: Vec::new(),
-            }]);
-        }
-
         let mut scopes = Vec::new();
         for target in targets {
             let target_mode = self.key_scopes[key_hash].target_scopes[target]
@@ -605,7 +600,10 @@ impl AccountKeychain {
             scopes.push(scope);
         }
 
-        Ok(scopes)
+        Ok(getAllowedCallsReturn {
+            isScoped: true,
+            scopes,
+        })
     }
 
     /// Returns the access key used to authorize the current transaction (`Address::ZERO` = root key).
@@ -769,7 +767,7 @@ impl AccountKeychain {
     /// Replaces the full call-scope tree for an account key.
     ///
     /// `None` switches the key back to unrestricted mode, while `Some([])` preserves scoped mode
-    /// with no targets so `get_allowed_calls` can round-trip the explicit deny-all sentinel.
+    /// with no targets so reads can distinguish scoped deny-all from unrestricted mode.
     fn replace_allowed_calls(
         &mut self,
         account_key: B256,
@@ -3483,7 +3481,7 @@ mod tests {
     }
 
     #[test]
-    fn test_t3_get_allowed_calls_returns_deny_all_sentinel() -> eyre::Result<()> {
+    fn test_t3_get_allowed_calls_distinguishes_unrestricted_and_deny_all() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         let account = Address::random();
         let key_id = Address::random();
@@ -3509,15 +3507,21 @@ mod tests {
                 },
             )?;
 
-            keychain.apply_key_authorization_restrictions(account, key_id, &[], Some(&[]))?;
-
             let scopes = keychain.get_allowed_calls(getAllowedCallsCall {
                 account,
                 keyId: key_id,
             })?;
-            assert_eq!(scopes.len(), 1);
-            assert_eq!(scopes[0].target, Address::ZERO);
-            assert!(scopes[0].selectorRules.is_empty());
+            assert!(!scopes.isScoped);
+            assert!(scopes.scopes.is_empty());
+
+            keychain.apply_key_authorization_restrictions(account, key_id, &[], Some(&[]))?;
+
+            let deny_all = keychain.get_allowed_calls(getAllowedCallsCall {
+                account,
+                keyId: key_id,
+            })?;
+            assert!(deny_all.isScoped);
+            assert!(deny_all.scopes.is_empty());
 
             Ok(())
         })
@@ -3569,14 +3573,15 @@ mod tests {
                 account,
                 keyId: key_id,
             })?;
-            assert_eq!(scopes.len(), 1);
-            assert_eq!(scopes[0].target, target);
-            assert_eq!(scopes[0].selectorRules.len(), 1);
+            assert!(scopes.isScoped);
+            assert_eq!(scopes.scopes.len(), 1);
+            assert_eq!(scopes.scopes[0].target, target);
+            assert_eq!(scopes.scopes[0].selectorRules.len(), 1);
             assert_eq!(
-                *scopes[0].selectorRules[0].selector,
+                *scopes.scopes[0].selectorRules[0].selector,
                 TIP20_TRANSFER_SELECTOR
             );
-            assert!(scopes[0].selectorRules[0].recipients.is_empty());
+            assert!(scopes.scopes[0].selectorRules[0].recipients.is_empty());
 
             let allow = keychain.validate_call_scope_for_transaction(
                 account,
@@ -3598,9 +3603,8 @@ mod tests {
                 account,
                 keyId: key_id,
             })?;
-            assert_eq!(removed.len(), 1);
-            assert_eq!(removed[0].target, Address::ZERO);
-            assert!(removed[0].selectorRules.is_empty());
+            assert!(removed.isScoped);
+            assert!(removed.scopes.is_empty());
 
             let denied = keychain
                 .validate_call_scope_for_transaction(
@@ -3659,9 +3663,10 @@ mod tests {
                 account,
                 keyId: key_id,
             })?;
-            assert_eq!(scopes.len(), 1);
-            assert_eq!(scopes[0].target, target);
-            assert!(scopes[0].selectorRules.is_empty());
+            assert!(scopes.isScoped);
+            assert_eq!(scopes.scopes.len(), 1);
+            assert_eq!(scopes.scopes[0].target, target);
+            assert!(scopes.scopes[0].selectorRules.is_empty());
 
             let allow = keychain.validate_call_scope_for_transaction(
                 account,

@@ -3,7 +3,8 @@
 pub use IAccountKeychain::{
     IAccountKeychainErrors as AccountKeychainError, IAccountKeychainEvents as AccountKeychainEvent,
     authorizeKey_0Call as legacyAuthorizeKeyCall, authorizeKey_1Call as authorizeKeyCall,
-    getRemainingLimitWithPeriodCall, getRemainingLimitWithPeriodReturn as getRemainingLimitReturn,
+    getAllowedCallsReturn, getRemainingLimitWithPeriodCall,
+    getRemainingLimitWithPeriodReturn as getRemainingLimitReturn,
 };
 
 crate::sol! {
@@ -162,8 +163,13 @@ crate::sol! {
             address token
         ) external view returns (uint256 remaining, uint64 periodEnd);
 
-        /// Returns configured call scopes for an account key.
-        function getAllowedCalls(address account, address keyId) external view returns (CallScope[] memory);
+        /// Returns whether an account key is call-scoped and, if so, the configured call scopes.
+        /// @dev `isScoped = false` means unrestricted. `isScoped = true && scopes.length == 0`
+        ///      means scoped deny-all.
+        function getAllowedCalls(
+            address account,
+            address keyId
+        ) external view returns (bool isScoped, CallScope[] memory scopes);
 
         /// Get the key used in the current transaction
         /// @return The keyId used in the current transaction
