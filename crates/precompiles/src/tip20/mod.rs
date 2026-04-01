@@ -398,8 +398,10 @@ impl TIP20Token {
     ///   resolved master and emits a two-hop `Transfer` and `Mint(virtual, amount)` events
     ///
     /// # Errors
-    /// - `PolicyForbids` — TIP-403 policy rejects the mint recipient
     /// - `Unauthorized` — caller does not hold the `ISSUER_ROLE` role
+    /// - `ContractPaused` — (+T3) token is paused
+    /// - `InvalidRecipient` — (+T3) recipient is zero or a TIP-20 prefix address
+    /// - `PolicyForbids` — TIP-403 policy rejects the mint recipient
     /// - `SupplyCapExceeded` — minting would push total supply above the cap
     pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
         let to = Recipient::resolve(call.to)?;
@@ -447,13 +449,7 @@ impl TIP20Token {
         let total_supply = self.total_supply()?;
 
         // Check if the resolved target address is authorized to receive minted tokens
-        if !TIP403Registry::new().is_authorized_as(
-            self.transfer_policy_id()?,
-            to.target,
-            AuthRole::mint_recipient(),
-        )? {
-            return Err(TIP20Error::policy_forbids().into());
-        }
+        self.validate_mint(to)?;
 
         let new_supply = total_supply
             .checked_add(amount)
@@ -479,6 +475,7 @@ impl TIP20Token {
     /// Burns `amount` from the caller's balance and reduces total supply.
     ///
     /// # Errors
+    /// - `ContractPaused` — (+T3) token is paused
     /// - `Unauthorized` — caller does not hold the `ISSUER_ROLE` role
     /// - `InsufficientBalance` — caller balance lower than burn amount
     pub fn burn(&mut self, msg_sender: Address, call: ITIP20::burnCall) -> Result<()> {
@@ -512,6 +509,7 @@ impl TIP20Token {
     /// Burns tokens from addresses blocked by [`TIP403Registry`] policy.
     ///
     /// # Errors
+    /// - `ContractPaused` — (+T3) token is paused
     /// - `Unauthorized` — caller does not hold `BURN_BLOCKED_ROLE`
     /// - `PolicyForbids` — target address is not blocked by policy
     /// - `ProtectedAddress` — cannot burn from fee manager or stablecoin DEX addresses
@@ -520,6 +518,10 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::burnBlockedCall,
     ) -> Result<()> {
+        // Validate burner role and (+T3) ensure token is not paused
+        if self.storage.spec().is_t3() {
+            self.check_not_paused()?;
+        }
         self.check_role(msg_sender, *BURN_BLOCKED_ROLE)?;
 
         // Prevent burning from `FeeManager` and `StablecoinDEX` to protect accounting invariants
@@ -554,6 +556,10 @@ impl TIP20Token {
     }
 
     fn _burn(&mut self, msg_sender: Address, amount: U256) -> Result<()> {
+        // Validate issuer role and (+T3) ensure token is not paused
+        if self.storage.spec().is_t3() {
+            self.check_not_paused()?;
+        }
         self.check_role(msg_sender, *ISSUER_ROLE)?;
 
         self._transfer(msg_sender, &Recipient::direct(Address::ZERO), amount)?;
@@ -922,6 +928,26 @@ impl TIP20Token {
         self.check_not_paused()?;
         to.validate()?;
         self.ensure_transfer_authorized(from, to.target)
+    }
+
+    /// Ensures that the recipient is authorized to receive mints.
+    /// Additionally (+T3) checks pause state, validates the effective recipient.
+    fn validate_mint(&self, to: &Recipient) -> Result<()> {
+        if self.storage.spec().is_t3() {
+            self.check_not_paused()?;
+            to.validate()?;
+        }
+
+        // Check if the resolved target address is authorized to receive minted tokens
+        if !TIP403Registry::new().is_authorized_as(
+            self.transfer_policy_id()?,
+            to.target,
+            AuthRole::mint_recipient(),
+        )? {
+            return Err(TIP20Error::policy_forbids().into());
+        }
+
+        Ok(())
     }
 
     /// Check whether a transfer is authorized by the token's [`TIP403Registry`] policy.
@@ -3266,5 +3292,151 @@ pub(crate) mod tests {
 
             Ok(())
         }
+    }
+
+    #[test]
+    fn test_mint_rejects_when_paused_on_t3() -> eyre::Result<()> {
+        let to = Address::random();
+        let amount = U256::from(1000);
+        let memo = FixedBytes::random();
+
+        for hardfork in [TempoHardfork::T2, TempoHardfork::T3] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
+            let admin = Address::random();
+
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("Test", "TST", admin)
+                    .with_issuer(admin)
+                    .with_role(admin, *PAUSE_ROLE)
+                    .apply()?;
+
+                token.pause(admin, ITIP20::pauseCall {})?;
+
+                let mint_result = token.mint(admin, ITIP20::mintCall { to, amount });
+                let mint_memo_result =
+                    token.mint_with_memo(admin, ITIP20::mintWithMemoCall { to, amount, memo });
+
+                if hardfork.is_t3() {
+                    let expected = TempoPrecompileError::TIP20(TIP20Error::contract_paused());
+                    assert_eq!(mint_result, Err(expected.clone()));
+                    assert_eq!(mint_memo_result, Err(expected));
+                } else {
+                    assert!(mint_result.is_ok());
+                    assert!(mint_memo_result.is_ok());
+                }
+
+                Ok::<_, TempoPrecompileError>(())
+            })?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_burn_rejects_when_paused_on_t3() -> eyre::Result<()> {
+        let amount = U256::from(500);
+        let memo = FixedBytes::random();
+
+        for hardfork in [TempoHardfork::T2, TempoHardfork::T3] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
+            let admin = Address::random();
+
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("Test", "TST", admin)
+                    .with_issuer(admin)
+                    .with_role(admin, *PAUSE_ROLE)
+                    .with_mint(admin, amount * U256::from(2))
+                    .apply()?;
+
+                token.pause(admin, ITIP20::pauseCall {})?;
+
+                let burn_result = token.burn(admin, ITIP20::burnCall { amount });
+                let burn_memo_result =
+                    token.burn_with_memo(admin, ITIP20::burnWithMemoCall { amount, memo });
+
+                if hardfork.is_t3() {
+                    let expected = TempoPrecompileError::TIP20(TIP20Error::contract_paused());
+                    assert_eq!(burn_result, Err(expected.clone()));
+                    assert_eq!(burn_memo_result, Err(expected));
+                } else {
+                    assert!(burn_result.is_ok());
+                    assert!(burn_memo_result.is_ok());
+                }
+
+                Ok::<_, TempoPrecompileError>(())
+            })?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_burn_blocked_rejects_when_paused_on_t3() -> eyre::Result<()> {
+        let amount = U256::from(500);
+        let blocked = Address::random();
+
+        for hardfork in [TempoHardfork::T2, TempoHardfork::T3] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
+            let admin = Address::random();
+
+            StorageCtx::enter(&mut storage, || {
+                // Create a blacklist policy and block the address
+                let mut registry = TIP403Registry::new();
+                registry.initialize()?;
+                let policy_id = registry.create_policy(
+                    admin,
+                    ITIP403Registry::createPolicyCall {
+                        admin,
+                        policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                    },
+                )?;
+                registry.modify_policy_blacklist(
+                    admin,
+                    ITIP403Registry::modifyPolicyBlacklistCall {
+                        policyId: policy_id,
+                        account: blocked,
+                        restricted: true,
+                    },
+                )?;
+
+                let mut token = TIP20Setup::create("Test", "TST", admin)
+                    .with_issuer(admin)
+                    .with_role(admin, *PAUSE_ROLE)
+                    .with_role(admin, *BURN_BLOCKED_ROLE)
+                    .with_mint(blocked, amount)
+                    .apply()?;
+
+                // Point the token's transfer policy at our blacklist
+                token.change_transfer_policy_id(
+                    admin,
+                    ITIP20::changeTransferPolicyIdCall {
+                        newPolicyId: policy_id,
+                    },
+                )?;
+
+                // Pause the token
+                token.pause(admin, ITIP20::pauseCall {})?;
+
+                let result = token.burn_blocked(
+                    admin,
+                    ITIP20::burnBlockedCall {
+                        from: blocked,
+                        amount,
+                    },
+                );
+
+                if hardfork.is_t3() {
+                    assert_eq!(
+                        result,
+                        Err(TempoPrecompileError::TIP20(TIP20Error::contract_paused()))
+                    );
+                } else {
+                    // T2: pause not enforced, burn succeeds
+                    assert!(result.is_ok());
+                    assert_eq!(token.get_balance(blocked)?, U256::ZERO);
+                }
+
+                Ok::<_, TempoPrecompileError>(())
+            })?;
+        }
+        Ok(())
     }
 }
