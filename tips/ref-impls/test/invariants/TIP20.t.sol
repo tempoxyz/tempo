@@ -899,7 +899,9 @@ contract TIP20InvariantTest is InvariantBaseTest {
             vm.stopPrank();
             revert("TEMPO-TIP24: Should revert for FeeManager");
         } catch (bytes memory reason) {
-            assertEq(bytes4(reason), expectedSelector, "TEMPO-TIP24: Unexpected error for FeeManager");
+            assertEq(
+                bytes4(reason), expectedSelector, "TEMPO-TIP24: Unexpected error for FeeManager"
+            );
         }
 
         // Try to burn from DEX - should revert
