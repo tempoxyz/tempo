@@ -2611,14 +2611,16 @@ mod tests {
         use alloy_primitives::{Signature, TxKind, address};
         use alloy_signer::SignerSync;
         use alloy_signer_local::PrivateKeySigner;
+        use alloy_sol_types::SolCall;
         use reth_chainspec::ForkCondition;
         use reth_primitives_traits::Recovered;
         use reth_transaction_pool::error::PoolTransactionError;
         use tempo_chainspec::hardfork::TempoHardfork;
+        use tempo_contracts::precompiles::ITIP20;
         use tempo_precompiles::error::TempoPrecompileError;
         use tempo_primitives::transaction::{
-            CallScope, KeyAuthorization, SignatureType, SignedKeyAuthorization, TempoTransaction,
-            TokenLimit,
+            CallScope, KeyAuthorization, SelectorRule, SignatureType, SignedKeyAuthorization,
+            TempoTransaction, TokenLimit,
             tempo_transaction::Call,
             tt_signature::{
                 KeychainSignature, KeychainVersion, PrimitiveSignature, TempoSignature,
@@ -2657,11 +2659,11 @@ mod tests {
             access_key_signer: &PrivateKeySigner,
             key_authorization: Option<SignedKeyAuthorization>,
         ) -> TempoPooledTransaction {
-            create_aa_with_keychain_signature_versioned(
+            create_aa_with_keychain_signature_calls(
                 user_address,
                 access_key_signer,
                 key_authorization,
-                KeychainVersion::V2,
+                vec![default_test_call()],
             )
         }
 
@@ -2671,11 +2673,35 @@ mod tests {
             access_key_signer: &PrivateKeySigner,
             key_authorization: Option<SignedKeyAuthorization>,
         ) -> TempoPooledTransaction {
-            create_aa_with_keychain_signature_versioned(
+            create_aa_with_keychain_signature_calls_versioned(
                 user_address,
                 access_key_signer,
                 key_authorization,
                 KeychainVersion::V1,
+                vec![default_test_call()],
+            )
+        }
+
+        fn default_test_call() -> Call {
+            Call {
+                to: TxKind::Call(address!("0000000000000000000000000000000000000001")),
+                value: U256::ZERO,
+                input: alloy_primitives::Bytes::new(),
+            }
+        }
+
+        fn create_aa_with_keychain_signature_calls(
+            user_address: Address,
+            access_key_signer: &PrivateKeySigner,
+            key_authorization: Option<SignedKeyAuthorization>,
+            calls: Vec<Call>,
+        ) -> TempoPooledTransaction {
+            create_aa_with_keychain_signature_calls_versioned(
+                user_address,
+                access_key_signer,
+                key_authorization,
+                KeychainVersion::V2,
+                calls,
             )
         }
 
@@ -2686,16 +2712,28 @@ mod tests {
             key_authorization: Option<SignedKeyAuthorization>,
             version: KeychainVersion,
         ) -> TempoPooledTransaction {
+            create_aa_with_keychain_signature_calls_versioned(
+                user_address,
+                access_key_signer,
+                key_authorization,
+                version,
+                vec![default_test_call()],
+            )
+        }
+
+        fn create_aa_with_keychain_signature_calls_versioned(
+            user_address: Address,
+            access_key_signer: &PrivateKeySigner,
+            key_authorization: Option<SignedKeyAuthorization>,
+            version: KeychainVersion,
+            calls: Vec<Call>,
+        ) -> TempoPooledTransaction {
             let tx_aa = TempoTransaction {
                 chain_id: 42431, // MODERATO chain_id
                 max_priority_fee_per_gas: 1_000_000_000,
                 max_fee_per_gas: 20_000_000_000,
                 gas_limit: 1_000_000,
-                calls: vec![Call {
-                    to: TxKind::Call(address!("0000000000000000000000000000000000000001")),
-                    value: U256::ZERO,
-                    input: alloy_primitives::Bytes::new(),
-                }],
+                calls,
                 nonce_key: U256::ZERO,
                 nonce: 0,
                 fee_token: Some(address!("0000000000000000000000000000000000000002")),
@@ -2742,6 +2780,89 @@ mod tests {
             let envelope: TempoTxEnvelope = signed_tx.into();
             let recovered = envelope.try_into_recovered().unwrap();
             TempoPooledTransaction::new(recovered)
+        }
+
+        fn sign_key_authorization(
+            key_authorization: KeyAuthorization,
+            user_signer: &PrivateKeySigner,
+        ) -> SignedKeyAuthorization {
+            let auth_signature = user_signer
+                .sign_hash_sync(&key_authorization.signature_hash())
+                .expect("signing failed");
+            key_authorization.into_signed(PrimitiveSignature::Secp256k1(auth_signature))
+        }
+
+        fn tip20_transfer_call(target: Address, recipient: Address) -> Call {
+            Call {
+                to: TxKind::Call(target),
+                value: U256::ZERO,
+                input: ITIP20::transferCall {
+                    to: recipient,
+                    amount: U256::from(1_u64),
+                }
+                .abi_encode()
+                .into(),
+            }
+        }
+
+        fn tip20_approve_call(target: Address, spender: Address) -> Call {
+            Call {
+                to: TxKind::Call(target),
+                value: U256::ZERO,
+                input: ITIP20::approveCall {
+                    spender,
+                    amount: U256::from(1_u64),
+                }
+                .abi_encode()
+                .into(),
+            }
+        }
+
+        fn tip20_transfer_with_memo_call(target: Address, recipient: Address) -> Call {
+            Call {
+                to: TxKind::Call(target),
+                value: U256::ZERO,
+                input: ITIP20::transferWithMemoCall {
+                    to: recipient,
+                    amount: U256::from(1_u64),
+                    memo: B256::repeat_byte(0x55),
+                }
+                .abi_encode()
+                .into(),
+            }
+        }
+
+        fn deploy_path_usd(
+            provider: &MockEthProvider<TempoPrimitives, TempoChainSpec>,
+            _admin: Address,
+        ) {
+            provider.add_account(
+                PATH_USD_ADDRESS,
+                ExtendedAccount::new(0, U256::ZERO)
+                    .with_bytecode(alloy_primitives::Bytes::from_static(&[0xef])),
+            );
+        }
+
+        fn validate_t3_key_authorization_result(
+            transaction: &TempoPooledTransaction,
+            user_address: Address,
+            key_id: Address,
+            setup_storage: impl FnOnce(&MockEthProvider<TempoPrimitives, TempoChainSpec>),
+        ) -> Result<Result<(), TempoPoolTransactionError>, ProviderError> {
+            let validator = setup_validator_with_keychain_storage_spec(
+                transaction,
+                user_address,
+                key_id,
+                None,
+                moderato_with_t3(),
+            );
+            setup_storage(validator.inner.client());
+            let mut state_provider = validator.inner.client().latest().unwrap();
+            validate_against_keychain_default_fee_context(
+                &validator,
+                transaction,
+                &mut state_provider,
+            )
         }
 
         fn validate_against_keychain_default_fee_context(
@@ -3953,6 +4074,254 @@ mod tests {
             assert!(
                 result.is_ok(),
                 "Expected allowed call-scope transaction to pass, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_key_authorization_t3_recipient_scope_matches_constrained_tip20_selectors()
+        -> Result<(), ProviderError> {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+            let allowed_recipient = Address::repeat_byte(0x11);
+            let denied_recipient = Address::repeat_byte(0x22);
+
+            let signed_key_auth = sign_key_authorization(
+                KeyAuthorization {
+                    chain_id: 42431,
+                    key_type: SignatureType::Secp256k1,
+                    key_id: access_key_address,
+                    expiry: None,
+                    limits: None,
+                    allowed_calls: Some(vec![CallScope {
+                        target: PATH_USD_ADDRESS,
+                        selector_rules: Some(vec![
+                            SelectorRule {
+                                selector: ITIP20::transferCall::SELECTOR,
+                                recipients: Some(vec![allowed_recipient]),
+                            },
+                            SelectorRule {
+                                selector: ITIP20::approveCall::SELECTOR,
+                                recipients: Some(vec![allowed_recipient]),
+                            },
+                            SelectorRule {
+                                selector: ITIP20::transferWithMemoCall::SELECTOR,
+                                recipients: Some(vec![allowed_recipient]),
+                            },
+                        ]),
+                    }]),
+                },
+                &user_signer,
+            );
+
+            for (name, make_call) in [
+                (
+                    "transfer",
+                    tip20_transfer_call as fn(Address, Address) -> Call,
+                ),
+                (
+                    "approve",
+                    tip20_approve_call as fn(Address, Address) -> Call,
+                ),
+                (
+                    "transferWithMemo",
+                    tip20_transfer_with_memo_call as fn(Address, Address) -> Call,
+                ),
+            ] {
+                let allowed_tx = create_aa_with_keychain_signature_calls(
+                    user_address,
+                    &access_key_signer,
+                    Some(signed_key_auth.clone()),
+                    vec![make_call(PATH_USD_ADDRESS, allowed_recipient)],
+                );
+                let allowed_result = validate_t3_key_authorization_result(
+                    &allowed_tx,
+                    user_address,
+                    access_key_address,
+                    |provider| deploy_path_usd(provider, user_address),
+                )?;
+                assert!(
+                    allowed_result.is_ok(),
+                    "{name} should allow the configured recipient, got: {allowed_result:?}"
+                );
+
+                let denied_tx = create_aa_with_keychain_signature_calls(
+                    user_address,
+                    &access_key_signer,
+                    Some(signed_key_auth.clone()),
+                    vec![make_call(PATH_USD_ADDRESS, denied_recipient)],
+                );
+                let denied_result = validate_t3_key_authorization_result(
+                    &denied_tx,
+                    user_address,
+                    access_key_address,
+                    |provider| deploy_path_usd(provider, user_address),
+                )?;
+                assert!(
+                    matches!(
+                        denied_result,
+                        Err(TempoPoolTransactionError::Keychain(
+                            "call not allowed by key scope"
+                        ))
+                    ),
+                    "{name} should reject an unlisted recipient, got: {denied_result:?}"
+                );
+            }
+
+            Ok(())
+        }
+
+        #[test]
+        fn test_key_authorization_t3_rejects_batch_when_any_call_is_out_of_scope()
+        -> Result<(), ProviderError> {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+            let allowed_recipient = Address::repeat_byte(0x11);
+            let denied_recipient = Address::repeat_byte(0x22);
+
+            let signed_key_auth = sign_key_authorization(
+                KeyAuthorization {
+                    chain_id: 42431,
+                    key_type: SignatureType::Secp256k1,
+                    key_id: access_key_address,
+                    expiry: None,
+                    limits: None,
+                    allowed_calls: Some(vec![CallScope {
+                        target: PATH_USD_ADDRESS,
+                        selector_rules: Some(vec![SelectorRule {
+                            selector: ITIP20::transferCall::SELECTOR,
+                            recipients: Some(vec![allowed_recipient]),
+                        }]),
+                    }]),
+                },
+                &user_signer,
+            );
+
+            let transaction = create_aa_with_keychain_signature_calls(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+                vec![
+                    tip20_transfer_call(PATH_USD_ADDRESS, allowed_recipient),
+                    tip20_transfer_call(PATH_USD_ADDRESS, denied_recipient),
+                ],
+            );
+
+            let result = validate_t3_key_authorization_result(
+                &transaction,
+                user_address,
+                access_key_address,
+                |provider| deploy_path_usd(provider, user_address),
+            )?;
+
+            assert!(
+                matches!(
+                    result,
+                    Err(TempoPoolTransactionError::Keychain(
+                        "call not allowed by key scope"
+                    ))
+                ),
+                "Expected batched scope rejection, got: {result:?}"
+            );
+
+            Ok(())
+        }
+
+        #[test]
+        fn test_key_authorization_t3_rejects_duplicate_recipients_in_selector_rule() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+            let duplicate_recipient = Address::repeat_byte(0x11);
+
+            let signed_key_auth = sign_key_authorization(
+                KeyAuthorization {
+                    chain_id: 42431,
+                    key_type: SignatureType::Secp256k1,
+                    key_id: access_key_address,
+                    expiry: None,
+                    limits: None,
+                    allowed_calls: Some(vec![CallScope {
+                        target: PATH_USD_ADDRESS,
+                        selector_rules: Some(vec![SelectorRule {
+                            selector: ITIP20::transferCall::SELECTOR,
+                            recipients: Some(vec![duplicate_recipient, duplicate_recipient]),
+                        }]),
+                    }]),
+                },
+                &user_signer,
+            );
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let result = validate_t3_key_authorization_result(
+                &transaction,
+                user_address,
+                access_key_address,
+                |_| {},
+            )
+            .expect("should not be a provider error");
+
+            assert!(
+                matches!(
+                    result,
+                    Err(TempoPoolTransactionError::Keychain(
+                        "selector rule recipients must be non-zero and unique"
+                    ))
+                ),
+                "Expected duplicate recipient rejection, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_key_authorization_t3_rejects_recipient_scope_for_non_tip20_target() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+
+            let signed_key_auth = sign_key_authorization(
+                KeyAuthorization {
+                    chain_id: 42431,
+                    key_type: SignatureType::Secp256k1,
+                    key_id: access_key_address,
+                    expiry: None,
+                    limits: None,
+                    allowed_calls: Some(vec![CallScope {
+                        target: address!("0000000000000000000000000000000000000042"),
+                        selector_rules: Some(vec![SelectorRule {
+                            selector: ITIP20::transferCall::SELECTOR,
+                            recipients: Some(vec![address!(
+                                "00000000000000000000000000000000000000aa"
+                            )]),
+                        }]),
+                    }]),
+                },
+                &user_signer,
+            );
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let result = validate_t3_key_authorization_result(
+                &transaction,
+                user_address,
+                access_key_address,
+                |_| {},
+            )
+            .expect("should not be a provider error");
+
+            assert!(
+                matches!(
+                    result,
+                    Err(TempoPoolTransactionError::Keychain(
+                        "recipient-constrained selector rules require a deployed TIP-20 target"
+                    ))
+                ),
+                "Expected non-TIP-20 target rejection, got: {result:?}"
             );
         }
 
