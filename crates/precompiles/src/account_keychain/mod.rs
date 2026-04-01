@@ -419,9 +419,16 @@ impl AccountKeychain {
         })
     }
 
-    /// Returns the remaining spending limit for a key-token pair, or a blank entry if inexistent
-    /// or revoked (T2+).
+    /// Returns the remaining spending limit for a key-token pair.
+    ///
+    /// T2+ returns zero for missing, revoked, or expired keys. Pre-T2 preserves the historical
+    /// behavior of reading the raw stored remaining amount so old blocks reexecute identically.
     pub fn get_remaining_limit(&self, call: getRemainingLimitCall) -> Result<U256> {
+        if !self.storage.spec().is_t2() {
+            let limit_key = Self::spending_limit_key(call.account, call.keyId);
+            return self.spending_limits[limit_key][call.token].remaining.read();
+        }
+
         self.get_remaining_limit_with_period(getRemainingLimitWithPeriodCall {
             account: call.account,
             keyId: call.keyId,
@@ -431,42 +438,22 @@ impl AccountKeychain {
     }
 
     /// Returns the remaining spending limit together with the active period end timestamp.
+    ///
+    /// Missing, revoked, or expired keys report zeroed values instead of erroring.
     pub fn get_remaining_limit_with_period(
         &self,
         call: getRemainingLimitWithPeriodCall,
     ) -> Result<getRemainingLimitReturn> {
-        // T2+: return zero if key doesn't exist or has been revoked
-        if self.storage.spec().is_t2() {
-            let key = self.keys[call.account][call.keyId].read()?;
-            if key.expiry == 0 || key.is_revoked {
-                return Ok(getRemainingLimitReturn {
-                    remaining: U256::ZERO,
-                    periodEnd: 0,
-                });
-            }
-        }
+        let (remaining, period_end) = self.effective_limit_state(
+            call.account,
+            call.keyId,
+            call.token,
+            self.storage.timestamp().saturating_to::<u64>(),
+        )?;
 
-        if self.storage.spec().is_t3() {
-            let (remaining, period_end) = self.effective_limit_state(
-                call.account,
-                call.keyId,
-                call.token,
-                self.storage.timestamp().saturating_to::<u64>(),
-            )?;
-
-            return Ok(getRemainingLimitReturn {
-                remaining,
-                periodEnd: period_end,
-            });
-        }
-
-        let limit_key = Self::spending_limit_key(call.account, call.keyId);
-        let remaining = self.spending_limits[limit_key][call.token]
-            .remaining
-            .read()?;
         Ok(getRemainingLimitReturn {
             remaining,
-            periodEnd: 0,
+            periodEnd: period_end,
         })
     }
 
@@ -1132,16 +1119,14 @@ impl AccountKeychain {
 
         let mut limit_state = self.spending_limits[limit_key][token].read()?;
         let mut remaining = limit_state.remaining;
+        let is_periodic = limit_state.period != 0;
 
-        if limit_state.period > 0 {
-            let now = self.storage.timestamp().saturating_to::<u64>();
-            if now >= limit_state.period_end {
-                let next_end = limit_state.compute_next_period_end(now);
+        if is_periodic && current_timestamp >= limit_state.period_end {
+            let next_end = limit_state.compute_next_period_end(current_timestamp);
 
-                remaining = U256::from(limit_state.max);
-                limit_state.remaining = remaining;
-                limit_state.period_end = next_end;
-            }
+            remaining = U256::from(limit_state.max);
+            limit_state.remaining = remaining;
+            limit_state.period_end = next_end;
         }
 
         if amount > remaining {
@@ -1150,20 +1135,24 @@ impl AccountKeychain {
 
         // Update remaining limit
         let new_remaining = remaining - amount;
-        limit_state.remaining = new_remaining;
-        self.spending_limits[limit_key][token].write(limit_state)?;
-
-        if self.storage.spec().is_t3() {
-            self.emit_event(AccountKeychainEvent::AccessKeySpend(
-                IAccountKeychain::AccessKeySpend {
-                    account,
-                    publicKey: key_id,
-                    token,
-                    amount,
-                    remainingLimit: new_remaining,
-                },
-            ))?;
+        if is_periodic {
+            limit_state.remaining = new_remaining;
+            self.spending_limits[limit_key][token].write(limit_state)?;
+        } else {
+            self.spending_limits[limit_key][token]
+                .remaining
+                .write(new_remaining)?;
         }
+
+        self.emit_event(AccountKeychainEvent::AccessKeySpend(
+            IAccountKeychain::AccessKeySpend {
+                account,
+                publicKey: key_id,
+                token,
+                amount,
+                remainingLimit: new_remaining,
+            },
+        ))?;
 
         Ok(())
     }
@@ -3595,6 +3584,112 @@ mod tests {
             assert_eq!(
                 keychain.effective_remaining_limit(account, key_id, token, 1_010)?,
                 U256::ZERO
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_pre_t3_expired_key_has_zero_remaining_limit() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let account = Address::random();
+        let key_id = Address::random();
+        let token = Address::random();
+
+        storage.set_timestamp(U256::from(1_000u64));
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
+
+            keychain.authorize_key(
+                account,
+                authorizeKeyCall {
+                    keyId: key_id,
+                    signatureType: SignatureType::Secp256k1,
+                    config: KeyRestrictions {
+                        expiry: 1_005,
+                        enforceLimits: true,
+                        limits: vec![TokenLimit {
+                            token,
+                            amount: U256::from(100u64),
+                            period: 0,
+                        }],
+                        enforceAllowedCalls: false,
+                        allowedCalls: vec![],
+                    },
+                },
+            )?;
+
+            Ok::<_, eyre::Report>(())
+        })?;
+
+        storage.set_timestamp(U256::from(1_010u64));
+        StorageCtx::enter(&mut storage, || {
+            let keychain = AccountKeychain::new();
+
+            assert_eq!(
+                keychain.get_remaining_limit(getRemainingLimitCall {
+                    account,
+                    keyId: key_id,
+                    token,
+                })?,
+                U256::ZERO
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_pre_t2_expired_key_preserves_raw_remaining_limit() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
+        let account = Address::random();
+        let key_id = Address::random();
+        let token = Address::random();
+
+        storage.set_timestamp(U256::from(1_000u64));
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
+
+            keychain.authorize_key(
+                account,
+                authorizeKeyCall {
+                    keyId: key_id,
+                    signatureType: SignatureType::Secp256k1,
+                    config: KeyRestrictions {
+                        expiry: 1_005,
+                        enforceLimits: true,
+                        limits: vec![TokenLimit {
+                            token,
+                            amount: U256::from(100u64),
+                            period: 0,
+                        }],
+                        enforceAllowedCalls: false,
+                        allowedCalls: vec![],
+                    },
+                },
+            )?;
+
+            Ok::<_, eyre::Report>(())
+        })?;
+
+        storage.set_timestamp(U256::from(1_010u64));
+        StorageCtx::enter(&mut storage, || {
+            let keychain = AccountKeychain::new();
+
+            assert_eq!(
+                keychain.get_remaining_limit(getRemainingLimitCall {
+                    account,
+                    keyId: key_id,
+                    token,
+                })?,
+                U256::from(100u64)
             );
 
             Ok(())
