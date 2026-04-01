@@ -885,6 +885,14 @@ impl AccountKeychain {
             return Err(AccountKeychainError::selector_limit_exceeded().into());
         }
 
+        let mut cached_is_tip20: Option<bool> = None;
+        let mut is_tip20 = || -> Result<bool> {
+            match cached_is_tip20 {
+                Some(v) => Ok(v),
+                None => Ok(*cached_is_tip20.insert(TIP20Factory::new().is_tip20(target)?)),
+            }
+        };
+
         let mut selectors = HashSet::new();
         for rule in rules {
             if !selectors.insert(rule.selector) {
@@ -899,9 +907,7 @@ impl AccountKeychain {
                 return Err(AccountKeychainError::recipient_limit_exceeded().into());
             }
 
-            if !TIP20Factory::new().is_tip20(target)?
-                || !is_constrained_tip20_selector(*rule.selector)
-            {
+            if !is_constrained_tip20_selector(*rule.selector) || !is_tip20()? {
                 return Err(AccountKeychainError::invalid_call_scope().into());
             }
 
