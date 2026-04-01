@@ -651,8 +651,9 @@ impl AccountKeychain {
 
     /// Validates a top-level call against scoped permissions for this key.
     ///
-    /// Validation walks the scope tree from coarse to fine:
-    /// - `is_scoped = false` => unrestricted key
+    /// Non-root access keys can never authorize contract creation. For regular CALLs, validation
+    /// then walks the scope tree from coarse to fine:
+    /// - `is_scoped = false` => unrestricted key for CALL targets
     /// - target missing from `targets` => target denied
     /// - target present with `selectors = []` => allow any selector on that target
     /// - selector missing from `selectors` => selector denied
@@ -674,10 +675,9 @@ impl AccountKeychain {
         };
 
         let key_hash = Self::spending_limit_key(account, key_id);
-        let mode = self.key_scopes[key_hash].is_scoped.read()?;
 
-        // Key-level mode decides whether the call is unrestricted or must match stored scopes.
-        if !mode {
+        // Key-level scoped flag decides whether this CALL must match the stored scope tree.
+        if !self.key_scopes[key_hash].is_scoped.read()? {
             return Ok(());
         }
 
