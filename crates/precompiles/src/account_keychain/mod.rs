@@ -457,6 +457,15 @@ impl AccountKeychain {
         })
     }
 
+    fn emit_allowed_calls_updated(&mut self, account: Address, key_id: Address) -> Result<()> {
+        self.emit_event(AccountKeychainEvent::AllowedCallsUpdated(
+            IAccountKeychain::AllowedCallsUpdated {
+                account,
+                publicKey: key_id,
+            },
+        ))
+    }
+
     /// Root-only create-or-replace updates for one or more target call scopes.
     pub fn set_allowed_calls(
         &mut self,
@@ -476,7 +485,7 @@ impl AccountKeychain {
         let scopes = call.scopes;
 
         if scopes.is_empty() {
-            return Ok(());
+            return Err(AccountKeychainError::invalid_call_scope().into());
         }
 
         let mut seen_targets = HashSet::with_capacity(scopes.len());
@@ -490,7 +499,8 @@ impl AccountKeychain {
             self.upsert_target_scope(key_hash, scope)?;
         }
 
-        self.key_scopes[key_hash].is_scoped.write(true)
+        self.key_scopes[key_hash].is_scoped.write(true)?;
+        self.emit_allowed_calls_updated(msg_sender, call.keyId)
     }
 
     /// Root-only removal of one target call scope.
@@ -510,7 +520,9 @@ impl AccountKeychain {
             return Ok(());
         }
 
-        self.remove_target_scope(key_hash, call.target)?;
+        if self.remove_target_scope(key_hash, call.target)? {
+            self.emit_allowed_calls_updated(msg_sender, call.keyId)?;
+        }
 
         Ok(())
     }
@@ -815,12 +827,13 @@ impl AccountKeychain {
     }
 
     /// Deletes one target scope and all nested selector/recipient rows beneath it.
-    fn remove_target_scope(&mut self, account_key: B256, target: Address) -> Result<()> {
+    fn remove_target_scope(&mut self, account_key: B256, target: Address) -> Result<bool> {
         if !self.key_scopes[account_key].targets.remove(&target)? {
-            return Ok(());
+            return Ok(false);
         }
 
-        self.clear_target_selectors(account_key, target)
+        self.clear_target_selectors(account_key, target)?;
+        Ok(true)
     }
 
     /// Clears every selector scope stored under one target.
@@ -1313,7 +1326,8 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
     };
-    use alloy::primitives::{Address, TxKind, U256};
+    use alloy::primitives::{Address, Log, TxKind, U256};
+    use alloy::sol_types::SolEvent;
     use revm::state::Bytecode;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, IAccountKeychain::SignatureType};
@@ -3831,6 +3845,55 @@ mod tests {
     }
 
     #[test]
+    fn test_t3_set_allowed_calls_rejects_empty_scope_batch() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let account = Address::random();
+        let key_id = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
+
+            keychain.authorize_key(
+                account,
+                authorizeKeyCall {
+                    keyId: key_id,
+                    signatureType: SignatureType::Secp256k1,
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: false,
+                        limits: vec![],
+                        enforceAllowedCalls: false,
+                        allowedCalls: vec![],
+                    },
+                },
+            )?;
+
+            let err = keychain
+                .set_allowed_calls(
+                    account,
+                    setAllowedCallsCall {
+                        keyId: key_id,
+                        scopes: vec![],
+                    },
+                )
+                .expect_err("unexpected success for empty scope batch");
+            assert_invalid_call_scope(err);
+
+            let scopes = keychain.get_allowed_calls(getAllowedCallsCall {
+                account,
+                keyId: key_id,
+            })?;
+            assert!(!scopes.isScoped);
+            assert!(scopes.scopes.is_empty());
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_t3_set_allowed_calls_roundtrip_and_remove_target_scope() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         let account = Address::random();
@@ -3918,6 +3981,31 @@ mod tests {
                 )
                 .expect_err("unexpected success for removed target scope");
             assert_call_not_allowed(denied);
+
+            let events = StorageCtx.get_events(ACCOUNT_KEYCHAIN_ADDRESS);
+            assert_eq!(events.len(), 3);
+
+            let set_event =
+                tempo_contracts::precompiles::IAccountKeychain::AllowedCallsUpdated::decode_log(
+                    &Log::new_unchecked(
+                        ACCOUNT_KEYCHAIN_ADDRESS,
+                        events[1].topics().to_vec(),
+                        events[1].data.clone(),
+                    ),
+                )?;
+            assert_eq!(set_event.account, account);
+            assert_eq!(set_event.publicKey, key_id);
+
+            let remove_event =
+                tempo_contracts::precompiles::IAccountKeychain::AllowedCallsUpdated::decode_log(
+                    &Log::new_unchecked(
+                        ACCOUNT_KEYCHAIN_ADDRESS,
+                        events[2].topics().to_vec(),
+                        events[2].data.clone(),
+                    ),
+                )?;
+            assert_eq!(remove_event.account, account);
+            assert_eq!(remove_event.publicKey, key_id);
 
             Ok(())
         })

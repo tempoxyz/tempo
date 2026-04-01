@@ -7,7 +7,7 @@
 
 use crate::{RevokedKeys, SpendingLimitUpdates, transaction::TempoPooledTransaction};
 use alloy_primitives::{Address, TxHash, map::HashMap};
-use reth_transaction_pool::{PoolTransaction, ValidPoolTransaction};
+use reth_transaction_pool::ValidPoolTransaction;
 use std::{sync::Arc, time::Instant};
 
 /// Duration after which paused transactions are expired and removed.
@@ -193,7 +193,7 @@ impl PausedFeeTokenPool {
 
     /// Removes transactions matching invalidation criteria from the paused pool.
     ///
-    /// This handles revoked keys, spending limit updates, and spending limit spends
+    /// This handles revoked keys, scope changes, spending limit updates, and spending limit spends
     /// in a single pass. The `spending_limit_spends` parameter captures (account, key_id,
     /// fee_token) combos from keychain txs that were included in the block and decremented
     /// limits via `verify_and_update_spending()`.
@@ -202,10 +202,12 @@ impl PausedFeeTokenPool {
     pub fn evict_invalidated(
         &mut self,
         revoked_keys: &RevokedKeys,
+        scope_changes: &RevokedKeys,
         spending_limit_updates: &SpendingLimitUpdates,
         spending_limit_spends: &SpendingLimitUpdates,
     ) -> usize {
         if revoked_keys.is_empty()
+            && scope_changes.is_empty()
             && spending_limit_updates.is_empty()
             && spending_limit_spends.is_empty()
         {
@@ -224,18 +226,13 @@ impl PausedFeeTokenPool {
                 let matches_limit_spend =
                     subject.matches_spending_limit_update(spending_limit_spends);
                 let sender_paid = if matches_limit_update || matches_limit_spend {
-                    let sender = *entry.tx.transaction.sender_ref();
-                    entry
-                        .tx
-                        .transaction
-                        .inner()
-                        .fee_payer(sender)
-                        .map_or(true, |fee_payer| fee_payer == sender)
+                    entry.tx.transaction.sender_pays_own_fees()
                 } else {
                     false
                 };
 
                 let invalidated = subject.matches_revoked(revoked_keys)
+                    || scope_changes.contains(subject.account, subject.key_id)
                     || (sender_paid && (matches_limit_update || matches_limit_spend));
 
                 !invalidated
@@ -442,8 +439,12 @@ mod tests {
         let mut spends = SpendingLimitUpdates::new();
         spends.insert(user_address, key_id, Some(fee_token));
 
-        let evicted =
-            pool.evict_invalidated(&RevokedKeys::new(), &SpendingLimitUpdates::new(), &spends);
+        let evicted = pool.evict_invalidated(
+            &RevokedKeys::new(),
+            &RevokedKeys::new(),
+            &SpendingLimitUpdates::new(),
+            &spends,
+        );
 
         assert_eq!(
             evicted, 1,
@@ -477,8 +478,12 @@ mod tests {
         let mut spends = SpendingLimitUpdates::new();
         spends.insert(user_address, key_id, Some(fee_token));
 
-        let evicted =
-            pool.evict_invalidated(&RevokedKeys::new(), &SpendingLimitUpdates::new(), &spends);
+        let evicted = pool.evict_invalidated(
+            &RevokedKeys::new(),
+            &RevokedKeys::new(),
+            &SpendingLimitUpdates::new(),
+            &spends,
+        );
 
         assert_eq!(evicted, 0, "Sponsored keychain tx should not be evicted");
         assert_eq!(pool.len(), 1);
@@ -509,11 +514,54 @@ mod tests {
         let mut updates = SpendingLimitUpdates::new();
         updates.insert(user_address, key_id, Some(fee_token));
 
-        let evicted =
-            pool.evict_invalidated(&RevokedKeys::new(), &updates, &SpendingLimitUpdates::new());
+        let evicted = pool.evict_invalidated(
+            &RevokedKeys::new(),
+            &RevokedKeys::new(),
+            &updates,
+            &SpendingLimitUpdates::new(),
+        );
 
         assert_eq!(evicted, 0, "Sponsored keychain tx should not be evicted");
         assert_eq!(pool.len(), 1);
+    }
+
+    #[test]
+    fn test_evict_invalidated_with_scope_changes() {
+        let mut pool = PausedFeeTokenPool::new();
+        let user_address = Address::random();
+        let fee_token = Address::random();
+
+        let keychain_tx = create_valid_keychain_tx(user_address, fee_token, true);
+        pool.insert_batch(
+            fee_token,
+            vec![PausedEntry {
+                tx: keychain_tx,
+                valid_before: None,
+            }],
+        );
+
+        let key_id = pool
+            .all_entries()
+            .next()
+            .and_then(|entry| entry.tx.transaction.keychain_subject())
+            .map(|subject| subject.key_id)
+            .expect("keychain tx should have keychain subject");
+
+        let mut scope_changes = RevokedKeys::new();
+        scope_changes.insert(user_address, key_id);
+
+        let evicted = pool.evict_invalidated(
+            &RevokedKeys::new(),
+            &scope_changes,
+            &SpendingLimitUpdates::new(),
+            &SpendingLimitUpdates::new(),
+        );
+
+        assert_eq!(
+            evicted, 1,
+            "Scope changes should evict matching keychain txs"
+        );
+        assert_eq!(pool.len(), 0);
     }
 
     #[test]

@@ -48,6 +48,9 @@ pub struct TempoPoolUpdates {
     /// Revoked keychain keys.
     /// Indexed by account for efficient lookup.
     pub revoked_keys: RevokedKeys,
+    /// Keychain keys whose persisted call scopes changed.
+    /// Indexed by account for efficient lookup.
+    pub scope_changes: RevokedKeys,
     /// Spending limit changes.
     /// When a spending limit changes, transactions from that key paying with that token
     /// may become unexecutable if the new limit is below their value.
@@ -90,6 +93,7 @@ impl TempoPoolUpdates {
     pub fn is_empty(&self) -> bool {
         self.expired_txs.is_empty()
             && self.revoked_keys.is_empty()
+            && self.scope_changes.is_empty()
             && self.spending_limit_changes.is_empty()
             && self.validator_token_changes.is_empty()
             && self.user_token_changes.is_empty()
@@ -114,10 +118,12 @@ impl TempoPoolUpdates {
             .flatten()
             .flat_map(|receipt| &receipt.logs)
         {
-            // Key revocations and spending limit changes
+            // Key revocations, scope changes, and spending limit changes
             if log.address == ACCOUNT_KEYCHAIN_ADDRESS {
                 if let Ok(event) = IAccountKeychain::KeyRevoked::decode_log(log) {
                     updates.revoked_keys.insert(event.account, event.publicKey);
+                } else if let Ok(event) = IAccountKeychain::AllowedCallsUpdated::decode_log(log) {
+                    updates.scope_changes.insert(event.account, event.publicKey);
                 } else if let Ok(event) = IAccountKeychain::SpendingLimitUpdated::decode_log(log) {
                     updates.spending_limit_changes.insert(
                         event.account,
@@ -198,6 +204,7 @@ impl TempoPoolUpdates {
     /// Returns true if there are any invalidation events that require scanning the pool.
     pub fn has_invalidation_events(&self) -> bool {
         !self.revoked_keys.is_empty()
+            || !self.scope_changes.is_empty()
             || !self.spending_limit_changes.is_empty()
             || !self.spending_limit_spends.is_empty()
             || !self.validator_token_changes.is_empty()
@@ -766,13 +773,15 @@ where
                     );
                 }
 
-                // 5. Evict revoked keys and spending limit updates from paused pool
+                // 5. Evict revoked keys, scope changes, and spending limit updates from paused pool
                 if !updates.revoked_keys.is_empty()
+                    || !updates.scope_changes.is_empty()
                     || !updates.spending_limit_changes.is_empty()
                     || !updates.spending_limit_spends.is_empty()
                 {
                     state.paused_pool.evict_invalidated(
                         &updates.revoked_keys,
+                        &updates.scope_changes,
                         &updates.spending_limit_changes,
                         &updates.spending_limit_spends,
                     );
@@ -804,7 +813,7 @@ where
                 metrics.amm_cache_update_duration_seconds.record(amm_start.elapsed());
 
                 // 9. Evict invalidated transactions in a single pool scan
-                // This checks revoked keys, spending limit changes, validator token changes,
+                // This checks revoked keys, scope changes, spending limit changes, validator token changes,
                 // blacklist additions, and whitelist removals together to avoid scanning
                 // all transactions multiple times per block.
                 if updates.has_invalidation_events() {
@@ -812,6 +821,7 @@ where
                     debug!(
                         target: "txpool",
                         revoked_keys = updates.revoked_keys.len(),
+                        scope_changes = updates.scope_changes.len(),
                         spending_limit_changes = updates.spending_limit_changes.len(),
                         spending_limit_spends = updates.spending_limit_spends.len(),
                         validator_token_changes = updates.validator_token_changes.len(),
@@ -1448,6 +1458,17 @@ mod tests {
                 Address::random(),
                 Some(Address::random()),
             );
+            assert!(updates.has_invalidation_events());
+        }
+
+        #[test]
+        fn has_invalidation_events_includes_scope_changes() {
+            let mut updates = TempoPoolUpdates::new();
+            assert!(!updates.has_invalidation_events());
+
+            updates
+                .scope_changes
+                .insert(Address::random(), Address::random());
             assert!(updates.has_invalidation_events());
         }
 

@@ -155,11 +155,12 @@ where
     ///
     /// This performs a single scan of all pooled transactions and checks for:
     /// 1. **Revoked keychain keys**: AA transactions signed with keys that have been revoked
-    /// 2. **Spending limit updates**: AA transactions signed with keys whose spending limit
+    /// 2. **Call-scope changes**: AA transactions signed with keys whose persisted scopes changed
+    /// 3. **Spending limit updates**: AA transactions signed with keys whose spending limit
     ///    changed for a token matching the transaction's fee token
-    ///    2b. **Spending limit spends**: AA transactions whose remaining spending limit (re-read
+    ///    3b. **Spending limit spends**: AA transactions whose remaining spending limit (re-read
     ///    from state) is now insufficient after included keychain txs decremented it
-    /// 3. **Validator token changes**: Transactions that would fail due to insufficient
+    /// 4. **Validator token changes**: Transactions that would fail due to insufficient
     ///    liquidity in the new (user_token, validator_token) AMM pool
     ///
     /// All checks are combined into one scan to avoid iterating the pool multiple times
@@ -234,6 +235,7 @@ where
 
         let mut to_remove = Vec::new();
         let mut revoked_count = 0;
+        let mut scope_change_count = 0;
         let mut spending_limit_count = 0;
         let mut spending_limit_spend_count = 0;
         let mut liquidity_count = 0;
@@ -256,7 +258,19 @@ where
                 continue;
             }
 
-            // Check 2: Spending limit updates
+            // Check 2: Key scope changes
+            if !updates.scope_changes.is_empty()
+                && let Some(ref subject) = keychain_subject
+                && updates
+                    .scope_changes
+                    .contains(subject.account, subject.key_id)
+            {
+                to_remove.push(*tx.hash());
+                scope_change_count += 1;
+                continue;
+            }
+
+            // Check 3: Spending limit updates
             // Only evict if the transaction's fee token matches the token whose limit changed.
             if !updates.spending_limit_changes.is_empty()
                 && let Some(ref subject) = keychain_subject
@@ -267,7 +281,7 @@ where
                 continue;
             }
 
-            // Check 2b: Spending limit spends
+            // Check 3b: Spending limit spends
             // When a keychain tx is included, verify_and_update_spending() decrements the
             // remaining limit but emits no event. We re-read the current remaining limit
             // from state for affected (account, key_id, fee_token) combos and evict if
@@ -275,6 +289,7 @@ where
             if !updates.spending_limit_spends.is_empty()
                 && let Some(ref subject) = keychain_subject
                 && subject.matches_spending_limit_update(&updates.spending_limit_spends)
+                && tx.transaction.sender_pays_own_fees()
                 && let Some(ref mut provider) = state_provider
                 && exceeds_spending_limit(
                     provider,
@@ -424,6 +439,7 @@ where
                 target: "txpool",
                 total = to_remove.len(),
                 revoked_count,
+                scope_change_count,
                 spending_limit_count,
                 spending_limit_spend_count,
                 liquidity_count,

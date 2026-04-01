@@ -202,6 +202,12 @@ where
         // Validate each scope as a unit so target and selector constraints stay grouped.
         let mut seen_targets = HashSet::with_capacity(scopes.len());
         for scope in scopes {
+            if scope.target.is_zero() {
+                return Ok(Err(TempoPoolTransactionError::Keychain(
+                    "call scope target cannot be the zero address",
+                )));
+            }
+
             if !seen_targets.insert(scope.target) {
                 return Ok(Err(TempoPoolTransactionError::Keychain(
                     "duplicate call scope targets are not allowed",
@@ -3817,6 +3823,63 @@ mod tests {
                     ))
                 ),
                 "Expected duplicate target rejection, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_key_authorization_t3_rejects_zero_target_scope() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: None,
+                allowed_calls: Some(vec![CallScope {
+                    target: Address::ZERO,
+                    selector_rules: None,
+                }]),
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage_spec(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+                moderato_with_t3(),
+            );
+            let mut state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )
+            .expect("should not be a provider error");
+
+            assert!(
+                matches!(
+                    result,
+                    Err(TempoPoolTransactionError::Keychain(
+                        "call scope target cannot be the zero address"
+                    ))
+                ),
+                "Expected zero-target rejection, got: {result:?}"
             );
         }
 

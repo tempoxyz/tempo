@@ -155,6 +155,14 @@ impl TempoPooledTransaction {
         })
     }
 
+    /// Returns whether this transaction pays its own fees.
+    pub fn sender_pays_own_fees(&self) -> bool {
+        let sender = self.sender();
+        self.inner()
+            .fee_payer(sender)
+            .map_or(true, |fee_payer| fee_payer == sender)
+    }
+
     /// Returns the unique identifier for this AA transaction.
     pub(crate) fn aa_transaction_id(&self) -> Option<AA2dTransactionId> {
         let nonce_key = self.nonce_key()?;

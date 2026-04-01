@@ -82,6 +82,9 @@ crate::sol! {
         /// Emitted when a spending limit is updated
         event SpendingLimitUpdated(address indexed account, address indexed publicKey, address indexed token, uint256 newLimit);
 
+        /// Emitted when a key's persisted call-scope tree changes.
+        event AllowedCallsUpdated(address indexed account, address indexed publicKey);
+
         event AccessKeySpend(
             address indexed account,
             address indexed publicKey,
@@ -124,6 +127,7 @@ crate::sol! {
         ) external;
 
         /// Set or replace allowed calls for one or more key+target pairs.
+        /// @dev Reverts if `scopes` is empty; use `removeAllowedCalls` to delete target scopes.
         /// @dev `scope.selectorRules = []` does NOT block the target; it allows any selector on that target.
         /// @dev To block the target entirely, call `removeAllowedCalls`. To block one selector,
         ///      omit that selector rule from `scope.selectorRules`.
