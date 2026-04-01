@@ -35,7 +35,7 @@ use tempo_chainspec::{
 };
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
-    account_keychain::{AccountKeychain, SpendingLimitState},
+    account_keychain::AccountKeychain,
     error::Result as TempoPrecompileResult,
     nonce::NonceManager,
     storage::Handler,
@@ -1273,7 +1273,7 @@ mod tests {
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::ITIP403Registry;
     use tempo_precompiles::{
-        account_keychain::{AccountKeychain, AuthorizedKey},
+        account_keychain::{AccountKeychain, AuthorizedKey, SpendingLimitState},
         tip20::slots as tip20_slots,
         tip403_registry::{CompoundPolicyData, PolicyData, TIP403Registry},
     };

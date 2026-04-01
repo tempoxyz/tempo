@@ -3,7 +3,7 @@ use crate::transaction::PrimitiveSignature;
 use alloc::vec::Vec;
 use alloy_consensus::crypto::RecoveryError;
 use alloy_primitives::{Address, B256, U256, keccak256};
-use alloy_rlp::{Decodable, Encodable};
+use alloy_rlp::Encodable;
 
 /// Token spending limit for access keys
 ///
