@@ -9,13 +9,14 @@ use alloy::{
     primitives::Address,
     sol_types::{SolCall, SolInterface},
 };
-use revm::precompile::{PrecompileError, PrecompileResult};
+use alloy_evm::precompiles::PrecompileResultExt;
+use revm::precompile::PrecompileError;
 use tempo_contracts::precompiles::IValidatorConfig::{
     IValidatorConfigCalls, changeValidatorStatusByIndexCall,
 };
 
 impl Precompile for ValidatorConfig {
-    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
+    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResultExt {
         self.storage
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
@@ -57,6 +58,7 @@ impl Precompile for ValidatorConfig {
                     if !self.storage.spec().is_t1() {
                         return unknown_selector(
                             changeValidatorStatusByIndexCall::SELECTOR,
+                            self.storage.gas_limit(),
                             self.storage.gas_used(),
                         );
                     }
@@ -122,7 +124,9 @@ mod tests {
             validator_config.initialize(owner)?;
 
             let result = validator_config.call(&[0x12, 0x34], sender);
-            assert!(matches!(result, Err(PrecompileError::Other(_))));
+            assert!(
+                matches!(result, Err(f) if matches!(f.precompile_error, PrecompileError::Other(_)))
+            );
 
             Ok(())
         })
@@ -145,7 +149,7 @@ mod tests {
 
             let result = validator_config.call(&calldata, sender)?;
             // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
-            assert_eq!(result.gas_used, 0);
+            assert_eq!(result.gas.remaining(), 0);
 
             // Verify we get the correct owner
             let decoded = Address::abi_decode(&result.bytes)?;
@@ -180,7 +184,7 @@ mod tests {
             let result = validator_config.call(&calldata, owner)?;
 
             // HashMapStorageProvider does not have gas accounting, so we expect 0
-            assert_eq!(result.gas_used, 0);
+            assert_eq!(result.gas.remaining(), 0);
 
             // Verify validator was added by calling getValidators
             let validators = validator_config.get_validators()?;

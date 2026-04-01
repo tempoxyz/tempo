@@ -1,0 +1,41 @@
+thread 'rustc' panicked at /rustc-dev/bcded331651b60a0383b3ff51db4f24c4495ac53/compiler/rustc_middle/src/query/on_disk_cache.rs:663:9:
+cannot decode `AttrId` with `CacheDecoder`
+stack backtrace:
+   0:     0x760ca1db906b - <std[7d30a76dffadf049]::backtrace::Backtrace>::create
+   1:     0x760ca1db8fb5 - <std[7d30a76dffadf049]::backtrace::Backtrace>::force_capture
+   2:     0x760ca0dd3c8b - std[7d30a76dffadf049]::panicking::update_hook::<alloc[e0b931b7d0af5c50]::boxed::Box<rustc_driver_impl[5448826ccd3e97a1]::install_ice_hook::{closure#1}>>::{closure#0}
+   3:     0x760ca1dcbb62 - std[7d30a76dffadf049]::panicking::panic_with_hook
+   4:     0x760ca1dae60a - std[7d30a76dffadf049]::panicking::panic_handler::{closure#0}
+   5:     0x760ca1da2b39 - std[7d30a76dffadf049]::sys::backtrace::__rust_end_short_backtrace::<std[7d30a76dffadf049]::panicking::panic_handler::{closure#0}, !>
+   6:     0x760ca1db003d - __rustc[a638a912b495cae0]::rust_begin_unwind
+   7:     0x760c9e8a951c - core[623525b5c18656f3]::panicking::panic_fmt
+   8:     0x760ca394b22d - <rustc_middle[6f95cc988acd69b2]::query::on_disk_cache::OnDiskCache>::load_side_effect
+   9:     0x760ca394c78d - <rustc_query_impl[44740c00700bfba1]::dep_kind_vtables::non_query::SideEffect::{closure#0} as core[623525b5c18656f3]::ops::function::FnOnce<(rustc_middle[6f95cc988acd69b2]::ty::context::TyCtxt, rustc_middle[6f95cc988acd69b2]::dep_graph::dep_node::DepNode, rustc_middle[6f95cc988acd69b2]::dep_graph::serialized::SerializedDepNodeIndex)>>::call_once
+  10:     0x760ca24b8cb4 - <rustc_middle[6f95cc988acd69b2]::dep_graph::graph::DepGraphData>::try_mark_previous_green
+  11:     0x760ca24b5e69 - <rustc_middle[6f95cc988acd69b2]::dep_graph::graph::DepGraph>::try_mark_green
+  12:     0x760ca24b5cae - rustc_query_impl[44740c00700bfba1]::execution::ensure_can_skip_execution::<rustc_middle[6f95cc988acd69b2]::query::caches::DefaultCache<rustc_span[5cb0e44dc3869b0b]::def_id::LocalModDefId, rustc_middle[6f95cc988acd69b2]::query::erase::ErasedData<[u8; 0usize]>>>
+  13:     0x760ca3401d2c - rustc_query_impl[44740c00700bfba1]::query_impl::lint_mod::execute_query_incr::__rust_end_short_backtrace
+  14:     0x760ca3401824 - rustc_lint[887d74ac1027174b]::late::check_crate::{closure#1}
+  15:     0x760ca3401446 - rustc_lint[887d74ac1027174b]::late::check_crate
+  16:     0x760ca3400b70 - rustc_interface[aed5607d16a7f406]::passes::analysis::{closure#0}::{closure#0}::{closure#2}
+  17:     0x760ca3400962 - rustc_data_structures[94965839176f1595]::sync::parallel::par_fns
+  18:     0x760ca34008fc - rustc_interface[aed5607d16a7f406]::passes::analysis::{closure#0}::{closure#0}
+  19:     0x760ca3400962 - rustc_data_structures[94965839176f1595]::sync::parallel::par_fns
+  20:     0x760ca24b9ca3 - rustc_interface[aed5607d16a7f406]::passes::analysis
+  21:     0x760ca39adabe - rustc_query_impl[44740c00700bfba1]::execution::try_execute_query::<rustc_middle[6f95cc988acd69b2]::query::caches::SingleCache<rustc_middle[6f95cc988acd69b2]::query::erase::ErasedData<[u8; 0usize]>>, true>
+  22:     0x760ca39ad42a - rustc_query_impl[44740c00700bfba1]::query_impl::analysis::execute_query_incr::__rust_end_short_backtrace
+  23:     0x760ca368309e - rustc_interface[aed5607d16a7f406]::interface::run_compiler::<(), rustc_driver_impl[5448826ccd3e97a1]::run_compiler::{closure#0}>::{closure#1}
+  24:     0x760ca36386fe - std[7d30a76dffadf049]::sys::backtrace::__rust_begin_short_backtrace::<rustc_interface[aed5607d16a7f406]::util::run_in_thread_with_globals<rustc_interface[aed5607d16a7f406]::util::run_in_thread_pool_with_globals<rustc_interface[aed5607d16a7f406]::interface::run_compiler<(), rustc_driver_impl[5448826ccd3e97a1]::run_compiler::{closure#0}>::{closure#1}, ()>::{closure#0}, ()>::{closure#0}::{closure#0}, ()>
+  25:     0x760ca3638fa0 - <std[7d30a76dffadf049]::thread::lifecycle::spawn_unchecked<rustc_interface[aed5607d16a7f406]::util::run_in_thread_with_globals<rustc_interface[aed5607d16a7f406]::util::run_in_thread_pool_with_globals<rustc_interface[aed5607d16a7f406]::interface::run_compiler<(), rustc_driver_impl[5448826ccd3e97a1]::run_compiler::{closure#0}>::{closure#1}, ()>::{closure#0}, ()>::{closure#0}::{closure#0}, ()>::{closure#1} as core[623525b5c18656f3]::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+  26:     0x760ca3639eac - <std[7d30a76dffadf049]::sys::thread::unix::Thread>::new::thread_start
+  27:     0x760c9ce9caa4 - <unknown>
+  28:     0x760c9cf29c6c - <unknown>
+  29:                0x0 - <unknown>
+
+
+rustc version: 1.96.0-nightly (bcded3316 2026-04-06)
+platform: x86_64-unknown-linux-gnu
+
+query stack during panic:
+#0 [analysis] running analysis passes on crate `tempo_evm`
+end of query stack

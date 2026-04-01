@@ -3,21 +3,25 @@
 use super::*;
 use crate::{Precompile, dispatch_call, input_cost, mutate, mutate_void, view};
 use alloy::{primitives::Address, sol_types::SolInterface};
-use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
+use alloy_evm::precompiles::{PrecompileOutputExt, PrecompileResultExt};
+use revm::{interpreter::gas::GasTracker, precompile::PrecompileError};
 use tempo_contracts::precompiles::IValidatorConfigV2::IValidatorConfigV2Calls;
 
 impl Precompile for ValidatorConfigV2 {
-    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
+    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResultExt {
         self.storage
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
 
         // Pre-T2: behave like an empty contract (call succeeds, no execution)
         if !self.storage.spec().is_t2() {
-            return Ok(PrecompileOutput::new(
-                self.storage.gas_used(),
-                Default::default(),
-            ));
+            let gas_limit = self.storage.gas_limit();
+            let gas_used = self.storage.gas_used();
+            return Ok(PrecompileOutputExt {
+                gas: GasTracker::new(gas_limit, gas_limit - gas_used, 0),
+                bytes: Default::default(),
+                reverted: false,
+            });
         }
 
         dispatch_call(

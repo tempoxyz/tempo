@@ -6,11 +6,12 @@ use crate::{
     dispatch_call, input_cost, mutate, view,
 };
 use alloy::{primitives::Address, sol_types::SolInterface};
-use revm::precompile::{PrecompileError, PrecompileResult};
+use alloy_evm::precompiles::PrecompileResultExt;
+use revm::precompile::PrecompileError;
 use tempo_contracts::precompiles::IAddressRegistry::IAddressRegistryCalls;
 
 impl Precompile for AddressRegistry {
-    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
+    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResultExt {
         self.storage
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;

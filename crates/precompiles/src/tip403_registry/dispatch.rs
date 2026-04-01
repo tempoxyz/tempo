@@ -9,14 +9,15 @@ use alloy::{
     primitives::Address,
     sol_types::{SolCall, SolInterface},
 };
-use revm::precompile::{PrecompileError, PrecompileResult};
+use alloy_evm::precompiles::PrecompileResultExt;
+use revm::precompile::PrecompileError;
 use tempo_contracts::precompiles::ITIP403Registry::{
     ITIP403RegistryCalls, compoundPolicyDataCall, createCompoundPolicyCall,
     isAuthorizedMintRecipientCall, isAuthorizedRecipientCall, isAuthorizedSenderCall,
 };
 
 impl Precompile for TIP403Registry {
-    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
+    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResultExt {
         self.storage
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
@@ -38,6 +39,7 @@ impl Precompile for TIP403Registry {
                     if !self.storage.spec().is_t2() {
                         return unknown_selector(
                             isAuthorizedSenderCall::SELECTOR,
+                            self.storage.gas_limit(),
                             self.storage.gas_used(),
                         );
                     }
@@ -49,6 +51,7 @@ impl Precompile for TIP403Registry {
                     if !self.storage.spec().is_t2() {
                         return unknown_selector(
                             isAuthorizedRecipientCall::SELECTOR,
+                            self.storage.gas_limit(),
                             self.storage.gas_used(),
                         );
                     }
@@ -60,6 +63,7 @@ impl Precompile for TIP403Registry {
                     if !self.storage.spec().is_t2() {
                         return unknown_selector(
                             isAuthorizedMintRecipientCall::SELECTOR,
+                            self.storage.gas_limit(),
                             self.storage.gas_used(),
                         );
                     }
@@ -71,6 +75,7 @@ impl Precompile for TIP403Registry {
                     if !self.storage.spec().is_t2() {
                         return unknown_selector(
                             compoundPolicyDataCall::SELECTOR,
+                            self.storage.gas_limit(),
                             self.storage.gas_used(),
                         );
                     }
@@ -98,6 +103,7 @@ impl Precompile for TIP403Registry {
                     if !self.storage.spec().is_t2() {
                         return unknown_selector(
                             createCompoundPolicyCall::SELECTOR,
+                            self.storage.gas_limit(),
                             self.storage.gas_used(),
                         );
                     }
