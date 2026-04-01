@@ -525,7 +525,7 @@ impl AccountKeychain {
 
         self.remove_target_scope(key_hash, call.target)?;
 
-        self.key_scopes[key_hash].is_scoped.write(true)
+        Ok(())
     }
 
     /// Returns whether an account key is call-scoped together with its configured call scopes.
@@ -807,10 +807,10 @@ impl AccountKeychain {
     fn clear_all_target_scopes(&mut self, account_key: B256) -> Result<()> {
         let targets = self.key_scopes[account_key].targets.read()?;
         for target in targets {
-            self.remove_target_scope(account_key, target)?;
+            self.clear_target_selectors(account_key, target)?;
         }
 
-        Ok(())
+        self.key_scopes[account_key].targets.delete()
     }
 
     /// Deletes one target scope and all nested selector/recipient rows beneath it.
