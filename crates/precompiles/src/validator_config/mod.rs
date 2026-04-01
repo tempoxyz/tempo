@@ -127,7 +127,7 @@ impl ValidatorConfig {
     /// Returns all registered validators in index order.
     pub fn get_validators(&self) -> Result<Vec<IValidatorConfig::Validator>> {
         let count = self.validators_array.len()?;
-        let mut validators = Vec::with_capacity(count);
+        let mut validators = Vec::new();
 
         for i in 0..count {
             // Read validator address from the array at index i
@@ -231,7 +231,7 @@ impl ValidatorConfig {
         };
         self.validators[call.newValidatorAddress].write(validator)?;
 
-        // Add the validator public key to the validators array
+        // Add the validator address to the validators array
         self.validators_array.push(call.newValidatorAddress)
     }
 

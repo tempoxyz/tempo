@@ -54,6 +54,7 @@ fn generate_consensus_node_config(
     rng: &mut impl CryptoRngCore,
     signers: u32,
     verifiers: u32,
+    fee_recipient: Address,
 ) -> (
     OnchainDkgOutcome,
     ordered::Map<PublicKey, ConsensusNodeConfig>,
@@ -91,7 +92,7 @@ fn generate_consensus_node_config(
                     address: crate::execution_runtime::validator(i as u32),
                     ingress: SocketAddr::from(([127, 0, 0, (i + 1) as u8], 8000)),
                     egress: SocketAddr::from(([127, 0, 0, (i + 1) as u8], 0)),
-                    fee_recipient: Address::ZERO,
+                    fee_recipient,
                     private_key,
                     share: shares.get_value(&public_key).cloned(),
                 };
@@ -133,9 +134,6 @@ pub struct Setup {
     /// The number of heights in an epoch.
     pub epoch_length: u64,
 
-    /// Whether to connect execution layer nodes directly.
-    pub connect_execution_layer_nodes: bool,
-
     /// The amount of time the node waits for the execution layer to return
     /// a build a payload.
     pub new_payload_wait_time: Duration,
@@ -149,6 +147,9 @@ pub struct Setup {
 
     /// Whether to activate subblocks building.
     pub with_subblocks: bool,
+
+    /// The fee recipient written into the V2 contract for each validator.
+    pub fee_recipient: Address,
 }
 
 impl Setup {
@@ -163,10 +164,10 @@ impl Setup {
                 success_rate: 1.0,
             },
             epoch_length: 20,
-            connect_execution_layer_nodes: false,
             new_payload_wait_time: Duration::from_millis(300),
             t2_time: 1,
             with_subblocks: false,
+            fee_recipient: Address::ZERO,
         }
     }
 
@@ -199,13 +200,6 @@ impl Setup {
         }
     }
 
-    pub fn connect_execution_layer_nodes(self, connect_execution_layer_nodes: bool) -> Self {
-        Self {
-            connect_execution_layer_nodes,
-            ..self
-        }
-    }
-
     pub fn new_payload_wait_time(self, new_payload_wait_time: Duration) -> Self {
         Self {
             new_payload_wait_time,
@@ -222,6 +216,13 @@ impl Setup {
 
     pub fn t2_time(self, t2_time: u64) -> Self {
         Self { t2_time, ..self }
+    }
+
+    pub fn fee_recipient(self, fee_recipient: Address) -> Self {
+        Self {
+            fee_recipient,
+            ..self
+        }
     }
 }
 
@@ -243,11 +244,11 @@ pub async fn setup_validators(
         epoch_length,
         how_many_signers,
         how_many_verifiers,
-        connect_execution_layer_nodes,
         linkage,
         new_payload_wait_time,
         t2_time,
         with_subblocks,
+        fee_recipient,
         ..
     }: Setup,
 ) -> (Vec<TestingNode<Context>>, ExecutionRuntime) {
@@ -261,8 +262,12 @@ pub async fn setup_validators(
     );
     network.start();
 
-    let (onchain_dkg_outcome, validators) =
-        generate_consensus_node_config(context, how_many_signers, how_many_verifiers);
+    let (onchain_dkg_outcome, validators) = generate_consensus_node_config(
+        context,
+        how_many_signers,
+        how_many_verifiers,
+        fee_recipient,
+    );
 
     let execution_runtime = ExecutionRuntime::builder()
         .with_epoch_length(epoch_length)
@@ -274,7 +279,6 @@ pub async fn setup_validators(
 
     let execution_configs = ExecutionNodeConfig::generator()
         .with_count(how_many_signers + how_many_verifiers)
-        .with_peers(connect_execution_layer_nodes)
         .generate();
 
     let mut nodes = vec![];
@@ -297,7 +301,7 @@ pub async fn setup_validators(
         execution_config.feed_state = Some(feed_state.clone());
 
         let engine_config = consensus::Builder {
-            fee_recipient: alloy_primitives::Address::ZERO,
+            fee_recipient: None,
             execution_node: None,
             blocker: oracle.control(private_key.public_key()),
             peer_manager: oracle.socket_manager(),
@@ -346,7 +350,6 @@ pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> 
     executor.start(|mut context| async move {
         // Setup and run all validators.
         let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup.clone()).await;
-
         join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
 
         loop {
@@ -394,6 +397,36 @@ pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> 
 
         context.auditor().state()
     })
+}
+
+/// Connects a running node to a set of peers
+///
+/// Useful when a node is restarted and needs to re-connect to its previous peers as
+/// ports are not statically defined.
+pub async fn connect_execution_to_peers<TClock: commonware_runtime::Clock>(
+    node: &TestingNode<TClock>,
+    nodes: &[TestingNode<TClock>],
+) {
+    for other in nodes {
+        if node.public_key() == other.public_key() {
+            continue;
+        }
+
+        if let (Some(a), Some(b)) = (node.execution_node.as_ref(), other.execution_node.as_ref()) {
+            a.connect_peer(b).await;
+        }
+    }
+}
+
+/// Connects all running execution nodes as peers.
+///
+/// This must be called after nodes are started so that the ports are known
+pub async fn connect_execution_peers<TClock: commonware_runtime::Clock>(
+    nodes: &[TestingNode<TClock>],
+) {
+    for i in 0..nodes.len() {
+        connect_execution_to_peers(&nodes[i], &nodes[(i + 1)..]).await;
+    }
 }
 
 /// Links (or unlinks) validators using the oracle.
