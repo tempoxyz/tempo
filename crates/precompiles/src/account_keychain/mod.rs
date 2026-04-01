@@ -668,6 +668,11 @@ impl AccountKeychain {
             return Ok(());
         }
 
+        let target = match to {
+            TxKind::Call(target) => *target,
+            TxKind::Create => return Err(AccountKeychainError::call_not_allowed().into()),
+        };
+
         let key_hash = Self::spending_limit_key(account, key_id);
         let mode = self.key_scopes[key_hash].is_scoped.read()?;
 
@@ -675,11 +680,6 @@ impl AccountKeychain {
         if !mode {
             return Ok(());
         }
-
-        let target = match to {
-            TxKind::Call(target) => *target,
-            TxKind::Create => return Err(AccountKeychainError::call_not_allowed().into()),
-        };
 
         if !self.key_scopes[key_hash].targets.contains(&target)? {
             return Err(AccountKeychainError::call_not_allowed().into());
