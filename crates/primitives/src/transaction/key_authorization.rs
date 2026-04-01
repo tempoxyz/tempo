@@ -32,11 +32,9 @@ pub struct TokenLimit {
 /// Per-target call scope for an access key.
 ///
 /// `selector_rules` semantics:
-/// - `None` => allow any selector for this target
-/// - `Some([..])` => allow exactly the listed selector rules
-/// - `Some([])` => invalid and rejected during validation
+/// - `[]` => allow any selector for this target
+/// - `[rule1, ...]` => allow exactly the listed selector rules
 #[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
-#[rlp(trailing)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
@@ -44,27 +42,28 @@ pub struct TokenLimit {
 pub struct CallScope {
     /// Target contract address.
     pub target: Address,
-    /// Optional selector rules for this target.
-    pub selector_rules: Option<Vec<SelectorRule>>,
+    /// Selector rules for this target. Empty means any selector is allowed.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Vec::is_empty"))]
+    pub selector_rules: Vec<SelectorRule>,
 }
 
 impl CallScope {
     fn heap_size(&self) -> usize {
-        self.selector_rules.as_ref().map_or(0, |rules| {
-            rules.capacity() * size_of::<SelectorRule>()
-                + rules.iter().map(SelectorRule::heap_size).sum::<usize>()
-        })
+        self.selector_rules.capacity() * size_of::<SelectorRule>()
+            + self
+                .selector_rules
+                .iter()
+                .map(SelectorRule::heap_size)
+                .sum::<usize>()
     }
 }
 
 /// Selector-level rule within a [`CallScope`].
 ///
 /// `recipients` semantics:
-/// - `None` => no recipient constraint
-/// - `Some([..])` => first ABI address argument must be in this list
-/// - `Some([])` => invalid and rejected during validation
+/// - `[]` => no recipient constraint
+/// - `[a1, ...]` => first ABI address argument must be in this list
 #[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
-#[rlp(trailing)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
@@ -72,15 +71,14 @@ impl CallScope {
 pub struct SelectorRule {
     /// 4-byte function selector.
     pub selector: [u8; 4],
-    /// Optional recipient allowlist.
-    pub recipients: Option<Vec<Address>>,
+    /// Recipient allowlist. Empty means no recipient restriction.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Vec::is_empty"))]
+    pub recipients: Vec<Address>,
 }
 
 impl SelectorRule {
     fn heap_size(&self) -> usize {
-        self.recipients
-            .as_ref()
-            .map_or(0, |recipients| recipients.capacity() * size_of::<Address>())
+        self.recipients.capacity() * size_of::<Address>()
     }
 }
 
@@ -413,13 +411,13 @@ mod tests {
         let mut rules = Vec::with_capacity(3);
         rules.push(SelectorRule {
             selector: [1, 2, 3, 4],
-            recipients: Some(recipients),
+            recipients,
         });
 
         let mut scopes = Vec::with_capacity(2);
         scopes.push(CallScope {
             target: Address::repeat_byte(0x33),
-            selector_rules: Some(rules),
+            selector_rules: rules,
         });
 
         let auth = KeyAuthorization {
@@ -432,8 +430,8 @@ mod tests {
         };
 
         let scope_rules = auth.allowed_calls.as_ref().unwrap();
-        let selector_rules = scope_rules[0].selector_rules.as_ref().unwrap();
-        let recipients = selector_rules[0].recipients.as_ref().unwrap();
+        let selector_rules = &scope_rules[0].selector_rules;
+        let recipients = &selector_rules[0].recipients;
 
         let expected = size_of::<KeyAuthorization>()
             + scope_rules.capacity() * size_of::<CallScope>()
@@ -520,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn test_key_authorization_roundtrip_preserves_nested_optional_list_markers() {
+    fn test_key_authorization_roundtrip_preserves_explicit_nested_allow_all_lists() {
         let auth = KeyAuthorization {
             chain_id: 1,
             key_type: SignatureType::Secp256k1,
@@ -530,14 +528,14 @@ mod tests {
             allowed_calls: Some(vec![
                 CallScope {
                     target: Address::repeat_byte(0x22),
-                    selector_rules: None,
+                    selector_rules: vec![],
                 },
                 CallScope {
                     target: Address::repeat_byte(0x33),
-                    selector_rules: Some(vec![SelectorRule {
+                    selector_rules: vec![SelectorRule {
                         selector: [0xaa, 0xbb, 0xcc, 0xdd],
-                        recipients: None,
-                    }]),
+                        recipients: vec![],
+                    }],
                 },
             ]),
         };
@@ -555,7 +553,7 @@ mod tests {
     }
 
     #[test]
-    fn test_call_scope_decode_accepts_omitted_none_selector_rules() {
+    fn test_call_scope_decode_rejects_omitted_selector_rules() {
         let target = Address::repeat_byte(0x11);
 
         let mut encoded = Vec::new();
@@ -566,21 +564,27 @@ mod tests {
         .encode(&mut encoded);
         target.encode(&mut encoded);
 
-        let decoded =
-            <CallScope as Decodable>::decode(&mut encoded.as_slice()).expect("decode scope");
-        assert_eq!(decoded.target, target);
-        assert_eq!(decoded.selector_rules, None);
+        <CallScope as Decodable>::decode(&mut encoded.as_slice())
+            .expect_err("omitted selector_rules should be rejected");
     }
 
     #[test]
-    fn test_call_scope_roundtrip_preserves_empty_selector_rules_list() {
+    fn test_call_scope_explicit_empty_selector_rules_roundtrip() {
         let scope = CallScope {
             target: Address::repeat_byte(0x11),
-            selector_rules: Some(Vec::new()),
+            selector_rules: Vec::new(),
         };
 
         let mut encoded = Vec::new();
         scope.encode(&mut encoded);
+
+        let mut payload = &encoded[..];
+        let header = alloy_rlp::Header::decode(&mut payload).expect("decode list header");
+        assert!(header.list);
+        assert_eq!(
+            header.payload_length,
+            scope.target.length() + Vec::<SelectorRule>::new().length()
+        );
 
         let decoded =
             <CallScope as Decodable>::decode(&mut encoded.as_slice()).expect("decode scope");
@@ -588,7 +592,30 @@ mod tests {
     }
 
     #[test]
-    fn test_selector_rule_decode_accepts_omitted_none_recipients() {
+    fn test_call_scope_decode_accepts_explicit_empty_selector_rules_list() {
+        let target = Address::repeat_byte(0x11);
+
+        let mut encoded = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: target.length() + Vec::<SelectorRule>::new().length(),
+        }
+        .encode(&mut encoded);
+        target.encode(&mut encoded);
+        Vec::<SelectorRule>::new().encode(&mut encoded);
+
+        let decoded =
+            <CallScope as Decodable>::decode(&mut encoded.as_slice()).expect("decode scope");
+        assert_eq!(decoded.target, target);
+        assert!(decoded.selector_rules.is_empty());
+
+        let mut reencoded = Vec::new();
+        decoded.encode(&mut reencoded);
+        assert_eq!(reencoded, encoded);
+    }
+
+    #[test]
+    fn test_selector_rule_decode_rejects_omitted_recipients() {
         let selector = [0xaa, 0xbb, 0xcc, 0xdd];
 
         let mut encoded = Vec::new();
@@ -599,21 +626,27 @@ mod tests {
         .encode(&mut encoded);
         selector.encode(&mut encoded);
 
-        let decoded =
-            <SelectorRule as Decodable>::decode(&mut encoded.as_slice()).expect("decode rule");
-        assert_eq!(decoded.selector, selector);
-        assert_eq!(decoded.recipients, None);
+        <SelectorRule as Decodable>::decode(&mut encoded.as_slice())
+            .expect_err("omitted recipients should be rejected");
     }
 
     #[test]
-    fn test_selector_rule_decode_accepts_empty_recipient_list_for_downstream_validation() {
+    fn test_selector_rule_empty_recipients_roundtrip() {
         let rule = SelectorRule {
             selector: [0xaa, 0xbb, 0xcc, 0xdd],
-            recipients: Some(Vec::new()),
+            recipients: Vec::new(),
         };
 
         let mut encoded = Vec::new();
         rule.encode(&mut encoded);
+
+        let mut payload = &encoded[..];
+        let header = alloy_rlp::Header::decode(&mut payload).expect("decode list header");
+        assert!(header.list);
+        assert_eq!(
+            header.payload_length,
+            rule.selector.length() + Vec::<Address>::new().length()
+        );
 
         let decoded =
             <SelectorRule as Decodable>::decode(&mut encoded.as_slice()).expect("decode rule");
@@ -621,10 +654,33 @@ mod tests {
     }
 
     #[test]
+    fn test_selector_rule_decode_accepts_explicit_empty_recipient_list() {
+        let selector = [0xaa, 0xbb, 0xcc, 0xdd];
+
+        let mut encoded = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: selector.length() + Vec::<Address>::new().length(),
+        }
+        .encode(&mut encoded);
+        selector.encode(&mut encoded);
+        Vec::<Address>::new().encode(&mut encoded);
+
+        let decoded =
+            <SelectorRule as Decodable>::decode(&mut encoded.as_slice()).expect("decode rule");
+        assert_eq!(decoded.selector, selector);
+        assert!(decoded.recipients.is_empty());
+
+        let mut reencoded = Vec::new();
+        decoded.encode(&mut reencoded);
+        assert_eq!(reencoded, encoded);
+    }
+
+    #[test]
     fn test_selector_rule_roundtrip_preserves_non_empty_recipient_list() {
         let rule = SelectorRule {
             selector: [0xaa, 0xbb, 0xcc, 0xdd],
-            recipients: Some(vec![Address::repeat_byte(0x11), Address::repeat_byte(0x22)]),
+            recipients: vec![Address::repeat_byte(0x11), Address::repeat_byte(0x22)],
         };
 
         let mut encoded = Vec::new();

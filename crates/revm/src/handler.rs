@@ -143,13 +143,11 @@ fn call_scope_storage_slots(auth: &tempo_primitives::transaction::KeyAuthorizati
             let mut recipients = 0u64;
 
             for scope in scopes {
-                if let Some(rules) = scope.selector_rules.as_ref() {
-                    selectors += rules.len() as u64;
-                    for rule in rules {
-                        if let Some(rule_recipients) = rule.recipients.as_ref() {
-                            constrained_selectors += 1;
-                            recipients += rule_recipients.len() as u64;
-                        }
+                selectors += scope.selector_rules.len() as u64;
+                for rule in &scope.selector_rules {
+                    if !rule.recipients.is_empty() {
+                        constrained_selectors += 1;
+                        recipients += rule.recipients.len() as u64;
                     }
                 }
             }
@@ -167,57 +165,25 @@ fn call_scope_storage_slots(auth: &tempo_primitives::transaction::KeyAuthorizati
 
 fn translate_allowed_calls_for_precompile(
     key_auth: &tempo_primitives::transaction::SignedKeyAuthorization,
-) -> Result<Vec<PrecompileCallScope>, TempoInvalidTransaction> {
+) -> Vec<PrecompileCallScope> {
     let Some(scopes) = key_auth.allowed_calls.as_ref() else {
-        return Ok(Vec::new());
+        return Vec::new();
     };
 
-    let mut precompile_scopes = Vec::with_capacity(scopes.len());
-    for scope in scopes {
-        let Some(rules) = scope.selector_rules.as_ref() else {
-            precompile_scopes.push(PrecompileCallScope {
-                target: scope.target,
-                selectorRules: vec![],
-            });
-            continue;
-        };
-
-        if rules.is_empty() {
-            return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                reason: "call scope selector rules must be omitted or non-empty".to_string(),
-            });
-        }
-
-        let mut selector_rules = Vec::with_capacity(rules.len());
-        for rule in rules {
-            let Some(recipients) = rule.recipients.as_ref() else {
-                selector_rules.push(PrecompileSelectorRule {
-                    selector: rule.selector.into(),
-                    recipients: vec![],
-                });
-                continue;
-            };
-
-            if recipients.is_empty() {
-                return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                    reason: "recipient-constrained selector rule requires non-empty recipients"
-                        .to_string(),
-                });
-            }
-
-            selector_rules.push(PrecompileSelectorRule {
-                selector: rule.selector.into(),
-                recipients: recipients.clone(),
-            });
-        }
-
-        precompile_scopes.push(PrecompileCallScope {
+    scopes
+        .iter()
+        .map(|scope| PrecompileCallScope {
             target: scope.target,
-            selectorRules: selector_rules,
-        });
-    }
-
-    Ok(precompile_scopes)
+            selectorRules: scope
+                .selector_rules
+                .iter()
+                .map(|rule| PrecompileSelectorRule {
+                    selector: rule.selector.into(),
+                    recipients: rule.recipients.clone(),
+                })
+                .collect(),
+        })
+        .collect()
 }
 
 /// Calculates the intrinsic gas cost for a KeyAuthorization.
@@ -1144,7 +1110,7 @@ where
                     .unwrap_or_default();
 
                 let enforce_allowed_calls = key_auth.allowed_calls.is_some();
-                let precompile_allowed_calls = translate_allowed_calls_for_precompile(key_auth)?;
+                let precompile_allowed_calls = translate_allowed_calls_for_precompile(key_auth);
 
                 // Create the authorize key call
                 let authorize_call = authorizeKeyCall {
@@ -2719,25 +2685,25 @@ mod tests {
                 limits: None,
                 allowed_calls: Some(vec![tempo_primitives::transaction::CallScope {
                     target: Address::random(),
-                    selector_rules: Some(vec![tempo_primitives::transaction::SelectorRule {
+                    selector_rules: vec![tempo_primitives::transaction::SelectorRule {
                         selector: [0xa9, 0x05, 0x9c, 0xbb],
-                        recipients: Some(vec![Address::random(), Address::random()]),
-                    }]),
+                        recipients: vec![Address::random(), Address::random()],
+                    }],
                 }]),
             },
             signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
         };
 
         let gas = calculate_key_authorization_gas(&scoped, &t1b_gas_params, TempoHardfork::T3);
-        // 1 key write + 14 scope slots:
-        // account mode(1) + target insert+mode(4) + selector insert+mode(4)
+        // 1 key write + 12 scope slots:
+        // account mode(1) + target insertion rows(3) + selector insertion rows(3)
         // + constrained selector recipient-length(1) + recipients values+positions(2*2).
-        let expected = ECRECOVER_GAS + sload + sstore * (1 + 14) + BUFFER;
+        let expected = ECRECOVER_GAS + sload + sstore * (1 + 12) + BUFFER;
         assert_eq!(gas, expected, "T3 scope writes should be fully charged");
     }
 
     #[test]
-    fn test_translate_allowed_calls_for_precompile_rejects_nested_empty_lists() {
+    fn test_translate_allowed_calls_for_precompile_preserves_empty_nested_allow_all_lists() {
         use tempo_primitives::transaction::{
             CallScope, KeyAuthorization, SelectorRule, SignatureType, SignedKeyAuthorization,
         };
@@ -2751,17 +2717,15 @@ mod tests {
                 limits: None,
                 allowed_calls: Some(vec![CallScope {
                     target: Address::random(),
-                    selector_rules: Some(vec![]),
+                    selector_rules: vec![],
                 }]),
             },
             signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
         };
 
-        assert!(matches!(
-            translate_allowed_calls_for_precompile(&empty_selector_rules),
-            Err(TempoInvalidTransaction::KeychainValidationFailed { reason })
-                if reason == "call scope selector rules must be omitted or non-empty"
-        ));
+        let translated = translate_allowed_calls_for_precompile(&empty_selector_rules);
+        assert_eq!(translated.len(), 1);
+        assert!(translated[0].selectorRules.is_empty());
 
         let empty_recipients = SignedKeyAuthorization {
             authorization: KeyAuthorization {
@@ -2772,20 +2736,19 @@ mod tests {
                 limits: None,
                 allowed_calls: Some(vec![CallScope {
                     target: Address::random(),
-                    selector_rules: Some(vec![SelectorRule {
+                    selector_rules: vec![SelectorRule {
                         selector: [0xa9, 0x05, 0x9c, 0xbb],
-                        recipients: Some(vec![]),
-                    }]),
+                        recipients: vec![],
+                    }],
                 }]),
             },
             signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
         };
 
-        assert!(matches!(
-            translate_allowed_calls_for_precompile(&empty_recipients),
-            Err(TempoInvalidTransaction::KeychainValidationFailed { reason })
-                if reason == "recipient-constrained selector rule requires non-empty recipients"
-        ));
+        let translated = translate_allowed_calls_for_precompile(&empty_recipients);
+        assert_eq!(translated.len(), 1);
+        assert_eq!(translated[0].selectorRules.len(), 1);
+        assert!(translated[0].selectorRules[0].recipients.is_empty());
     }
 
     #[test]

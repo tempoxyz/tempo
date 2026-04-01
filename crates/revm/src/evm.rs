@@ -1170,7 +1170,8 @@ mod tests {
     }
 
     #[test]
-    fn test_t3_key_authorization_rejects_empty_recipient_allowlist() -> eyre::Result<()> {
+    fn test_t3_key_authorization_accepts_empty_recipient_allowlist_as_unconstrained()
+    -> eyre::Result<()> {
         let key_pair = P256KeyPair::random();
         let caller = key_pair.address;
 
@@ -1205,10 +1206,10 @@ mod tests {
             limits: None,
             allowed_calls: Some(vec![tempo_primitives::transaction::CallScope {
                 target: PATH_USD_ADDRESS,
-                selector_rules: Some(vec![tempo_primitives::transaction::SelectorRule {
+                selector_rules: vec![tempo_primitives::transaction::SelectorRule {
                     selector: ITIP20::transferCall::SELECTOR,
-                    recipients: Some(Vec::new()),
-                }]),
+                    recipients: Vec::new(),
+                }],
             }]),
         };
         let key_auth_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
@@ -1223,19 +1224,8 @@ mod tests {
         let signed_tx = key_pair.sign_tx_keychain(tx)?;
         let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
 
-        let err = evm
-            .transact_commit(tx_env)
-            .expect_err("empty recipient allowlist should reject the transaction");
-
-        assert!(
-            matches!(
-                err,
-                revm::context::result::EVMError::Transaction(
-                    TempoInvalidTransaction::KeychainValidationFailed { ref reason }
-                ) if reason == "recipient-constrained selector rule requires non-empty recipients"
-            ),
-            "expected empty recipient rejection, got: {err:?}"
-        );
+        evm.transact_commit(tx_env)
+            .expect("empty recipient allowlist should allow the call");
 
         Ok(())
     }
