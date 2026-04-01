@@ -1311,7 +1311,7 @@ mod tests {
 
         executor.apply_pre_execution_changes().unwrap();
 
-        let initial_non_shared = executor.non_shared_gas_left();
+        let initial_non_shared = executor.non_shared_gas_left;
 
         let tx = create_legacy_tx();
         let output = TempoTxResult {
@@ -1334,7 +1334,7 @@ mod tests {
         };
         executor.commit_transaction(output).unwrap();
 
-        assert_eq!(executor.non_shared_gas_left(), initial_non_shared - 50_000);
+        assert_eq!(executor.non_shared_gas_left, initial_non_shared - 50_000);
     }
 
     #[test]
