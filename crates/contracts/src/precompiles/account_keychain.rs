@@ -166,6 +166,8 @@ crate::sol! {
         /// Returns whether an account key is call-scoped and, if so, the configured call scopes.
         /// @dev `isScoped = false` means unrestricted. `isScoped = true && scopes.length == 0`
         ///      means scoped deny-all.
+        /// @dev Missing, revoked, or expired access keys also return scoped deny-all so callers do
+        ///      not observe stale persisted scope state.
         function getAllowedCalls(
             address account,
             address keyId

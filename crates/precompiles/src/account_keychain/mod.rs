@@ -518,8 +518,25 @@ impl AccountKeychain {
     /// Returns whether an account key is call-scoped together with its configured call scopes.
     ///
     /// `isScoped = false` means unrestricted. `isScoped = true` with an empty `scopes` vec means
-    /// the key is scoped but currently allows no targets.
+    /// the key is scoped but currently allows no targets. Missing, revoked, or expired access
+    /// keys also report scoped deny-all so this getter never exposes stale persisted scope state.
     pub fn get_allowed_calls(&self, call: getAllowedCallsCall) -> Result<getAllowedCallsReturn> {
+        if call.keyId.is_zero() {
+            return Ok(getAllowedCallsReturn {
+                isScoped: false,
+                scopes: Vec::new(),
+            });
+        }
+
+        let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
+        let key = self.keys[call.account][call.keyId].read()?;
+        if key.expiry == 0 || key.is_revoked || current_timestamp >= key.expiry {
+            return Ok(getAllowedCallsReturn {
+                isScoped: true,
+                scopes: Vec::new(),
+            });
+        }
+
         let key_hash = Self::spending_limit_key(call.account, call.keyId);
         let is_scoped = self.key_scopes[key_hash].is_scoped.read()?;
 
@@ -3531,6 +3548,75 @@ mod tests {
             })?;
             assert!(deny_all.isScoped);
             assert!(deny_all.scopes.is_empty());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t3_get_allowed_calls_returns_deny_all_for_inactive_keys() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let account = Address::random();
+        let revoked_key = Address::random();
+        let expiring_key = Address::random();
+        let target = DEFAULT_FEE_TOKEN;
+
+        storage.set_timestamp(U256::from(1_000u64));
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
+
+            for (key_id, expiry) in [(revoked_key, u64::MAX), (expiring_key, 1_005)] {
+                keychain.authorize_key(
+                    account,
+                    authorizeKeyCall {
+                        keyId: key_id,
+                        signatureType: SignatureType::Secp256k1,
+                        config: KeyRestrictions {
+                            expiry,
+                            enforceLimits: false,
+                            limits: vec![],
+                            enforceAllowedCalls: true,
+                            allowedCalls: vec![CallScope {
+                                target,
+                                selectorRules: vec![],
+                            }],
+                        },
+                    },
+                )?;
+            }
+
+            keychain.revoke_key(account, revokeKeyCall { keyId: revoked_key })?;
+
+            let revoked = keychain.get_allowed_calls(getAllowedCallsCall {
+                account,
+                keyId: revoked_key,
+            })?;
+            assert!(revoked.isScoped);
+            assert!(revoked.scopes.is_empty());
+
+            let root = keychain.get_allowed_calls(getAllowedCallsCall {
+                account,
+                keyId: Address::ZERO,
+            })?;
+            assert!(!root.isScoped);
+            assert!(root.scopes.is_empty());
+
+            Ok::<_, eyre::Report>(())
+        })?;
+
+        storage.set_timestamp(U256::from(1_010u64));
+        StorageCtx::enter(&mut storage, || {
+            let keychain = AccountKeychain::new();
+
+            let expired = keychain.get_allowed_calls(getAllowedCallsCall {
+                account,
+                keyId: expiring_key,
+            })?;
+            assert!(expired.isScoped);
+            assert!(expired.scopes.is_empty());
 
             Ok(())
         })

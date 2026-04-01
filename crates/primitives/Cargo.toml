@@ -42,9 +42,10 @@ serde_json.workspace = true
 once_cell = { version = "1.21", default-features = false }
 
 # Cryptography for P256 and WebAuthn signature verification
-p256 = { workspace = true, features = ["ecdsa"] }
 sha2.workspace = true
 base64.workspace = true
+aws-lc-rs = { version = "1.16.2", optional = true, default-features = false, features = ["alloc", "non-fips", "ring-sig-verify"] }
+p256 = { workspace = true, features = ["ecdsa"] }
 
 [dev-dependencies]
 arbitrary.workspace = true
@@ -72,6 +73,7 @@ std = [
 	"alloy-primitives/std",
 	"alloy-rlp/std",
 	"alloy-serde?/std",
+	"dep:aws-lc-rs",
 	"base64/std",
 	"derive_more/std",
 	"once_cell/std",
@@ -95,8 +97,8 @@ serde = [
 	"alloy-eips/serde",
 	"alloy-primitives/serde",
 	"reth-codecs?/serde",
-	"rand/serde",
 	"p256/serde",
+	"rand/serde",
 	"tracing-subscriber/serde",
 	"revm/serde",
 	"tempo-contracts/serde"

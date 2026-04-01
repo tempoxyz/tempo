@@ -26,7 +26,9 @@ use reth_revm::{
 };
 use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_contracts::precompiles::{SIGNATURE_VERIFIER_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS};
+use tempo_contracts::precompiles::{
+    ADDRESS_REGISTRY_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+};
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
     subblock::PartialValidatorKey,
@@ -407,6 +409,7 @@ where
         }
         if self.inner.spec.is_t3_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(SIGNATURE_VERIFIER_ADDRESS)?;
+            self.deploy_precompile_at_boundary(ADDRESS_REGISTRY_ADDRESS)?;
         }
 
         Ok(())

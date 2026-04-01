@@ -50,6 +50,7 @@ use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
     PATH_USD_ADDRESS,
     account_keychain::AccountKeychain,
+    address_registry::AddressRegistry,
     nonce::NonceManager,
     signature_verifier::SignatureVerifier,
     stablecoin_dex::StablecoinDEX,
@@ -416,6 +417,9 @@ impl GenesisArgs {
 
         println!("Initializing account keychain");
         initialize_account_keychain(&mut evm)?;
+
+        println!("Initializing TIP20 registry");
+        initialize_address_registry(&mut evm)?;
 
         if self.t3_time == 0 {
             println!("Initializing signature verifier (T3 active at genesis)");
@@ -894,6 +898,19 @@ fn initialize_account_keychain(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Re
         &ctx.cfg,
         &ctx.tx,
         || AccountKeychain::new().initialize(),
+    )?;
+
+    Ok(())
+}
+
+fn initialize_address_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
+    let ctx = evm.ctx_mut();
+    StorageCtx::enter_evm(
+        &mut ctx.journaled_state,
+        &ctx.block,
+        &ctx.cfg,
+        &ctx.tx,
+        || AddressRegistry::new().initialize(),
     )?;
 
     Ok(())

@@ -12295,6 +12295,7 @@ dependencies = [
  "alloy-signer-local",
  "alloy-sol-types",
  "arbitrary",
+ "aws-lc-rs",
  "base64 0.22.1",
  "derive_more",
  "modular-bitfield",
