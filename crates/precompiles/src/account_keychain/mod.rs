@@ -668,9 +668,8 @@ impl AccountKeychain {
 
     /// Validates a top-level call against scoped permissions for this key.
     ///
-    /// Non-root access keys can never authorize contract creation. For regular CALLs, validation
-    /// then walks the scope tree from coarse to fine:
-    /// - `is_scoped = false` => unrestricted key for CALL targets
+    /// Validation walks the scope tree from coarse to fine:
+    /// - `is_scoped = false` => unrestricted key
     /// - target missing from `targets` => target denied
     /// - target present with `selectors = []` => allow any selector on that target
     /// - selector missing from `selectors` => selector denied
