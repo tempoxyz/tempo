@@ -45,6 +45,24 @@ impl ForkSchedule {
         }
     }
 
+    /// Returns whether the given fork's `*Time` key is active (set to 0) for this schedule.
+    ///
+    /// For [`Devnet`](Self::Devnet) all forks from the dev genesis are active.
+    /// For other schedules, a fork is active only if its timestamp in the
+    /// reference genesis is in the past.
+    pub(crate) fn is_fork_active(&self, time_key: &str) -> bool {
+        let Some(reference_json) = self.reference_genesis() else {
+            return true; // devnet: all forks active
+        };
+        let reference: serde_json::Value =
+            serde_json::from_str(reference_json).expect("reference genesis must parse");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        matches!(reference["config"][time_key].as_u64(), Some(ts) if ts <= now)
+    }
+
     /// Apply this profile's fork timestamps to a test genesis JSON value.
     ///
     /// Scans the test genesis config for all `*Time` keys and checks each

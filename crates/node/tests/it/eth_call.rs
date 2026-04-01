@@ -293,7 +293,12 @@ async fn test_eth_estimate_gas(schedule: ForkSchedule) -> eyre::Result<()> {
     let gas = provider.estimate_gas(tx.clone()).await?;
     // gas estimation is calldata dependent, but should be consistent with same calldata
     // TIP-1000 (T1): gas includes 250k new account cost when nonce=0
-    assert_eq!(gas, 549423);
+    let expected_gas = if schedule.is_fork_active("t3Time") {
+        551540
+    } else {
+        549423
+    };
+    assert_eq!(gas, expected_gas);
 
     // ensure we can successfully send the tx with that gas
     let receipt = provider
