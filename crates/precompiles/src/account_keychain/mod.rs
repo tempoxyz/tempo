@@ -668,10 +668,6 @@ impl AccountKeychain {
             return Ok(());
         }
 
-        if to.is_create() {
-            return Err(AccountKeychainError::call_not_allowed().into());
-        }
-
         let key_hash = Self::spending_limit_key(account, key_id);
         let mode = self.key_scopes[key_hash].is_scoped.read()?;
 
@@ -703,7 +699,9 @@ impl AccountKeychain {
         }
 
         // Scoped targets next match on the 4-byte selector.
-        let selector = FixedBytes::<4>::from([input[0], input[1], input[2], input[3]]);
+        let selector = FixedBytes::<4>::from(
+            <[u8; 4]>::try_from(&input[..4]).expect("input len checked above"),
+        );
         if !self.key_scopes[key_hash].target_scopes[target]
             .selectors
             .contains(&selector)?
