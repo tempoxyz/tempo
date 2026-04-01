@@ -124,6 +124,7 @@ crate::sol! {
         ) external;
 
         /// Set or replace allowed calls for one or more key+target pairs.
+        /// @dev Reverts if `scopes` is empty; use `removeAllowedCalls` to delete target scopes.
         /// @dev `scope.selectorRules = []` does NOT block the target; it allows any selector on that target.
         /// @dev To block the target entirely, call `removeAllowedCalls`. To block one selector,
         ///      omit that selector rule from `scope.selectorRules`.

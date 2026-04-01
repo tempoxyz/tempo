@@ -476,7 +476,7 @@ impl AccountKeychain {
         let scopes = call.scopes;
 
         if scopes.is_empty() {
-            return Ok(());
+            return Err(AccountKeychainError::invalid_call_scope().into());
         }
 
         let mut seen_targets = HashSet::with_capacity(scopes.len());
@@ -3825,6 +3825,55 @@ mod tests {
                 )
                 .expect_err("unexpected success for zero target scope");
             assert_invalid_call_scope(err);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t3_set_allowed_calls_rejects_empty_scope_batch() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let account = Address::random();
+        let key_id = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
+
+            keychain.authorize_key(
+                account,
+                authorizeKeyCall {
+                    keyId: key_id,
+                    signatureType: SignatureType::Secp256k1,
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: false,
+                        limits: vec![],
+                        enforceAllowedCalls: false,
+                        allowedCalls: vec![],
+                    },
+                },
+            )?;
+
+            let err = keychain
+                .set_allowed_calls(
+                    account,
+                    setAllowedCallsCall {
+                        keyId: key_id,
+                        scopes: vec![],
+                    },
+                )
+                .expect_err("unexpected success for empty scope batch");
+            assert_invalid_call_scope(err);
+
+            let scopes = keychain.get_allowed_calls(getAllowedCallsCall {
+                account,
+                keyId: key_id,
+            })?;
+            assert!(!scopes.isScoped);
+            assert!(scopes.scopes.is_empty());
 
             Ok(())
         })
