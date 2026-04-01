@@ -271,6 +271,58 @@ impl<'a> arbitrary::Arbitrary<'a> for KeyAuthorization {
     }
 }
 
+mod rlp {
+    use super::TokenLimit;
+    use alloy_primitives::{Address, U256};
+    use alloy_rlp::{Decodable, Encodable};
+
+    #[derive(
+        Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable,
+    )]
+    #[rlp(trailing)]
+    struct TokenLimitWire {
+        token: Address,
+        limit: U256,
+        period: Option<u64>,
+    }
+
+    impl From<TokenLimitWire> for TokenLimit {
+        fn from(value: TokenLimitWire) -> Self {
+            Self {
+                token: value.token,
+                limit: value.limit,
+                period: value.period.unwrap_or(0),
+            }
+        }
+    }
+
+    impl From<&TokenLimit> for TokenLimitWire {
+        fn from(value: &TokenLimit) -> Self {
+            Self {
+                token: value.token,
+                limit: value.limit,
+                period: (value.period != 0).then_some(value.period),
+            }
+        }
+    }
+
+    impl Decodable for TokenLimit {
+        fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+            Ok(TokenLimitWire::decode(buf)?.into())
+        }
+    }
+
+    impl Encodable for TokenLimit {
+        fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+            TokenLimitWire::from(self).encode(out)
+        }
+
+        fn length(&self) -> usize {
+            TokenLimitWire::from(self).length()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -521,6 +573,21 @@ mod tests {
     }
 
     #[test]
+    fn test_call_scope_roundtrip_preserves_empty_selector_rules_list() {
+        let scope = CallScope {
+            target: Address::repeat_byte(0x11),
+            selector_rules: Some(Vec::new()),
+        };
+
+        let mut encoded = Vec::new();
+        scope.encode(&mut encoded);
+
+        let decoded =
+            <CallScope as Decodable>::decode(&mut encoded.as_slice()).expect("decode scope");
+        assert_eq!(decoded, scope);
+    }
+
+    #[test]
     fn test_selector_rule_decode_accepts_omitted_none_recipients() {
         let selector = [0xaa, 0xbb, 0xcc, 0xdd];
 
@@ -543,6 +610,21 @@ mod tests {
         let rule = SelectorRule {
             selector: [0xaa, 0xbb, 0xcc, 0xdd],
             recipients: Some(Vec::new()),
+        };
+
+        let mut encoded = Vec::new();
+        rule.encode(&mut encoded);
+
+        let decoded =
+            <SelectorRule as Decodable>::decode(&mut encoded.as_slice()).expect("decode rule");
+        assert_eq!(decoded, rule);
+    }
+
+    #[test]
+    fn test_selector_rule_roundtrip_preserves_non_empty_recipient_list() {
+        let rule = SelectorRule {
+            selector: [0xaa, 0xbb, 0xcc, 0xdd],
+            recipients: Some(vec![Address::repeat_byte(0x11), Address::repeat_byte(0x22)]),
         };
 
         let mut encoded = Vec::new();
@@ -621,6 +703,44 @@ mod tests {
     }
 
     #[test]
+    fn test_key_authorization_decode_accepts_explicit_deny_all_allowed_calls_field() {
+        let chain_id = 1u64;
+        let key_type = SignatureType::Secp256k1;
+        let key_id = Address::random();
+
+        let mut payload = Vec::new();
+        chain_id.encode(&mut payload);
+        key_type.encode(&mut payload);
+        key_id.encode(&mut payload);
+        payload.extend_from_slice(&[
+            alloy_rlp::EMPTY_STRING_CODE,
+            alloy_rlp::EMPTY_STRING_CODE,
+            0xc0,
+        ]);
+
+        let mut encoded = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: payload.len(),
+        }
+        .encode(&mut encoded);
+        encoded.extend_from_slice(&payload);
+
+        let decoded =
+            <KeyAuthorization as Decodable>::decode(&mut encoded.as_slice()).expect("decode auth");
+        assert_eq!(decoded.chain_id, chain_id);
+        assert_eq!(decoded.key_type, key_type);
+        assert_eq!(decoded.key_id, key_id);
+        assert_eq!(decoded.expiry, None);
+        assert_eq!(decoded.limits, None);
+        assert_eq!(decoded.allowed_calls, Some(vec![]));
+
+        let mut reencoded = Vec::new();
+        decoded.encode(&mut reencoded);
+        assert_eq!(reencoded, encoded);
+    }
+
+    #[test]
     fn test_validate_chain_id_pre_t1c() {
         let expected = 42431;
 
@@ -670,57 +790,5 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.expected, expected);
         assert_eq!(err.got, 999);
-    }
-}
-
-mod rlp {
-    use super::TokenLimit;
-    use alloy_primitives::{Address, U256};
-    use alloy_rlp::{Decodable, Encodable};
-
-    #[derive(
-        Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable,
-    )]
-    #[rlp(trailing)]
-    struct TokenLimitWire {
-        token: Address,
-        limit: U256,
-        period: Option<u64>,
-    }
-
-    impl From<TokenLimitWire> for TokenLimit {
-        fn from(value: TokenLimitWire) -> Self {
-            Self {
-                token: value.token,
-                limit: value.limit,
-                period: value.period.unwrap_or(0),
-            }
-        }
-    }
-
-    impl From<&TokenLimit> for TokenLimitWire {
-        fn from(value: &TokenLimit) -> Self {
-            Self {
-                token: value.token,
-                limit: value.limit,
-                period: (value.period != 0).then_some(value.period),
-            }
-        }
-    }
-
-    impl Decodable for TokenLimit {
-        fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-            Ok(TokenLimitWire::decode(buf)?.into())
-        }
-    }
-
-    impl Encodable for TokenLimit {
-        fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-            TokenLimitWire::from(self).encode(out)
-        }
-
-        fn length(&self) -> usize {
-            TokenLimitWire::from(self).length()
-        }
     }
 }

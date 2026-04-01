@@ -10,6 +10,7 @@ pub mod storage;
 pub(crate) mod ip_validation;
 
 pub mod account_keychain;
+pub mod address_registry;
 pub mod nonce;
 pub mod signature_verifier;
 pub mod stablecoin_dex;
@@ -25,6 +26,7 @@ pub mod test_util;
 
 use crate::{
     account_keychain::AccountKeychain,
+    address_registry::AddressRegistry,
     nonce::NonceManager,
     signature_verifier::SignatureVerifier,
     stablecoin_dex::StablecoinDEX,
@@ -54,10 +56,10 @@ use revm::{
 };
 
 pub use tempo_contracts::precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
-    SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
-    VALIDATOR_CONFIG_V2_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, DEFAULT_FEE_TOKEN,
+    NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
@@ -123,6 +125,8 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
             Some(TIP20Token::create_precompile(*address, &cfg))
         } else if *address == TIP20_FACTORY_ADDRESS {
             Some(TIP20Factory::create_precompile(&cfg))
+        } else if *address == ADDRESS_REGISTRY_ADDRESS && cfg.spec.is_t3() {
+            Some(AddressRegistry::create_precompile(&cfg))
         } else if *address == TIP403_REGISTRY_ADDRESS {
             Some(TIP403Registry::create_precompile(&cfg))
         } else if *address == TIP_FEE_MANAGER_ADDRESS {
@@ -179,6 +183,13 @@ impl TipFeeManager {
     /// Creates the EVM precompile for this type.
     pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
         tempo_precompile!("TipFeeManager", cfg, |input| { Self::new() })
+    }
+}
+
+impl AddressRegistry {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
+        tempo_precompile!("AddressRegistry", cfg, |input| { Self::new() })
     }
 }
 
