@@ -685,16 +685,17 @@ impl AccountKeychain {
             return Ok(());
         }
 
+        let target = match to {
+            TxKind::Call(target) => *target,
+            TxKind::Create => return Err(AccountKeychainError::call_not_allowed().into()),
+        };
+
         let key_hash = Self::spending_limit_key(account, key_id);
         let mode = self.key_scopes[key_hash].is_scoped.read()?;
 
         // Key-level mode decides whether the call is unrestricted or must match stored scopes.
         if !mode {
             return Ok(());
-        }      
-        let target = match to {
-            TxKind::Call(target) => *target,
-            TxKind::Create => return Err(AccountKeychainError::call_not_allowed().into()),
         };
 
         if !self.key_scopes[key_hash].targets.contains(&target)? {

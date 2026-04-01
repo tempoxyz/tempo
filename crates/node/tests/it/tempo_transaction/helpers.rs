@@ -189,10 +189,15 @@ pub(crate) fn create_signed_key_authorization(
     } else {
         Some(
             (0..num_limits)
-                .map(|_| TokenLimit {
-                    token: Address::ZERO,
-                    limit: U256::ZERO,
-                    period: 0,
+                .map(|i| {
+                    let mut token = [0u8; 20];
+                    token[12..].copy_from_slice(&((i as u64) + 1).to_be_bytes());
+
+                    TokenLimit {
+                        token: Address::from(token),
+                        limit: U256::ZERO,
+                        period: 0,
+                    }
                 })
                 .collect(),
         )
