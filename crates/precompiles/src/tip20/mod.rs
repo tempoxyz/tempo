@@ -446,8 +446,10 @@ impl TIP20Token {
     /// Internal helper to mint new tokens and update balances.
     fn _mint(&mut self, msg_sender: Address, to: &Recipient, amount: U256) -> Result<()> {
         self.check_role(msg_sender, *ISSUER_ROLE)?;
-        self.validate_mint(to)?;
         let total_supply = self.total_supply()?;
+
+        // Check if the resolved target address is authorized to receive minted tokens
+        self.validate_mint(to)?;
 
         let new_supply = total_supply
             .checked_add(amount)
