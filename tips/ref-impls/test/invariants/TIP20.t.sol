@@ -877,6 +877,8 @@ contract TIP20InvariantTest is InvariantBaseTest {
 
     /// @notice Handler for attempting burnBlocked on protected addresses
     /// @dev Tests TEMPO-TIP24 (protected addresses cannot be burned from)
+    ///      On T3 the precompile checks pause before protected-address, so
+    ///      ContractPaused takes precedence when the token is paused.
     function burnBlockedProtectedAddress(uint256 tokenSeed, uint256 amount) external {
         TIP20 token = _selectBaseToken(tokenSeed);
 
@@ -885,32 +887,28 @@ contract TIP20InvariantTest is InvariantBaseTest {
         address feeManager = 0xfeEC000000000000000000000000000000000000;
         address dex = 0xDEc0000000000000000000000000000000000000;
 
+        bool isPaused = token.paused();
+        bytes4 expectedSelector =
+            isPaused ? ITIP20.ContractPaused.selector : ITIP20.ProtectedAddress.selector;
+
         vm.startPrank(admin);
         token.grantRole(_BURN_BLOCKED_ROLE, admin);
 
-        // Try to burn from FeeManager - should revert with ProtectedAddress
+        // Try to burn from FeeManager - should revert
         try token.burnBlocked(feeManager, amount) {
             vm.stopPrank();
             revert("TEMPO-TIP24: Should revert for FeeManager");
         } catch (bytes memory reason) {
-            assertEq(
-                bytes4(reason),
-                ITIP20.ProtectedAddress.selector,
-                "TEMPO-TIP24: Should revert with ProtectedAddress for FeeManager"
-            );
+            assertEq(bytes4(reason), expectedSelector, "TEMPO-TIP24: Unexpected error for FeeManager");
         }
 
-        // Try to burn from DEX - should revert with ProtectedAddress
+        // Try to burn from DEX - should revert
         try token.burnBlocked(dex, amount) {
             vm.stopPrank();
             revert("TEMPO-TIP24: Should revert for DEX");
         } catch (bytes memory reason) {
             vm.stopPrank();
-            assertEq(
-                bytes4(reason),
-                ITIP20.ProtectedAddress.selector,
-                "TEMPO-TIP24: Should revert with ProtectedAddress for DEX"
-            );
+            assertEq(bytes4(reason), expectedSelector, "TEMPO-TIP24: Unexpected error for DEX");
         }
     }
 
