@@ -110,6 +110,11 @@ impl TempoPooledTransaction {
         self.intrinsic_state_gas.store(gas, Ordering::Relaxed);
     }
 
+    /// Returns the gas available for execution (gas_limit minus intrinsic state gas).
+    pub fn execution_gas_limit(&self) -> u64 {
+        self.inner.gas_limit() - self.intrinsic_state_gas()
+    }
+
     /// Get the cost of the transaction in the fee token.
     pub fn fee_token_cost(&self) -> U256 {
         self.inner.cost - self.inner.value()

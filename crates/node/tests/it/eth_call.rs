@@ -15,7 +15,7 @@ use alloy_rpc_types_eth::{
     state::{AccountOverride, StateOverride},
 };
 use reth_evm::revm::interpreter::instructions::utility::IntoU256;
-use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
+use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{
     IFeeManager,
     ITIP20::{self, transferCall},

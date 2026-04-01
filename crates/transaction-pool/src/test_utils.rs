@@ -173,6 +173,12 @@ impl TxBuilder {
         self
     }
 
+    /// Set the chain ID.
+    pub(crate) fn chain_id(mut self, chain_id: u64) -> Self {
+        self.chain_id = chain_id;
+        self
+    }
+
     /// Set the access list for the AA transaction.
     pub(crate) fn access_list(mut self, access_list: AccessList) -> Self {
         self.access_list = access_list;
@@ -190,7 +196,7 @@ impl TxBuilder {
         });
 
         let tx = TempoTransaction {
-            chain_id: 1,
+            chain_id: self.chain_id,
             max_priority_fee_per_gas: self.max_priority_fee_per_gas,
             max_fee_per_gas: self.max_fee_per_gas,
             gas_limit: self.gas_limit,
@@ -246,7 +252,7 @@ impl TxBuilder {
         });
 
         let tx = TempoTransaction {
-            chain_id: 1,
+            chain_id: self.chain_id,
             max_priority_fee_per_gas: self.max_priority_fee_per_gas,
             max_fee_per_gas: self.max_fee_per_gas,
             gas_limit: self.gas_limit,
