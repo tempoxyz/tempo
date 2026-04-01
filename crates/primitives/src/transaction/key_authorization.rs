@@ -43,7 +43,10 @@ pub struct CallScope {
     /// Target contract address.
     pub target: Address,
     /// Selector rules for this target. Empty means any selector is allowed.
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Vec::is_empty"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Vec::is_empty")
+    )]
     pub selector_rules: Vec<SelectorRule>,
 }
 
@@ -72,7 +75,10 @@ pub struct SelectorRule {
     /// 4-byte function selector.
     pub selector: [u8; 4],
     /// Recipient allowlist. Empty means no recipient restriction.
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Vec::is_empty"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Vec::is_empty")
+    )]
     pub recipients: Vec<Address>,
 }
 
