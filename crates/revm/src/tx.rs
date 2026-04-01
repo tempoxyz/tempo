@@ -1,8 +1,7 @@
 use crate::TempoInvalidTransaction;
 use alloy_consensus::{EthereumTxEnvelope, TxEip4844, Typed2718, crypto::secp256k1};
-use alloy_evm::{FromRecoveredTx, FromTxWithEncoded, IntoTxEnv};
+use alloy_evm::{FromRecoveredTx, FromTxWithEncoded, IntoTxEnv, TransactionEnvMut};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
-use alloy_evm::TransactionEnvMut;
 use revm::context::{
     Transaction, TxEnv,
     either::Either,
