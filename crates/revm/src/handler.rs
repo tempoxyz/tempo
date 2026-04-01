@@ -1197,14 +1197,14 @@ where
                 .unwrap_or(false);
 
             // Always need to set the transaction key for Keychain signatures
-            StorageCtx::enter_precompile(
+            let scope_validation_gas = StorageCtx::enter_precompile(
                 journal,
                 block,
                 cfg,
                 tx,
                 |mut keychain: AccountKeychain| {
                     if is_authorizing_this_key {
-                        if spec.is_t1()
+                        if spec.is_t3()
                             && tempo_tx_env
                                 .key_authorization
                                 .as_ref()
@@ -1225,10 +1225,10 @@ where
                         // Extract the signature type from the inner signature to validate it matches
                         // the key_type stored in the keychain. This prevents using a signature of one
                         // type to authenticate as a key registered with a different type.
-                        // Only validate signature type on T1+ to maintain backward compatibility
+                        // Only validate signature type on T3+ to maintain backward compatibility
                         // with historical blocks during re-execution.
                         let sig_type = spec
-                            .is_t1()
+                            .is_t3()
                             .then_some(keychain_sig.signature.signature_type().into());
 
                         keychain
@@ -1250,7 +1250,9 @@ where
                         .set_transaction_key(access_key_addr)
                         .map_err(|e| EVMError::Custom(e.to_string()))?;
 
-                    if spec.is_t3() {
+                    let scope_validation_gas = if spec.is_t3() {
+                        let gas_before = StorageCtx.gas_used();
+
                         let user_address = keychain_sig.user_address;
                         for (to, input) in tx.calls() {
                             keychain
@@ -1264,11 +1266,17 @@ where
                                     reason: format!("{e:?}"),
                                 })?;
                         }
-                    }
 
-                    Ok::<(), EVMError<DB::Error, TempoInvalidTransaction>>(())
+                        StorageCtx.gas_used().saturating_sub(gas_before)
+                    } else {
+                        0
+                    };
+
+                    Ok::<u64, EVMError<DB::Error, TempoInvalidTransaction>>(scope_validation_gas)
                 },
             )?;
+
+            evm.initial_gas += scope_validation_gas;
         }
 
         // Short-circuit if there is no spending for this transaction and `collectFeePreTx`

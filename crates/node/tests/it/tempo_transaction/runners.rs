@@ -320,7 +320,10 @@ fn gas_estimation_cases() -> Vec<GasCase> {
         for &(payload_name, ref payload) in payloads {
             // T3 keychain validation rejects CREATE for access-key-backed transactions.
             if matches!(payload, GasPayload::ContractCreation)
-                && matches!(&auth_def.auth, AuthKind::Keychain { .. } | AuthKind::KeyAuth { .. })
+                && matches!(
+                    &auth_def.auth,
+                    AuthKind::Keychain { .. } | AuthKind::KeyAuth { .. }
+                )
             {
                 continue;
             }
