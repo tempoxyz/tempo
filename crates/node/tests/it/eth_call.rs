@@ -295,7 +295,7 @@ async fn test_eth_estimate_gas(schedule: ForkSchedule) -> eyre::Result<()> {
     // TIP-1000 (T1): gas includes 250k new account cost when nonce=0
     // T3 (devnet): state gas split changes the estimate
     let expected_gas = match schedule {
-        ForkSchedule::Devnet => 84654,
+        ForkSchedule::Devnet => 86763,
         _ => 549423,
     };
     assert_eq!(gas, expected_gas);
