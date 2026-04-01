@@ -46,14 +46,7 @@ pub struct CallScope {
     /// Target contract address.
     pub target: Address,
     /// Selector rules for this target. Empty means any selector is allowed.
-    #[cfg_attr(
-        feature = "serde",
-        serde(
-            default,
-            skip_serializing_if = "Vec::is_empty",
-            deserialize_with = "deserialize_optional_vec_as_empty"
-        )
-    )]
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Vec::is_empty"))]
     pub selector_rules: Vec<SelectorRule>,
 }
 
@@ -85,14 +78,7 @@ pub struct SelectorRule {
     /// 4-byte function selector.
     pub selector: [u8; 4],
     /// Recipient allowlist. Empty means no recipient restriction.
-    #[cfg_attr(
-        feature = "serde",
-        serde(
-            default,
-            skip_serializing_if = "Vec::is_empty",
-            deserialize_with = "deserialize_optional_vec_as_empty"
-        )
-    )]
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Vec::is_empty"))]
     pub recipients: Vec<Address>,
 }
 
@@ -100,15 +86,6 @@ impl SelectorRule {
     fn heap_size(&self) -> usize {
         self.recipients.capacity() * size_of::<Address>()
     }
-}
-
-#[cfg(feature = "serde")]
-fn deserialize_optional_vec_as_empty<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: serde::Deserialize<'de>,
-{
-    <Option<Vec<T>> as serde::Deserialize>::deserialize(deserializer).map(Option::unwrap_or_default)
 }
 
 /// Key authorization for provisioning access keys
