@@ -639,6 +639,10 @@ impl AccountKeychain {
         self.tx_origin.t_write(origin)
     }
 
+    /// Persists the authorization-time restrictions for a freshly created key.
+    ///
+    /// T0-T2 only store raw spending limits. T3 additionally seeds periodic metadata and replaces
+    /// the key's call-scope tree in one pass.
     fn apply_key_authorization_restrictions<'a>(
         &mut self,
         account: Address,
@@ -699,7 +703,7 @@ impl AccountKeychain {
         let key_hash = Self::spending_limit_key(account, key_id);
         let mode = self.key_scopes[key_hash].is_scoped.read()?;
 
-        // Unrestricted mode.
+        // Key-level mode decides whether the call is unrestricted or must match stored scopes.
         if !mode {
             return Ok(());
         }
@@ -724,6 +728,7 @@ impl AccountKeychain {
             return Err(AccountKeychainError::call_not_allowed().into());
         }
 
+        // Scoped targets next match on the 4-byte selector.
         let selector = FixedBytes::<4>::from([input[0], input[1], input[2], input[3]]);
         if !self.key_scopes[key_hash].target_scopes[target]
             .selectors
@@ -744,6 +749,7 @@ impl AccountKeychain {
             return Err(AccountKeychainError::call_not_allowed().into());
         }
 
+        // Recipient-constrained selectors only permit ABI-encoded address arguments.
         let recipient_word = &input[4..36];
         if recipient_word[..12].iter().any(|byte| *byte != 0) {
             return Err(AccountKeychainError::call_not_allowed().into());
@@ -760,6 +766,10 @@ impl AccountKeychain {
         }
     }
 
+    /// Replaces the full call-scope tree for an account key.
+    ///
+    /// `None` switches the key back to unrestricted mode, while `Some([])` preserves scoped mode
+    /// with no targets so `get_allowed_calls` can round-trip the explicit deny-all sentinel.
     fn replace_allowed_calls(
         &mut self,
         account_key: B256,
@@ -803,6 +813,7 @@ impl AccountKeychain {
         }
     }
 
+    /// Deletes every persisted target scope under an account key.
     fn clear_all_target_scopes(&mut self, account_key: B256) -> Result<()> {
         let targets = self.key_scopes[account_key].targets.read()?;
         for target in targets {
@@ -812,6 +823,7 @@ impl AccountKeychain {
         Ok(())
     }
 
+    /// Deletes one target scope and all nested selector/recipient rows beneath it.
     fn remove_target_scope(&mut self, account_key: B256, target: Address) -> Result<()> {
         if !self.key_scopes[account_key].targets.remove(&target)? {
             return Ok(());
@@ -820,6 +832,7 @@ impl AccountKeychain {
         self.clear_target_selectors(account_key, target)
     }
 
+    /// Clears every selector scope stored under one target.
     fn clear_target_selectors(&mut self, account_key: B256, target: Address) -> Result<()> {
         let selectors = self.key_scopes[account_key].target_scopes[target]
             .selectors
@@ -835,6 +848,7 @@ impl AccountKeychain {
             .delete()
     }
 
+    /// Creates or replaces one target scope, including all nested selector rules.
     fn upsert_target_scope(&mut self, account_key: B256, scope: &CallScope) -> Result<()> {
         let target = scope.target;
 
@@ -889,6 +903,7 @@ impl AccountKeychain {
         Ok(())
     }
 
+    /// Validates per-selector scope rules for one target before they are persisted.
     fn validate_selector_rules(&self, target: Address, rules: &[SelectorRule]) -> Result<()> {
         if rules.len() > MAX_SELECTOR_RULES_PER_SCOPE as usize {
             return Err(AccountKeychainError::selector_limit_exceeded().into());
