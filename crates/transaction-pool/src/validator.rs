@@ -160,49 +160,52 @@ where
         Ok(())
     }
 
-    /// Validates the T3-only key-authorization payload shape before any state lookups.
+    /// Validates the T3-only key-authorization restrictions before any state lookups.
     ///
-    /// This keeps txpool admission aligned with runtime and precompile expectations so
-    /// malformed limits or call scopes are rejected before propagation.
-    fn validate_t3_key_authorization_shape(
+    /// This keeps txpool admission aligned with runtime and precompile expectations so malformed
+    /// limits, call scopes, or recipient-scoped undeployed TIP-20 targets are rejected before
+    /// propagation.
+    fn validate_t3_key_authorization_restrictions(
         &self,
         auth: &tempo_primitives::transaction::SignedKeyAuthorization,
-    ) -> Result<(), TempoPoolTransactionError> {
+        state_provider: &mut impl StateProvider,
+        spec: TempoHardfork,
+    ) -> Result<Result<(), TempoPoolTransactionError>, ProviderError> {
         // Spending limits must stay unique and fit the precompile's u128-backed storage layout.
         if let Some(limits) = auth.limits.as_ref() {
             let mut seen_tokens = HashSet::with_capacity(limits.len());
             for limit in limits {
                 if !seen_tokens.insert(limit.token) {
-                    return Err(TempoPoolTransactionError::Keychain(
+                    return Ok(Err(TempoPoolTransactionError::Keychain(
                         "duplicate token limits are not allowed",
-                    ));
+                    )));
                 }
 
                 if limit.limit > U256::from(u128::MAX) {
-                    return Err(TempoPoolTransactionError::Keychain(
+                    return Ok(Err(TempoPoolTransactionError::Keychain(
                         "spending limit exceeds u128::MAX",
-                    ));
+                    )));
                 }
             }
         }
 
         let Some(scopes) = auth.allowed_calls.as_ref() else {
-            return Ok(());
+            return Ok(Ok(()));
         };
 
         if scopes.len() > MAX_CALL_SCOPES as usize {
-            return Err(TempoPoolTransactionError::Keychain(
+            return Ok(Err(TempoPoolTransactionError::Keychain(
                 "too many call scopes in key authorization",
-            ));
+            )));
         }
 
         // Validate each scope as a unit so target and selector constraints stay grouped.
         let mut seen_targets = HashSet::with_capacity(scopes.len());
         for scope in scopes {
             if !seen_targets.insert(scope.target) {
-                return Err(TempoPoolTransactionError::Keychain(
+                return Ok(Err(TempoPoolTransactionError::Keychain(
                     "duplicate call scope targets are not allowed",
-                ));
+                )));
             }
 
             let Some(selector_rules) = scope.selector_rules.as_ref() else {
@@ -210,24 +213,26 @@ where
             };
 
             if selector_rules.is_empty() {
-                return Err(TempoPoolTransactionError::Keychain(
+                return Ok(Err(TempoPoolTransactionError::Keychain(
                     "call scope selector rules must be omitted or non-empty",
-                ));
+                )));
             }
 
             if selector_rules.len() > MAX_SELECTOR_RULES_PER_SCOPE as usize {
-                return Err(TempoPoolTransactionError::Keychain(
+                return Ok(Err(TempoPoolTransactionError::Keychain(
                     "too many selector rules in call scope",
-                ));
+                )));
             }
+
+            let mut requires_deployed_tip20 = false;
 
             // Selector rules are unique per target and must stay within the per-scope bound.
             let mut seen_selectors = HashSet::with_capacity(selector_rules.len());
             for rule in selector_rules {
                 if !seen_selectors.insert(rule.selector) {
-                    return Err(TempoPoolTransactionError::Keychain(
+                    return Ok(Err(TempoPoolTransactionError::Keychain(
                         "duplicate selector rules are not allowed",
-                    ));
+                    )));
                 }
 
                 let Some(recipients) = rule.recipients.as_ref() else {
@@ -237,55 +242,36 @@ where
                 // Recipient-constrained rules only make sense for constrained TIP-20 selectors and
                 // must carry a non-empty, de-duplicated recipient set.
                 if recipients.is_empty() {
-                    return Err(TempoPoolTransactionError::Keychain(
+                    return Ok(Err(TempoPoolTransactionError::Keychain(
                         "recipient-constrained selector rule requires non-empty recipients",
-                    ));
+                    )));
                 }
 
                 if recipients.len() > MAX_RECIPIENTS_PER_SELECTOR as usize {
-                    return Err(TempoPoolTransactionError::Keychain(
+                    return Ok(Err(TempoPoolTransactionError::Keychain(
                         "too many recipients in selector rule",
-                    ));
+                    )));
                 }
 
                 if !is_constrained_tip20_selector(rule.selector) {
-                    return Err(TempoPoolTransactionError::Keychain(
+                    return Ok(Err(TempoPoolTransactionError::Keychain(
                         "recipient-constrained selector rules require TIP-20 target and constrained selector",
-                    ));
+                    )));
                 }
+
+                requires_deployed_tip20 = true;
 
                 let mut seen_recipients = HashSet::with_capacity(recipients.len());
                 for recipient in recipients {
                     if recipient.is_zero() || !seen_recipients.insert(*recipient) {
-                        return Err(TempoPoolTransactionError::Keychain(
+                        return Ok(Err(TempoPoolTransactionError::Keychain(
                             "selector rule recipients must be non-zero and unique",
-                        ));
+                        )));
                     }
                 }
             }
-        }
 
-        Ok(())
-    }
-
-    fn validate_t3_key_authorization_tip20_targets(
-        &self,
-        auth: &tempo_primitives::transaction::SignedKeyAuthorization,
-        state_provider: &mut impl StateProvider,
-        spec: TempoHardfork,
-    ) -> Result<Result<(), TempoPoolTransactionError>, ProviderError> {
-        let Some(scopes) = auth.allowed_calls.as_ref() else {
-            return Ok(Ok(()));
-        };
-
-        let mut checked_targets = HashSet::new();
-        for scope in scopes {
-            let requires_deployed_tip20 = scope
-                .selector_rules
-                .as_ref()
-                .is_some_and(|rules| rules.iter().any(|rule| rule.recipients.is_some()));
-
-            if !requires_deployed_tip20 || !checked_targets.insert(scope.target) {
+            if !requires_deployed_tip20 {
                 continue;
             }
 
@@ -437,16 +423,10 @@ where
                         "call scopes are not active before T3",
                     )));
                 }
-            } else {
-                if let Err(err) = self.validate_t3_key_authorization_shape(auth) {
-                    return Ok(Err(err));
-                }
-
-                if let Err(err) =
-                    self.validate_t3_key_authorization_tip20_targets(auth, state_provider, spec)?
-                {
-                    return Ok(Err(err));
-                }
+            } else if let Err(err) =
+                self.validate_t3_key_authorization_restrictions(auth, state_provider, spec)?
+            {
+                return Ok(Err(err));
             }
 
             // Validate KeyAuthorization expiry, reject if expiring within the propagation
