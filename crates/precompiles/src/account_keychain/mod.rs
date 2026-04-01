@@ -26,7 +26,7 @@ pub use tempo_contracts::precompiles::{
 use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     error::Result,
-    storage::{Handler, Mapping, Set},
+    storage::{EnumerableMap, Handler, Mapping, Set},
     tip20_factory::TIP20Factory,
 };
 use alloy::primitives::{Address, B256, FixedBytes, TxKind, U256, keccak256};
@@ -105,8 +105,7 @@ pub struct AccountKeychain {
 #[derive(Debug, Clone, Storable, Default)]
 pub struct KeyScope {
     pub is_scoped: bool,
-    pub targets: Set<Address>,
-    pub target_scopes: Mapping<Address, TargetScope>,
+    pub targets: EnumerableMap<Address, TargetScope>,
 }
 
 /// Target-level scope for one target under one account key.
@@ -117,8 +116,7 @@ pub struct KeyScope {
 /// means "no further restriction", not "deny all selectors".
 #[derive(Debug, Clone, Storable, Default)]
 pub struct TargetScope {
-    pub selectors: Set<FixedBytes<4>>,
-    pub selector_scopes: Mapping<FixedBytes<4>, SelectorScope>,
+    pub selectors: EnumerableMap<FixedBytes<4>, SelectorScope>,
 }
 
 /// Selector-level scope for one selector under one target.
@@ -547,12 +545,10 @@ impl AccountKeychain {
             });
         }
 
-        let targets = self.key_scopes[key_hash].targets.read()?;
+        let targets = self.key_scopes[key_hash].targets.keys()?;
         let mut scopes = Vec::new();
         for target in targets {
-            let selectors = self.key_scopes[key_hash].target_scopes[target]
-                .selectors
-                .read()?;
+            let selectors = self.key_scopes[key_hash].targets[target].selectors.keys()?;
 
             let scope = if selectors.is_empty() {
                 CallScope {
@@ -563,8 +559,8 @@ impl AccountKeychain {
                 let mut rules = Vec::new();
 
                 for selector in selectors {
-                    let recipients: Vec<Address> = self.key_scopes[key_hash].target_scopes[target]
-                        .selector_scopes[selector]
+                    let recipients: Vec<Address> = self.key_scopes[key_hash].targets[target]
+                        .selectors[selector]
                         .recipients
                         .read()?
                         .into();
@@ -703,7 +699,7 @@ impl AccountKeychain {
 
         // Empty child sets mean "no further restriction" once the parent target was explicitly
         // allowed, so a present target with `selectors = []` allows any selector.
-        let target_is_unconstrained = self.key_scopes[key_hash].target_scopes[target]
+        let target_is_unconstrained = self.key_scopes[key_hash].targets[target]
             .selectors
             .is_empty()?;
         if target_is_unconstrained {
@@ -718,7 +714,7 @@ impl AccountKeychain {
         let selector = FixedBytes::<4>::from(
             <[u8; 4]>::try_from(&input[..4]).expect("input len checked above"),
         );
-        if !self.key_scopes[key_hash].target_scopes[target]
+        if !self.key_scopes[key_hash].targets[target]
             .selectors
             .contains(&selector)?
         {
@@ -726,8 +722,8 @@ impl AccountKeychain {
         }
 
         // Likewise, a present selector with `recipients = []` means any recipient is allowed.
-        let selector_is_unconstrained = self.key_scopes[key_hash].target_scopes[target]
-            .selector_scopes[selector]
+        let selector_is_unconstrained = self.key_scopes[key_hash].targets[target].selectors
+            [selector]
             .recipients
             .is_empty()?;
         if selector_is_unconstrained {
@@ -745,7 +741,7 @@ impl AccountKeychain {
         }
 
         let recipient = Address::from_slice(&recipient_word[12..]);
-        if self.key_scopes[key_hash].target_scopes[target].selector_scopes[selector]
+        if self.key_scopes[key_hash].targets[target].selectors[selector]
             .recipients
             .contains(&recipient)?
         {
@@ -768,8 +764,8 @@ impl AccountKeychain {
     ) -> Result<()> {
         // Fresh authorizations should not have any pre-existing call-scope rows because
         // `authorize_key` rejects both existing and previously revoked keys before reaching this
-        // path. We still clear the scope tree first as a defense-in-depth measure against stale or
-        // out-of-band state, and keep it because the valid-path cost is low (empty target set).
+        // path. We still clear the scope tree first as a defense-in-depth measure against stale
+        // state before installing the replacement configuration.
         self.clear_all_target_scopes(account_key)?;
 
         match allowed_calls {
@@ -806,12 +802,7 @@ impl AccountKeychain {
 
     /// Deletes every persisted target scope under an account key.
     fn clear_all_target_scopes(&mut self, account_key: B256) -> Result<()> {
-        let targets = self.key_scopes[account_key].targets.read()?;
-        for target in targets {
-            self.clear_target_selectors(account_key, target)?;
-        }
-
-        self.key_scopes[account_key].targets.delete()
+        self.key_scopes[account_key].targets.clear()
     }
 
     /// Deletes one target scope and all nested selector/recipient rows beneath it.
@@ -820,23 +811,12 @@ impl AccountKeychain {
             return Ok(());
         }
 
-        self.clear_target_selectors(account_key, target)
+        Ok(())
     }
 
     /// Clears every selector scope stored under one target.
     fn clear_target_selectors(&mut self, account_key: B256, target: Address) -> Result<()> {
-        let selectors = self.key_scopes[account_key].target_scopes[target]
-            .selectors
-            .read()?;
-        for selector in selectors {
-            self.key_scopes[account_key].target_scopes[target].selector_scopes[selector]
-                .recipients
-                .delete()?;
-        }
-
-        self.key_scopes[account_key].target_scopes[target]
-            .selectors
-            .delete()
+        self.key_scopes[account_key].targets[target].selectors.clear()
     }
 
     /// Creates or replaces one target scope, including all nested selector rules.
@@ -859,7 +839,9 @@ impl AccountKeychain {
                 return Err(AccountKeychainError::scope_limit_exceeded().into());
             }
 
-            self.key_scopes[account_key].targets.insert(target)?;
+            self.key_scopes[account_key]
+                .targets
+                .set_with(target, |_| Ok(()))?;
         }
 
         self.clear_target_selectors(account_key, target)?;
@@ -873,16 +855,16 @@ impl AccountKeychain {
 
         for rule in &scope.selectorRules {
             let selector = rule.selector;
-            self.key_scopes[account_key].target_scopes[target]
+            self.key_scopes[account_key].targets[target]
                 .selectors
-                .insert(selector)?;
+                .set_with(selector, |_| Ok(()))?;
 
             if rule.recipients.is_empty() {
-                self.key_scopes[account_key].target_scopes[target].selector_scopes[selector]
+                self.key_scopes[account_key].targets[target].selectors[selector]
                     .recipients
                     .delete()?;
             } else {
-                self.key_scopes[account_key].target_scopes[target].selector_scopes[selector]
+                self.key_scopes[account_key].targets[target].selectors[selector]
                     .recipients
                     .write(Set::from(rule.recipients.clone()))?;
             }

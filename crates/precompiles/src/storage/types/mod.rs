@@ -11,8 +11,10 @@ pub mod mapping;
 pub use mapping::*;
 
 pub mod array;
+pub mod enumerable_map;
 pub mod set;
 pub mod vec;
+pub use enumerable_map::EnumerableMap;
 pub use set::{Set, SetHandler};
 
 pub mod bytes_like;
