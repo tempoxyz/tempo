@@ -1,5 +1,4 @@
-//! Decode a hex-encoded consensus certificate (notarization or finalization) and write JSON to
-//! disk.
+//! Decode a hex-encoded consensus certificate and print its JSON representation to stdout.
 //!
 //! Certificates are encoded via `commonware_codec::Encode` and hex-encoded. This tool decodes
 //! them back into structured JSON for inspection.
@@ -83,15 +82,19 @@ pub(crate) struct DecodeCert {
     hex: String,
 }
 
-type TempoScheme = Scheme<PublicKey, MinSig>;
-
-/// JSON-serializable representation of a decoded certificate.
+/// JSON-serializable representation of the proposal inside a certificate.
 #[derive(Serialize)]
-struct CertJson {
+struct ProposalJson {
     epoch: u64,
     view: u64,
     parent_view: u64,
     payload: String,
+}
+
+/// JSON-serializable representation of a decoded certificate.
+#[derive(Serialize)]
+struct CertJson {
+    proposal: ProposalJson,
     /// The inner threshold BLS certificate (not the full notarization/finalization encoding).
     threshold_certificate: String,
 }
@@ -100,14 +103,16 @@ impl DecodeCert {
     pub(crate) async fn run(self) -> eyre::Result<()> {
         let bytes = const_hex::decode(&self.hex).wrap_err("invalid hex input")?;
 
-        let f = Finalization::<TempoScheme, Digest>::decode(&bytes[..])
+        let f = Finalization::<Scheme<PublicKey, MinSig>, Digest>::decode(&bytes[..])
             .wrap_err("failed to decode certificate")?;
 
         let json = CertJson {
-            epoch: f.proposal.round.epoch().get(),
-            view: f.proposal.round.view().get(),
-            parent_view: f.proposal.parent.get(),
-            payload: const_hex::encode_prefixed(f.proposal.payload.0),
+            proposal: ProposalJson {
+                epoch: f.proposal.round.epoch().get(),
+                view: f.proposal.round.view().get(),
+                parent_view: f.proposal.parent.get(),
+                payload: const_hex::encode_prefixed(f.proposal.payload.0),
+            },
             threshold_certificate: const_hex::encode_prefixed(f.certificate.encode()),
         };
 
