@@ -248,17 +248,17 @@ impl AccountKeychain {
                 }
             }
 
-            if config.enforceAllowedCalls {
-                Some(config.allowedCalls.as_slice())
-            } else {
+            if config.allowAnyCalls {
                 None
+            } else {
+                Some(config.allowedCalls.as_slice())
             }
         } else {
             if config.limits.iter().any(|limit| limit.period != 0) {
                 return Err(AccountKeychainError::invalid_spending_limit().into());
             }
 
-            if config.enforceAllowedCalls || !config.allowedCalls.is_empty() {
+            if !config.allowAnyCalls || !config.allowedCalls.is_empty() {
                 return Err(AccountKeychainError::invalid_call_scope().into());
             }
 
@@ -1420,7 +1420,7 @@ mod tests {
                     expiry: u64::MAX,
                     enforceLimits: true,
                     limits: vec![],
-                    enforceAllowedCalls: false,
+                    allowAnyCalls: true,
                     allowedCalls: vec![],
                 },
             };
@@ -1437,7 +1437,7 @@ mod tests {
                     expiry: u64::MAX,
                     enforceLimits: true,
                     limits: vec![],
-                    enforceAllowedCalls: false,
+                    allowAnyCalls: true,
                     allowedCalls: vec![],
                 },
             };
@@ -1506,7 +1506,7 @@ mod tests {
                         expiry: u64::MAX,
                         enforceLimits: true,
                         limits: vec![],
-                        enforceAllowedCalls: false,
+                        allowAnyCalls: true,
                         allowedCalls: vec![],
                     },
                 },
@@ -1524,7 +1524,7 @@ mod tests {
                         expiry: u64::MAX,
                         enforceLimits: true,
                         limits: vec![],
-                        enforceAllowedCalls: false,
+                        allowAnyCalls: true,
                         allowedCalls: vec![],
                     },
                 },
@@ -1589,7 +1589,7 @@ mod tests {
                             amount: U256::from(100),
                             period: 0,
                         }],
-                        enforceAllowedCalls: false,
+                        allowAnyCalls: true,
                         allowedCalls: vec![],
                     },
                 },
@@ -1654,7 +1654,7 @@ mod tests {
                             amount: U256::from(100),
                             period: 0,
                         }],
-                        enforceAllowedCalls: false,
+                        allowAnyCalls: true,
                         allowedCalls: vec![],
                     },
                 },
@@ -1709,7 +1709,7 @@ mod tests {
                             amount: U256::from(100),
                             period: 0,
                         }],
-                        enforceAllowedCalls: false,
+                        allowAnyCalls: true,
                         allowedCalls: vec![],
                     },
                 },
@@ -1763,7 +1763,7 @@ mod tests {
                             amount: U256::from(100),
                             period: 0,
                         }],
-                        enforceAllowedCalls: false,
+                        allowAnyCalls: true,
                         allowedCalls: vec![],
                     },
                 },
@@ -1783,7 +1783,7 @@ mod tests {
                         expiry: u64::MAX,
                         enforceLimits: false,
                         limits: vec![],
-                        enforceAllowedCalls: false,
+                        allowAnyCalls: true,
                         allowedCalls: vec![],
                     },
                 },
@@ -1847,7 +1847,7 @@ mod tests {
                         amount: U256::from(100),
                         period: 0,
                     }],
-                    enforceAllowedCalls: false,
+                    allowAnyCalls: true,
                     allowedCalls: vec![],
                 },
             };
@@ -1932,7 +1932,7 @@ mod tests {
                     expiry: 0, // Zero expiry is in the past - should fail
                     enforceLimits: false,
                     limits: vec![],
-                    enforceAllowedCalls: false,
+                    allowAnyCalls: true,
                     allowedCalls: vec![],
                 },
             };
@@ -1961,7 +1961,7 @@ mod tests {
                     expiry: 1, // Very old timestamp - should fail
                     enforceLimits: false,
                     limits: vec![],
-                    enforceAllowedCalls: false,
+                    allowAnyCalls: true,
                     allowedCalls: vec![],
                 },
             };
@@ -2005,7 +2005,7 @@ mod tests {
                             amount: U256::from(100u64),
                             period: 60,
                         }],
-                        enforceAllowedCalls: false,
+                        allowAnyCalls: true,
                         allowedCalls: vec![],
                     },
                 },
@@ -2059,7 +2059,7 @@ mod tests {
                     expiry: u64::MAX,
                     enforceLimits: false,
                     limits: vec![],
-                    enforceAllowedCalls: false,
+                    allowAnyCalls: true,
                     allowedCalls: vec![],
                 },
             };
@@ -2076,7 +2076,7 @@ mod tests {
                     expiry: u64::MAX,
                     enforceLimits: true,
                     limits: vec![],
-                    enforceAllowedCalls: false,
+                    allowAnyCalls: true,
                     allowedCalls: vec![],
                 },
             };
@@ -2122,7 +2122,7 @@ mod tests {
                         amount: U256::from(100),
                         period: 0,
                     }],
-                    enforceAllowedCalls: false,
+                    allowAnyCalls: true,
                     allowedCalls: vec![],
                 },
             };
@@ -2239,7 +2239,7 @@ mod tests {
                         amount: U256::from(100),
                         period: 0,
                     }],
-                    enforceAllowedCalls: false,
+                    allowAnyCalls: true,
                     allowedCalls: vec![],
                 },
             };
@@ -2343,7 +2343,7 @@ mod tests {
                     expiry: 1, // Minimal positive expiry
                     enforceLimits: false,
                     limits: vec![],
-                    enforceAllowedCalls: false,
+                    allowAnyCalls: true,
                     allowedCalls: vec![],
                 },
             };
@@ -2432,7 +2432,7 @@ mod tests {
                     expiry: u64::MAX,
                     enforceLimits: false,
                     limits: vec![],
-                    enforceAllowedCalls: false,
+                    allowAnyCalls: true,
                     allowedCalls: vec![],
                 },
             };
@@ -2468,7 +2468,7 @@ mod tests {
                     expiry: u64::MAX,
                     enforceLimits: false,
                     limits: vec![],
-                    enforceAllowedCalls: false,
+                    allowAnyCalls: true,
                     allowedCalls: vec![],
                 },
             };
@@ -2523,7 +2523,7 @@ mod tests {
                         amount: U256::from(100),
                         period: 0,
                     }],
-                    enforceAllowedCalls: false,
+                    allowAnyCalls: true,
                     allowedCalls: vec![],
                 },
             };
@@ -2572,7 +2572,7 @@ mod tests {
                     expiry: u64::MAX,
                     enforceLimits: false, // Initially no limits
                     limits: vec![],
-                    enforceAllowedCalls: false,
+                    allowAnyCalls: true,
                     allowedCalls: vec![],
                 },
             };
@@ -2638,7 +2638,7 @@ mod tests {
                     expiry: u64::MAX,
                     enforceLimits: false,
                     limits: vec![],
-                    enforceAllowedCalls: false,
+                    allowAnyCalls: true,
                     allowedCalls: vec![],
                 },
             };
@@ -2658,7 +2658,7 @@ mod tests {
                     expiry: u64::MAX,
                     enforceLimits: false,
                     limits: vec![],
-                    enforceAllowedCalls: false,
+                    allowAnyCalls: true,
                     allowedCalls: vec![],
                 },
             };
@@ -2736,7 +2736,7 @@ mod tests {
                         expiry: u64::MAX,
                         enforceLimits: false,
                         limits: vec![],
-                        enforceAllowedCalls: false,
+                        allowAnyCalls: true,
                         allowedCalls: vec![],
                     },
                 },
@@ -2751,7 +2751,7 @@ mod tests {
                         expiry: u64::MAX,
                         enforceLimits: false,
                         limits: vec![],
-                        enforceAllowedCalls: false,
+                        allowAnyCalls: true,
                         allowedCalls: vec![],
                     },
                 },
@@ -2766,7 +2766,7 @@ mod tests {
                         expiry: u64::MAX,
                         enforceLimits: false,
                         limits: vec![],
-                        enforceAllowedCalls: false,
+                        allowAnyCalls: true,
                         allowedCalls: vec![],
                     },
                 },
@@ -2832,7 +2832,7 @@ mod tests {
                     expiry: u64::MAX,
                     enforceLimits: false,
                     limits: vec![],
-                    enforceAllowedCalls: false,
+                    allowAnyCalls: true,
                     allowedCalls: vec![],
                 },
             };
@@ -2905,7 +2905,7 @@ mod tests {
                         amount: U256::from(100),
                         period: 0,
                     }],
-                    enforceAllowedCalls: false,
+                    allowAnyCalls: true,
                     allowedCalls: vec![],
                 },
             };
@@ -2980,7 +2980,7 @@ mod tests {
                         amount: U256::from(100),
                         period: 0,
                     }],
-                    enforceAllowedCalls: false,
+                    allowAnyCalls: true,
                     allowedCalls: vec![],
                 },
             };
@@ -3046,7 +3046,7 @@ mod tests {
                         amount: U256::from(100),
                         period: 0,
                     }],
-                    enforceAllowedCalls: false,
+                    allowAnyCalls: true,
                     allowedCalls: vec![],
                 },
             };
@@ -3108,7 +3108,7 @@ mod tests {
                         amount: original_limit,
                         period: 0,
                     }],
-                    enforceAllowedCalls: false,
+                    allowAnyCalls: true,
                     allowedCalls: vec![],
                 },
             };
@@ -3169,7 +3169,7 @@ mod tests {
                             amount: U256::from(100),
                             period: 60,
                         }],
-                        enforceAllowedCalls: false,
+                        allowAnyCalls: true,
                         allowedCalls: vec![],
                     },
                 },
@@ -3222,7 +3222,7 @@ mod tests {
                             amount: oversized_limit,
                             period: 60,
                         }],
-                        enforceAllowedCalls: false,
+                        allowAnyCalls: true,
                         allowedCalls: vec![],
                     },
                 },
@@ -3251,7 +3251,7 @@ mod tests {
                             amount: U256::from(100u64),
                             period: 60,
                         }],
-                        enforceAllowedCalls: false,
+                        allowAnyCalls: true,
                         allowedCalls: vec![],
                     },
                 },
@@ -3313,7 +3313,7 @@ mod tests {
                                 period: 60,
                             },
                         ],
-                        enforceAllowedCalls: false,
+                        allowAnyCalls: true,
                         allowedCalls: vec![],
                     },
                 },
@@ -3396,7 +3396,7 @@ mod tests {
                         expiry: u64::MAX,
                         enforceLimits: false,
                         limits: vec![],
-                        enforceAllowedCalls: false,
+                        allowAnyCalls: true,
                         allowedCalls: vec![],
                     },
                 },
@@ -3457,7 +3457,7 @@ mod tests {
                             amount: U256::from(100),
                             period: 0,
                         }],
-                        enforceAllowedCalls: false,
+                        allowAnyCalls: true,
                         allowedCalls: vec![],
                     },
                 },
@@ -3526,7 +3526,7 @@ mod tests {
                         expiry: u64::MAX,
                         enforceLimits: false,
                         limits: vec![],
-                        enforceAllowedCalls: false,
+                        allowAnyCalls: true,
                         allowedCalls: vec![],
                     },
                 },
@@ -3577,7 +3577,7 @@ mod tests {
                             expiry,
                             enforceLimits: false,
                             limits: vec![],
-                            enforceAllowedCalls: true,
+                            allowAnyCalls: false,
                             allowedCalls: vec![CallScope {
                                 target,
                                 selectorRules: vec![],
@@ -3648,7 +3648,7 @@ mod tests {
                             amount: U256::from(100u64),
                             period: 60,
                         }],
-                        enforceAllowedCalls: false,
+                        allowAnyCalls: true,
                         allowedCalls: vec![],
                     },
                 },
@@ -3706,7 +3706,7 @@ mod tests {
                             amount: U256::from(100u64),
                             period: 0,
                         }],
-                        enforceAllowedCalls: false,
+                        allowAnyCalls: true,
                         allowedCalls: vec![],
                     },
                 },
@@ -3759,7 +3759,7 @@ mod tests {
                             amount: U256::from(100u64),
                             period: 0,
                         }],
-                        enforceAllowedCalls: false,
+                        allowAnyCalls: true,
                         allowedCalls: vec![],
                     },
                 },
@@ -3806,7 +3806,7 @@ mod tests {
                         expiry: u64::MAX,
                         enforceLimits: false,
                         limits: vec![],
-                        enforceAllowedCalls: false,
+                        allowAnyCalls: true,
                         allowedCalls: vec![],
                     },
                 },
@@ -3851,7 +3851,7 @@ mod tests {
                         expiry: u64::MAX,
                         enforceLimits: false,
                         limits: vec![],
-                        enforceAllowedCalls: false,
+                        allowAnyCalls: true,
                         allowedCalls: vec![],
                     },
                 },
@@ -3901,7 +3901,7 @@ mod tests {
                         expiry: u64::MAX,
                         enforceLimits: false,
                         limits: vec![],
-                        enforceAllowedCalls: false,
+                        allowAnyCalls: true,
                         allowedCalls: vec![],
                     },
                 },
@@ -3994,7 +3994,7 @@ mod tests {
                         expiry: u64::MAX,
                         enforceLimits: false,
                         limits: vec![],
-                        enforceAllowedCalls: false,
+                        allowAnyCalls: true,
                         allowedCalls: vec![],
                     },
                 },
@@ -4057,7 +4057,7 @@ mod tests {
                         expiry: u64::MAX,
                         enforceLimits: false,
                         limits: vec![],
-                        enforceAllowedCalls: false,
+                        allowAnyCalls: true,
                         allowedCalls: vec![],
                     },
                 },
@@ -4138,7 +4138,7 @@ mod tests {
                         expiry: u64::MAX,
                         enforceLimits: false,
                         limits: vec![],
-                        enforceAllowedCalls: false,
+                        allowAnyCalls: true,
                         allowedCalls: vec![],
                     },
                 },

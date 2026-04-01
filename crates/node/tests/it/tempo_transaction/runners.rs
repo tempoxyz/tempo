@@ -721,7 +721,7 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
                     expiry: u64::MAX,
                     enforceLimits: true,
                     limits: vec![],
-                    enforceAllowedCalls: false,
+                    allowAnyCalls: true,
                     allowedCalls: vec![],
                 },
             };

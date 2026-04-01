@@ -1109,7 +1109,7 @@ where
                     })
                     .unwrap_or_default();
 
-                let enforce_allowed_calls = key_auth.allowed_calls.is_some();
+                let allow_any_calls = key_auth.allowed_calls.is_none();
                 let precompile_allowed_calls = translate_allowed_calls_for_precompile(key_auth);
 
                 // Create the authorize key call
@@ -1120,7 +1120,7 @@ where
                         expiry,
                         enforceLimits: enforce_limits,
                         limits: precompile_limits,
-                        enforceAllowedCalls: enforce_allowed_calls,
+                        allowAnyCalls: allow_any_calls,
                         allowedCalls: precompile_allowed_calls,
                     },
                 };
