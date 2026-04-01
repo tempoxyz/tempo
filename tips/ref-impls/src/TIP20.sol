@@ -327,7 +327,6 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
 
     function _mint(ResolvedRecipient memory recipient, uint256 amount) internal {
         // TIP-1015: Use mint recipient authorization
-        _validateRecipient(recipient.target);
         if (!TIP403_REGISTRY.isAuthorizedMintRecipient(transferPolicyId, recipient.target)) {
             revert PolicyForbids();
         }
