@@ -45,12 +45,12 @@ impl ForkSchedule {
         }
     }
 
-    /// Returns whether the given fork's `*Time` key is active (set to 0) for this schedule.
+    /// Returns whether the given Tempo hardfork is active for this schedule.
     ///
     /// For [`Devnet`](Self::Devnet) all forks from the dev genesis are active.
     /// For other schedules, a fork is active only if its timestamp in the
     /// reference genesis is in the past.
-    pub(crate) fn is_fork_active(&self, time_key: &str) -> bool {
+    pub(crate) fn is_active(&self, fork: TempoHardfork) -> bool {
         let Some(reference_json) = self.reference_genesis() else {
             return true; // devnet: all forks active
         };
@@ -60,7 +60,8 @@ impl ForkSchedule {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        matches!(reference["config"][time_key].as_u64(), Some(ts) if ts <= now)
+        let time_key = format!("{}Time", fork.to_string().to_lowercase());
+        matches!(reference["config"][&time_key].as_u64(), Some(ts) if ts <= now)
     }
 
     /// Apply this profile's fork timestamps to a test genesis JSON value.
