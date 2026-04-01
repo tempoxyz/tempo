@@ -78,7 +78,6 @@ impl Write for Digest {
 #[derive(Debug, clap::Args)]
 pub(crate) struct DecodeCert {
     /// Hex-encoded certificate bytes (with or without 0x prefix).
-    #[arg(long)]
     hex: String,
 }
 
