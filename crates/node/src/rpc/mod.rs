@@ -15,7 +15,7 @@ use reth_primitives_traits::{
     Recovered, TransactionMeta, TxTy, WithEncoded, transaction::TxHashRef,
 };
 use reth_rpc_eth_api::{FromEthApiError, RpcTxReq};
-use reth_transaction_pool::PoolPooledTx;
+use reth_transaction_pool::{PoolPooledTx, TransactionOrigin};
 use std::sync::Arc;
 pub use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::TempoChainSpec;
@@ -25,12 +25,9 @@ use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
 pub use token::{TempoToken, TempoTokenApiServer};
 
 use crate::{node::TempoNode, rpc::error::TempoEthApiError};
-use alloy::{
-    consensus::TxReceipt,
-    primitives::{U256, uint},
-};
+use alloy::primitives::{U256, uint};
 use reth_ethereum::tasks::{
-    TaskSpawner,
+    Runtime,
     pool::{BlockingTaskGuard, BlockingTaskPool},
 };
 use reth_evm::{
@@ -185,7 +182,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthApiSpec for TempoEthApi<N> {
 
 impl<N: FullNodeTypes<Types = TempoNode>> SpawnBlocking for TempoEthApi<N> {
     #[inline]
-    fn io_task_spawner(&self) -> impl TaskSpawner {
+    fn io_task_spawner(&self) -> &Runtime {
         self.inner.task_spawner()
     }
 
@@ -347,6 +344,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthTransactions for TempoEthApi<N> {
 
     fn send_transaction(
         &self,
+        origin: TransactionOrigin,
         tx: WithEncoded<Recovered<PoolPooledTx<Self::Pool>>>,
     ) -> impl Future<Output = Result<B256, Self::Error>> + Send {
         match tx.value().inner().subblock_proposer() {
@@ -368,7 +366,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthTransactions for TempoEthApi<N> {
                 ))
                 .into(),
             ))),
-            None => Either::Right(self.inner.send_transaction(tx).map_err(Into::into)),
+            None => Either::Right(self.inner.send_transaction(origin, tx).map_err(Into::into)),
         }
     }
 
@@ -431,7 +429,23 @@ impl TempoReceiptConverter {
         Self {
             inner: EthReceiptConverter::new(chain_spec).with_builder(
                 |receipt: TempoReceipt, next_log_index, meta| {
-                    receipt.into_rpc(next_log_index, meta).into_with_bloom()
+                    let mut log_index = next_log_index;
+                    receipt
+                        .map_logs(|log| {
+                            let idx = log_index;
+                            log_index += 1;
+                            Log {
+                                inner: log,
+                                block_hash: Some(meta.block_hash),
+                                block_number: Some(meta.block_number),
+                                block_timestamp: Some(meta.timestamp),
+                                transaction_hash: Some(meta.tx_hash),
+                                transaction_index: Some(meta.index),
+                                log_index: Some(idx as u64),
+                                removed: false,
+                            }
+                        })
+                        .into()
                 },
             ),
         }

@@ -5,7 +5,9 @@
 
 use std::{net::SocketAddr, time::Duration};
 
-use super::dkg::common::{assert_no_dkg_failures, wait_for_epoch, wait_for_outcome};
+use super::dkg::common::{
+    assert_no_dkg_failures, wait_for_outcome, wait_for_validators_to_reach_epoch,
+};
 use crate::{CONSENSUS_NODE_PREFIX, Setup, setup_validators};
 use alloy::transports::http::reqwest::Url;
 use alloy_primitives::hex;
@@ -33,7 +35,10 @@ async fn consensus_subscribe_and_query_finalization() {
     let _ = tempo_eyre::install();
 
     let initial_height = 3;
-    let setup = Setup::new().how_many_signers(1).epoch_length(100);
+    let setup = Setup::new()
+        .how_many_signers(1)
+        .t2_time(0)
+        .epoch_length(100);
     let cfg = deterministic::Config::default().with_seed(setup.seed);
 
     let (addr_tx, addr_rx) = oneshot::channel::<(SocketAddr, SocketAddr)>();
@@ -79,11 +84,13 @@ async fn consensus_subscribe_and_query_finalization() {
             .unwrap();
 
         match event {
-            Event::Notarized { .. } => {
-                saw_notarized = true;
+            Event::Notarized { block, .. } => {
+                if block.block.inner.number > current_height {
+                    saw_notarized = true;
+                }
             }
             Event::Finalized { block, .. } => {
-                let height = block.height.unwrap();
+                let height = block.block.inner.number;
                 assert!(
                     height > current_height,
                     "finalized height should be > {current_height}"
@@ -140,19 +147,22 @@ async fn wait_for_height(context: &Context, target_height: u64) {
     }
 }
 
-/// Test that `get_identity_transition_proof` returns valid proofs after a full DKG ceremony.
+/// Test that `get_identity_transition_proof` returns valid proofs after two full DKG ceremonies.
 ///
 /// This verifies:
-/// 1. After a full DKG, the RPC returns a transition with different old/new public keys
-/// 2. The transition epoch matches where the full DKG occurred
-/// 3. The proof contains a valid header and certificate
+/// 1. After two full DKGs, `full=true` returns both transitions plus genesis marker
+/// 2. `full=false` returns only the most recent transition
+/// 3. Transition epochs, identities, and proofs are correct
+/// 4. Repeated calls return consistent results (cache correctness)
+/// 5. Querying from epoch 0 returns no transitions
 #[test_traced]
 fn get_identity_transition_proof_after_full_dkg() {
     let _ = tempo_eyre::install();
 
     let how_many_signers = 1;
     let epoch_length = 10;
-    let full_dkg_epoch: u64 = 1;
+    let first_full_dkg_epoch: u64 = 1;
+    let second_full_dkg_epoch: u64 = 3;
 
     let setup = Setup::new()
         .how_many_signers(how_many_signers)
@@ -176,39 +186,72 @@ fn get_identity_transition_proof_after_full_dkg() {
             .parse()
             .unwrap();
 
-        // Schedule full DKG for epoch 1
+        // --- First full DKG ---
         execution_runtime
-            .set_next_full_dkg_ceremony(http_url.clone(), full_dkg_epoch)
+            .set_next_full_dkg_ceremony(http_url.clone(), first_full_dkg_epoch)
             .await
             .unwrap();
 
-        // Wait for is_next_full_dkg flag
-        let outcome_before =
-            wait_for_outcome(&context, &validators, full_dkg_epoch - 1, epoch_length).await;
+        let outcome_before = wait_for_outcome(
+            &context,
+            &validators,
+            first_full_dkg_epoch - 1,
+            epoch_length,
+        )
+        .await;
         assert!(
             outcome_before.is_next_full_dkg,
             "Epoch {} outcome should have is_next_full_dkg=true",
-            full_dkg_epoch - 1
+            first_full_dkg_epoch - 1
         );
-        let pubkey_before = *outcome_before.sharing().public();
 
         // Wait for full DKG to complete
-        wait_for_epoch(&context, full_dkg_epoch + 1, how_many_signers).await;
+        wait_for_validators_to_reach_epoch(&context, first_full_dkg_epoch + 1, how_many_signers)
+            .await;
         assert_no_dkg_failures(&context);
 
-        // Verify the full DKG created a new public key
-        let outcome_after =
-            wait_for_outcome(&context, &validators, full_dkg_epoch, epoch_length).await;
-        let pubkey_after = *outcome_after.sharing().public();
+        let outcome_after_first =
+            wait_for_outcome(&context, &validators, first_full_dkg_epoch, epoch_length).await;
         assert_ne!(
-            pubkey_before, pubkey_after,
-            "Full DKG must produce a DIFFERENT group public key"
+            outcome_before.sharing().public(),
+            outcome_after_first.sharing().public(),
+            "First full DKG must produce a different group public key"
         );
 
-        // Test 1: Query from latest epoch (after full DKG) - should have transition
-        // Run on execution runtime's tokio runtime since jsonrpsee requires tokio
+        // --- Second full DKG ---
+        execution_runtime
+            .set_next_full_dkg_ceremony(http_url.clone(), second_full_dkg_epoch)
+            .await
+            .unwrap();
+
+        let outcome_before_second = wait_for_outcome(
+            &context,
+            &validators,
+            second_full_dkg_epoch - 1,
+            epoch_length,
+        )
+        .await;
+        assert!(
+            outcome_before_second.is_next_full_dkg,
+            "Epoch {} outcome should have is_next_full_dkg=true",
+            second_full_dkg_epoch - 1
+        );
+
+        wait_for_validators_to_reach_epoch(&context, second_full_dkg_epoch + 1, how_many_signers)
+            .await;
+        assert_no_dkg_failures(&context);
+
+        let outcome_after_second =
+            wait_for_outcome(&context, &validators, second_full_dkg_epoch, epoch_length).await;
+        assert_ne!(
+            outcome_after_first.sharing().public(),
+            outcome_after_second.sharing().public(),
+            "Second full DKG must produce a different group public key"
+        );
+
+        // --- Test 1: full=false returns only the most recent transition ---
         let http_url_str = http_url.to_string();
-        let response = execution_runtime
+        let response_partial = execution_runtime
             .run_async(async move {
                 let http_client = HttpClientBuilder::default().build(&http_url_str).unwrap();
                 http_client
@@ -219,35 +262,70 @@ fn get_identity_transition_proof_after_full_dkg() {
             .await
             .unwrap();
 
-        assert!(
-            !response.identity.is_empty(),
-            "Identity should always be present"
-        );
         assert_eq!(
-            response.transitions.len(),
+            response_partial.transitions.len(),
             1,
-            "Expected exactly one transition"
-        );
-
-        let transition = &response.transitions[0];
-        assert_eq!(
-            transition.transition_epoch, full_dkg_epoch,
-            "Transition epoch should match full DKG epoch"
-        );
-        assert_ne!(
-            transition.old_identity, transition.new_identity,
-            "Old and new public keys should be different"
+            "full=false should return only the most recent transition"
         );
         assert_eq!(
-            response.identity, transition.new_identity,
-            "Identity should match the new public key from the latest transition"
+            response_partial.transitions[0].transition_epoch, second_full_dkg_epoch,
+            "Most recent transition should be from the second full DKG"
         );
 
-        // Decode and verify the BLS signature
-        let old_pubkey_bytes = hex::decode(&transition.old_identity).unwrap();
+        // --- Test 2: full=true returns both transitions plus genesis ---
+        let http_url_str = http_url.to_string();
+        let response_full = execution_runtime
+            .run_async(async move {
+                let http_client = HttpClientBuilder::default().build(&http_url_str).unwrap();
+                http_client
+                    .get_identity_transition_proof(None, Some(true))
+                    .await
+                    .unwrap()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response_full.transitions.len(),
+            3,
+            "full=true should return 2 transitions + genesis marker"
+        );
+
+        // Transitions should be ordered newest to oldest
+        assert_eq!(
+            response_full.transitions[0].transition_epoch, second_full_dkg_epoch,
+            "First transition should be from second full DKG"
+        );
+        assert_eq!(
+            response_full.transitions[1].transition_epoch, first_full_dkg_epoch,
+            "Second transition should be from first full DKG"
+        );
+        assert_eq!(
+            response_full.transitions[2].transition_epoch, 0,
+            "Third entry should be the genesis marker"
+        );
+
+        // Genesis marker should have no proof
+        assert!(
+            response_full.transitions[2].proof.is_none(),
+            "Genesis marker should have no proof"
+        );
+
+        // Identity chain should be consistent
+        assert_eq!(
+            response_full.identity, response_full.transitions[0].new_identity,
+            "Identity should match newest transition's new_identity"
+        );
+        assert_eq!(
+            response_full.transitions[0].old_identity, response_full.transitions[1].new_identity,
+            "Transition chain should be linked"
+        );
+
+        // Verify a BLS signature on the most recent transition
+        let old_pubkey_bytes = hex::decode(&response_full.transitions[0].old_identity).unwrap();
         let old_pubkey = <MinSig as Variant>::Public::read(&mut old_pubkey_bytes.as_slice())
             .expect("valid BLS public key");
-        let proof = transition
+        let proof = response_full.transitions[0]
             .proof
             .as_ref()
             .expect("non-genesis transition should have proof");
@@ -267,8 +345,7 @@ fn get_identity_transition_proof_after_full_dkg() {
             "BLS signature verification failed"
         );
 
-        // Test 2: Query from epoch 0 (before full DKG) - should have identity but no transitions
-        let old_identity = transition.old_identity.clone();
+        // --- Test 3: Query from epoch 0 - no transitions ---
         let http_url_str = http_url.to_string();
         let response_epoch0 = execution_runtime
             .run_async(async move {
@@ -282,16 +359,12 @@ fn get_identity_transition_proof_after_full_dkg() {
             .unwrap();
 
         assert!(
-            !response_epoch0.identity.is_empty(),
-            "Identity should be present even at epoch 0"
-        );
-        assert!(
             response_epoch0.transitions.is_empty(),
             "Should have no transitions when querying from epoch 0"
         );
         assert_eq!(
-            response_epoch0.identity, old_identity,
-            "Identity at epoch 0 should be the old public key (before full DKG)"
+            response_epoch0.identity, response_full.transitions[1].old_identity,
+            "Identity at epoch 0 should be the original genesis key"
         );
     });
 }

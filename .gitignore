@@ -22,6 +22,8 @@ localnet/**
 .claude/
 !docs/.claude/
 CLAUDE.local.md
+research.md
+plan.md
 
 # Docs
 tips/ref-impls/cache/
@@ -36,3 +38,4 @@ _
 
 # LLVM coverage profraw files
 *.profraw
+__pycache__/

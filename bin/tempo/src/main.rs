@@ -15,18 +15,36 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+// tracy-client is an optional dependency activated by the `tracy` feature.
+// It is not used directly but must be present for the `ondemand` feature flag.
+#[cfg(feature = "tracy")]
+use tracy_client as _;
+
 #[global_allocator]
 static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::new_allocator();
 
+/// Compile-time jemalloc configuration for heap profiling.
+///
+/// tikv-jemallocator uses prefixed symbols, so the runtime `MALLOC_CONF` env var is ignored.
+/// This exported symbol is read by jemalloc at init time to enable profiling unconditionally
+/// when the `jemalloc-prof` feature is active.
+///
+/// See <https://github.com/jemalloc/jemalloc/wiki/Getting-Started>
+#[cfg(all(feature = "jemalloc-prof", unix))]
+#[unsafe(export_name = "_rjem_malloc_conf")]
+static MALLOC_CONF: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0";
+
 mod defaults;
+mod init_state;
 mod tempo_cmd;
 
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 use commonware_runtime::{Metrics, Runner};
 use eyre::WrapErr as _;
 use futures::{FutureExt as _, future::FusedFuture as _};
 use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands, evm::revm::primitives::B256};
 use reth_ethereum_cli::Cli;
+use reth_network_peers::pk2id;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
 use reth_rpc_server_types::DefaultRpcModuleValidator;
 use std::{sync::Arc, thread};
@@ -45,7 +63,10 @@ use tempo_node::{
     telemetry::{PrometheusMetricsConfig, install_prometheus_metrics},
 };
 use tokio::sync::oneshot;
-use tracing::{info, info_span};
+use tracing::{info, info_span, warn};
+
+type TempoCli =
+    Cli<TempoChainSpecParser, TempoArgs, DefaultRpcModuleValidator, tempo_cmd::TempoSubcommand>;
 
 // TODO: migrate this to tempo_node eventually.
 #[derive(Debug, Clone, clap::Args)]
@@ -110,6 +131,56 @@ fn install_crypto_provider() {
         .expect("Failed to install default rustls crypto provider");
 }
 
+trait NodeCommandExt {
+    /// Derive the peer id from the p2p secret key without starting the network.
+    fn peer_id(&self) -> reth_network_peers::PeerId;
+}
+
+impl NodeCommandExt for reth_cli_commands::node::NodeCommand<TempoChainSpecParser, TempoArgs> {
+    fn peer_id(&self) -> reth_network_peers::PeerId {
+        let data_dir = self.datadir.clone().resolve_datadir(self.chain.chain());
+        let sk = self
+            .network
+            .secret_key(data_dir.p2p_secret())
+            .expect("unable to derive peer id from p2p secret");
+
+        pk2id(&sk.public_key(secp256k1::SECP256K1))
+    }
+}
+
+/// Print installed extensions as a footer after root help output.
+/// Skips printing when help is for a subcommand (e.g. `tempo node --help`).
+fn print_extensions_footer() {
+    let is_subcommand_help = std::env::args()
+        .skip(1)
+        .any(|a| !a.starts_with('-') && a != "help");
+    if is_subcommand_help {
+        return;
+    }
+
+    let extensions = match tempo_ext::installed_extensions() {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    if extensions.is_empty() {
+        return;
+    }
+    let use_color = std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let (b, bu, r) = if use_color {
+        ("\x1b[1m", "\x1b[1m\x1b[4m", "\x1b[0m")
+    } else {
+        ("", "", "")
+    };
+    println!("\n{bu}Extensions:{r}");
+    for (name, desc) in &extensions {
+        if desc.is_empty() {
+            println!("  {b}{name}{r}");
+        } else {
+            println!("  {b}{name:<22}{r} {desc}");
+        }
+    }
+}
+
 fn main() -> eyre::Result<()> {
     install_crypto_provider();
 
@@ -133,12 +204,38 @@ fn main() -> eyre::Result<()> {
     tempo_node::init_version_metadata();
     defaults::init_defaults();
 
-    let mut cli = Cli::<
-        TempoChainSpecParser,
-        TempoArgs,
-        DefaultRpcModuleValidator,
-        tempo_cmd::TempoSubcommand,
-    >::parse();
+    let mut cli = match TempoCli::command()
+        .about("Tempo")
+        .try_get_matches_from(std::env::args_os())
+        .and_then(|matches| TempoCli::from_arg_matches(&matches))
+    {
+        Ok(cli) => cli,
+        Err(err) => {
+            if err.kind() == clap::error::ErrorKind::InvalidSubcommand {
+                // Unknown subcommand — try the extension launcher.
+                let code = match tempo_ext::run(std::env::args_os()) {
+                    Ok(code) => code,
+                    Err(e) => {
+                        eprintln!("{e}");
+                        1
+                    }
+                };
+                std::process::exit(code);
+            }
+
+            if matches!(
+                err.kind(),
+                clap::error::ErrorKind::DisplayHelp
+                    | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+            ) {
+                let _ = err.print();
+                print_extensions_footer();
+                std::process::exit(0);
+            }
+
+            err.exit();
+        }
+    };
 
     // If telemetry is enabled, set logs OTLP (conflicts_with in TelemetryArgs prevents both being set)
     let mut telemetry_config = None;
@@ -149,12 +246,44 @@ fn main() -> eyre::Result<()> {
             .try_to_config()
             .wrap_err("failed to parse telemetry config")?
     {
+        let consensus_pubkey = node_cmd
+            .ext
+            .consensus
+            .public_key()
+            .wrap_err("failed parsing consensus key")?
+            .map(|k| k.to_string());
+
+        let peer_id = format!("{:x}", node_cmd.peer_id());
+
+        // VictoriaMetrics does not support merging `extra_fields` query args like `extra_labels` for
+        // metrics. A workaround for now is to directly hook into the `OTEL_RESOURCE_ATTRIBUTES` env var
+        // used at startup to capture contextual information.
+        let mut extra_attrs = vec![format!("peer_id={peer_id}")];
+        if let Some(pubkey) = &consensus_pubkey {
+            extra_attrs.push(format!("consensus_pubkey={pubkey}"));
+        }
+
+        if !extra_attrs.is_empty() {
+            let current = std::env::var("OTEL_RESOURCE_ATTRIBUTES").unwrap_or_default();
+            let new_attrs = if current.is_empty() {
+                extra_attrs.join(",")
+            } else {
+                format!("{current},{}", extra_attrs.join(","))
+            };
+
+            // SAFETY: called at startup before the OTEL SDK is initialised
+            unsafe {
+                std::env::set_var("OTEL_RESOURCE_ATTRIBUTES", &new_attrs);
+            }
+        }
+
         // Set Reth logs OTLP. Consensus logs are exported as well via the same tracing system.
         cli.traces.logs_otlp = Some(config.logs_otlp_url.clone());
         cli.traces.logs_otlp_filter = config
             .logs_otlp_filter
             .parse()
             .wrap_err("invalid default logs filter")?;
+
         telemetry_config.replace(config);
     }
 
@@ -224,10 +353,18 @@ fn main() -> eyre::Result<()> {
 
                 // Start the unified metrics exporter if configured
                 if let Some(config) = telemetry_config {
+                    let consensus_pubkey = args
+                        .consensus
+                        .public_key()
+                        .wrap_err("failed parsing consensus key")?
+                        .map(|k| k.to_string());
+
                     let prometheus_config = PrometheusMetricsConfig {
                         endpoint: config.metrics_prometheus_url,
                         interval: config.metrics_prometheus_interval,
                         auth_header: config.metrics_auth_header,
+                        consensus_pubkey,
+                        peer_id: format!("{:x}", node.network.peer_id()),
                     };
 
                     install_prometheus_metrics(
@@ -235,6 +372,15 @@ fn main() -> eyre::Result<()> {
                         prometheus_config,
                     )
                     .wrap_err("failed to start Prometheus metrics exporter")?;
+                }
+
+                if args.consensus.fee_recipient.is_some() {
+                    warn!(
+                        "`--consensus.fee-recipient` is deprecated and will be \
+                         removed. It is only used pre-T2 hardfork, if validator \
+                         config v2 is not yet activated, or if the on-chain fee \
+                         recipient is set to the zero address",
+                    );
                 }
 
                 let consensus_stack =
@@ -279,6 +425,26 @@ fn main() -> eyre::Result<()> {
             .consensus
             .public_key()?
             .map(|key| B256::from_slice(key.as_ref()));
+
+        // Validators must not prune account or storage history — the consensus
+        // implementation relies on historical state to fetch the validator set.
+        if validator_key.is_some()
+            && let Some(prune_config) = builder.config().prune_config()
+        {
+            let modes = &prune_config.segments;
+            if let Some(mode) = &modes.account_history {
+                eyre::bail!(
+                    "validator nodes must not prune account history \
+                     (configured: {mode:?}). Remove --prune.account-history.* flags."
+                );
+            }
+            if let Some(mode) = &modes.storage_history {
+                eyre::bail!(
+                    "validator nodes must not prune storage history \
+                     (configured: {mode:?}). Remove --prune.storage-history.* flags."
+                );
+            }
+        }
 
         // Initialize Pyroscope profiling if enabled
         #[cfg(feature = "pyroscope")]

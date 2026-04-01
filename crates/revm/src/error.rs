@@ -3,6 +3,7 @@
 use alloy_evm::error::InvalidTxError;
 use alloy_primitives::{Address, U256};
 use revm::context::result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction};
+use tempo_primitives::transaction::{KeyAuthorizationChainIdError, KeychainVersionError};
 
 /// Tempo-specific invalid transaction errors.
 ///
@@ -20,7 +21,7 @@ pub enum TempoInvalidTransaction {
 
     /// System transaction execution failed.
     #[error("system transaction execution failed, result: {_0:?}")]
-    SystemTransactionFailed(ExecutionResult<TempoHaltReason>),
+    SystemTransactionFailed(Box<ExecutionResult<TempoHaltReason>>),
 
     /// Fee payer signature recovery failed.
     ///
@@ -28,6 +29,10 @@ pub enum TempoInvalidTransaction {
     /// signature recovery for the fee payer fails.
     #[error("fee payer signature recovery failed")]
     InvalidFeePayerSignature,
+
+    /// Fee payer cannot resolve to the sender address.
+    #[error("fee payer cannot resolve to sender")]
+    SelfSponsoredFeePayer,
 
     // Tempo transaction errors
     /// Transaction cannot be included before validAfter timestamp.
@@ -67,20 +72,6 @@ pub enum TempoInvalidTransaction {
     InvalidWebAuthnSignature {
         /// Specific reason for failure.
         reason: String,
-    },
-
-    /// Insufficient gas for intrinsic cost.
-    ///
-    /// Tempo transactions have variable intrinsic gas costs based on signature type and nonce usage.
-    /// This error occurs when the gas_limit is less than the calculated intrinsic gas.
-    #[error(
-        "insufficient gas for intrinsic cost: gas_limit {gas_limit} < intrinsic_gas {intrinsic_gas}"
-    )]
-    InsufficientGasForIntrinsicCost {
-        /// The transaction's gas limit.
-        gas_limit: u64,
-        /// The calculated intrinsic gas required.
-        intrinsic_gas: u64,
     },
 
     /// Nonce manager error.
@@ -199,6 +190,23 @@ pub enum TempoInvalidTransaction {
         got: u64,
     },
 
+    /// Legacy V1 keychain signature is no longer accepted (deprecated at T1C).
+    ///
+    /// V1 keychain signatures do not bind the user address into the signature hash.
+    /// Use V2 keychain signatures instead.
+    #[error("legacy V1 keychain signature is no longer accepted, use V2 (type 0x04)")]
+    LegacyKeychainSignature,
+
+    /// V2 keychain signature used before T1C activation.
+    ///
+    /// V2 signatures (type 0x04) are only valid after the T1C hardfork activates.
+    /// Rejecting them before activation prevents chain splits between upgraded and
+    /// non-upgraded nodes.
+    ///
+    /// TODO(tanishk): This variant can be removed after T1C activation on all networks.
+    #[error("V2 keychain signature (type 0x04) is not valid before T1C activation")]
+    V2KeychainBeforeActivation,
+
     /// Keychain operations are not supported in subblock transactions.
     #[error("keychain operations are not supported in subblock transactions")]
     KeychainOpInSubblockTransaction,
@@ -242,6 +250,15 @@ impl From<&'static str> for TempoInvalidTransaction {
     }
 }
 
+impl From<KeychainVersionError> for TempoInvalidTransaction {
+    fn from(err: KeychainVersionError) -> Self {
+        match err {
+            KeychainVersionError::LegacyPostT1C => Self::LegacyKeychainSignature,
+            KeychainVersionError::V2BeforeActivation => Self::V2KeychainBeforeActivation,
+        }
+    }
+}
+
 /// Error type for fee payment errors.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum FeePaymentError {
@@ -270,6 +287,15 @@ pub enum FeePaymentError {
     /// Other error.
     #[error("{0}")]
     Other(String),
+}
+
+impl From<KeyAuthorizationChainIdError> for TempoInvalidTransaction {
+    fn from(err: KeyAuthorizationChainIdError) -> Self {
+        Self::KeyAuthorizationChainIdMismatch {
+            expected: err.expected,
+            got: err.got,
+        }
+    }
 }
 
 impl<DBError> From<FeePaymentError> for EVMError<DBError, TempoInvalidTransaction> {
@@ -350,6 +376,10 @@ mod tests {
         assert!(err.as_invalid_tx_err().is_some());
 
         let err = TempoInvalidTransaction::InvalidFeePayerSignature;
+        assert!(!err.is_nonce_too_low());
+        assert!(err.as_invalid_tx_err().is_none());
+
+        let err = TempoInvalidTransaction::SelfSponsoredFeePayer;
         assert!(!err.is_nonce_too_low());
         assert!(err.as_invalid_tx_err().is_none());
     }

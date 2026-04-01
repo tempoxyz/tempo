@@ -19,7 +19,11 @@ use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain};
 use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::{PoolTransaction, TransactionOrigin, TransactionPool};
-use std::{collections::BTreeMap, sync::Arc, time::Instant};
+use std::{
+    collections::{BTreeMap, btree_map::Entry},
+    sync::Arc,
+    time::Instant,
+};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
 use tempo_precompiles::{
@@ -28,6 +32,10 @@ use tempo_precompiles::{
 };
 use tempo_primitives::{AASigned, TempoPrimitives};
 use tracing::{debug, error};
+
+/// Evict transactions this many seconds before they expire to reduce propagation
+/// of near-expiry transactions that are likely to fail validation on peers.
+const EVICTION_BUFFER_SECS: u64 = 3;
 
 /// Aggregated block-level invalidation events for the transaction pool.
 ///
@@ -45,8 +53,10 @@ pub struct TempoPoolUpdates {
     /// may become unexecutable if the new limit is below their value.
     /// Indexed by account for efficient lookup.
     pub spending_limit_changes: SpendingLimitUpdates,
-    /// Validator token preference changes: (validator, new_token).
-    pub validator_token_changes: Vec<(Address, Address)>,
+    /// Validator token preference changes: validator to new_token (last-write-wins).
+    /// Uses `AddressMap` to deduplicate by validator, preventing resource amplification
+    /// when a validator emits multiple `ValidatorTokenSet` events in the same block.
+    pub validator_token_changes: AddressMap<Address>,
     /// User token preference changes.
     /// When a user changes their fee token preference via `setUserToken()`, pending
     /// transactions from that user that don't have an explicit fee_token set may now
@@ -112,7 +122,7 @@ impl TempoPoolUpdates {
                     updates.spending_limit_changes.insert(
                         event.account,
                         event.publicKey,
-                        event.token,
+                        Some(event.token),
                     );
                 }
             }
@@ -121,7 +131,7 @@ impl TempoPoolUpdates {
                 if let Ok(event) = IFeeManager::ValidatorTokenSet::decode_log(log) {
                     updates
                         .validator_token_changes
-                        .push((event.validator, event.token));
+                        .insert(event.validator, event.token);
                 } else if let Ok(event) = IFeeManager::UserTokenSet::decode_log(log) {
                     updates.user_token_changes.insert(event.user);
                 }
@@ -171,13 +181,15 @@ impl TempoPoolUpdates {
             if key_id.is_zero() {
                 continue;
             }
-            let fee_token = aa_tx
-                .tx()
-                .fee_token
-                .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN);
-            updates
-                .spending_limit_spends
-                .insert(keychain_sig.user_address, key_id, fee_token);
+            // Resolving the fee token requires state (AMM routing), which we don't have here.
+            // `None` wildcards the token in `SpendingLimitUpdates::contains`, so every pending tx
+            // for this (account, key_id) is re-checked. Safe because the main pool still gates
+            // eviction on `exceeds_spending_limit()`, which can read state.
+            updates.spending_limit_spends.insert(
+                keychain_sig.user_address,
+                key_id,
+                aa_tx.tx().fee_token,
+            );
         }
 
         updates
@@ -230,6 +242,20 @@ impl TempoPoolState {
             self.expiry_map.entry(valid_before).or_default().push(hash);
             self.tx_to_expiry.insert(hash, valid_before);
         }
+    }
+
+    /// Removes expiry and key-expiry tracking for a single transaction.
+    fn untrack_expiry(&mut self, hash: &TxHash) {
+        if let Some(valid_before) = self.tx_to_expiry.remove(hash)
+            && let Entry::Occupied(mut entry) = self.expiry_map.entry(valid_before)
+        {
+            entry.get_mut().retain(|h| *h != *hash);
+            if entry.get().is_empty() {
+                entry.remove();
+            }
+        }
+
+        self.key_expiry.untrack(hash);
     }
 
     /// Collects and removes all expired transactions up to the given timestamp.
@@ -354,6 +380,8 @@ struct KeyExpiryTracker {
     expiry_map: BTreeMap<u64, HashSet<KeyId>>,
     /// Maps KeyId -> (expiry timestamp, set of transaction hashes using this key).
     key_to_txs: HashMap<KeyId, (u64, HashSet<TxHash>)>,
+    /// Reverse map transaction hash -> KeyId for O(1) lookup on removal.
+    tx_to_key: HashMap<TxHash, KeyId>,
 }
 
 impl KeyExpiryTracker {
@@ -378,6 +406,30 @@ impl KeyExpiryTracker {
                 self.expiry_map.entry(expiry).or_default().insert(key);
             }
         }
+        self.tx_to_key.insert(tx_hash, key);
+    }
+
+    /// Removes a single transaction hash from key expiry tracking.
+    fn untrack(&mut self, hash: &TxHash) {
+        let Some(key) = self.tx_to_key.remove(hash) else {
+            return;
+        };
+
+        let Some((expiry, txs)) = self.key_to_txs.get_mut(&key) else {
+            return;
+        };
+        txs.remove(hash);
+
+        if txs.is_empty() {
+            let expiry = *expiry;
+            self.key_to_txs.remove(&key);
+            if let Some(keys) = self.expiry_map.get_mut(&expiry) {
+                keys.remove(&key);
+                if keys.is_empty() {
+                    self.expiry_map.remove(&expiry);
+                }
+            }
+        }
     }
 
     /// Drain all expired keys and return the transaction hashes that should be evicted.
@@ -392,6 +444,9 @@ impl KeyExpiryTracker {
             let expired_keys = entry.remove();
             for key in expired_keys {
                 if let Some((_, txs)) = self.key_to_txs.remove(&key) {
+                    for tx in &txs {
+                        self.tx_to_key.remove(tx);
+                    }
                     expired_txs.extend(txs);
                 }
             }
@@ -541,19 +596,23 @@ where
                 // 1. Collect all block-level invalidation events
                 let mut updates = TempoPoolUpdates::from_chain(tip);
 
-                // Collect mined transaction hashes separately (not an invalidation event)
-                let mined_tx_hashes: Vec<TxHash> = tip
-                    .blocks_iter()
+                // Remove expiry tracking for mined transactions.
+                tip.blocks_iter()
                     .flat_map(|block| block.body().transactions())
-                    .map(|tx| *tx.tx_hash())
-                    .collect();
+                    .for_each(|tx| {
+                    state.untrack_expiry(tx.tx_hash())
+                });
+
+                // Evict transactions slightly before they expire to prevent
+                // broadcasting near-expiry txs that peers would reject.
+                let max_expiry = tip_timestamp.saturating_add(EVICTION_BUFFER_SECS);
 
                 // Add expired transactions (from local tracking state)
-                let expired = state.drain_expired(tip_timestamp);
+                let expired = state.drain_expired(max_expiry);
                 updates.expired_txs = expired.into_iter().filter(|h| pool.contains(h)).collect();
 
                 // Add transactions using expired keychain keys
-                let key_expired = state.key_expiry.drain_expired(tip_timestamp);
+                let key_expired = state.key_expiry.drain_expired(max_expiry);
                 let key_expired: Vec<TxHash> =
                     key_expired.into_iter().filter(|h| pool.contains(h)).collect();
 
@@ -622,6 +681,11 @@ where
                         let count = removed_txs.len();
 
                         if count > 0 {
+                            // Clean up expiry tracking for paused txs
+                            for tx in &removed_txs {
+                                state.untrack_expiry(tx.hash());
+                            }
+
                             let entries: Vec<_> = removed_txs
                                 .into_iter()
                                 .map(|tx| {
@@ -722,7 +786,11 @@ where
                 // 7. Remove included expiring nonce transactions
                 // Expiring nonce txs don't have sequential nonces, so we need to remove them
                 // on inclusion rather than relying on nonce changes.
-                pool.remove_included_expiring_nonce_txs(mined_tx_hashes.iter());
+                pool.remove_included_expiring_nonce_txs(
+                    tip.blocks_iter()
+                        .flat_map(|block| block.body().transactions())
+                        .map(|tx| tx.tx_hash()),
+                );
                 metrics.nonce_pool_update_duration_seconds.record(nonce_pool_start.elapsed());
 
                 // 8. Update AMM liquidity cache (must happen before validator token eviction)
@@ -753,7 +821,10 @@ where
                         "Processing transaction invalidation events"
                     );
                     let evicted = pool.evict_invalidated_transactions(&updates);
-                    metrics.transactions_invalidated.increment(evicted as u64);
+                    for hash in &evicted {
+                        state.untrack_expiry(hash);
+                    }
+                    metrics.transactions_invalidated.increment(evicted.len() as u64);
                     metrics
                         .invalidation_eviction_duration_seconds
                         .record(invalidation_start.elapsed());
@@ -775,6 +846,10 @@ where
                             tip_timestamp,
                             "Evicting stale pending transactions"
                         );
+                        // Clean up expiry tracking for stale txs to prevent orphaned entries
+                        for hash in &stale_to_evict {
+                            state.untrack_expiry(hash);
+                        }
                         pool.remove_transactions(stale_to_evict);
                     }
                 }
@@ -958,6 +1033,33 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_remove_mined() {
+        let mut state = TempoPoolState::default();
+        let hash_a = TxHash::random();
+        let hash_b = TxHash::random();
+        let hash_unknown = TxHash::random();
+
+        // Track two txs at the same valid_before
+        state.expiry_map.entry(1000).or_default().push(hash_a);
+        state.tx_to_expiry.insert(hash_a, 1000);
+        state.expiry_map.entry(1000).or_default().push(hash_b);
+        state.tx_to_expiry.insert(hash_b, 1000);
+
+        // Mine hash_a and an unknown hash
+        state.untrack_expiry(&hash_a);
+        state.untrack_expiry(&hash_unknown);
+
+        // hash_a removed from both maps
+        assert!(!state.tx_to_expiry.contains_key(&hash_a));
+        assert_eq!(state.expiry_map[&1000], vec![hash_b]);
+
+        // Mine hash_b should remove the expiry_map entry entirely
+        state.untrack_expiry(&hash_b);
+        assert!(!state.tx_to_expiry.contains_key(&hash_b));
+        assert!(!state.expiry_map.contains_key(&1000));
+    }
+
     mod key_expiry_tracker_tests {
         use super::*;
 
@@ -971,10 +1073,10 @@ mod tests {
 
             tracker.track(account, key_id, expiry, tx_hash);
 
-            // Key should be tracked
             let key = KeyId { account, key_id };
             assert!(tracker.key_to_txs.contains_key(&key));
             assert!(tracker.expiry_map.contains_key(&expiry));
+            assert_eq!(tracker.tx_to_key.get(&tx_hash), Some(&key));
         }
 
         #[test]
@@ -994,6 +1096,7 @@ mod tests {
             assert_eq!(txs.len(), 2);
             assert!(txs.contains(&tx1));
             assert!(txs.contains(&tx2));
+            assert_eq!(tracker.tx_to_key.len(), 2);
         }
 
         #[test]
@@ -1021,6 +1124,7 @@ mod tests {
             // Tracker should be empty now
             assert!(tracker.key_to_txs.is_empty());
             assert!(tracker.expiry_map.is_empty());
+            assert!(tracker.tx_to_key.is_empty());
         }
 
         #[test]
@@ -1046,6 +1150,75 @@ mod tests {
             assert_eq!(expired.len(), 1);
             assert!(expired.contains(&tx2));
         }
+
+        #[test]
+        fn remove_tx_cleans_up_tx_from_key() {
+            let mut tracker = KeyExpiryTracker::default();
+            let account = Address::random();
+            let key_id = Address::random();
+            let tx1 = TxHash::random();
+            let tx2 = TxHash::random();
+
+            tracker.track(account, key_id, 1000, tx1);
+            tracker.track(account, key_id, 1000, tx2);
+
+            // Remove one tx — key should still be tracked with the other
+            tracker.untrack(&tx1);
+            let key = KeyId { account, key_id };
+            let (_, txs) = tracker.key_to_txs.get(&key).unwrap();
+            assert_eq!(txs.len(), 1);
+            assert!(txs.contains(&tx2));
+            assert!(tracker.expiry_map.contains_key(&1000));
+            assert!(!tracker.tx_to_key.contains_key(&tx1));
+            assert!(tracker.tx_to_key.contains_key(&tx2));
+
+            // Remove the last tx — all maps should be fully cleaned up
+            tracker.untrack(&tx2);
+            assert!(!tracker.key_to_txs.contains_key(&key));
+            assert!(!tracker.expiry_map.contains_key(&1000));
+            assert!(tracker.tx_to_key.is_empty());
+        }
+
+        #[test]
+        fn remove_tx_ignores_unknown_hashes() {
+            let mut tracker = KeyExpiryTracker::default();
+            let account = Address::random();
+            let key_id = Address::random();
+            let tx = TxHash::random();
+            let unknown = TxHash::random();
+
+            tracker.track(account, key_id, 1000, tx);
+            tracker.untrack(&unknown);
+
+            // Original entry should be untouched
+            let key = KeyId { account, key_id };
+            assert!(tracker.key_to_txs.contains_key(&key));
+            assert!(tracker.expiry_map.contains_key(&1000));
+            assert_eq!(tracker.tx_to_key.len(), 1);
+        }
+
+        #[test]
+        fn remove_tx_then_drain_expired() {
+            let mut tracker = KeyExpiryTracker::default();
+            let account = Address::random();
+            let key_id = Address::random();
+            let tx1 = TxHash::random();
+            let tx2 = TxHash::random();
+
+            tracker.track(account, key_id, 1000, tx1);
+            tracker.track(account, key_id, 1000, tx2);
+
+            // Remove one tx, then drain at expiry — only remaining tx should be returned
+            tracker.untrack(&tx1);
+            let expired = tracker.drain_expired(1000);
+            assert_eq!(expired.len(), 1);
+            assert!(expired.contains(&tx2));
+
+            // All maps should be empty
+            assert!(tracker.key_to_txs.is_empty());
+            assert!(tracker.expiry_map.is_empty());
+            assert!(tracker.tx_to_key.is_empty());
+        }
     }
 
     fn create_test_chain(
@@ -1056,7 +1229,6 @@ mod tests {
         Arc::new(Chain::new(
             blocks,
             ExecutionOutcome::default(),
-            Default::default(),
             Default::default(),
         ))
     }
@@ -1240,9 +1412,9 @@ mod tests {
             assert!(updates.spending_limit_spends.is_empty());
         }
 
-        /// Uses default fee token when keychain tx has no explicit fee_token.
+        /// When a keychain tx has no explicit fee_token, it is stored as a wildcard.
         #[test]
-        fn uses_default_fee_token_when_none_set() {
+        fn uses_wildcard_fee_token_when_none_set() {
             let user_address = Address::random();
             let access_key_signer = PrivateKeySigner::random();
             let key_id = access_key_signer.address();
@@ -1257,10 +1429,11 @@ mod tests {
 
             let updates = TempoPoolUpdates::from_chain(&chain);
 
+            // Wildcard should match any token
             assert!(updates.spending_limit_spends.contains(
                 user_address,
                 key_id,
-                tempo_precompiles::DEFAULT_FEE_TOKEN,
+                Address::random(),
             ));
         }
 
@@ -1273,9 +1446,32 @@ mod tests {
             updates.spending_limit_spends.insert(
                 Address::random(),
                 Address::random(),
-                Address::random(),
+                Some(Address::random()),
             );
             assert!(updates.has_invalidation_events());
+        }
+
+        /// Duplicate validator token changes must be deduplicated (last-write-wins).
+        #[test]
+        fn validator_token_changes_deduplicates_by_validator() {
+            let validator = Address::random();
+            let token_a = Address::random();
+            let token_b = Address::random();
+
+            let mut updates = TempoPoolUpdates::new();
+            updates.validator_token_changes.insert(validator, token_a);
+            updates.validator_token_changes.insert(validator, token_b);
+
+            assert_eq!(
+                updates.validator_token_changes.len(),
+                1,
+                "duplicate validator entries must be deduplicated"
+            );
+            assert_eq!(
+                updates.validator_token_changes.get(&validator).copied(),
+                Some(token_b),
+                "last-write-wins: second token should overwrite the first"
+            );
         }
     }
 }

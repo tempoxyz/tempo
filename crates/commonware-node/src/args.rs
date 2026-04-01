@@ -56,12 +56,10 @@ pub struct Args {
     #[arg(long = "consensus.deque-size", default_value_t = 10)]
     pub deque_size: usize,
 
-    /// The fee recipient that will be specified by this node. Will use the
-    /// coinbase address in genesis if not set.
-    #[arg(
-        long = "consensus.fee-recipient",
-        required_unless_present_any = ["follow", "dev"],
-    )]
+    /// Deprecated: the fee recipient is now read from the validator config v2
+    /// contract. This value is used as a fallback when the on-chain fee
+    /// recipient is `Address::ZERO` or when the v2 contract is not yet active.
+    #[arg(long = "consensus.fee-recipient")]
     pub fee_recipient: Option<alloy_primitives::Address>,
 
     /// The amount of time to wait for a peer to respond to a consensus request.
@@ -97,12 +95,35 @@ pub struct Args {
     )]
     pub inactive_views_until_leader_skip: u64,
 
-    /// The amount of time this node will use to construct a block as a proposal.
+    /// The maximum amount of time to spend on executing transactions when preparing a proposal as a leader.
+    ///
+    /// NOTE: This only limits the time the builder spends on transaction execution, and does not
+    /// include the state root calculation time. For this reason, we keep it well below `consensus.time-to-build-proposal`.
+    #[arg(
+        long = "consensus.time-to-prepare-proposal-transactions",
+        default_value = "200ms"
+    )]
+    pub time_to_prepare_proposal_transactions: PositiveDuration,
+
+    /// The minimum amount of time this node waits before sending a proposal
+    ///
+    /// The intention is to keep block times stable even if there is low load on the network.
     /// This value should be well below `consensus.wait-for-proposal` to account
     /// for the leader to enter the view, build and broadcast the proposal, and
     /// have the other peers receive the proposal.
-    #[arg(long = "consensus.time-to-build-proposal", default_value = "500ms")]
-    pub time_to_build_proposal: PositiveDuration,
+    #[arg(
+        long = "consensus.minimum-time-before-propose",
+        alias = "consensus.time-to-build-proposal",
+        default_value = "450ms"
+    )]
+    pub minimum_time_before_propose: PositiveDuration,
+
+    /// Whether to enable subblock processing.
+    ///
+    /// When disabled, the node will not build or broadcast subblocks, and will
+    /// ignore any incoming subblocks from the network.
+    #[arg(long = "consensus.enable-subblocks", default_value_t = false)]
+    pub enable_subblocks: bool,
 
     /// The amount of time this node will use to construct a subblock before
     /// sending it to the next proposer. This value should be well below
