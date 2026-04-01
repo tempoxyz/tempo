@@ -97,6 +97,11 @@ pub struct AccountKeychain {
 }
 
 /// Key-level call scope.
+///
+/// This is the only level that needs an explicit mode bit: an empty `targets` set is ambiguous
+/// between "unrestricted" and "scoped deny-all". `is_scoped = false` means ignore the tree and
+/// allow any call, while `is_scoped = true && targets.is_empty()` means the key currently allows
+/// no targets.
 #[derive(Debug, Clone, Storable, Default)]
 pub struct KeyScope {
     pub is_scoped: bool,
@@ -106,22 +111,25 @@ pub struct KeyScope {
 
 /// Target-level scope for one target under one account key.
 ///
-/// Only persisted for targets present in the parent `targets` set. There is intentionally no
-/// inner "deny all selectors" mode; deleting the target from `targets` removes the scope.
+/// Only persisted for targets present in the parent `targets` set. An empty `selectors` set means
+/// any selector on the target is allowed; deleting the target from `targets` removes the scope.
+/// This asymmetry is intentional: once the parent target is explicitly allowed, an empty child set
+/// means "no further restriction", not "deny all selectors".
 #[derive(Debug, Clone, Storable, Default)]
 pub struct TargetScope {
-    pub is_scoped: bool,
     pub selectors: Set<FixedBytes<4>>,
     pub selector_scopes: Mapping<FixedBytes<4>, SelectorScope>,
 }
 
 /// Selector-level scope for one selector under one target.
 ///
-/// Only persisted for selectors present in the parent `selectors` set. There is intentionally no
-/// inner "deny all recipients" mode; deleting the selector from `selectors` removes the scope.
+/// Only persisted for selectors present in the parent `selectors` set. An empty `recipients` set
+/// means any recipient is allowed; deleting the selector from `selectors` removes the scope.
+/// Future incremental remove APIs must delete the selector entry when the last recipient is
+/// removed; leaving an existing selector with `recipients = []` would widen permissions to
+/// allow-all recipients.
 #[derive(Debug, Clone, Storable, Default)]
 pub struct SelectorScope {
-    pub is_scoped: bool,
     pub recipients: Set<Address>,
 }
 
@@ -538,52 +546,24 @@ impl AccountKeychain {
         let targets = self.key_scopes[key_hash].targets.read()?;
         let mut scopes = Vec::new();
         for target in targets {
-            let target_mode = self.key_scopes[key_hash].target_scopes[target]
-                .is_scoped
+            let selectors = self.key_scopes[key_hash].target_scopes[target]
+                .selectors
                 .read()?;
 
-            let scope = if !target_mode {
+            let scope = if selectors.is_empty() {
                 CallScope {
                     target,
                     selectorRules: Vec::new(),
                 }
             } else {
                 let mut rules = Vec::new();
-                let selectors = self.key_scopes[key_hash].target_scopes[target]
-                    .selectors
-                    .read()?;
-                debug_assert!(
-                    !selectors.is_empty(),
-                    "scoped target scopes should always carry selectors"
-                );
-                if selectors.is_empty() {
-                    continue;
-                }
 
                 for selector in selectors {
-                    let selector_mode = self.key_scopes[key_hash].target_scopes[target]
+                    let recipients: Vec<Address> = self.key_scopes[key_hash].target_scopes[target]
                         .selector_scopes[selector]
-                        .is_scoped
-                        .read()?;
-
-                    let recipients = if selector_mode {
-                        let recipients: Vec<Address> = self.key_scopes[key_hash].target_scopes
-                            [target]
-                            .selector_scopes[selector]
-                            .recipients
-                            .read()?
-                            .into();
-                        debug_assert!(
-                            !recipients.is_empty(),
-                            "scoped selector scopes should always carry recipients"
-                        );
-                        if recipients.is_empty() {
-                            continue;
-                        }
-                        recipients
-                    } else {
-                        Vec::new()
-                    };
+                        .recipients
+                        .read()?
+                        .into();
 
                     rules.push(SelectorRule {
                         selector,
@@ -683,6 +663,13 @@ impl AccountKeychain {
     }
 
     /// Validates a top-level call against scoped permissions for this key.
+    ///
+    /// Validation walks the scope tree from coarse to fine:
+    /// - `is_scoped = false` => unrestricted key
+    /// - target missing from `targets` => target denied
+    /// - target present with `selectors = []` => allow any selector on that target
+    /// - selector missing from `selectors` => selector denied
+    /// - selector present with `recipients = []` => allow any recipient for that selector
     pub fn validate_call_scope_for_transaction(
         &self,
         account: Address,
@@ -715,10 +702,12 @@ impl AccountKeychain {
             return Err(AccountKeychainError::call_not_allowed().into());
         }
 
-        let target_mode = self.key_scopes[key_hash].target_scopes[target]
-            .is_scoped
-            .read()?;
-        if !target_mode {
+        // Empty child sets mean "no further restriction" once the parent target was explicitly
+        // allowed, so a present target with `selectors = []` allows any selector.
+        let target_is_unconstrained = self.key_scopes[key_hash].target_scopes[target]
+            .selectors
+            .is_empty()?;
+        if target_is_unconstrained {
             return Ok(());
         }
 
@@ -735,11 +724,12 @@ impl AccountKeychain {
             return Err(AccountKeychainError::call_not_allowed().into());
         }
 
-        let selector_mode = self.key_scopes[key_hash].target_scopes[target].selector_scopes
-            [selector]
-            .is_scoped
-            .read()?;
-        if !selector_mode {
+        // Likewise, a present selector with `recipients = []` means any recipient is allowed.
+        let selector_is_unconstrained = self.key_scopes[key_hash].target_scopes[target]
+            .selector_scopes[selector]
+            .recipients
+            .is_empty()?;
+        if selector_is_unconstrained {
             return Ok(());
         }
 
@@ -767,7 +757,9 @@ impl AccountKeychain {
     /// Replaces the full call-scope tree for an account key.
     ///
     /// `None` switches the key back to unrestricted mode, while `Some([])` preserves scoped mode
-    /// with no targets so reads can distinguish scoped deny-all from unrestricted mode.
+    /// with no targets so reads can distinguish scoped deny-all from unrestricted mode. This is
+    /// the only place where an empty top-level list means deny-all; below the key level, empty
+    /// child sets mean "no further restriction".
     fn replace_allowed_calls(
         &mut self,
         account_key: B256,
@@ -850,6 +842,12 @@ impl AccountKeychain {
     fn upsert_target_scope(&mut self, account_key: B256, scope: &CallScope) -> Result<()> {
         let target = scope.target;
 
+        // The public API uses the absence of a target to block it, so persisting address(0) as a
+        // real target is always confusing and serves no useful purpose.
+        if target.is_zero() {
+            return Err(AccountKeychainError::invalid_call_scope().into());
+        }
+
         if !scope.selectorRules.is_empty() {
             self.validate_selector_rules(target, &scope.selectorRules)?;
         }
@@ -866,35 +864,26 @@ impl AccountKeychain {
         self.clear_target_selectors(account_key, target)?;
 
         if scope.selectorRules.is_empty() {
-            self.key_scopes[account_key].target_scopes[target]
-                .is_scoped
-                .write(false)?;
-        } else {
-            self.key_scopes[account_key].target_scopes[target]
-                .is_scoped
-                .write(true)?;
+            // Keeping the target while clearing nested selector rows intentionally widens this
+            // target to allow-all selectors. Future incremental remove APIs must delete the target
+            // instead of leaving `selectors = []` behind accidentally.
+            return Ok(());
+        }
 
-            for rule in &scope.selectorRules {
-                let selector = rule.selector;
-                self.key_scopes[account_key].target_scopes[target]
-                    .selectors
-                    .insert(selector)?;
+        for rule in &scope.selectorRules {
+            let selector = rule.selector;
+            self.key_scopes[account_key].target_scopes[target]
+                .selectors
+                .insert(selector)?;
 
-                if rule.recipients.is_empty() {
-                    self.key_scopes[account_key].target_scopes[target].selector_scopes[selector]
-                        .is_scoped
-                        .write(false)?;
-                    self.key_scopes[account_key].target_scopes[target].selector_scopes[selector]
-                        .recipients
-                        .delete()?;
-                } else {
-                    self.key_scopes[account_key].target_scopes[target].selector_scopes[selector]
-                        .is_scoped
-                        .write(true)?;
-                    self.key_scopes[account_key].target_scopes[target].selector_scopes[selector]
-                        .recipients
-                        .write(Set::from(rule.recipients.clone()))?;
-                }
+            if rule.recipients.is_empty() {
+                self.key_scopes[account_key].target_scopes[target].selector_scopes[selector]
+                    .recipients
+                    .delete()?;
+            } else {
+                self.key_scopes[account_key].target_scopes[target].selector_scopes[selector]
+                    .recipients
+                    .write(Set::from(rule.recipients.clone()))?;
             }
         }
 
@@ -902,6 +891,10 @@ impl AccountKeychain {
     }
 
     /// Validates per-selector scope rules for one target before they are persisted.
+    ///
+    /// `recipients = []` is an explicit allow-all sentinel at the selector level. To deny a
+    /// selector entirely, omit it from `selectorRules` or remove the target scope instead of
+    /// leaving behind an empty child set via incremental mutation.
     fn validate_selector_rules(&self, target: Address, rules: &[SelectorRule]) -> Result<()> {
         if rules.len() > MAX_SELECTOR_RULES_PER_SCOPE as usize {
             return Err(AccountKeychainError::selector_limit_exceeded().into());
@@ -1324,6 +1317,18 @@ mod tests {
                 assert!(
                     matches!(e, AccountKeychainError::CallNotAllowed(_)),
                     "Expected CallNotAllowed error, got: {e:?}"
+                );
+            }
+            _ => panic!("Expected AccountKeychainError, got: {error:?}"),
+        }
+    }
+
+    fn assert_invalid_call_scope(error: TempoPrecompileError) {
+        match error {
+            TempoPrecompileError::AccountKeychainError(e) => {
+                assert!(
+                    matches!(e, AccountKeychainError::InvalidCallScope(_)),
+                    "Expected InvalidCallScope error, got: {e:?}"
                 );
             }
             _ => panic!("Expected AccountKeychainError, got: {error:?}"),
@@ -3522,6 +3527,51 @@ mod tests {
             })?;
             assert!(deny_all.isScoped);
             assert!(deny_all.scopes.is_empty());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t3_set_allowed_calls_rejects_zero_target() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let account = Address::random();
+        let key_id = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
+
+            keychain.authorize_key(
+                account,
+                authorizeKeyCall {
+                    keyId: key_id,
+                    signatureType: SignatureType::Secp256k1,
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: false,
+                        limits: vec![],
+                        enforceAllowedCalls: false,
+                        allowedCalls: vec![],
+                    },
+                },
+            )?;
+
+            let err = keychain
+                .set_allowed_calls(
+                    account,
+                    setAllowedCallsCall {
+                        keyId: key_id,
+                        scopes: vec![CallScope {
+                            target: Address::ZERO,
+                            selectorRules: vec![],
+                        }],
+                    },
+                )
+                .expect_err("unexpected success for zero target scope");
+            assert_invalid_call_scope(err);
 
             Ok(())
         })
