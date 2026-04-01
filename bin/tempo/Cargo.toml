@@ -34,8 +34,10 @@ alloy-provider = { workspace = true, features = [
 	"reqwest-rustls-tls",
 ] }
 alloy-rpc-types-eth.workspace = true
-alloy-signer-local.workspace = true
+alloy-signer.workspace = true
+alloy-signer-local = { workspace = true, features = ["mnemonic"] }
 alloy-sol-types.workspace = true
+coins-bip32.workspace = true
 commonware-codec.workspace = true
 commonware-consensus.workspace = true
 commonware-cryptography.workspace = true
@@ -44,11 +46,13 @@ commonware-runtime = { workspace = true, features = ["external"] }
 commonware-utils.workspace = true
 futures = { workspace = true, features = ["executor"] }
 rand_08.workspace = true
+rayon.workspace = true
 reth-chainspec.workspace = true
 reth-cli.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempo-alloy.workspace = true
+tempo-primitives.workspace = true
 tempo-contracts.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true
 reth-cli-commands.workspace = true

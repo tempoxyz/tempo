@@ -67,6 +67,12 @@ pub(crate) enum TempoSubcommand {
     /// and applies them to the genesis state.
     InitFromBinaryDump(Box<init_state::InitFromBinaryDump<TempoChainSpecParser>>),
 
+    /// Generate TIP20 state bloat directly into the database.
+    ///
+    /// Derives TIP20 storage slots (total_supply + balances) and writes them
+    /// directly into the node's database without an intermediate binary file.
+    GenerateStateBloat(Box<init_state::GenerateStateBloat<TempoChainSpecParser>>),
+
     /// Install an extension (e.g., `tempo add wallet`).
     #[command(
         override_usage = "tempo add <EXT> [VERSION]",
@@ -101,6 +107,13 @@ impl ExtendedCommand for TempoSubcommand {
                 Ok(())
             }
             Self::InitFromBinaryDump(cmd) => {
+                let runtime = runner.runtime();
+                runner.run_blocking_until_ctrl_c(
+                    cmd.execute::<tempo_node::node::TempoNode>(runtime),
+                )?;
+                Ok(())
+            }
+            Self::GenerateStateBloat(cmd) => {
                 let runtime = runner.runtime();
                 runner.run_blocking_until_ctrl_c(
                     cmd.execute::<tempo_node::node::TempoNode>(runtime),
