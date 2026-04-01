@@ -31,10 +31,10 @@ pub struct TokenLimit {
 
 /// Per-target call scope for an access key.
 ///
-/// `selector_rules` uses tri-state semantics:
+/// `selector_rules` semantics:
 /// - `None` => allow any selector for this target
-/// - `Some([])` => deny all selectors for this target
 /// - `Some([..])` => allow exactly the listed selector rules
+/// - `Some([])` => invalid and rejected during validation
 #[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
 #[rlp(trailing)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -61,6 +61,7 @@ impl CallScope {
 /// `recipients` semantics:
 /// - `None` => no recipient constraint
 /// - `Some([..])` => first ABI address argument must be in this list
+/// - `Some([])` => invalid and rejected during validation
 #[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
 #[rlp(trailing)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

@@ -37,7 +37,10 @@ use tempo_contracts::precompiles::{
 };
 use tempo_precompiles::{
     ECRECOVER_GAS,
-    account_keychain::{AccountKeychain, KeyRestrictions, TokenLimit, authorizeKeyCall},
+    account_keychain::{
+        AccountKeychain, CallScope as PrecompileCallScope, KeyRestrictions,
+        SelectorRule as PrecompileSelectorRule, TokenLimit, authorizeKeyCall,
+    },
     error::TempoPrecompileError,
     nonce::{EXPIRING_NONCE_MAX_EXPIRY_SECS, INonce::getNonceCall, NonceManager},
     storage::{PrecompileStorageProvider, StorageCtx, evm::EvmPrecompileStorageProvider},
@@ -126,16 +129,10 @@ fn tempo_signature_verification_gas(signature: &TempoSignature) -> u64 {
     }
 }
 
-/// Calculates the intrinsic gas cost for a KeyAuthorization.
+/// Counts the storage rows written by T3 call-scope configuration.
 ///
-/// This is charged before execution as part of transaction validation.
-///
-/// Pre-T1B: Gas = BASE (27k) + signature verification + (22k per spending limit)
-///   On T1/T1A this was double-charged alongside the gas-metered precompile call.
-///
-/// T1B+: Gas = signature verification + SLOAD (existing key check) +
-///   SSTORE (write key) + N × SSTORE (per spending limit)
-///   This is the sole gas accounting — the precompile runs with unlimited gas.
+/// This lets intrinsic gas account for the scoped-call writes that `authorize_key`
+/// persists into keychain storage.
 fn call_scope_storage_slots(auth: &tempo_primitives::transaction::KeyAuthorization) -> u64 {
     match auth.allowed_calls.as_ref() {
         None => 0,
@@ -168,6 +165,71 @@ fn call_scope_storage_slots(auth: &tempo_primitives::transaction::KeyAuthorizati
     }
 }
 
+fn translate_allowed_calls_for_precompile(
+    key_auth: &tempo_primitives::transaction::SignedKeyAuthorization,
+) -> Result<Vec<PrecompileCallScope>, TempoInvalidTransaction> {
+    let Some(scopes) = key_auth.allowed_calls.as_ref() else {
+        return Ok(Vec::new());
+    };
+
+    let mut precompile_scopes = Vec::with_capacity(scopes.len());
+    for scope in scopes {
+        let Some(rules) = scope.selector_rules.as_ref() else {
+            precompile_scopes.push(PrecompileCallScope {
+                target: scope.target,
+                selectorRules: vec![],
+            });
+            continue;
+        };
+
+        if rules.is_empty() {
+            return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                reason: "call scope selector rules must be omitted or non-empty".to_string(),
+            });
+        }
+
+        let mut selector_rules = Vec::with_capacity(rules.len());
+        for rule in rules {
+            let Some(recipients) = rule.recipients.as_ref() else {
+                selector_rules.push(PrecompileSelectorRule {
+                    selector: rule.selector.into(),
+                    recipients: vec![],
+                });
+                continue;
+            };
+
+            if recipients.is_empty() {
+                return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                    reason: "recipient-constrained selector rule requires non-empty recipients"
+                        .to_string(),
+                });
+            }
+
+            selector_rules.push(PrecompileSelectorRule {
+                selector: rule.selector.into(),
+                recipients: recipients.clone(),
+            });
+        }
+
+        precompile_scopes.push(PrecompileCallScope {
+            target: scope.target,
+            selectorRules: selector_rules,
+        });
+    }
+
+    Ok(precompile_scopes)
+}
+
+/// Calculates the intrinsic gas cost for a KeyAuthorization.
+///
+/// This is charged before execution as part of transaction validation.
+///
+/// Pre-T1B: Gas = BASE (27k) + signature verification + (22k per spending limit)
+///   On T1/T1A this was double-charged alongside the gas-metered precompile call.
+///
+/// T1B+: Gas = signature verification + SLOAD (existing key check) +
+///   SSTORE (write key) + N × SSTORE (per spending limit)
+///   This is the sole gas accounting — the precompile runs with unlimited gas.
 #[inline]
 fn calculate_key_authorization_gas(
     key_auth: &tempo_primitives::transaction::SignedKeyAuthorization,
@@ -1081,56 +1143,8 @@ where
                     })
                     .unwrap_or_default();
 
-                if let Some(scopes) = key_auth.allowed_calls.as_ref() {
-                    for scope in scopes {
-                        if let Some(rules) = scope.selector_rules.as_ref() {
-                            for rule in rules {
-                                if matches!(rule.recipients.as_deref(), Some([])) {
-                                    return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                                        reason: "recipient-constrained selector rule requires non-empty recipients".to_string(),
-                                    }
-                                    .into());
-                                }
-                            }
-                        }
-                    }
-                }
-
-                let precompile_allowed_calls = key_auth
-                    .allowed_calls
-                    .as_ref()
-                    .map(|scopes| {
-                        scopes
-                            .iter()
-                            .filter_map(|scope| match scope.selector_rules.as_ref() {
-                                Some(rules) if rules.is_empty() => None,
-                                _ => Some(tempo_precompiles::account_keychain::CallScope {
-                                    target: scope.target,
-                                    selectorRules: scope
-                                        .selector_rules
-                                        .as_ref()
-                                        .map(|rules| {
-                                            rules
-                                                .iter()
-                                                .map(|rule| {
-                                                    tempo_precompiles::account_keychain::SelectorRule {
-                                                        selector: rule.selector.into(),
-                                                        recipients: rule
-                                                            .recipients
-                                                            .clone()
-                                                            .unwrap_or_default(),
-                                                    }
-                                                })
-                                                .collect()
-                                        })
-                                        .unwrap_or_default(),
-                                }),
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-
                 let enforce_allowed_calls = key_auth.allowed_calls.is_some();
+                let precompile_allowed_calls = translate_allowed_calls_for_precompile(key_auth)?;
 
                 // Create the authorize key call
                 let authorize_call = authorizeKeyCall {
@@ -2720,6 +2734,58 @@ mod tests {
         // + constrained selector recipient-length(1) + recipients values+positions(2*2).
         let expected = ECRECOVER_GAS + sload + sstore * (1 + 14) + BUFFER;
         assert_eq!(gas, expected, "T3 scope writes should be fully charged");
+    }
+
+    #[test]
+    fn test_translate_allowed_calls_for_precompile_rejects_nested_empty_lists() {
+        use tempo_primitives::transaction::{
+            CallScope, KeyAuthorization, SelectorRule, SignatureType, SignedKeyAuthorization,
+        };
+
+        let empty_selector_rules = SignedKeyAuthorization {
+            authorization: KeyAuthorization {
+                chain_id: 1,
+                key_type: SignatureType::Secp256k1,
+                key_id: Address::random(),
+                expiry: None,
+                limits: None,
+                allowed_calls: Some(vec![CallScope {
+                    target: Address::random(),
+                    selector_rules: Some(vec![]),
+                }]),
+            },
+            signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+        };
+
+        assert!(matches!(
+            translate_allowed_calls_for_precompile(&empty_selector_rules),
+            Err(TempoInvalidTransaction::KeychainValidationFailed { reason })
+                if reason == "call scope selector rules must be omitted or non-empty"
+        ));
+
+        let empty_recipients = SignedKeyAuthorization {
+            authorization: KeyAuthorization {
+                chain_id: 1,
+                key_type: SignatureType::Secp256k1,
+                key_id: Address::random(),
+                expiry: None,
+                limits: None,
+                allowed_calls: Some(vec![CallScope {
+                    target: Address::random(),
+                    selector_rules: Some(vec![SelectorRule {
+                        selector: [0xa9, 0x05, 0x9c, 0xbb],
+                        recipients: Some(vec![]),
+                    }]),
+                }]),
+            },
+            signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+        };
+
+        assert!(matches!(
+            translate_allowed_calls_for_precompile(&empty_recipients),
+            Err(TempoInvalidTransaction::KeychainValidationFailed { reason })
+                if reason == "recipient-constrained selector rule requires non-empty recipients"
+        ));
     }
 
     #[test]

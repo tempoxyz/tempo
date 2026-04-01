@@ -160,10 +160,15 @@ where
         Ok(())
     }
 
+    /// Validates the T3-only key-authorization payload shape before any state lookups.
+    ///
+    /// This keeps txpool admission aligned with runtime and precompile expectations so
+    /// malformed limits or call scopes are rejected before propagation.
     fn validate_t3_key_authorization_shape(
         &self,
         auth: &tempo_primitives::transaction::SignedKeyAuthorization,
     ) -> Result<(), TempoPoolTransactionError> {
+        // Spending limits must stay unique and fit the precompile's u128-backed storage layout.
         if let Some(limits) = auth.limits.as_ref() {
             let mut seen_tokens = HashSet::with_capacity(limits.len());
             for limit in limits {
@@ -191,6 +196,7 @@ where
             ));
         }
 
+        // Validate each scope as a unit so target and selector constraints stay grouped.
         let mut seen_targets = HashSet::with_capacity(scopes.len());
         for scope in scopes {
             if !seen_targets.insert(scope.target) {
@@ -203,12 +209,19 @@ where
                 continue;
             };
 
+            if selector_rules.is_empty() {
+                return Err(TempoPoolTransactionError::Keychain(
+                    "call scope selector rules must be omitted or non-empty",
+                ));
+            }
+
             if selector_rules.len() > MAX_SELECTOR_RULES_PER_SCOPE as usize {
                 return Err(TempoPoolTransactionError::Keychain(
                     "too many selector rules in call scope",
                 ));
             }
 
+            // Selector rules are unique per target and must stay within the per-scope bound.
             let mut seen_selectors = HashSet::with_capacity(selector_rules.len());
             for rule in selector_rules {
                 if !seen_selectors.insert(rule.selector) {
@@ -221,6 +234,8 @@ where
                     continue;
                 };
 
+                // Recipient-constrained rules only make sense for constrained TIP-20 selectors and
+                // must carry a non-empty, de-duplicated recipient set.
                 if recipients.is_empty() {
                     return Err(TempoPoolTransactionError::Keychain(
                         "recipient-constrained selector rule requires non-empty recipients",
@@ -339,6 +354,10 @@ where
         recipients.contains(&Address::from_slice(&recipient_word[12..]))
     }
 
+    /// Rejects inline AA calls that fall outside the already-authorized T3 call scopes.
+    ///
+    /// This mirrors runtime scope matching closely enough to keep obvious mismatches out of the
+    /// pool before execution.
     fn validate_inline_t3_call_scopes(
         tx: &TempoTransaction,
         auth: &tempo_primitives::transaction::SignedKeyAuthorization,
@@ -3697,6 +3716,63 @@ mod tests {
                     ))
                 ),
                 "Expected duplicate target rejection, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_key_authorization_t3_rejects_empty_selector_rules() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: None,
+                allowed_calls: Some(vec![CallScope {
+                    target: Address::random(),
+                    selector_rules: Some(vec![]),
+                }]),
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage_spec(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+                moderato_with_t3(),
+            );
+            let mut state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )
+            .expect("should not be a provider error");
+
+            assert!(
+                matches!(
+                    result,
+                    Err(TempoPoolTransactionError::Keychain(
+                        "call scope selector rules must be omitted or non-empty"
+                    ))
+                ),
+                "Expected empty selector-rules rejection, got: {result:?}"
             );
         }
 
