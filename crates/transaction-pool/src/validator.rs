@@ -1219,6 +1219,7 @@ mod tests {
     use tempo_evm::TempoEvmConfig;
     use tempo_precompiles::{
         PATH_USD_ADDRESS, TIP403_REGISTRY_ADDRESS,
+        storage::{LayoutCtx, Storable, packing::PackedSlot},
         tip20::{TIP20Token, slots as tip20_slots},
         tip403_registry::{ITIP403Registry, PolicyData, TIP403Registry},
     };
@@ -1236,6 +1237,15 @@ mod tests {
 
     /// Arbitrary validity window (in seconds) used for expiring-nonce transactions in tests.
     const TEST_VALIDITY_WINDOW: u64 = 25;
+
+    /// Encodes a [`Storable`] value into a single U256 slot word.
+    fn encode_to_slot(value: &impl Storable) -> U256 {
+        let mut slot = PackedSlot(U256::ZERO);
+        value
+            .store(&mut slot, U256::ZERO, LayoutCtx::FULL)
+            .expect("encode_to_slot");
+        slot.0
+    }
 
     /// Helper to create a mock sealed block with the given timestamp.
     fn create_mock_block(timestamp: u64) -> SealedBlock<Block> {
@@ -1738,7 +1748,7 @@ mod tests {
         provider.add_account(
             TIP403_REGISTRY_ADDRESS,
             ExtendedAccount::new(0, U256::ZERO).extend_storage([
-                (policy_data_slot.into(), policy_data.encode_to_slot()),
+                (policy_data_slot.into(), encode_to_slot(&policy_data)),
                 (policy_set_slot.into(), U256::from(1)), // in blacklist = true
             ]),
         );
@@ -2702,13 +2712,12 @@ mod tests {
                 create_aa_with_keychain_signature(user_address, &access_key_signer, None);
 
             // Setup storage with a valid authorized key (expiry > 0, not revoked)
-            let slot_value = AuthorizedKey {
+            let slot_value = encode_to_slot(&AuthorizedKey {
                 signature_type: 0, // secp256k1
                 expiry: u64::MAX,  // never expires
                 enforce_limits: false,
                 is_revoked: false,
-            }
-            .encode_to_slot();
+            });
 
             let validator = setup_validator_with_keychain_storage(
                 &transaction,
@@ -2739,13 +2748,12 @@ mod tests {
                 create_aa_with_keychain_signature(user_address, &access_key_signer, None);
 
             // Setup storage with a revoked key
-            let slot_value = AuthorizedKey {
+            let slot_value = encode_to_slot(&AuthorizedKey {
                 signature_type: 0,
                 expiry: 0, // revoked keys have expiry=0
                 enforce_limits: false,
                 is_revoked: true,
-            }
-            .encode_to_slot();
+            });
 
             let validator = setup_validator_with_keychain_storage(
                 &transaction,
@@ -2780,13 +2788,12 @@ mod tests {
                 create_aa_with_keychain_signature(user_address, &access_key_signer, None);
 
             // Setup storage with expiry = 0 (key doesn't exist)
-            let slot_value = AuthorizedKey {
+            let slot_value = encode_to_slot(&AuthorizedKey {
                 signature_type: 0,
                 expiry: 0, // expiry = 0 means key doesn't exist
                 enforce_limits: false,
                 is_revoked: false,
-            }
-            .encode_to_slot();
+            });
 
             let validator = setup_validator_with_keychain_storage(
                 &transaction,
@@ -2919,13 +2926,12 @@ mod tests {
                 Some(signed_key_auth),
             );
 
-            let existing_key_slot = AuthorizedKey {
+            let existing_key_slot = encode_to_slot(&AuthorizedKey {
                 signature_type: 0,
                 expiry: u64::MAX,
                 enforce_limits: false,
                 is_revoked: false,
-            }
-            .encode_to_slot();
+            });
 
             let validator = setup_validator_with_keychain_storage(
                 &transaction,
@@ -3687,13 +3693,12 @@ mod tests {
             // The actual mismatch scenario would require manually constructing an invalid state.
 
             // Setup with valid key for the actual sender
-            let slot_value = AuthorizedKey {
+            let slot_value = encode_to_slot(&AuthorizedKey {
                 signature_type: 0,
                 expiry: u64::MAX,
                 enforce_limits: false,
                 is_revoked: false,
-            }
-            .encode_to_slot();
+            });
             let validator = setup_validator_with_keychain_storage(
                 &transaction,
                 real_user,
@@ -3786,13 +3791,12 @@ mod tests {
                 create_aa_with_keychain_signature(user_address, &access_key_signer, None);
 
             // Setup storage with an expired key (expiry in the past)
-            let slot_value = AuthorizedKey {
+            let slot_value = encode_to_slot(&AuthorizedKey {
                 signature_type: 0,
                 expiry: current_time - 1, // Expired (in the past)
                 enforce_limits: false,
                 is_revoked: false,
-            }
-            .encode_to_slot();
+            });
 
             let validator = setup_validator_with_keychain_storage_and_timestamp(
                 &transaction,
@@ -3828,13 +3832,12 @@ mod tests {
                 create_aa_with_keychain_signature(user_address, &access_key_signer, None);
 
             // Setup storage with expiry == current_time (edge case: expired)
-            let slot_value = AuthorizedKey {
+            let slot_value = encode_to_slot(&AuthorizedKey {
                 signature_type: 0,
                 expiry: current_time, // Expiry at exactly current time should be rejected
                 enforce_limits: false,
                 is_revoked: false,
-            }
-            .encode_to_slot();
+            });
 
             let validator = setup_validator_with_keychain_storage_and_timestamp(
                 &transaction,
@@ -3869,13 +3872,12 @@ mod tests {
                 create_aa_with_keychain_signature(user_address, &access_key_signer, None);
 
             // Setup storage with a future expiry
-            let slot_value = AuthorizedKey {
+            let slot_value = encode_to_slot(&AuthorizedKey {
                 signature_type: 0,
                 expiry: current_time + 100, // Valid (in the future)
                 enforce_limits: false,
                 is_revoked: false,
-            }
-            .encode_to_slot();
+            });
 
             let validator = setup_validator_with_keychain_storage_and_timestamp(
                 &transaction,
@@ -4170,13 +4172,12 @@ mod tests {
             provider.add_block(B256::random(), Default::default());
 
             // Setup AccountKeychain storage with AuthorizedKey
-            let slot_value = AuthorizedKey {
+            let slot_value = encode_to_slot(&AuthorizedKey {
                 signature_type: 0,
                 expiry: u64::MAX,
                 enforce_limits,
                 is_revoked: false,
-            }
-            .encode_to_slot();
+            });
 
             let key_storage_slot = AccountKeychain::new().keys[user_address][key_id].base_slot();
             let mut storage = vec![(key_storage_slot.into(), slot_value)];
@@ -4496,13 +4497,12 @@ mod tests {
             let transaction =
                 create_aa_with_keychain_signature(user_address, &access_key_signer, None);
 
-            let slot_value = AuthorizedKey {
+            let slot_value = encode_to_slot(&AuthorizedKey {
                 signature_type: 0,
                 expiry: u64::MAX,
                 enforce_limits: false,
                 is_revoked: false,
-            }
-            .encode_to_slot();
+            });
 
             let validator = setup_validator_with_keychain_storage(
                 &transaction,
@@ -4554,13 +4554,12 @@ mod tests {
             let transaction =
                 create_aa_with_v1_keychain_signature(user_address, &access_key_signer, None);
 
-            let slot_value = AuthorizedKey {
+            let slot_value = encode_to_slot(&AuthorizedKey {
                 signature_type: 0,
                 expiry: u64::MAX,
                 enforce_limits: false,
                 is_revoked: false,
-            }
-            .encode_to_slot();
+            });
 
             // Pre-T1C validator with keychain storage
             let provider =
@@ -5188,7 +5187,7 @@ mod tests {
         // Verify has_enough_liquidity would bypass (return true) for this token
         // because it matches a validator token. This confirms the vulnerability we're testing.
         let liquidity_result =
-            amm_cache.has_enough_liquidity(paused_validator_token, U256::from(1000), &state);
+            amm_cache.has_enough_liquidity(paused_validator_token, U256::from(1000), &mut state);
         assert!(
             liquidity_result.is_ok() && liquidity_result.unwrap(),
             "Token in unique_tokens should bypass liquidity check and return true"
