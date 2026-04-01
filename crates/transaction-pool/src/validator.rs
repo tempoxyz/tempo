@@ -208,14 +208,9 @@ where
                 )));
             }
 
-            let Some(selector_rules) = scope.selector_rules.as_ref() else {
-                continue;
-            };
-
+            let selector_rules = &scope.selector_rules;
             if selector_rules.is_empty() {
-                return Ok(Err(TempoPoolTransactionError::Keychain(
-                    "call scope selector rules must be omitted or non-empty",
-                )));
+                continue;
             }
 
             if selector_rules.len() > MAX_SELECTOR_RULES_PER_SCOPE as usize {
@@ -235,18 +230,13 @@ where
                     )));
                 }
 
-                let Some(recipients) = rule.recipients.as_ref() else {
-                    continue;
-                };
-
-                // Recipient-constrained rules only make sense for constrained TIP-20 selectors and
-                // must carry a non-empty, de-duplicated recipient set.
+                let recipients = &rule.recipients;
                 if recipients.is_empty() {
-                    return Ok(Err(TempoPoolTransactionError::Keychain(
-                        "recipient-constrained selector rule requires non-empty recipients",
-                    )));
+                    continue;
                 }
 
+                // Recipient-constrained rules only make sense for constrained TIP-20 selectors and
+                // must carry a de-duplicated recipient set.
                 if recipients.len() > MAX_RECIPIENTS_PER_SELECTOR as usize {
                     return Ok(Err(TempoPoolTransactionError::Keychain(
                         "too many recipients in selector rule",
@@ -313,10 +303,11 @@ where
             return false;
         };
 
-        let Some(selector_rules) = scope.selector_rules.as_deref() else {
+        let selector_rules = &scope.selector_rules;
+        if selector_rules.is_empty() {
             return true;
-        };
-        if selector_rules.is_empty() || input.len() < 4 {
+        }
+        if input.len() < 4 {
             return false;
         }
 
@@ -325,9 +316,10 @@ where
             return false;
         };
 
-        let Some(recipients) = rule.recipients.as_deref() else {
+        let recipients = &rule.recipients;
+        if recipients.is_empty() {
             return true;
-        };
+        }
         if input.len() < 36 {
             return false;
         }
@@ -3644,7 +3636,7 @@ mod tests {
             for _ in 0..=MAX_CALL_SCOPES {
                 scopes.push(CallScope {
                     target: Address::random(),
-                    selector_rules: None,
+                    selector_rules: vec![],
                 });
             }
 
@@ -3771,11 +3763,11 @@ mod tests {
                 allowed_calls: Some(vec![
                     CallScope {
                         target: duplicate_target,
-                        selector_rules: None,
+                        selector_rules: vec![],
                     },
                     CallScope {
                         target: duplicate_target,
-                        selector_rules: None,
+                        selector_rules: vec![],
                     },
                 ]),
             };
@@ -3821,7 +3813,7 @@ mod tests {
         }
 
         #[test]
-        fn test_key_authorization_t3_rejects_empty_selector_rules() {
+        fn test_key_authorization_t3_accepts_empty_selector_rules_as_address_only_scope() {
             let (access_key_signer, access_key_address) = generate_keypair();
             let (user_signer, user_address) = generate_keypair();
 
@@ -3832,8 +3824,8 @@ mod tests {
                 expiry: None,
                 limits: None,
                 allowed_calls: Some(vec![CallScope {
-                    target: Address::random(),
-                    selector_rules: Some(vec![]),
+                    target: address!("0000000000000000000000000000000000000001"),
+                    selector_rules: vec![],
                 }]),
             };
 
@@ -3867,13 +3859,8 @@ mod tests {
             .expect("should not be a provider error");
 
             assert!(
-                matches!(
-                    result,
-                    Err(TempoPoolTransactionError::Keychain(
-                        "call scope selector rules must be omitted or non-empty"
-                    ))
-                ),
-                "Expected empty selector-rules rejection, got: {result:?}"
+                result.is_ok(),
+                "Expected address-only scope to pass, got: {result:?}"
             );
         }
 
@@ -3890,7 +3877,7 @@ mod tests {
                 limits: None,
                 allowed_calls: Some(vec![CallScope {
                     target: address!("0000000000000000000000000000000000000002"),
-                    selector_rules: None,
+                    selector_rules: vec![],
                 }]),
             };
 
@@ -4038,7 +4025,7 @@ mod tests {
                 limits: None,
                 allowed_calls: Some(vec![CallScope {
                     target: address!("0000000000000000000000000000000000000001"),
-                    selector_rules: None,
+                    selector_rules: vec![],
                 }]),
             };
 
@@ -4094,20 +4081,20 @@ mod tests {
                     limits: None,
                     allowed_calls: Some(vec![CallScope {
                         target: PATH_USD_ADDRESS,
-                        selector_rules: Some(vec![
+                        selector_rules: vec![
                             SelectorRule {
                                 selector: ITIP20::transferCall::SELECTOR,
-                                recipients: Some(vec![allowed_recipient]),
+                                recipients: vec![allowed_recipient],
                             },
                             SelectorRule {
                                 selector: ITIP20::approveCall::SELECTOR,
-                                recipients: Some(vec![allowed_recipient]),
+                                recipients: vec![allowed_recipient],
                             },
                             SelectorRule {
                                 selector: ITIP20::transferWithMemoCall::SELECTOR,
-                                recipients: Some(vec![allowed_recipient]),
+                                recipients: vec![allowed_recipient],
                             },
-                        ]),
+                        ],
                     }]),
                 },
                 &user_signer,
@@ -4187,10 +4174,10 @@ mod tests {
                     limits: None,
                     allowed_calls: Some(vec![CallScope {
                         target: PATH_USD_ADDRESS,
-                        selector_rules: Some(vec![SelectorRule {
+                        selector_rules: vec![SelectorRule {
                             selector: ITIP20::transferCall::SELECTOR,
-                            recipients: Some(vec![allowed_recipient]),
-                        }]),
+                            recipients: vec![allowed_recipient],
+                        }],
                     }]),
                 },
                 &user_signer,
@@ -4241,10 +4228,10 @@ mod tests {
                     limits: None,
                     allowed_calls: Some(vec![CallScope {
                         target: PATH_USD_ADDRESS,
-                        selector_rules: Some(vec![SelectorRule {
+                        selector_rules: vec![SelectorRule {
                             selector: ITIP20::transferCall::SELECTOR,
-                            recipients: Some(vec![duplicate_recipient, duplicate_recipient]),
-                        }]),
+                            recipients: vec![duplicate_recipient, duplicate_recipient],
+                        }],
                     }]),
                 },
                 &user_signer,
@@ -4289,12 +4276,10 @@ mod tests {
                     limits: None,
                     allowed_calls: Some(vec![CallScope {
                         target: address!("0000000000000000000000000000000000000042"),
-                        selector_rules: Some(vec![SelectorRule {
+                        selector_rules: vec![SelectorRule {
                             selector: ITIP20::transferCall::SELECTOR,
-                            recipients: Some(vec![address!(
-                                "00000000000000000000000000000000000000aa"
-                            )]),
-                        }]),
+                            recipients: vec![address!("00000000000000000000000000000000000000aa")],
+                        }],
                     }]),
                 },
                 &user_signer,
@@ -4343,12 +4328,10 @@ mod tests {
                 limits: None,
                 allowed_calls: Some(vec![CallScope {
                     target: undeployed_tip20,
-                    selector_rules: Some(vec![tempo_primitives::transaction::SelectorRule {
+                    selector_rules: vec![tempo_primitives::transaction::SelectorRule {
                         selector: [0xa9, 0x05, 0x9c, 0xbb],
-                        recipients: Some(vec![address!(
-                            "00000000000000000000000000000000000000aa"
-                        )]),
-                    }]),
+                        recipients: vec![address!("00000000000000000000000000000000000000aa")],
+                    }],
                 }]),
             };
 
