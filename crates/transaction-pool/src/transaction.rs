@@ -1069,7 +1069,7 @@ mod tests {
             .build();
 
         // Test various Transaction trait methods
-        assert_eq!(tx.chain_id(), Some(1));
+        assert_eq!(tx.chain_id(), Some(42431));
         assert_eq!(tx.nonce(), 0);
         assert_eq!(tx.gas_limit(), 1_000_000);
         assert_eq!(tx.max_fee_per_gas(), 20_000_000_000);
