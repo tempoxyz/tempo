@@ -1235,7 +1235,7 @@ mod tests {
         let key_pair = P256KeyPair::random();
         let caller = key_pair.address;
 
-        let mut evm = create_funded_evm_t1(caller);
+        let mut evm = create_funded_evm_t3(caller);
 
         let key_auth = KeyAuthorization {
             chain_id: 1,
