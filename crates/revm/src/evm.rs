@@ -233,6 +233,7 @@ mod tests {
     };
 
     use crate::{TempoBlockEnv, TempoEvm, TempoHaltReason, TempoInvalidTransaction, TempoTxEnv};
+    use revm::context::result::InvalidTransaction;
 
     // ==================== Test Constants ====================
 
@@ -1319,7 +1320,7 @@ mod tests {
     /// Tests all error paths in the AA initial transaction gas validation:
     /// - CreateInitCodeSizeLimit: when initcode exceeds max size
     /// - ValueTransferNotAllowedInAATx: when a call has non-zero value
-    /// - InsufficientGasForIntrinsicCost: when gas_limit < intrinsic_gas
+    /// - CallGasCostMoreThanGasLimit: when gas_limit < intrinsic_gas
     #[test]
     fn test_validate_aa_initial_tx_gas_errors() -> eyre::Result<()> {
         use revm::{context::result::EVMError, handler::Handler};
@@ -1387,7 +1388,7 @@ mod tests {
             );
         }
 
-        // Test 3: InsufficientGasForIntrinsicCost - gas_limit < intrinsic_gas
+        // Test 3: CallGasCostMoreThanGasLimit - gas_limit < intrinsic_gas
         {
             let mut evm = create_evm_with_tx(
                 TxBuilder::new()
@@ -1401,41 +1402,49 @@ mod tests {
                 matches!(
                     result,
                     Err(EVMError::Transaction(
-                        TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
-                            gas_limit: 1000,
-                            intrinsic_gas
-                        }
-                    )) if intrinsic_gas > 1000
+                        TempoInvalidTransaction::EthInvalidTransaction(
+                            InvalidTransaction::CallGasCostMoreThanGasLimit {
+                                gas_limit: 1000,
+                                initial_gas
+                            }
+                        )
+                    )) if initial_gas > 1000
                 ),
-                "Expected InsufficientGasForIntrinsicCost error, got: {result:?}"
+                "Expected CallGasCostMoreThanGasLimit error, got: {result:?}"
             );
         }
 
-        // Test 4: InsufficientGasForIntrinsicCost - gas_limit < floor_gas (EIP-7623)
+        // Test 4: gas_limit < floor_gas (EIP-7623)
+        // For AA transactions, intrinsic gas is higher than for standard txs, so with
+        // gas_limit=31000 the intrinsic gas check fires first (CallGasCostMoreThanGasLimit).
+        // The floor gas error (GasFloorMoreThanGasLimit) would only appear if gas_limit
+        // were between intrinsic_gas and floor_gas, but AA intrinsic gas already exceeds
+        // both values here.
         {
             let large_calldata = vec![0x42; 1000]; // 1000 non-zero bytes = 1000 tokens
 
             let mut evm = create_evm_with_tx(
                 TxBuilder::new()
                     .call_identity(&large_calldata)
-                    .gas_limit(31_000) // Above initial_gas (~30600) but below floor_gas (~32500)
+                    .gas_limit(31_000)
                     .build(),
             )?;
 
             let result = handler.validate_initial_tx_gas(&mut evm);
 
-            // Should fail because gas_limit < floor_gas
             assert!(
                 matches!(
                     result,
                     Err(EVMError::Transaction(
-                        TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
-                            gas_limit: 31_000,
-                            intrinsic_gas
-                        }
-                    )) if intrinsic_gas > 31_000
+                        TempoInvalidTransaction::EthInvalidTransaction(
+                            InvalidTransaction::CallGasCostMoreThanGasLimit {
+                                gas_limit: 31_000,
+                                initial_gas
+                            }
+                        )
+                    )) if initial_gas > 31_000
                 ),
-                "Expected InsufficientGasForIntrinsicCost (floor gas), got: {result:?}"
+                "Expected CallGasCostMoreThanGasLimit, got: {result:?}"
             );
         }
 
@@ -2140,15 +2149,17 @@ mod tests {
                 true // OOG: tx committed, nonce incremented
             }
             Err(e) => {
-                // Transaction rejected during validation - must be InsufficientGasForIntrinsicCost
+                // Transaction rejected during validation - must be CallGasCostMoreThanGasLimit
                 assert!(
                     matches!(
                         e,
                         revm::context::result::EVMError::Transaction(
-                            TempoInvalidTransaction::InsufficientGasForIntrinsicCost { .. }
+                            TempoInvalidTransaction::EthInvalidTransaction(
+                                revm::context::result::InvalidTransaction::CallGasCostMoreThanGasLimit { .. }
+                            )
                         )
                     ),
-                    "Expected InsufficientGasForIntrinsicCost, got: {e:?}"
+                    "Expected CallGasCostMoreThanGasLimit, got: {e:?}"
                 );
                 false // Validation rejection: nonce NOT incremented
             }

@@ -1,4 +1,5 @@
 pub mod account_keychain;
+pub mod address_registry;
 pub mod common_errors;
 pub mod nonce;
 pub mod signature_verifier;
@@ -11,6 +12,7 @@ pub mod validator_config;
 pub mod validator_config_v2;
 
 pub use account_keychain::*;
+pub use address_registry::*;
 use alloy_primitives::{Address, address};
 pub use common_errors::*;
 pub use nonce::*;
@@ -37,5 +39,7 @@ pub const ACCOUNT_KEYCHAIN_ADDRESS: Address =
     address!("0xAAAAAAAA00000000000000000000000000000000");
 pub const VALIDATOR_CONFIG_V2_ADDRESS: Address =
     address!("0xCCCCCCCC00000000000000000000000000000001");
+pub const ADDRESS_REGISTRY_ADDRESS: Address =
+    address!("0xFDC0000000000000000000000000000000000000");
 pub const SIGNATURE_VERIFIER_ADDRESS: Address =
     address!("0x5165300000000000000000000000000000000000");
