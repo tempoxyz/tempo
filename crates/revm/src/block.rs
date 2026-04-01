@@ -6,7 +6,7 @@ use revm::{
 };
 
 /// Tempo block environment.
-#[derive(Debug, Clone, Default, derive_more::Deref, derive_more::DerefMut)]
+#[derive(Debug, Clone, Default, derive_more::Deref, derive_more::DerefMut, PartialEq, Eq, Hash)]
 pub struct TempoBlockEnv {
     /// Inner [`BlockEnv`].
     #[deref]
