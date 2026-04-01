@@ -156,11 +156,11 @@ fn call_scope_storage_slots(auth: &tempo_primitives::transaction::KeyAuthorizati
 
             // Storage write accounting:
             // - account mode write: 1
-            // - each target insertion + target mode write: 3 + 1
-            // - each selector insertion + selector mode write: 3 + 1
+            // - each target insertion: 3
+            // - each selector insertion: 3
             // - recipient-constrained selectors also write recipient set length: +1 per selector
             // - recipient set values+positions: +2 per recipient
-            1 + scopes.len() as u64 * 4 + selectors * 4 + constrained_selectors + recipients * 2
+            1 + scopes.len() as u64 * 3 + selectors * 3 + constrained_selectors + recipients * 2
         }
     }
 }
