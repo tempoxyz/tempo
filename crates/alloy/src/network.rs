@@ -493,8 +493,15 @@ mod tests {
     fn output_tx_type_key_authorization_is_aa() {
         let req = TempoTransactionRequest {
             key_authorization: Some(
-                KeyAuthorization::unrestricted(0, SignatureType::Secp256k1, Address::ZERO)
-                    .into_signed(PrimitiveSignature::Secp256k1(Signature::new(
+                KeyAuthorization {
+                    chain_id: 0,
+                    key_type: SignatureType::Secp256k1,
+                    key_id: Address::ZERO,
+                    expiry: None,
+                    limits: None,
+                    allowed_calls: None,
+                }
+                .into_signed(PrimitiveSignature::Secp256k1(Signature::new(
                         U256::ZERO,
                         U256::ZERO,
                         false,

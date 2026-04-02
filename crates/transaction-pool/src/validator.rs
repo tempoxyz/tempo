@@ -3113,8 +3113,14 @@ mod tests {
             let (user_signer, user_address) = generate_keypair();
 
             // Create KeyAuthorization signed by the user's main key
-            let key_auth =
-                KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address);
+            let key_auth = KeyAuthorization {
+                chain_id: 42431, // MODERATO chain_id
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None, // never expires
+                limits: None, // unlimited
+                allowed_calls: None,
+            };
 
             let auth_sig_hash = key_auth.signature_hash();
             let auth_signature = user_signer
@@ -3155,8 +3161,14 @@ mod tests {
             let (access_key_signer, access_key_address) = generate_keypair();
             let (user_signer, user_address) = generate_keypair();
 
-            let key_auth =
-                KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address);
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: None,
+                allowed_calls: None,
+            };
 
             let auth_sig_hash = key_auth.signature_hash();
             let auth_signature = user_signer
@@ -3206,13 +3218,18 @@ mod tests {
             let (user_signer, user_address) = generate_keypair();
             let fee_token = address!("0000000000000000000000000000000000000002");
 
-            let key_auth =
-                KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address)
-                    .with_limits(vec![TokenLimit {
-                        token: fee_token,
-                        limit: U256::ZERO,
-                        period: 0,
-                    }]);
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: Some(vec![TokenLimit {
+                    token: fee_token,
+                    limit: U256::ZERO,
+                    period: 0,
+                }]),
+                allowed_calls: None,
+            };
 
             let auth_sig_hash = key_auth.signature_hash();
             let auth_signature = user_signer
@@ -3259,9 +3276,14 @@ mod tests {
             let (user_signer, user_address) = generate_keypair();
             let fee_token = address!("0000000000000000000000000000000000000002");
 
-            let key_auth =
-                KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address)
-                    .with_no_spending();
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: Some(vec![]),
+                allowed_calls: None,
+            };
 
             let auth_sig_hash = key_auth.signature_hash();
             let auth_signature = user_signer
@@ -3310,13 +3332,18 @@ mod tests {
             let non_fee_token = Address::random();
             assert_ne!(non_fee_token, fee_token);
 
-            let key_auth =
-                KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address)
-                    .with_limits(vec![TokenLimit {
-                        token: non_fee_token,
-                        limit: U256::MAX,
-                        period: 0,
-                    }]);
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: Some(vec![TokenLimit {
+                    token: non_fee_token,
+                    limit: U256::MAX,
+                    period: 0,
+                }]),
+                allowed_calls: None,
+            };
 
             let auth_sig_hash = key_auth.signature_hash();
             let auth_signature = user_signer
@@ -3369,20 +3396,25 @@ mod tests {
             let fee_cost = probe_tx.fee_token_cost();
 
             // Duplicate limits for the same token: execution keeps the last write.
-            let key_auth =
-                KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address)
-                    .with_limits(vec![
-                        TokenLimit {
-                            token: fee_token,
-                            limit: U256::ZERO,
-                            period: 0,
-                        },
-                        TokenLimit {
-                            token: fee_token,
-                            limit: fee_cost + U256::from(100),
-                            period: 0,
-                        },
-                    ]);
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: Some(vec![
+                    TokenLimit {
+                        token: fee_token,
+                        limit: U256::ZERO,
+                        period: 0,
+                    },
+                    TokenLimit {
+                        token: fee_token,
+                        limit: fee_cost + U256::from(100),
+                        period: 0,
+                    },
+                ]),
+                allowed_calls: None,
+            };
 
             let auth_sig_hash = key_auth.signature_hash();
             let auth_signature = user_signer
@@ -3423,20 +3455,25 @@ mod tests {
             let (user_signer, user_address) = generate_keypair();
             let fee_token = address!("0000000000000000000000000000000000000002");
 
-            let key_auth =
-                KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address)
-                    .with_limits(vec![
-                        TokenLimit {
-                            token: fee_token,
-                            limit: U256::from(100_u64),
-                            period: 0,
-                        },
-                        TokenLimit {
-                            token: fee_token,
-                            limit: U256::from(200_u64),
-                            period: 60,
-                        },
-                    ]);
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: Some(vec![
+                    TokenLimit {
+                        token: fee_token,
+                        limit: U256::from(100_u64),
+                        period: 0,
+                    },
+                    TokenLimit {
+                        token: fee_token,
+                        limit: U256::from(200_u64),
+                        period: 60,
+                    },
+                ]),
+                allowed_calls: None,
+            };
 
             let auth_sig_hash = key_auth.signature_hash();
             let auth_signature = user_signer
@@ -3486,13 +3523,18 @@ mod tests {
             let (user_signer, user_address) = generate_keypair();
             let resolved_fee_token = Address::random();
 
-            let key_auth =
-                KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address)
-                    .with_limits(vec![TokenLimit {
-                        token: resolved_fee_token,
-                        limit: U256::MAX,
-                        period: 0,
-                    }]);
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: Some(vec![TokenLimit {
+                    token: resolved_fee_token,
+                    limit: U256::MAX,
+                    period: 0,
+                }]),
+                allowed_calls: None,
+            };
 
             let auth_sig_hash = key_auth.signature_hash();
             let auth_signature = user_signer
@@ -3535,13 +3577,18 @@ mod tests {
             let (user_signer, user_address) = generate_keypair();
             let fee_token = address!("0000000000000000000000000000000000000002");
 
-            let key_auth =
-                KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address)
-                    .with_limits(vec![TokenLimit {
-                        token: fee_token,
-                        limit: U256::ZERO,
-                        period: 0,
-                    }]);
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: Some(vec![TokenLimit {
+                    token: fee_token,
+                    limit: U256::ZERO,
+                    period: 0,
+                }]),
+                allowed_calls: None,
+            };
 
             let auth_sig_hash = key_auth.signature_hash();
             let auth_signature = user_signer

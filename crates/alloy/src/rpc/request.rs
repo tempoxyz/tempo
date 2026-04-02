@@ -682,11 +682,14 @@ mod tests {
     fn test_build_aa_preserves_key_authorization() {
         use tempo_primitives::transaction::{KeyAuthorization, PrimitiveSignature};
 
-        let key_auth = KeyAuthorization::unrestricted(
-            4217,
-            SignatureType::Secp256k1,
-            address!("0x1111111111111111111111111111111111111111"),
-        )
+        let key_auth = KeyAuthorization {
+            chain_id: 4217,
+            key_type: SignatureType::Secp256k1,
+            key_id: address!("0x1111111111111111111111111111111111111111"),
+            expiry: None,
+            limits: None,
+            allowed_calls: None,
+        }
         .into_signed(PrimitiveSignature::default());
 
         let mut request = TempoTransactionRequest {
@@ -726,11 +729,14 @@ mod tests {
     fn test_keychain_builder_helpers() {
         use tempo_primitives::transaction::{KeyAuthorization, PrimitiveSignature};
 
-        let key_auth = KeyAuthorization::unrestricted(
-            4217,
-            SignatureType::Secp256k1,
-            address!("0x1111111111111111111111111111111111111111"),
-        )
+        let key_auth = KeyAuthorization {
+            chain_id: 4217,
+            key_type: SignatureType::Secp256k1,
+            key_id: address!("0x1111111111111111111111111111111111111111"),
+            expiry: None,
+            limits: None,
+            allowed_calls: None,
+        }
         .into_signed(PrimitiveSignature::default());
 
         let request = TempoTransactionRequest::default()
