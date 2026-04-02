@@ -32,13 +32,6 @@ use crate::{
 use alloy::primitives::{Address, B256, FixedBytes, TxKind, U256, keccak256};
 use tempo_precompiles_macros::{Storable, contract};
 
-/// Maximum number of call scopes per account key.
-pub const MAX_CALL_SCOPES: u8 = 8;
-/// Maximum number of selector rules per call scope.
-pub const MAX_SELECTOR_RULES_PER_SCOPE: u8 = 16;
-/// Maximum number of recipients per selector rule.
-pub const MAX_RECIPIENTS_PER_SELECTOR: u8 = 16;
-
 /// Allowed TIP-20 selectors for recipient-constrained rules.
 const TIP20_TRANSFER_SELECTOR: [u8; 4] = ITIP20::transferCall::SELECTOR;
 const TIP20_APPROVE_SELECTOR: [u8; 4] = ITIP20::approveCall::SELECTOR;
@@ -870,9 +863,10 @@ impl AccountKeychain {
                     .recipients
                     .delete()?;
             } else {
+                // `validate_selector_rules` already rejected duplicates.
                 self.key_scopes[account_key].target_scopes[target].selector_scopes[selector]
                     .recipients
-                    .write(Set::from(rule.recipients.clone()))?;
+                    .write(Set::new_unchecked(rule.recipients.clone()))?;
             }
         }
 

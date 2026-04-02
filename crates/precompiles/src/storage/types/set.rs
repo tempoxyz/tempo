@@ -77,6 +77,18 @@ impl<T> Set<T> {
     pub fn new() -> Self {
         Self(Vec::new())
     }
+
+    /// Creates a set from a vector that is already known to contain no duplicates.
+    ///
+    /// # IMPORTANT
+    ///
+    /// The caller **must** guarantee that `vec` contains no duplicate elements.
+    /// Violating this breaks the position-mapping invariant in storage: two equal values would
+    /// share a single position slot, causing silent data corruption on subsequent `remove()` calls.
+    #[inline]
+    pub fn new_unchecked(vec: Vec<T>) -> Self {
+        Self(vec)
+    }
 }
 
 impl<T> Deref for Set<T> {
