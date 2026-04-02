@@ -75,6 +75,13 @@ pub const MAX_TOKEN_LIMITS: usize = 256;
 /// they become executable.
 pub const DEFAULT_AA_VALID_AFTER_MAX_SECS: u64 = 120;
 
+/// Maximum number of call scopes per account key.
+const MAX_KEYCHAIN_CALL_SCOPES: u8 = 10;
+/// Maximum number of selector rules per call scope.
+const MAX_KEYCHAIN_SELECTOR_RULES_PER_SCOPE: u8 = 16;
+/// Maximum number of recipients per selector rule.
+const MAX_KEYCHAIN_RECIPIENTS_PER_SELECTOR: u8 = 16;
+
 /// Validator for Tempo transactions.
 #[derive(Debug)]
 pub struct TempoTransactionValidator<Client> {
@@ -190,6 +197,12 @@ where
             return Ok(Ok(()));
         };
 
+        if scopes.len() > MAX_KEYCHAIN_CALL_SCOPES as usize {
+            return Ok(Err(TempoPoolTransactionError::Keychain(
+                "too many call scopes in key authorization",
+            )));
+        }
+
         // Validate each scope as a unit so target and selector constraints stay grouped.
         let mut seen_targets = HashSet::with_capacity(scopes.len());
         for scope in scopes {
@@ -202,6 +215,12 @@ where
             let selector_rules = &scope.selector_rules;
             if selector_rules.is_empty() {
                 continue;
+            }
+
+            if selector_rules.len() > MAX_KEYCHAIN_SELECTOR_RULES_PER_SCOPE as usize {
+                return Ok(Err(TempoPoolTransactionError::Keychain(
+                    "too many selector rules in call scope",
+                )));
             }
 
             let mut requires_deployed_tip20 = false;
@@ -222,6 +241,12 @@ where
 
                 // Recipient-constrained rules only make sense for constrained TIP-20 selectors and
                 // must carry a de-duplicated recipient set.
+                if recipients.len() > MAX_KEYCHAIN_RECIPIENTS_PER_SELECTOR as usize {
+                    return Ok(Err(TempoPoolTransactionError::Keychain(
+                        "too many recipients in selector rule",
+                    )));
+                }
+
                 if !is_constrained_tip20_selector(rule.selector) {
                     return Ok(Err(TempoPoolTransactionError::Keychain(
                         "recipient-constrained selector rules require TIP-20 target and constrained selector",
@@ -3604,6 +3629,68 @@ mod tests {
                 "Inline key authorization spending limits should be skipped for sponsored transactions"
             );
             Ok(())
+        }
+
+        #[test]
+        fn test_key_authorization_t3_rejects_too_many_call_scopes() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+
+            let mut scopes = Vec::new();
+            for _ in 0..=MAX_KEYCHAIN_CALL_SCOPES {
+                scopes.push(CallScope {
+                    target: Address::random(),
+                    selector_rules: vec![],
+                });
+            }
+
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: None,
+                allowed_calls: Some(scopes),
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage_spec(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+                moderato_with_t3(),
+            );
+            let mut state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )
+            .expect("should not be a provider error");
+
+            assert!(
+                matches!(
+                    result,
+                    Err(TempoPoolTransactionError::Keychain(
+                        "too many call scopes in key authorization"
+                    ))
+                ),
+                "Expected too many call scopes rejection, got: {result:?}"
+            );
         }
 
         #[test]
