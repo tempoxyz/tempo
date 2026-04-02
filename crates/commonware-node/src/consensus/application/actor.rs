@@ -418,20 +418,6 @@ impl Inner<Init> {
 
         // 2. make the forkchoice state available && cache the block
         if let Ok((block, true)) = result {
-            // Only make the verified block canonical when not doing a
-            // re-propose at the end of an epoch.
-            if parent.1 != payload
-                && let Err(error) = self
-                    .state
-                    .executor
-                    .canonicalize_head(block.height(), block.digest())
-                    .await
-            {
-                tracing::warn!(
-                    %error,
-                    "failed making the verified proposal the head of the canonical chain",
-                );
-            }
             self.marshal.verified(round, block).await;
         }
     }

@@ -85,7 +85,7 @@ impl LastCanonicalized {
     /// `self` unchanged.
     fn update_head(self, height: Height, digest: Digest) -> Self {
         let mut this = self;
-        if height > this.finalized_height {
+        if height >= this.finalized_height {
             this.head_height = height;
             this.forkchoice.head_block_hash = digest.0;
         }
