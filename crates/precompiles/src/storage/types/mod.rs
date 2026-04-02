@@ -1,7 +1,7 @@
 //! Storable type system for EVM storage.
 //!
 //! Defines the core traits ([`StorableType`], [`Storable`], [`FromWord`], [`Packable`])
-//! and types ([`Slot`], [`Mapping`], [`Set`], [`vec::VecHandler`], [`array::ArrayHandler`]) that
+//! and types ([`Slot`], [`Mapping`], [`Set`], [`EnumerableMap`], [`vec::VecHandler`], [`array::ArrayHandler`]) that
 //! enable type-safe access to EVM storage slots with automatic packing.
 
 mod slot;
@@ -11,8 +11,10 @@ pub mod mapping;
 pub use mapping::*;
 
 pub mod array;
+pub mod enumerable_map;
 pub mod set;
 pub mod vec;
+pub use enumerable_map::{EnumerableMap, EnumerableMapHandler};
 pub use set::{Set, SetHandler};
 
 pub mod bytes_like;
