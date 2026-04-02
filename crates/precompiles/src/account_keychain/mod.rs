@@ -784,10 +784,6 @@ impl AccountKeychain {
                     return Ok(());
                 }
 
-                if scopes.len() > MAX_CALL_SCOPES as usize {
-                    return Err(AccountKeychainError::scope_limit_exceeded().into());
-                }
-
                 let mut seen_targets = HashSet::new();
                 for scope in scopes {
                     if !seen_targets.insert(scope.target) {
@@ -853,15 +849,7 @@ impl AccountKeychain {
             self.validate_selector_rules(target, &scope.selectorRules)?;
         }
 
-        if !self.key_scopes[account_key].targets.contains(&target)? {
-            let count = self.key_scopes[account_key].targets.len()?;
-            if count >= MAX_CALL_SCOPES as usize {
-                return Err(AccountKeychainError::scope_limit_exceeded().into());
-            }
-
-            self.key_scopes[account_key].targets.insert(target)?;
-        }
-
+        self.key_scopes[account_key].targets.insert(target)?;
         self.clear_target_selectors(account_key, target)?;
 
         if scope.selectorRules.is_empty() {
@@ -897,10 +885,6 @@ impl AccountKeychain {
     /// selector entirely, omit it from `selectorRules` or remove the target scope instead of
     /// leaving behind an empty child set via incremental mutation.
     fn validate_selector_rules(&self, target: Address, rules: &[SelectorRule]) -> Result<()> {
-        if rules.len() > MAX_SELECTOR_RULES_PER_SCOPE as usize {
-            return Err(AccountKeychainError::selector_limit_exceeded().into());
-        }
-
         let mut cached_is_tip20: Option<bool> = None;
         let mut is_tip20 = || -> Result<bool> {
             match cached_is_tip20 {
@@ -917,10 +901,6 @@ impl AccountKeychain {
 
             if rule.recipients.is_empty() {
                 continue;
-            }
-
-            if rule.recipients.len() > MAX_RECIPIENTS_PER_SELECTOR as usize {
-                return Err(AccountKeychainError::recipient_limit_exceeded().into());
             }
 
             if !is_constrained_tip20_selector(*rule.selector) || !is_tip20()? {
@@ -3825,55 +3805,6 @@ mod tests {
                 )
                 .expect_err("unexpected success for zero target scope");
             assert_invalid_call_scope(err);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_t3_set_allowed_calls_rejects_empty_scope_batch() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
-        let account = Address::random();
-        let key_id = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
-
-            keychain.authorize_key(
-                account,
-                authorizeKeyCall {
-                    keyId: key_id,
-                    signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: false,
-                        limits: vec![],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
-                },
-            )?;
-
-            let err = keychain
-                .set_allowed_calls(
-                    account,
-                    setAllowedCallsCall {
-                        keyId: key_id,
-                        scopes: vec![],
-                    },
-                )
-                .expect_err("unexpected success for empty scope batch");
-            assert_invalid_call_scope(err);
-
-            let scopes = keychain.get_allowed_calls(getAllowedCallsCall {
-                account,
-                keyId: key_id,
-            })?;
-            assert!(!scopes.isScoped);
-            assert!(scopes.scopes.is_empty());
 
             Ok(())
         })

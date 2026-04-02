@@ -194,9 +194,7 @@ crate::sol! {
         error SignatureTypeMismatch(uint8 expected, uint8 actual);
         error CallNotAllowed();
         error InvalidCallScope();
-        error ScopeLimitExceeded();
-        error SelectorLimitExceeded();
-        error RecipientLimitExceeded();
+
         error LegacyAuthorizeKeySelectorChanged(bytes4 newSelector);
     }
 }
@@ -269,20 +267,6 @@ impl AccountKeychainError {
         Self::InvalidCallScope(IAccountKeychain::InvalidCallScope {})
     }
 
-    /// Creates an error for scope count limit violations.
-    pub const fn scope_limit_exceeded() -> Self {
-        Self::ScopeLimitExceeded(IAccountKeychain::ScopeLimitExceeded {})
-    }
-
-    /// Creates an error for selector count limit violations.
-    pub const fn selector_limit_exceeded() -> Self {
-        Self::SelectorLimitExceeded(IAccountKeychain::SelectorLimitExceeded {})
-    }
-
-    /// Creates an error for recipient count limit violations.
-    pub const fn recipient_limit_exceeded() -> Self {
-        Self::RecipientLimitExceeded(IAccountKeychain::RecipientLimitExceeded {})
-    }
 
     /// Creates an error for the legacy authorize-key selector being unavailable on T3+.
     pub fn legacy_authorize_key_selector_changed(new_selector: [u8; 4]) -> Self {
