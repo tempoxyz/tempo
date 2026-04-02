@@ -145,8 +145,11 @@ where
         V: Storable,
         V::Handler: Handler<V>,
     {
-        self.values.at_mut(key).delete()?;
-        self.keys.remove(key)
+        if self.keys.remove(key)? {
+            self.values.at_mut(key).delete()?;
+            Ok(true)
+        }
+        Ok(false)
     }
 
     /// Removes all key-value pairs from the map.
