@@ -35,3 +35,9 @@ pub const ACCOUNT_KEYCHAIN_ADDRESS: Address =
     address!("0xAAAAAAAA00000000000000000000000000000000");
 pub const VALIDATOR_CONFIG_V2_ADDRESS: Address =
     address!("0xCCCCCCCC00000000000000000000000000000001");
+
+/// Testnet-only TIP20 tokens (minted by faucet on Moderato). These addresses are in the
+/// reserved TIP20 space and may be deployed on mainnet in the future with the same addresses.
+pub const ALPHA_USD_ADDRESS: Address = address!("0x20C0000000000000000000000000000000000001");
+pub const BETA_USD_ADDRESS: Address = address!("0x20C0000000000000000000000000000000000002");
+pub const THETA_USD_ADDRESS: Address = address!("0x20C0000000000000000000000000000000000003");
