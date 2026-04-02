@@ -76,11 +76,11 @@ pub const MAX_TOKEN_LIMITS: usize = 256;
 pub const DEFAULT_AA_VALID_AFTER_MAX_SECS: u64 = 120;
 
 /// Maximum number of call scopes per account key.
-const MAX_KEYCHAIN_CALL_SCOPES: u8 = 10;
+const MAX_KEYCHAIN_CALL_SCOPES: u8 = 64;
 /// Maximum number of selector rules per call scope.
-const MAX_KEYCHAIN_SELECTOR_RULES_PER_SCOPE: u8 = 16;
+const MAX_KEYCHAIN_SELECTOR_RULES_PER_SCOPE: u8 = 64;
 /// Maximum number of recipients per selector rule.
-const MAX_KEYCHAIN_RECIPIENTS_PER_SELECTOR: u8 = 16;
+const MAX_KEYCHAIN_RECIPIENTS_PER_SELECTOR: u8 = 64;
 
 /// Validator for Tempo transactions.
 #[derive(Debug)]
