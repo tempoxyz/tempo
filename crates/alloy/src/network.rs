@@ -499,6 +499,7 @@ mod tests {
                     key_id: Address::ZERO,
                     expiry: None,
                     limits: None,
+                    allowed_calls: None,
                 },
                 signature: PrimitiveSignature::Secp256k1(Signature::new(
                     U256::ZERO,

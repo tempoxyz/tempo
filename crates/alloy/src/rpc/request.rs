@@ -586,6 +586,7 @@ mod tests {
                 key_id: address!("0x1111111111111111111111111111111111111111"),
                 expiry: None,
                 limits: None,
+                allowed_calls: None,
             },
             signature: PrimitiveSignature::default(),
         };

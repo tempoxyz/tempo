@@ -189,9 +189,15 @@ pub(crate) fn create_signed_key_authorization(
     } else {
         Some(
             (0..num_limits)
-                .map(|_| TokenLimit {
-                    token: Address::ZERO,
-                    limit: U256::ZERO,
+                .map(|i| {
+                    let mut token = [0u8; 20];
+                    token[12..].copy_from_slice(&((i as u64) + 1).to_be_bytes());
+
+                    TokenLimit {
+                        token: Address::from(token),
+                        limit: U256::ZERO,
+                        period: 0,
+                    }
                 })
                 .collect(),
         )
@@ -203,6 +209,7 @@ pub(crate) fn create_signed_key_authorization(
         key_id: Address::random(), // Random key being authorized
         expiry: None,              // Never expires
         limits,
+        allowed_calls: None,
     };
 
     // Sign the key authorization
@@ -311,6 +318,7 @@ pub(crate) fn create_key_authorization(
         key_id: access_key_addr,
         expiry,
         limits: spending_limits,
+        allowed_calls: None,
     };
 
     // Root key signs the authorization
@@ -585,6 +593,7 @@ pub(crate) fn create_default_token_limit(
     vec![TokenLimit {
         token: DEFAULT_FEE_TOKEN,
         limit: funded / U256::from(2),
+        period: 0,
     }]
 }
 
