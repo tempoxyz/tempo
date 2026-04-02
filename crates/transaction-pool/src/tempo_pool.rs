@@ -502,6 +502,7 @@ where
 
                     Ok(AddedTransactionOutcome { hash, state })
                 } else {
+                    let hash = *transaction.hash();
                     self.protocol_pool
                         .inner()
                         .add_transactions(
@@ -516,16 +517,17 @@ where
                             }),
                         )
                         .pop()
-                        .unwrap()
+                        .ok_or_else(|| PoolError::new(hash, PoolErrorKind::DiscardedOnInsert))?
                 }
             }
             invalid => {
+                let hash = invalid.tx_hash();
                 // this forwards for event listener updates
                 self.protocol_pool
                     .inner()
                     .add_transactions(origin, Some(invalid))
                     .pop()
-                    .unwrap()
+                    .ok_or_else(|| PoolError::new(hash, PoolErrorKind::DiscardedOnInsert))?
             }
         }
     }
