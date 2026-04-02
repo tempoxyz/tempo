@@ -7,4 +7,4 @@ pub mod keychain;
 #[doc(inline)]
 pub use ext::{TempoProviderBuilderExt, TempoProviderExt};
 #[doc(inline)]
-pub use keychain::{AccountKeyRestrictions, CallScopeBuilder, KeychainBuildError};
+pub use keychain::{CallScopeBuilder, KeyRestrictions, KeychainBuildError};

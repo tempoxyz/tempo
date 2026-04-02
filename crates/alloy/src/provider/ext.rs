@@ -14,7 +14,6 @@ use tempo_primitives::transaction::CallScope;
 use crate::{
     TempoFillers, TempoNetwork,
     fillers::{ExpiringNonceFiller, NonceKeyFiller, Random2DNonceFiller},
-    provider::keychain::to_primitive_call_scopes,
 };
 
 /// Extension trait for [`Provider`] with Tempo-specific functionality.
@@ -84,7 +83,7 @@ pub trait TempoProviderExt: Provider<TempoNetwork> {
             .call()
             .await
             .map(|getAllowedCallsReturn { isScoped, scopes }| {
-                isScoped.then(|| to_primitive_call_scopes(scopes))
+                isScoped.then(|| scopes.into_iter().map(Into::into).collect())
             })
     }
 

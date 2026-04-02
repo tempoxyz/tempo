@@ -5,9 +5,8 @@ use alloy_sol_types::SolCall;
 use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     IAccountKeychain::{
-        CallScope as AbiCallScope, KeyRestrictions as AbiKeyRestrictions,
-        LegacyTokenLimit as AbiLegacyTokenLimit, SelectorRule as AbiSelectorRule,
-        SignatureType as AbiSignatureType, TokenLimit as AbiTokenLimit, removeAllowedCallsCall,
+        KeyRestrictions as AbiKeyRestrictions, LegacyTokenLimit as AbiLegacyTokenLimit,
+        TokenLimit as AbiTokenLimit, removeAllowedCallsCall,
         revokeKeyCall, setAllowedCallsCall, updateSpendingLimitCall,
     },
     ITIP20, authorizeKeyCall, legacyAuthorizeKeyCall,
@@ -19,7 +18,7 @@ use tempo_primitives::{
 
 /// SDK-level access-key restrictions used for AccountKeychain call builders.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct AccountKeyRestrictions {
+pub struct KeyRestrictions {
     /// Unix timestamp when the key expires. `None` means never expires.
     pub expiry: Option<u64>,
     /// Optional token spending limits. `None` means unlimited spending.
@@ -28,7 +27,7 @@ pub struct AccountKeyRestrictions {
     pub allowed_calls: Option<Vec<CallScope>>,
 }
 
-impl AccountKeyRestrictions {
+impl KeyRestrictions {
     /// Create a new set of account-key restrictions.
     pub fn new(
         expiry: Option<u64>,
@@ -53,11 +52,41 @@ impl AccountKeyRestrictions {
     }
 }
 
+impl From<KeyRestrictions> for AbiKeyRestrictions {
+    fn from(restrictions: KeyRestrictions) -> Self {
+        let KeyRestrictions {
+            expiry,
+            limits,
+            allowed_calls,
+        } = restrictions;
+
+        Self {
+            expiry: expiry.unwrap_or(u64::MAX),
+            enforceLimits: limits.is_some(),
+            limits: limits
+                .unwrap_or_default()
+                .into_iter()
+                .map(|limit| AbiTokenLimit {
+                    token: limit.token,
+                    amount: limit.limit,
+                    period: limit.period,
+                })
+                .collect(),
+            allowAnyCalls: allowed_calls.is_none(),
+            allowedCalls: allowed_calls
+                .unwrap_or_default()
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+        }
+    }
+}
+
 /// Builder for constructing a [`CallScope`] with ergonomic helpers for common TIP-20 selectors.
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// use alloy_primitives::address;
 /// use tempo_alloy::provider::keychain::CallScopeBuilder;
 ///
@@ -151,7 +180,7 @@ impl fmt::Display for KeychainBuildError {
 pub fn authorize_key_legacy(
     key_id: Address,
     signature_type: SignatureType,
-    restrictions: AccountKeyRestrictions,
+    restrictions: KeyRestrictions,
 ) -> Result<Call, KeychainBuildError> {
     if restrictions.has_call_scopes() {
         return Err(KeychainBuildError::LegacyCallScopes);
@@ -160,7 +189,7 @@ pub fn authorize_key_legacy(
         return Err(KeychainBuildError::LegacyPeriodicLimits);
     }
 
-    let AccountKeyRestrictions {
+    let KeyRestrictions {
         expiry,
         limits,
         allowed_calls: _,
@@ -175,139 +204,63 @@ pub fn authorize_key_legacy(
         })
         .collect();
 
-    Ok(account_keychain_call(
-        legacyAuthorizeKeyCall {
-            keyId: key_id,
-            signatureType: AbiSignatureType::try_from(signature_type as u8)
-                .expect("primitive and ABI SignatureType share the same discriminants"),
-            expiry: expiry.unwrap_or(u64::MAX),
-            enforceLimits: enforce_limits,
-            limits,
-        }
-        .abi_encode(),
-    ))
+    Ok(account_keychain_call(legacyAuthorizeKeyCall {
+        keyId: key_id,
+        signatureType: signature_type.into(),
+        expiry: expiry.unwrap_or(u64::MAX),
+        enforceLimits: enforce_limits,
+        limits,
+    }))
 }
 
 /// Build a `authorizeKey(address,uint8,KeyRestrictions)` precompile call (T3+).
 pub fn authorize_key(
     key_id: Address,
     signature_type: SignatureType,
-    restrictions: AccountKeyRestrictions,
+    restrictions: KeyRestrictions,
 ) -> Call {
-    account_keychain_call(
-        authorizeKeyCall {
-            keyId: key_id,
-            signatureType: AbiSignatureType::try_from(signature_type as u8)
-                .expect("primitive and ABI SignatureType share the same discriminants"),
-            config: to_abi_key_restrictions(restrictions),
-        }
-        .abi_encode(),
-    )
+    account_keychain_call(authorizeKeyCall {
+        keyId: key_id,
+        signatureType: signature_type.into(),
+        config: restrictions.into(),
+    })
 }
 
 /// Build a `revokeKey(address)` precompile call.
 pub fn revoke_key(key_id: Address) -> Call {
-    account_keychain_call(revokeKeyCall { keyId: key_id }.abi_encode())
+    account_keychain_call(revokeKeyCall { keyId: key_id })
 }
 
 /// Build an `updateSpendingLimit(address,address,uint256)` precompile call.
 pub fn update_spending_limit(key_id: Address, token: Address, new_limit: U256) -> Call {
-    account_keychain_call(
-        updateSpendingLimitCall {
-            keyId: key_id,
-            token,
-            newLimit: new_limit,
-        }
-        .abi_encode(),
-    )
+    account_keychain_call(updateSpendingLimitCall {
+        keyId: key_id,
+        token,
+        newLimit: new_limit,
+    })
 }
 
 /// Build a `setAllowedCalls(address,CallScope[])` precompile call.
 pub fn set_allowed_calls(key_id: Address, scopes: Vec<CallScope>) -> Call {
-    account_keychain_call(
-        setAllowedCallsCall {
-            keyId: key_id,
-            scopes: scopes.into_iter().map(abi_call_scope).collect(),
-        }
-        .abi_encode(),
-    )
+    account_keychain_call(setAllowedCallsCall {
+        keyId: key_id,
+        scopes: scopes.into_iter().map(Into::into).collect(),
+    })
 }
 
 /// Build a `removeAllowedCalls(address,address)` precompile call.
 pub fn remove_allowed_calls(key_id: Address, target: Address) -> Call {
-    account_keychain_call(
-        removeAllowedCallsCall {
-            keyId: key_id,
-            target,
-        }
-        .abi_encode(),
-    )
+    account_keychain_call(removeAllowedCallsCall {
+        keyId: key_id,
+        target,
+    })
 }
 
-pub(crate) fn to_primitive_call_scopes(scopes: Vec<AbiCallScope>) -> Vec<CallScope> {
-    scopes
-        .into_iter()
-        .map(|scope| CallScope {
-            target: scope.target,
-            selector_rules: scope
-                .selectorRules
-                .into_iter()
-                .map(|rule| SelectorRule {
-                    selector: rule.selector.into(),
-                    recipients: rule.recipients,
-                })
-                .collect(),
-        })
-        .collect()
-}
-
-fn to_abi_key_restrictions(restrictions: AccountKeyRestrictions) -> AbiKeyRestrictions {
-    let AccountKeyRestrictions {
-        expiry,
-        limits,
-        allowed_calls,
-    } = restrictions;
-
-    AbiKeyRestrictions {
-        expiry: expiry.unwrap_or(u64::MAX),
-        enforceLimits: limits.is_some(),
-        limits: limits
-            .unwrap_or_default()
-            .into_iter()
-            .map(|limit| AbiTokenLimit {
-                token: limit.token,
-                amount: limit.limit,
-                period: limit.period,
-            })
-            .collect(),
-        allowAnyCalls: allowed_calls.is_none(),
-        allowedCalls: allowed_calls
-            .unwrap_or_default()
-            .into_iter()
-            .map(abi_call_scope)
-            .collect(),
-    }
-}
-
-fn abi_call_scope(scope: CallScope) -> AbiCallScope {
-    AbiCallScope {
-        target: scope.target,
-        selectorRules: scope
-            .selector_rules
-            .into_iter()
-            .map(|rule| AbiSelectorRule {
-                selector: rule.selector.into(),
-                recipients: rule.recipients,
-            })
-            .collect(),
-    }
-}
-
-fn account_keychain_call(input: Vec<u8>) -> Call {
+fn account_keychain_call(call: impl SolCall) -> Call {
     Call {
         to: TxKind::Call(ACCOUNT_KEYCHAIN_ADDRESS),
         value: U256::ZERO,
-        input: Bytes::from(input),
+        input: Bytes::from(call.abi_encode()),
     }
 }
 
@@ -315,13 +268,17 @@ fn account_keychain_call(input: Vec<u8>) -> Call {
 mod tests {
     use super::*;
     use alloy_primitives::{address, uint};
+    use tempo_contracts::precompiles::IAccountKeychain::{
+        CallScope as AbiCallScope, SelectorRule as AbiSelectorRule,
+        SignatureType as AbiSignatureType,
+    };
 
     #[test]
     fn test_authorize_key_t3_defaults_to_unrestricted_never_expiring() {
         let call = authorize_key(
             address!("0x1111111111111111111111111111111111111111"),
             SignatureType::Secp256k1,
-            AccountKeyRestrictions::default(),
+            KeyRestrictions::default(),
         );
 
         let decoded = authorizeKeyCall::abi_decode(&call.input).expect("decode authorizeKey");
@@ -339,7 +296,7 @@ mod tests {
 
     #[test]
     fn test_authorize_key_t3_preserves_call_scopes() {
-        let restrictions = AccountKeyRestrictions::new(
+        let restrictions = KeyRestrictions::new(
             Some(123),
             Some(vec![TokenLimit {
                 token: address!("0x20c0000000000000000000000000000000000001"),
@@ -380,7 +337,7 @@ mod tests {
         let scoped = authorize_key_legacy(
             address!("0x1111111111111111111111111111111111111111"),
             SignatureType::Secp256k1,
-            AccountKeyRestrictions::new(None, None, Some(vec![])),
+            KeyRestrictions::new(None, None, Some(vec![])),
         )
         .expect_err("legacy ABI should reject call scopes");
         assert_eq!(scoped, KeychainBuildError::LegacyCallScopes);
@@ -388,7 +345,7 @@ mod tests {
         let periodic = authorize_key_legacy(
             address!("0x1111111111111111111111111111111111111111"),
             SignatureType::Secp256k1,
-            AccountKeyRestrictions::new(
+            KeyRestrictions::new(
                 None,
                 Some(vec![TokenLimit {
                     token: address!("0x20c0000000000000000000000000000000000001"),
@@ -407,7 +364,7 @@ mod tests {
         let call = authorize_key_legacy(
             address!("0x1111111111111111111111111111111111111111"),
             SignatureType::WebAuthn,
-            AccountKeyRestrictions::new(
+            KeyRestrictions::new(
                 Some(999),
                 Some(vec![TokenLimit {
                     token: address!("0x20c0000000000000000000000000000000000001"),
@@ -463,8 +420,8 @@ mod tests {
             }],
         }];
 
-        let primitive = to_primitive_call_scopes(scopes.clone());
-        let roundtrip: Vec<AbiCallScope> = primitive.into_iter().map(abi_call_scope).collect();
+        let primitive: Vec<CallScope> = scopes.clone().into_iter().map(Into::into).collect();
+        let roundtrip: Vec<AbiCallScope> = primitive.into_iter().map(Into::into).collect();
         assert_eq!(roundtrip, scopes);
     }
 }

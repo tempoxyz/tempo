@@ -88,6 +88,46 @@ impl SelectorRule {
     }
 }
 
+use tempo_contracts::precompiles::IAccountKeychain::{
+    CallScope as AbiCallScope, SelectorRule as AbiSelectorRule,
+};
+
+impl From<AbiCallScope> for CallScope {
+    fn from(scope: AbiCallScope) -> Self {
+        Self {
+            target: scope.target,
+            selector_rules: scope.selectorRules.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<CallScope> for AbiCallScope {
+    fn from(scope: CallScope) -> Self {
+        Self {
+            target: scope.target,
+            selectorRules: scope.selector_rules.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<AbiSelectorRule> for SelectorRule {
+    fn from(rule: AbiSelectorRule) -> Self {
+        Self {
+            selector: rule.selector.into(),
+            recipients: rule.recipients,
+        }
+    }
+}
+
+impl From<SelectorRule> for AbiSelectorRule {
+    fn from(rule: SelectorRule) -> Self {
+        Self {
+            selector: rule.selector.into(),
+            recipients: rule.recipients,
+        }
+    }
+}
+
 /// Key authorization for provisioning access keys
 ///
 /// Used in TempoTransaction to add a new key to the AccountKeychain precompile.
