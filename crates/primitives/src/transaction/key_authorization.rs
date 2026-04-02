@@ -165,6 +165,11 @@ impl KeyAuthorization {
         self.expiry.is_none()
     }
 
+    /// Returns whether this authorization can be encoded with the legacy pre-T3 ABI.
+    pub fn is_legacy_compatible(&self) -> bool {
+        !(self.has_periodic_limits() || self.has_call_scopes())
+    }
+
     /// Convert the key authorization into a [`SignedKeyAuthorization`] with a signature.
     pub fn into_signed(self, signature: PrimitiveSignature) -> SignedKeyAuthorization {
         SignedKeyAuthorization {

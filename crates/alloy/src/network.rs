@@ -165,6 +165,8 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
             || !self.tempo_authorization_list.is_empty()
             || self.key_authorization.is_some()
             || self.key_id.is_some()
+            || self.key_type.is_some()
+            || self.key_data.is_some()
             || self.valid_before.is_some()
             || self.valid_after.is_some()
             || self.fee_payer_signature.is_some()
