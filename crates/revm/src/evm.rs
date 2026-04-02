@@ -988,8 +988,7 @@ mod tests {
         assert!(result.is_success());
 
         // Test with KeychainSignature using key_authorization to provision the access key
-        let key_auth =
-            KeyAuthorization::unrestricted(1, SignatureType::WebAuthn, caller);
+        let key_auth = KeyAuthorization::unrestricted(1, SignatureType::WebAuthn, caller);
         let key_auth_webauthn_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
         let signed_key_auth =
             key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_webauthn_sig));
@@ -1126,8 +1125,7 @@ mod tests {
 
         // Explicit deny-all marker in protocol payload: Some([]).
         let key_auth =
-            KeyAuthorization::unrestricted(1, SignatureType::WebAuthn, caller)
-                .with_no_calls();
+            KeyAuthorization::unrestricted(1, SignatureType::WebAuthn, caller).with_no_calls();
         let key_auth_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
         let signed_key_auth = key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig));
 
@@ -1187,15 +1185,14 @@ mod tests {
         }
         .abi_encode();
 
-        let key_auth =
-            KeyAuthorization::unrestricted(1, SignatureType::WebAuthn, caller)
-                .with_allowed_calls(vec![tempo_primitives::transaction::CallScope {
-                    target: PATH_USD_ADDRESS,
-                    selector_rules: vec![tempo_primitives::transaction::SelectorRule {
-                        selector: ITIP20::transferCall::SELECTOR,
-                        recipients: Vec::new(),
-                    }],
-                }]);
+        let key_auth = KeyAuthorization::unrestricted(1, SignatureType::WebAuthn, caller)
+            .with_allowed_calls(vec![tempo_primitives::transaction::CallScope {
+                target: PATH_USD_ADDRESS,
+                selector_rules: vec![tempo_primitives::transaction::SelectorRule {
+                    selector: ITIP20::transferCall::SELECTOR,
+                    recipients: Vec::new(),
+                }],
+            }]);
         let key_auth_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
         let signed_key_auth = key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig));
 
@@ -1221,8 +1218,7 @@ mod tests {
 
         let mut evm = create_funded_evm_t3(caller);
 
-        let key_auth =
-            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, caller);
+        let key_auth = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, caller);
         let key_auth_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
         let signed_key_auth = key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig));
 
@@ -2346,7 +2342,8 @@ mod tests {
         // Now try with sufficient gas - key should be authorized
 
         let access_key2 = P256KeyPair::random();
-        let key_auth2 = KeyAuthorization::unrestricted(1, SignatureType::WebAuthn, access_key2.address);
+        let key_auth2 =
+            KeyAuthorization::unrestricted(1, SignatureType::WebAuthn, access_key2.address);
         let key_auth_sig2 = key_pair.sign_webauthn(key_auth2.signature_hash().as_slice())?;
         let signed_key_auth2 = key_auth2.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig2));
 

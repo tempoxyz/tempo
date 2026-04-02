@@ -568,24 +568,21 @@ mod tests {
 
     #[test]
     fn test_key_authorization_roundtrip_preserves_explicit_nested_allow_all_lists() {
-        let auth = KeyAuthorization::unrestricted(
-            1,
-            SignatureType::Secp256k1,
-            Address::repeat_byte(0x11),
-        )
-        .with_allowed_calls(vec![
-            CallScope {
-                target: Address::repeat_byte(0x22),
-                selector_rules: vec![],
-            },
-            CallScope {
-                target: Address::repeat_byte(0x33),
-                selector_rules: vec![SelectorRule {
-                    selector: [0xaa, 0xbb, 0xcc, 0xdd],
-                    recipients: vec![],
-                }],
-            },
-        ]);
+        let auth =
+            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::repeat_byte(0x11))
+                .with_allowed_calls(vec![
+                    CallScope {
+                        target: Address::repeat_byte(0x22),
+                        selector_rules: vec![],
+                    },
+                    CallScope {
+                        target: Address::repeat_byte(0x33),
+                        selector_rules: vec![SelectorRule {
+                            selector: [0xaa, 0xbb, 0xcc, 0xdd],
+                            recipients: vec![],
+                        }],
+                    },
+                ]);
 
         let mut encoded = Vec::new();
         auth.encode(&mut encoded);

@@ -313,12 +313,8 @@ pub(crate) fn create_key_authorization(
     let key_type = access_key_signature.signature_type();
 
     let mut key_auth = KeyAuthorization::unrestricted(chain_id, key_type, access_key_addr);
-    if let Some(expiry) = expiry {
-        key_auth = key_auth.with_expiry(Some(expiry));
-    }
-    if let Some(limits) = spending_limits {
-        key_auth = key_auth.with_limits(Some(limits));
-    }
+    key_auth.expiry = expiry;
+    key_auth.limits = spending_limits;
 
     // Root key signs the authorization
     let root_auth_signature = root_signer.sign_hash_sync(&key_auth.signature_hash())?;

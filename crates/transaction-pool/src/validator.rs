@@ -3643,12 +3643,13 @@ mod tests {
             let (user_signer, user_address) = generate_keypair();
             let fee_token = address!("0000000000000000000000000000000000000002");
 
-            let key_auth = KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address)
-                .with_limits(vec![TokenLimit {
-                    token: fee_token,
-                    limit: U256::from(u128::MAX) + U256::from(1_u8),
-                    period: 0,
-                }]);
+            let key_auth =
+                KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address)
+                    .with_limits(vec![TokenLimit {
+                        token: fee_token,
+                        limit: U256::from(u128::MAX) + U256::from(1_u8),
+                        period: 0,
+                    }]);
 
             let auth_sig_hash = key_auth.signature_hash();
             let auth_signature = user_signer
@@ -3696,17 +3697,18 @@ mod tests {
             let (user_signer, user_address) = generate_keypair();
             let duplicate_target = Address::random();
 
-            let key_auth = KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address)
-                .with_allowed_calls(vec![
-                    CallScope {
-                        target: duplicate_target,
-                        selector_rules: vec![],
-                    },
-                    CallScope {
-                        target: duplicate_target,
-                        selector_rules: vec![],
-                    },
-                ]);
+            let key_auth =
+                KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address)
+                    .with_allowed_calls(vec![
+                        CallScope {
+                            target: duplicate_target,
+                            selector_rules: vec![],
+                        },
+                        CallScope {
+                            target: duplicate_target,
+                            selector_rules: vec![],
+                        },
+                    ]);
 
             let auth_sig_hash = key_auth.signature_hash();
             let auth_signature = user_signer
@@ -3753,11 +3755,12 @@ mod tests {
             let (access_key_signer, access_key_address) = generate_keypair();
             let (user_signer, user_address) = generate_keypair();
 
-            let key_auth = KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address)
-                .with_allowed_calls(vec![CallScope {
-                    target: address!("0000000000000000000000000000000000000001"),
-                    selector_rules: vec![],
-                }]);
+            let key_auth =
+                KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address)
+                    .with_allowed_calls(vec![CallScope {
+                        target: address!("0000000000000000000000000000000000000001"),
+                        selector_rules: vec![],
+                    }]);
 
             let auth_sig_hash = key_auth.signature_hash();
             let auth_signature = user_signer
@@ -3799,11 +3802,12 @@ mod tests {
             let (access_key_signer, access_key_address) = generate_keypair();
             let (user_signer, user_address) = generate_keypair();
 
-            let key_auth = KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address)
-                .with_allowed_calls(vec![CallScope {
-                    target: address!("0000000000000000000000000000000000000002"),
-                    selector_rules: vec![],
-                }]);
+            let key_auth =
+                KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address)
+                    .with_allowed_calls(vec![CallScope {
+                        target: address!("0000000000000000000000000000000000000002"),
+                        selector_rules: vec![],
+                    }]);
 
             let auth_sig_hash = key_auth.signature_hash();
             let auth_signature = user_signer
@@ -3850,7 +3854,8 @@ mod tests {
             let (access_key_signer, access_key_address) = generate_keypair();
             let (user_signer, user_address) = generate_keypair();
 
-            let key_auth = KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address);
+            let key_auth =
+                KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address);
 
             let auth_sig_hash = key_auth.signature_hash();
             let auth_signature = user_signer
@@ -3934,11 +3939,12 @@ mod tests {
             let (access_key_signer, access_key_address) = generate_keypair();
             let (user_signer, user_address) = generate_keypair();
 
-            let key_auth = KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address)
-                .with_allowed_calls(vec![CallScope {
-                    target: address!("0000000000000000000000000000000000000001"),
-                    selector_rules: vec![],
-                }]);
+            let key_auth =
+                KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address)
+                    .with_allowed_calls(vec![CallScope {
+                        target: address!("0000000000000000000000000000000000000001"),
+                        selector_rules: vec![],
+                    }]);
 
             let auth_sig_hash = key_auth.signature_hash();
             let auth_signature = user_signer
@@ -4207,14 +4213,15 @@ mod tests {
             target_bytes[19] = 0x42;
             let undeployed_tip20 = Address::from(target_bytes);
 
-            let key_auth = KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address)
-                .with_allowed_calls(vec![CallScope {
-                    target: undeployed_tip20,
-                    selector_rules: vec![tempo_primitives::transaction::SelectorRule {
-                        selector: [0xa9, 0x05, 0x9c, 0xbb],
-                        recipients: vec![address!("00000000000000000000000000000000000000aa")],
-                    }],
-                }]);
+            let key_auth =
+                KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address)
+                    .with_allowed_calls(vec![CallScope {
+                        target: undeployed_tip20,
+                        selector_rules: vec![tempo_primitives::transaction::SelectorRule {
+                            selector: [0xa9, 0x05, 0x9c, 0xbb],
+                            recipients: vec![address!("00000000000000000000000000000000000000aa")],
+                        }],
+                    }]);
 
             let auth_sig_hash = key_auth.signature_hash();
             let auth_signature = user_signer
@@ -4302,7 +4309,11 @@ mod tests {
             user_address: Address,
             version: KeychainVersion,
         ) -> TempoPooledTransaction {
-            let key_auth = KeyAuthorization::unrestricted(chain_id, SignatureType::Secp256k1, access_key_address);
+            let key_auth = KeyAuthorization::unrestricted(
+                chain_id,
+                SignatureType::Secp256k1,
+                access_key_address,
+            );
             let auth_sig_hash = key_auth.signature_hash();
             let auth_signature = user_signer
                 .sign_hash_sync(&auth_sig_hash)
@@ -4494,7 +4505,8 @@ mod tests {
             let different_key_id = Address::random();
 
             // Create KeyAuthorization with a DIFFERENT key_id than the one signing the tx
-            let key_auth = KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, different_key_id);
+            let key_auth =
+                KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, different_key_id);
 
             let auth_sig_hash = key_auth.signature_hash();
             let auth_signature = user_signer
@@ -4541,7 +4553,8 @@ mod tests {
             let (random_signer, _) = generate_keypair();
 
             // Create KeyAuthorization but sign with a random key (not the user's key)
-            let key_auth = KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address);
+            let key_auth =
+                KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address);
 
             let auth_sig_hash = key_auth.signature_hash();
             // Sign with random_signer instead of user_signer
@@ -4586,7 +4599,8 @@ mod tests {
             let (access_key_signer, access_key_address) = generate_keypair();
             let (user_signer, user_address) = generate_keypair();
 
-            let key_auth = KeyAuthorization::unrestricted(1337, SignatureType::P256, access_key_address);
+            let key_auth =
+                KeyAuthorization::unrestricted(1337, SignatureType::P256, access_key_address);
 
             let auth_sig_hash = key_auth.signature_hash();
             let auth_signature = user_signer
@@ -4890,8 +4904,9 @@ mod tests {
             let current_time = 1000u64;
 
             // Create KeyAuthorization with expired expiry
-            let key_auth = KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address)
-                .with_expiry(current_time - 1);
+            let key_auth =
+                KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address)
+                    .with_expiry(current_time - 1);
 
             let auth_sig_hash = key_auth.signature_hash();
             let auth_signature = user_signer
@@ -4937,8 +4952,9 @@ mod tests {
             let current_time = 1000u64;
 
             // Create KeyAuthorization with expiry == current_time
-            let key_auth = KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address)
-                .with_expiry(current_time);
+            let key_auth =
+                KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address)
+                    .with_expiry(current_time);
 
             let auth_sig_hash = key_auth.signature_hash();
             let auth_signature = user_signer
@@ -4983,8 +4999,9 @@ mod tests {
             let current_time = 1000u64;
 
             // Create KeyAuthorization with future expiry
-            let key_auth = KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address)
-                .with_expiry(current_time + 100);
+            let key_auth =
+                KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address)
+                    .with_expiry(current_time + 100);
 
             let auth_sig_hash = key_auth.signature_hash();
             let auth_signature = user_signer
@@ -5028,8 +5045,9 @@ mod tests {
             let current_time = 1000u64;
             let expiry = current_time + 100;
 
-            let key_auth = KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address)
-                .with_expiry(expiry);
+            let key_auth =
+                KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address)
+                    .with_expiry(expiry);
 
             let auth_sig_hash = key_auth.signature_hash();
             let auth_signature = user_signer
@@ -5074,7 +5092,8 @@ mod tests {
             let current_time = 1000u64;
 
             // Create KeyAuthorization with no expiry (None = never expires)
-            let key_auth = KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address);
+            let key_auth =
+                KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key_address);
 
             let auth_sig_hash = key_auth.signature_hash();
             let auth_signature = user_signer

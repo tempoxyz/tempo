@@ -904,12 +904,9 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
                     let (wrong_signer_key, wrong_pub_x, wrong_pub_y, _) =
                         generate_p256_access_key();
 
-                    let auth_message_hash = KeyAuthorization::unrestricted(
-                        chain_id,
-                        SignatureType::P256,
-                        addr_3,
-                    )
-                    .signature_hash();
+                    let auth_message_hash =
+                        KeyAuthorization::unrestricted(chain_id, SignatureType::P256, addr_3)
+                            .signature_hash();
 
                     use p256::ecdsa::signature::hazmat::PrehashSigner;
                     use sha2::{Digest, Sha256};
@@ -919,18 +916,15 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
                         wrong_signer_key.sign_prehash(wrong_sig_hash.as_slice())?;
                     let wrong_sig_bytes = wrong_signature.to_bytes();
 
-                    let invalid_key_auth = KeyAuthorization::unrestricted(
-                        chain_id,
-                        SignatureType::P256,
-                        addr_3,
-                    )
-                    .into_signed(PrimitiveSignature::P256(P256SignatureWithPreHash {
-                        r: B256::from_slice(&wrong_sig_bytes[0..32]),
-                        s: normalize_p256_s(&wrong_sig_bytes[32..64]),
-                        pub_key_x: wrong_pub_x,
-                        pub_key_y: wrong_pub_y,
-                        pre_hash: true,
-                    }));
+                    let invalid_key_auth =
+                        KeyAuthorization::unrestricted(chain_id, SignatureType::P256, addr_3)
+                            .into_signed(PrimitiveSignature::P256(P256SignatureWithPreHash {
+                                r: B256::from_slice(&wrong_sig_bytes[0..32]),
+                                s: normalize_p256_s(&wrong_sig_bytes[32..64]),
+                                pub_key_x: wrong_pub_x,
+                                pub_key_y: wrong_pub_y,
+                                pre_hash: true,
+                            }));
 
                     tx.key_authorization = Some(invalid_key_auth);
                     let sig = sign_aa_tx_with_p256_access_key(
