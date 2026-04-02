@@ -194,7 +194,6 @@ crate::sol! {
         error SignatureTypeMismatch(uint8 expected, uint8 actual);
         error CallNotAllowed();
         error InvalidCallScope();
-
         error LegacyAuthorizeKeySelectorChanged(bytes4 newSelector);
     }
 }
@@ -266,7 +265,6 @@ impl AccountKeychainError {
     pub const fn invalid_call_scope() -> Self {
         Self::InvalidCallScope(IAccountKeychain::InvalidCallScope {})
     }
-
 
     /// Creates an error for the legacy authorize-key selector being unavailable on T3+.
     pub fn legacy_authorize_key_selector_changed(new_selector: [u8; 4]) -> Self {

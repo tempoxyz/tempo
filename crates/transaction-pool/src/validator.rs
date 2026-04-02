@@ -25,9 +25,7 @@ use tempo_evm::TempoEvmConfig;
 #[cfg(test)]
 use tempo_precompiles::account_keychain::{AuthorizedKey, SpendingLimitState};
 use tempo_precompiles::{
-    account_keychain::{
-        AccountKeychain, is_constrained_tip20_selector,
-    },
+    account_keychain::{AccountKeychain, is_constrained_tip20_selector},
     nonce::{INonce, NonceManager},
     storage::Handler,
     tip20_factory::TIP20Factory,
