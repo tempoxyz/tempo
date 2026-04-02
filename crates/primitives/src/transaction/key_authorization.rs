@@ -88,6 +88,46 @@ impl SelectorRule {
     }
 }
 
+use tempo_contracts::precompiles::IAccountKeychain::{
+    CallScope as AbiCallScope, SelectorRule as AbiSelectorRule,
+};
+
+impl From<AbiCallScope> for CallScope {
+    fn from(scope: AbiCallScope) -> Self {
+        Self {
+            target: scope.target,
+            selector_rules: scope.selectorRules.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<CallScope> for AbiCallScope {
+    fn from(scope: CallScope) -> Self {
+        Self {
+            target: scope.target,
+            selectorRules: scope.selector_rules.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<AbiSelectorRule> for SelectorRule {
+    fn from(rule: AbiSelectorRule) -> Self {
+        Self {
+            selector: rule.selector.into(),
+            recipients: rule.recipients,
+        }
+    }
+}
+
+impl From<SelectorRule> for AbiSelectorRule {
+    fn from(rule: SelectorRule) -> Self {
+        Self {
+            selector: rule.selector.into(),
+            recipients: rule.recipients,
+        }
+    }
+}
+
 /// Key authorization for provisioning access keys
 ///
 /// Used in TempoTransaction to add a new key to the AccountKeychain precompile.
@@ -136,6 +176,49 @@ pub struct KeyAuthorization {
 }
 
 impl KeyAuthorization {
+    /// Create a fully unrestricted key authorization: no expiry, no spending limits, no call
+    /// scopes.
+    pub fn unrestricted(chain_id: u64, key_type: SignatureType, key_id: Address) -> Self {
+        Self {
+            chain_id,
+            key_type,
+            key_id,
+            expiry: None,
+            limits: None,
+            allowed_calls: None,
+        }
+    }
+
+    /// Set an expiry timestamp on this key authorization.
+    pub fn with_expiry(mut self, expiry: u64) -> Self {
+        self.expiry = Some(expiry);
+        self
+    }
+
+    /// Set token spending limits on this key authorization.
+    pub fn with_limits(mut self, limits: Vec<TokenLimit>) -> Self {
+        self.limits = Some(limits);
+        self
+    }
+
+    /// Set call-scope restrictions on this key authorization.
+    pub fn with_allowed_calls(mut self, allowed_calls: Vec<CallScope>) -> Self {
+        self.allowed_calls = Some(allowed_calls);
+        self
+    }
+
+    /// Deny all spending (enforce limits with an empty allowlist).
+    pub fn with_no_spending(mut self) -> Self {
+        self.limits = Some(Vec::new());
+        self
+    }
+
+    /// Deny all calls (scoped mode with an empty allowlist).
+    pub fn with_no_calls(mut self) -> Self {
+        self.allowed_calls = Some(Vec::new());
+        self
+    }
+
     /// Computes the authorization message hash for this key authorization.
     pub fn signature_hash(&self) -> B256 {
         let mut buf = Vec::new();
@@ -163,6 +246,11 @@ impl KeyAuthorization {
     /// Returns whether this key never expires (expiry is None)
     pub fn never_expires(&self) -> bool {
         self.expiry.is_none()
+    }
+
+    /// Returns whether this authorization can be encoded with the legacy pre-T3 ABI.
+    pub fn is_legacy_compatible(&self) -> bool {
+        !(self.has_periodic_limits() || self.has_call_scopes())
     }
 
     /// Convert the key authorization into a [`SignedKeyAuthorization`] with a signature.
@@ -426,14 +514,9 @@ mod tests {
             selector_rules: rules,
         });
 
-        let auth = KeyAuthorization {
-            chain_id: 1,
-            key_type: SignatureType::Secp256k1,
-            key_id: Address::repeat_byte(0x44),
-            expiry: None,
-            limits: None,
-            allowed_calls: Some(scopes),
-        };
+        let auth =
+            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::repeat_byte(0x44))
+                .with_allowed_calls(scopes);
 
         let scope_rules = auth.allowed_calls.as_ref().unwrap();
         let selector_rules = &scope_rules[0].selector_rules;
@@ -525,26 +608,24 @@ mod tests {
 
     #[test]
     fn test_key_authorization_roundtrip_preserves_explicit_nested_allow_all_lists() {
-        let auth = KeyAuthorization {
-            chain_id: 1,
-            key_type: SignatureType::Secp256k1,
-            key_id: Address::repeat_byte(0x11),
-            expiry: None,
-            limits: None,
-            allowed_calls: Some(vec![
-                CallScope {
-                    target: Address::repeat_byte(0x22),
-                    selector_rules: vec![],
-                },
-                CallScope {
-                    target: Address::repeat_byte(0x33),
-                    selector_rules: vec![SelectorRule {
-                        selector: [0xaa, 0xbb, 0xcc, 0xdd],
-                        recipients: vec![],
-                    }],
-                },
-            ]),
-        };
+        let auth = KeyAuthorization::unrestricted(
+            1,
+            SignatureType::Secp256k1,
+            Address::repeat_byte(0x11),
+        )
+        .with_allowed_calls(vec![
+            CallScope {
+                target: Address::repeat_byte(0x22),
+                selector_rules: vec![],
+            },
+            CallScope {
+                target: Address::repeat_byte(0x33),
+                selector_rules: vec![SelectorRule {
+                    selector: [0xaa, 0xbb, 0xcc, 0xdd],
+                    recipients: vec![],
+                }],
+            },
+        ]);
 
         let mut encoded = Vec::new();
         auth.encode(&mut encoded);

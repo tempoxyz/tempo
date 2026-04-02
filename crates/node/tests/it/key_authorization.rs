@@ -28,14 +28,11 @@ fn build_create_key_auth_tx(
     gas_limit: u64,
     max_priority_fee_per_gas: u128,
 ) -> eyre::Result<Vec<u8>> {
-    let key_auth = KeyAuthorization {
+    let key_auth = KeyAuthorization::unrestricted(
         chain_id,
-        key_type: tempo_primitives::SignatureType::Secp256k1,
-        key_id: Address::random(),
-        expiry: None,
-        limits: None,
-        allowed_calls: None,
-    };
+        tempo_primitives::SignatureType::Secp256k1,
+        Address::random(),
+    );
     let sig = signer.sign_hash_sync(&key_auth.signature_hash())?;
     let signed_key_auth = key_auth.into_signed(PrimitiveSignature::Secp256k1(sig));
 
