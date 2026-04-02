@@ -1,5 +1,5 @@
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
-use reth_chainspec::{EthereumHardfork, ForkCondition, ForkId, Hardforks, Head};
+use reth_chainspec::{EthereumHardfork, ForkCondition, Hardforks, Head};
 use reth_primitives_traits::AlloyBlockHeader as _;
 use reth_provider::{BlockNumReader, ChainSpecProvider, HeaderProvider};
 use serde::{Deserialize, Serialize};
@@ -25,10 +25,10 @@ pub struct ForkInfo {
     pub activation_time: u64,
     /// Whether this fork is active at the chain head.
     pub active: bool,
-    /// EIP-2124 fork identifier at this fork's activation point.
+    /// EIP-2124 fork hash at this fork's activation point (e.g. `"0x471a451c"`).
     /// `None` if the fork is not yet active.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub fork_id: Option<ForkId>,
+    pub fork_id: Option<String>,
 }
 
 #[rpc(server, namespace = "tempo")]
@@ -89,11 +89,15 @@ where
                 };
                 let active = ts <= head_timestamp;
                 let fork_id = active.then(|| {
-                    chain_spec.fork_id(&Head {
+                    let id = chain_spec.fork_id(&Head {
                         number: best_number,
                         timestamp: ts,
                         ..Default::default()
-                    })
+                    });
+                    format!(
+                        "0x{}",
+                        id.hash.0.iter().map(|b| format!("{b:02x}")).collect::<String>()
+                    )
                 });
                 Some(ForkInfo {
                     name: fork.name().to_string(),

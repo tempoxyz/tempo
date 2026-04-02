@@ -47,13 +47,13 @@ async fn test_fork_schedule() -> eyre::Result<()> {
         .iter()
         .find(|f| f.name == schedule.active)
         .expect("active fork must be in schedule");
-    let fork_hash = active_entry.fork_id.as_ref().unwrap().hash.0;
-    let hash_hex = format!("0x{}", fork_hash.iter().map(|b| format!("{b:02x}")).collect::<String>());
-
     let eth_config: serde_json::Value = provider
         .raw_request("eth_config".into(), ())
         .await?;
-    assert_eq!(hash_hex, eth_config["current"]["forkId"].as_str().unwrap());
+    assert_eq!(
+        active_entry.fork_id.as_deref().unwrap(),
+        eth_config["current"]["forkId"].as_str().unwrap()
+    );
 
     Ok(())
 }
