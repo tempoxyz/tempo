@@ -208,9 +208,7 @@ pub(crate) fn create_signed_key_authorization(
         key_type,
         Address::random(), // Random key being authorized
     );
-    if let Some(limits) = limits {
-        authorization = authorization.with_limits(limits);
-    }
+    authorization.limits = limits;
 
     // Sign the key authorization
     let sig_hash = authorization.signature_hash();
