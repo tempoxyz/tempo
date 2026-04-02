@@ -4,7 +4,9 @@
 //! which spins up an in-process node with direct pool/block access, plus tests
 //! that require pool introspection or controlled block mining.
 
-use crate::utils::{ForkSchedule, SingleNodeSetup, TEST_MNEMONIC, TestNodeBuilder, make_genesis_at};
+use crate::utils::{
+    ForkSchedule, SingleNodeSetup, TEST_MNEMONIC, TestNodeBuilder, make_genesis_at,
+};
 use alloy::{
     consensus::{BlockHeader, Transaction},
     network::{EthereumWallet, ReceiptResponse},
