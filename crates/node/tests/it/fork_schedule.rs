@@ -24,26 +24,35 @@ async fn test_fork_schedule() -> eyre::Result<()> {
             fork.name()
         );
     }
-    // No extra entries beyond the expected Tempo forks.
-    assert_eq!(names.len(), TempoHardfork::VARIANTS.len() - 1); // minus Genesis
+    assert_eq!(names.len(), TempoHardfork::VARIANTS.len() - 1);
 
     // Active fork must be in the schedule.
     assert!(names.contains(&schedule.active.as_str()));
 
-    // fork_id.hash must match eth_config.
+    // Active forks must have a fork_id; inactive forks must not.
+    for entry in &schedule.schedule {
+        assert_eq!(
+            entry.active,
+            entry.fork_id.is_some(),
+            "fork '{}': active={} but fork_id={}",
+            entry.name,
+            entry.active,
+            if entry.fork_id.is_some() { "Some" } else { "None" }
+        );
+    }
+
+    // The active fork's fork_id must match eth_config.
+    let active_entry = schedule
+        .schedule
+        .iter()
+        .find(|f| f.name == schedule.active)
+        .expect("active fork must be in schedule");
+    let fork_hash = active_entry.fork_id.as_ref().unwrap().hash.0;
+    let hash_hex = format!("0x{}", fork_hash.iter().map(|b| format!("{b:02x}")).collect::<String>());
+
     let eth_config: serde_json::Value = provider
         .raw_request("eth_config".into(), ())
         .await?;
-    let hash_hex = format!(
-        "0x{}",
-        schedule
-            .fork_id
-            .hash
-            .0
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>()
-    );
     assert_eq!(hash_hex, eth_config["current"]["forkId"].as_str().unwrap());
 
     Ok(())

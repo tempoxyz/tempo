@@ -13,8 +13,6 @@ pub struct ForkSchedule {
     pub schedule: Vec<ForkInfo>,
     /// Name of the latest active Tempo fork at the chain head.
     pub active: String,
-    /// EIP-2124 fork identifier at the chain head (comparable with `eth_config`).
-    pub fork_id: ForkId,
 }
 
 /// Information about a single Tempo fork.
@@ -27,11 +25,15 @@ pub struct ForkInfo {
     pub activation_time: u64,
     /// Whether this fork is active at the chain head.
     pub active: bool,
+    /// EIP-2124 fork identifier at this fork's activation point.
+    /// `None` if the fork is not yet active.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fork_id: Option<ForkId>,
 }
 
 #[rpc(server, namespace = "tempo")]
 pub trait TempoForkScheduleApi {
-    /// Returns the Tempo fork schedule, the currently active fork, and the EIP-2124 fork ID.
+    /// Returns the Tempo fork schedule and the currently active fork.
     #[method(name = "forkSchedule")]
     async fn fork_schedule(&self) -> RpcResult<ForkSchedule>;
 }
@@ -85,10 +87,19 @@ where
                 let ForkCondition::Timestamp(ts) = condition else {
                     return None;
                 };
+                let active = ts <= head_timestamp;
+                let fork_id = active.then(|| {
+                    chain_spec.fork_id(&Head {
+                        number: best_number,
+                        timestamp: ts,
+                        ..Default::default()
+                    })
+                });
                 Some(ForkInfo {
                     name: fork.name().to_string(),
                     activation_time: ts,
-                    active: ts <= head_timestamp,
+                    active,
+                    fork_id,
                 })
             })
             .collect();
@@ -98,16 +109,6 @@ where
             .name()
             .to_string();
 
-        let fork_id = chain_spec.fork_id(&Head {
-            number: best_number,
-            timestamp: head_timestamp,
-            ..Default::default()
-        });
-
-        Ok(ForkSchedule {
-            schedule,
-            active,
-            fork_id,
-        })
+        Ok(ForkSchedule { schedule, active })
     }
 }
