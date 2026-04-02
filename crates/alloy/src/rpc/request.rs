@@ -405,7 +405,9 @@ impl<P: Provider<TempoNetwork>, D: CallDecoder> TempoCallBuilderExt
 mod tests {
     use super::*;
     use alloy_primitives::{Bytes, address};
-    use tempo_primitives::transaction::{Call, TEMPO_EXPIRING_NONCE_KEY};
+    use tempo_primitives::transaction::{
+        Call, KeyAuthorization, PrimitiveSignature, TEMPO_EXPIRING_NONCE_KEY,
+    };
 
     #[test]
     fn test_set_valid_before() {
@@ -575,8 +577,6 @@ mod tests {
 
     #[test]
     fn test_build_aa_preserves_key_authorization() {
-        use tempo_primitives::transaction::{KeyAuthorization, PrimitiveSignature};
-
         let key_auth = KeyAuthorization::unrestricted(
             4217,
             SignatureType::Secp256k1,
