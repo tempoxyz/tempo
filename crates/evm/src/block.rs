@@ -415,7 +415,8 @@ where
         // Deploy 0xEF marker bytecode to precompiles at their activation hardforks.
         if self.hardfork.is_t2() {
             self.deploy_precompile_at_boundary(VALIDATOR_CONFIG_V2_ADDRESS)?;
-        } else if self.hardfork.is_t3() {
+        }
+        if self.hardfork.is_t3() {
             self.deploy_precompile_at_boundary(SIGNATURE_VERIFIER_ADDRESS)?;
             self.deploy_precompile_at_boundary(ADDRESS_REGISTRY_ADDRESS)?;
         }
