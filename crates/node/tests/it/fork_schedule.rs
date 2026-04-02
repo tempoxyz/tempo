@@ -17,7 +17,10 @@ async fn test_fork_schedule() -> eyre::Result<()> {
 
     // Every TempoHardfork variant except Genesis must appear.
     let names: Vec<&str> = schedule.schedule.iter().map(|f| f.name.as_str()).collect();
-    for fork in TempoHardfork::VARIANTS.iter().filter(|f| f.name() != "Genesis") {
+    for fork in TempoHardfork::VARIANTS
+        .iter()
+        .filter(|f| f.name() != "Genesis")
+    {
         assert!(
             names.contains(&fork.name()),
             "missing fork '{}' in schedule",
@@ -37,7 +40,11 @@ async fn test_fork_schedule() -> eyre::Result<()> {
             "fork '{}': active={} but fork_id={}",
             entry.name,
             entry.active,
-            if entry.fork_id.is_some() { "Some" } else { "None" }
+            if entry.fork_id.is_some() {
+                "Some"
+            } else {
+                "None"
+            }
         );
     }
 
@@ -47,9 +54,7 @@ async fn test_fork_schedule() -> eyre::Result<()> {
         .iter()
         .find(|f| f.name == schedule.active)
         .expect("active fork must be in schedule");
-    let eth_config: serde_json::Value = provider
-        .raw_request("eth_config".into(), ())
-        .await?;
+    let eth_config: serde_json::Value = provider.raw_request("eth_config".into(), ()).await?;
     assert_eq!(
         active_entry.fork_id.as_deref().unwrap(),
         eth_config["current"]["forkId"].as_str().unwrap()

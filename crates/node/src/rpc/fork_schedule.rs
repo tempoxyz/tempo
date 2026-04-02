@@ -96,7 +96,11 @@ where
                     });
                     format!(
                         "0x{}",
-                        id.hash.0.iter().map(|b| format!("{b:02x}")).collect::<String>()
+                        id.hash
+                            .0
+                            .iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect::<String>()
                     )
                 });
                 Some(ForkInfo {
