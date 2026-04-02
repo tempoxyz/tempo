@@ -816,7 +816,9 @@ impl AccountKeychain {
 
     /// Clears every selector scope stored under one target.
     fn clear_target_selectors(&mut self, account_key: B256, target: Address) -> Result<()> {
-        self.key_scopes[account_key].targets[target].selectors.clear()
+        self.key_scopes[account_key].targets[target]
+            .selectors
+            .clear()
     }
 
     /// Creates or replaces one target scope, including all nested selector rules.
