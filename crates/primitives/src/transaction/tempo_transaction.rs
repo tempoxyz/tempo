@@ -794,16 +794,6 @@ impl Decodable for TempoTransaction {
     }
 }
 
-#[cfg(feature = "reth")]
-impl reth_primitives_traits::InMemorySize for TempoTransaction {
-    fn size(&self) -> usize {
-        Self::size(self)
-    }
-}
-
-#[cfg(feature = "serde-bincode-compat")]
-impl reth_primitives_traits::serde_bincode_compat::RlpBincode for TempoTransaction {}
-
 // Custom Arbitrary implementation to ensure calls is never empty and CREATE validation passes
 #[cfg(any(test, feature = "arbitrary"))]
 impl<'a> arbitrary::Arbitrary<'a> for TempoTransaction {
@@ -1618,7 +1608,9 @@ mod tests {
             limits: Some(vec![crate::transaction::TokenLimit {
                 token: address!("0000000000000000000000000000000000000003"),
                 limit: U256::from(10000),
+                period: 0,
             }]),
+            allowed_calls: None,
             key_id: address!("0000000000000000000000000000000000000004"),
         }
         .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));

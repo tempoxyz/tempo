@@ -290,23 +290,12 @@ impl ValidatorConfigV2 {
         self.read_validator_at(idx1 - 1)
     }
 
-    /// Returns all validators ever added, including deactivated entries and rotation snapshots,
-    /// ordered by their global index.
-    pub fn get_validators(&self) -> Result<Vec<IValidatorConfigV2::Validator>> {
-        let count = self.validator_count()?;
-        let mut out = Vec::with_capacity(count as usize);
-        for i in 0..count {
-            out.push(self.read_validator_at(i)?);
-        }
-        Ok(out)
-    }
-
     /// Returns only active validators (where `deactivatedAtHeight == 0`).
     ///
     /// NOTE: the order of returned validator records is NOT stable and should NOT be relied upon.
     pub fn get_active_validators(&self) -> Result<Vec<IValidatorConfigV2::Validator>> {
         let count = self.active_indices.len()?;
-        let mut out = Vec::with_capacity(count);
+        let mut out = Vec::new();
         for i in 0..count {
             let global_idx1 = self.active_indices[i].read()?;
             out.push(self.read_validator_at(global_idx1 - 1)?);
@@ -1562,7 +1551,7 @@ mod tests {
             assert_eq!(active.len(), 1);
             assert_eq!(active[0].validatorAddress, v2);
 
-            assert_eq!(vc.get_validators()?.len(), 2);
+            assert_eq!(vc.validator_count()?, 2);
 
             Ok(())
         })

@@ -2,6 +2,8 @@ use crate::{
     amm::AmmLiquidityCache,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
+use std::collections::HashSet;
+
 use alloy_consensus::Transaction;
 
 use alloy_primitives::{Address, U256};
@@ -21,11 +23,15 @@ use tempo_chainspec::{
 };
 use tempo_evm::TempoEvmConfig;
 #[cfg(test)]
-use tempo_precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, account_keychain::AuthorizedKey};
+use tempo_precompiles::account_keychain::{AuthorizedKey, SpendingLimitState};
 use tempo_precompiles::{
-    account_keychain::AccountKeychain,
+    account_keychain::{
+        AccountKeychain, MAX_CALL_SCOPES, MAX_RECIPIENTS_PER_SELECTOR,
+        MAX_SELECTOR_RULES_PER_SCOPE, is_constrained_tip20_selector,
+    },
     nonce::{INonce, NonceManager},
     storage::Handler,
+    tip20_factory::TIP20Factory,
 };
 use tempo_primitives::{
     Block,
@@ -154,6 +160,203 @@ where
         Ok(())
     }
 
+    /// Validates the T3-only key-authorization restrictions before any state lookups.
+    ///
+    /// This keeps txpool admission aligned with runtime and precompile expectations so malformed
+    /// limits, call scopes, or recipient-scoped undeployed TIP-20 targets are rejected before
+    /// propagation.
+    fn validate_t3_key_authorization_restrictions(
+        &self,
+        auth: &tempo_primitives::transaction::SignedKeyAuthorization,
+        state_provider: &mut impl StateProvider,
+        spec: TempoHardfork,
+    ) -> Result<Result<(), TempoPoolTransactionError>, ProviderError> {
+        // Spending limits must stay unique and fit the precompile's u128-backed storage layout.
+        if let Some(limits) = auth.limits.as_ref() {
+            let mut seen_tokens = HashSet::with_capacity(limits.len());
+            for limit in limits {
+                if !seen_tokens.insert(limit.token) {
+                    return Ok(Err(TempoPoolTransactionError::Keychain(
+                        "duplicate token limits are not allowed",
+                    )));
+                }
+
+                if limit.limit > U256::from(u128::MAX) {
+                    return Ok(Err(TempoPoolTransactionError::Keychain(
+                        "spending limit exceeds u128::MAX",
+                    )));
+                }
+            }
+        }
+
+        let Some(scopes) = auth.allowed_calls.as_ref() else {
+            return Ok(Ok(()));
+        };
+
+        if scopes.len() > MAX_CALL_SCOPES as usize {
+            return Ok(Err(TempoPoolTransactionError::Keychain(
+                "too many call scopes in key authorization",
+            )));
+        }
+
+        // Validate each scope as a unit so target and selector constraints stay grouped.
+        let mut seen_targets = HashSet::with_capacity(scopes.len());
+        for scope in scopes {
+            if !seen_targets.insert(scope.target) {
+                return Ok(Err(TempoPoolTransactionError::Keychain(
+                    "duplicate call scope targets are not allowed",
+                )));
+            }
+
+            let selector_rules = &scope.selector_rules;
+            if selector_rules.is_empty() {
+                continue;
+            }
+
+            if selector_rules.len() > MAX_SELECTOR_RULES_PER_SCOPE as usize {
+                return Ok(Err(TempoPoolTransactionError::Keychain(
+                    "too many selector rules in call scope",
+                )));
+            }
+
+            let mut requires_deployed_tip20 = false;
+
+            // Selector rules are unique per target and must stay within the per-scope bound.
+            let mut seen_selectors = HashSet::with_capacity(selector_rules.len());
+            for rule in selector_rules {
+                if !seen_selectors.insert(rule.selector) {
+                    return Ok(Err(TempoPoolTransactionError::Keychain(
+                        "duplicate selector rules are not allowed",
+                    )));
+                }
+
+                let recipients = &rule.recipients;
+                if recipients.is_empty() {
+                    continue;
+                }
+
+                // Recipient-constrained rules only make sense for constrained TIP-20 selectors and
+                // must carry a de-duplicated recipient set.
+                if recipients.len() > MAX_RECIPIENTS_PER_SELECTOR as usize {
+                    return Ok(Err(TempoPoolTransactionError::Keychain(
+                        "too many recipients in selector rule",
+                    )));
+                }
+
+                if !is_constrained_tip20_selector(rule.selector) {
+                    return Ok(Err(TempoPoolTransactionError::Keychain(
+                        "recipient-constrained selector rules require TIP-20 target and constrained selector",
+                    )));
+                }
+
+                requires_deployed_tip20 = true;
+
+                let mut seen_recipients = HashSet::with_capacity(recipients.len());
+                for recipient in recipients {
+                    if recipient.is_zero() || !seen_recipients.insert(*recipient) {
+                        return Ok(Err(TempoPoolTransactionError::Keychain(
+                            "selector rule recipients must be non-zero and unique",
+                        )));
+                    }
+                }
+            }
+
+            if !requires_deployed_tip20 {
+                continue;
+            }
+
+            let is_tip20 = state_provider
+                .with_read_only_storage_ctx(spec, || TIP20Factory::new().is_tip20(scope.target))
+                .map_err(ProviderError::other)?;
+
+            if !is_tip20 {
+                return Ok(Err(TempoPoolTransactionError::Keychain(
+                    "recipient-constrained selector rules require a deployed TIP-20 target",
+                )));
+            }
+        }
+
+        Ok(Ok(()))
+    }
+
+    fn call_scope_allows_call(
+        scopes: Option<&[tempo_primitives::transaction::CallScope]>,
+        to: &alloy_primitives::TxKind,
+        input: &[u8],
+    ) -> bool {
+        if to.is_create() {
+            return false;
+        }
+
+        let Some(scopes) = scopes else {
+            return true;
+        };
+        if scopes.is_empty() {
+            return false;
+        }
+
+        let Some(target) = to.to().copied() else {
+            return false;
+        };
+
+        let Some(scope) = scopes.iter().find(|scope| scope.target == target) else {
+            return false;
+        };
+
+        let selector_rules = &scope.selector_rules;
+        if selector_rules.is_empty() {
+            return true;
+        }
+        if input.len() < 4 {
+            return false;
+        }
+
+        let selector = [input[0], input[1], input[2], input[3]];
+        let Some(rule) = selector_rules.iter().find(|rule| rule.selector == selector) else {
+            return false;
+        };
+
+        let recipients = &rule.recipients;
+        if recipients.is_empty() {
+            return true;
+        }
+        if input.len() < 36 {
+            return false;
+        }
+
+        let recipient_word = &input[4..36];
+        if recipient_word[..12].iter().any(|byte| *byte != 0) {
+            return false;
+        }
+
+        recipients.contains(&Address::from_slice(&recipient_word[12..]))
+    }
+
+    /// Rejects inline AA calls that fall outside the already-authorized T3 call scopes.
+    ///
+    /// This mirrors runtime scope matching closely enough to keep obvious mismatches out of the
+    /// pool before execution.
+    fn validate_inline_t3_call_scopes(
+        tx: &TempoTransaction,
+        auth: &tempo_primitives::transaction::SignedKeyAuthorization,
+    ) -> Result<(), TempoPoolTransactionError> {
+        for call in &tx.calls {
+            if call.to.is_create() {
+                return Err(TempoPoolTransactionError::Keychain(
+                    "contract creation not allowed with access keys",
+                ));
+            }
+
+            if !Self::call_scope_allows_call(auth.allowed_calls.as_deref(), &call.to, &call.input) {
+                return Err(TempoPoolTransactionError::Keychain(
+                    "call not allowed by key scope",
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
     /// Validates AA transactions against the keychain: signature recovery, key authorization,
     /// on-chain key existence/revocation/expiry, and spending limits.
     ///
@@ -197,6 +400,25 @@ where
                 return Ok(Err(TempoPoolTransactionError::Keychain(
                     "KeyAuthorization chain_id does not match current chain",
                 )));
+            }
+
+            // TIP-1011 fields are T3-gated. Keep pre-T3 admission semantics unchanged.
+            if !spec.is_t3() {
+                if auth.has_periodic_limits() {
+                    return Ok(Err(TempoPoolTransactionError::Keychain(
+                        "periodic token limits are not active before T3",
+                    )));
+                }
+
+                if auth.has_call_scopes() {
+                    return Ok(Err(TempoPoolTransactionError::Keychain(
+                        "call scopes are not active before T3",
+                    )));
+                }
+            } else if let Err(err) =
+                self.validate_t3_key_authorization_restrictions(auth, state_provider, spec)?
+            {
+                return Ok(Err(err));
             }
 
             // Validate KeyAuthorization expiry, reject if expiring within the propagation
@@ -247,6 +469,12 @@ where
                 )));
             }
 
+            if spec.is_t1() && auth.key_type != sig.signature.signature_type() {
+                return Ok(Err(TempoPoolTransactionError::Keychain(
+                    "key authorization key_type does not match the keychain signature type",
+                )));
+            }
+
             if authorized_key.expiry > 0 {
                 return Ok(Err(TempoPoolTransactionError::Keychain(
                     "access key already exists",
@@ -280,6 +508,12 @@ where
                 {
                     return Ok(Err(err));
                 }
+            }
+
+            if spec.is_t3()
+                && let Err(err) = Self::validate_inline_t3_call_scopes(tx.tx(), auth)
+            {
+                return Ok(Err(err));
             }
 
             return Ok(Ok(()));
@@ -318,17 +552,45 @@ where
         // Check spending limit for fee token if enforce_limits is enabled.
         // This prevents transactions that would exceed the spending limit from entering the pool.
         if fee_payer == transaction.sender() && authorized_key.enforce_limits {
-            // Compute the storage slot for the spending limit
-            let limit_key = AccountKeychain::spending_limit_key(transaction.sender(), key_id);
             let remaining_limit = state_provider
                 .with_read_only_storage_ctx(spec, || {
-                    AccountKeychain::new().spending_limits[limit_key][fee_token].read()
+                    AccountKeychain::new().effective_remaining_limit(
+                        transaction.sender(),
+                        key_id,
+                        fee_token,
+                        current_time,
+                    )
                 })
                 .map_err(ProviderError::other)?;
 
             if let Err(err) = self.validate_spending_limit(transaction, fee_token, remaining_limit)
             {
                 return Ok(Err(err));
+            }
+        }
+
+        if spec.is_t3() {
+            let call_scope_result: tempo_precompiles::Result<()> = state_provider
+                .with_read_only_storage_ctx(spec, || {
+                    let keychain = AccountKeychain::new();
+                    for call in &tx.tx().calls {
+                        keychain.validate_call_scope_for_transaction(
+                            transaction.sender(),
+                            key_id,
+                            &call.to,
+                            &call.input,
+                        )?;
+                    }
+                    Ok(())
+                });
+
+            if let Err(err) = call_scope_result {
+                if err.is_system_error() {
+                    return Err(ProviderError::other(err));
+                }
+                return Ok(Err(TempoPoolTransactionError::Keychain(
+                    "call not allowed by key scope",
+                )));
             }
         }
 
@@ -773,6 +1035,20 @@ where
             }
         };
 
+        if transaction
+            .inner()
+            .as_aa()
+            .is_some_and(|aa| aa.tx().fee_payer_signature.is_some())
+            && fee_payer == transaction.sender()
+        {
+            return TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::other(
+                    TempoPoolTransactionError::SelfSponsoredFeePayer,
+                ),
+            );
+        }
+
         let fee_token = match state_provider.get_fee_token(transaction.inner(), fee_payer, spec) {
             Ok(fee_token) => fee_token,
             Err(err) => {
@@ -862,7 +1138,7 @@ where
 
         match self
             .amm_liquidity_cache
-            .has_enough_liquidity(fee_token, cost, &state_provider)
+            .has_enough_liquidity(fee_token, cost, &mut state_provider)
         {
             Ok(true) => {}
             Ok(false) => {
@@ -1142,7 +1418,10 @@ pub fn ensure_intrinsic_gas_tempo_tx(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{test_utils::TxBuilder, transaction::TempoPoolTransactionError};
+    use crate::{
+        test_utils::{MockProviderStorageExt, TxBuilder},
+        transaction::TempoPoolTransactionError,
+    };
     use alloy_consensus::{Header, Signed, Transaction, TxLegacy};
     use alloy_primitives::{Address, B256, TxKind, U256, address, uint};
     use alloy_signer::Signature;
@@ -1154,7 +1433,7 @@ mod tests {
     use std::sync::Arc;
     use tempo_chainspec::spec::{MODERATO, TEMPO_T1_TX_GAS_LIMIT_CAP};
     use tempo_precompiles::{
-        PATH_USD_ADDRESS, TIP403_REGISTRY_ADDRESS,
+        PATH_USD_ADDRESS,
         tip20::{TIP20Token, slots as tip20_slots},
         tip403_registry::{ITIP403Registry, PolicyData, TIP403Registry},
     };
@@ -1381,6 +1660,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_self_sponsored_fee_payer_rejected() {
+        use alloy_signer::SignerSync;
+        use alloy_signer_local::PrivateKeySigner;
+
+        let signer = PrivateKeySigner::random();
+        let sender = signer.address();
+
+        let mut tx = TempoTransaction {
+            chain_id: MODERATO.chain_id(),
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 20_000_000_000,
+            gas_limit: 1_000_000,
+            calls: vec![Call {
+                to: TxKind::Call(Address::random()),
+                value: U256::ZERO,
+                input: Default::default(),
+            }],
+            nonce_key: U256::ZERO,
+            nonce: 0,
+            fee_token: Some(PATH_USD_ADDRESS),
+            fee_payer_signature: Some(Signature::new(U256::ZERO, U256::ZERO, false)),
+            ..Default::default()
+        };
+
+        let fee_payer_hash = tx.fee_payer_signature_hash(sender);
+        tx.fee_payer_signature = Some(
+            signer
+                .sign_hash_sync(&fee_payer_hash)
+                .expect("fee payer signing should succeed"),
+        );
+
+        let signed = AASigned::new_unhashed(
+            tx,
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
+        );
+
+        let envelope: TempoTxEnvelope = signed.into();
+        let transaction = TempoPooledTransaction::new(
+            reth_primitives_traits::Recovered::new_unchecked(envelope, sender),
+        );
+        let validator = setup_validator(&transaction, 0);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                assert!(matches!(
+                    err.downcast_other_ref::<TempoPoolTransactionError>(),
+                    Some(TempoPoolTransactionError::SelfSponsoredFeePayer)
+                ));
+            }
+            _ => panic!(
+                "Expected Invalid outcome with SelfSponsoredFeePayer error, got: {outcome:?}"
+            ),
+        }
+    }
+
+    #[tokio::test]
     async fn test_aa_valid_before_check() {
         // NOTE: `setup_validator` will turn `tip_timestamp` into `current_time`
         let current_time = std::time::SystemTime::now()
@@ -1532,22 +1871,16 @@ mod tests {
         );
 
         // Add TIP403Registry with blacklist policy containing fee_payer
-        let policy_data = PolicyData {
-            policy_type: ITIP403Registry::PolicyType::BLACKLIST as u8,
-            admin: Address::ZERO,
-        };
-        let policy_data_slot = TIP403Registry::new().policy_records[policy_id]
-            .base
-            .base_slot();
-        let policy_set_slot = TIP403Registry::new().policy_set[policy_id][fee_payer].slot();
-
-        provider.add_account(
-            TIP403_REGISTRY_ADDRESS,
-            ExtendedAccount::new(0, U256::ZERO).extend_storage([
-                (policy_data_slot.into(), policy_data.encode_to_slot()),
-                (policy_set_slot.into(), U256::from(1)), // in blacklist = true
-            ]),
-        );
+        provider
+            .setup_storage(TempoHardfork::default(), || {
+                let mut registry = TIP403Registry::new();
+                registry.policy_records[policy_id].base.write(PolicyData {
+                    policy_type: ITIP403Registry::PolicyType::BLACKLIST as u8,
+                    admin: Address::ZERO,
+                })?;
+                registry.policy_set[policy_id][fee_payer].write(true)
+            })
+            .unwrap();
 
         // Create validator and validate
         let inner =
@@ -2270,11 +2603,16 @@ mod tests {
         use alloy_primitives::{Signature, TxKind, address};
         use alloy_signer::SignerSync;
         use alloy_signer_local::PrivateKeySigner;
+        use alloy_sol_types::SolCall;
         use reth_chainspec::ForkCondition;
+        use reth_primitives_traits::Recovered;
         use reth_transaction_pool::error::PoolTransactionError;
         use tempo_chainspec::hardfork::TempoHardfork;
+        use tempo_contracts::precompiles::ITIP20;
+        use tempo_precompiles::error::TempoPrecompileError;
         use tempo_primitives::transaction::{
-            KeyAuthorization, SignatureType, SignedKeyAuthorization, TempoTransaction, TokenLimit,
+            CallScope, KeyAuthorization, SelectorRule, SignatureType, SignedKeyAuthorization,
+            TempoTransaction, TokenLimit,
             tempo_transaction::Call,
             tt_signature::{
                 KeychainSignature, KeychainVersion, PrimitiveSignature, TempoSignature,
@@ -2291,6 +2629,15 @@ mod tests {
             spec
         }
 
+        /// Returns a MODERATO chain spec with T3 activated at timestamp 0.
+        fn moderato_with_t3() -> TempoChainSpec {
+            let mut spec = Arc::unwrap_or_clone(MODERATO.clone());
+            spec.inner
+                .hardforks
+                .extend([(TempoHardfork::T3, ForkCondition::Timestamp(0))]);
+            spec
+        }
+
         /// Generate a secp256k1 keypair for testing
         fn generate_keypair() -> (PrivateKeySigner, Address) {
             let signer = PrivateKeySigner::random();
@@ -2304,11 +2651,11 @@ mod tests {
             access_key_signer: &PrivateKeySigner,
             key_authorization: Option<SignedKeyAuthorization>,
         ) -> TempoPooledTransaction {
-            create_aa_with_keychain_signature_versioned(
+            create_aa_with_keychain_signature_calls(
                 user_address,
                 access_key_signer,
                 key_authorization,
-                KeychainVersion::V2,
+                vec![default_test_call()],
             )
         }
 
@@ -2318,11 +2665,35 @@ mod tests {
             access_key_signer: &PrivateKeySigner,
             key_authorization: Option<SignedKeyAuthorization>,
         ) -> TempoPooledTransaction {
-            create_aa_with_keychain_signature_versioned(
+            create_aa_with_keychain_signature_calls_versioned(
                 user_address,
                 access_key_signer,
                 key_authorization,
                 KeychainVersion::V1,
+                vec![default_test_call()],
+            )
+        }
+
+        fn default_test_call() -> Call {
+            Call {
+                to: TxKind::Call(address!("0000000000000000000000000000000000000001")),
+                value: U256::ZERO,
+                input: alloy_primitives::Bytes::new(),
+            }
+        }
+
+        fn create_aa_with_keychain_signature_calls(
+            user_address: Address,
+            access_key_signer: &PrivateKeySigner,
+            key_authorization: Option<SignedKeyAuthorization>,
+            calls: Vec<Call>,
+        ) -> TempoPooledTransaction {
+            create_aa_with_keychain_signature_calls_versioned(
+                user_address,
+                access_key_signer,
+                key_authorization,
+                KeychainVersion::V2,
+                calls,
             )
         }
 
@@ -2333,16 +2704,28 @@ mod tests {
             key_authorization: Option<SignedKeyAuthorization>,
             version: KeychainVersion,
         ) -> TempoPooledTransaction {
+            create_aa_with_keychain_signature_calls_versioned(
+                user_address,
+                access_key_signer,
+                key_authorization,
+                version,
+                vec![default_test_call()],
+            )
+        }
+
+        fn create_aa_with_keychain_signature_calls_versioned(
+            user_address: Address,
+            access_key_signer: &PrivateKeySigner,
+            key_authorization: Option<SignedKeyAuthorization>,
+            version: KeychainVersion,
+            calls: Vec<Call>,
+        ) -> TempoPooledTransaction {
             let tx_aa = TempoTransaction {
                 chain_id: 42431, // MODERATO chain_id
                 max_priority_fee_per_gas: 1_000_000_000,
                 max_fee_per_gas: 20_000_000_000,
                 gas_limit: 1_000_000,
-                calls: vec![Call {
-                    to: TxKind::Call(address!("0000000000000000000000000000000000000001")),
-                    value: U256::ZERO,
-                    input: alloy_primitives::Bytes::new(),
-                }],
+                calls,
                 nonce_key: U256::ZERO,
                 nonce: 0,
                 fee_token: Some(address!("0000000000000000000000000000000000000002")),
@@ -2391,6 +2774,89 @@ mod tests {
             TempoPooledTransaction::new(recovered)
         }
 
+        fn sign_key_authorization(
+            key_authorization: KeyAuthorization,
+            user_signer: &PrivateKeySigner,
+        ) -> SignedKeyAuthorization {
+            let auth_signature = user_signer
+                .sign_hash_sync(&key_authorization.signature_hash())
+                .expect("signing failed");
+            key_authorization.into_signed(PrimitiveSignature::Secp256k1(auth_signature))
+        }
+
+        fn tip20_transfer_call(target: Address, recipient: Address) -> Call {
+            Call {
+                to: TxKind::Call(target),
+                value: U256::ZERO,
+                input: ITIP20::transferCall {
+                    to: recipient,
+                    amount: U256::from(1_u64),
+                }
+                .abi_encode()
+                .into(),
+            }
+        }
+
+        fn tip20_approve_call(target: Address, spender: Address) -> Call {
+            Call {
+                to: TxKind::Call(target),
+                value: U256::ZERO,
+                input: ITIP20::approveCall {
+                    spender,
+                    amount: U256::from(1_u64),
+                }
+                .abi_encode()
+                .into(),
+            }
+        }
+
+        fn tip20_transfer_with_memo_call(target: Address, recipient: Address) -> Call {
+            Call {
+                to: TxKind::Call(target),
+                value: U256::ZERO,
+                input: ITIP20::transferWithMemoCall {
+                    to: recipient,
+                    amount: U256::from(1_u64),
+                    memo: B256::repeat_byte(0x55),
+                }
+                .abi_encode()
+                .into(),
+            }
+        }
+
+        fn deploy_path_usd(
+            provider: &MockEthProvider<TempoPrimitives, TempoChainSpec>,
+            _admin: Address,
+        ) {
+            provider.add_account(
+                PATH_USD_ADDRESS,
+                ExtendedAccount::new(0, U256::ZERO)
+                    .with_bytecode(alloy_primitives::Bytes::from_static(&[0xef])),
+            );
+        }
+
+        fn validate_t3_key_authorization_result(
+            transaction: &TempoPooledTransaction,
+            user_address: Address,
+            key_id: Address,
+            setup_storage: impl FnOnce(&MockEthProvider<TempoPrimitives, TempoChainSpec>),
+        ) -> Result<Result<(), TempoPoolTransactionError>, ProviderError> {
+            let validator = setup_validator_with_keychain_storage_spec(
+                transaction,
+                user_address,
+                key_id,
+                None,
+                moderato_with_t3(),
+            );
+            setup_storage(validator.inner.client());
+            let mut state_provider = validator.inner.client().latest().unwrap();
+            validate_against_keychain_default_fee_context(
+                &validator,
+                transaction,
+                &mut state_provider,
+            )
+        }
+
         fn validate_against_keychain_default_fee_context(
             validator: &TempoTransactionValidator<MockEthProvider<TempoPrimitives, TempoChainSpec>>,
             transaction: &TempoPooledTransaction,
@@ -2412,13 +2878,13 @@ mod tests {
             transaction: &TempoPooledTransaction,
             user_address: Address,
             key_id: Address,
-            authorized_key_slot_value: Option<U256>,
+            authorized_key: Option<AuthorizedKey>,
         ) -> TempoTransactionValidator<MockEthProvider<TempoPrimitives, TempoChainSpec>> {
             setup_validator_with_keychain_storage_spec(
                 transaction,
                 user_address,
                 key_id,
-                authorized_key_slot_value,
+                authorized_key,
                 moderato_with_t1c(),
             )
         }
@@ -2427,7 +2893,7 @@ mod tests {
             transaction: &TempoPooledTransaction,
             user_address: Address,
             key_id: Address,
-            authorized_key_slot_value: Option<U256>,
+            authorized_key: Option<AuthorizedKey>,
             chain_spec: TempoChainSpec,
         ) -> TempoTransactionValidator<MockEthProvider<TempoPrimitives, TempoChainSpec>> {
             let provider = MockEthProvider::<TempoPrimitives>::new().with_chain_spec(chain_spec);
@@ -2439,14 +2905,13 @@ mod tests {
             );
             provider.add_block(B256::random(), Default::default());
 
-            // If slot value provided, setup AccountKeychain storage
-            if let Some(slot_value) = authorized_key_slot_value {
-                let storage_slot = AccountKeychain::new().keys[user_address][key_id].base_slot();
-                provider.add_account(
-                    ACCOUNT_KEYCHAIN_ADDRESS,
-                    ExtendedAccount::new(0, U256::ZERO)
-                        .extend_storage([(storage_slot.into(), slot_value)]),
-                );
+            // If authorized key provided, setup AccountKeychain storage
+            if let Some(authorized_key) = authorized_key {
+                provider
+                    .setup_storage(TempoHardfork::default(), || {
+                        AccountKeychain::new().keys[user_address][key_id].write(authorized_key)
+                    })
+                    .unwrap();
             }
 
             let inner =
@@ -2508,19 +2973,16 @@ mod tests {
                 create_aa_with_keychain_signature(user_address, &access_key_signer, None);
 
             // Setup storage with a valid authorized key (expiry > 0, not revoked)
-            let slot_value = AuthorizedKey {
-                signature_type: 0, // secp256k1
-                expiry: u64::MAX,  // never expires
-                enforce_limits: false,
-                is_revoked: false,
-            }
-            .encode_to_slot();
-
             let validator = setup_validator_with_keychain_storage(
                 &transaction,
                 user_address,
                 access_key_address,
-                Some(slot_value),
+                Some(AuthorizedKey {
+                    signature_type: 0, // secp256k1
+                    expiry: u64::MAX,  // never expires
+                    enforce_limits: false,
+                    is_revoked: false,
+                }),
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
@@ -2545,19 +3007,16 @@ mod tests {
                 create_aa_with_keychain_signature(user_address, &access_key_signer, None);
 
             // Setup storage with a revoked key
-            let slot_value = AuthorizedKey {
-                signature_type: 0,
-                expiry: 0, // revoked keys have expiry=0
-                enforce_limits: false,
-                is_revoked: true,
-            }
-            .encode_to_slot();
-
             let validator = setup_validator_with_keychain_storage(
                 &transaction,
                 user_address,
                 access_key_address,
-                Some(slot_value),
+                Some(AuthorizedKey {
+                    signature_type: 0,
+                    expiry: 0, // revoked keys have expiry=0
+                    enforce_limits: false,
+                    is_revoked: true,
+                }),
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
@@ -2586,19 +3045,16 @@ mod tests {
                 create_aa_with_keychain_signature(user_address, &access_key_signer, None);
 
             // Setup storage with expiry = 0 (key doesn't exist)
-            let slot_value = AuthorizedKey {
-                signature_type: 0,
-                expiry: 0, // expiry = 0 means key doesn't exist
-                enforce_limits: false,
-                is_revoked: false,
-            }
-            .encode_to_slot();
-
             let validator = setup_validator_with_keychain_storage(
                 &transaction,
                 user_address,
                 access_key_address,
-                Some(slot_value),
+                Some(AuthorizedKey {
+                    signature_type: 0,
+                    expiry: 0, // expiry = 0 means key doesn't exist
+                    enforce_limits: false,
+                    is_revoked: false,
+                }),
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
@@ -2663,6 +3119,7 @@ mod tests {
                 key_id: access_key_address,
                 expiry: None, // never expires
                 limits: None, // unlimited
+                allowed_calls: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();
@@ -2710,6 +3167,7 @@ mod tests {
                 key_id: access_key_address,
                 expiry: None,
                 limits: None,
+                allowed_calls: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();
@@ -2725,19 +3183,16 @@ mod tests {
                 Some(signed_key_auth),
             );
 
-            let existing_key_slot = AuthorizedKey {
-                signature_type: 0,
-                expiry: u64::MAX,
-                enforce_limits: false,
-                is_revoked: false,
-            }
-            .encode_to_slot();
-
             let validator = setup_validator_with_keychain_storage(
                 &transaction,
                 user_address,
                 access_key_address,
-                Some(existing_key_slot),
+                Some(AuthorizedKey {
+                    signature_type: 0,
+                    expiry: u64::MAX,
+                    enforce_limits: false,
+                    is_revoked: false,
+                }),
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
@@ -2771,7 +3226,9 @@ mod tests {
                 limits: Some(vec![TokenLimit {
                     token: fee_token,
                     limit: U256::ZERO,
+                    period: 0,
                 }]),
+                allowed_calls: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();
@@ -2825,6 +3282,7 @@ mod tests {
                 key_id: access_key_address,
                 expiry: None,
                 limits: Some(vec![]),
+                allowed_calls: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();
@@ -2882,7 +3340,9 @@ mod tests {
                 limits: Some(vec![TokenLimit {
                     token: non_fee_token,
                     limit: U256::MAX,
+                    period: 0,
                 }]),
+                allowed_calls: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();
@@ -2925,7 +3385,7 @@ mod tests {
         }
 
         #[test]
-        fn test_key_authorization_duplicate_token_limits_uses_last_value()
+        fn test_key_authorization_pre_t3_duplicate_token_limits_use_last_value()
         -> Result<(), ProviderError> {
             let (access_key_signer, access_key_address) = generate_keypair();
             let (user_signer, user_address) = generate_keypair();
@@ -2945,12 +3405,15 @@ mod tests {
                     TokenLimit {
                         token: fee_token,
                         limit: U256::ZERO,
+                        period: 0,
                     },
                     TokenLimit {
                         token: fee_token,
                         limit: fee_cost + U256::from(100),
+                        period: 0,
                     },
                 ]),
+                allowed_calls: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();
@@ -2987,6 +3450,73 @@ mod tests {
         }
 
         #[test]
+        fn test_key_authorization_t3_rejects_duplicate_token_limits() -> Result<(), ProviderError> {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+            let fee_token = address!("0000000000000000000000000000000000000002");
+
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: Some(vec![
+                    TokenLimit {
+                        token: fee_token,
+                        limit: U256::from(100_u64),
+                        period: 0,
+                    },
+                    TokenLimit {
+                        token: fee_token,
+                        limit: U256::from(200_u64),
+                        period: 60,
+                    },
+                ]),
+                allowed_calls: None,
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage_spec(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+                moderato_with_t3(),
+            );
+            let mut state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )?;
+
+            assert!(
+                matches!(
+                    result,
+                    Err(TempoPoolTransactionError::Keychain(
+                        "duplicate token limits are not allowed"
+                    ))
+                ),
+                "Expected duplicate token limits rejection, got: {result:?}"
+            );
+
+            Ok(())
+        }
+
+        #[test]
         fn test_key_authorization_spending_limit_uses_resolved_fee_token()
         -> Result<(), ProviderError> {
             let (access_key_signer, access_key_address) = generate_keypair();
@@ -3001,7 +3531,9 @@ mod tests {
                 limits: Some(vec![TokenLimit {
                     token: resolved_fee_token,
                     limit: U256::MAX,
+                    period: 0,
                 }]),
+                allowed_calls: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();
@@ -3053,7 +3585,9 @@ mod tests {
                 limits: Some(vec![TokenLimit {
                     token: fee_token,
                     limit: U256::ZERO,
+                    period: 0,
                 }]),
+                allowed_calls: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();
@@ -3093,12 +3627,760 @@ mod tests {
             Ok(())
         }
 
+        #[test]
+        fn test_key_authorization_t3_rejects_too_many_call_scopes() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+
+            let mut scopes = Vec::new();
+            for _ in 0..=MAX_CALL_SCOPES {
+                scopes.push(CallScope {
+                    target: Address::random(),
+                    selector_rules: vec![],
+                });
+            }
+
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: None,
+                allowed_calls: Some(scopes),
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage_spec(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+                moderato_with_t3(),
+            );
+            let mut state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )
+            .expect("should not be a provider error");
+
+            assert!(
+                matches!(
+                    result,
+                    Err(TempoPoolTransactionError::Keychain(
+                        "too many call scopes in key authorization"
+                    ))
+                ),
+                "Expected too many call scopes rejection, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_key_authorization_t3_rejects_spending_limit_above_u128_max() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+            let fee_token = address!("0000000000000000000000000000000000000002");
+
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: Some(vec![TokenLimit {
+                    token: fee_token,
+                    limit: U256::from(u128::MAX) + U256::from(1_u8),
+                    period: 0,
+                }]),
+                allowed_calls: None,
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage_spec(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+                moderato_with_t3(),
+            );
+            let mut state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )
+            .expect("should not be a provider error");
+
+            assert!(
+                matches!(
+                    result,
+                    Err(TempoPoolTransactionError::Keychain(
+                        "spending limit exceeds u128::MAX"
+                    ))
+                ),
+                "Expected oversized spending limit rejection, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_key_authorization_t3_rejects_duplicate_scope_targets() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+            let duplicate_target = Address::random();
+
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: None,
+                allowed_calls: Some(vec![
+                    CallScope {
+                        target: duplicate_target,
+                        selector_rules: vec![],
+                    },
+                    CallScope {
+                        target: duplicate_target,
+                        selector_rules: vec![],
+                    },
+                ]),
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage_spec(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+                moderato_with_t3(),
+            );
+            let mut state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )
+            .expect("should not be a provider error");
+
+            assert!(
+                matches!(
+                    result,
+                    Err(TempoPoolTransactionError::Keychain(
+                        "duplicate call scope targets are not allowed"
+                    ))
+                ),
+                "Expected duplicate target rejection, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_key_authorization_t3_accepts_empty_selector_rules_as_address_only_scope() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: None,
+                allowed_calls: Some(vec![CallScope {
+                    target: address!("0000000000000000000000000000000000000001"),
+                    selector_rules: vec![],
+                }]),
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage_spec(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+                moderato_with_t3(),
+            );
+            let mut state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )
+            .expect("should not be a provider error");
+
+            assert!(
+                result.is_ok(),
+                "Expected address-only scope to pass, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_key_authorization_t3_rejects_inline_disallowed_call_scope() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: None,
+                allowed_calls: Some(vec![CallScope {
+                    target: address!("0000000000000000000000000000000000000002"),
+                    selector_rules: vec![],
+                }]),
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage_spec(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+                moderato_with_t3(),
+            );
+            let mut state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )
+            .expect("should not be a provider error");
+
+            assert!(
+                matches!(
+                    result,
+                    Err(TempoPoolTransactionError::Keychain(
+                        "call not allowed by key scope"
+                    ))
+                ),
+                "Expected call-scope rejection, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_key_authorization_t3_rejects_inline_contract_creation() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: None,
+                allowed_calls: None,
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let tx_aa = TempoTransaction {
+                chain_id: 42431,
+                max_priority_fee_per_gas: 1_000_000_000,
+                max_fee_per_gas: 20_000_000_000,
+                gas_limit: 1_000_000,
+                calls: vec![Call {
+                    to: TxKind::Create,
+                    value: U256::ZERO,
+                    input: alloy_primitives::Bytes::new(),
+                }],
+                nonce_key: U256::ZERO,
+                nonce: 0,
+                fee_token: Some(address!("0000000000000000000000000000000000000002")),
+                fee_payer_signature: None,
+                valid_after: None,
+                valid_before: None,
+                access_list: Default::default(),
+                tempo_authorization_list: vec![],
+                key_authorization: Some(signed_key_auth),
+            };
+
+            let unsigned = AASigned::new_unhashed(
+                tx_aa.clone(),
+                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                    Signature::test_signature(),
+                )),
+            );
+            let sig_hash = KeychainSignature::signing_hash(unsigned.signature_hash(), user_address);
+            let signature = access_key_signer
+                .sign_hash_sync(&sig_hash)
+                .expect("signing failed");
+            let signed = AASigned::new_unhashed(
+                tx_aa,
+                TempoSignature::Keychain(KeychainSignature::new(
+                    user_address,
+                    PrimitiveSignature::Secp256k1(signature),
+                )),
+            );
+            let transaction = TempoPooledTransaction::new(Recovered::new_unchecked(
+                tempo_primitives::TempoTxEnvelope::AA(signed),
+                user_address,
+            ));
+
+            let validator = setup_validator_with_keychain_storage_spec(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+                moderato_with_t3(),
+            );
+            let mut state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )
+            .expect("should not be a provider error");
+
+            assert!(
+                matches!(
+                    result,
+                    Err(TempoPoolTransactionError::Keychain(
+                        "contract creation not allowed with access keys"
+                    ))
+                ),
+                "Expected create-call rejection, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_key_authorization_t3_accepts_inline_allowed_call_scope() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: None,
+                allowed_calls: Some(vec![CallScope {
+                    target: address!("0000000000000000000000000000000000000001"),
+                    selector_rules: vec![],
+                }]),
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage_spec(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+                moderato_with_t3(),
+            );
+            let mut state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )
+            .expect("should not be a provider error");
+
+            assert!(
+                result.is_ok(),
+                "Expected allowed call-scope transaction to pass, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_key_authorization_t3_recipient_scope_matches_constrained_tip20_selectors()
+        -> Result<(), ProviderError> {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+            let allowed_recipient = Address::repeat_byte(0x11);
+            let denied_recipient = Address::repeat_byte(0x22);
+
+            let signed_key_auth = sign_key_authorization(
+                KeyAuthorization {
+                    chain_id: 42431,
+                    key_type: SignatureType::Secp256k1,
+                    key_id: access_key_address,
+                    expiry: None,
+                    limits: None,
+                    allowed_calls: Some(vec![CallScope {
+                        target: PATH_USD_ADDRESS,
+                        selector_rules: vec![
+                            SelectorRule {
+                                selector: ITIP20::transferCall::SELECTOR,
+                                recipients: vec![allowed_recipient],
+                            },
+                            SelectorRule {
+                                selector: ITIP20::approveCall::SELECTOR,
+                                recipients: vec![allowed_recipient],
+                            },
+                            SelectorRule {
+                                selector: ITIP20::transferWithMemoCall::SELECTOR,
+                                recipients: vec![allowed_recipient],
+                            },
+                        ],
+                    }]),
+                },
+                &user_signer,
+            );
+
+            for (name, make_call) in [
+                (
+                    "transfer",
+                    tip20_transfer_call as fn(Address, Address) -> Call,
+                ),
+                (
+                    "approve",
+                    tip20_approve_call as fn(Address, Address) -> Call,
+                ),
+                (
+                    "transferWithMemo",
+                    tip20_transfer_with_memo_call as fn(Address, Address) -> Call,
+                ),
+            ] {
+                let allowed_tx = create_aa_with_keychain_signature_calls(
+                    user_address,
+                    &access_key_signer,
+                    Some(signed_key_auth.clone()),
+                    vec![make_call(PATH_USD_ADDRESS, allowed_recipient)],
+                );
+                let allowed_result = validate_t3_key_authorization_result(
+                    &allowed_tx,
+                    user_address,
+                    access_key_address,
+                    |provider| deploy_path_usd(provider, user_address),
+                )?;
+                assert!(
+                    allowed_result.is_ok(),
+                    "{name} should allow the configured recipient, got: {allowed_result:?}"
+                );
+
+                let denied_tx = create_aa_with_keychain_signature_calls(
+                    user_address,
+                    &access_key_signer,
+                    Some(signed_key_auth.clone()),
+                    vec![make_call(PATH_USD_ADDRESS, denied_recipient)],
+                );
+                let denied_result = validate_t3_key_authorization_result(
+                    &denied_tx,
+                    user_address,
+                    access_key_address,
+                    |provider| deploy_path_usd(provider, user_address),
+                )?;
+                assert!(
+                    matches!(
+                        denied_result,
+                        Err(TempoPoolTransactionError::Keychain(
+                            "call not allowed by key scope"
+                        ))
+                    ),
+                    "{name} should reject an unlisted recipient, got: {denied_result:?}"
+                );
+            }
+
+            Ok(())
+        }
+
+        #[test]
+        fn test_key_authorization_t3_rejects_batch_when_any_call_is_out_of_scope()
+        -> Result<(), ProviderError> {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+            let allowed_recipient = Address::repeat_byte(0x11);
+            let denied_recipient = Address::repeat_byte(0x22);
+
+            let signed_key_auth = sign_key_authorization(
+                KeyAuthorization {
+                    chain_id: 42431,
+                    key_type: SignatureType::Secp256k1,
+                    key_id: access_key_address,
+                    expiry: None,
+                    limits: None,
+                    allowed_calls: Some(vec![CallScope {
+                        target: PATH_USD_ADDRESS,
+                        selector_rules: vec![SelectorRule {
+                            selector: ITIP20::transferCall::SELECTOR,
+                            recipients: vec![allowed_recipient],
+                        }],
+                    }]),
+                },
+                &user_signer,
+            );
+
+            let transaction = create_aa_with_keychain_signature_calls(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+                vec![
+                    tip20_transfer_call(PATH_USD_ADDRESS, allowed_recipient),
+                    tip20_transfer_call(PATH_USD_ADDRESS, denied_recipient),
+                ],
+            );
+
+            let result = validate_t3_key_authorization_result(
+                &transaction,
+                user_address,
+                access_key_address,
+                |provider| deploy_path_usd(provider, user_address),
+            )?;
+
+            assert!(
+                matches!(
+                    result,
+                    Err(TempoPoolTransactionError::Keychain(
+                        "call not allowed by key scope"
+                    ))
+                ),
+                "Expected batched scope rejection, got: {result:?}"
+            );
+
+            Ok(())
+        }
+
+        #[test]
+        fn test_key_authorization_t3_rejects_duplicate_recipients_in_selector_rule() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+            let duplicate_recipient = Address::repeat_byte(0x11);
+
+            let signed_key_auth = sign_key_authorization(
+                KeyAuthorization {
+                    chain_id: 42431,
+                    key_type: SignatureType::Secp256k1,
+                    key_id: access_key_address,
+                    expiry: None,
+                    limits: None,
+                    allowed_calls: Some(vec![CallScope {
+                        target: PATH_USD_ADDRESS,
+                        selector_rules: vec![SelectorRule {
+                            selector: ITIP20::transferCall::SELECTOR,
+                            recipients: vec![duplicate_recipient, duplicate_recipient],
+                        }],
+                    }]),
+                },
+                &user_signer,
+            );
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let result = validate_t3_key_authorization_result(
+                &transaction,
+                user_address,
+                access_key_address,
+                |_| {},
+            )
+            .expect("should not be a provider error");
+
+            assert!(
+                matches!(
+                    result,
+                    Err(TempoPoolTransactionError::Keychain(
+                        "selector rule recipients must be non-zero and unique"
+                    ))
+                ),
+                "Expected duplicate recipient rejection, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_key_authorization_t3_rejects_recipient_scope_for_non_tip20_target() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+
+            let signed_key_auth = sign_key_authorization(
+                KeyAuthorization {
+                    chain_id: 42431,
+                    key_type: SignatureType::Secp256k1,
+                    key_id: access_key_address,
+                    expiry: None,
+                    limits: None,
+                    allowed_calls: Some(vec![CallScope {
+                        target: address!("0000000000000000000000000000000000000042"),
+                        selector_rules: vec![SelectorRule {
+                            selector: ITIP20::transferCall::SELECTOR,
+                            recipients: vec![address!("00000000000000000000000000000000000000aa")],
+                        }],
+                    }]),
+                },
+                &user_signer,
+            );
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let result = validate_t3_key_authorization_result(
+                &transaction,
+                user_address,
+                access_key_address,
+                |_| {},
+            )
+            .expect("should not be a provider error");
+
+            assert!(
+                matches!(
+                    result,
+                    Err(TempoPoolTransactionError::Keychain(
+                        "recipient-constrained selector rules require a deployed TIP-20 target"
+                    ))
+                ),
+                "Expected non-TIP-20 target rejection, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_key_authorization_t3_rejects_recipient_scope_for_undeployed_tip20() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+            let mut target_bytes = [0u8; 20];
+            target_bytes[0] = 0x20;
+            target_bytes[1] = 0xc0;
+            target_bytes[19] = 0x42;
+            let undeployed_tip20 = Address::from(target_bytes);
+
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: None,
+                allowed_calls: Some(vec![CallScope {
+                    target: undeployed_tip20,
+                    selector_rules: vec![tempo_primitives::transaction::SelectorRule {
+                        selector: [0xa9, 0x05, 0x9c, 0xbb],
+                        recipients: vec![address!("00000000000000000000000000000000000000aa")],
+                    }],
+                }]),
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage_spec(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+                moderato_with_t3(),
+            );
+            let mut state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )
+            .expect("should not be a provider error");
+
+            assert!(
+                matches!(
+                    result,
+                    Err(TempoPoolTransactionError::Keychain(
+                        "recipient-constrained selector rules require a deployed TIP-20 target"
+                    ))
+                ),
+                "Expected undeployed TIP-20 rejection, got: {result:?}"
+            );
+        }
+
         /// Setup a validator using the DEV chain spec (T1C active at genesis).
         fn setup_validator_with_keychain_storage_t1c(
             transaction: &TempoPooledTransaction,
             user_address: Address,
             key_id: Address,
-            authorized_key_slot_value: Option<U256>,
+            authorized_key: Option<AuthorizedKey>,
         ) -> TempoTransactionValidator<MockEthProvider<TempoPrimitives, TempoChainSpec>> {
             use tempo_chainspec::spec::DEV;
 
@@ -3106,7 +4388,7 @@ mod tests {
                 transaction,
                 user_address,
                 key_id,
-                authorized_key_slot_value,
+                authorized_key,
                 Arc::unwrap_or_clone(DEV.clone()),
             )
         }
@@ -3145,6 +4427,7 @@ mod tests {
                 key_id: access_key_address,
                 expiry: None,
                 limits: None,
+                allowed_calls: None,
             };
             let auth_sig_hash = key_auth.signature_hash();
             let auth_signature = user_signer
@@ -3343,6 +4626,7 @@ mod tests {
                 key_id: different_key_id, // Different from access_key_address
                 expiry: None,
                 limits: None,
+                allowed_calls: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();
@@ -3396,6 +4680,7 @@ mod tests {
                 key_id: access_key_address,
                 expiry: None,
                 limits: None,
+                allowed_calls: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();
@@ -3433,6 +4718,59 @@ mod tests {
                     ))
                 ),
                 "Invalid KeyAuthorization signature should be rejected"
+            );
+        }
+
+        #[test]
+        fn test_key_authorization_same_tx_key_type_mismatch_rejected() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+
+            let key_auth = KeyAuthorization {
+                chain_id: 1337,
+                key_type: SignatureType::P256,
+                key_id: access_key_address,
+                expiry: None,
+                limits: None,
+                allowed_calls: None,
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage_t1c(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+            );
+            let mut state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )
+            .expect("should not be a provider error");
+
+            assert!(
+                matches!(
+                    result,
+                    Err(TempoPoolTransactionError::Keychain(
+                        "key authorization key_type does not match the keychain signature type"
+                    ))
+                ),
+                "Expected key-type mismatch rejection, got: {result:?}"
             );
         }
 
@@ -3493,18 +4831,16 @@ mod tests {
             // The actual mismatch scenario would require manually constructing an invalid state.
 
             // Setup with valid key for the actual sender
-            let slot_value = AuthorizedKey {
-                signature_type: 0,
-                expiry: u64::MAX,
-                enforce_limits: false,
-                is_revoked: false,
-            }
-            .encode_to_slot();
             let validator = setup_validator_with_keychain_storage(
                 &transaction,
                 real_user,
                 access_key_address,
-                Some(slot_value),
+                Some(AuthorizedKey {
+                    signature_type: 0,
+                    expiry: u64::MAX,
+                    enforce_limits: false,
+                    is_revoked: false,
+                }),
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
@@ -3526,7 +4862,7 @@ mod tests {
             transaction: &TempoPooledTransaction,
             user_address: Address,
             key_id: Address,
-            authorized_key_slot_value: Option<U256>,
+            authorized_key: Option<AuthorizedKey>,
             tip_timestamp: u64,
         ) -> TempoTransactionValidator<MockEthProvider<TempoPrimitives, TempoChainSpec>> {
             let provider =
@@ -3552,14 +4888,13 @@ mod tests {
             };
             provider.add_block(B256::random(), block);
 
-            // If slot value provided, setup AccountKeychain storage
-            if let Some(slot_value) = authorized_key_slot_value {
-                let storage_slot = AccountKeychain::new().keys[user_address][key_id].base_slot();
-                provider.add_account(
-                    ACCOUNT_KEYCHAIN_ADDRESS,
-                    ExtendedAccount::new(0, U256::ZERO)
-                        .extend_storage([(storage_slot.into(), slot_value)]),
-                );
+            // If authorized key provided, setup AccountKeychain storage
+            if let Some(authorized_key) = authorized_key {
+                provider
+                    .setup_storage(TempoHardfork::default(), || {
+                        AccountKeychain::new().keys[user_address][key_id].write(authorized_key)
+                    })
+                    .unwrap();
             }
 
             let inner =
@@ -3592,19 +4927,16 @@ mod tests {
                 create_aa_with_keychain_signature(user_address, &access_key_signer, None);
 
             // Setup storage with an expired key (expiry in the past)
-            let slot_value = AuthorizedKey {
-                signature_type: 0,
-                expiry: current_time - 1, // Expired (in the past)
-                enforce_limits: false,
-                is_revoked: false,
-            }
-            .encode_to_slot();
-
             let validator = setup_validator_with_keychain_storage_and_timestamp(
                 &transaction,
                 user_address,
                 access_key_address,
-                Some(slot_value),
+                Some(AuthorizedKey {
+                    signature_type: 0,
+                    expiry: current_time - 1, // Expired (in the past)
+                    enforce_limits: false,
+                    is_revoked: false,
+                }),
                 current_time,
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
@@ -3634,19 +4966,16 @@ mod tests {
                 create_aa_with_keychain_signature(user_address, &access_key_signer, None);
 
             // Setup storage with expiry == current_time (edge case: expired)
-            let slot_value = AuthorizedKey {
-                signature_type: 0,
-                expiry: current_time, // Expiry at exactly current time should be rejected
-                enforce_limits: false,
-                is_revoked: false,
-            }
-            .encode_to_slot();
-
             let validator = setup_validator_with_keychain_storage_and_timestamp(
                 &transaction,
                 user_address,
                 access_key_address,
-                Some(slot_value),
+                Some(AuthorizedKey {
+                    signature_type: 0,
+                    expiry: current_time, // Expiry at exactly current time should be rejected
+                    enforce_limits: false,
+                    is_revoked: false,
+                }),
                 current_time,
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
@@ -3675,19 +5004,16 @@ mod tests {
                 create_aa_with_keychain_signature(user_address, &access_key_signer, None);
 
             // Setup storage with a future expiry
-            let slot_value = AuthorizedKey {
-                signature_type: 0,
-                expiry: current_time + 100, // Valid (in the future)
-                enforce_limits: false,
-                is_revoked: false,
-            }
-            .encode_to_slot();
-
             let validator = setup_validator_with_keychain_storage_and_timestamp(
                 &transaction,
                 user_address,
                 access_key_address,
-                Some(slot_value),
+                Some(AuthorizedKey {
+                    signature_type: 0,
+                    expiry: current_time + 100, // Valid (in the future)
+                    enforce_limits: false,
+                    is_revoked: false,
+                }),
                 current_time,
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
@@ -3717,6 +5043,7 @@ mod tests {
                 key_id: access_key_address,
                 expiry: Some(current_time - 1), // Expired
                 limits: None,
+                allowed_calls: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();
@@ -3769,6 +5096,7 @@ mod tests {
                 key_id: access_key_address,
                 expiry: Some(current_time), // Expired at exactly current time
                 limits: None,
+                allowed_calls: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();
@@ -3820,6 +5148,7 @@ mod tests {
                 key_id: access_key_address,
                 expiry: Some(current_time + 100), // Valid (in the future)
                 limits: None,
+                allowed_calls: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();
@@ -3870,6 +5199,7 @@ mod tests {
                 key_id: access_key_address,
                 expiry: Some(expiry),
                 limits: None,
+                allowed_calls: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();
@@ -3921,6 +5251,7 @@ mod tests {
                 key_id: access_key_address,
                 expiry: None, // Never expires
                 limits: None,
+                allowed_calls: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();
@@ -3975,30 +5306,26 @@ mod tests {
             );
             provider.add_block(B256::random(), Default::default());
 
-            // Setup AccountKeychain storage with AuthorizedKey
-            let slot_value = AuthorizedKey {
-                signature_type: 0,
-                expiry: u64::MAX,
-                enforce_limits,
-                is_revoked: false,
-            }
-            .encode_to_slot();
-
-            let key_storage_slot = AccountKeychain::new().keys[user_address][key_id].base_slot();
-            let mut storage = vec![(key_storage_slot.into(), slot_value)];
-
-            // Add spending limit if provided
-            if let Some((token, limit)) = spending_limit {
-                let limit_key = AccountKeychain::spending_limit_key(user_address, key_id);
-                let limit_slot: U256 =
-                    AccountKeychain::new().spending_limits[limit_key][token].slot();
-                storage.push((limit_slot.into(), limit));
-            }
-
-            provider.add_account(
-                ACCOUNT_KEYCHAIN_ADDRESS,
-                ExtendedAccount::new(0, U256::ZERO).extend_storage(storage),
-            );
+            // Setup `AccountKeychain` storage with `AuthorizedKey` and optional spending limit
+            provider
+                .setup_storage(TempoHardfork::default(), || {
+                    let mut keychain = AccountKeychain::new();
+                    keychain.keys[user_address][key_id].write(AuthorizedKey {
+                        signature_type: 0,
+                        expiry: u64::MAX,
+                        enforce_limits,
+                        is_revoked: false,
+                    })?;
+                    if let Some((token, limit)) = spending_limit {
+                        let limit_key = AccountKeychain::spending_limit_key(user_address, key_id);
+                        keychain.spending_limits[limit_key][token].write(SpendingLimitState {
+                            remaining: limit,
+                            ..Default::default()
+                        })?;
+                    }
+                    Ok::<(), TempoPrecompileError>(())
+                })
+                .unwrap();
 
             let inner =
                 EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
@@ -4302,19 +5629,16 @@ mod tests {
             let transaction =
                 create_aa_with_keychain_signature(user_address, &access_key_signer, None);
 
-            let slot_value = AuthorizedKey {
-                signature_type: 0,
-                expiry: u64::MAX,
-                enforce_limits: false,
-                is_revoked: false,
-            }
-            .encode_to_slot();
-
             let validator = setup_validator_with_keychain_storage(
                 &transaction,
                 user_address,
                 access_key_address,
-                Some(slot_value),
+                Some(AuthorizedKey {
+                    signature_type: 0,
+                    expiry: u64::MAX,
+                    enforce_limits: false,
+                    is_revoked: false,
+                }),
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
@@ -4360,14 +5684,6 @@ mod tests {
             let transaction =
                 create_aa_with_v1_keychain_signature(user_address, &access_key_signer, None);
 
-            let slot_value = AuthorizedKey {
-                signature_type: 0,
-                expiry: u64::MAX,
-                enforce_limits: false,
-                is_revoked: false,
-            }
-            .encode_to_slot();
-
             // Pre-T1C validator with keychain storage
             let provider =
                 MockEthProvider::<TempoPrimitives>::new().with_chain_spec(moderato_without_t1c());
@@ -4376,13 +5692,18 @@ mod tests {
                 ExtendedAccount::new(transaction.nonce(), U256::ZERO),
             );
             provider.add_block(B256::random(), Default::default());
-            let storage_slot =
-                AccountKeychain::new().keys[user_address][access_key_address].base_slot();
-            provider.add_account(
-                ACCOUNT_KEYCHAIN_ADDRESS,
-                ExtendedAccount::new(0, U256::ZERO)
-                    .extend_storage([(storage_slot.into(), slot_value)]),
-            );
+            provider
+                .setup_storage(TempoHardfork::default(), || {
+                    AccountKeychain::new().keys[user_address][access_key_address].write(
+                        AuthorizedKey {
+                            signature_type: 0,
+                            expiry: u64::MAX,
+                            enforce_limits: false,
+                            is_revoked: false,
+                        },
+                    )
+                })
+                .unwrap();
             let inner =
                 EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
                     .disable_balance_check()
@@ -4886,7 +6207,7 @@ mod tests {
             .validate_transaction(TransactionOrigin::External, tx)
             .await;
 
-        // Should NOT fail with InsufficientGasForIntrinsicCost
+        // Should NOT fail with CallGasCostMoreThanGasLimit (intrinsic gas check)
         if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
             assert!(
                 matches!(err, InvalidPoolTransactionError::IntrinsicGasTooLow),
@@ -4994,7 +6315,7 @@ mod tests {
         // Verify has_enough_liquidity would bypass (return true) for this token
         // because it matches a validator token. This confirms the vulnerability we're testing.
         let liquidity_result =
-            amm_cache.has_enough_liquidity(paused_validator_token, U256::from(1000), &state);
+            amm_cache.has_enough_liquidity(paused_validator_token, U256::from(1000), &mut state);
         assert!(
             liquidity_result.is_ok() && liquidity_result.unwrap(),
             "Token in unique_tokens should bypass liquidity check and return true"

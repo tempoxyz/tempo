@@ -233,6 +233,7 @@ mod tests {
     };
 
     use crate::{TempoBlockEnv, TempoEvm, TempoHaltReason, TempoInvalidTransaction, TempoTxEnv};
+    use revm::context::result::InvalidTransaction;
 
     // ==================== Test Constants ====================
 
@@ -298,6 +299,24 @@ mod tests {
         cfg.spec = TempoHardfork::T1C;
         // Apply TIP-1000 gas params for T1C hardfork
         cfg.gas_params = tempo_gas_params(TempoHardfork::T1C);
+
+        let ctx = Context::mainnet()
+            .with_db(db)
+            .with_block(Default::default())
+            .with_cfg(cfg)
+            .with_tx(Default::default());
+
+        let mut evm = TempoEvm::new(ctx, ());
+        fund_account(&mut evm, address);
+        evm
+    }
+
+    /// Create an EVM with T3 hardfork enabled and a funded account.
+    fn create_funded_evm_t3(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T3;
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T3);
 
         let ctx = Context::mainnet()
             .with_db(db)
@@ -975,6 +994,7 @@ mod tests {
             key_id: caller,
             expiry: None,
             limits: None,
+            allowed_calls: None,
         };
         let key_auth_webauthn_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
         let signed_key_auth =
@@ -1084,6 +1104,172 @@ mod tests {
             .storage_ref(NONCE_PRECOMPILE_ADDRESS, nonce_slot)
             .unwrap_or_default();
         assert_eq!(stored_nonce_2, U256::from(2));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_t3_key_authorization_deny_all_scopes_blocks_same_tx_call() -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+
+        let mut evm = create_funded_evm_t3(caller);
+
+        // Set up TIP20 for fee payment.
+        let block = TempoBlockEnv::default();
+        {
+            let ctx = &mut evm.ctx;
+            let internals = EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
+            let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
+
+            StorageCtx::enter(&mut provider, || {
+                TIP20Setup::path_usd(caller)
+                    .with_issuer(caller)
+                    .with_mint(caller, U256::from(10_000_000))
+                    .apply()
+            })?;
+        }
+
+        // Explicit deny-all marker in protocol payload: Some([]).
+        let key_auth = KeyAuthorization {
+            chain_id: 1,
+            key_type: SignatureType::WebAuthn,
+            key_id: caller,
+            expiry: None,
+            limits: None,
+            allowed_calls: Some(Vec::new()),
+        };
+        let key_auth_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
+        let signed_key_auth = key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig));
+
+        let tx = TxBuilder::new()
+            .call_identity(&[0x01])
+            .key_authorization(signed_key_auth)
+            .gas_limit(5_000_000)
+            .build();
+
+        // Use keychain signature so call-scope validation runs in the same tx.
+        let signed_tx = key_pair.sign_tx_keychain(tx)?;
+        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+
+        let err = evm
+            .transact_commit(tx_env)
+            .expect_err("deny-all scope should reject the call");
+
+        assert!(
+            matches!(
+                err,
+                revm::context::result::EVMError::Transaction(
+                    TempoInvalidTransaction::KeychainValidationFailed { .. }
+                )
+            ),
+            "expected KeychainValidationFailed, got: {err:?}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_t3_key_authorization_accepts_empty_recipient_allowlist_as_unconstrained()
+    -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+
+        let mut evm = create_funded_evm_t3(caller);
+
+        let block = TempoBlockEnv::default();
+        {
+            let ctx = &mut evm.ctx;
+            let internals = EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
+            let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
+
+            StorageCtx::enter(&mut provider, || {
+                TIP20Setup::path_usd(caller)
+                    .with_issuer(caller)
+                    .with_mint(caller, U256::from(10_000_000))
+                    .apply()
+            })?;
+        }
+
+        let transfer_to = Address::repeat_byte(0xaa);
+        let transfer_input = ITIP20::transferCall {
+            to: transfer_to,
+            amount: U256::from(1_u64),
+        }
+        .abi_encode();
+
+        let key_auth = KeyAuthorization {
+            chain_id: 1,
+            key_type: SignatureType::WebAuthn,
+            key_id: caller,
+            expiry: None,
+            limits: None,
+            allowed_calls: Some(vec![tempo_primitives::transaction::CallScope {
+                target: PATH_USD_ADDRESS,
+                selector_rules: vec![tempo_primitives::transaction::SelectorRule {
+                    selector: ITIP20::transferCall::SELECTOR,
+                    recipients: Vec::new(),
+                }],
+            }]),
+        };
+        let key_auth_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
+        let signed_key_auth = key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig));
+
+        let tx = TxBuilder::new()
+            .call(PATH_USD_ADDRESS, &transfer_input)
+            .key_authorization(signed_key_auth)
+            .gas_limit(5_000_000)
+            .build();
+
+        let signed_tx = key_pair.sign_tx_keychain(tx)?;
+        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+
+        evm.transact_commit(tx_env)
+            .expect("empty recipient allowlist should allow the call");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_same_tx_key_authorization_rejects_key_type_mismatch() -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+
+        let mut evm = create_funded_evm_t3(caller);
+
+        let key_auth = KeyAuthorization {
+            chain_id: 1,
+            key_type: SignatureType::Secp256k1,
+            key_id: caller,
+            expiry: None,
+            limits: None,
+            allowed_calls: None,
+        };
+        let key_auth_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
+        let signed_key_auth = key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig));
+
+        let tx = TxBuilder::new()
+            .call_identity(&[0x01])
+            .key_authorization(signed_key_auth)
+            .gas_limit(5_000_000)
+            .build();
+
+        let signed_tx = key_pair.sign_tx_keychain(tx)?;
+        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+
+        let err = evm
+            .transact_commit(tx_env)
+            .expect_err("mismatched key_type should reject same-tx auth+use");
+
+        assert!(
+            matches!(
+                err,
+                revm::context::result::EVMError::Transaction(
+                    TempoInvalidTransaction::KeychainValidationFailed { .. }
+                )
+            ),
+            "expected KeychainValidationFailed, got: {err:?}"
+        );
 
         Ok(())
     }
@@ -1319,7 +1505,7 @@ mod tests {
     /// Tests all error paths in the AA initial transaction gas validation:
     /// - CreateInitCodeSizeLimit: when initcode exceeds max size
     /// - ValueTransferNotAllowedInAATx: when a call has non-zero value
-    /// - InsufficientGasForIntrinsicCost: when gas_limit < intrinsic_gas
+    /// - CallGasCostMoreThanGasLimit: when gas_limit < intrinsic_gas
     #[test]
     fn test_validate_aa_initial_tx_gas_errors() -> eyre::Result<()> {
         use revm::{context::result::EVMError, handler::Handler};
@@ -1387,7 +1573,7 @@ mod tests {
             );
         }
 
-        // Test 3: InsufficientGasForIntrinsicCost - gas_limit < intrinsic_gas
+        // Test 3: CallGasCostMoreThanGasLimit - gas_limit < intrinsic_gas
         {
             let mut evm = create_evm_with_tx(
                 TxBuilder::new()
@@ -1401,41 +1587,49 @@ mod tests {
                 matches!(
                     result,
                     Err(EVMError::Transaction(
-                        TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
-                            gas_limit: 1000,
-                            intrinsic_gas
-                        }
-                    )) if intrinsic_gas > 1000
+                        TempoInvalidTransaction::EthInvalidTransaction(
+                            InvalidTransaction::CallGasCostMoreThanGasLimit {
+                                gas_limit: 1000,
+                                initial_gas
+                            }
+                        )
+                    )) if initial_gas > 1000
                 ),
-                "Expected InsufficientGasForIntrinsicCost error, got: {result:?}"
+                "Expected CallGasCostMoreThanGasLimit error, got: {result:?}"
             );
         }
 
-        // Test 4: InsufficientGasForIntrinsicCost - gas_limit < floor_gas (EIP-7623)
+        // Test 4: gas_limit < floor_gas (EIP-7623)
+        // For AA transactions, intrinsic gas is higher than for standard txs, so with
+        // gas_limit=31000 the intrinsic gas check fires first (CallGasCostMoreThanGasLimit).
+        // The floor gas error (GasFloorMoreThanGasLimit) would only appear if gas_limit
+        // were between intrinsic_gas and floor_gas, but AA intrinsic gas already exceeds
+        // both values here.
         {
             let large_calldata = vec![0x42; 1000]; // 1000 non-zero bytes = 1000 tokens
 
             let mut evm = create_evm_with_tx(
                 TxBuilder::new()
                     .call_identity(&large_calldata)
-                    .gas_limit(31_000) // Above initial_gas (~30600) but below floor_gas (~32500)
+                    .gas_limit(31_000)
                     .build(),
             )?;
 
             let result = handler.validate_initial_tx_gas(&mut evm);
 
-            // Should fail because gas_limit < floor_gas
             assert!(
                 matches!(
                     result,
                     Err(EVMError::Transaction(
-                        TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
-                            gas_limit: 31_000,
-                            intrinsic_gas
-                        }
-                    )) if intrinsic_gas > 31_000
+                        TempoInvalidTransaction::EthInvalidTransaction(
+                            InvalidTransaction::CallGasCostMoreThanGasLimit {
+                                gas_limit: 31_000,
+                                initial_gas
+                            }
+                        )
+                    )) if initial_gas > 31_000
                 ),
-                "Expected InsufficientGasForIntrinsicCost (floor gas), got: {result:?}"
+                "Expected CallGasCostMoreThanGasLimit, got: {result:?}"
             );
         }
 
@@ -2092,6 +2286,7 @@ mod tests {
             key_id: access_key.address,
             expiry: None,
             limits: None,
+            allowed_calls: None,
         };
         let key_auth_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
         let signed_key_auth = key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig));
@@ -2140,15 +2335,17 @@ mod tests {
                 true // OOG: tx committed, nonce incremented
             }
             Err(e) => {
-                // Transaction rejected during validation - must be InsufficientGasForIntrinsicCost
+                // Transaction rejected during validation - must be CallGasCostMoreThanGasLimit
                 assert!(
                     matches!(
                         e,
                         revm::context::result::EVMError::Transaction(
-                            TempoInvalidTransaction::InsufficientGasForIntrinsicCost { .. }
+                            TempoInvalidTransaction::EthInvalidTransaction(
+                                revm::context::result::InvalidTransaction::CallGasCostMoreThanGasLimit { .. }
+                            )
                         )
                     ),
-                    "Expected InsufficientGasForIntrinsicCost, got: {e:?}"
+                    "Expected CallGasCostMoreThanGasLimit, got: {e:?}"
                 );
                 false // Validation rejection: nonce NOT incremented
             }
@@ -2183,6 +2380,7 @@ mod tests {
             key_id: access_key2.address,
             expiry: None, // Never expires (u64::MAX)
             limits: None, // No spending limits
+            allowed_calls: None,
         };
         let key_auth_sig2 = key_pair.sign_webauthn(key_auth2.signature_hash().as_slice())?;
         let signed_key_auth2 = key_auth2.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig2));
@@ -2292,6 +2490,7 @@ mod tests {
                 key_id: access_key.address,
                 expiry: None,
                 limits: None,
+                allowed_calls: None,
             };
             let key_auth_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
             let signed_key_auth = key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig));
@@ -2412,6 +2611,7 @@ mod tests {
                 key_id: access_key.address,
                 expiry: None,
                 limits: None,
+                allowed_calls: None,
             };
             let key_auth_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
             let signed_key_auth = key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig));

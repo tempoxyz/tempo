@@ -355,7 +355,7 @@ where
         let end = end.min(len);
         let start = start.min(end);
 
-        let mut result = Vec::with_capacity(end - start);
+        let mut result = Vec::new();
         for i in start..end {
             result.push(self.values[i].read()?);
         }
@@ -373,7 +373,7 @@ where
     /// The returned `Set` preserves storage order: `set[i] == handler.at(i)`.
     fn read(&self) -> Result<Set<T>> {
         let len = self.len()?;
-        let mut vec = Vec::with_capacity(len);
+        let mut vec = Vec::new();
 
         for i in 0..len {
             vec.push(self.values[i].read()?);

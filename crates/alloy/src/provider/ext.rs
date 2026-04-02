@@ -7,6 +7,7 @@ use alloy_provider::{
 use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     IAccountKeychain::{IAccountKeychainInstance, KeyInfo},
+    getRemainingLimitReturn,
 };
 
 use crate::{
@@ -45,9 +46,10 @@ pub trait TempoProviderExt: Provider<TempoNetwork> {
         Self: Sized,
     {
         self.account_keychain()
-            .getRemainingLimit(account, key_id, token)
+            .getRemainingLimitWithPeriod(account, key_id, token)
             .call()
             .await
+            .map(|getRemainingLimitReturn { remaining, .. }| remaining)
     }
 
     /// Returns the key ID used in the current transaction context.
@@ -140,8 +142,12 @@ mod tests {
     use alloy::sol_types::SolCall;
     use alloy_primitives::{Address, Bytes, U256};
     use alloy_provider::{Identity, ProviderBuilder, fillers::JoinFill, mock::Asserter};
-    use tempo_contracts::precompiles::IAccountKeychain::{
-        KeyInfo, SignatureType, getKeyCall, getRemainingLimitCall, getTransactionKeyCall,
+    use tempo_contracts::precompiles::{
+        IAccountKeychain::{
+            KeyInfo, SignatureType, getKeyCall, getRemainingLimitWithPeriodCall,
+            getTransactionKeyCall,
+        },
+        getRemainingLimitReturn,
     };
 
     use crate::{
@@ -205,9 +211,12 @@ mod tests {
         let token = Address::repeat_byte(0x33);
         let expected = U256::from(42_u64);
 
-        asserter.push_success(&Bytes::from(getRemainingLimitCall::abi_encode_returns(
-            &expected,
-        )));
+        asserter.push_success(&Bytes::from(
+            getRemainingLimitWithPeriodCall::abi_encode_returns(&getRemainingLimitReturn {
+                remaining: expected,
+                periodEnd: 0,
+            }),
+        ));
 
         let actual = provider
             .get_keychain_remaining_limit(account, key_id, token)

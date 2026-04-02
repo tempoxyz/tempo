@@ -4,12 +4,13 @@
 use crate::error::TempoPrecompileError;
 use crate::{
     PATH_USD_ADDRESS, Precompile, Result,
+    address_registry::{AddressRegistry, IAddressRegistry, MasterId, UserTag, VIRTUAL_MAGIC},
     storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
     tip20::{self, ITIP20, TIP20Token},
     tip20_factory::{self, TIP20Factory},
 };
 use alloy::{
-    primitives::{Address, B256, U256},
+    primitives::{Address, B256, U256, address, hex_literal::hex},
     sol_types::SolError,
 };
 use revm::precompile::PrecompileError;
@@ -179,7 +180,7 @@ impl TIP20Setup {
         }
     }
 
-    /// Clears emitted events for the token after applying the configuration.
+    /// Clear the emitted events of the token when `apply()` is called.
     ///
     /// SAFETY: the caller must ensure the test uses `HashMapStorageProvider`.
     pub fn clear_events(mut self) -> Self {
@@ -448,4 +449,33 @@ pub fn gen_word_from(values: &[&str]) -> U256 {
     slot_bytes[start_idx..].copy_from_slice(&bytes);
 
     U256::from_be_bytes(slot_bytes)
+}
+
+// ────────────────── TIP-1022 Virtual Address Helpers ──────────────────
+
+/// Pre-computed (address, salt) pair satisfying the 32-bit PoW.
+/// Uses the standard test mnemonic index-0 address so it works in both unit and integration tests.
+pub const VIRTUAL_MASTER: Address = address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
+pub const VIRTUAL_SALT: [u8; 32] =
+    hex!("00000000000000000000000000000000000000000000000000000000abf52baf");
+
+/// Builds a virtual address from a `masterId` and `userTag`.
+pub fn make_virtual_address(master_id: MasterId, user_tag: UserTag) -> Address {
+    let mut bytes = [0u8; 20];
+    bytes[0..4].copy_from_slice(master_id.as_slice());
+    bytes[4..14].copy_from_slice(&VIRTUAL_MAGIC);
+    bytes[14..20].copy_from_slice(user_tag.as_slice());
+    Address::from(bytes)
+}
+
+/// Registers [`VIRTUAL_MASTER`] and returns `(master_id, virtual_address)`.
+pub fn register_virtual_master(registry: &mut AddressRegistry) -> Result<(MasterId, Address)> {
+    let master_id = registry.register_virtual_master(
+        VIRTUAL_MASTER,
+        IAddressRegistry::registerVirtualMasterCall {
+            salt: VIRTUAL_SALT.into(),
+        },
+    )?;
+    let virtual_addr = make_virtual_address(master_id, UserTag::new(hex!("010203040506")));
+    Ok((master_id, virtual_addr))
 }

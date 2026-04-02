@@ -37,7 +37,10 @@ use tempo_contracts::precompiles::{
 };
 use tempo_precompiles::{
     ECRECOVER_GAS,
-    account_keychain::{AccountKeychain, TokenLimit, authorizeKeyCall},
+    account_keychain::{
+        AccountKeychain, CallScope as PrecompileCallScope, KeyRestrictions,
+        SelectorRule as PrecompileSelectorRule, TokenLimit, authorizeKeyCall,
+    },
     error::TempoPrecompileError,
     nonce::{EXPIRING_NONCE_MAX_EXPIRY_SECS, INonce::getNonceCall, NonceManager},
     storage::{PrecompileStorageProvider, StorageCtx, evm::EvmPrecompileStorageProvider},
@@ -126,6 +129,63 @@ fn tempo_signature_verification_gas(signature: &TempoSignature) -> u64 {
     }
 }
 
+/// Counts the storage rows written by T3 call-scope configuration.
+///
+/// This lets intrinsic gas account for the scoped-call writes that `authorize_key`
+/// persists into keychain storage.
+fn call_scope_storage_slots(auth: &tempo_primitives::transaction::KeyAuthorization) -> u64 {
+    match auth.allowed_calls.as_ref() {
+        None => 0,
+        Some(scopes) if scopes.is_empty() => 1,
+        Some(scopes) => {
+            let mut selectors = 0u64;
+            let mut constrained_selectors = 0u64;
+            let mut recipients = 0u64;
+
+            for scope in scopes {
+                selectors += scope.selector_rules.len() as u64;
+                for rule in &scope.selector_rules {
+                    if !rule.recipients.is_empty() {
+                        constrained_selectors += 1;
+                        recipients += rule.recipients.len() as u64;
+                    }
+                }
+            }
+
+            // Storage write accounting:
+            // - account mode write: 1
+            // - each target insertion: 3
+            // - each selector insertion: 3
+            // - recipient-constrained selectors also write recipient set length: +1 per selector
+            // - recipient set values+positions: +2 per recipient
+            1 + scopes.len() as u64 * 3 + selectors * 3 + constrained_selectors + recipients * 2
+        }
+    }
+}
+
+fn translate_allowed_calls_for_precompile(
+    key_auth: &tempo_primitives::transaction::SignedKeyAuthorization,
+) -> Vec<PrecompileCallScope> {
+    let Some(scopes) = key_auth.allowed_calls.as_ref() else {
+        return Vec::new();
+    };
+
+    scopes
+        .iter()
+        .map(|scope| PrecompileCallScope {
+            target: scope.target,
+            selectorRules: scope
+                .selector_rules
+                .iter()
+                .map(|rule| PrecompileSelectorRule {
+                    selector: rule.selector.into(),
+                    recipients: rule.recipients.clone(),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
 /// Calculates the intrinsic gas cost for a KeyAuthorization.
 ///
 /// This is charged before execution as part of transaction validation.
@@ -163,7 +223,24 @@ fn calculate_key_authorization_gas(
         let sload_cost =
             gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
 
-        sig_gas + sload_cost + sstore_cost * (1 + num_limits) + BUFFER
+        let limit_slots = if spec.is_t3() {
+            // T3 periodic limits write 2 storage slots per token:
+            // spending_limits[token].remaining + packed {max, period, period_end}
+            num_limits.saturating_mul(2)
+        } else {
+            num_limits
+        };
+
+        let mut total = sig_gas + sload_cost + sstore_cost * (1 + limit_slots) + BUFFER;
+
+        // T3+: include scoped-call storage rows in intrinsic gas.
+        if spec.is_t3() {
+            total = total.saturating_add(
+                sstore_cost.saturating_mul(call_scope_storage_slots(&key_auth.authorization)),
+            );
+        }
+
+        total
     } else {
         // Pre-T1B: Original heuristic constants
         KEY_AUTH_BASE_GAS + sig_gas + num_limits * KEY_AUTH_PER_LIMIT_GAS
@@ -214,6 +291,27 @@ impl<DB, I> TempoEvmHandler<DB, I> {
 }
 
 impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
+    fn seed_tx_origin(
+        &self,
+        evm: &mut TempoEvm<DB, I>,
+    ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
+        let ctx = evm.ctx_mut();
+
+        // Seed tx.origin in keychain transient storage for both regular execution and
+        // RPC simulations (`eth_call` / `eth_estimateGas`) that go through handler execution.
+        StorageCtx::enter_evm(
+            &mut ctx.journaled_state,
+            &ctx.block,
+            &ctx.cfg,
+            &ctx.tx,
+            || {
+                let mut keychain = AccountKeychain::new();
+                keychain.set_tx_origin(ctx.tx.caller())
+            },
+        )
+        .map_err(|e| EVMError::Custom(e.to_string()))
+    }
+
     /// Loads the fee token and fee payer from the transaction environment.
     ///
     /// Resolves and validates the fee fields used by Tempo's fee system:
@@ -223,8 +321,8 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
     /// Must be called before `validate_against_state_and_deduct_caller`, which uses the
     /// loaded fee fields for balance checks.
     ///
-    /// Called by [`Handler::run`] and [`InspectorHandler::inspect_run`]. Exposed for consumers
-    /// like `FoundryHandler` that override `inspect_run` but still need Tempo fee setup.
+    /// Exposed for consumers like `FoundryHandler` that override the default run flow
+    /// but still need Tempo fee setup.
     pub fn load_fee_fields(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
@@ -232,6 +330,13 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
         let ctx = evm.ctx_mut();
 
         self.fee_payer = ctx.tx.fee_payer()?;
+        if ctx.cfg.spec.is_t2()
+            && ctx.tx.has_fee_payer_signature()
+            && self.fee_payer == ctx.tx.caller()
+        {
+            return Err(TempoInvalidTransaction::SelfSponsoredFeePayer.into());
+        }
+
         self.fee_token = ctx
             .journaled_state
             .get_fee_token(&ctx.tx, self.fee_payer, ctx.cfg.spec)
@@ -669,18 +774,12 @@ where
         &self,
         evm: &mut Self::Evm,
     ) -> Result<(), Self::Error> {
+        self.seed_tx_origin(evm)?;
+
         let block = &evm.inner.ctx.block;
         let tx = &evm.inner.ctx.tx;
         let cfg = &evm.inner.ctx.cfg;
         let journal = &mut evm.inner.ctx.journaled_state;
-
-        // Set tx.origin in the keychain's transient storage for spending limit checks.
-        // This must be done for ALL transactions so precompiles can access it.
-        StorageCtx::enter_evm(journal, block, cfg, tx, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.set_tx_origin(tx.caller())
-        })
-        .map_err(|e| EVMError::Custom(e.to_string()))?;
 
         // Validate fee token has TIP20 prefix before loading balance.
         // This prevents panics in get_token_balance for invalid fee tokens.
@@ -727,9 +826,9 @@ where
 
             // do the gas limit check again.
             if tx.gas_limit() < evm.initial_gas {
-                return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+                return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
                     gas_limit: tx.gas_limit(),
-                    intrinsic_gas: evm.initial_gas,
+                    initial_gas: evm.initial_gas,
                 }
                 .into());
             }
@@ -905,6 +1004,24 @@ where
                 .validate_chain_id(cfg.chain_id(), spec.is_t1c())
                 .map_err(TempoInvalidTransaction::from)?;
 
+            // T3 gates all TIP-1011 fields. Before activation, transaction semantics must stay
+            // unchanged, so periodic limits and call scopes are rejected.
+            if !spec.is_t3() {
+                if key_auth.has_periodic_limits() {
+                    return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                        reason: "periodic token limits are not active before T3".to_string(),
+                    }
+                    .into());
+                }
+
+                if key_auth.has_call_scopes() {
+                    return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                        reason: "call scopes are not active before T3".to_string(),
+                    }
+                    .into());
+                }
+            }
+
             let keychain_checkpoint = if spec.is_t1() {
                 Some(journal.checkpoint())
             } else {
@@ -986,18 +1103,26 @@ where
                             .map(|limit| TokenLimit {
                                 token: limit.token,
                                 amount: limit.limit,
+                                period: limit.period,
                             })
                             .collect()
                     })
                     .unwrap_or_default();
 
+                let allow_any_calls = key_auth.allowed_calls.is_none();
+                let precompile_allowed_calls = translate_allowed_calls_for_precompile(key_auth);
+
                 // Create the authorize key call
                 let authorize_call = authorizeKeyCall {
                     keyId: access_key_addr,
                     signatureType: signature_type,
-                    expiry,
-                    enforceLimits: enforce_limits,
-                    limits: precompile_limits,
+                    config: KeyRestrictions {
+                        expiry,
+                        enforceLimits: enforce_limits,
+                        limits: precompile_limits,
+                        allowAnyCalls: allow_any_calls,
+                        allowedCalls: precompile_allowed_calls,
+                    },
                 };
 
                 // Call precompile to authorize the key (same phase as nonce increment)
@@ -1062,8 +1187,9 @@ where
                     .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
             };
 
-            // Check if this transaction includes a KeyAuthorization for the same key
-            // If so, skip keychain validation here - the key was just validated and authorized
+            // Check if this transaction includes a KeyAuthorization for the same key.
+            // Same-tx auth+use still needs key-type parity checks, but we avoid a full keychain
+            // existence lookup here to preserve the pre-T1B out-of-gas behavior.
             let is_authorizing_this_key = tempo_tx_env
                 .key_authorization
                 .as_ref()
@@ -1071,24 +1197,38 @@ where
                 .unwrap_or(false);
 
             // Always need to set the transaction key for Keychain signatures
-            StorageCtx::enter_precompile(
+            let scope_validation_gas = StorageCtx::enter_precompile(
                 journal,
                 block,
                 cfg,
                 tx,
                 |mut keychain: AccountKeychain| {
-                    // Skip keychain validation when authorizing this key in the same tx
-                    if !is_authorizing_this_key {
+                    if is_authorizing_this_key {
+                        if spec.is_t3()
+                            && tempo_tx_env
+                                .key_authorization
+                                .as_ref()
+                                .is_some_and(|key_auth| {
+                                    key_auth.key_type != keychain_sig.signature.signature_type()
+                                })
+                        {
+                            return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                                reason: "key authorization key_type does not match the keychain signature type"
+                                    .to_string(),
+                            }
+                            .into());
+                        }
+                    } else {
                         // Validate that user_address has authorized this access key in the keychain
                         let user_address = &keychain_sig.user_address;
 
                         // Extract the signature type from the inner signature to validate it matches
                         // the key_type stored in the keychain. This prevents using a signature of one
                         // type to authenticate as a key registered with a different type.
-                        // Only validate signature type on T1+ to maintain backward compatibility
+                        // Only validate signature type on T3+ to maintain backward compatibility
                         // with historical blocks during re-execution.
                         let sig_type = spec
-                            .is_t1()
+                            .is_t3()
                             .then_some(keychain_sig.signature.signature_type().into());
 
                         keychain
@@ -1108,9 +1248,35 @@ where
                     // The TIP20 precompile will read this during execution to enforce spending limits
                     keychain
                         .set_transaction_key(access_key_addr)
-                        .map_err(|e| EVMError::Custom(e.to_string()))
+                        .map_err(|e| EVMError::Custom(e.to_string()))?;
+
+                    let scope_validation_gas = if spec.is_t3() {
+                        let gas_before = StorageCtx.gas_used();
+
+                        let user_address = keychain_sig.user_address;
+                        for (to, input) in tx.calls() {
+                            keychain
+                                .validate_call_scope_for_transaction(
+                                    user_address,
+                                    access_key_addr,
+                                    to,
+                                    input,
+                                )
+                                .map_err(|e| TempoInvalidTransaction::KeychainValidationFailed {
+                                    reason: format!("{e:?}"),
+                                })?;
+                        }
+
+                        StorageCtx.gas_used().saturating_sub(gas_before)
+                    } else {
+                        0
+                    };
+
+                    Ok::<u64, EVMError<DB::Error, TempoInvalidTransaction>>(scope_validation_gas)
                 },
             )?;
+
+            evm.initial_gas += scope_validation_gas;
         }
 
         // Short-circuit if there is no spending for this transaction and `collectFeePreTx`
@@ -1362,18 +1528,18 @@ where
 
             // Validate gas limit is sufficient for initial gas
             if gas_limit < init_gas.initial_gas {
-                return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+                return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
                     gas_limit,
-                    intrinsic_gas: init_gas.initial_gas,
+                    initial_gas: init_gas.initial_gas,
                 }
                 .into());
             }
 
             // Validate floor gas (Prague+)
             if !evm.ctx.cfg.is_eip7623_disabled() && gas_limit < init_gas.floor_gas {
-                return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+                return Err(InvalidTransaction::GasFloorMoreThanGasLimit {
                     gas_limit,
-                    intrinsic_gas: init_gas.floor_gas,
+                    gas_floor: init_gas.floor_gas,
                 }
                 .into());
             }
@@ -1611,11 +1777,10 @@ where
         batch_gas.initial_gas += nonce_2d_gas;
     }
 
-    // Validate gas limit is sufficient for initial gas
     if gas_limit < batch_gas.initial_gas {
-        return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+        return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
             gas_limit,
-            intrinsic_gas: batch_gas.initial_gas,
+            initial_gas: batch_gas.initial_gas,
         }
         .into());
     }
@@ -1628,9 +1793,9 @@ where
 
     // Validate floor gas (Prague+)
     if !evm.ctx.cfg.is_eip7623_disabled() && gas_limit < batch_gas.floor_gas {
-        return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+        return Err(InvalidTransaction::GasFloorMoreThanGasLimit {
             gas_limit,
-            intrinsic_gas: batch_gas.floor_gas,
+            gas_floor: batch_gas.floor_gas,
         }
         .into());
     }
@@ -1823,6 +1988,79 @@ mod tests {
             ),
             "Should reject invalid fee token with InvalidFeeToken error"
         );
+    }
+
+    #[test]
+    fn test_self_sponsored_fee_payer_rejected_post_t2() {
+        let caller = Address::random();
+        let invalid_token = Address::random();
+
+        let mut handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::default();
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T2;
+
+        let tx_env = TempoTxEnv {
+            inner: revm::context::TxEnv {
+                caller,
+                ..Default::default()
+            },
+            fee_token: Some(invalid_token),
+            fee_payer: Some(Some(caller)),
+            ..Default::default()
+        };
+
+        let mut evm: TempoEvm<CacheDB<EmptyDB>, ()> = TempoEvm::new(
+            Context::mainnet()
+                .with_db(CacheDB::new(EmptyDB::default()))
+                .with_block(TempoBlockEnv::default())
+                .with_cfg(cfg)
+                .with_tx(tx_env),
+            (),
+        );
+
+        let result = handler.load_fee_fields(&mut evm);
+        assert!(matches!(
+            result,
+            Err(EVMError::Transaction(
+                TempoInvalidTransaction::SelfSponsoredFeePayer
+            ))
+        ));
+    }
+
+    #[test]
+    fn test_self_sponsored_fee_payer_not_rejected_pre_t2() {
+        let caller = Address::random();
+        let invalid_token = Address::random();
+
+        let mut handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::default();
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T1C;
+
+        let tx_env = TempoTxEnv {
+            inner: revm::context::TxEnv {
+                caller,
+                ..Default::default()
+            },
+            fee_token: Some(invalid_token),
+            fee_payer: Some(Some(caller)),
+            ..Default::default()
+        };
+
+        let mut evm: TempoEvm<CacheDB<EmptyDB>, ()> = TempoEvm::new(
+            Context::mainnet()
+                .with_db(CacheDB::new(EmptyDB::default()))
+                .with_block(TempoBlockEnv::default())
+                .with_cfg(cfg)
+                .with_tx(tx_env),
+            (),
+        );
+
+        let result = handler.load_fee_fields(&mut evm);
+        assert!(matches!(
+            result,
+            Err(EVMError::Transaction(TempoInvalidTransaction::InvalidFeeToken(addr)))
+                if addr == invalid_token
+        ));
     }
 
     #[test]
@@ -2208,10 +2446,12 @@ mod tests {
             TokenLimit {
                 token: Address::random(),
                 limit: U256::from(100),
+                period: 0,
             },
             TokenLimit {
                 token: Address::random(),
                 limit: U256::from(200),
+                period: 0,
             },
         ];
 
@@ -2222,6 +2462,7 @@ mod tests {
             key_id,
             expiry: Some(expiry),
             limits: Some(limits.clone()),
+            allowed_calls: None,
         }
         .signature_hash();
 
@@ -2232,6 +2473,7 @@ mod tests {
             key_id,
             expiry: Some(expiry),
             limits: Some(limits.clone()),
+            allowed_calls: None,
         }
         .signature_hash();
 
@@ -2244,6 +2486,7 @@ mod tests {
             key_id,
             expiry: Some(expiry),
             limits: Some(limits),
+            allowed_calls: None,
         }
         .signature_hash();
         assert_ne!(
@@ -2344,6 +2587,7 @@ mod tests {
                         .map(|_| TokenLimit {
                             token: Address::random(),
                             limit: U256::from(1000),
+                            period: 0,
                         })
                         .collect(),
                 )
@@ -2356,6 +2600,7 @@ mod tests {
                     key_id: Address::random(),
                     expiry: None,
                     limits,
+                    allowed_calls: None,
                 },
                 signature: PrimitiveSignature::Secp256k1(
                     alloy_primitives::Signature::test_signature(),
@@ -2428,6 +2673,90 @@ mod tests {
             let expected = ECRECOVER_GAS + sload + sstore * (1 + num_limits as u64) + BUFFER;
             assert_eq!(gas, expected, "T1B with {num_limits} limits");
         }
+
+        for num_limits in 0..=3 {
+            let gas = calculate_key_authorization_gas(
+                &create_key_auth(num_limits),
+                &t1b_gas_params,
+                TempoHardfork::T3,
+            );
+            let expected = ECRECOVER_GAS + sload + sstore * (1 + 2 * num_limits as u64) + BUFFER;
+            assert_eq!(gas, expected, "T3 with {num_limits} limits");
+        }
+
+        let scoped = SignedKeyAuthorization {
+            authorization: KeyAuthorization {
+                chain_id: 1,
+                key_type: SignatureType::Secp256k1,
+                key_id: Address::random(),
+                expiry: None,
+                limits: None,
+                allowed_calls: Some(vec![tempo_primitives::transaction::CallScope {
+                    target: Address::random(),
+                    selector_rules: vec![tempo_primitives::transaction::SelectorRule {
+                        selector: [0xa9, 0x05, 0x9c, 0xbb],
+                        recipients: vec![Address::random(), Address::random()],
+                    }],
+                }]),
+            },
+            signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+        };
+
+        let gas = calculate_key_authorization_gas(&scoped, &t1b_gas_params, TempoHardfork::T3);
+        // 1 key write + 12 scope slots:
+        // account mode(1) + target insertion rows(3) + selector insertion rows(3)
+        // + constrained selector recipient-length(1) + recipients values+positions(2*2).
+        let expected = ECRECOVER_GAS + sload + sstore * (1 + 12) + BUFFER;
+        assert_eq!(gas, expected, "T3 scope writes should be fully charged");
+    }
+
+    #[test]
+    fn test_translate_allowed_calls_for_precompile_preserves_empty_nested_allow_all_lists() {
+        use tempo_primitives::transaction::{
+            CallScope, KeyAuthorization, SelectorRule, SignatureType, SignedKeyAuthorization,
+        };
+
+        let empty_selector_rules = SignedKeyAuthorization {
+            authorization: KeyAuthorization {
+                chain_id: 1,
+                key_type: SignatureType::Secp256k1,
+                key_id: Address::random(),
+                expiry: None,
+                limits: None,
+                allowed_calls: Some(vec![CallScope {
+                    target: Address::random(),
+                    selector_rules: vec![],
+                }]),
+            },
+            signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+        };
+
+        let translated = translate_allowed_calls_for_precompile(&empty_selector_rules);
+        assert_eq!(translated.len(), 1);
+        assert!(translated[0].selectorRules.is_empty());
+
+        let empty_recipients = SignedKeyAuthorization {
+            authorization: KeyAuthorization {
+                chain_id: 1,
+                key_type: SignatureType::Secp256k1,
+                key_id: Address::random(),
+                expiry: None,
+                limits: None,
+                allowed_calls: Some(vec![CallScope {
+                    target: Address::random(),
+                    selector_rules: vec![SelectorRule {
+                        selector: [0xa9, 0x05, 0x9c, 0xbb],
+                        recipients: vec![],
+                    }],
+                }]),
+            },
+            signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+        };
+
+        let translated = translate_allowed_calls_for_precompile(&empty_recipients);
+        assert_eq!(translated.len(), 1);
+        assert_eq!(translated[0].selectorRules.len(), 1);
+        assert!(translated[0].selectorRules[0].recipients.is_empty());
     }
 
     #[test]
@@ -2459,12 +2788,15 @@ mod tests {
                     TokenLimit {
                         token: Address::random(),
                         limit: U256::from(1000),
+                        period: 0,
                     },
                     TokenLimit {
                         token: Address::random(),
                         limit: U256::from(2000),
+                        period: 0,
                     },
                 ]),
+                allowed_calls: None,
             },
             signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
         };
@@ -2703,9 +3035,12 @@ mod tests {
                     assert!(
                         matches!(
                             err.as_invalid_tx_err(),
-                            Some(TempoInvalidTransaction::InsufficientGasForIntrinsicCost { .. })
+                            Some(TempoInvalidTransaction::EthInvalidTransaction(
+                                InvalidTransaction::CallGasCostMoreThanGasLimit { .. }
+                                    | InvalidTransaction::GasFloorMoreThanGasLimit { .. }
+                            ))
                         ),
-                        "Expected InsufficientGasForIntrinsicCost, got: {err:?}"
+                        "Expected CallGasCostMoreThanGasLimit or GasFloorMoreThanGasLimit, got: {err:?}"
                     );
                 }
             }
@@ -3152,6 +3487,7 @@ mod tests {
                     Some((0..num_limits).map(|i| PrimTokenLimit {
                         token: Address::with_last_byte(i as u8),
                         limit: U256::from(1000),
+                        period: 0,
                     }).collect())
                 };
 
@@ -3162,6 +3498,7 @@ mod tests {
                         key_id: Address::ZERO,
                         expiry: None,
                         limits,
+                        allowed_calls: None,
                     },
                     signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
                 }
@@ -3220,8 +3557,10 @@ mod tests {
                         Some((0..num_limits).map(|i| PrimTokenLimit {
                             token: Address::with_last_byte(i as u8),
                             limit: U256::from(1000),
+                            period: 0,
                         }).collect())
                     },
+                    allowed_calls: None,
                 },
                 signature,
             };

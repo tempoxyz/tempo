@@ -53,8 +53,10 @@ pub struct TempoPoolUpdates {
     /// may become unexecutable if the new limit is below their value.
     /// Indexed by account for efficient lookup.
     pub spending_limit_changes: SpendingLimitUpdates,
-    /// Validator token preference changes: (validator, new_token).
-    pub validator_token_changes: Vec<(Address, Address)>,
+    /// Validator token preference changes: validator to new_token (last-write-wins).
+    /// Uses `AddressMap` to deduplicate by validator, preventing resource amplification
+    /// when a validator emits multiple `ValidatorTokenSet` events in the same block.
+    pub validator_token_changes: AddressMap<Address>,
     /// User token preference changes.
     /// When a user changes their fee token preference via `setUserToken()`, pending
     /// transactions from that user that don't have an explicit fee_token set may now
@@ -129,7 +131,7 @@ impl TempoPoolUpdates {
                 if let Ok(event) = IFeeManager::ValidatorTokenSet::decode_log(log) {
                     updates
                         .validator_token_changes
-                        .push((event.validator, event.token));
+                        .insert(event.validator, event.token);
                 } else if let Ok(event) = IFeeManager::UserTokenSet::decode_log(log) {
                     updates.user_token_changes.insert(event.user);
                 }
@@ -1447,6 +1449,29 @@ mod tests {
                 Some(Address::random()),
             );
             assert!(updates.has_invalidation_events());
+        }
+
+        /// Duplicate validator token changes must be deduplicated (last-write-wins).
+        #[test]
+        fn validator_token_changes_deduplicates_by_validator() {
+            let validator = Address::random();
+            let token_a = Address::random();
+            let token_b = Address::random();
+
+            let mut updates = TempoPoolUpdates::new();
+            updates.validator_token_changes.insert(validator, token_a);
+            updates.validator_token_changes.insert(validator, token_b);
+
+            assert_eq!(
+                updates.validator_token_changes.len(),
+                1,
+                "duplicate validator entries must be deduplicated"
+            );
+            assert_eq!(
+                updates.validator_token_changes.get(&validator).copied(),
+                Some(token_b),
+                "last-write-wins: second token should overwrite the first"
+            );
         }
     }
 }

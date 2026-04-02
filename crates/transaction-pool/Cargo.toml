@@ -34,7 +34,7 @@ revm.workspace = true
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-eips.workspace = true
-alloy-evm.workspace = true
+alloy-evm = { workspace = true, features = ["std"] }
 alloy-sol-types.workspace = true
 
 futures.workspace = true
@@ -61,6 +61,7 @@ test-utils = [
 reth-ethereum-primitives = { workspace = true, features = ["test-utils"] }
 reth-transaction-pool = { workspace = true, features = ["test-utils"] }
 reth-provider = { workspace = true, features = ["test-utils"] }
+tempo-precompiles = { workspace = true, features = ["test-utils"] }
 alloy-eips.workspace = true
 alloy-consensus.workspace = true
 alloy-signer.workspace = true

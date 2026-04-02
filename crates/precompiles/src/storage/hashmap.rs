@@ -257,4 +257,11 @@ impl HashMapStorageProvider {
             .and_modify(|v| v.clear())
             .or_default();
     }
+
+    /// Returns all storage entries as `(address, slot, value)`.
+    pub fn into_storage(self) -> impl Iterator<Item = (Address, U256, U256)> {
+        self.internals
+            .into_iter()
+            .map(|((addr, slot), value)| (addr, slot, value))
+    }
 }
