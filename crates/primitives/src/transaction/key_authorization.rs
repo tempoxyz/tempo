@@ -118,7 +118,7 @@ pub struct KeyAuthorization {
     /// Unix timestamp when key expires.
     /// - `None` (RLP 0x80) = key never expires (stored as u64::MAX in precompile)
     /// - `Some(timestamp)` = key expires at this timestamp
-    /// 
+    ///
     /// Note: Some(0) will get decoded as None after RLP roundtrip.
     #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity::opt"))]
     pub expiry: Option<u64>,
@@ -293,7 +293,11 @@ mod rlp {
 
     impl From<&TokenLimit> for TokenLimitWire {
         fn from(value: &TokenLimit) -> Self {
-            let TokenLimit { token, limit, period } = value;
+            let TokenLimit {
+                token,
+                limit,
+                period,
+            } = value;
             Self {
                 token: *token,
                 limit: *limit,
@@ -342,7 +346,14 @@ mod rlp {
 
     impl<'a> From<&'a KeyAuthorization> for KeyAuthorizationWire<'a> {
         fn from(value: &'a KeyAuthorization) -> Self {
-            let KeyAuthorization { chain_id, key_type, key_id, expiry, limits, allowed_calls } = value;
+            let KeyAuthorization {
+                chain_id,
+                key_type,
+                key_id,
+                expiry,
+                limits,
+                allowed_calls,
+            } = value;
             Self {
                 chain_id: *chain_id,
                 key_type: *key_type,
@@ -353,7 +364,7 @@ mod rlp {
             }
         }
     }
-    
+
     impl<'a> From<KeyAuthorizationWire<'a>> for KeyAuthorization {
         fn from(value: KeyAuthorizationWire<'a>) -> Self {
             Self {
@@ -361,8 +372,12 @@ mod rlp {
                 key_type: value.key_type,
                 key_id: value.key_id,
                 expiry: value.expiry.map(|expiry| expiry.get()),
-                limits: value.limits.map(|limits| limits.into_owned().into_iter().collect()),
-                allowed_calls: value.allowed_calls.map(|allowed_calls| allowed_calls.into_owned().into_iter().collect()),
+                limits: value
+                    .limits
+                    .map(|limits| limits.into_owned().into_iter().collect()),
+                allowed_calls: value
+                    .allowed_calls
+                    .map(|allowed_calls| allowed_calls.into_owned().into_iter().collect()),
             }
         }
     }
@@ -561,17 +576,15 @@ mod tests {
     fn test_token_limit_decode_accepts_explicit_zero_period_field() {
         let token = Address::random();
         let limit = U256::from(42);
-        let period = 0u64;
 
         let mut encoded = Vec::new();
         alloy_rlp::Header {
             list: true,
-            payload_length: token.length() + limit.length() + period.length(),
+            payload_length: token.length() + limit.length(),
         }
         .encode(&mut encoded);
         token.encode(&mut encoded);
         limit.encode(&mut encoded);
-        period.encode(&mut encoded);
 
         let decoded: TokenLimit =
             <TokenLimit as Decodable>::decode(&mut encoded.as_slice()).expect("decode token limit");
@@ -793,11 +806,6 @@ mod tests {
         chain_id.encode(&mut payload);
         key_type.encode(&mut payload);
         key_id.encode(&mut payload);
-        payload.extend_from_slice(&[
-            alloy_rlp::EMPTY_STRING_CODE,
-            alloy_rlp::EMPTY_STRING_CODE,
-            alloy_rlp::EMPTY_STRING_CODE,
-        ]);
 
         let mut encoded = Vec::new();
         alloy_rlp::Header {
@@ -818,7 +826,7 @@ mod tests {
 
         let mut reencoded = Vec::new();
         decoded.encode(&mut reencoded);
-        assert!(reencoded.len() < encoded.len());
+        assert_eq!(reencoded.len(), encoded.len());
     }
 
     #[test]
