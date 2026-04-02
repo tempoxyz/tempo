@@ -1326,8 +1326,10 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
     };
-    use alloy::primitives::{Address, Log, TxKind, U256};
-    use alloy::sol_types::SolEvent;
+    use alloy::{
+        primitives::{Address, Log, TxKind, U256},
+        sol_types::SolEvent,
+    };
     use revm::state::Bytecode;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, IAccountKeychain::SignatureType};
