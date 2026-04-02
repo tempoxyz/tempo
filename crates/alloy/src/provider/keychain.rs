@@ -6,8 +6,8 @@ use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     IAccountKeychain::{
         KeyRestrictions as AbiKeyRestrictions, LegacyTokenLimit as AbiLegacyTokenLimit,
-        TokenLimit as AbiTokenLimit, removeAllowedCallsCall,
-        revokeKeyCall, setAllowedCallsCall, updateSpendingLimitCall,
+        TokenLimit as AbiTokenLimit, removeAllowedCallsCall, revokeKeyCall, setAllowedCallsCall,
+        updateSpendingLimitCall,
     },
     ITIP20, authorizeKeyCall, legacyAuthorizeKeyCall,
 };
@@ -28,17 +28,34 @@ pub struct KeyRestrictions {
 }
 
 impl KeyRestrictions {
-    /// Create a new set of account-key restrictions.
-    pub fn new(
-        expiry: Option<u64>,
-        limits: Option<Vec<TokenLimit>>,
-        allowed_calls: Option<Vec<CallScope>>,
-    ) -> Self {
-        Self {
-            expiry,
-            limits,
-            allowed_calls,
-        }
+    /// Set an expiry timestamp.
+    pub fn with_expiry(mut self, expiry: u64) -> Self {
+        self.expiry = Some(expiry);
+        self
+    }
+
+    /// Set token spending limits.
+    pub fn with_limits(mut self, limits: Vec<TokenLimit>) -> Self {
+        self.limits = Some(limits);
+        self
+    }
+
+    /// Set call-scope restrictions.
+    pub fn with_allowed_calls(mut self, allowed_calls: Vec<CallScope>) -> Self {
+        self.allowed_calls = Some(allowed_calls);
+        self
+    }
+
+    /// Deny all spending (enforce limits with an empty allowlist).
+    pub fn with_no_spending(mut self) -> Self {
+        self.limits = Some(Vec::new());
+        self
+    }
+
+    /// Deny all calls (scoped mode with an empty allowlist).
+    pub fn with_no_calls(mut self) -> Self {
+        self.allowed_calls = Some(Vec::new());
+        self
     }
 
     fn has_periodic_limits(&self) -> bool {
@@ -296,21 +313,20 @@ mod tests {
 
     #[test]
     fn test_authorize_key_t3_preserves_call_scopes() {
-        let restrictions = KeyRestrictions::new(
-            Some(123),
-            Some(vec![TokenLimit {
+        let restrictions = KeyRestrictions::default()
+            .with_expiry(123)
+            .with_limits(vec![TokenLimit {
                 token: address!("0x20c0000000000000000000000000000000000001"),
                 limit: uint!(42_U256),
                 period: 60,
-            }]),
-            Some(vec![CallScope {
+            }])
+            .with_allowed_calls(vec![CallScope {
                 target: address!("0x20c0000000000000000000000000000000000002"),
                 selector_rules: vec![SelectorRule {
                     selector: [0xaa, 0xbb, 0xcc, 0xdd],
                     recipients: vec![address!("0x3333333333333333333333333333333333333333")],
                 }],
-            }]),
-        );
+            }]);
 
         let call = authorize_key(
             address!("0x1111111111111111111111111111111111111111"),
@@ -337,7 +353,7 @@ mod tests {
         let scoped = authorize_key_legacy(
             address!("0x1111111111111111111111111111111111111111"),
             SignatureType::Secp256k1,
-            KeyRestrictions::new(None, None, Some(vec![])),
+            KeyRestrictions::default().with_no_calls(),
         )
         .expect_err("legacy ABI should reject call scopes");
         assert_eq!(scoped, KeychainBuildError::LegacyCallScopes);
@@ -345,15 +361,11 @@ mod tests {
         let periodic = authorize_key_legacy(
             address!("0x1111111111111111111111111111111111111111"),
             SignatureType::Secp256k1,
-            KeyRestrictions::new(
-                None,
-                Some(vec![TokenLimit {
-                    token: address!("0x20c0000000000000000000000000000000000001"),
-                    limit: U256::from(1),
-                    period: 1,
-                }]),
-                None,
-            ),
+            KeyRestrictions::default().with_limits(vec![TokenLimit {
+                token: address!("0x20c0000000000000000000000000000000000001"),
+                limit: U256::from(1),
+                period: 1,
+            }]),
         )
         .expect_err("legacy ABI should reject periodic limits");
         assert_eq!(periodic, KeychainBuildError::LegacyPeriodicLimits);
@@ -364,15 +376,13 @@ mod tests {
         let call = authorize_key_legacy(
             address!("0x1111111111111111111111111111111111111111"),
             SignatureType::WebAuthn,
-            KeyRestrictions::new(
-                Some(999),
-                Some(vec![TokenLimit {
+            KeyRestrictions::default()
+                .with_expiry(999)
+                .with_limits(vec![TokenLimit {
                     token: address!("0x20c0000000000000000000000000000000000001"),
                     limit: U256::from(7),
                     period: 0,
                 }]),
-                None,
-            ),
         )
         .expect("legacy restrictions are compatible");
 
