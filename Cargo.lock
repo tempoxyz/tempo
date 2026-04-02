@@ -12124,6 +12124,7 @@ dependencies = [
  "tempo-consensus",
  "tempo-evm",
  "tempo-payload-types",
+ "tempo-precompiles",
  "tempo-primitives",
  "tempo-transaction-pool",
  "tracing",
