@@ -3117,8 +3117,8 @@ mod tests {
                 chain_id: 42431, // MODERATO chain_id
                 key_type: SignatureType::Secp256k1,
                 key_id: access_key_address,
-                expiry: None, // never expires
-                limits: None, // unlimited
+                expiry: None,
+                limits: None,
                 allowed_calls: None,
             };
 

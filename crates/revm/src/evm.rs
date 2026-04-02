@@ -988,14 +988,7 @@ mod tests {
         assert!(result.is_success());
 
         // Test with KeychainSignature using key_authorization to provision the access key
-        let key_auth = KeyAuthorization {
-            chain_id: 1,
-            key_type: SignatureType::WebAuthn,
-            key_id: caller,
-            expiry: None,
-            limits: None,
-            allowed_calls: None,
-        };
+        let key_auth = KeyAuthorization { chain_id: 1, key_type: SignatureType::WebAuthn, key_id: caller, expiry: None, limits: None, allowed_calls: None };
         let key_auth_webauthn_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
         let signed_key_auth =
             key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_webauthn_sig));
@@ -1131,14 +1124,7 @@ mod tests {
         }
 
         // Explicit deny-all marker in protocol payload: Some([]).
-        let key_auth = KeyAuthorization {
-            chain_id: 1,
-            key_type: SignatureType::WebAuthn,
-            key_id: caller,
-            expiry: None,
-            limits: None,
-            allowed_calls: Some(Vec::new()),
-        };
+        let key_auth = KeyAuthorization { chain_id: 1, key_type: SignatureType::WebAuthn, key_id: caller, expiry: None, limits: None, allowed_calls: Some(Vec::new()) };
         let key_auth_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
         let signed_key_auth = key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig));
 
@@ -1237,14 +1223,7 @@ mod tests {
 
         let mut evm = create_funded_evm_t3(caller);
 
-        let key_auth = KeyAuthorization {
-            chain_id: 1,
-            key_type: SignatureType::Secp256k1,
-            key_id: caller,
-            expiry: None,
-            limits: None,
-            allowed_calls: None,
-        };
+        let key_auth = KeyAuthorization { chain_id: 1, key_type: SignatureType::Secp256k1, key_id: caller, expiry: None, limits: None, allowed_calls: None };
         let key_auth_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
         let signed_key_auth = key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig));
 

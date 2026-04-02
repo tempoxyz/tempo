@@ -136,6 +136,32 @@ pub struct KeyAuthorization {
 }
 
 impl KeyAuthorization {
+    /// Create a key authorization with no expiry and no spending limits, scoped to the given
+    /// target addresses (any selector allowed per target).
+    pub fn unrestricted(
+        chain_id: u64,
+        key_type: SignatureType,
+        key_id: Address,
+        targets: Vec<Address>,
+    ) -> Self {
+        Self {
+            chain_id,
+            key_type,
+            key_id,
+            expiry: None,
+            limits: None,
+            allowed_calls: Some(
+                targets
+                    .into_iter()
+                    .map(|target| CallScope {
+                        target,
+                        selector_rules: Vec::new(),
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
     /// Computes the authorization message hash for this key authorization.
     pub fn signature_hash(&self) -> B256 {
         let mut buf = Vec::new();
