@@ -112,6 +112,7 @@ fn make_pre_t1b_genesis() -> eyre::Result<String> {
     genesis["config"].as_object_mut().unwrap().remove("t1cTime");
     genesis["config"].as_object_mut().unwrap().remove("t2Time");
     genesis["config"].as_object_mut().unwrap().remove("t3Time");
+    genesis["config"].as_object_mut().unwrap().remove("t4Time");
     Ok(serde_json::to_string(&genesis)?)
 }
 

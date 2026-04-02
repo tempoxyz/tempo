@@ -414,6 +414,7 @@ async fn test_fee_payer_transfer_whitelist_pre_t1c() -> eyre::Result<()> {
     genesis["config"].as_object_mut().unwrap().remove("t1cTime");
     genesis["config"].as_object_mut().unwrap().remove("t2Time");
     genesis["config"].as_object_mut().unwrap().remove("t3Time");
+    genesis["config"].as_object_mut().unwrap().remove("t4Time");
 
     let setup = TestNodeBuilder::new()
         .with_genesis(serde_json::to_string(&genesis)?)
