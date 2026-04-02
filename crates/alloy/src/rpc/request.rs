@@ -509,8 +509,10 @@ impl<P: Provider<TempoNetwork>, D: CallDecoder> TempoCallBuilderExt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{Bytes, address};
-    use tempo_primitives::transaction::{Call, TEMPO_EXPIRING_NONCE_KEY};
+    use alloy_primitives::{Bytes, Signature, address};
+    use tempo_primitives::transaction::{
+        Call, KeyAuthorization, PrimitiveSignature, TEMPO_EXPIRING_NONCE_KEY,
+    };
 
     #[test]
     fn test_set_valid_before() {
@@ -612,8 +614,6 @@ mod tests {
 
     #[test]
     fn test_set_fee_payer_signature() {
-        use alloy_primitives::Signature;
-
         let mut request = TempoTransactionRequest::default();
         assert!(request.fee_payer_signature.is_none());
 
@@ -624,8 +624,6 @@ mod tests {
 
     #[test]
     fn test_with_fee_payer_signature() {
-        use alloy_primitives::Signature;
-
         let sig = Signature::test_signature();
         let request = TempoTransactionRequest::default().with_fee_payer_signature(sig);
         assert!(request.fee_payer_signature.is_some());
@@ -633,8 +631,6 @@ mod tests {
 
     #[test]
     fn test_build_aa_with_fee_payer_signature() {
-        use alloy_primitives::Signature;
-
         let sig = Signature::test_signature();
         let mut request = TempoTransactionRequest::default().with_fee_payer_signature(sig);
 
@@ -650,8 +646,6 @@ mod tests {
 
     #[test]
     fn test_from_tempo_transaction_preserves_fee_payer_signature() {
-        use alloy_primitives::Signature;
-
         let sig = Signature::test_signature();
         let tx = TempoTransaction {
             chain_id: 1,
@@ -680,8 +674,6 @@ mod tests {
 
     #[test]
     fn test_build_aa_preserves_key_authorization() {
-        use tempo_primitives::transaction::{KeyAuthorization, PrimitiveSignature};
-
         let key_auth = KeyAuthorization {
             chain_id: 4217,
             key_type: SignatureType::Secp256k1,
@@ -727,8 +719,6 @@ mod tests {
 
     #[test]
     fn test_keychain_builder_helpers() {
-        use tempo_primitives::transaction::{KeyAuthorization, PrimitiveSignature};
-
         let key_auth = KeyAuthorization {
             chain_id: 4217,
             key_type: SignatureType::Secp256k1,
