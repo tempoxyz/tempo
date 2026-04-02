@@ -108,6 +108,7 @@ impl LayoutCtx {
     /// packed fields in the same slot.
     ///
     /// Only primitive types with `Layout::Bytes(n)` where `n < 32` support this context.
+    /// Note that these include enums which are representable as `u8`.
     pub const fn packed(offset: usize) -> Self {
         debug_assert!(offset < 32);
         Self(offset)

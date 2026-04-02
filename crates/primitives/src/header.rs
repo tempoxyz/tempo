@@ -49,9 +49,6 @@ impl AsRef<Self> for TempoHeader {
     }
 }
 
-#[cfg(feature = "serde-bincode-compat")]
-impl reth_primitives_traits::serde_bincode_compat::RlpBincode for TempoHeader {}
-
 impl BlockHeader for TempoHeader {
     fn parent_hash(&self) -> B256 {
         self.inner.parent_hash()
@@ -138,67 +135,8 @@ impl BlockHeader for TempoHeader {
     }
 }
 
-#[cfg(feature = "reth")]
-impl reth_primitives_traits::InMemorySize for TempoHeader {
-    fn size(&self) -> usize {
-        let Self {
-            inner,
-            general_gas_limit,
-            timestamp_millis_part,
-            shared_gas_limit,
-        } = self;
-        inner.size()
-            + general_gas_limit.size()
-            + timestamp_millis_part.size()
-            + shared_gas_limit.size()
-    }
-}
-
 impl Sealable for TempoHeader {
     fn hash_slow(&self) -> B256 {
         keccak256(alloy_rlp::encode(self))
-    }
-}
-
-#[cfg(feature = "reth")]
-impl reth_primitives_traits::BlockHeader for TempoHeader {}
-
-#[cfg(feature = "reth")]
-impl reth_primitives_traits::header::HeaderMut for TempoHeader {
-    fn set_parent_hash(&mut self, hash: B256) {
-        self.inner.set_parent_hash(hash);
-    }
-
-    fn set_block_number(&mut self, number: BlockNumber) {
-        self.inner.set_block_number(number);
-    }
-
-    fn set_timestamp(&mut self, timestamp: u64) {
-        self.inner.set_timestamp(timestamp);
-    }
-
-    fn set_state_root(&mut self, state_root: B256) {
-        self.inner.set_state_root(state_root);
-    }
-
-    fn set_difficulty(&mut self, difficulty: U256) {
-        self.inner.set_difficulty(difficulty);
-    }
-}
-
-#[cfg(feature = "reth-codec")]
-impl reth_db_api::table::Compress for TempoHeader {
-    type Compressed = alloc::vec::Vec<u8>;
-
-    fn compress_to_buf<B: alloy_primitives::bytes::BufMut + AsMut<[u8]>>(&self, buf: &mut B) {
-        let _ = reth_codecs::Compact::to_compact(self, buf);
-    }
-}
-
-#[cfg(feature = "reth-codec")]
-impl reth_db_api::table::Decompress for TempoHeader {
-    fn decompress(value: &[u8]) -> Result<Self, reth_db_api::DatabaseError> {
-        let (obj, _) = reth_codecs::Compact::from_compact(value, value.len());
-        Ok(obj)
     }
 }

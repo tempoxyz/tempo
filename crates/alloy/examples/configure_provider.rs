@@ -2,7 +2,7 @@
 //!
 //! Run with: `cargo run --example configure_provider`
 
-use alloy::providers::ProviderBuilder;
+use alloy::providers::{Provider, ProviderBuilder};
 use tempo_alloy::TempoNetwork;
 
 #[tokio::main]
@@ -12,7 +12,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     println!("Provider connected successfully");
-    println!("Chain ID: {provider:?}");
+    let chain_id = provider.get_chain_id().await?;
+    println!("Chain ID: {chain_id}");
 
     Ok(())
 }

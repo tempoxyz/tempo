@@ -21,10 +21,20 @@ on:
         default: "300"
         type: string
       bloat:
-        description: "State bloat in MiB (0 = none)"
+        description: "State bloat in GB (0 = none)"
         required: false
-        default: "1024"
-        type: string
+        default: "1"
+        type: choice
+        options:
+          - "0"
+          - "1"
+          - "10"
+          - "100"
+      force-bloat:
+        description: "Force re-creation of the bloat snapshot"
+        required: false
+        default: false
+        type: boolean
       tps:
         description: "Target transactions per second"
         required: false
@@ -74,7 +84,19 @@ on:
         required: false
         default: ""
         type: string
-
+      run-type:
+        description: "Attribution for this benchmark run"
+        required: false
+        default: "manual"
+        type: choice
+        options:
+          - "manual"
+          - "nightly"
+      no_slack:
+        description: "Suppress Slack notifications for benchmark results"
+        required: false
+        default: true
+        type: boolean
 env:
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: "sccache"
@@ -110,6 +132,9 @@ jobs:
       tracy-offset: ${{ steps.args.outputs.tracy-offset }}
       baseline-hardfork: ${{ steps.args.outputs.baseline-hardfork }}
       feature-hardfork: ${{ steps.args.outputs.feature-hardfork }}
+      run-type: ${{ steps.args.outputs.run-type }}
+      force-bloat: ${{ steps.args.outputs.force-bloat }}
+      no-slack: ${{ steps.args.outputs.no-slack }}
       comment-id: ${{ steps.ack.outputs.comment-id }}
     steps:
       - name: Check org membership
@@ -137,13 +162,13 @@ jobs:
         with:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |
-            let pr, actor, preset, duration, bloat, tps, baseline, feature, samply, tracy, tracySeconds, tracyOffset, baselineHardfork, featureHardfork;
+            let pr, actor, preset, duration, bloat, tps, baseline, feature, samply, tracy, tracySeconds, tracyOffset, baselineHardfork, featureHardfork, runType, forceBloat, noSlack;
 
             if (context.eventName === 'workflow_dispatch') {
               actor = '${{ github.actor }}';
               preset = '${{ github.event.inputs.preset }}' || 'tip20';
               duration = '${{ github.event.inputs.duration }}' || '300';
-              bloat = '${{ github.event.inputs.bloat }}' || '1024';
+              bloat = String(parseInt('${{ github.event.inputs.bloat }}' || '1', 10) * 1000);
               tps = '${{ github.event.inputs.tps }}' || '10000';
               baseline = '${{ github.event.inputs.baseline }}';
               feature = '${{ github.event.inputs.feature }}';
@@ -153,6 +178,9 @@ jobs:
               tracyOffset = '${{ github.event.inputs.tracy-offset }}' || '120';
               baselineHardfork = '${{ github.event.inputs.baseline-hardfork }}' || '';
               featureHardfork = '${{ github.event.inputs.feature-hardfork }}' || '';
+              runType = '${{ github.event.inputs.run-type }}' || 'manual';
+              forceBloat = '${{ github.event.inputs.force-bloat }}' === 'true' ? 'true' : 'false';
+              noSlack = '${{ github.event.inputs.no_slack }}' !== 'false' ? 'true' : 'false';
 
               // Find PR for the selected branch
               const branch = '${{ github.ref_name }}';
@@ -175,8 +203,8 @@ jobs:
               const intArgs = new Set(['duration', 'bloat', 'tps', 'tracy-seconds', 'tracy-offset']);
               const refArgs = new Set(['baseline', 'feature']);
               const stringArgs = new Set(['preset', 'tracy', 'baseline-hardfork', 'feature-hardfork']);
-              const boolArgs = new Set(['samply']);
-              const defaults = { preset: 'tip20', duration: '300', bloat: '1024', tps: '10000', baseline: '', feature: '', samply: 'false', tracy: 'off', 'tracy-seconds': '30', 'tracy-offset': '120', 'baseline-hardfork': '', 'feature-hardfork': '' };
+              const boolArgs = new Set(['samply', 'force-bloat', 'no-slack']);
+              const defaults = { preset: 'tip20', duration: '300', bloat: '1024', tps: '10000', baseline: '', feature: '', samply: 'false', tracy: 'off', 'tracy-seconds': '30', 'tracy-offset': '120', 'baseline-hardfork': '', 'feature-hardfork': '', 'force-bloat': 'false', 'no-slack': 'false' };
               const unknown = [];
               const invalid = [];
               const args = body.replace(/^(?:@decofe|derek) bench\s*/, '');
@@ -218,7 +246,7 @@ jobs:
               if (unknown.length) errors.push(`Unknown argument(s): \`${unknown.join('`, `')}\``);
               if (invalid.length) errors.push(`Invalid value(s): ${invalid.join(', ')}`);
               if (errors.length) {
-                const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-hardfork=FORK] [feature-hardfork=FORK]\``;
+                const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [force-bloat] [no-slack] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-hardfork=FORK] [feature-hardfork=FORK]\``;
                 await github.rest.issues.createComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
@@ -240,9 +268,12 @@ jobs:
               tracyOffset = defaults['tracy-offset'];
               baselineHardfork = defaults['baseline-hardfork'];
               featureHardfork = defaults['feature-hardfork'];
+              runType = 'manual';
+              forceBloat = defaults['force-bloat'];
+              noSlack = defaults['no-slack'];
             }
 
-            const usageStr = '**Usage:** `@decofe bench [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-hardfork=FORK] [feature-hardfork=FORK]`';
+            const usageStr = '**Usage:** `@decofe bench [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [force-bloat] [no-slack] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-hardfork=FORK] [feature-hardfork=FORK]`';
 
             // Validate tracy value
             if (!['off', 'on', 'full'].includes(tracy)) {
@@ -295,6 +326,12 @@ jobs:
               }
             }
 
+            if (!['manual', 'nightly'].includes(runType)) {
+              const msg = `❌ **Invalid benchmark type**\n\n\`run-type=${runType}\` is not valid. Must be \`manual\` or \`nightly\`.`;
+              core.setFailed(msg);
+              return;
+            }
+
             // Resolve display names for baseline/feature
             let baselineName = baseline || 'main';
             let featureName = feature;
@@ -327,6 +364,9 @@ jobs:
             core.setOutput('tracy-offset', tracyOffset);
             core.setOutput('baseline-hardfork', baselineHardfork || '');
             core.setOutput('feature-hardfork', featureHardfork || '');
+            core.setOutput('run-type', runType);
+            core.setOutput('force-bloat', forceBloat);
+            core.setOutput('no-slack', noSlack);
 
       - name: Acknowledge request
         id: ack
@@ -390,9 +430,17 @@ jobs:
       BENCH_TRACY_OFFSET: ${{ needs.tempo-bench-ack.outputs.tracy-offset }}
       BENCH_BASELINE_HARDFORK: ${{ needs.tempo-bench-ack.outputs.baseline-hardfork }}
       BENCH_FEATURE_HARDFORK: ${{ needs.tempo-bench-ack.outputs.feature-hardfork }}
+      BENCH_RUN_TYPE: ${{ needs.tempo-bench-ack.outputs.run-type }}
+      BENCH_FORCE_BLOAT: ${{ needs.tempo-bench-ack.outputs.force-bloat }}
+      BENCH_NO_SLACK: ${{ needs.tempo-bench-ack.outputs.no-slack }}
       BENCH_COMMENT_ID: ${{ needs.tempo-bench-ack.outputs.comment-id }}
       TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
       GRAFANA_TEMPO: ${{ secrets.GRAFANA_TEMPO }}
+      CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
+      CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
+      CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+      SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
+      SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
     steps:
       - name: Mask telemetry URL
         if: env.TEMPO_TELEMETRY_URL
@@ -401,6 +449,12 @@ jobs:
       - name: Mask Grafana Tempo URL
         if: env.GRAFANA_TEMPO
         run: echo "::add-mask::$GRAFANA_TEMPO"
+
+      - name: Mask ClickHouse credentials
+        if: env.CLICKHOUSE_URL
+        run: |
+          echo "::add-mask::$CLICKHOUSE_URL"
+          echo "::add-mask::$CLICKHOUSE_PASSWORD"
 
       - name: Clean up previous results
         run: sudo rm -rf bench-results/ 2>/dev/null || true
@@ -545,6 +599,30 @@ jobs:
             core.setOutput('feature-ref', featureRef);
             core.setOutput('feature-name', featureName);
 
+      - name: Resolve PR attribution
+        uses: actions/github-script@v8
+        with:
+          script: |
+            let pr = process.env.BENCH_PR || '';
+            if (!pr) {
+              const featureRef = '${{ steps.refs.outputs.feature-ref }}';
+              try {
+                const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  commit_sha: featureRef,
+                });
+                const openPr = prs.find(candidate => candidate.state === 'open');
+                if (openPr) {
+                  pr = String(openPr.number);
+                  core.info(`Using PR #${pr} for feature ref ${featureRef}`);
+                }
+              } catch (error) {
+                core.info(`No PR associated with feature ref ${featureRef}: ${error.message}`);
+              }
+            }
+            core.exportVariable('BENCH_PR', pr);
+
       - name: Update status (running benchmark)
         if: success() && env.BENCH_COMMENT_ID
         uses: actions/github-script@v8
@@ -569,11 +647,12 @@ jobs:
             --no-infra \
             --baseline "$BASELINE_REF" \
             --feature "$FEATURE_REF" \
-            --bench-datadir /reth-bench \
+            --bench-datadir "/reth-bench/tempo_${BENCH_BLOAT}mb" \
             --tune \
             $([ "$BENCH_SAMPLY" = "true" ] && echo "--samply" || true) \
             $([ "$BENCH_TRACY" != "off" ] && echo "--tracy $BENCH_TRACY --tracy-seconds $BENCH_TRACY_SECONDS --tracy-offset $BENCH_TRACY_OFFSET" || true) \
-            $([ -n "$BENCH_BASELINE_HARDFORK" ] && echo "--baseline-hardfork $BENCH_BASELINE_HARDFORK --feature-hardfork $BENCH_FEATURE_HARDFORK" || true)
+            $([ -n "$BENCH_BASELINE_HARDFORK" ] && echo "--baseline-hardfork $BENCH_BASELINE_HARDFORK --feature-hardfork $BENCH_FEATURE_HARDFORK" || true) \
+            $([ "$BENCH_FORCE_BLOAT" = "true" ] && echo "--force" || true)
 
       - name: Find results directory
         id: results-dir
@@ -593,6 +672,15 @@ jobs:
         with:
           name: tempo-bench-results
           path: bench-results/
+
+      - name: Upload results to ClickHouse
+        if: success()
+        env:
+          BENCH_BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
+          BENCH_FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
+          BENCH_RUN_TYPE: ${{ env.BENCH_RUN_TYPE }}
+          BENCH_JOB_URL: ${{ env.BENCH_JOB_URL }}
+        run: bash contrib/bench/upload-clickhouse.sh "${{ steps.results-dir.outputs.path }}"
 
       - name: Post results to PR
         if: success()
@@ -707,6 +795,26 @@ jobs:
             } else {
               await core.summary.addRaw(body).write();
             }
+
+      - name: Send Slack notification (success)
+        if: success() && steps.results-dir.outputs.path && env.BENCH_NO_SLACK != 'true'
+        uses: actions/github-script@v8
+        env:
+          BENCH_WORK_DIR: ${{ steps.results-dir.outputs.path }}
+          BENCH_BASELINE_NAME: ${{ steps.refs.outputs.baseline-name }}
+          BENCH_FEATURE_NAME: ${{ steps.refs.outputs.feature-name }}
+        with:
+          script: |
+            const notify = require('./.github/scripts/bench-slack-notify.js');
+            await notify.success({ core, context });
+
+      - name: Send Slack notification (failure)
+        if: failure() && env.BENCH_NO_SLACK != 'true'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const notify = require('./.github/scripts/bench-slack-notify.js');
+            await notify.failure({ core, context, failedStep: 'running benchmark' });
 
       - name: Update status (failed)
         if: failure() && env.BENCH_COMMENT_ID

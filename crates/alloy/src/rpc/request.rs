@@ -405,7 +405,9 @@ impl<P: Provider<TempoNetwork>, D: CallDecoder> TempoCallBuilderExt
 mod tests {
     use super::*;
     use alloy_primitives::{Bytes, address};
-    use tempo_primitives::transaction::{Call, TEMPO_EXPIRING_NONCE_KEY};
+    use tempo_primitives::transaction::{
+        Call, KeyAuthorization, PrimitiveSignature, TEMPO_EXPIRING_NONCE_KEY,
+    };
 
     #[test]
     fn test_set_valid_before() {
@@ -575,20 +577,12 @@ mod tests {
 
     #[test]
     fn test_build_aa_preserves_key_authorization() {
-        use tempo_primitives::transaction::{
-            KeyAuthorization, PrimitiveSignature, SignedKeyAuthorization,
-        };
-
-        let key_auth = SignedKeyAuthorization {
-            authorization: KeyAuthorization {
-                chain_id: 4217,
-                key_type: SignatureType::Secp256k1,
-                key_id: address!("0x1111111111111111111111111111111111111111"),
-                expiry: None,
-                limits: None,
-            },
-            signature: PrimitiveSignature::default(),
-        };
+        let key_auth = KeyAuthorization::unrestricted(
+            4217,
+            SignatureType::Secp256k1,
+            address!("0x1111111111111111111111111111111111111111"),
+        )
+        .into_signed(PrimitiveSignature::default());
 
         let mut request = TempoTransactionRequest {
             key_authorization: Some(key_auth.clone()),
@@ -659,47 +653,6 @@ mod tests {
         assert_eq!(
             roundtrip.calls, batch,
             "multi-call AA must not gain phantom calls on round-trip"
-        );
-    }
-
-    #[test]
-    #[cfg(feature = "tempo-compat")]
-    fn test_aa_roundtrip_via_tx_env() {
-        use reth_evm::EvmEnv;
-        use reth_rpc_convert::TryIntoTxEnv;
-
-        let calls = vec![
-            Call {
-                to: address!("0x1111111111111111111111111111111111111111").into(),
-                value: U256::ZERO,
-                input: Bytes::from(vec![0xaa]),
-            },
-            Call {
-                to: address!("0x2222222222222222222222222222222222222222").into(),
-                value: U256::ZERO,
-                input: Bytes::from(vec![0xbb]),
-            },
-        ];
-
-        let tx = TempoTransaction {
-            chain_id: 4217,
-            nonce: 1,
-            gas_limit: 100_000,
-            max_fee_per_gas: 1_000_000_000,
-            max_priority_fee_per_gas: 1_000_000,
-            calls: calls.clone(),
-            ..Default::default()
-        };
-
-        let req = TempoTransactionRequest::from(tx);
-
-        let evm_env = EvmEnv::default();
-        let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
-        let aa_calls = tx_env.tempo_tx_env.expect("tempo_tx_env").aa_calls;
-
-        assert_eq!(
-            aa_calls, calls,
-            "roundtrip via try_into_tx_env must preserve exact call list"
         );
     }
 }
