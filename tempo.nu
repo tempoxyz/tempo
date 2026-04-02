@@ -280,7 +280,7 @@ def read-bench-marker [datadir: string] {
 # ============================================================================
 
 # Ordered list of all Tempo hardforks (must match TempoHardfork enum in crates/chainspec)
-const TEMPO_HARDFORKS = ["T0" "T1" "T1A" "T1B" "T1C" "T2"]
+const TEMPO_HARDFORKS = ["T0" "T1" "T1A" "T1B" "T1C" "T2" "T3" "T4"]
 
 # Map a hardfork name to generate-genesis CLI args.
 # Forks up to and including the given fork are active at genesis (time=0).

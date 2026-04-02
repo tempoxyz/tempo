@@ -184,6 +184,8 @@ tempo_hardfork! (
         T2,
         /// T3 hardfork
         T3,
+        /// T4 hardfork
+        T4,
     }
 );
 
