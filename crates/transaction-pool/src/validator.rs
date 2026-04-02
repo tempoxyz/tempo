@@ -206,6 +206,11 @@ where
         // Validate each scope as a unit so target and selector constraints stay grouped.
         let mut seen_targets = HashSet::with_capacity(scopes.len());
         for scope in scopes {
+            if scope.target.is_zero() {
+                return Ok(Err(TempoPoolTransactionError::Keychain(
+                    "call scope target cannot be the zero address",
+                )));
+            }
             if !seen_targets.insert(scope.target) {
                 return Ok(Err(TempoPoolTransactionError::Keychain(
                     "duplicate call scope targets are not allowed",
