@@ -1,4 +1,4 @@
-use crate::utils::{TestNodeBuilder, setup_test_token};
+use crate::utils::{TestNodeBuilder, make_genesis_at, setup_test_token};
 use alloy::{
     consensus::Transaction,
     network::ReceiptResponse,
@@ -409,15 +409,10 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
 async fn test_fee_payer_transfer_whitelist_pre_t1c() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let genesis_str = include_str!("../assets/test-genesis.json");
-    let mut genesis: serde_json::Value = serde_json::from_str(genesis_str)?;
-    genesis["config"].as_object_mut().unwrap().remove("t1cTime");
-    genesis["config"].as_object_mut().unwrap().remove("t2Time");
-    genesis["config"].as_object_mut().unwrap().remove("t3Time");
-    genesis["config"].as_object_mut().unwrap().remove("t4Time");
+    let pre_t1c_genesis = make_genesis_at(tempo_chainspec::hardfork::TempoHardfork::T1B);
 
     let setup = TestNodeBuilder::new()
-        .with_genesis(serde_json::to_string(&genesis)?)
+        .with_genesis(pre_t1c_genesis)
         .build_http_only()
         .await?;
 
