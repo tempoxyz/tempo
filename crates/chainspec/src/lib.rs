@@ -7,6 +7,7 @@
 extern crate alloc;
 
 mod bootnodes;
+pub mod constants;
 pub mod hardfork;
 pub mod spec;
 pub use spec::TempoChainSpec;

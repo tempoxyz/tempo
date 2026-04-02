@@ -3,7 +3,7 @@ use crate::{
     engine::TempoEngineValidator,
     rpc::{
         TempoAdminApi, TempoAdminApiServer, TempoEthApiBuilder, TempoEthExt, TempoEthExtApiServer,
-        TempoToken, TempoTokenApiServer,
+        TempoForkScheduleApiServer, TempoForkScheduleRpc, TempoToken, TempoTokenApiServer,
     },
 };
 use alloy_primitives::B256;
@@ -207,9 +207,12 @@ where
                 let token = TempoToken::new(eth_api.clone());
                 let eth_ext = TempoEthExt::new(eth_api);
                 let admin = TempoAdminApi::new(self.validator_key);
+                let fork_schedule =
+                    TempoForkScheduleRpc::new(registry.eth_api().provider().clone());
 
                 modules.merge_configured(token.into_rpc())?;
                 modules.merge_configured(eth_ext.into_rpc())?;
+                modules.merge_configured(fork_schedule.into_rpc())?;
                 modules.merge_if_module_configured(RethRpcModule::Admin, admin.into_rpc())?;
                 modules.merge_if_module_configured(RethRpcModule::Eth, eth_config.into_rpc())?;
 
