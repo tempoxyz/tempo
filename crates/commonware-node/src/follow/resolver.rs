@@ -136,20 +136,6 @@ impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> FollowResolver
             return Ok(None);
         };
 
-        let block = self
-            .execution_node
-            .provider
-            .block_by_number(height)
-            .map_err(|e| eyre::eyre!("local provider error: {e}"))?;
-
-        let block = match block {
-            Some(b) => b,
-            None => match self.upstream.get_block_by_number(height).await? {
-                Some(b) => b,
-                None => return Ok(None),
-            },
-        };
-
         let cert_bytes = alloy_primitives::hex::decode(&certified.certificate)
             .wrap_err("failed to decode certificate hex")?;
 
@@ -157,7 +143,7 @@ impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> FollowResolver
             Finalization::read(&mut &cert_bytes[..])
                 .map_err(|e| eyre::eyre!("failed to decode finalization: {e:?}"))?;
 
-        let consensus_block = Block::from_execution_block(SealedBlock::seal_slow(block));
+        let consensus_block = Block::from_execution_block(SealedBlock::seal_slow(certified.block));
         Ok(Some((finalization, consensus_block).encode()))
     }
 

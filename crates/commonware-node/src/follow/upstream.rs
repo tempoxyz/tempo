@@ -65,14 +65,14 @@ pub trait UpstreamNode: Send + Sync + 'static {
 ///
 /// Owns a persistent WebSocket connection to the upstream node with
 /// transparent reconnection.
-pub struct WsUpstream<C> {
-    context: C,
+pub struct WsUpstream<TContext> {
+    context: TContext,
     url: String,
     client: Mutex<Option<Arc<WsClient>>>,
 }
 
-impl<C: Clock> WsUpstream<C> {
-    pub fn new(context: C, url: String) -> Self {
+impl<TContext: Clock> WsUpstream<TContext> {
+    pub fn new(context: TContext, url: String) -> Self {
         Self {
             context,
             url,
