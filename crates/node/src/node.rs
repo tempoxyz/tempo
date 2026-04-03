@@ -3,7 +3,8 @@ use crate::{
     engine::TempoEngineValidator,
     rpc::{
         TempoAdminApi, TempoAdminApiServer, TempoEthApiBuilder, TempoEthExt, TempoEthExtApiServer,
-        TempoForkScheduleApiServer, TempoForkScheduleRpc, TempoToken, TempoTokenApiServer,
+        TempoForkScheduleApiServer, TempoForkScheduleRpc, TempoSimulate, TempoSimulateApiServer,
+        TempoToken, TempoTokenApiServer,
     },
 };
 use alloy_primitives::B256;
@@ -25,11 +26,15 @@ use reth_node_builder::{
 };
 use reth_node_ethereum::EthereumNetworkBuilder;
 use reth_primitives_traits::SealedHeader;
+use reth_provider::ChainSpecProvider;
 use reth_provider::{EthStorage, providers::ProviderFactoryBuilder};
 use reth_rpc_builder::{Identity, RethRpcModule};
 use reth_rpc_eth_api::{
-    RpcNodeCore,
-    helpers::config::{EthConfigApiServer, EthConfigHandler},
+    EthApiTypes, RpcNodeCore,
+    helpers::{
+        EthCall, LoadState, SpawnBlocking,
+        config::{EthConfigApiServer, EthConfigHandler},
+    },
 };
 use reth_tracing::tracing::{debug, info};
 use reth_transaction_pool::{TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore};
@@ -188,8 +193,14 @@ where
     EthB: EthApiBuilder<N>,
     PVB: Send + PayloadValidatorBuilder<N>,
     EVB: EngineValidatorBuilder<N>,
-    EthB::EthApi:
-        RpcNodeCore<Evm = TempoEvmConfig, Primitives: NodePrimitives<BlockHeader = TempoHeader>>,
+    EthB::EthApi: EthApiTypes<NetworkTypes = tempo_alloy::TempoNetwork>
+        + EthCall
+        + SpawnBlocking
+        + LoadState
+        + RpcNodeCore<Evm = TempoEvmConfig, Primitives: NodePrimitives<BlockHeader = TempoHeader>>,
+    <EthB::EthApi as RpcNodeCore>::Provider:
+        ChainSpecProvider<ChainSpec = tempo_chainspec::TempoChainSpec>,
+    <EthB::EthApi as EthApiTypes>::Error: Into<jsonrpsee::types::ErrorObject<'static>>,
 {
     type Handle = <RpcAddOns<N, EthB, PVB, NoopEngineApiBuilder, EVB> as NodeAddOns<N>>::Handle;
 
@@ -205,13 +216,15 @@ where
 
                 let eth_api = registry.eth_api().clone();
                 let token = TempoToken::new(eth_api.clone());
-                let eth_ext = TempoEthExt::new(eth_api);
+                let eth_ext = TempoEthExt::new(eth_api.clone());
+                let simulate = TempoSimulate::new(eth_api);
                 let admin = TempoAdminApi::new(self.validator_key);
                 let fork_schedule =
                     TempoForkScheduleRpc::new(registry.eth_api().provider().clone());
 
                 modules.merge_configured(token.into_rpc())?;
                 modules.merge_configured(eth_ext.into_rpc())?;
+                modules.merge_configured(simulate.into_rpc())?;
                 modules.merge_configured(fork_schedule.into_rpc())?;
                 modules.merge_if_module_configured(RethRpcModule::Admin, admin.into_rpc())?;
                 modules.merge_if_module_configured(RethRpcModule::Eth, eth_config.into_rpc())?;
@@ -228,8 +241,14 @@ where
     EthB: EthApiBuilder<N>,
     PVB: PayloadValidatorBuilder<N>,
     EVB: EngineValidatorBuilder<N>,
-    EthB::EthApi:
-        RpcNodeCore<Evm = TempoEvmConfig, Primitives: NodePrimitives<BlockHeader = TempoHeader>>,
+    EthB::EthApi: EthApiTypes<NetworkTypes = tempo_alloy::TempoNetwork>
+        + EthCall
+        + SpawnBlocking
+        + LoadState
+        + RpcNodeCore<Evm = TempoEvmConfig, Primitives: NodePrimitives<BlockHeader = TempoHeader>>,
+    <EthB::EthApi as RpcNodeCore>::Provider:
+        ChainSpecProvider<ChainSpec = tempo_chainspec::TempoChainSpec>,
+    <EthB::EthApi as EthApiTypes>::Error: Into<jsonrpsee::types::ErrorObject<'static>>,
 {
     type EthApi = EthB::EthApi;
 
