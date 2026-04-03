@@ -133,9 +133,15 @@ fn subblocks_are_included_1_node() {
             }
 
             // Send subblock transactions to all nodes.
-            for node in nodes.iter() {
-                for _ in 0..5 {
-                    expected_transactions.push(submit_subblock_tx(node).await);
+            //
+            // Skip first block as it's taking slightly more to process and it is 
+            // likely that by the time we observe it, it's too late to land any 
+            // transactions in the next subblock.
+            if block.block_number() > 1 {
+                for node in nodes.iter() {
+                    for _ in 0..5 {
+                        expected_transactions.push(submit_subblock_tx(node).await);
+                    }
                 }
             }
         }
