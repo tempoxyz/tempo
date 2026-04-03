@@ -26,8 +26,7 @@ use reth_node_builder::{
 };
 use reth_node_ethereum::EthereumNetworkBuilder;
 use reth_primitives_traits::SealedHeader;
-use reth_provider::ChainSpecProvider;
-use reth_provider::{EthStorage, providers::ProviderFactoryBuilder};
+use reth_provider::{ChainSpecProvider, EthStorage, providers::ProviderFactoryBuilder};
 use reth_rpc_builder::{Identity, RethRpcModule};
 use reth_rpc_eth_api::{
     EthApiTypes, RpcNodeCore,
