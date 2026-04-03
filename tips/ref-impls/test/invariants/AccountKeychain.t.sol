@@ -110,11 +110,18 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
     /// @param keyId The key ID to authorize
     function _createKeyInternal(address account, address keyId) internal {
         uint64 expiry = _generateExpiry(uint256(keccak256(abi.encode(account, keyId))));
-        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
 
         vm.startPrank(account, account);
         keychain.authorizeKey(
-            keyId, IAccountKeychain.SignatureType.Secp256k1, expiry, false, limits
+            keyId,
+            IAccountKeychain.SignatureType.Secp256k1,
+            IAccountKeychain.KeyRestrictions({
+                expiry: expiry,
+                enforceLimits: false,
+                limits: new IAccountKeychain.TokenLimit[](0),
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         );
         vm.stopPrank();
 
@@ -234,14 +241,25 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             limits = new IAccountKeychain.TokenLimit[](1);
             limits[0] = IAccountKeychain.TokenLimit({
                 token: address(_tokens[limitAmountSeed % _tokens.length]),
-                amount: (limitAmountSeed % 1_000_000) * 1e6
+                amount: (limitAmountSeed % 1_000_000) * 1e6,
+                period: 0
             });
         } else {
             limits = new IAccountKeychain.TokenLimit[](0);
         }
 
         vm.startPrank(account, account);
-        try keychain.authorizeKey(keyId, sigType, expiry, enforceLimits, limits) {
+        try keychain.authorizeKey(
+            keyId,
+            sigType,
+            IAccountKeychain.KeyRestrictions({
+                expiry: expiry,
+                enforceLimits: enforceLimits,
+                limits: limits,
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
+        ) {
             vm.stopPrank();
 
             _totalKeysAuthorized++;
@@ -376,15 +394,17 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             account = keyOwner;
         }
 
-        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
-
         vm.startPrank(account, account);
         try keychain.authorizeKey(
             keyId,
             IAccountKeychain.SignatureType.Secp256k1,
-            uint64(block.timestamp + 1 days),
-            false,
-            limits
+            IAccountKeychain.KeyRestrictions({
+                expiry: uint64(block.timestamp + 1 days),
+                enforceLimits: false,
+                limits: new IAccountKeychain.TokenLimit[](0),
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         ) {
             vm.stopPrank();
             revert("TEMPO-KEY4: Reauthorizing revoked key should fail");
@@ -436,7 +456,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             _ghostKeyEnforceLimits[account][keyId] = true; // Always enables limits
 
             // TEMPO-KEY5: Verify limit was updated
-            uint256 storedLimit = keychain.getRemainingLimit(account, keyId, token);
+            (uint256 storedLimit,) = keychain.getRemainingLimitWithPeriod(account, keyId, token);
             assertEq(storedLimit, newLimit, "TEMPO-KEY5: Spending limit should be updated");
 
             // TEMPO-KEY6: Verify enforceLimits is now true
@@ -453,15 +473,17 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
     function tryAuthorizeZeroKey(uint256 accountSeed) external {
         address account = _selectActor(accountSeed);
 
-        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
-
         vm.startPrank(account, account);
         try keychain.authorizeKey(
             address(0), // Zero key ID
             IAccountKeychain.SignatureType.Secp256k1,
-            uint64(block.timestamp + 1 days),
-            false,
-            limits
+            IAccountKeychain.KeyRestrictions({
+                expiry: uint64(block.timestamp + 1 days),
+                enforceLimits: false,
+                limits: new IAccountKeychain.TokenLimit[](0),
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         ) {
             vm.stopPrank();
             revert("TEMPO-KEY7: Zero key ID should fail");
@@ -485,15 +507,17 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             return;
         }
 
-        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
-
         vm.startPrank(account, account);
         try keychain.authorizeKey(
             keyId,
             IAccountKeychain.SignatureType.P256,
-            uint64(block.timestamp + 2 days),
-            false,
-            limits
+            IAccountKeychain.KeyRestrictions({
+                expiry: uint64(block.timestamp + 2 days),
+                enforceLimits: false,
+                limits: new IAccountKeychain.TokenLimit[](0),
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         ) {
             vm.stopPrank();
             revert("TEMPO-KEY8: Duplicate key should fail");
@@ -564,15 +588,20 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         // Authorize key for account1
         IAccountKeychain.TokenLimit[] memory limits1 = new IAccountKeychain.TokenLimit[](1);
-        limits1[0] = IAccountKeychain.TokenLimit({ token: address(_tokens[0]), amount: 1000e6 });
+        limits1[0] =
+            IAccountKeychain.TokenLimit({ token: address(_tokens[0]), amount: 1000e6, period: 0 });
 
         vm.prank(account1, account1);
         keychain.authorizeKey(
             keyId,
             IAccountKeychain.SignatureType.P256,
-            uint64(block.timestamp + 1 days),
-            true,
-            limits1
+            IAccountKeychain.KeyRestrictions({
+                expiry: uint64(block.timestamp + 1 days),
+                enforceLimits: true,
+                limits: limits1,
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         );
 
         // Update ghost state for account1
@@ -589,15 +618,20 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         // Authorize same keyId for account2 with different settings
         IAccountKeychain.TokenLimit[] memory limits2 = new IAccountKeychain.TokenLimit[](1);
-        limits2[0] = IAccountKeychain.TokenLimit({ token: address(_tokens[0]), amount: 2000e6 });
+        limits2[0] =
+            IAccountKeychain.TokenLimit({ token: address(_tokens[0]), amount: 2000e6, period: 0 });
 
         vm.prank(account2, account2);
         keychain.authorizeKey(
             keyId,
             IAccountKeychain.SignatureType.Secp256k1,
-            uint64(block.timestamp + 2 days),
-            true,
-            limits2
+            IAccountKeychain.KeyRestrictions({
+                expiry: uint64(block.timestamp + 2 days),
+                enforceLimits: true,
+                limits: limits2,
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         );
 
         // Update ghost state for account2
@@ -621,8 +655,10 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         assertEq(uint8(info1.signatureType), 1, "TEMPO-KEY10: Account1 should have P256");
         assertEq(uint8(info2.signatureType), 0, "TEMPO-KEY10: Account2 should have Secp256k1");
 
-        uint256 limit1 = keychain.getRemainingLimit(account1, keyId, address(_tokens[0]));
-        uint256 limit2 = keychain.getRemainingLimit(account2, keyId, address(_tokens[0]));
+        (uint256 limit1,) =
+            keychain.getRemainingLimitWithPeriod(account1, keyId, address(_tokens[0]));
+        (uint256 limit2,) =
+            keychain.getRemainingLimitWithPeriod(account2, keyId, address(_tokens[0]));
 
         assertEq(limit1, 1000e6, "TEMPO-KEY10: Account1 limit should be 1000");
         assertEq(limit2, 2000e6, "TEMPO-KEY10: Account2 limit should be 2000");
@@ -678,11 +714,17 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         // Create a key with expiry 1 second in the future (valid at creation)
         uint64 expiry = uint64(block.timestamp + 1);
 
-        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
-
         vm.startPrank(account, account);
         try keychain.authorizeKey(
-            keyId, IAccountKeychain.SignatureType.Secp256k1, expiry, false, limits
+            keyId,
+            IAccountKeychain.SignatureType.Secp256k1,
+            IAccountKeychain.KeyRestrictions({
+                expiry: expiry,
+                enforceLimits: false,
+                limits: new IAccountKeychain.TokenLimit[](0),
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         ) {
             vm.stopPrank();
 
@@ -786,17 +828,23 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         badType = uint8(bound(badType, 3, 255));
 
         uint64 expiry = uint64(block.timestamp + 1 days);
-        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
 
-        // Use low-level call to bypass Solidity's enum type checking
-        // This allows us to pass an invalid uint8 value for signatureType
-        bytes memory callData = abi.encodeWithSelector(
-            IAccountKeychain.authorizeKey.selector,
+        // Build call data for the T3 authorizeKey(address,uint8,KeyRestrictions) overload.
+        // We use abi.encodeWithSignature with the full Solidity type signature to get the
+        // correct selector, and pass the invalid badType as a raw uint8.
+        IAccountKeychain.KeyRestrictions memory config = IAccountKeychain.KeyRestrictions({
+            expiry: expiry,
+            enforceLimits: false,
+            limits: new IAccountKeychain.TokenLimit[](0),
+            allowAnyCalls: true,
+            allowedCalls: new IAccountKeychain.CallScope[](0)
+        });
+
+        bytes memory callData = abi.encodeWithSignature(
+            "authorizeKey(address,uint8,(uint64,bool,(address,uint256,uint64)[],bool,(address,(bytes4,address[])[])[]))))",
             keyId,
-            badType, // Raw uint8 instead of enum
-            expiry,
-            false,
-            limits
+            badType,
+            config
         );
 
         vm.startPrank(account, account);
@@ -875,7 +923,8 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                             for (uint256 t = 0; t < _tokens.length; t++) {
                                 address token = address(_tokens[t]);
                                 uint256 expected = _ghostSpendingLimits[account][keyId][token];
-                                uint256 actual = keychain.getRemainingLimit(account, keyId, token);
+                                (uint256 actual,) =
+                                    keychain.getRemainingLimitWithPeriod(account, keyId, token);
                                 assertEq(
                                     actual,
                                     expected,
@@ -898,14 +947,14 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         bytes4 selector = bytes4(reason);
         bool isKnown = selector == IAccountKeychain.KeyAlreadyExists.selector
             || selector == IAccountKeychain.KeyNotFound.selector
-            || selector == IAccountKeychain.KeyInactive.selector
             || selector == IAccountKeychain.KeyExpired.selector
             || selector == IAccountKeychain.KeyAlreadyRevoked.selector
             || selector == IAccountKeychain.SpendingLimitExceeded.selector
             || selector == IAccountKeychain.InvalidSignatureType.selector
             || selector == IAccountKeychain.ZeroPublicKey.selector
             || selector == IAccountKeychain.ExpiryInPast.selector
-            || selector == IAccountKeychain.UnauthorizedCaller.selector;
+            || selector == IAccountKeychain.UnauthorizedCaller.selector
+            || selector == IAccountKeychain.LegacyAuthorizeKeySelectorChanged.selector;
         assertTrue(isKnown, "Unknown error encountered");
     }
 
