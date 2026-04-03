@@ -480,8 +480,7 @@ mod tests {
         assert_eq!(call.to, TxKind::Call(ACCOUNT_KEYCHAIN_ADDRESS));
         assert_eq!(call.value, U256::ZERO);
 
-        let decoded =
-            setAllowedCallsCall::abi_decode(&call.input).expect("decode setAllowedCalls");
+        let decoded = setAllowedCallsCall::abi_decode(&call.input).expect("decode setAllowedCalls");
         assert_eq!(decoded.keyId, key_id);
         assert_eq!(decoded.scopes.len(), 1);
         assert_eq!(decoded.scopes[0].selectorRules.len(), 1);
