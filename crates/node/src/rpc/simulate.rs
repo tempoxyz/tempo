@@ -74,6 +74,42 @@ impl<EthApi> TempoSimulate<EthApi> {
     }
 }
 
+/// Extract TIP-20 addresses from the simulation request's call targets.
+///
+/// This allows metadata resolution to start before simulation completes.
+fn extract_tip20_targets(
+    payload: &alloy_rpc_types_eth::simulate::SimulatePayload<
+        tempo_alloy::rpc::TempoTransactionRequest,
+    >,
+) -> Vec<Address> {
+    let mut addrs = std::collections::BTreeSet::new();
+    for block in &payload.block_state_calls {
+        for call in &block.calls {
+            // Standard `to` field
+            if let Some(to) = call.to.as_ref().and_then(|k| k.to())
+                && is_tip20_prefix(*to)
+            {
+                addrs.insert(*to);
+            }
+            // AA calls array
+            for c in &call.calls {
+                if let Some(to) = c.to.to()
+                    && is_tip20_prefix(*to)
+                {
+                    addrs.insert(*to);
+                }
+            }
+            // Fee token
+            if let Some(ft) = call.fee_token
+                && is_tip20_prefix(ft)
+            {
+                addrs.insert(ft);
+            }
+        }
+    }
+    addrs.into_iter().collect()
+}
+
 #[async_trait::async_trait]
 impl<EthApi> TempoSimulateApiServer for TempoSimulate<EthApi>
 where
@@ -93,33 +129,43 @@ where
         >,
         block: Option<alloy_eips::BlockId>,
     ) -> RpcResult<TempoSimulateV1Response<RpcBlock<tempo_alloy::TempoNetwork>>> {
-        let blocks = EthCall::simulate_v1(&self.eth_api, payload, block)
-            .await
-            .map_err(|e| {
-                let err: jsonrpsee::types::ErrorObject<'static> = e.into();
-                err
-            })?;
+        // Pre-extract TIP-20 addresses from call targets so we can start
+        // metadata resolution concurrently with the simulation.
+        let prefetched = extract_tip20_targets(&payload);
 
-        // Collect unique TIP-20 addresses from Transfer logs
-        let mut tip20_addresses = std::collections::BTreeSet::new();
+        // Run simulation and metadata prefetch concurrently
+        let (sim_result, mut token_metadata) = tokio::join!(
+            EthCall::simulate_v1(&self.eth_api, payload, block),
+            self.resolve_token_metadata(prefetched),
+        );
+
+        let blocks = sim_result.map_err(|e| {
+            let err: jsonrpsee::types::ErrorObject<'static> = e.into();
+            err
+        })?;
+
+        // Scan simulation logs for any additional TIP-20 addresses not in the
+        // prefetched set (e.g. tokens touched indirectly via contract calls).
+        let mut extra = Vec::new();
         for sim_block in &blocks {
             for call in &sim_block.calls {
                 for log in &call.logs {
                     if is_tip20_prefix(log.address())
                         && log.topics().first() == Some(&*TRANSFER_TOPIC)
+                        && !token_metadata.contains_key(&log.address())
                     {
-                        tip20_addresses.insert(log.address());
+                        extra.push(log.address());
                     }
                 }
             }
         }
 
-        let token_metadata = if tip20_addresses.is_empty() {
-            BTreeMap::new()
-        } else {
-            let addresses: Vec<Address> = tip20_addresses.into_iter().collect();
-            self.resolve_token_metadata(addresses).await
-        };
+        if !extra.is_empty() {
+            extra.sort_unstable();
+            extra.dedup();
+            let extra_metadata = self.resolve_token_metadata(extra).await;
+            token_metadata.extend(extra_metadata);
+        }
 
         Ok(TempoSimulateV1Response {
             blocks,
@@ -138,6 +184,10 @@ where
         &self,
         addresses: Vec<Address>,
     ) -> BTreeMap<Address, Tip20TokenMetadata> {
+        if addresses.is_empty() {
+            return BTreeMap::new();
+        }
+
         let result = self
             .eth_api
             .spawn_blocking_io(move |this| {
