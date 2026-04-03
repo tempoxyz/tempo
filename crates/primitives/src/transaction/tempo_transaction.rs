@@ -1626,18 +1626,17 @@ mod tests {
         assert_eq!(decoded_without.calls.len(), tx_without.calls.len());
 
         // Create transaction WITH key_authorization (new format)
-        let key_auth = KeyAuthorization {
-            chain_id: 1, // Test chain ID
-            key_type: SignatureType::Secp256k1,
-            expiry: Some(1234567890),
-            limits: Some(vec![crate::transaction::TokenLimit {
-                token: address!("0000000000000000000000000000000000000003"),
-                limit: U256::from(10000),
-                period: 0,
-            }]),
-            allowed_calls: None,
-            key_id: address!("0000000000000000000000000000000000000004"),
-        }
+        let key_auth = KeyAuthorization::unrestricted(
+            1,
+            SignatureType::Secp256k1,
+            address!("0000000000000000000000000000000000000004"),
+        )
+        .with_expiry(1234567890)
+        .with_limits(vec![crate::transaction::TokenLimit {
+            token: address!("0000000000000000000000000000000000000003"),
+            limit: U256::from(10000),
+            period: 0,
+        }])
         .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
 
         let tx_with = TempoTransaction {

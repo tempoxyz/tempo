@@ -203,14 +203,12 @@ pub(crate) fn create_signed_key_authorization(
         )
     };
 
-    let authorization = KeyAuthorization {
+    let mut authorization = KeyAuthorization::unrestricted(
         chain_id, // Must match chain_id (T1C rejects wildcard 0)
         key_type,
-        key_id: Address::random(), // Random key being authorized
-        expiry: None,              // Never expires
-        limits,
-        allowed_calls: None,
-    };
+        Address::random(), // Random key being authorized
+    );
+    authorization.limits = limits;
 
     // Sign the key authorization
     let sig_hash = authorization.signature_hash();
@@ -312,14 +310,9 @@ pub(crate) fn create_key_authorization(
     // Infer key_type from the access key signature
     let key_type = access_key_signature.signature_type();
 
-    let key_auth = KeyAuthorization {
-        chain_id,
-        key_type,
-        key_id: access_key_addr,
-        expiry,
-        limits: spending_limits,
-        allowed_calls: None,
-    };
+    let mut key_auth = KeyAuthorization::unrestricted(chain_id, key_type, access_key_addr);
+    key_auth.expiry = expiry;
+    key_auth.limits = spending_limits;
 
     // Root key signs the authorization
     let root_auth_signature = root_signer.sign_hash_sync(&key_auth.signature_hash())?;

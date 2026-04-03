@@ -48,7 +48,8 @@ use reth_rpc_eth_api::{
     helpers::{
         Call, EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthTransactions, LoadBlock,
         LoadFee, LoadPendingBlock, LoadReceipt, LoadState, LoadTransaction, SpawnBlocking, Trace,
-        estimate::EstimateCall, pending_block::PendingEnvBuilder, spec::SignersForRpc,
+        bal::GetBlockAccessList, estimate::EstimateCall, pending_block::PendingEnvBuilder,
+        spec::SignersForRpc,
     },
     transaction::{ConvertReceiptInput, ReceiptConverter},
 };
@@ -257,6 +258,8 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthFees for TempoEthApi<N> {}
 impl<N: FullNodeTypes<Types = TempoNode>> Trace for TempoEthApi<N> {}
 
 impl<N: FullNodeTypes<Types = TempoNode>> EthCall for TempoEthApi<N> {}
+
+impl<N: FullNodeTypes<Types = TempoNode>> GetBlockAccessList for TempoEthApi<N> {}
 
 impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
     #[inline]

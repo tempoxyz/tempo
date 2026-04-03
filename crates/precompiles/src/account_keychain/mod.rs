@@ -32,13 +32,6 @@ use crate::{
 use alloy::primitives::{Address, B256, FixedBytes, TxKind, U256, keccak256};
 use tempo_precompiles_macros::{Storable, contract};
 
-/// Maximum number of call scopes per account key.
-pub const MAX_CALL_SCOPES: u8 = 8;
-/// Maximum number of selector rules per call scope.
-pub const MAX_SELECTOR_RULES_PER_SCOPE: u8 = 16;
-/// Maximum number of recipients per selector rule.
-pub const MAX_RECIPIENTS_PER_SELECTOR: u8 = 16;
-
 /// Allowed TIP-20 selectors for recipient-constrained rules.
 const TIP20_TRANSFER_SELECTOR: [u8; 4] = ITIP20::transferCall::SELECTOR;
 const TIP20_APPROVE_SELECTOR: [u8; 4] = ITIP20::approveCall::SELECTOR;
@@ -784,10 +777,6 @@ impl AccountKeychain {
                     return Ok(());
                 }
 
-                if scopes.len() > MAX_CALL_SCOPES as usize {
-                    return Err(AccountKeychainError::scope_limit_exceeded().into());
-                }
-
                 let mut seen_targets = HashSet::new();
                 for scope in scopes {
                     if !seen_targets.insert(scope.target) {
@@ -853,15 +842,7 @@ impl AccountKeychain {
             self.validate_selector_rules(target, &scope.selectorRules)?;
         }
 
-        if !self.key_scopes[account_key].targets.contains(&target)? {
-            let count = self.key_scopes[account_key].targets.len()?;
-            if count >= MAX_CALL_SCOPES as usize {
-                return Err(AccountKeychainError::scope_limit_exceeded().into());
-            }
-
-            self.key_scopes[account_key].targets.insert(target)?;
-        }
-
+        self.key_scopes[account_key].targets.insert(target)?;
         self.clear_target_selectors(account_key, target)?;
 
         if scope.selectorRules.is_empty() {
@@ -882,9 +863,10 @@ impl AccountKeychain {
                     .recipients
                     .delete()?;
             } else {
+                // `validate_selector_rules` already rejected duplicates.
                 self.key_scopes[account_key].target_scopes[target].selector_scopes[selector]
                     .recipients
-                    .write(Set::from(rule.recipients.clone()))?;
+                    .write(Set::new_unchecked(rule.recipients.clone()))?;
             }
         }
 
@@ -897,10 +879,6 @@ impl AccountKeychain {
     /// selector entirely, omit it from `selectorRules` or remove the target scope instead of
     /// leaving behind an empty child set via incremental mutation.
     fn validate_selector_rules(&self, target: Address, rules: &[SelectorRule]) -> Result<()> {
-        if rules.len() > MAX_SELECTOR_RULES_PER_SCOPE as usize {
-            return Err(AccountKeychainError::selector_limit_exceeded().into());
-        }
-
         let mut cached_is_tip20: Option<bool> = None;
         let mut is_tip20 = || -> Result<bool> {
             match cached_is_tip20 {
@@ -917,10 +895,6 @@ impl AccountKeychain {
 
             if rule.recipients.is_empty() {
                 continue;
-            }
-
-            if rule.recipients.len() > MAX_RECIPIENTS_PER_SELECTOR as usize {
-                return Err(AccountKeychainError::recipient_limit_exceeded().into());
             }
 
             if !is_constrained_tip20_selector(*rule.selector) || !is_tip20()? {
