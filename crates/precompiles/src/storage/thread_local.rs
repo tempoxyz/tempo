@@ -292,10 +292,7 @@ impl<'evm> StorageCtx {
 
     /// Like [`enter_evm`](Self::enter_evm), but takes a `&mut impl ContextTr`
     /// directly instead of requiring the caller to destructure the context.
-    pub fn enter_ctx<C, R>(
-        ctx: &mut C,
-        f: impl FnOnce() -> R,
-    ) -> R
+    pub fn enter_ctx<C, R>(ctx: &mut C, f: impl FnOnce() -> R) -> R
     where
         C: ContextTr<Cfg = CfgEnv<TempoHardfork>, Journal: Debug, Db: Database>,
     {

@@ -48,6 +48,7 @@ use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_consensus::TEMPO_SHARED_GAS_DIVISOR;
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, evm::TempoEvm};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
+use tempo_precompiles::{storage::StorageCtx, validator_config_v2::ValidatorConfigV2};
 use tempo_primitives::{
     RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoTxEnvelope,
     subblock::PartialValidatorKey,
@@ -59,10 +60,6 @@ use tempo_primitives::{
 use tempo_transaction_pool::{
     TempoTransactionPool,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
-};
-use tempo_precompiles::{
-    storage::StorageCtx,
-    validator_config_v2::ValidatorConfigV2,
 };
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 
@@ -764,7 +761,10 @@ fn maybe_override_fee_recipient<DB: Database, I>(
     let parent_number = ctx.block.number.saturating_to::<u64>() - 1;
     match StorageCtx::enter_ctx(ctx, || -> Result<Option<Address>, PayloadBuilderError> {
         let config = ValidatorConfigV2::default();
-        if !config.is_initialized().map_err(PayloadBuilderError::other)? {
+        if !config
+            .is_initialized()
+            .map_err(PayloadBuilderError::other)?
+        {
             return Ok(None);
         }
         let init_height = config

@@ -253,8 +253,13 @@ mod tests {
         let timestamp_millis = 1500; // 1s + 500ms
 
         // With extra_data
-        let attrs =
-            TempoPayloadAttributes::new(recipient, None, timestamp_millis, extra_data.clone(), Vec::new);
+        let attrs = TempoPayloadAttributes::new(
+            recipient,
+            None,
+            timestamp_millis,
+            extra_data.clone(),
+            Vec::new,
+        );
         assert_eq!(attrs.extra_data(), &extra_data);
         assert_eq!(attrs.suggested_fee_recipient, recipient);
         assert_eq!(
