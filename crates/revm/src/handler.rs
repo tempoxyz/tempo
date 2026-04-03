@@ -2564,10 +2564,10 @@ mod tests {
 
         // Helper to create key auth with N limits
         let create_key_auth = |num_limits: usize| -> SignedKeyAuthorization {
-            let limits = if num_limits == 0 {
-                None
-            } else {
-                Some(
+            let mut auth =
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::random());
+            if num_limits > 0 {
+                auth = auth.with_limits(
                     (0..num_limits)
                         .map(|_| TokenLimit {
                             token: Address::random(),
@@ -2575,18 +2575,10 @@ mod tests {
                             period: 0,
                         })
                         .collect(),
-                )
-            };
-
+                );
+            }
             SignedKeyAuthorization {
-                authorization: KeyAuthorization {
-                    chain_id: 1,
-                    key_type: SignatureType::Secp256k1,
-                    key_id: Address::random(),
-                    expiry: None,
-                    limits,
-                    allowed_calls: None,
-                },
+                authorization: auth,
                 signature: PrimitiveSignature::Secp256k1(
                     alloy_primitives::Signature::test_signature(),
                 ),
@@ -2758,25 +2750,23 @@ mod tests {
 
         // Create key authorization with 2 limits
         let key_auth: SignedKeyAuthorization = SignedKeyAuthorization {
-            authorization: KeyAuthorization {
-                chain_id: 1,
-                key_type: SignatureType::Secp256k1,
-                key_id: Address::random(),
-                expiry: None,
-                limits: Some(vec![
-                    TokenLimit {
-                        token: Address::random(),
-                        limit: U256::from(1000),
-                        period: 0,
-                    },
-                    TokenLimit {
-                        token: Address::random(),
-                        limit: U256::from(2000),
-                        period: 0,
-                    },
-                ]),
-                allowed_calls: None,
-            },
+            authorization: KeyAuthorization::unrestricted(
+                1,
+                SignatureType::Secp256k1,
+                Address::random(),
+            )
+            .with_limits(vec![
+                TokenLimit {
+                    token: Address::random(),
+                    limit: U256::from(1000),
+                    period: 0,
+                },
+                TokenLimit {
+                    token: Address::random(),
+                    limit: U256::from(2000),
+                    period: 0,
+                },
+            ]),
             signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
         };
 
@@ -3460,25 +3450,17 @@ mod tests {
             };
 
             let make_key_auth = |num_limits: usize| -> SignedKeyAuthorization {
-                let limits = if num_limits == 0 {
-                    None
-                } else {
-                    Some((0..num_limits).map(|i| PrimTokenLimit {
+                let mut auth =
+                    KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::ZERO);
+                if num_limits > 0 {
+                    auth = auth.with_limits((0..num_limits).map(|i| PrimTokenLimit {
                         token: Address::with_last_byte(i as u8),
                         limit: U256::from(1000),
                         period: 0,
-                    }).collect())
-                };
-
+                    }).collect());
+                }
                 SignedKeyAuthorization {
-                    authorization: KeyAuthorization {
-                        chain_id: 1,
-                        key_type: SignatureType::Secp256k1,
-                        key_id: Address::ZERO,
-                        expiry: None,
-                        limits,
-                        allowed_calls: None,
-                    },
+                    authorization: auth,
                     signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
                 }
             };
@@ -3526,21 +3508,17 @@ mod tests {
                 }),
             };
 
+            let mut auth =
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::ZERO);
+            if num_limits > 0 {
+                auth = auth.with_limits((0..num_limits).map(|i| PrimTokenLimit {
+                    token: Address::with_last_byte(i as u8),
+                    limit: U256::from(1000),
+                    period: 0,
+                }).collect());
+            }
             let key_auth = SignedKeyAuthorization {
-                authorization: KeyAuthorization {
-                    chain_id: 1,
-                    key_type: SignatureType::Secp256k1,
-                    key_id: Address::ZERO,
-                    expiry: None,
-                    limits: if num_limits == 0 { None } else {
-                        Some((0..num_limits).map(|i| PrimTokenLimit {
-                            token: Address::with_last_byte(i as u8),
-                            limit: U256::from(1000),
-                            period: 0,
-                        }).collect())
-                    },
-                    allowed_calls: None,
-                },
+                authorization: auth,
                 signature,
             };
 

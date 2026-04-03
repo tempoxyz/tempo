@@ -203,7 +203,11 @@ pub(crate) fn create_signed_key_authorization(
         )
     };
 
-    let mut authorization = KeyAuthorization::unrestricted(chain_id, key_type, Address::random());
+    let mut authorization = KeyAuthorization::unrestricted(
+        chain_id, // Must match chain_id (T1C rejects wildcard 0)
+        key_type,
+        Address::random(), // Random key being authorized
+    );
     authorization.limits = limits;
 
     // Sign the key authorization
