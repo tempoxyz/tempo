@@ -2,7 +2,8 @@ use alloy_primitives::{Address, B256, keccak256};
 use alloy_rpc_types_eth::simulate::SimulatedBlock;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth_ethereum::evm::revm::database::StateProviderDatabase;
-use reth_provider::ChainSpecProvider;
+use reth_primitives_traits::AlloyBlockHeader as _;
+use reth_provider::{BlockIdReader, ChainSpecProvider, HeaderProvider};
 use reth_rpc_eth_api::{
     EthApiTypes, RpcBlock,
     helpers::{EthCall, LoadState, SpawnBlocking},
@@ -127,7 +128,7 @@ where
         + EthApiTypes<NetworkTypes = tempo_alloy::TempoNetwork>
         + Clone
         + 'static,
-    EthApi::Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>,
+    EthApi::Provider: ChainSpecProvider<ChainSpec = TempoChainSpec> + HeaderProvider,
     EthApi::Error: Into<jsonrpsee::types::ErrorObject<'static>>,
 {
     async fn simulate_v1(
@@ -144,7 +145,7 @@ where
         // Run simulation and metadata prefetch concurrently
         let (sim_result, mut token_metadata) = tokio::join!(
             EthCall::simulate_v1(&self.eth_api, payload, block),
-            self.resolve_token_metadata(prefetched),
+            self.resolve_token_metadata(prefetched, block),
         );
 
         let blocks = sim_result.map_err(|e| {
@@ -170,7 +171,7 @@ where
 
         if !extra.is_empty() {
             let extra_metadata = self
-                .resolve_token_metadata(extra.into_iter().collect())
+                .resolve_token_metadata(extra.into_iter().collect(), block)
                 .await;
             token_metadata.extend(extra_metadata);
         }
@@ -186,12 +187,13 @@ where
 impl<EthApi> TempoSimulate<EthApi>
 where
     EthApi: SpawnBlocking + LoadState + EthApiTypes + Clone + 'static,
-    EthApi::Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>,
+    EthApi::Provider: ChainSpecProvider<ChainSpec = TempoChainSpec> + HeaderProvider,
 {
-    /// Resolves TIP-20 token metadata for the given addresses using the latest state.
+    /// Resolves TIP-20 token metadata for the given addresses using state at the target block.
     async fn resolve_token_metadata(
         &self,
         addresses: Vec<Address>,
+        block: Option<alloy_eips::BlockId>,
     ) -> BTreeMap<Address, Tip20TokenMetadata> {
         if addresses.is_empty() {
             return BTreeMap::new();
@@ -199,9 +201,27 @@ where
 
         let result = self
             .eth_api
-            .spawn_blocking_io(move |this| {
-                let state = this.latest_state()?;
-                let spec = this.provider().chain_spec().tempo_hardfork_at(u64::MAX);
+            .spawn_blocking_io_fut(async move |this| {
+                let state = this.state_at_block_id_or_latest(block).await?;
+
+                // Derive hardfork spec from the target block's timestamp.
+                let timestamp = block
+                    .and_then(|id| {
+                        this.provider()
+                            .block_number_for_id(id)
+                            .ok()
+                            .flatten()
+                            .and_then(|num| {
+                                this.provider()
+                                    .header_by_number(num)
+                                    .ok()
+                                    .flatten()
+                                    .map(|h| h.timestamp())
+                            })
+                    })
+                    .unwrap_or(u64::MAX);
+
+                let spec = this.provider().chain_spec().tempo_hardfork_at(timestamp);
                 let mut db = StateProviderDatabase::new(state);
 
                 let mut metadata = BTreeMap::new();
