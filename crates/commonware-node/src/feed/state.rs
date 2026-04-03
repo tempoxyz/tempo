@@ -11,7 +11,7 @@ use commonware_consensus::{
 use commonware_cryptography::bls12381::primitives::variant::{MinSig, Variant};
 use parking_lot::RwLock;
 use reth_provider::HeaderProvider as _;
-use reth_rpc_convert::transaction::FromConsensusHeader;
+use reth_rpc_convert::FromConsensusHeader;
 use std::sync::{Arc, OnceLock};
 use tempo_alloy::rpc::TempoHeaderResponse;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;

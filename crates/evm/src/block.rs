@@ -26,7 +26,9 @@ use reth_revm::{
 };
 use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
+use tempo_contracts::precompiles::{
+    ADDRESS_REGISTRY_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+};
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
     subblock::PartialValidatorKey,
@@ -100,6 +102,10 @@ impl<H> TxResult for TempoTxResult<H> {
 
     fn result(&self) -> &ResultAndState<Self::HaltReason> {
         self.inner.result()
+    }
+
+    fn into_result(self) -> ResultAndState<Self::HaltReason> {
+        self.inner.into_result()
     }
 }
 
@@ -324,6 +330,22 @@ where
         Ok(())
     }
 
+    /// Pre-validate a transaction before execution.
+    ///
+    /// This is only done for system transaction as they are effectively bypassing
+    /// the regular block gas limit checks and we need to make sure that they
+    /// only perform explicitly allowed actions.
+    pub(crate) fn validate_tx_pre_execution(
+        &self,
+        tx: &TempoTxEnvelope,
+    ) -> Result<Option<BlockSection>, BlockValidationError> {
+        if tx.is_system_tx() {
+            self.validate_system_tx(tx).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
     pub(crate) fn validate_tx(
         &self,
         tx: &TempoTxEnvelope,
@@ -405,6 +427,10 @@ where
         if self.inner.spec.is_t2_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(VALIDATOR_CONFIG_V2_ADDRESS)?;
         }
+        if self.inner.spec.is_t3_active_at_timestamp(timestamp) {
+            self.deploy_precompile_at_boundary(SIGNATURE_VERIFIER_ADDRESS)?;
+            self.deploy_precompile_at_boundary(ADDRESS_REGISTRY_ADDRESS)?;
+        }
 
         Ok(())
     }
@@ -418,6 +444,8 @@ where
         tx: impl ExecutableTx<Self>,
     ) -> Result<Self::Result, BlockExecutionError> {
         let (tx_env, recovered) = tx.into_parts();
+
+        let next_section = self.validate_tx_pre_execution(recovered.tx())?;
 
         let beneficiary = self.evm_mut().ctx_mut().block.beneficiary;
         // If we are dealing with a subblock transaction, configure the fee recipient context.
@@ -437,7 +465,13 @@ where
 
         let inner = result?;
 
-        let next_section = self.validate_tx(recovered.tx(), inner.result.result.gas_used())?;
+        let next_section = if let Some(next_section) = next_section {
+            // If pre-execution validation returned a section to use, just use it.
+            next_section
+        } else {
+            // Otherwise, rely on post-execution validation to determine the next section.
+            self.validate_tx(recovered.tx(), inner.result.result.gas_used())?
+        };
         Ok(TempoTxResult {
             inner,
             next_section,
@@ -1164,6 +1198,44 @@ mod tests {
         let acc = db.load_cache_account(VALIDATOR_CONFIG_V2_ADDRESS).unwrap();
         let info = acc.account_info().unwrap();
         assert!(!info.is_empty_code_hash());
+    }
+
+    #[test]
+    fn test_apply_pre_execution_deploys_signature_verifier_code() {
+        use std::sync::Arc;
+        use tempo_chainspec::spec::DEV;
+
+        // Dev chainspec has t3Time: 0, so T3 is active at any timestamp.
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+
+        let acc = db.load_cache_account(SIGNATURE_VERIFIER_ADDRESS).unwrap();
+        let info = acc.account_info().unwrap();
+        assert!(!info.is_empty_code_hash());
+    }
+
+    #[test]
+    fn test_pre_t3_does_not_deploy_signature_verifier_code() {
+        // Moderato does not have T3 active (no t3Time set), so the code should NOT be deployed.
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+
+        let acc = db.load_cache_account(SIGNATURE_VERIFIER_ADDRESS).unwrap();
+        let info = acc.account_info();
+        assert!(
+            info.is_none() || info.unwrap().is_empty_code_hash(),
+            "SignatureVerifier code should not be deployed before T3"
+        );
     }
 
     #[test]

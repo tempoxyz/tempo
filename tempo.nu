@@ -217,7 +217,7 @@ def bench-recover [datadir: string] {
     } else {
         print $"Restoring snapshot from ($datadir).virgin..."
         rm -rf $datadir
-        cp -a $"($datadir).virgin" $datadir
+        ^cp -a $"($datadir).virgin" $datadir
     }
 }
 
@@ -229,7 +229,7 @@ def bench-promote [datadir: string] {
     } else {
         print $"Saving snapshot to ($datadir).virgin..."
         rm -rf $"($datadir).virgin"
-        cp -a $datadir $"($datadir).virgin"
+        ^cp -a $datadir $"($datadir).virgin"
     }
 }
 

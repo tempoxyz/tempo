@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 pragma solidity >=0.8.13 <0.9.0;
 
+import { TempoUtilities } from "./TempoUtilities.sol";
 import { ITIP403Registry } from "./interfaces/ITIP403Registry.sol";
 
 contract TIP403Registry is ITIP403Registry {
@@ -65,6 +66,13 @@ contract TIP403Registry is ITIP403Registry {
             policyType == PolicyType.WHITELIST || policyType == PolicyType.BLACKLIST,
             IncompatiblePolicyType()
         );
+
+        for (uint256 i = 0; i < accounts.length; i++) {
+            if (TempoUtilities.isVirtualAddress(accounts[i])) {
+                revert VirtualAddressNotAllowed();
+            }
+        }
+
         newPolicyId = policyIdCounter++;
 
         policyRecords[newPolicyId].base = PolicyData({ policyType: policyType, admin: admin });
@@ -98,6 +106,10 @@ contract TIP403Registry is ITIP403Registry {
     //////////////////////////////////////////////////////////////*/
 
     function modifyPolicyWhitelist(uint64 policyId, address account, bool allowed) external {
+        if (TempoUtilities.isVirtualAddress(account)) {
+            revert VirtualAddressNotAllowed();
+        }
+
         PolicyData memory data = _getPolicyData(policyId);
 
         require(data.admin == msg.sender, Unauthorized());
@@ -109,6 +121,10 @@ contract TIP403Registry is ITIP403Registry {
     }
 
     function modifyPolicyBlacklist(uint64 policyId, address account, bool restricted) external {
+        if (TempoUtilities.isVirtualAddress(account)) {
+            revert VirtualAddressNotAllowed();
+        }
+
         PolicyData memory data = _getPolicyData(policyId);
 
         require(data.admin == msg.sender, Unauthorized());

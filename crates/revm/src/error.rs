@@ -74,20 +74,6 @@ pub enum TempoInvalidTransaction {
         reason: String,
     },
 
-    /// Insufficient gas for intrinsic cost.
-    ///
-    /// Tempo transactions have variable intrinsic gas costs based on signature type and nonce usage.
-    /// This error occurs when the gas_limit is less than the calculated intrinsic gas.
-    #[error(
-        "insufficient gas for intrinsic cost: gas_limit {gas_limit} < intrinsic_gas {intrinsic_gas}"
-    )]
-    InsufficientGasForIntrinsicCost {
-        /// The transaction's gas limit.
-        gas_limit: u64,
-        /// The calculated intrinsic gas required.
-        intrinsic_gas: u64,
-    },
-
     /// Nonce manager error.
     #[error("nonce manager error: {0}")]
     NonceManagerError(String),
