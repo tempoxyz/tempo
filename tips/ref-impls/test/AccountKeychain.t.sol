@@ -919,6 +919,9 @@ contract AccountKeychainTest is BaseTest {
     {
         vm.assume(keyId != address(0));
         vm.assume(token1 != token2);
+        // T3 caps spending limits to u128
+        amount1 = bound(amount1, 0, type(uint128).max);
+        amount2 = bound(amount2, 0, type(uint128).max);
 
         vm.startPrank(alice, alice);
 
@@ -956,6 +959,9 @@ contract AccountKeychainTest is BaseTest {
         public
     {
         vm.assume(keyId != address(0));
+        // T3 caps spending limits to u128
+        initialLimit = bound(initialLimit, 0, type(uint128).max);
+        newLimit = bound(newLimit, 0, type(uint128).max);
 
         vm.startPrank(alice, alice);
 

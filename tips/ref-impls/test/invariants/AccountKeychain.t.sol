@@ -841,7 +841,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         });
 
         bytes memory callData = abi.encodeWithSignature(
-            "authorizeKey(address,uint8,(uint64,bool,(address,uint256,uint64)[],bool,(address,(bytes4,address[])[])[]))))",
+            "authorizeKey(address,uint8,(uint64,bool,(address,uint256,uint64)[],bool,(address,(bytes4,address[])[])[]))",
             keyId,
             badType,
             config
