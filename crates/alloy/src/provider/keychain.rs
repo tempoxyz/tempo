@@ -287,7 +287,8 @@ mod tests {
     use alloy_primitives::{address, uint};
     use tempo_contracts::precompiles::IAccountKeychain::{
         CallScope as AbiCallScope, SelectorRule as AbiSelectorRule,
-        SignatureType as AbiSignatureType,
+        SignatureType as AbiSignatureType, removeAllowedCallsCall, revokeKeyCall,
+        setAllowedCallsCall, updateSpendingLimitCall,
     };
 
     #[test]
@@ -433,5 +434,71 @@ mod tests {
         let primitive: Vec<CallScope> = scopes.clone().into_iter().map(Into::into).collect();
         let roundtrip: Vec<AbiCallScope> = primitive.into_iter().map(Into::into).collect();
         assert_eq!(roundtrip, scopes);
+    }
+
+    #[test]
+    fn test_revoke_key_encodes_correctly() {
+        let key_id = address!("0x1111111111111111111111111111111111111111");
+        let call = revoke_key(key_id);
+
+        assert_eq!(call.to, TxKind::Call(ACCOUNT_KEYCHAIN_ADDRESS));
+        assert_eq!(call.value, U256::ZERO);
+
+        let decoded = revokeKeyCall::abi_decode(&call.input).expect("decode revokeKey");
+        assert_eq!(decoded.keyId, key_id);
+    }
+
+    #[test]
+    fn test_update_spending_limit_encodes_correctly() {
+        let key_id = address!("0x1111111111111111111111111111111111111111");
+        let token = address!("0x2222222222222222222222222222222222222222");
+        let limit = uint!(1000_U256);
+        let call = update_spending_limit(key_id, token, limit);
+
+        assert_eq!(call.to, TxKind::Call(ACCOUNT_KEYCHAIN_ADDRESS));
+        assert_eq!(call.value, U256::ZERO);
+
+        let decoded =
+            updateSpendingLimitCall::abi_decode(&call.input).expect("decode updateSpendingLimit");
+        assert_eq!(decoded.keyId, key_id);
+        assert_eq!(decoded.token, token);
+        assert_eq!(decoded.newLimit, limit);
+    }
+
+    #[test]
+    fn test_set_allowed_calls_encodes_correctly() {
+        let key_id = address!("0x1111111111111111111111111111111111111111");
+        let scopes = vec![CallScope {
+            target: address!("0x2222222222222222222222222222222222222222"),
+            selector_rules: vec![SelectorRule {
+                selector: [0xaa, 0xbb, 0xcc, 0xdd],
+                recipients: vec![address!("0x3333333333333333333333333333333333333333")],
+            }],
+        }];
+        let call = set_allowed_calls(key_id, scopes);
+
+        assert_eq!(call.to, TxKind::Call(ACCOUNT_KEYCHAIN_ADDRESS));
+        assert_eq!(call.value, U256::ZERO);
+
+        let decoded =
+            setAllowedCallsCall::abi_decode(&call.input).expect("decode setAllowedCalls");
+        assert_eq!(decoded.keyId, key_id);
+        assert_eq!(decoded.scopes.len(), 1);
+        assert_eq!(decoded.scopes[0].selectorRules.len(), 1);
+    }
+
+    #[test]
+    fn test_remove_allowed_calls_encodes_correctly() {
+        let key_id = address!("0x1111111111111111111111111111111111111111");
+        let target = address!("0x2222222222222222222222222222222222222222");
+        let call = remove_allowed_calls(key_id, target);
+
+        assert_eq!(call.to, TxKind::Call(ACCOUNT_KEYCHAIN_ADDRESS));
+        assert_eq!(call.value, U256::ZERO);
+
+        let decoded =
+            removeAllowedCallsCall::abi_decode(&call.input).expect("decode removeAllowedCalls");
+        assert_eq!(decoded.keyId, key_id);
+        assert_eq!(decoded.target, target);
     }
 }
