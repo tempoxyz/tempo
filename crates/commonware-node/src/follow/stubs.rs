@@ -16,12 +16,11 @@ use rand_08::SeedableRng as _;
 
 use crate::consensus::block::Block;
 
-/// Create a null broadcast mailbox that never returns blocks.
+/// Create a null broadcast mailbox
 ///
-/// In follow mode, marshal never needs to request blocks from broadcast
-/// because blocks arrive via the FollowResolver. The engine
-/// is created but never started, so requests will hang which is fine
-/// since they should never be made.
+/// In follow mode, there are no consensus peers to broadcast state or
+/// request information from. The FollowResolver is backed by the
+/// execution node and upstream ws connection.
 pub(super) fn null_broadcast<E: Clock + Spawner + Metrics + BufferPooler>(
     context: E,
     mailbox_size: usize,

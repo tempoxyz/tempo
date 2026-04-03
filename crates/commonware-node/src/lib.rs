@@ -170,7 +170,10 @@ pub async fn run_follow_stack(
         .epoch_length()
         .ok_or_eyre("chainspec did not contain epochLength")?;
 
-    let upstream = std::sync::Arc::new(follow::WsUpstream::new(upstream_url));
+    let upstream = std::sync::Arc::new(follow::WsUpstream::new(
+        context.with_label("upstream"),
+        upstream_url,
+    ));
 
     let engine = follow::Builder {
         execution_node,

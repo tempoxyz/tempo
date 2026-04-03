@@ -3,7 +3,7 @@
 //! [`alto`]: https://github.com/commonwarexyx/alto
 
 use std::{
-    num::{NonZeroU16, NonZeroU64, NonZeroUsize},
+    num::NonZeroUsize,
     time::{Duration, Instant},
 };
 
@@ -23,7 +23,7 @@ use commonware_runtime::{
     BufferPooler, Clock, ContextCell, Handle, Metrics, Network, Pacer, Spawner, Storage,
     buffer::paged::CacheRef, spawn_cell,
 };
-use commonware_utils::{NZU16, NZU64, NZUsize};
+use commonware_utils::{NZU64, NZUsize};
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::future::try_join_all;
 use rand_08::{CryptoRng, Rng};
@@ -44,13 +44,6 @@ use super::block::Block;
 /// To better support peers near tip during network instability, we multiply
 /// the consensus activity timeout by this factor.
 const SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER: u64 = 10;
-const PRUNABLE_ITEMS_PER_SECTION: NonZeroU64 = NZU64!(4_096);
-const REPLAY_BUFFER: NonZeroUsize = NZUsize!(8 * 1024 * 1024); // 8MB
-const WRITE_BUFFER: NonZeroUsize = NZUsize!(1024 * 1024); // 1MB
-const BUFFER_POOL_PAGE_SIZE: NonZeroU16 = NZU16!(4_096); // 4KB
-const BUFFER_POOL_CAPACITY: NonZeroUsize = NZUsize!(8_192); // 32MB
-const MAX_REPAIR: NonZeroUsize = NZUsize!(20);
-
 // Ensure the marshal delivers blocks sequentially.
 const MAX_PENDING_ACKS: NonZeroUsize = NZUsize!(1);
 
@@ -134,8 +127,11 @@ where
             "using public ed25519 verifying key derived from provided private ed25519 signing key",
         );
 
-        let page_cache_ref =
-            CacheRef::from_pooler(&context, BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
+        let page_cache_ref = CacheRef::from_pooler(
+            &context,
+            storage::BUFFER_POOL_PAGE_SIZE,
+            storage::BUFFER_POOL_CAPACITY,
+        );
 
         let scheme_provider = SchemeProvider::new();
 
@@ -176,12 +172,12 @@ where
                     self.views_to_track
                         .saturating_mul(SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER),
                 ),
-                prunable_items_per_section: PRUNABLE_ITEMS_PER_SECTION,
+                prunable_items_per_section: storage::PRUNABLE_ITEMS_PER_SECTION,
                 page_cache: page_cache_ref.clone(),
-                replay_buffer: REPLAY_BUFFER,
-                key_write_buffer: WRITE_BUFFER,
-                value_write_buffer: WRITE_BUFFER,
-                max_repair: MAX_REPAIR,
+                replay_buffer: storage::REPLAY_BUFFER,
+                key_write_buffer: storage::WRITE_BUFFER,
+                value_write_buffer: storage::WRITE_BUFFER,
+                max_repair: storage::MAX_REPAIR,
                 max_pending_acks: MAX_PENDING_ACKS,
                 block_codec_config: (),
                 strategy: Sequential,

@@ -17,7 +17,7 @@ use commonware_consensus::{
     types::{Epoch, Epocher as _, FixedEpocher, Height, Round, View},
 };
 use commonware_cryptography::{
-    bls12381::primitives::variant::MinSig, certificate::Provider, ed25519::PublicKey,
+    bls12381::primitives::variant::MinSig, certificate::Provider as _, ed25519::PublicKey,
 };
 use commonware_parallel::Sequential;
 use commonware_runtime::Clock;

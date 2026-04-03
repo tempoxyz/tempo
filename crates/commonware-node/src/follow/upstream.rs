@@ -9,6 +9,7 @@
 use std::{sync::Arc, time::Duration};
 
 use alloy_rpc_types_eth::Block as AlloyRpcBlock;
+use commonware_runtime::Clock;
 use eyre::WrapErr as _;
 use futures::stream::{BoxStream, StreamExt as _};
 use jsonrpsee::{
@@ -22,7 +23,7 @@ use tempo_node::{
     TempoFullNode,
     rpc::consensus::{CertifiedBlock, ConsensusFeed as _, Event, Query, TempoConsensusApiClient},
 };
-use tempo_primitives::TempoTxEnvelope;
+use tempo_primitives::{Block, TempoTxEnvelope};
 use tokio::sync::Mutex;
 use tracing::{debug, warn, warn_span};
 
@@ -52,26 +53,28 @@ pub trait UpstreamNode: Send + Sync + 'static {
     fn get_block_by_number(
         &self,
         height: u64,
-    ) -> impl std::future::Future<Output = eyre::Result<Option<tempo_primitives::Block>>> + Send;
+    ) -> impl std::future::Future<Output = eyre::Result<Option<Block>>> + Send;
 
     fn get_block_by_hash(
         &self,
         hash: alloy_primitives::B256,
-    ) -> impl std::future::Future<Output = eyre::Result<Option<tempo_primitives::Block>>> + Send;
+    ) -> impl std::future::Future<Output = eyre::Result<Option<Block>>> + Send;
 }
 
 /// WebSocket-based upstream node for production use.
 ///
 /// Owns a persistent WebSocket connection to the upstream node with
 /// transparent reconnection.
-pub struct WsUpstream {
+pub struct WsUpstream<C> {
+    context: C,
     url: String,
     client: Mutex<Option<Arc<WsClient>>>,
 }
 
-impl WsUpstream {
-    pub fn new(url: String) -> Self {
+impl<C: Clock> WsUpstream<C> {
+    pub fn new(context: C, url: String) -> Self {
         Self {
+            context,
             url,
             client: Mutex::new(None),
         }
@@ -111,13 +114,13 @@ impl WsUpstream {
                         );
                     });
 
-                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                    self.context.sleep(Duration::from_millis(delay_ms)).await;
                 }
             }
         }
     }
 
-    fn convert_rpc_block(rpc_block: TempoRpcBlock) -> tempo_primitives::Block {
+    fn convert_rpc_block(rpc_block: TempoRpcBlock) -> Block {
         rpc_block
             .into_consensus_block()
             .map_header(|h| h.inner.inner)
@@ -127,7 +130,7 @@ impl WsUpstream {
     }
 }
 
-impl UpstreamNode for WsUpstream {
+impl<C: Clock> UpstreamNode for WsUpstream<C> {
     async fn subscribe_events(&self) -> eyre::Result<BoxStream<'static, eyre::Result<Event>>> {
         let client = self.client().await?;
         let sub = client.subscribe_events().await.wrap_err("rpc error")?;
@@ -139,10 +142,7 @@ impl UpstreamNode for WsUpstream {
         client.get_finalization(query).await.wrap_err("rpc error")
     }
 
-    async fn get_block_by_number(
-        &self,
-        height: u64,
-    ) -> eyre::Result<Option<tempo_primitives::Block>> {
+    async fn get_block_by_number(&self, height: u64) -> eyre::Result<Option<Block>> {
         let client = self.client().await?;
         let rpc_block: Option<TempoRpcBlock> = client
             .request(
@@ -155,10 +155,7 @@ impl UpstreamNode for WsUpstream {
         Ok(rpc_block.map(Self::convert_rpc_block))
     }
 
-    async fn get_block_by_hash(
-        &self,
-        hash: alloy_primitives::B256,
-    ) -> eyre::Result<Option<tempo_primitives::Block>> {
+    async fn get_block_by_hash(&self, hash: alloy_primitives::B256) -> eyre::Result<Option<Block>> {
         let client = self.client().await?;
         let rpc_block: Option<TempoRpcBlock> = client
             .request("eth_getBlockByHash", rpc_params![hash, true])
@@ -169,7 +166,7 @@ impl UpstreamNode for WsUpstream {
     }
 }
 
-/// Upstream backed by direct access to state.
+/// Upstream backed by direct state access
 ///
 /// Avoids WebSocket I/O, allowing the follow engine to run in a
 /// deterministic runtime for testing.
