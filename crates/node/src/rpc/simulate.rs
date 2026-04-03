@@ -9,29 +9,31 @@ use reth_rpc_eth_api::{
 };
 use reth_tracing::tracing;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, sync::LazyLock};
+use std::{
+    collections::{BTreeMap, HashSet},
+    sync::LazyLock,
+};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_contracts::precompiles::DECIMALS as TIP20_DECIMALS;
 use tempo_evm::TempoStateAccess;
 use tempo_precompiles::{
     error::TempoPrecompileError,
     tip20::{TIP20Token, is_tip20_prefix},
 };
 
-/// TIP-20 decimals are always 6 (protocol constant).
-const TIP20_DECIMALS: u8 = 6;
-
 /// keccak256("Transfer(address,address,uint256)")
 static TRANSFER_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256(b"Transfer(address,address,uint256)"));
 
 /// TIP-20 token metadata returned alongside simulation results.
+///
+/// `decimals` is omitted because all TIP-20 tokens use a fixed decimal count
+/// ([`TIP20_DECIMALS`]). The top-level response includes a `decimals` field instead.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Tip20TokenMetadata {
     pub name: String,
     pub symbol: String,
-    #[serde(with = "alloy_serde::quantity")]
-    pub decimals: u8,
     pub currency: String,
 }
 
@@ -44,6 +46,9 @@ pub struct Tip20TokenMetadata {
 pub struct TempoSimulateV1Response<B> {
     /// Standard simulation results (one per simulated block).
     pub blocks: Vec<SimulatedBlock<B>>,
+    /// Decimal count shared by all TIP-20 tokens.
+    #[serde(with = "alloy_serde::quantity")]
+    pub decimals: u8,
     /// Token metadata for TIP-20 addresses that appear in Transfer logs.
     pub token_metadata: BTreeMap<Address, Tip20TokenMetadata>,
 }
@@ -149,7 +154,7 @@ where
 
         // Scan simulation logs for any additional TIP-20 addresses not in the
         // prefetched set (e.g. tokens touched indirectly via contract calls).
-        let mut extra = Vec::new();
+        let mut extra = HashSet::new();
         for sim_block in &blocks {
             for call in &sim_block.calls {
                 for log in &call.logs {
@@ -157,21 +162,22 @@ where
                         && log.topics().first() == Some(&*TRANSFER_TOPIC)
                         && !token_metadata.contains_key(&log.address())
                     {
-                        extra.push(log.address());
+                        extra.insert(log.address());
                     }
                 }
             }
         }
 
         if !extra.is_empty() {
-            extra.sort_unstable();
-            extra.dedup();
-            let extra_metadata = self.resolve_token_metadata(extra).await;
+            let extra_metadata = self
+                .resolve_token_metadata(extra.into_iter().collect())
+                .await;
             token_metadata.extend(extra_metadata);
         }
 
         Ok(TempoSimulateV1Response {
             blocks,
+            decimals: TIP20_DECIMALS,
             token_metadata,
         })
     }
@@ -216,7 +222,6 @@ where
                                 Tip20TokenMetadata {
                                     name,
                                     symbol,
-                                    decimals: TIP20_DECIMALS,
                                     currency,
                                 },
                             );
