@@ -216,10 +216,7 @@ pub(crate) fn create_signed_key_authorization(
         .sign_hash_sync(&sig_hash)
         .expect("signing should succeed");
 
-    SignedKeyAuthorization {
-        authorization,
-        signature: PrimitiveSignature::Secp256k1(signature),
-    }
+    authorization.into_signed(PrimitiveSignature::Secp256k1(signature))
 }
 
 /// Helper function to compute authorization signature hash (EIP-7702)

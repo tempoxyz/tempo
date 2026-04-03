@@ -51,6 +51,31 @@ impl From<SignatureType> for u8 {
     }
 }
 
+use tempo_contracts::precompiles::IAccountKeychain::SignatureType as AbiSignatureType;
+
+impl From<SignatureType> for AbiSignatureType {
+    fn from(sig_type: SignatureType) -> Self {
+        match sig_type {
+            SignatureType::Secp256k1 => Self::Secp256k1,
+            SignatureType::P256 => Self::P256,
+            SignatureType::WebAuthn => Self::WebAuthn,
+        }
+    }
+}
+
+impl TryFrom<AbiSignatureType> for SignatureType {
+    type Error = u8;
+
+    fn try_from(sig_type: AbiSignatureType) -> Result<Self, Self::Error> {
+        match sig_type {
+            AbiSignatureType::Secp256k1 => Ok(Self::Secp256k1),
+            AbiSignatureType::P256 => Ok(Self::P256),
+            AbiSignatureType::WebAuthn => Ok(Self::WebAuthn),
+            _ => Err(sig_type as u8),
+        }
+    }
+}
+
 impl alloy_rlp::Encodable for SignatureType {
     fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
         (*self as u8).encode(out);

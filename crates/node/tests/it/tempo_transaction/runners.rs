@@ -9,7 +9,6 @@ use alloy::{
     providers::Provider,
     rpc::types::TransactionRequest,
     signers::{SignerSync, local::PrivateKeySigner},
-    sol_types::SolCall,
 };
 use alloy_eips::{Decodable2718, Encodable2718};
 use alloy_primitives::TxKind;
@@ -641,8 +640,6 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
     env: &mut E,
     test_case: &RawSendTestCase,
 ) -> eyre::Result<()> {
-    use tempo_precompiles::account_keychain::updateSpendingLimitCall;
-
     println!("\n=== Raw send test: {} ===\n", test_case.name);
     let chain_id = env.chain_id();
 
@@ -680,17 +677,11 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
                 *amount,
             )]
         }
-        TestAction::AdminCall => vec![Call {
-            to: tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS.into(),
-            value: U256::ZERO,
-            input: updateSpendingLimitCall {
-                keyId: Address::random(),
-                token: DEFAULT_FEE_TOKEN,
-                newLimit: U256::from(20u64) * U256::from(10).pow(U256::from(18)),
-            }
-            .abi_encode()
-            .into(),
-        }],
+        TestAction::AdminCall => vec![tempo_alloy::provider::keychain::update_spending_limit(
+            Address::random(),
+            DEFAULT_FEE_TOKEN,
+            U256::from(20u64) * U256::from(10).pow(U256::from(18)),
+        )],
     };
 
     let nonce_before = env.provider().get_transaction_count(root_addr).await?;
@@ -707,29 +698,18 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
             // Sign with root key directly (handled below)
         }
         KeySetup::ZeroPubKey => {
-            use tempo_precompiles::{
-                ACCOUNT_KEYCHAIN_ADDRESS,
-                account_keychain::{
-                    KeyRestrictions, SignatureType as KCSignatureType, authorizeKeyCall,
-                },
+            use tempo_alloy::provider::keychain::{
+                KeyRestrictions, authorize_key, authorize_key_legacy,
             };
 
-            let authorize_call = authorizeKeyCall {
-                keyId: Address::ZERO,
-                signatureType: KCSignatureType::P256,
-                config: KeyRestrictions {
-                    expiry: u64::MAX,
-                    enforceLimits: true,
-                    limits: vec![],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
+            let restrictions = KeyRestrictions::default().with_no_spending();
+            let call = if env.hardfork().is_t3() {
+                authorize_key(Address::ZERO, SignatureType::P256, restrictions)
+            } else {
+                authorize_key_legacy(Address::ZERO, SignatureType::P256, restrictions)
+                    .expect("default restrictions are legacy-compatible")
             };
-            tx.calls = vec![Call {
-                to: ACCOUNT_KEYCHAIN_ADDRESS.into(),
-                value: U256::ZERO,
-                input: authorize_call.abi_encode().into(),
-            }];
+            tx.calls = vec![call];
             tx.fee_token = None;
         }
         KeySetup::AccessKey { limits, expiry } => {
