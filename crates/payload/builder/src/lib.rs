@@ -674,6 +674,69 @@ where
             .rlp_block_size_bytes_last
             .set(rlp_length as f64);
 
+        let eth_payload = EthBuiltPayload::new(sealed_block.clone(), total_fees, requests);
+
+        let execution_output = BlockExecutionOutput {
+            result: execution_result,
+            state: db.take_bundle(),
+        };
+
+        // Post-execution state stats (counts, not byte sizes)
+        let bundle_state = &execution_output.state;
+        let bundle_account_count = bundle_state.len();
+        let bundle_storage_slot_count: usize = bundle_state
+            .state()
+            .values()
+            .map(|acct| acct.storage.len())
+            .sum();
+        let bundle_contract_count = bundle_state.contracts.len();
+        let bundle_weight_hint = bundle_state.size_hint();
+
+        let hashed_account_count = hashed_state.accounts.len();
+        let hashed_storage_entry_count: usize = hashed_state
+            .storages
+            .values()
+            .map(|s| s.storage.len())
+            .sum();
+
+        let trie_account_node_count = trie_updates.account_nodes_ref().len();
+        let trie_storage_trie_count = trie_updates.storage_tries_ref().len();
+
+        let receipt_log_count: usize = execution_output
+            .result
+            .receipts
+            .iter()
+            .map(|r| r.logs.len())
+            .sum();
+
+        self.metrics
+            .bundle_state_weight_hint
+            .record(bundle_weight_hint as f64);
+        self.metrics
+            .bundle_state_account_count
+            .record(bundle_account_count as f64);
+        self.metrics
+            .bundle_state_storage_slot_count
+            .record(bundle_storage_slot_count as f64);
+        self.metrics
+            .bundle_state_contract_count
+            .record(bundle_contract_count as f64);
+        self.metrics
+            .hashed_post_state_account_count
+            .record(hashed_account_count as f64);
+        self.metrics
+            .hashed_post_state_storage_entry_count
+            .record(hashed_storage_entry_count as f64);
+        self.metrics
+            .trie_updates_account_node_count
+            .record(trie_account_node_count as f64);
+        self.metrics
+            .trie_updates_storage_trie_count
+            .record(trie_storage_trie_count as f64);
+        self.metrics
+            .receipt_log_count
+            .record(receipt_log_count as f64);
+
         info!(
             parent_hash = ?sealed_block.parent_hash(),
             number = sealed_block.number(),
@@ -691,15 +754,18 @@ where
             ?total_subblock_transaction_execution_elapsed,
             ?total_transaction_execution_elapsed,
             ?builder_finish_elapsed,
+            rlp_length,
+            bundle_weight_hint,
+            bundle_account_count,
+            bundle_storage_slot_count,
+            bundle_contract_count,
+            hashed_account_count,
+            hashed_storage_entry_count,
+            trie_account_node_count,
+            trie_storage_trie_count,
+            receipt_log_count,
             "Built payload"
         );
-
-        let eth_payload = EthBuiltPayload::new(sealed_block, total_fees, requests);
-
-        let execution_output = BlockExecutionOutput {
-            result: execution_result,
-            state: db.take_bundle(),
-        };
 
         let executed_block = BuiltPayloadExecutedBlock {
             recovered_block: Arc::new(block),

@@ -87,6 +87,24 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) hashed_post_state_duration_seconds: Histogram,
     /// Time to compute the state root and trie updates via `state_root_with_updates`.
     pub(crate) state_root_with_updates_duration_seconds: Histogram,
+    /// BundleState weight hint (abstract units: account_count + storage_slot_count + reverts, not bytes).
+    pub(crate) bundle_state_weight_hint: Histogram,
+    /// Number of accounts touched in the BundleState.
+    pub(crate) bundle_state_account_count: Histogram,
+    /// Total storage slots touched across all accounts in the BundleState.
+    pub(crate) bundle_state_storage_slot_count: Histogram,
+    /// Number of new contracts in the BundleState.
+    pub(crate) bundle_state_contract_count: Histogram,
+    /// Number of accounts in the HashedPostState.
+    pub(crate) hashed_post_state_account_count: Histogram,
+    /// Total storage entries across all accounts in the HashedPostState.
+    pub(crate) hashed_post_state_storage_entry_count: Histogram,
+    /// Number of account trie nodes in TrieUpdates.
+    pub(crate) trie_updates_account_node_count: Histogram,
+    /// Number of storage tries in TrieUpdates.
+    pub(crate) trie_updates_storage_trie_count: Histogram,
+    /// Total number of logs across all receipts.
+    pub(crate) receipt_log_count: Histogram,
 }
 
 impl TempoPayloadBuilderMetrics {
