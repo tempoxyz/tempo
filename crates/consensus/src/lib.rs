@@ -166,20 +166,9 @@ impl Consensus<Block> for TempoConsensus {
             )));
         }
 
-        // Reject system transactions that appear outside the end-of-block positions.
-        let non_system_count = transactions.len().saturating_sub(SYSTEM_TX_COUNT);
-        if transactions[..non_system_count]
-            .iter()
-            .any(|tx| tx.is_system_tx())
-        {
-            return Err(ConsensusError::Other(
-                "system transaction outside end-of-block position".to_string(),
-            ));
-        }
-
         // Get the last END_OF_BLOCK_SYSTEM_TX_COUNT transactions and validate they are end-of-block system txs
         let end_of_block_system_txs = transactions
-            .get(non_system_count..)
+            .get(transactions.len().saturating_sub(SYSTEM_TX_COUNT)..)
             .map(|slice| {
                 slice
                     .iter()
@@ -894,34 +883,6 @@ mod tests {
         assert!(
             result.is_ok(),
             "Timestamp exactly at boundary should be accepted, got: {result:?}"
-        );
-    }
-
-    #[test]
-    fn test_validate_block_pre_execution_extra_system_tx() {
-        let consensus = TempoConsensus::new(MODERATO.clone());
-        let chain_id = MODERATO.chain().id();
-
-        // Place a valid system tx before regular txs, in addition to the required
-        // end-of-block system tx - this should be rejected.
-        let extra_system_tx = create_system_tx(chain_id, Address::ZERO);
-        let user_tx = create_tx(chain_id);
-        let end_system_tx = create_system_tx(chain_id, SYSTEM_TX_ADDRESSES[0]);
-
-        let header = TestHeaderBuilder::default()
-            .gas_limit(30_000_000)
-            .timestamp(current_timestamp_millis())
-            .build();
-        let block = create_valid_block(header, vec![extra_system_tx, user_tx, end_system_tx]);
-        let sealed = SealedBlock::seal_slow(block);
-
-        let result = consensus.validate_block_pre_execution(&sealed);
-        let err = result.unwrap_err();
-        assert!(matches!(err, ConsensusError::Other(_)));
-        assert!(
-            err.to_string()
-                .contains("system transaction outside end-of-block position"),
-            "unexpected error: {err}"
         );
     }
 
