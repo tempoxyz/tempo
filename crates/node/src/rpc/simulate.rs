@@ -17,6 +17,9 @@ use tempo_precompiles::{
     tip20::{TIP20Token, is_tip20_prefix},
 };
 
+/// TIP-20 decimals are always 6 (protocol constant).
+const TIP20_DECIMALS: u8 = 6;
+
 /// keccak256("Transfer(address,address,uint256)")
 static TRANSFER_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256(b"Transfer(address,address,uint256)"));
@@ -202,19 +205,18 @@ where
                         Ok::<_, TempoPrecompileError>((
                             token.name()?,
                             token.symbol()?,
-                            token.decimals()?,
                             token.currency()?,
                         ))
                     });
 
                     match result {
-                        Ok((name, symbol, decimals, currency)) => {
+                        Ok((name, symbol, currency)) => {
                             metadata.insert(
                                 *addr,
                                 Tip20TokenMetadata {
                                     name,
                                     symbol,
-                                    decimals,
+                                    decimals: TIP20_DECIMALS,
                                     currency,
                                 },
                             );
