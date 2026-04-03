@@ -99,6 +99,13 @@ pub struct TempoTransactionRequest {
     /// The sponsor signs fee_payer_signature_hash(sender) to commit to paying gas.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fee_payer_signature: Option<alloy_primitives::Signature>,
+
+    /// Hint that a fee payer will sponsor this transaction.
+    /// When `true`, gas estimation accounts for cold storage accesses to load the
+    /// fee payer's balance and fee token preference (which differ from the caller's).
+    /// Without this hint, estimation assumes caller == fee payer and underestimates gas.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_payer: Option<bool>,
 }
 
 impl TempoTransactionRequest {
@@ -339,6 +346,7 @@ impl From<TempoTransaction> for TempoTransactionRequest {
             valid_before: tx.valid_before,
             valid_after: tx.valid_after,
             fee_payer_signature: tx.fee_payer_signature,
+            fee_payer: None,
         }
     }
 }

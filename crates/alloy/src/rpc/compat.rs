@@ -45,6 +45,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                     valid_before,
                     valid_after,
                     fee_payer_signature,
+                    fee_payer,
                 } = self;
                 let envelope = match TryIntoSimTx::<EthereumTxEnvelope<TxEip4844>>::try_into_sim_tx(
                     inner.clone(),
@@ -64,6 +65,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             valid_before,
                             valid_after,
                             fee_payer_signature,
+                            fee_payer,
                         }));
                     }
                 };
@@ -83,6 +85,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             valid_before,
                             valid_after,
                             fee_payer_signature,
+                            fee_payer,
                         })
                     },
                 )?)
@@ -106,6 +109,11 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
                 .ok()
                 .and_then(|tx| tx.recover_fee_payer(caller_addr).ok())
                 .map(Some)
+        } else if self.fee_payer == Some(true) {
+            // Fee payer hint: use a sentinel address so gas estimation accounts for
+            // cold storage accesses to load the fee payer's balance and fee token
+            // preference (which differ from the caller's).
+            Some(Some(Address::ZERO))
         } else {
             None
         };
@@ -123,6 +131,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
             valid_before,
             valid_after,
             fee_payer_signature: _,
+            fee_payer: _,
         } = self;
 
         Ok(TempoTxEnv {
@@ -509,4 +518,83 @@ mod tests {
             ),
         }
     }
+
+    #[test]
+    fn test_fee_payer_hint_sets_fee_payer() {
+        let req = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")),
+                to: Some(TxKind::Call(address!(
+                    "0x1111111111111111111111111111111111111111"
+                ))),
+                nonce: Some(0),
+                ..Default::default()
+            },
+            nonce_key: Some(alloy_primitives::U256::ZERO),
+            fee_payer: Some(true),
+            ..Default::default()
+        };
+
+        let evm_env =
+            EvmEnv::<reth_evm::revm::primitives::hardfork::SpecId, TempoBlockEnv>::default();
+        let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
+
+        assert_eq!(
+            tx_env.fee_payer,
+            Some(Some(Address::ZERO)),
+            "fee_payer hint should set fee_payer to sentinel address"
+        );
+    }
+
+    #[test]
+    fn test_no_fee_payer_hint_leaves_fee_payer_none() {
+        let req = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")),
+                to: Some(TxKind::Call(address!(
+                    "0x1111111111111111111111111111111111111111"
+                ))),
+                nonce: Some(0),
+                ..Default::default()
+            },
+            nonce_key: Some(alloy_primitives::U256::ZERO),
+            ..Default::default()
+        };
+
+        let evm_env =
+            EvmEnv::<reth_evm::revm::primitives::hardfork::SpecId, TempoBlockEnv>::default();
+        let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
+
+        assert_eq!(
+            tx_env.fee_payer, None,
+            "without fee_payer hint, fee_payer should be None"
+        );
+    }
+
+    #[test]
+    fn test_fee_payer_hint_false_leaves_fee_payer_none() {
+        let req = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")),
+                to: Some(TxKind::Call(address!(
+                    "0x1111111111111111111111111111111111111111"
+                ))),
+                nonce: Some(0),
+                ..Default::default()
+            },
+            nonce_key: Some(alloy_primitives::U256::ZERO),
+            fee_payer: Some(false),
+            ..Default::default()
+        };
+
+        let evm_env =
+            EvmEnv::<reth_evm::revm::primitives::hardfork::SpecId, TempoBlockEnv>::default();
+        let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
+
+        assert_eq!(
+            tx_env.fee_payer, None,
+            "fee_payer: false should not set fee_payer"
+        );
+    }
+
 }
