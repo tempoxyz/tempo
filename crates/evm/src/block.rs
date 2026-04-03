@@ -440,8 +440,10 @@ where
         let inner = result?;
 
         let next_section = if let Some(next_section) = next_section {
+            // If pre-execution validation returned a section to use, just use it.
             next_section
         } else {
+            // Otherwise, rely on post-execution validation to determine the next section.
             self.validate_tx(recovered.tx(), inner.result.result.gas_used())?
         };
         Ok(TempoTxResult {
