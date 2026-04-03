@@ -25,7 +25,10 @@ use reth_revm::{
     state::{Account, Bytecode, EvmState},
 };
 use std::collections::{HashMap, HashSet};
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_chainspec::{
+    TempoChainSpec,
+    hardfork::{TempoHardfork, TempoHardforks},
+};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
@@ -118,6 +121,7 @@ pub(crate) struct TempoBlockExecutor<'a, DB: Database, I> {
     pub(crate) inner:
         EthBlockExecutor<'a, TempoEvm<DB, I>, &'a TempoChainSpec, TempoReceiptBuilder>,
 
+    hardfork: TempoHardfork,
     section: BlockSection,
     seen_subblocks: Vec<(PartialValidatorKey, Vec<TempoTxEnvelope>)>,
     validator_set: Option<Vec<B256>>,
@@ -141,6 +145,7 @@ where
     ) -> Self {
         Self {
             incentive_gas_used: 0,
+            hardfork: chain_spec.tempo_hardfork_at(evm.block().timestamp.to::<u64>()),
             validator_set: ctx.validator_set,
             non_payment_gas_left: ctx.general_gas_limit,
             non_shared_gas_left: evm.block().gas_limit - ctx.shared_gas_limit,
@@ -334,6 +339,7 @@ where
         &self,
         tx: &TempoTxEnvelope,
         gas_used: u64,
+        is_payment: bool,
     ) -> Result<BlockSection, BlockValidationError> {
         // Start with processing of transaction kinds that require specific sections.
         if tx.is_system_tx() {
@@ -366,7 +372,7 @@ where
             match self.section {
                 BlockSection::StartOfBlock | BlockSection::NonShared => {
                     if gas_used > self.non_shared_gas_left
-                        || (!tx.is_payment_v1() && gas_used > self.non_payment_gas_left)
+                        || (!is_payment && gas_used > self.non_payment_gas_left)
                     {
                         // Assume that this transaction wants to make use of gas incentive section
                         //
@@ -407,11 +413,10 @@ where
         self.inner.apply_pre_execution_changes()?;
 
         // Deploy 0xEF marker bytecode to precompiles at their activation hardforks.
-        let timestamp = self.evm().block().timestamp.to::<u64>();
-        if self.inner.spec.is_t2_active_at_timestamp(timestamp) {
+        if self.hardfork.is_t2() {
             self.deploy_precompile_at_boundary(VALIDATOR_CONFIG_V2_ADDRESS)?;
         }
-        if self.inner.spec.is_t3_active_at_timestamp(timestamp) {
+        if self.hardfork.is_t3() {
             self.deploy_precompile_at_boundary(SIGNATURE_VERIFIER_ADDRESS)?;
             self.deploy_precompile_at_boundary(ADDRESS_REGISTRY_ADDRESS)?;
         }
@@ -447,11 +452,18 @@ where
 
         let inner = result?;
 
-        let next_section = self.validate_tx(recovered.tx(), inner.result.result.gas_used())?;
+        let is_payment = if self.hardfork.is_t3() {
+            recovered.tx().is_payment_v2()
+        } else {
+            recovered.tx().is_payment_v1()
+        };
+
+        let next_section =
+            self.validate_tx(recovered.tx(), inner.result.result.gas_used(), is_payment)?;
         Ok(TempoTxResult {
             inner,
             next_section,
-            is_payment: recovered.tx().is_payment_v1(),
+            is_payment,
             tx: matches!(next_section, BlockSection::SubBlock { .. })
                 .then(|| recovered.tx().clone()),
         })
@@ -992,7 +1004,7 @@ mod tests {
 
         // Test regular transaction in StartOfBlock section goes to NonShared
         let tx = create_legacy_tx();
-        let result = executor.validate_tx(&tx, 21000);
+        let result = executor.validate_tx(&tx, 21000, false);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), BlockSection::NonShared);
     }
@@ -1034,7 +1046,7 @@ mod tests {
             .build(&mut db, &chainspec);
 
         let subblock_tx = create_subblock_tx(&proposer);
-        let result = executor.validate_tx(&subblock_tx, 21000);
+        let result = executor.validate_tx(&subblock_tx, 21000, false);
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
@@ -1049,7 +1061,7 @@ mod tests {
             })
             .build(&mut db2, &chainspec);
 
-        let result = executor2.validate_tx(&subblock_tx, 21000);
+        let result = executor2.validate_tx(&subblock_tx, 21000, false);
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
@@ -1079,7 +1091,7 @@ mod tests {
 
         // Try to submit a tx for proposer1 (already processed)
         let subblock_tx = create_subblock_tx(&proposer1);
-        let result = executor.validate_tx(&subblock_tx, 21000);
+        let result = executor.validate_tx(&subblock_tx, 21000, false);
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
@@ -1101,7 +1113,7 @@ mod tests {
 
         // Try to validate a regular tx
         let tx = create_legacy_tx();
-        let result = executor.validate_tx(&tx, 21000);
+        let result = executor.validate_tx(&tx, 21000, false);
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
