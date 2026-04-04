@@ -381,7 +381,7 @@ pub(super) fn sign_p256_primitive(
 
     Ok(PrimitiveSignature::P256(P256SignatureWithPreHash {
         r: B256::from_slice(&sig_bytes[0..32]),
-        s: normalize_p256_s(&sig_bytes[32..64]),
+        s: normalize_p256_s(&sig_bytes[32..64]).expect("p256 crate produces valid s"),
         pub_key_x,
         pub_key_y,
         pre_hash: true,
@@ -493,7 +493,7 @@ pub(super) fn sign_webauthn_primitive(
     Ok(PrimitiveSignature::WebAuthn(WebAuthnSignature {
         webauthn_data: Bytes::from(webauthn_data),
         r: B256::from_slice(&sig_bytes[0..32]),
-        s: normalize_p256_s(&sig_bytes[32..64]),
+        s: normalize_p256_s(&sig_bytes[32..64]).expect("p256 crate produces valid s"),
         pub_key_x,
         pub_key_y,
     }))
