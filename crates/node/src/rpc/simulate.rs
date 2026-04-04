@@ -1,11 +1,13 @@
+use crate::{node::TempoNode, rpc::TempoEthApi};
 use alloy_primitives::{Address, B256, keccak256};
 use alloy_rpc_types_eth::simulate::SimulatedBlock;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth_ethereum::evm::revm::database::StateProviderDatabase;
+use reth_node_api::FullNodeTypes;
 use reth_primitives_traits::AlloyBlockHeader as _;
 use reth_provider::{BlockIdReader, ChainSpecProvider, HeaderProvider};
 use reth_rpc_eth_api::{
-    EthApiTypes, RpcBlock,
+    RpcBlock, RpcNodeCore,
     helpers::{EthCall, LoadState, SpawnBlocking},
 };
 use reth_tracing::tracing;
@@ -14,7 +16,7 @@ use std::{
     collections::{BTreeMap, HashSet},
     sync::LazyLock,
 };
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_contracts::precompiles::DECIMALS as TIP20_DECIMALS;
 use tempo_evm::TempoStateAccess;
 use tempo_precompiles::{
@@ -73,12 +75,12 @@ pub trait TempoSimulateApi {
 
 /// Implementation of `tempo_simulateV1`.
 #[derive(Debug, Clone)]
-pub struct TempoSimulate<EthApi> {
-    eth_api: EthApi,
+pub struct TempoSimulate<N: FullNodeTypes<Types = TempoNode>> {
+    eth_api: TempoEthApi<N>,
 }
 
-impl<EthApi> TempoSimulate<EthApi> {
-    pub fn new(eth_api: EthApi) -> Self {
+impl<N: FullNodeTypes<Types = TempoNode>> TempoSimulate<N> {
+    pub fn new(eth_api: TempoEthApi<N>) -> Self {
         Self { eth_api }
     }
 }
@@ -120,17 +122,7 @@ fn extract_tip20_targets(
 }
 
 #[async_trait::async_trait]
-impl<EthApi> TempoSimulateApiServer for TempoSimulate<EthApi>
-where
-    EthApi: EthCall
-        + SpawnBlocking
-        + LoadState
-        + EthApiTypes<NetworkTypes = tempo_alloy::TempoNetwork>
-        + Clone
-        + 'static,
-    EthApi::Provider: ChainSpecProvider<ChainSpec = TempoChainSpec> + HeaderProvider,
-    EthApi::Error: Into<jsonrpsee::types::ErrorObject<'static>>,
-{
+impl<N: FullNodeTypes<Types = TempoNode>> TempoSimulateApiServer for TempoSimulate<N> {
     async fn simulate_v1(
         &self,
         payload: alloy_rpc_types_eth::simulate::SimulatePayload<
@@ -144,7 +136,7 @@ where
 
         // Run simulation and metadata prefetch concurrently
         let (sim_result, mut token_metadata) = tokio::join!(
-            EthCall::simulate_v1(&self.eth_api, payload, block),
+            self.eth_api.simulate_v1(payload, block),
             self.resolve_token_metadata(prefetched, block),
         );
 
@@ -184,11 +176,7 @@ where
     }
 }
 
-impl<EthApi> TempoSimulate<EthApi>
-where
-    EthApi: SpawnBlocking + LoadState + EthApiTypes + Clone + 'static,
-    EthApi::Provider: ChainSpecProvider<ChainSpec = TempoChainSpec> + HeaderProvider,
-{
+impl<N: FullNodeTypes<Types = TempoNode>> TempoSimulate<N> {
     /// Resolves TIP-20 token metadata for the given addresses using state at the target block.
     async fn resolve_token_metadata(
         &self,
@@ -256,7 +244,7 @@ where
                     }
                 }
 
-                Ok::<_, EthApi::Error>(metadata)
+                Ok(metadata)
             })
             .await;
 
