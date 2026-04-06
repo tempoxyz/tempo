@@ -718,6 +718,8 @@ where
             .get_fee_token(tx, fee_payer, cfg.spec)
             .map_err(|err| EVMError::Custom(err.to_string()))?;
 
+        evm.fee_token = Some(fee_token);
+
         // Always validate TIP20 prefix to prevent panics in get_token_balance.
         // This is a protocol-level check since validators could bypass initial validation.
         if !is_tip20_prefix(fee_token) {
