@@ -7,9 +7,7 @@ use alloy_evm::EvmEnv;
 use parking_lot::RwLock;
 use reth_chainspec::ChainSpecProvider;
 use reth_evm::ConfigureEvm;
-use reth_primitives_traits::{
-    SealedBlock, transaction::error::InvalidTransactionError,
-};
+use reth_primitives_traits::{SealedBlock, transaction::error::InvalidTransactionError};
 use reth_provider::BlockReaderIdExt;
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{StateProvider, StateProviderFactory, errors::ProviderError};
@@ -718,6 +716,9 @@ mod tests {
         },
     };
 
+    /// Arbitrary validity window (in seconds) used for expiring-nonce transactions in tests.
+    const TEST_VALIDITY_WINDOW: u64 = 25;
+
     /// Helper to create a mock sealed block with the given timestamp.
     fn create_mock_block(timestamp: u64) -> SealedBlock<Block> {
         let header = TempoHeader {
@@ -1187,6 +1188,168 @@ mod tests {
                     )
                 ))
             ));
+        }
+    }
+
+    /// Test that CREATE transactions with 2D nonce (nonce_key != 0) require additional gas
+    /// when the sender's account nonce is 0 (account creation cost).
+    ///
+    /// The new logic adds 250k gas requirement when:
+    /// - Transaction has 2D nonce (nonce_key != 0)
+    /// - Transaction is CREATE
+    /// - Account nonce is 0
+    #[tokio::test]
+    async fn test_aa_create_tx_with_2d_nonce_intrinsic_gas() {
+        use alloy_primitives::Signature;
+        use tempo_primitives::transaction::{
+            TempoTransaction,
+            tempo_transaction::Call as TxCall,
+            tt_signature::{PrimitiveSignature, TempoSignature},
+            tt_signed::AASigned,
+        };
+
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Helper to create AA transaction
+        let create_aa_tx = |gas_limit: u64, nonce_key: U256, is_create: bool| {
+            let calls: Vec<TxCall> = if is_create {
+                vec![TxCall {
+                    to: TxKind::Create,
+                    value: U256::ZERO,
+                    input: alloy_primitives::Bytes::from(vec![0x60, 0x00, 0x60, 0x00, 0xF3]),
+                }]
+            } else {
+                (0..10)
+                    .map(|i| TxCall {
+                        to: TxKind::Call(Address::from([i as u8; 20])),
+                        value: U256::ZERO,
+                        input: alloy_primitives::Bytes::from(vec![0x00; 100]),
+                    })
+                    .collect()
+            };
+
+            let valid_before = if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+                Some(current_time + TEST_VALIDITY_WINDOW)
+            } else {
+                None
+            };
+
+            let tx = TempoTransaction {
+                chain_id: MODERATO.chain_id(),
+                max_priority_fee_per_gas: 1_000_000_000,
+                max_fee_per_gas: 20_000_000_000,
+                gas_limit,
+                calls,
+                nonce_key,
+                nonce: 0,
+                valid_before,
+                fee_token: Some(address!("0000000000000000000000000000000000000002")),
+                ..Default::default()
+            };
+
+            let signed = AASigned::new_unhashed(
+                tx,
+                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                    Signature::test_signature(),
+                )),
+            );
+            TempoPooledTransaction::new(TempoTxEnvelope::from(signed).try_into_recovered().unwrap())
+        };
+
+        // Test 1: Verify 1D nonce (nonce_key=0) with low gas fails intrinsic gas check
+        let tx_1d_low_gas = create_aa_tx(30_000, U256::ZERO, false);
+        let validator1 = setup_validator(&tx_1d_low_gas, current_time);
+        let outcome1 = validator1
+            .validate_transaction(TransactionOrigin::External, tx_1d_low_gas)
+            .await;
+
+        match outcome1 {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                assert!(
+                    matches!(
+                        err.downcast_other_ref::<TempoPoolTransactionError>(),
+                        Some(TempoPoolTransactionError::Evm(
+                            TempoInvalidTransaction::EthInvalidTransaction(
+                                InvalidTransaction::CallGasCostMoreThanGasLimit { .. }
+                            )
+                        ))
+                    ),
+                    "1D nonce with low gas should fail InsufficientGasForAAIntrinsicCost, got: {err:?}"
+                );
+            }
+            _ => panic!("Expected Invalid outcome, got: {outcome1:?}"),
+        }
+
+        // Test 2: Verify 2D nonce (nonce_key != 0) with same low gas also fails intrinsic gas check
+        // This confirms that 2D nonce adds additional gas requirements (for nonce == 0 case)
+        let tx_2d_low_gas = create_aa_tx(30_000, TEMPO_EXPIRING_NONCE_KEY, false);
+        let validator2 = setup_validator(&tx_2d_low_gas, current_time);
+        let outcome2 = validator2
+            .validate_transaction(TransactionOrigin::External, tx_2d_low_gas)
+            .await;
+
+        match outcome2 {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                assert!(
+                    matches!(
+                        err.downcast_other_ref::<TempoPoolTransactionError>(),
+                        Some(TempoPoolTransactionError::Evm(
+                            TempoInvalidTransaction::EthInvalidTransaction(
+                                InvalidTransaction::CallGasCostMoreThanGasLimit { .. }
+                            )
+                        ))
+                    ),
+                    "2D nonce with low gas should fail InsufficientGasForAAIntrinsicCost, got: {err:?}"
+                );
+            }
+            _ => panic!("Expected Invalid outcome, got: {outcome2:?}"),
+        }
+
+        // Test 3: 1D nonce with sufficient gas should NOT fail intrinsic gas check
+        let tx_1d_high_gas = create_aa_tx(1_000_000, U256::ZERO, false);
+        let validator3 = setup_validator(&tx_1d_high_gas, current_time);
+        let outcome3 = validator3
+            .validate_transaction(TransactionOrigin::External, tx_1d_high_gas)
+            .await;
+
+        // May fail for other reasons (fee token, etc.) but should NOT fail intrinsic gas
+        if let TransactionValidationOutcome::Invalid(_, ref err) = outcome3 {
+            assert!(
+                !matches!(
+                    err.downcast_other_ref::<TempoPoolTransactionError>(),
+                    Some(TempoPoolTransactionError::Evm(
+                        TempoInvalidTransaction::EthInvalidTransaction(
+                            InvalidTransaction::CallGasCostMoreThanGasLimit { .. }
+                        )
+                    ))
+                ),
+                "1D nonce with high gas should NOT fail InsufficientGasForAAIntrinsicCost, got: {err:?}"
+            );
+        }
+
+        // Test 4: 2D nonce with sufficient gas should NOT fail intrinsic gas check
+        let tx_2d_high_gas = create_aa_tx(1_000_000, TEMPO_EXPIRING_NONCE_KEY, false);
+        let validator4 = setup_validator(&tx_2d_high_gas, current_time);
+        let outcome4 = validator4
+            .validate_transaction(TransactionOrigin::External, tx_2d_high_gas)
+            .await;
+
+        // May fail for other reasons (fee token, etc.) but should NOT fail intrinsic gas
+        if let TransactionValidationOutcome::Invalid(_, ref err) = outcome4 {
+            assert!(
+                !matches!(
+                    err.downcast_other_ref::<TempoPoolTransactionError>(),
+                    Some(TempoPoolTransactionError::Evm(
+                        TempoInvalidTransaction::EthInvalidTransaction(
+                            InvalidTransaction::CallGasCostMoreThanGasLimit { .. }
+                        )
+                    ))
+                ),
+                "2D nonce with high gas should NOT fail InsufficientGasForAAIntrinsicCost, got: {err:?}"
+            );
         }
     }
 
