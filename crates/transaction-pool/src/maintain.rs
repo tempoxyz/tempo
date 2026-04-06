@@ -68,6 +68,11 @@ pub struct TempoPoolUpdates {
     pub whitelist_removals: Vec<(u64, Address)>,
     /// Fee token pause state changes: (token, is_paused).
     pub pause_events: Vec<(Address, bool)>,
+    /// Fee token balance changes keyed by token.
+    ///
+    /// When a TIP20 `Transfer` changes a fee payer's balance, pending transactions that rely on
+    /// that `(fee_token, fee_payer)` pair may become unpayable and should be re-checked.
+    pub fee_balance_changes: AddressMap<HashSet<Address>>,
     /// Keychain transactions that were included in the block, decrementing spending limits.
     ///
     /// We record which (account, key_id, fee_token) combos had their limits decremented by
@@ -94,6 +99,7 @@ impl TempoPoolUpdates {
             && self.blacklist_additions.is_empty()
             && self.whitelist_removals.is_empty()
             && self.pause_events.is_empty()
+            && self.fee_balance_changes.is_empty()
             && self.spending_limit_spends.is_empty()
     }
 
@@ -150,11 +156,16 @@ impl TempoPoolUpdates {
                         .push((event.policyId, event.account));
                 }
             }
-            // Fee token pause events
-            else if is_tip20_prefix(log.address)
-                && let Ok(event) = ITIP20::PauseStateUpdate::decode_log(log)
-            {
-                updates.pause_events.push((log.address, event.isPaused));
+            // Fee token pause events and balance changes
+            else if is_tip20_prefix(log.address) {
+                if let Ok(event) = ITIP20::PauseStateUpdate::decode_log(log) {
+                    updates.pause_events.push((log.address, event.isPaused));
+                } else if let Ok(event) = ITIP20::Transfer::decode_log(log) {
+                    let changed_accounts =
+                        updates.fee_balance_changes.entry(log.address).or_default();
+                    changed_accounts.insert(event.from);
+                    changed_accounts.insert(event.to);
+                }
             }
         }
 
@@ -202,6 +213,7 @@ impl TempoPoolUpdates {
             || !self.user_token_changes.is_empty()
             || !self.blacklist_additions.is_empty()
             || !self.whitelist_removals.is_empty()
+            || !self.fee_balance_changes.is_empty()
     }
 }
 
@@ -818,6 +830,22 @@ mod tests {
         ))
     }
 
+    fn create_test_chain_with_receipts(
+        blocks: Vec<reth_primitives_traits::RecoveredBlock<Block>>,
+        receipts: Vec<Vec<tempo_primitives::TempoReceipt>>,
+    ) -> Arc<Chain<TempoPrimitives>> {
+        use reth_provider::{Chain, ExecutionOutcome};
+
+        Arc::new(Chain::new(
+            blocks,
+            ExecutionOutcome {
+                receipts,
+                ..Default::default()
+            },
+            Default::default(),
+        ))
+    }
+
     /// Helper to create a recovered block containing the given transactions.
     fn create_block_with_txs(
         block_number: u64,
@@ -846,7 +874,9 @@ mod tests {
 
     mod from_chain_spending_limit_spends {
         use super::*;
+        use alloy_primitives::{IntoLogData, Log, U256};
         use alloy_signer_local::PrivateKeySigner;
+        use tempo_primitives::{TempoReceipt, TempoTxType};
 
         /// Verify from_chain extracts (account, key_id) with wildcard token from included
         /// keychain txs, so all pending txs for that key are rechecked regardless of fee token.
@@ -984,6 +1014,36 @@ mod tests {
                 Address::random(),
                 Address::random(),
                 Some(Address::random()),
+            );
+            assert!(updates.has_invalidation_events());
+        }
+
+        #[test]
+        fn extracts_fee_balance_changes_from_tip20_transfer_logs() {
+            let fee_token = tempo_precompiles::PATH_USD_ADDRESS;
+            let from = Address::random();
+            let to = Address::random();
+            let amount = U256::from(42_u64);
+            let log_data = ITIP20::Transfer { from, to, amount }.into_log_data();
+            let log =
+                Log::new_unchecked(fee_token, log_data.topics().to_vec(), log_data.data.clone());
+            let receipt = TempoReceipt {
+                tx_type: TempoTxType::Legacy,
+                success: true,
+                cumulative_gas_used: 21_000,
+                logs: vec![log],
+            };
+
+            let block = create_block_with_txs(1, vec![], vec![]);
+            let chain = create_test_chain_with_receipts(vec![block], vec![vec![receipt]]);
+            let updates = TempoPoolUpdates::from_chain(&chain);
+
+            assert!(
+                updates
+                    .fee_balance_changes
+                    .get(&fee_token)
+                    .is_some_and(|accounts| accounts.contains(&from) && accounts.contains(&to)),
+                "TIP20 transfer logs should mark both sender and recipient as balance-changed"
             );
             assert!(updates.has_invalidation_events());
         }
