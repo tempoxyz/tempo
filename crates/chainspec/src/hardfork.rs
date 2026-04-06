@@ -184,6 +184,8 @@ tempo_hardfork! (
         T2,
         /// T3 hardfork
         T3,
+        /// T4 hardfork
+        T4,
     }
 );
 
@@ -252,6 +254,7 @@ impl TempoHardfork {
             Self::T1C => Some(MAINNET_T1C_BLOCK),
             Self::T2 => Some(MAINNET_T2_BLOCK),
             Self::T3 => None,
+            Self::T4 => None,
         }
     }
 
@@ -267,6 +270,7 @@ impl TempoHardfork {
             Self::T1C => Some(MAINNET_T1C_TIMESTAMP),
             Self::T2 => Some(MAINNET_T2_TIMESTAMP),
             Self::T3 => None,
+            Self::T4 => None,
         }
     }
 
@@ -282,6 +286,7 @@ impl TempoHardfork {
             Self::T1C => Some(MODERATO_T1C_BLOCK),
             Self::T2 => Some(MODERATO_T2_BLOCK),
             Self::T3 => None,
+            Self::T4 => None,
         }
     }
 
@@ -297,6 +302,7 @@ impl TempoHardfork {
             Self::T1C => Some(MODERATO_T1C_TIMESTAMP),
             Self::T2 => Some(MODERATO_T2_TIMESTAMP),
             Self::T3 => None,
+            Self::T4 => None,
         }
     }
 }
