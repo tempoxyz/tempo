@@ -230,11 +230,6 @@ pub enum TempoPoolTransactionError {
     ExceedsNonPaymentLimit,
 
     #[error(
-        "Fee token {0} is paused, please see https://docs.tempo.xyz/errors/tx/PausedFeeToken for more"
-    )]
-    PausedFeeToken(Address),
-
-    #[error(
         "'valid_before' {valid_before} is too close to current time (min allowed: {min_allowed})"
     )]
     InvalidValidBefore { valid_before: u64, min_allowed: u64 },
@@ -260,18 +255,6 @@ pub enum TempoPoolTransactionError {
     /// Thrown when an AA transaction has too many calls.
     #[error("Too many calls in AA transaction: {count} exceeds maximum allowed {max_allowed}")]
     TooManyCalls { count: usize, max_allowed: usize },
-
-    /// Thrown when an AA transaction has no calls.
-    #[error("AA transaction has no calls")]
-    NoCalls,
-
-    /// Thrown when a call in an AA transaction is the second call and is a CREATE.
-    #[error("CREATE calls must be the first call in an AA transaction")]
-    CreateCallNotFirst,
-
-    /// Thrown when an AA transaction contains both a CREATE call and an authorization list.
-    #[error("CREATE calls are not allowed in the same transaction that has an authorization list")]
-    CreateCallWithAuthorizationList,
 
     /// Thrown when a call in an AA transaction has input data exceeding the maximum allowed size.
     #[error(
@@ -309,10 +292,6 @@ pub enum TempoPoolTransactionError {
     )]
     TooManyTokenLimits { count: usize, max_allowed: usize },
 
-    /// Thrown when an expiring nonce transaction's hash has already been seen (replay).
-    #[error("Expiring nonce transaction replay: tx hash already seen and not expired")]
-    ExpiringNonceReplay,
-
     /// Thrown when an access key has expired or is expiring within the propagation buffer.
     #[error("Access key expired: expiry {expiry} <= min allowed {min_allowed}")]
     AccessKeyExpired { expiry: u64, min_allowed: u64 },
@@ -323,7 +302,7 @@ pub enum TempoPoolTransactionError {
 
     /// EVM validation pipeline error.
     #[error(transparent)]
-    Evm(#[from] TempoInvalidTransaction),
+    Evm(TempoInvalidTransaction),
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
@@ -331,10 +310,8 @@ impl PoolTransactionError for TempoPoolTransactionError {
         match self {
             Self::Evm(err) => err.is_bad_transaction(),
             Self::ExceedsNonPaymentLimit
-            | Self::PausedFeeToken(_)
             | Self::InvalidValidBefore { .. }
             | Self::InvalidValidAfter { .. }
-            | Self::ExpiringNonceReplay
             | Self::AccessKeyExpired { .. }
             | Self::KeyAuthorizationExpired { .. }
             | Self::Keychain(_) => false,
@@ -345,10 +322,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::TooManyAccessListAccounts { .. }
             | Self::TooManyStorageKeysPerAccount { .. }
             | Self::TooManyTotalStorageKeys { .. }
-            | Self::TooManyTokenLimits { .. }
-            | Self::NoCalls
-            | Self::CreateCallWithAuthorizationList
-            | Self::CreateCallNotFirst => true,
+            | Self::TooManyTokenLimits { .. } => true,
         }
     }
 
@@ -732,10 +706,6 @@ mod tests {
         let cases: &[(TempoPoolTransactionError, bool)] = &[
             (TempoPoolTransactionError::ExceedsNonPaymentLimit, false),
             (
-                TempoPoolTransactionError::PausedFeeToken(Address::ZERO),
-                false,
-            ),
-            (
                 TempoPoolTransactionError::InvalidValidBefore {
                     valid_before: 100,
                     min_allowed: 200,
@@ -750,7 +720,12 @@ mod tests {
                 false,
             ),
             (TempoPoolTransactionError::Keychain("test error"), false),
-            (TempoPoolTransactionError::ExpiringNonceReplay, false),
+            (
+                TempoPoolTransactionError::Evm(TempoInvalidTransaction::NonceManagerError(
+                    "nonce error".to_string(),
+                )),
+                false,
+            ),
             (
                 TempoPoolTransactionError::AccessKeyExpired {
                     expiry: 100,
@@ -766,10 +741,10 @@ mod tests {
                 false,
             ),
             (TempoPoolTransactionError::SubblockNonceKey, true),
-            (TempoPoolTransactionError::NoCalls, true),
-            (TempoPoolTransactionError::CreateCallNotFirst, true),
             (
-                TempoPoolTransactionError::CreateCallWithAuthorizationList,
+                TempoPoolTransactionError::Evm(TempoInvalidTransaction::CallsValidation(
+                    "calls error",
+                )),
                 true,
             ),
         ];
