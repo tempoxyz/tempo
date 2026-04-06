@@ -23,6 +23,7 @@ reth-transaction-pool.workspace = true
 reth-evm.workspace = true
 reth-chainspec.workspace = true
 reth-primitives-traits.workspace = true
+reth-revm.workspace = true
 reth-storage-api.workspace = true
 reth-provider.workspace = true
 reth-eth-wire-types.workspace = true
