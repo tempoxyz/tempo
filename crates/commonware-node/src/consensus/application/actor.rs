@@ -39,7 +39,7 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 use tempo_telemetry_util::display_duration;
 
-use reth_provider::{BlockHashReader as _, BlockReader as _, CanonStateSubscriptions as _};
+use reth_provider::{BlockHashReader as _, BlockReader as _};
 use tempo_payload_types::TempoPayloadAttributes;
 use tokio::sync::RwLock;
 use tracing::{Level, debug, error, error_span, info, info_span, instrument, warn};
@@ -551,17 +551,19 @@ impl Inner<Init> {
         };
 
         let parent_hash = parent.block_hash();
-        let fee_recipient = self
-            .resolve_fee_recipient(parent_hash, parent.height())
-            .await
-            .wrap_err("failed resolving fee recipient for proposal")?;
-        let attrs =
-            TempoPayloadAttributes::new(fee_recipient, timestamp_millis, extra_data, move || {
+        let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
+        let attrs = TempoPayloadAttributes::new(
+            self.fee_recipient.unwrap_or_default(),
+            Some(proposer_public_key),
+            timestamp_millis,
+            extra_data,
+            move || {
                 self.subblocks
                     .as_ref()
                     .and_then(|s| s.get_subblocks(parent_hash).ok())
                     .unwrap_or_default()
-            });
+            },
+        );
 
         let interrupt_handle = attrs.interrupt_handle().clone();
 
@@ -615,65 +617,6 @@ impl Inner<Init> {
         context.sleep_until(payload_return_time).await;
 
         Ok(Block::from_execution_block(payload.block().clone()))
-    }
-
-    /// Resolves the fee recipient to use for a proposal built on top of
-    /// `parent_hash`. Waits for canonical state events if the state at
-    /// `parent_hash` is not yet available.
-    #[instrument(skip_all, fields(%parent_hash, %parent_height), ret(Display), err(level = Level::WARN))]
-    async fn resolve_fee_recipient(
-        &self,
-        parent_hash: B256,
-        parent_height: Height,
-    ) -> eyre::Result<alloy_primitives::Address> {
-        // Subscribe before the first read so we don't miss canonical state
-        // updates that arrive between a failed read and subscribing.
-        // `canonical_state_stream` wraps a `broadcast::Receiver` that only
-        // delivers events sent after subscription.
-        let mut canonical_events = self.execution_node.provider.canonical_state_stream();
-
-        match read_fee_recipient(
-            &self.execution_node,
-            &self.public_key,
-            parent_hash,
-            self.fee_recipient,
-        ) {
-            Ok(fee_recipient) => return Ok(fee_recipient),
-            Err(error) => {
-                warn!(
-                    %error,
-                    "failed reading proposer fee recipient from validator \
-                     config v2; waiting for canonical state events",
-                );
-            }
-        }
-
-        loop {
-            let Some(event) = canonical_events.next().await else {
-                bail!("canonical state stream ended unexpectedly");
-            };
-            let committed = event.committed();
-            let Some(block) = committed.blocks().get(&parent_height.get()) else {
-                continue;
-            };
-            if block.hash() != parent_hash {
-                warn!(
-                    committed_hash = %block.hash(),
-                    "canonical event contained parent height but hash did not match",
-                );
-                continue;
-            }
-            return read_fee_recipient(
-                &self.execution_node,
-                &self.public_key,
-                parent_hash,
-                self.fee_recipient,
-            )
-            .wrap_err(
-                "failed reading fee recipient from validator config v2 \
-                 after parent was committed",
-            );
-        }
     }
 
     async fn verify<TContext: Pacer>(
@@ -818,39 +761,6 @@ struct Init {
     dkg_manager: crate::dkg::manager::Mailbox,
     /// The communication channel to the executor agent.
     executor: crate::executor::Mailbox,
-}
-
-/// Reads the fee recipient from the V2 contract at `block_hash`,
-/// falling back to `fallback` when V2 is not active or the on-chain
-/// address is `Address::ZERO`.
-fn read_fee_recipient(
-    execution_node: &TempoFullNode,
-    public_key: &PublicKey,
-    block_hash: B256,
-    fallback: Option<alloy_primitives::Address>,
-) -> eyre::Result<alloy_primitives::Address> {
-    let fee_recipient;
-    let msg = match crate::validators::read_fee_recipient_at_block_hash(
-        execution_node,
-        public_key,
-        block_hash,
-    ) {
-        Ok(Some(recipient)) if recipient.is_zero() && fallback.is_some() => {
-            fee_recipient = fallback.expect("match arm checks it is set");
-            "on-chain fee recipient is zero; using fallback"
-        }
-        Ok(Some(recipient)) => {
-            fee_recipient = recipient;
-            "using on-chain fee recipient"
-        }
-        Ok(None) => {
-            fee_recipient = fallback.unwrap_or_default();
-            "v2 contract not active; using fallback"
-        }
-        Err(error) => return Err(error),
-    };
-    debug!(%fee_recipient, msg);
-    Ok(fee_recipient)
 }
 
 /// Verifies `block` given its `parent` against the execution layer.

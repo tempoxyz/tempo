@@ -330,6 +330,22 @@ where
         Ok(())
     }
 
+    /// Pre-validate a transaction before execution.
+    ///
+    /// This is only done for system transaction as they are effectively bypassing
+    /// the regular block gas limit checks and we need to make sure that they
+    /// only perform explicitly allowed actions.
+    pub(crate) fn validate_tx_pre_execution(
+        &self,
+        tx: &TempoTxEnvelope,
+    ) -> Result<Option<BlockSection>, BlockValidationError> {
+        if tx.is_system_tx() {
+            self.validate_system_tx(tx).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
     pub(crate) fn validate_tx(
         &self,
         tx: &TempoTxEnvelope,
@@ -429,6 +445,8 @@ where
     ) -> Result<Self::Result, BlockExecutionError> {
         let (tx_env, recovered) = tx.into_parts();
 
+        let next_section = self.validate_tx_pre_execution(recovered.tx())?;
+
         let beneficiary = self.evm_mut().ctx_mut().block.beneficiary;
         // If we are dealing with a subblock transaction, configure the fee recipient context.
         if let Some(validator) = recovered.tx().subblock_proposer() {
@@ -447,7 +465,13 @@ where
 
         let inner = result?;
 
-        let next_section = self.validate_tx(recovered.tx(), inner.result.result.gas_used())?;
+        let next_section = if let Some(next_section) = next_section {
+            // If pre-execution validation returned a section to use, just use it.
+            next_section
+        } else {
+            // Otherwise, rely on post-execution validation to determine the next section.
+            self.validate_tx(recovered.tx(), inner.result.result.gas_used())?
+        };
         Ok(TempoTxResult {
             inner,
             next_section,
