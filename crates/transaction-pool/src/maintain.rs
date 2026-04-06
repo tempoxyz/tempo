@@ -70,8 +70,8 @@ pub struct TempoPoolUpdates {
     pub pause_events: Vec<(Address, bool)>,
     /// Fee token balance changes keyed by token.
     ///
-    /// When a TIP20 `Transfer` changes a fee payer's balance, pending transactions that rely on
-    /// that `(fee_token, fee_payer)` pair may become unpayable and should be re-checked.
+    /// We only track the debited `from` account from TIP20 `Transfer` logs because credits to the
+    /// `to` account cannot make an already-admitted transaction newly invalid.
     pub fee_balance_changes: AddressMap<HashSet<Address>>,
     /// Keychain transactions that were included in the block, decrementing spending limits.
     ///
@@ -161,10 +161,11 @@ impl TempoPoolUpdates {
                 if let Ok(event) = ITIP20::PauseStateUpdate::decode_log(log) {
                     updates.pause_events.push((log.address, event.isPaused));
                 } else if let Ok(event) = ITIP20::Transfer::decode_log(log) {
-                    let changed_accounts =
-                        updates.fee_balance_changes.entry(log.address).or_default();
-                    changed_accounts.insert(event.from);
-                    changed_accounts.insert(event.to);
+                    updates
+                        .fee_balance_changes
+                        .entry(log.address)
+                        .or_default()
+                        .insert(event.from);
                 }
             }
         }
@@ -1042,8 +1043,8 @@ mod tests {
                 updates
                     .fee_balance_changes
                     .get(&fee_token)
-                    .is_some_and(|accounts| accounts.contains(&from) && accounts.contains(&to)),
-                "TIP20 transfer logs should mark both sender and recipient as balance-changed"
+                    .is_some_and(|accounts| accounts.len() == 1 && accounts.contains(&from)),
+                "TIP20 transfer logs should only mark the debited sender as balance-changed"
             );
             assert!(updates.has_invalidation_events());
         }
