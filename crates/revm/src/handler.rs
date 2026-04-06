@@ -643,6 +643,8 @@ where
         evm.logs.clear();
         // reset initial gas to 0 to avoid gas limit check errors
         evm.initial_gas = 0;
+        evm.fee_token = None;
+
         if !result.instruction_result().is_ok() {
             evm.logs = evm.journal_mut().take_logs();
         }
@@ -1516,6 +1518,7 @@ where
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
         // reset initial gas to 0 to avoid gas limit check errors
         evm.initial_gas = 0;
+        evm.fee_token = None;
 
         // For subblock transactions that failed `collectFeePreTx` call we catch error and treat such transactions as valid.
         if evm.ctx.tx.is_subblock_transaction()
