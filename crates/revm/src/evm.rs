@@ -1,6 +1,6 @@
 use crate::{TempoBlockEnv, TempoTxEnv, instructions};
 use alloy_evm::{Database, precompiles::PrecompilesMap};
-use alloy_primitives::{Log, U256};
+use alloy_primitives::{Address, Log, U256};
 use revm::{
     Context, Inspector,
     context::{CfgEnv, ContextError, Evm, FrameStack},
@@ -37,6 +37,8 @@ pub struct TempoEvm<DB: Database, I> {
     ///
     /// Additional initial gas cost is added for authorization_key setting in pre execution.
     pub(crate) initial_gas: u64,
+    /// The fee token used to pay fees for the current transaction.
+    pub(crate) fee_token: Option<Address>,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -70,6 +72,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             logs: Vec::new(),
             collected_fee: U256::ZERO,
             initial_gas: 0,
+            fee_token: None,
         }
     }
 }
