@@ -69,10 +69,7 @@ fn subblocks_are_included_1_node() {
             .engine_events
             .new_listener();
 
-        // In single-node mode, the subblock payload for block N+1 may already be
-        // built before transactions submitted after block N arrive. Track pending
-        // transactions separately so they can be included in a later block.
-        let mut pending_transactions: Vec<TxHash> = Vec::new();
+        let mut expected_transactions: Vec<TxHash> = Vec::new();
         while let Some(update) = stream.next().await {
             let block = match update {
                 ConsensusEngineEvent::BlockReceived(_)
@@ -84,44 +81,61 @@ fn subblocks_are_included_1_node() {
                 ConsensusEngineEvent::CanonicalBlockAdded(block, _) => block,
             };
 
-            let block_txs = &block.sealed_block().body().transactions;
             let receipts = &block.execution_outcome().receipts;
 
-            // Identify which pending transactions were included in this block.
-            let mut included_count = 0usize;
-            pending_transactions.retain(|tx| {
-                if block_txs.iter().any(|t| t.tx_hash() == **tx) {
-                    included_count += 1;
-                    false
-                } else {
-                    true
-                }
-            });
-
-            // Assert that the block only contains system txs plus any included subblock txs.
+            // Assert that block only contains our subblock transactions and the system transactions
             assert_eq!(
-                block_txs.len(),
-                SYSTEM_TX_COUNT + included_count
+                block.sealed_block().body().transactions.len(),
+                SYSTEM_TX_COUNT + expected_transactions.len()
             );
+
+            // Assert that all expected transactions are included in the block.
+            for tx in expected_transactions.drain(..) {
+                if !block
+                    .sealed_block()
+                    .body()
+                    .transactions
+                    .iter()
+                    .any(|t| t.tx_hash() == *tx)
+                {
+                    panic!("transaction {tx} was not included");
+                }
+            }
 
             // Assert that all transactions were successful
             for receipt in receipts {
                 assert!(receipt.status());
             }
 
+            if !expected_transactions.is_empty() {
+                let fee_token_storage = &block
+                    .execution_outcome()
+                    .state
+                    .account(&DEFAULT_FEE_TOKEN)
+                    .unwrap()
+                    .storage;
+
+                // Assert that all validators were paid for their subblock transactions
+                for fee_recipient in &fee_recipients {
+                    let balance_slot = TIP20Token::from_address(DEFAULT_FEE_TOKEN)
+                        .unwrap()
+                        .balances[*fee_recipient]
+                        .slot();
+                    let slot = fee_token_storage.get(&balance_slot).unwrap();
+
+                    assert!(slot.present_value > slot.original_value());
+                }
+            }
+
             // Exit once we reach height 20.
             if block.block_number() == 20 {
-                assert!(
-                    pending_transactions.is_empty(),
-                    "not all subblock transactions were included by height 20",
-                );
                 break;
             }
 
             // Send subblock transactions to all nodes.
             for node in nodes.iter() {
                 for _ in 0..5 {
-                    pending_transactions.push(submit_subblock_tx(node).await);
+                    expected_transactions.push(submit_subblock_tx(node).await);
                 }
             }
         }
