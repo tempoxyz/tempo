@@ -247,6 +247,19 @@ jobs:
           mkdir $VERSION
           mv artifacts/**/* $VERSION/
 
+      - name: Determine destination directory
+        id: dest
+        env:
+          VERSION: ${{ needs.get-version.outputs.version }}
+          SHA: ${{ github.sha }}
+        run: |
+          if [[ "${{ github.repository }}" == "tempoxyz/tempo-private-fork" ]]; then
+            echo "dir=${SHA}/${VERSION}" >> $GITHUB_OUTPUT
+          else
+            # Otherwise these are being stored in a generic bucket with many other subdirectories
+            echo "dir=binaries/${VERSION}" >> $GITHUB_OUTPUT
+          fi
+
       - uses: shallwefootball/s3-upload-action@4350529f410221787ccf424e50133cbc1b52704e # v1.3.3
         with:
           aws_key_id: ${{ secrets.R2_BINARIES_KEY_ID }}
@@ -254,4 +267,4 @@ jobs:
           aws_bucket: ${{ secrets.R2_BINARIES_BUCKET }}
           endpoint: ${{ secrets.R2_BINARIES_ENDPOINT }}
           source_dir: "${{ needs.get-version.outputs.version }}"
-          destination_dir: "binaries/${{ needs.get-version.outputs.version }}"
+          destination_dir: "${{ steps.dest.outputs.dir }}"
