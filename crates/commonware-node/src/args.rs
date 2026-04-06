@@ -16,7 +16,7 @@ pub struct Args {
     /// The file containing the ed25519 signing key for p2p communication.
     #[arg(
         long = "consensus.signing-key",
-        required_unless_present_any = ["follow", "dev"],
+        required_unless_present_any = ["follow", "follow_uncertified", "dev"],
     )]
     signing_key: Option<PathBuf>,
 

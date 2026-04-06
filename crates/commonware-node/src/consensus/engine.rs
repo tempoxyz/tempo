@@ -10,13 +10,11 @@ use std::{
 use commonware_broadcast::buffered;
 use commonware_consensus::{
     Reporters, marshal,
-    simplex::scheme::bls12381_threshold::vrf::Scheme,
     types::{FixedEpocher, ViewDelta},
 };
 use commonware_cryptography::{
     Signer as _,
-    bls12381::primitives::{group::Share, variant::MinSig},
-    certificate::Scheme as _,
+    bls12381::primitives::group::Share,
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_p2p::{AddressableManager, Blocker, Receiver, Sender};
@@ -25,7 +23,6 @@ use commonware_runtime::{
     BufferPooler, Clock, ContextCell, Handle, Metrics, Network, Pacer, Spawner, Storage,
     buffer::paged::CacheRef, spawn_cell,
 };
-use commonware_storage::archive::immutable;
 use commonware_utils::{NZU16, NZU64, NZUsize};
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::future::try_join_all;
@@ -34,11 +31,10 @@ use tempo_node::TempoFullNode;
 use tracing::info;
 
 use crate::{
-    config::BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
     consensus::application,
     dkg,
     epoch::{self, SchemeProvider},
-    peer_manager, subblocks,
+    peer_manager, storage, subblocks,
 };
 
 use super::block::Block;
@@ -49,11 +45,6 @@ use super::block::Block;
 /// the consensus activity timeout by this factor.
 const SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER: u64 = 10;
 const PRUNABLE_ITEMS_PER_SECTION: NonZeroU64 = NZU64!(4_096);
-const IMMUTABLE_ITEMS_PER_SECTION: NonZeroU64 = NZU64!(262_144);
-const FREEZER_TABLE_RESIZE_FREQUENCY: u8 = 4;
-const FREEZER_TABLE_RESIZE_CHUNK_SIZE: u32 = 2u32.pow(16); // 3MB
-const FREEZER_VALUE_TARGET_SIZE: u64 = 1024 * 1024 * 1024; // 1GB
-const FREEZER_VALUE_COMPRESSION: Option<u8> = Some(3);
 const REPLAY_BUFFER: NonZeroUsize = NZUsize!(8 * 1024 * 1024); // 8MB
 const WRITE_BUFFER: NonZeroUsize = NZUsize!(1024 * 1024); // 1MB
 const BUFFER_POOL_PAGE_SIZE: NonZeroU16 = NZU16!(4_096); // 4KB
@@ -148,101 +139,27 @@ where
 
         let scheme_provider = SchemeProvider::new();
 
-        const FINALIZATIONS_BY_HEIGHT: &str = "finalizations-by-height";
         let start = Instant::now();
-        let finalizations_by_height = immutable::Archive::init(
+        let finalizations_by_height = storage::init_finalizations_archive(
             context.with_label("finalizations_by_height"),
-            immutable::Config {
-                metadata_partition: format!(
-                    "{}-{FINALIZATIONS_BY_HEIGHT}-metadata",
-                    self.partition_prefix,
-                ),
-
-                freezer_table_partition: format!(
-                    "{}-{FINALIZATIONS_BY_HEIGHT}-freezer-table",
-                    self.partition_prefix,
-                ),
-
-                freezer_table_initial_size: BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
-                freezer_table_resize_frequency: FREEZER_TABLE_RESIZE_FREQUENCY,
-                freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
-
-                freezer_key_partition: format!(
-                    "{}-{FINALIZATIONS_BY_HEIGHT}-freezer-key",
-                    self.partition_prefix,
-                ),
-                freezer_key_page_cache: page_cache_ref.clone(),
-
-                freezer_value_partition: format!(
-                    "{}-{FINALIZATIONS_BY_HEIGHT}-freezer-value",
-                    self.partition_prefix,
-                ),
-                freezer_value_target_size: FREEZER_VALUE_TARGET_SIZE,
-                freezer_value_compression: FREEZER_VALUE_COMPRESSION,
-
-                ordinal_partition: format!(
-                    "{}-{FINALIZATIONS_BY_HEIGHT}-ordinal",
-                    self.partition_prefix,
-                ),
-
-                items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
-                codec_config: Scheme::<PublicKey, MinSig>::certificate_codec_config_unbounded(),
-
-                replay_buffer: REPLAY_BUFFER,
-                freezer_key_write_buffer: WRITE_BUFFER,
-                freezer_value_write_buffer: WRITE_BUFFER,
-                ordinal_write_buffer: WRITE_BUFFER,
-            },
+            &self.partition_prefix,
+            page_cache_ref.clone(),
         )
         .await
         .wrap_err("failed to initialize finalizations by height archive")?;
+
         info!(elapsed = ?start.elapsed(), "restored finalizations by height archive");
 
-        const FINALIZED_BLOCKS: &str = "finalized_blocks";
         let start = Instant::now();
-        let finalized_blocks = immutable::Archive::init(
+        let finalized_blocks = storage::init_finalized_blocks_archive(
             context.with_label("finalized_blocks"),
-            immutable::Config {
-                metadata_partition: format!(
-                    "{}-{FINALIZED_BLOCKS}-metadata",
-                    self.partition_prefix,
-                ),
-
-                freezer_table_partition: format!(
-                    "{}-{FINALIZED_BLOCKS}-freezer-table",
-                    self.partition_prefix,
-                ),
-
-                freezer_table_initial_size: BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
-                freezer_table_resize_frequency: FREEZER_TABLE_RESIZE_FREQUENCY,
-                freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
-
-                freezer_key_partition: format!(
-                    "{}-{FINALIZED_BLOCKS}-freezer-key",
-                    self.partition_prefix,
-                ),
-                freezer_key_page_cache: page_cache_ref.clone(),
-
-                freezer_value_partition: format!(
-                    "{}-{FINALIZED_BLOCKS}-freezer-value",
-                    self.partition_prefix,
-                ),
-                freezer_value_target_size: FREEZER_VALUE_TARGET_SIZE,
-                freezer_value_compression: FREEZER_VALUE_COMPRESSION,
-
-                ordinal_partition: format!("{}-{FINALIZED_BLOCKS}-ordinal", self.partition_prefix,),
-                items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
-                codec_config: (),
-
-                replay_buffer: REPLAY_BUFFER,
-                freezer_key_write_buffer: WRITE_BUFFER,
-                freezer_value_write_buffer: WRITE_BUFFER,
-                ordinal_write_buffer: WRITE_BUFFER,
-            },
+            &self.partition_prefix,
+            page_cache_ref.clone(),
         )
         .await
         .wrap_err("failed to initialize finalizations by height archive")?;
-        info!(elapsed = ?start.elapsed(), "restored finalizations by height archive");
+
+        info!(elapsed = ?start.elapsed(), "restored finalized blocks archive");
 
         // TODO(janis): forward `last_finalized_height` to application so it can
         // forward missing blocks to EL.
@@ -260,16 +177,13 @@ where
                         .saturating_mul(SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER),
                 ),
                 prunable_items_per_section: PRUNABLE_ITEMS_PER_SECTION,
-
                 page_cache: page_cache_ref.clone(),
-
                 replay_buffer: REPLAY_BUFFER,
                 key_write_buffer: WRITE_BUFFER,
                 value_write_buffer: WRITE_BUFFER,
                 max_repair: MAX_REPAIR,
                 max_pending_acks: MAX_PENDING_ACKS,
                 block_codec_config: (),
-
                 strategy: Sequential,
             },
         )

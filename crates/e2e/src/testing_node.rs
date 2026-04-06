@@ -345,7 +345,7 @@ where
     /// # Panics
     /// Panics if consensus is not running.
     #[instrument(skip_all)]
-    async fn stop_consensus(&mut self) {
+    pub async fn stop_consensus(&mut self) {
         let handle = self
             .consensus_handle
             .take()
