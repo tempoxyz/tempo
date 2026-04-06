@@ -20,7 +20,7 @@ use reth_engine_tree::tree::instrumented_state::InstrumentedStateProvider;
 use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
     ConfigureEvm, Database, Evm, NextBlockEnvAttributes,
-    block::{BlockExecutionError, BlockValidationError},
+    block::{BlockExecutionError, BlockExecutor, BlockValidationError},
     execute::{BlockBuilder, BlockBuilderOutcome},
 };
 use reth_execution_types::BlockExecutionOutput;
@@ -46,8 +46,9 @@ use std::{
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_consensus::TEMPO_SHARED_GAS_DIVISOR;
-use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
+use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, evm::TempoEvm};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
+use tempo_precompiles::{storage::StorageCtx, validator_config_v2::ValidatorConfigV2};
 use tempo_primitives::{
     RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoTxEnvelope,
     subblock::PartialValidatorKey,
@@ -356,6 +357,10 @@ where
                 },
             )
             .map_err(PayloadBuilderError::other)?;
+
+        // Override the fee recipient with the on-chain value from the V2
+        // validator config contract, if available.
+        maybe_override_fee_recipient(&mut builder, &attributes);
 
         builder.apply_pre_execution_changes().map_err(|err| {
             warn!(%err, "failed to apply pre-execution changes");
@@ -739,6 +744,52 @@ pub fn is_more_subblocks(
     subblocks.len() > best_metadata.len()
 }
 
+/// Overrides the block's fee recipient (beneficiary) with the value from the
+/// V2 validator config contract, if the contract is active and returns a
+/// non-zero address for the given `public_key`.
+fn maybe_override_fee_recipient<DB: Database, I>(
+    builder: &mut impl BlockBuilder<Executor: BlockExecutor<Evm = TempoEvm<DB, I>>>,
+    attributes: &TempoPayloadAttributes,
+) {
+    let Some(public_key) = attributes.proposer_public_key() else {
+        return;
+    };
+    let ctx = builder.evm_mut().ctx_mut();
+    if !ctx.cfg.spec.is_t2() {
+        return;
+    }
+    let parent_number = ctx.block.number.saturating_to::<u64>() - 1;
+    match StorageCtx::enter_ctx(ctx, || -> Result<Option<Address>, PayloadBuilderError> {
+        let config = ValidatorConfigV2::default();
+        if !config
+            .is_initialized()
+            .map_err(PayloadBuilderError::other)?
+        {
+            return Ok(None);
+        }
+        let init_height = config
+            .get_initialized_at_height()
+            .map_err(PayloadBuilderError::other)?;
+        if init_height > parent_number {
+            return Ok(None);
+        }
+        let on_chain = config
+            .validator_by_public_key(*public_key)
+            .map(|v| v.feeRecipient)
+            .map_err(PayloadBuilderError::other)?;
+        Ok((!on_chain.is_zero()).then_some(on_chain))
+    }) {
+        Ok(Some(fee_recipient)) => {
+            debug!(%fee_recipient, "resolved fee recipient from contract");
+            builder.evm_mut().ctx_mut().block.beneficiary = fee_recipient;
+        }
+        Ok(None) => {}
+        Err(err) => {
+            warn!(%err, "failed resolving fee recipient from contract; using fallback");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -868,7 +919,7 @@ mod tests {
         let extra_data = Bytes::from(vec![42, 43, 44, 45, 46]);
 
         let attrs =
-            TempoPayloadAttributes::new(Address::default(), 1000, extra_data.clone(), Vec::new);
+            TempoPayloadAttributes::new(Address::ZERO, None, 1000, extra_data.clone(), Vec::new);
 
         assert_eq!(attrs.extra_data(), &extra_data);
 

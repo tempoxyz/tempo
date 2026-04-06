@@ -333,7 +333,7 @@ where
                     digest,
                     JustCanonicalizeOrAlsoBuild::AlsoBuild {
                         response,
-                        attributes: *attributes,
+                        attributes: Box::new(*attributes),
                     },
                 )
                 .await;
@@ -563,7 +563,7 @@ enum JustCanonicalizeOrAlsoBuild {
     },
     AlsoBuild {
         response: oneshot::Sender<eyre::Result<PayloadId>>,
-        attributes: TempoPayloadAttributes,
+        attributes: Box<TempoPayloadAttributes>,
     },
 }
 
