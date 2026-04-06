@@ -8,7 +8,7 @@ use std::{
 };
 
 use alloy_primitives::{Address, B256, Bytes};
-use alloy_provider::{Provider, ProviderBuilder};
+use alloy_provider::{DynProvider, Provider, ProviderBuilder};
 use alloy_rpc_types_eth::TransactionRequest;
 use alloy_signer_local::PrivateKeySigner;
 use alloy_sol_types::SolCall;
@@ -25,7 +25,7 @@ use eyre::{OptionExt as _, Report, WrapErr as _, eyre};
 use reth_cli_runner::CliRunner;
 use reth_ethereum_cli::ExtendedCommand;
 use serde::Serialize;
-use tempo_alloy::TempoNetwork;
+use tempo_alloy::{TempoNetwork};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_commonware_node_config::SigningKey;
 use tempo_contracts::precompiles::{
@@ -345,11 +345,15 @@ impl ValidatorSignatureArgs {
 pub(crate) struct ValidatorTransactionArgs {
     /// Path to the file holding the Ethereum private key.
     #[arg(long, value_name = "FILE")]
-    private_key: PathBuf,
+    private_key: Option<PathBuf>,
 
     /// The RPC URL to submit the transaction to.
     #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
     rpc_url: String,
+
+    /// Print an `eth_fillTransaction` JSON payload for offline / external signing instead of sending.
+    #[arg(long, short = 'b')]
+    build: bool,
 
     /// Skip the interactive confirmation prompt.
     #[arg(long, short = 'y')]
@@ -384,29 +388,32 @@ impl ValidatorTransactionArgs {
         }
     }
 
-    fn signer(&self) -> eyre::Result<PrivateKeySigner> {
-        let private_key_bytes = std::fs::read(&self.private_key)
-            .wrap_err("failed reading validator ethereum private key")?;
+    async fn provider(&self) -> eyre::Result<DynProvider<TempoNetwork>> {
+        match &self.private_key {
+            Some(path) => {
+                let private_key_bytes = std::fs::read(path)
+                    .wrap_err("failed reading validator ethereum private key")?;
+                let private_key = B256::try_from(private_key_bytes.as_slice())
+                    .wrap_err("invalid validator ethereum private key")?;
+                let signer = PrivateKeySigner::from_bytes(&private_key)?;
 
-        let private_key = B256::try_from(private_key_bytes.as_slice())
-            .wrap_err("invalid validator ethereum private key")?;
-
-        Ok(PrivateKeySigner::from_bytes(&private_key)?)
-    }
-
-    async fn provider(
-        &self,
-        signer: PrivateKeySigner,
-    ) -> eyre::Result<impl Provider<TempoNetwork>> {
-        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-            .fetch_chain_id()
-            .with_gas_estimation()
-            .wallet(signer)
-            .connect(&self.rpc_url)
-            .await
-            .wrap_err("failed to connect to RPC")?;
-
-        Ok(provider)
+                Ok(ProviderBuilder::new_with_network::<TempoNetwork>()
+                    .fetch_chain_id()
+                    .with_gas_estimation()
+                    .wallet(signer)
+                    .connect(&self.rpc_url)
+                    .await
+                    .wrap_err("failed to connect to RPC")?
+                    .erased())
+            }
+            None => Ok(
+                ProviderBuilder::new_with_network::<TempoNetwork>()
+                    .connect(&self.rpc_url)
+                    .await
+                    .wrap_err("failed to connect to RPC")?
+                    .erased(),
+            ),
+        }
     }
 }
 
@@ -425,8 +432,7 @@ pub(crate) struct AddValidator {
 
 impl AddValidator {
     async fn run(self) -> eyre::Result<()> {
-        let signer = self.submit.signer()?;
-        let provider = self.submit.provider(signer).await?;
+        let provider = self.submit.provider().await?;
 
         let chain_id = provider
             .get_chain_id()
@@ -451,6 +457,19 @@ impl AddValidator {
             signature,
             feeRecipient: self.fee_recipient,
         };
+
+        if self.submit.build {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "chainId": format!("0x{chain_id:x}"),
+                    "to": format!("{VALIDATOR_CONFIG_V2_ADDRESS:#x}"),
+                    "data": alloy_primitives::hex::encode_prefixed(call.abi_encode()),
+                }))
+                .wrap_err("failed to serialize transaction preview")?
+            );
+            return Ok(());
+        }
 
         self.submit.confirm(&call)?;
 
@@ -486,8 +505,7 @@ pub(crate) struct TransferValidatorOwnership {
 
 impl TransferValidatorOwnership {
     async fn run(self) -> eyre::Result<()> {
-        let signer = self.submit.signer()?;
-        let provider = self.submit.provider(signer).await?;
+        let provider = self.submit.provider().await?;
 
         let new_private_key_bytes = std::fs::read(&self.new_private_key)
             .wrap_err("failed reading new validator ethereum privatekey")?;
@@ -503,6 +521,19 @@ impl TransferValidatorOwnership {
             idx: validator.index,
             newAddress: new_validator_address,
         };
+
+        if self.submit.build {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "chainId": format!("0x{chain_id:x}"),
+                    "to": format!("{VALIDATOR_CONFIG_V2_ADDRESS:#x}"),
+                    "data": alloy_primitives::hex::encode_prefixed(call.abi_encode()),
+                }))
+                .wrap_err("failed to serialize transaction preview")?
+            );
+            return Ok(());
+        }
 
         self.submit.confirm(&call)?;
 
@@ -534,8 +565,7 @@ pub(crate) struct RotateValidator {
 
 impl RotateValidator {
     async fn run(self) -> eyre::Result<()> {
-        let signer = self.submit.signer()?;
-        let provider = self.submit.provider(signer).await?;
+        let provider = self.submit.provider().await?;
 
         let chain_id = provider
             .get_chain_id()
@@ -562,6 +592,19 @@ impl RotateValidator {
             egress: self.identity.egress.to_string(),
             signature,
         };
+
+        if self.submit.build {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "chainId": format!("0x{chain_id:x}"),
+                    "to": format!("{VALIDATOR_CONFIG_V2_ADDRESS:#x}"),
+                    "data": alloy_primitives::hex::encode_prefixed(call.abi_encode()),
+                }))
+                .wrap_err("failed to serialize transaction preview")?
+            );
+            return Ok(());
+        }
 
         self.submit.confirm(&call)?;
 
@@ -686,8 +729,7 @@ pub(crate) struct SetValidatorIpAddress {
 
 impl SetValidatorIpAddress {
     async fn run(self) -> eyre::Result<()> {
-        let signer = self.submit.signer()?;
-        let provider = self.submit.provider(signer).await?;
+        let provider = self.submit.provider().await?;
 
         if self.ingress.is_none() && self.egress.is_none() {
             return Err(eyre!("at least one of --ingress or --egress must be set"));
@@ -700,6 +742,19 @@ impl SetValidatorIpAddress {
             ingress: self.ingress.map_or(validator.ingress, |v| v.to_string()),
             egress: self.egress.map_or(validator.egress, |v| v.to_string()),
         };
+
+        if self.submit.build {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "chainId": format!("0x{chain_id:x}"),
+                    "to": format!("{VALIDATOR_CONFIG_V2_ADDRESS:#x}"),
+                    "data": alloy_primitives::hex::encode_prefixed(call.abi_encode()),
+                }))
+                .wrap_err("failed to serialize transaction preview")?
+            );
+            return Ok(());
+        }
 
         self.submit.confirm(&call)?;
 
@@ -731,14 +786,26 @@ pub(crate) struct DeactivateValidator {
 
 impl DeactivateValidator {
     async fn run(self) -> eyre::Result<()> {
-        let signer = self.submit.signer()?;
-        let provider = self.submit.provider(signer).await?;
+        let provider = self.submit.provider().await?;
 
         let validator = read_validator_from_contract(&provider, self.id).await?;
 
         let call = IValidatorConfigV2::deactivateValidatorCall {
             idx: validator.index,
         };
+
+        if self.submit.build {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "chainId": format!("0x{chain_id:x}"),
+                    "to": format!("{VALIDATOR_CONFIG_V2_ADDRESS:#x}"),
+                    "data": alloy_primitives::hex::encode_prefixed(call.abi_encode()),
+                }))
+                .wrap_err("failed to serialize transaction preview")?
+            );
+            return Ok(());
+        }
 
         self.submit.confirm(&call)?;
 
@@ -773,8 +840,7 @@ pub(crate) struct SetValidatorFeeRecipient {
 
 impl SetValidatorFeeRecipient {
     async fn run(self) -> eyre::Result<()> {
-        let signer = self.submit.signer()?;
-        let provider = self.submit.provider(signer).await?;
+        let provider = self.submit.provider().await?;
 
         let validator = read_validator_from_contract(&provider, self.id).await?;
 
@@ -782,6 +848,19 @@ impl SetValidatorFeeRecipient {
             idx: validator.index,
             feeRecipient: self.fee_recipient,
         };
+
+        if self.submit.build {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "chainId": format!("0x{chain_id:x}"),
+                    "to": format!("{VALIDATOR_CONFIG_V2_ADDRESS:#x}"),
+                    "data": alloy_primitives::hex::encode_prefixed(call.abi_encode()),
+                }))
+                .wrap_err("failed to serialize transaction preview")?
+            );
+            return Ok(());
+        }
 
         self.submit.confirm(&call)?;
 
