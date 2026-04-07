@@ -140,3 +140,24 @@ impl Sealable for TempoHeader {
         keccak256(alloy_rlp::encode(self))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Ensures backwards compatibility of the compact bitflag.
+    ///
+    /// If this fails because unused bits dropped to zero, new fields should be added via an
+    /// extension type (e.g. `Option<TempoHeaderExt>`) rather than directly to [`TempoHeader`].
+    ///
+    /// See reth's `HeaderExt` pattern:
+    /// <https://github.com/paradigmxyz/reth/blob/main/crates/storage/codecs/src/alloy/header.rs>
+    #[test]
+    fn tempo_header_has_unused_compact_bits() {
+        assert_ne!(
+            TempoHeader::bitflag_unused_bits(),
+            0,
+            "TempoHeader compact bitflag has no unused bits left — use an extension type"
+        );
+    }
+}
