@@ -227,7 +227,7 @@ where
                 .iter()
                 .filter(|(validator, _)| amm_cache.is_active_validator(validator))
                 .filter(|(_, new_token)| !amm_cache.is_active_validator_token(new_token))
-                .map(|(_, new_token)| *new_token)
+                .map(|(_, &new_token)| new_token)
                 .collect();
             amm_cache.track_tokens(&active_new_tokens)
         };
@@ -276,7 +276,13 @@ where
                 && let Some(ref subject) = keychain_subject
                 && subject.matches_spending_limit_update(&updates.spending_limit_spends)
                 && let Some(ref mut provider) = state_provider
-                && exceeds_spending_limit(provider, subject, tx.transaction.fee_token_cost())
+                && exceeds_spending_limit(
+                    provider,
+                    subject,
+                    tx.transaction.fee_token_cost(),
+                    tip_timestamp,
+                    spec,
+                )
             {
                 to_remove.push(*tx.hash());
                 spending_limit_spend_count += 1;
@@ -287,7 +293,7 @@ where
             // Prevents mass eviction because it only:
             // - evicts when NO validator token has enough liquidity
             // - considers active validators (protects from permissionless `setValidatorToken`)
-            if has_active_validator_token_changes && let Some(ref provider) = state_provider {
+            if has_active_validator_token_changes && let Some(ref mut provider) = state_provider {
                 let user_token = tx
                     .transaction
                     .inner()
@@ -295,7 +301,7 @@ where
                     .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN);
                 let cost = tx.transaction.fee_token_cost();
 
-                match amm_cache.has_enough_liquidity(user_token, cost, &**provider) {
+                match amm_cache.has_enough_liquidity(user_token, cost, provider) {
                     Ok(true) => {}
                     Ok(false) => {
                         to_remove.push(*tx.hash());
@@ -1147,20 +1153,18 @@ where
     }
 }
 
-/// Checks whether a pending keychain tx exceeds its remaining spending limit.
+/// Checks whether a pending keychain tx exceeds its effective remaining spending limit.
 ///
-/// Re-reads the current remaining limit from state for the tx's (account, key_id,
-/// fee_token) combo. Returns true if the tx's fee cost exceeds the remaining limit,
-/// meaning it should be evicted.
+/// Re-reads the current limit from state for the tx's `(account, key_id, fee_token)` combo,
+/// including any T3 periodic-limit rollover at `current_timestamp`. Returns true if the tx's
+/// fee cost exceeds the effective remaining limit, meaning it should be evicted.
 pub(crate) fn exceeds_spending_limit(
     provider: &mut impl StateProvider,
     subject: &crate::transaction::KeychainSubject,
     fee_token_cost: alloy_primitives::U256,
+    current_timestamp: u64,
+    spec: TempoHardfork,
 ) -> bool {
-    // Spec doesn't affect raw storage reads (sload), so default is safe here.
-    let spec = TempoHardfork::default();
-    let limit_key = AccountKeychain::spending_limit_key(subject.account, subject.key_id);
-
     provider
         .with_read_only_storage_ctx(spec, || -> TempoPrecompileResult<bool> {
             let keychain = AccountKeychain::new();
@@ -1171,7 +1175,12 @@ pub(crate) fn exceeds_spending_limit(
                 return Ok(false);
             }
 
-            let remaining = keychain.spending_limits[limit_key][subject.fee_token].read()?;
+            let remaining = keychain.effective_remaining_limit(
+                subject.account,
+                subject.key_id,
+                subject.fee_token,
+                current_timestamp,
+            )?;
             Ok(fee_token_cost > remaining)
         })
         .unwrap_or_default()
@@ -1257,16 +1266,16 @@ fn get_recipient_policy_ids(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transaction::KeychainSubject;
+    use crate::{test_utils::MockProviderStorageExt, transaction::KeychainSubject};
     use alloy_primitives::{U256, address};
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_storage_api::StateProviderFactory;
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::ITIP403Registry;
     use tempo_precompiles::{
-        ACCOUNT_KEYCHAIN_ADDRESS, TIP403_REGISTRY_ADDRESS,
-        account_keychain::{AccountKeychain, AuthorizedKey},
+        account_keychain::{AccountKeychain, AuthorizedKey, SpendingLimitState},
         tip20::slots as tip20_slots,
-        tip403_registry::PolicyData,
+        tip403_registry::{CompoundPolicyData, PolicyData, TIP403Registry},
     };
 
     fn provider_with_spending_limit(
@@ -1275,32 +1284,44 @@ mod tests {
         fee_token: Address,
         remaining_limit: alloy_primitives::U256,
     ) -> Box<dyn reth_storage_api::StateProvider> {
+        provider_with_spending_limit_state(
+            account,
+            key_id,
+            fee_token,
+            SpendingLimitState {
+                remaining: remaining_limit,
+                ..Default::default()
+            },
+            TempoHardfork::default(),
+        )
+    }
+
+    fn provider_with_spending_limit_state(
+        account: Address,
+        key_id: Address,
+        fee_token: Address,
+        limit_state: SpendingLimitState,
+        setup_spec: TempoHardfork,
+    ) -> Box<dyn reth_storage_api::StateProvider> {
         let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
             tempo_chainspec::spec::MODERATO.clone(),
         ));
 
-        let keychain = AccountKeychain::new();
-
         // Write AuthorizedKey with enforce_limits=true
-        let key_slot = keychain.keys[account][key_id].base_slot();
-        let authorized_key = AuthorizedKey {
-            signature_type: 0,
-            expiry: u64::MAX,
-            enforce_limits: true,
-            is_revoked: false,
-        }
-        .encode_to_slot();
-
-        let limit_key = AccountKeychain::spending_limit_key(account, key_id);
-        let limit_slot = keychain.spending_limits[limit_key][fee_token].slot();
-
-        provider.add_account(
-            ACCOUNT_KEYCHAIN_ADDRESS,
-            ExtendedAccount::new(0, alloy_primitives::U256::ZERO).extend_storage([
-                (key_slot.into(), authorized_key),
-                (limit_slot.into(), remaining_limit),
-            ]),
-        );
+        provider
+            .setup_storage(setup_spec, || {
+                let mut keychain = AccountKeychain::new();
+                keychain.keys[account][key_id].write(AuthorizedKey {
+                    signature_type: 0,
+                    expiry: u64::MAX,
+                    enforce_limits: true,
+                    is_revoked: false,
+                })?;
+                let limit_key = AccountKeychain::spending_limit_key(account, key_id);
+                keychain.spending_limits[limit_key][fee_token].write(limit_state)?;
+                Ok::<(), tempo_precompiles::error::TempoPrecompileError>(())
+            })
+            .unwrap();
 
         provider.latest().unwrap()
     }
@@ -1331,26 +1352,24 @@ mod tests {
         );
 
         // Set up TIP403 registry with compound policy pointing to sub-policies
-        let registry = TIP403Registry::new();
-        let policy_data = PolicyData {
-            policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
-            admin: Address::ZERO,
-        };
-        let base_slot = registry.policy_records[compound_policy_id].base.base_slot();
-        let compound_slot = registry.policy_records[compound_policy_id]
-            .compound
-            .base_slot();
-        // CompoundPolicyData: 3 u64s packed into one slot
-        let compound_encoded =
-            U256::from(sender_sub_policy) | (U256::from(recipient_sub_policy) << 64);
-
-        provider.add_account(
-            TIP403_REGISTRY_ADDRESS,
-            ExtendedAccount::new(0, U256::ZERO).extend_storage([
-                (base_slot.into(), policy_data.encode_to_slot()),
-                (compound_slot.into(), compound_encoded),
-            ]),
-        );
+        provider
+            .setup_storage(TempoHardfork::default(), || {
+                let mut registry = TIP403Registry::new();
+                registry.policy_records[compound_policy_id]
+                    .base
+                    .write(PolicyData {
+                        policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
+                        admin: Address::ZERO,
+                    })?;
+                registry.policy_records[compound_policy_id]
+                    .compound
+                    .write(CompoundPolicyData {
+                        sender_policy_id: sender_sub_policy,
+                        recipient_policy_id: recipient_sub_policy,
+                        mint_recipient_policy_id: 0,
+                    })
+            })
+            .unwrap();
 
         let mut state = provider.latest().unwrap();
         let mut cache: AddressMap<Vec<u64>> = AddressMap::default();
@@ -1392,25 +1411,24 @@ mod tests {
             )]),
         );
 
-        let registry = TIP403Registry::new();
-        let policy_data = PolicyData {
-            policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
-            admin: Address::ZERO,
-        };
-        let base_slot = registry.policy_records[compound_policy_id].base.base_slot();
-        let compound_slot = registry.policy_records[compound_policy_id]
-            .compound
-            .base_slot();
-        let compound_encoded =
-            U256::from(sender_sub_policy) | (U256::from(recipient_sub_policy) << 64);
-
-        provider.add_account(
-            TIP403_REGISTRY_ADDRESS,
-            ExtendedAccount::new(0, U256::ZERO).extend_storage([
-                (base_slot.into(), policy_data.encode_to_slot()),
-                (compound_slot.into(), compound_encoded),
-            ]),
-        );
+        provider
+            .setup_storage(TempoHardfork::default(), || {
+                let mut registry = TIP403Registry::new();
+                registry.policy_records[compound_policy_id]
+                    .base
+                    .write(PolicyData {
+                        policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
+                        admin: Address::ZERO,
+                    })?;
+                registry.policy_records[compound_policy_id]
+                    .compound
+                    .write(CompoundPolicyData {
+                        sender_policy_id: sender_sub_policy,
+                        recipient_policy_id: recipient_sub_policy,
+                        mint_recipient_policy_id: 0,
+                    })
+            })
+            .unwrap();
 
         let mut state = provider.latest().unwrap();
         let mut cache: AddressMap<Vec<u64>> = AddressMap::default();
@@ -1451,26 +1469,24 @@ mod tests {
             )]),
         );
 
-        let registry = TIP403Registry::new();
-        let policy_data = PolicyData {
-            policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
-            admin: Address::ZERO,
-        };
-        let base_slot = registry.policy_records[compound_policy_id].base.base_slot();
-        let compound_slot = registry.policy_records[compound_policy_id]
-            .compound
-            .base_slot();
-        let compound_encoded = U256::from(sender_sub)
-            | (U256::from(recipient_sub) << 64)
-            | (U256::from(mint_recipient_sub) << 128);
-
-        provider.add_account(
-            TIP403_REGISTRY_ADDRESS,
-            ExtendedAccount::new(0, U256::ZERO).extend_storage([
-                (base_slot.into(), policy_data.encode_to_slot()),
-                (compound_slot.into(), compound_encoded),
-            ]),
-        );
+        provider
+            .setup_storage(TempoHardfork::default(), || {
+                let mut registry = TIP403Registry::new();
+                registry.policy_records[compound_policy_id]
+                    .base
+                    .write(PolicyData {
+                        policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
+                        admin: Address::ZERO,
+                    })?;
+                registry.policy_records[compound_policy_id]
+                    .compound
+                    .write(CompoundPolicyData {
+                        sender_policy_id: sender_sub,
+                        recipient_policy_id: recipient_sub,
+                        mint_recipient_policy_id: mint_recipient_sub,
+                    })
+            })
+            .unwrap();
 
         let mut state = provider.latest().unwrap();
         let mut cache: AddressMap<Vec<u64>> = AddressMap::default();
@@ -1507,24 +1523,24 @@ mod tests {
             )]),
         );
 
-        let registry = TIP403Registry::new();
-        let policy_data = PolicyData {
-            policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
-            admin: Address::ZERO,
-        };
-        let base_slot = registry.policy_records[compound_policy_id].base.base_slot();
-        let compound_slot = registry.policy_records[compound_policy_id]
-            .compound
-            .base_slot();
-        let compound_encoded = U256::from(sender_sub) | (U256::from(recipient_sub) << 64);
-
-        provider.add_account(
-            TIP403_REGISTRY_ADDRESS,
-            ExtendedAccount::new(0, U256::ZERO).extend_storage([
-                (base_slot.into(), policy_data.encode_to_slot()),
-                (compound_slot.into(), compound_encoded),
-            ]),
-        );
+        provider
+            .setup_storage(TempoHardfork::default(), || {
+                let mut registry = TIP403Registry::new();
+                registry.policy_records[compound_policy_id]
+                    .base
+                    .write(PolicyData {
+                        policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
+                        admin: Address::ZERO,
+                    })?;
+                registry.policy_records[compound_policy_id]
+                    .compound
+                    .write(CompoundPolicyData {
+                        sender_policy_id: sender_sub,
+                        recipient_policy_id: recipient_sub,
+                        mint_recipient_policy_id: 0,
+                    })
+            })
+            .unwrap();
 
         let mut state = provider.latest().unwrap();
         let ids = get_recipient_policy_ids(&mut state, fee_token, TempoHardfork::default())
@@ -1564,18 +1580,17 @@ mod tests {
             )]),
         );
 
-        let registry = TIP403Registry::new();
-        let policy_data = PolicyData {
-            policy_type: ITIP403Registry::PolicyType::BLACKLIST as u8,
-            admin: Address::ZERO,
-        };
-        let base_slot = registry.policy_records[simple_policy_id].base.base_slot();
-
-        provider.add_account(
-            TIP403_REGISTRY_ADDRESS,
-            ExtendedAccount::new(0, U256::ZERO)
-                .extend_storage([(base_slot.into(), policy_data.encode_to_slot())]),
-        );
+        provider
+            .setup_storage(TempoHardfork::default(), || {
+                let mut registry = TIP403Registry::new();
+                registry.policy_records[simple_policy_id]
+                    .base
+                    .write(PolicyData {
+                        policy_type: ITIP403Registry::PolicyType::BLACKLIST as u8,
+                        admin: Address::ZERO,
+                    })
+            })
+            .unwrap();
 
         let mut state = provider.latest().unwrap();
         let ids = get_recipient_policy_ids(&mut state, fee_token, TempoHardfork::default())
@@ -1605,7 +1620,9 @@ mod tests {
         assert!(exceeds_spending_limit(
             &mut state,
             &subject,
-            alloy_primitives::U256::from(200)
+            alloy_primitives::U256::from(200),
+            0,
+            TempoHardfork::default(),
         ));
     }
 
@@ -1630,7 +1647,9 @@ mod tests {
         assert!(!exceeds_spending_limit(
             &mut state,
             &subject,
-            alloy_primitives::U256::from(200)
+            alloy_primitives::U256::from(200),
+            0,
+            TempoHardfork::default(),
         ));
     }
 
@@ -1649,25 +1668,23 @@ mod tests {
         let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
             tempo_chainspec::spec::MODERATO.clone(),
         ));
-        let key_slot = AccountKeychain::new().keys[account][key_id].base_slot();
-        let authorized_key = AuthorizedKey {
-            signature_type: 0,
-            expiry: u64::MAX,
-            enforce_limits: true,
-            is_revoked: false,
-        }
-        .encode_to_slot();
-        provider.add_account(
-            ACCOUNT_KEYCHAIN_ADDRESS,
-            ExtendedAccount::new(0, alloy_primitives::U256::ZERO)
-                .extend_storage([(key_slot.into(), authorized_key)]),
-        );
-        let mut state = provider.latest().unwrap();
+        provider
+            .setup_storage(TempoHardfork::default(), || {
+                AccountKeychain::new().keys[account][key_id].write(AuthorizedKey {
+                    signature_type: 0,
+                    expiry: u64::MAX,
+                    enforce_limits: true,
+                    is_revoked: false,
+                })
+            })
+            .unwrap();
 
         assert!(exceeds_spending_limit(
-            &mut state,
+            &mut provider.latest().unwrap(),
             &subject,
-            alloy_primitives::U256::from(1)
+            alloy_primitives::U256::from(1),
+            0,
+            TempoHardfork::default(),
         ));
     }
 
@@ -1686,25 +1703,63 @@ mod tests {
         let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
             tempo_chainspec::spec::MODERATO.clone(),
         ));
-        let key_slot = AccountKeychain::new().keys[account][key_id].base_slot();
-        let authorized_key = AuthorizedKey {
-            signature_type: 0,
-            expiry: u64::MAX,
-            enforce_limits: false,
-            is_revoked: false,
-        }
-        .encode_to_slot();
-        provider.add_account(
-            ACCOUNT_KEYCHAIN_ADDRESS,
-            ExtendedAccount::new(0, alloy_primitives::U256::ZERO)
-                .extend_storage([(key_slot.into(), authorized_key)]),
+        provider
+            .setup_storage(TempoHardfork::default(), || {
+                AccountKeychain::new().keys[account][key_id].write(AuthorizedKey {
+                    signature_type: 0,
+                    expiry: u64::MAX,
+                    enforce_limits: false,
+                    is_revoked: false,
+                })
+            })
+            .unwrap();
+
+        assert!(!exceeds_spending_limit(
+            &mut provider.latest().unwrap(),
+            &subject,
+            alloy_primitives::U256::from(1),
+            0,
+            TempoHardfork::default(),
+        ));
+    }
+
+    #[test]
+    fn exceeds_spending_limit_uses_period_reset_after_rollover() {
+        let account = Address::random();
+        let key_id = Address::random();
+        let fee_token = Address::random();
+        let subject = KeychainSubject {
+            account,
+            key_id,
+            fee_token,
+        };
+
+        let mut state = provider_with_spending_limit_state(
+            account,
+            key_id,
+            fee_token,
+            SpendingLimitState {
+                remaining: alloy_primitives::U256::ZERO,
+                max: 100,
+                period: 60,
+                period_end: 10,
+            },
+            TempoHardfork::T3,
         );
-        let mut state = provider.latest().unwrap();
 
         assert!(!exceeds_spending_limit(
             &mut state,
             &subject,
-            alloy_primitives::U256::from(1)
+            alloy_primitives::U256::from(50),
+            10,
+            TempoHardfork::T3,
+        ));
+        assert!(exceeds_spending_limit(
+            &mut state,
+            &subject,
+            alloy_primitives::U256::from(150),
+            10,
+            TempoHardfork::T3,
         ));
     }
 }

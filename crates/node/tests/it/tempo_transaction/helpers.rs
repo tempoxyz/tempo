@@ -189,21 +189,26 @@ pub(crate) fn create_signed_key_authorization(
     } else {
         Some(
             (0..num_limits)
-                .map(|_| TokenLimit {
-                    token: Address::ZERO,
-                    limit: U256::ZERO,
+                .map(|i| {
+                    let mut token = [0u8; 20];
+                    token[12..].copy_from_slice(&((i as u64) + 1).to_be_bytes());
+
+                    TokenLimit {
+                        token: Address::from(token),
+                        limit: U256::ZERO,
+                        period: 0,
+                    }
                 })
                 .collect(),
         )
     };
 
-    let authorization = KeyAuthorization {
+    let mut authorization = KeyAuthorization::unrestricted(
         chain_id, // Must match chain_id (T1C rejects wildcard 0)
         key_type,
-        key_id: Address::random(), // Random key being authorized
-        expiry: None,              // Never expires
-        limits,
-    };
+        Address::random(), // Random key being authorized
+    );
+    authorization.limits = limits;
 
     // Sign the key authorization
     let sig_hash = authorization.signature_hash();
@@ -211,10 +216,7 @@ pub(crate) fn create_signed_key_authorization(
         .sign_hash_sync(&sig_hash)
         .expect("signing should succeed");
 
-    SignedKeyAuthorization {
-        authorization,
-        signature: PrimitiveSignature::Secp256k1(signature),
-    }
+    authorization.into_signed(PrimitiveSignature::Secp256k1(signature))
 }
 
 /// Helper function to compute authorization signature hash (EIP-7702)
@@ -305,13 +307,9 @@ pub(crate) fn create_key_authorization(
     // Infer key_type from the access key signature
     let key_type = access_key_signature.signature_type();
 
-    let key_auth = KeyAuthorization {
-        chain_id,
-        key_type,
-        key_id: access_key_addr,
-        expiry,
-        limits: spending_limits,
-    };
+    let mut key_auth = KeyAuthorization::unrestricted(chain_id, key_type, access_key_addr);
+    key_auth.expiry = expiry;
+    key_auth.limits = spending_limits;
 
     // Root key signs the authorization
     let root_auth_signature = root_signer.sign_hash_sync(&key_auth.signature_hash())?;
@@ -383,7 +381,7 @@ pub(super) fn sign_p256_primitive(
 
     Ok(PrimitiveSignature::P256(P256SignatureWithPreHash {
         r: B256::from_slice(&sig_bytes[0..32]),
-        s: normalize_p256_s(&sig_bytes[32..64]),
+        s: normalize_p256_s(&sig_bytes[32..64]).expect("p256 crate produces valid s"),
         pub_key_x,
         pub_key_y,
         pre_hash: true,
@@ -495,7 +493,7 @@ pub(super) fn sign_webauthn_primitive(
     Ok(PrimitiveSignature::WebAuthn(WebAuthnSignature {
         webauthn_data: Bytes::from(webauthn_data),
         r: B256::from_slice(&sig_bytes[0..32]),
-        s: normalize_p256_s(&sig_bytes[32..64]),
+        s: normalize_p256_s(&sig_bytes[32..64]).expect("p256 crate produces valid s"),
         pub_key_x,
         pub_key_y,
     }))
@@ -585,6 +583,7 @@ pub(crate) fn create_default_token_limit(
     vec![TokenLimit {
         token: DEFAULT_FEE_TOKEN,
         limit: funded / U256::from(2),
+        period: 0,
     }]
 }
 

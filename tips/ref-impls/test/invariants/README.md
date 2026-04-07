@@ -543,3 +543,62 @@ TIP20 is the Tempo token standard that extends ERC-20 with transfer policies, me
 - **TEMPO-TIP33**: A permit signature can only be used once (enforced by nonce increment).
 - **TEMPO-TIP34**: A permit with a deadline in the past must always revert.
 - **TEMPO-TIP35**: The recovered signer from a valid permit signature must exactly match the `owner` parameter.
+
+## TIP-1020 Signature Verification Precompile
+
+The SignatureVerifier precompile (`0x5165300000000000000000000000000000000000`) verifies Tempo signature types (secp256k1, P256, WebAuthn) onchain via `recover()` and `verify()` functions.
+
+### Differential Verification Invariants
+
+- **SV1**: Transaction-equivalent verification - `recover()` must match `ecrecover` for secp256k1, return the correct P256/WebAuthn-derived address, and `verify()` must return true for correct signers and false for wrong signers. Both raw `v` (0/1) and Ethereum-style `v` (27/28) must be accepted.
+
+### Malleability Resistance Invariants
+
+- **SV2**: P256 and ECDSA signature malleability resistance - signatures with high-s values (`s > n/2`) must be rejected for secp256k1, P256, and WebAuthn (inner P256 signature). Both `recover()` and `verify()` must revert.
+
+### Size Enforcement Invariants
+
+- **SV3**: Signature size enforcement - the precompile must enforce per-type size limits (65 bytes secp256k1, 130 bytes P256, 129–2049 bytes WebAuthn) before any decoding. Wrong-sized inputs and zero-length inputs must revert via both `recover()` and `verify()`.
+
+### Failure Handling Invariants
+
+- **SV4**: Revert on failure - structurally valid but cryptographically invalid (garbage) signatures must cause both `recover()` and `verify()` to revert for all signature types (secp256k1, P256, WebAuthn). Additionally, when `ecrecover` returns `address(0)` for a secp256k1 input, the precompile must revert rather than return a zero address. All reverts must use one of the two defined errors: `InvalidFormat()` (encoding/size issues) or `InvalidSignature()` (cryptographic verification failure).
+
+### Gas Schedule Invariants
+
+- **SV5**: Gas schedule consistency - gas charged must follow the spec (secp256k1: 3,000, P256: 8,000, WebAuthn: 8,000 + input cost). **Not covered in this invariant suite; requires dedicated low-level gas tests.**
+
+### Type Disambiguation Invariants
+
+- **SV6**: Signature type disambiguation - exactly 65 bytes is secp256k1 (no prefix). Non-65-byte signatures with unknown type prefixes must revert via both `recover()` and `verify()`.
+
+### Keychain Rejection Invariants
+
+- **SV7**: Keychain signature rejection - signatures with `0x03` (Keychain secp256k1) or `0x04` (Keychain P256) prefixes must be rejected, even when containing valid-looking inner signatures. Both `recover()` and `verify()` must revert. The precompile may return either `InvalidFormat()` (when the keychain prefix is rejected at the parsing layer as an unsupported type) or `InvalidSignature()` (if parsing succeeds but verification rejects it).
+
+## TIP-1022 Virtual Addresses
+
+### Registry & Address Invariants
+
+- **TEMPO-VA1**: Registration determinism - each fixed `(master, salt)` fixture registers exactly the `masterId` implied by `bytes4(keccak256(abi.encodePacked(master, salt))[4:8])`.
+- **TEMPO-VA2**: Master ID uniqueness - no two registered fixtures share a `masterId`.
+- **TEMPO-VA3**: Decode round-trip - `decodeVirtualAddress(makeVirtualAddress(masterId, userTag))` returns the original `masterId` and `userTag`.
+- **TEMPO-VA4**: Registered resolution - `resolveRecipient(virtual)` and `resolveVirtualAddress(virtual)` both return the registered master for every tracked alias.
+- **TEMPO-VA5**: Non-virtual passthrough - `resolveRecipient(nonVirtual)` returns the literal address unchanged.
+
+### TIP-20 Forwarding Invariants
+
+- **TEMPO-VA6**: Unregistered resolution is atomic - calls to unregistered virtual aliases revert with no balance, allowance, supply, or event changes.
+- **TEMPO-VA7**: Transfer forwarding exactness - `transfer` and `transferWithMemo` debit the sender exactly once and credit the resolved master exactly once.
+- **TEMPO-VA8**: Allowance forwarding exactness - `transferFrom` and `transferFromWithMemo` apply forwarding without changing allowance semantics.
+- **TEMPO-VA9**: Mint forwarding exactness - `mint` and `mintWithMemo` credit only the resolved master and increase total supply by exactly `amount`.
+- **TEMPO-VA10**: Zero-balance invariant - `balanceOf(virtual) == 0` for every tracked alias after every run.
+- **TEMPO-VA11**: Two-hop transfer events - plain transfer paths emit `Transfer(sender, virtual, amount)` followed by `Transfer(virtual, master, amount)`.
+- **TEMPO-VA12**: Memo and mint event attribution - memo events and `Mint` events use the virtual alias as the recipient-facing address, with the forwarding hop emitted last.
+- **TEMPO-VA13**: Self-forward neutrality - master-to-own-alias transfers have zero net balance effect on the master while still emitting both hops.
+
+### Policy & Reward Invariants
+
+- **TEMPO-VA14**: Policy-on-master semantics - recipient and mint-recipient authorization is evaluated on the resolved master, not the alias.
+- **TEMPO-VA15**: Policy-operation rejection - TIP-403 configuration APIs reject virtual aliases as literal policy members.
+- **TEMPO-VA16**: Reward-recipient rejection - `setRewardRecipient` rejects virtual aliases.

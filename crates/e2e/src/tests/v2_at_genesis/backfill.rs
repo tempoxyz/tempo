@@ -10,8 +10,8 @@ use reth_ethereum::storage::BlockNumReader;
 use reth_node_metrics::recorder::install_prometheus_recorder;
 
 use crate::{
-    CONSENSUS_NODE_PREFIX, Setup, get_pipeline_runs, setup_validators,
-    tests::v2_at_genesis::assert_no_v1,
+    CONSENSUS_NODE_PREFIX, Setup, connect_execution_peers, connect_execution_to_peers,
+    get_pipeline_runs, setup_validators, tests::v2_at_genesis::assert_no_v1,
 };
 
 #[test_traced]
@@ -71,10 +71,7 @@ impl AssertJoinsLate {
         let _ = tempo_eyre::install();
         let metrics_recorder = install_prometheus_recorder();
 
-        let setup = Setup::new()
-            .epoch_length(100)
-            .t2_time(0)
-            .connect_execution_layer_nodes(should_pipeline_sync);
+        let setup = Setup::new().epoch_length(100).t2_time(0);
 
         Runner::from(Config::default().with_seed(setup.seed)).start(|mut context| async move {
             let (mut nodes, _execution_runtime) =
@@ -83,6 +80,9 @@ impl AssertJoinsLate {
             // Start all nodes except the last one
             let mut last = nodes.pop().unwrap();
             join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
+            if should_pipeline_sync {
+                connect_execution_peers(&nodes).await;
+            }
 
             // Wait for chain to advance before starting the last node
             while nodes[0].execution_provider().last_block_number().unwrap() < blocks_before_join {
@@ -90,6 +90,10 @@ impl AssertJoinsLate {
             }
 
             last.start(&context).await;
+            if should_pipeline_sync {
+                connect_execution_to_peers(&last, &nodes).await;
+            }
+
             assert_eq!(last.execution_provider().last_block_number().unwrap(), 0);
 
             tracing::debug!("last node started");

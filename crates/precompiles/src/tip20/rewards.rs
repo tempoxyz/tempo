@@ -7,9 +7,10 @@
 //! [Reward system]: <https://docs.tempo.xyz/protocol/tip20-rewards/overview>
 
 use crate::{
+    address_registry,
     error::{Result, TempoPrecompileError},
     storage::Handler,
-    tip20::TIP20Token,
+    tip20::{Recipient, TIP20Token},
 };
 use alloy::primitives::{Address, U256, uint};
 use tempo_contracts::precompiles::{ITIP20, TIP20Error, TIP20Event};
@@ -45,7 +46,7 @@ impl TIP20Token {
         self.ensure_transfer_authorized(msg_sender, token_address)?;
         self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
-        self._transfer(msg_sender, token_address, call.amount)?;
+        self._transfer(msg_sender, &Recipient::direct(token_address), call.amount)?;
 
         let opted_in_supply = U256::from(self.get_opted_in_supply()?);
         if opted_in_supply.is_zero() {
@@ -63,7 +64,7 @@ impl TIP20Token {
             .ok_or(TempoPrecompileError::under_overflow())?;
         self.set_global_reward_per_token(new_rpt)?;
 
-        // Emit distributed reward event for immediate payout
+        // Emit distributed reward event (recipients claim accrued rewards separately)
         self.emit_event(TIP20Event::RewardDistributed(ITIP20::RewardDistributed {
             funder: msg_sender,
             amount: call.amount,
@@ -126,12 +127,19 @@ impl TIP20Token {
     /// # Errors
     /// - `Paused` — token transfers are currently paused
     /// - `PolicyForbids` — TIP-403 policy rejects the sender→recipient transfer authorization
+    /// - `InvalidRecipient` — TIP-1022 virtual addresses are rejected
     pub fn set_reward_recipient(
         &mut self,
         msg_sender: Address,
         call: ITIP20::setRewardRecipientCall,
     ) -> Result<()> {
         self.check_not_paused()?;
+
+        // TIP-1022: reject virtual addresses as reward recipients
+        if self.storage.spec().is_t3() && address_registry::is_virtual_address(call.recipient) {
+            return Err(TIP20Error::invalid_recipient().into());
+        }
+
         if call.recipient != Address::ZERO {
             self.ensure_transfer_authorized(msg_sender, call.recipient)?;
         }
@@ -177,8 +185,8 @@ impl TIP20Token {
 
     /// Claims accumulated rewards for a recipient.
     ///
-    /// This function allows a reward recipient to claim their accumulated rewards
-    /// and receive them as token transfers to their own balance.
+    /// Pays out the lesser of the accrued reward balance and the contract's token
+    /// balance. Any remainder stays stored for future claims.
     ///
     /// # Errors
     /// - `Paused` — token transfers are currently paused
@@ -318,8 +326,8 @@ impl TIP20Token {
     /// 1. The stored reward balance from previous updates
     /// 2. Newly accrued rewards based on the current global reward per token
     ///
-    /// For accounts that have delegated their rewards to another recipient, this returns 0
-    /// since their rewards accrue to their delegate instead.
+    /// For accounts that have delegated their rewards to another recipient, only the stored
+    /// reward balance is returned (new accrual is skipped since it goes to the delegate).
     pub fn get_pending_rewards(&self, account: Address) -> Result<u128> {
         let info = self.user_reward_info[account].read()?;
 
@@ -378,12 +386,14 @@ impl From<UserRewardInfo> for ITIP20::UserRewardInfo {
 mod tests {
     use super::*;
     use crate::{
+        address_registry::{MasterId, UserTag},
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::TIP20Setup,
+        test_util::{TIP20Setup, make_virtual_address},
         tip403_registry::TIP403Registry,
     };
     use alloy::primitives::{Address, U256};
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{ITIP403Registry, TIP20Error};
 
     #[test]
@@ -715,5 +725,43 @@ mod tests {
 
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_set_reward_recipient_rejects_virtual_on_t3() -> eyre::Result<()> {
+        let virtual_addr = make_virtual_address(MasterId::ZERO, UserTag::ZERO);
+
+        for hardfork in [TempoHardfork::T2, TempoHardfork::T3] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
+            let admin = Address::random();
+            let alice = Address::random();
+
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("Test", "TST", admin)
+                    .with_issuer(admin)
+                    .with_mint(alice, U256::from(1000))
+                    .apply()?;
+
+                let result = token.set_reward_recipient(
+                    alice,
+                    ITIP20::setRewardRecipientCall {
+                        recipient: virtual_addr,
+                    },
+                );
+
+                if hardfork.is_t3() {
+                    assert!(matches!(
+                        result.unwrap_err(),
+                        TempoPrecompileError::TIP20(TIP20Error::InvalidRecipient(_))
+                    ));
+                } else {
+                    // Pre-T3: virtual addresses are accepted
+                    assert!(result.is_ok());
+                }
+
+                Ok::<_, TempoPrecompileError>(())
+            })?;
+        }
+        Ok(())
     }
 }

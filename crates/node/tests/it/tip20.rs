@@ -1,13 +1,17 @@
 use alloy::{
     primitives::{Address, FixedBytes, U256},
-    providers::ProviderBuilder,
+    providers::{Provider, ProviderBuilder},
     signers::local::MnemonicBuilder,
     sol_types::SolEvent,
+    transports::http::reqwest::Url,
 };
 use futures::future::try_join_all;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-use tempo_contracts::precompiles::{ITIP20, ITIP403Registry, TIP20Error};
-use tempo_precompiles::TIP403_REGISTRY_ADDRESS;
+use tempo_contracts::precompiles::{IAddressRegistry, ITIP20, ITIP403Registry, TIP20Error};
+use tempo_precompiles::{
+    ADDRESS_REGISTRY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    test_util::{VIRTUAL_SALT, make_virtual_address},
+};
 
 use crate::utils::{TestNodeBuilder, await_receipts, setup_test_token};
 
@@ -927,6 +931,250 @@ async fn test_tip20_pause_blocks_fee_collection() -> eyre::Result<()> {
     assert_eq!(
         balance_after_failed, balance_after_pause_tx,
         "Balance should be unchanged after failed tx"
+    );
+
+    Ok(())
+}
+
+/// Deploys a token, registers a virtual master, and returns all handles.
+async fn setup_virtual_test() -> eyre::Result<(
+    crate::utils::HttpOnlySetup,
+    Url,
+    Address,
+    ITIP20::ITIP20Instance<impl Provider + Clone>,
+    Address,
+)> {
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let http_url = setup.http_url.clone();
+
+    let admin_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let admin = admin_wallet.address();
+    let admin_provider = ProviderBuilder::new()
+        .wallet(admin_wallet)
+        .connect_http(http_url.clone());
+
+    let token = setup_test_token(admin_provider.clone(), admin).await?;
+    let registry = IAddressRegistry::new(ADDRESS_REGISTRY_ADDRESS, admin_provider);
+
+    let register_receipt = registry
+        .registerVirtualMaster(VIRTUAL_SALT.into())
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let master_event = register_receipt
+        .logs()
+        .iter()
+        .filter_map(|log| IAddressRegistry::MasterRegistered::decode_log(&log.inner).ok())
+        .next()
+        .expect("MasterRegistered event should be emitted");
+    assert_eq!(master_event.masterAddress, admin);
+
+    let virtual_addr =
+        make_virtual_address(master_event.masterId, FixedBytes::from([1, 2, 3, 4, 5, 6]));
+
+    Ok((setup, http_url, admin, token, virtual_addr))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip20_virtual_mint() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+    let (_setup, _http_url, admin, token, virtual_addr) = setup_virtual_test().await?;
+
+    let mint_amount = U256::from(5000);
+    let mint_receipt = token
+        .mint(virtual_addr, mint_amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(mint_receipt.status());
+
+    assert_eq!(token.balanceOf(admin).call().await?, mint_amount);
+    assert_eq!(token.balanceOf(virtual_addr).call().await?, U256::ZERO);
+
+    // Verify two-hop Transfer events: (0→virtual) then (virtual→master)
+    let token_addr = *token.address();
+    let transfers: Vec<_> = mint_receipt
+        .logs()
+        .iter()
+        .filter(|log| log.address() == token_addr)
+        .filter_map(|log| ITIP20::Transfer::decode_log(&log.inner).ok())
+        .collect();
+    assert_eq!(transfers.len(), 2);
+    assert_eq!(
+        transfers[0].data,
+        ITIP20::Transfer {
+            from: Address::ZERO,
+            to: virtual_addr,
+            amount: mint_amount
+        }
+    );
+    assert_eq!(
+        transfers[1].data,
+        ITIP20::Transfer {
+            from: virtual_addr,
+            to: admin,
+            amount: mint_amount
+        }
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip20_virtual_transfer() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+    let (_setup, http_url, admin, token, virtual_addr) = setup_virtual_test().await?;
+
+    let sender_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+        .index(1)?
+        .build()?;
+    let sender = sender_wallet.address();
+    let sender_provider = ProviderBuilder::new()
+        .wallet(sender_wallet)
+        .connect_http(http_url);
+
+    let amount = U256::from(1000);
+    token
+        .mint(sender, amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let admin_balance_before = token.balanceOf(admin).call().await?;
+    let sender_token = ITIP20::new(*token.address(), sender_provider);
+    let receipt = sender_token
+        .transfer(virtual_addr, amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(receipt.status());
+
+    assert_eq!(token.balanceOf(sender).call().await?, U256::ZERO);
+    assert_eq!(
+        token.balanceOf(admin).call().await?,
+        admin_balance_before + amount
+    );
+    assert_eq!(token.balanceOf(virtual_addr).call().await?, U256::ZERO);
+
+    let token_addr = *token.address();
+    let transfers: Vec<_> = receipt
+        .logs()
+        .iter()
+        .filter(|log| log.address() == token_addr)
+        .filter_map(|log| ITIP20::Transfer::decode_log(&log.inner).ok())
+        .collect();
+    assert_eq!(transfers.len(), 2);
+    assert_eq!(
+        transfers[0].data,
+        ITIP20::Transfer {
+            from: sender,
+            to: virtual_addr,
+            amount
+        }
+    );
+    assert_eq!(
+        transfers[1].data,
+        ITIP20::Transfer {
+            from: virtual_addr,
+            to: admin,
+            amount
+        }
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip20_virtual_transfer_from() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+    let (_setup, http_url, admin, token, virtual_addr) = setup_virtual_test().await?;
+
+    let sender_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+        .index(1)?
+        .build()?;
+    let sender = sender_wallet.address();
+    let sender_provider = ProviderBuilder::new()
+        .wallet(sender_wallet)
+        .connect_http(http_url);
+
+    let amount = U256::from(500);
+    token
+        .mint(sender, amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let sender_token = ITIP20::new(*token.address(), sender_provider);
+    sender_token
+        .approve(admin, amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let admin_balance_before = token.balanceOf(admin).call().await?;
+    let receipt = token
+        .transferFrom(sender, virtual_addr, amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(receipt.status());
+
+    assert_eq!(token.balanceOf(sender).call().await?, U256::ZERO);
+    assert_eq!(
+        token.balanceOf(admin).call().await?,
+        admin_balance_before + amount
+    );
+    assert_eq!(token.balanceOf(virtual_addr).call().await?, U256::ZERO);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip20_registry_deployed_at_t3_activation() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    // Set t3Time into the future and remove the registry from genesis alloc
+    // so the 0xEF marker is only deployed by the block executor at T3.
+    let genesis_str = include_str!("../assets/test-genesis.json");
+    let mut genesis: serde_json::Value = serde_json::from_str(genesis_str)?;
+    genesis["config"].as_object_mut().unwrap().insert(
+        "t3Time".to_string(),
+        serde_json::Value::Number(serde_json::Number::from(2u64)),
+    );
+    let registry_key = format!("{ADDRESS_REGISTRY_ADDRESS:#x}");
+    genesis["alloc"]
+        .as_object_mut()
+        .unwrap()
+        .remove(&registry_key);
+
+    let mut setup = TestNodeBuilder::new()
+        .with_genesis(serde_json::to_string(&genesis)?)
+        .build_with_node_access()
+        .await?;
+    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
+
+    // Pre-T3: registry should have no code.
+    let code = provider.get_code_at(ADDRESS_REGISTRY_ADDRESS).await?;
+    assert!(code.is_empty(), "registry should have no code before T3");
+
+    // Advance past t3Time to trigger T3 activation.
+    setup.node.advance_block().await?;
+    setup.node.advance_block().await?;
+
+    // Post-T3: registry should have 0xEF marker bytecode.
+    let code = provider.get_code_at(ADDRESS_REGISTRY_ADDRESS).await?;
+    assert_eq!(
+        code.as_ref(),
+        &[0xef],
+        "registry should have 0xEF marker after T3"
     );
 
     Ok(())
