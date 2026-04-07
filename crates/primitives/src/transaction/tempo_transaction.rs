@@ -2061,28 +2061,44 @@ mod tests {
 
     #[test]
     fn tempo_transaction_compact_roundtrip() {
+        use alloy_eips::eip2930::AccessListItem;
+
         let tx = TempoTransaction {
-            chain_id: 1,
-            fee_token: None,
+            chain_id: 42170,
+            fee_token: Some(address!("0x0000000000000000000000000000000000000abc")),
             max_priority_fee_per_gas: 1_000_000_000,
             max_fee_per_gas: 50_000_000_000,
             gas_limit: 21000,
-            calls: vec![Call {
-                to: TxKind::Call(address!("0x0000000000000000000000000000000000000001")),
-                value: U256::from(1000u64),
-                input: Bytes::new(),
-            }],
-            access_list: AccessList::default(),
-            nonce_key: U256::ZERO,
+            calls: vec![
+                Call {
+                    to: TxKind::Call(address!("0x0000000000000000000000000000000000000001")),
+                    value: U256::from(1000u64),
+                    input: bytes!("cafe"),
+                },
+                Call {
+                    to: TxKind::Create,
+                    value: U256::ZERO,
+                    input: bytes!("6080604052"),
+                },
+            ],
+            access_list: AccessList(vec![AccessListItem {
+                address: address!("0x0000000000000000000000000000000000000001"),
+                storage_keys: vec![B256::ZERO],
+            }]),
+            nonce_key: U256::from(7u64),
             nonce: 42,
-            fee_payer_signature: None,
-            valid_before: None,
-            valid_after: None,
+            fee_payer_signature: Some(Signature::new(
+                U256::from(1u64),
+                U256::from(2u64),
+                false,
+            )),
+            valid_before: Some(1_700_001_000),
+            valid_after: Some(1_700_000_000),
             key_authorization: None,
             tempo_authorization_list: vec![],
         };
 
-        let expected = hex!("8114010200013b9aca000ba43b74005208011705000000000000000000000000000000000000000103e8002a00");
+        let expected = hex!("921409e200a4ba0000000000000000000000000000000000000abc3b9aca000ba43b74005208021905000000000000000000000000000000000000000103e8cafe0600608060405201350000000000000000000000000000000000000001010000000000000000000000000000000000000000000000000000000000000000072a0001000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000046553f4e8046553f10000");
 
         let mut buf = vec![];
         let len = tx.to_compact(&mut buf);
