@@ -34,7 +34,7 @@ pub struct TempoTransactionRequest {
     pub inner: TransactionRequest,
 
     /// Optional fee token preference
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub fee_token: Option<Address>,
 
     /// Optional nonce key for a 2D [`TempoTransaction`].
@@ -47,12 +47,12 @@ pub struct TempoTransactionRequest {
 
     /// Optional key type for gas estimation of Tempo transactions.
     /// Specifies the signature verification algorithm to calculate accurate gas costs.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub key_type: Option<SignatureType>,
 
     /// Optional key-specific data for gas estimation (e.g., webauthn authenticator data).
     /// Required when key_type is WebAuthn to calculate calldata gas costs.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub key_data: Option<Bytes>,
 
     /// Optional access key ID for gas estimation.

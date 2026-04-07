@@ -12,7 +12,6 @@ import { Vm } from "forge-std/Vm.sol";
 /// @title TIP-1022 Virtual Address Invariant Tests
 /// @notice Stateful invariant coverage for deterministic virtual-address forwarding fixtures
 /// @dev Tests TEMPO-VA1 through TEMPO-VA16 using fixed anvil masters and pre-mined salts
-/// forge-config: default.hardfork = "tempo:T3"
 contract VirtualAddressesInvariantTest is InvariantBaseTest {
 
     struct MasterFixture {

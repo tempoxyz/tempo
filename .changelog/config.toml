@@ -30,6 +30,7 @@ ignore = [
     "tempo-sidecar",
     "tempo-telemetry-util",
     "tempo-transaction-pool",
+    "tempo-validator-config",
     "tempo-xtask",
 ]
 
