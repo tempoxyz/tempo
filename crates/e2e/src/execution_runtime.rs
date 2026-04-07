@@ -270,6 +270,8 @@ pub struct ExecutionNodeConfig {
     pub validator_key: Option<B256>,
     /// Feed state handle for consensus RPC (if validator).
     pub feed_state: Option<FeedStateHandle>,
+    /// Share the engine's sparse trie pipeline with the payload builder.
+    pub share_sparse_trie_with_payload_builder: bool,
 }
 
 impl ExecutionNodeConfig {
@@ -283,6 +285,7 @@ impl ExecutionNodeConfig {
             secret_key: B256::random(),
             validator_key: None,
             feed_state: None,
+            share_sparse_trie_with_payload_builder: false,
         }
     }
 }
@@ -1143,6 +1146,12 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
     rocksdb: Option<RocksDBProvider>,
 ) -> eyre::Result<ExecutionNode> {
     println!("launching node at {}", datadir.as_ref().display());
+    let ExecutionNodeConfig {
+        secret_key,
+        validator_key,
+        feed_state,
+        share_sparse_trie_with_payload_builder,
+    } = config;
     let node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_rpc(
             RpcServerArgs::default()
@@ -1164,12 +1173,13 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
         .apply(|mut c| {
             c.network.discovery.disable_discovery = true;
             c.network = c.network.with_unused_ports();
-            c.network.p2p_secret_key_hex = Some(config.secret_key);
+            c.network.p2p_secret_key_hex = Some(secret_key);
+            c.engine.share_sparse_trie_with_payload_builder =
+                share_sparse_trie_with_payload_builder;
             c
         });
 
-    let tempo_node = TempoNode::default().with_validator_key(config.validator_key);
-    let feed_state = config.feed_state;
+    let tempo_node = TempoNode::default().with_validator_key(validator_key);
 
     let node_handle = if let Some(rocksdb) = rocksdb {
         NodeBuilder::new(node_config)
