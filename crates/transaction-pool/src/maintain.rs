@@ -5,12 +5,11 @@ use crate::{
     metrics::TempoPoolMaintenanceMetrics,
     paused::{PausedEntry, PausedFeeTokenPool},
     transaction::TempoPooledTransaction,
-    tt_2d_pool::AASequenceId,
 };
 use alloy_consensus::transaction::TxHashRef;
 use alloy_primitives::{
     Address, TxHash,
-    map::{AddressMap, B256Set, HashMap, HashSet},
+    map::{AddressMap, HashMap, HashSet},
 };
 use alloy_sol_types::SolEvent;
 use futures::StreamExt;
@@ -18,10 +17,9 @@ use reth_chainspec::ChainSpecProvider;
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain};
 use reth_storage_api::StateProviderFactory;
-use reth_transaction_pool::{PoolTransaction, TransactionOrigin, TransactionPool};
+use reth_transaction_pool::{PoolTransaction, TransactionPool};
 use std::{
     collections::{BTreeMap, btree_map::Entry},
-    sync::Arc,
     time::Instant,
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks, spec::TEMPO_T1_BASE_FEE};
@@ -508,61 +506,14 @@ where
             // Process all maintenance operations on new block commit or reorg
             Some(event) = chain_events.next() => {
                 let new = match event {
-                    CanonStateNotification::Reorg { old, new } => {
-                        // Handle reorg: identify orphaned AA 2D txs and affected nonce slots
-                        let (orphaned_txs, affected_seq_ids) =
-                            handle_reorg(old, new.clone(), |hash| pool.contains(hash));
-
-                        // Reset nonce state for affected 2D nonce slots from the new tip's state.
-                        // Necessary because state diffs only contain slots that changed in the new chain.
-                        if !affected_seq_ids.is_empty() {
-                            let new_tip_hash = new.tip().hash();
-                            if let Err(err) = pool.reset_2d_nonces_from_state(
-                                affected_seq_ids.into_iter().collect(),
-                                new_tip_hash,
-                            ) {
-                                error!(
-                                    target: "txpool",
-                                    ?err,
-                                    "Failed to reset 2D nonce state after reorg"
-                                );
-                            }
-                        }
-
-                        if !orphaned_txs.is_empty() {
-                            let count = orphaned_txs.len();
-                            debug!(
-                                target: "txpool",
-                                count,
-                                "Re-injecting orphaned AA 2D transactions after reorg"
-                            );
-
-                            let pool_clone = pool.clone();
-                            tokio::spawn(async move {
-                                let results = pool_clone
-                                    .add_transactions(TransactionOrigin::Local, orphaned_txs)
-                                    .await;
-                                let failed = results.iter().filter(|r| r.is_err()).count();
-                                if failed > 0 {
-                                    debug!(
-                                        target: "txpool",
-                                        failed,
-                                        "Some orphaned AA 2D transactions failed to re-inject"
-                                    );
-                                }
-                            });
-                        }
-
-                        // Update nonce state based on the new canonical chain
-                        pool.notify_aa_pool_on_state_updates(new.execution_outcome().state().state());
-
+                    CanonStateNotification::Reorg { old: _, new } => {
                         // Repopulate AMM liquidity cache from the new canonical chain
                         // to invalidate stale entries from orphaned blocks.
                         if let Err(err) = amm_cache.repopulate(pool.client()) {
                             error!(target: "txpool", ?err, "AMM liquidity cache repopulate after reorg failed");
                         }
 
-                        continue;
+                        new
                     }
                     CanonStateNotification::Commit { new } => new,
                 };
@@ -892,71 +843,13 @@ where
     count
 }
 
-/// Handles a reorg event by identifying orphaned AA 2D transactions from the old chain
-/// that are not in the new chain.
-///
-/// Returns:
-/// - Orphaned transactions to re-inject
-/// - Affected sequence IDs whose nonce state needs to be reset from the new tip's state
-pub fn handle_reorg<F>(
-    old_chain: Arc<Chain<TempoPrimitives>>,
-    new_chain: Arc<Chain<TempoPrimitives>>,
-    is_in_pool: F,
-) -> (Vec<TempoPooledTransaction>, HashSet<AASequenceId>)
-where
-    F: Fn(&TxHash) -> bool,
-{
-    // Get inner chain blocks for iteration
-    let (new_blocks, _) = new_chain.inner();
-    let (old_blocks, _) = old_chain.inner();
-
-    // Collect transaction hashes from the new chain to identify what's still mined
-    let new_mined_hashes: B256Set = new_blocks.transaction_hashes().collect();
-
-    let mut orphaned_txs = Vec::new();
-    let mut affected_seq_ids = HashSet::default();
-
-    // Find AA 2D transactions from the old chain that are NOT in the new chain
-    for tx in old_blocks.transactions_ecrecovered() {
-        // Skip if transaction is in the new chain
-        if new_mined_hashes.contains(tx.tx_hash()) {
-            continue;
-        }
-
-        let Some(aa_tx) = tx.as_aa() else {
-            continue;
-        };
-
-        // Only process 2D nonce transactions (nonce_key > 0)
-        if aa_tx.tx().nonce_key.is_zero() {
-            continue;
-        }
-
-        let seq_id = AASequenceId::new(tx.signer(), aa_tx.tx().nonce_key);
-
-        // Track all affected sequence IDs for nonce reset. We reset all orphaned seq_ids
-        // because tx presence in the new chain doesn't guarantee the nonce slot was modified.
-        affected_seq_ids.insert(seq_id);
-
-        let pooled_tx = TempoPooledTransaction::new(tx);
-        if is_in_pool(pooled_tx.hash()) {
-            continue;
-        }
-
-        orphaned_txs.push(pooled_tx);
-    }
-
-    (orphaned_txs, affected_seq_ids)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_utils::TxBuilder;
-    use alloy_primitives::{Address, TxHash, U256};
+    use alloy_primitives::{Address, TxHash};
     use reth_primitives_traits::RecoveredBlock;
-    use reth_transaction_pool::PoolTransaction;
-    use std::collections::HashSet;
+    use std::sync::Arc;
     use tempo_primitives::{Block, BlockBody, TempoHeader, TempoTxEnvelope};
 
     mod pending_staleness_tracker_tests {
@@ -1257,100 +1150,6 @@ mod tests {
     /// Helper to extract a TempoTxEnvelope from a TempoPooledTransaction.
     fn extract_envelope(tx: &crate::transaction::TempoPooledTransaction) -> TempoTxEnvelope {
         tx.inner().clone().into_inner()
-    }
-
-    /// Tests all reorg handling scenarios:
-    /// 1. AA 2D tx orphaned in reorg -> should be re-injected
-    /// 2. AA tx with nonce_key=0 -> should NOT be re-injected (handled by vanilla pool)
-    /// 3. EIP-1559 tx -> should NOT be re-injected (not AA)
-    /// 4. AA 2D tx in both old and new chain -> should NOT be re-injected
-    /// 5. AA 2D tx already in pool -> should NOT be re-injected
-    /// 6. All orphaned 2D seq_ids should be in affected_seq_ids (for nonce reset)
-    #[test]
-    fn handle_reorg_correctly_identifies_orphaned_aa_2d_transactions() {
-        let sender_2d = Address::random();
-
-        // AA 2D tx that will be orphaned (should be re-injected)
-        let tx_2d_orphaned = TxBuilder::aa(sender_2d).nonce_key(U256::from(1)).build();
-        let hash_2d_orphaned = *tx_2d_orphaned.hash();
-        let envelope_2d_orphaned = extract_envelope(&tx_2d_orphaned);
-
-        // AA 2D tx that will be re-included in new chain (should NOT be re-injected)
-        let tx_2d_reincluded = TxBuilder::aa(sender_2d).nonce_key(U256::from(2)).build();
-        let envelope_2d_reincluded = extract_envelope(&tx_2d_reincluded);
-
-        // AA 2D tx that's already in the pool (should NOT be re-injected)
-        let tx_2d_in_pool = TxBuilder::aa(sender_2d).nonce_key(U256::from(3)).build();
-        let hash_2d_in_pool = *tx_2d_in_pool.hash();
-        let envelope_2d_in_pool = extract_envelope(&tx_2d_in_pool);
-
-        // AA tx with nonce_key=0 (should NOT be re-injected - vanilla pool handles it)
-        let tx_non_2d = TxBuilder::aa(sender_2d).nonce_key(U256::ZERO).build();
-        let envelope_non_2d = extract_envelope(&tx_non_2d);
-
-        // EIP-1559 tx (should NOT be re-injected - not AA)
-        let tx_eip1559 = TxBuilder::eip1559(Address::random()).build();
-        let envelope_eip1559 = extract_envelope(&tx_eip1559);
-
-        // Create old chain with all 5 transactions
-        let old_block = create_block_with_txs(
-            1,
-            vec![
-                envelope_2d_orphaned,
-                envelope_2d_reincluded.clone(),
-                envelope_2d_in_pool,
-                envelope_non_2d,
-                envelope_eip1559,
-            ],
-            vec![sender_2d; 5],
-        );
-        let old_chain = create_test_chain(vec![old_block]);
-
-        // Create new chain with only the re-included tx
-        let new_block = create_block_with_txs(1, vec![envelope_2d_reincluded], vec![sender_2d]);
-        let new_chain = create_test_chain(vec![new_block]);
-
-        // Simulate pool containing the "already in pool" tx
-        let pool_hashes: HashSet<TxHash> = [hash_2d_in_pool].into_iter().collect();
-
-        // Execute handle_reorg
-        let (orphaned, affected_seq_ids) =
-            handle_reorg(old_chain, new_chain, |hash| pool_hashes.contains(hash));
-
-        // Verify: Only the orphaned AA 2D tx should be returned (not in-pool, not re-included)
-        assert_eq!(
-            orphaned.len(),
-            1,
-            "Expected exactly 1 orphaned tx, got {}",
-            orphaned.len()
-        );
-        assert_eq!(
-            *orphaned[0].hash(),
-            hash_2d_orphaned,
-            "Wrong transaction was identified as orphaned"
-        );
-
-        // Verify: affected_seq_ids should contain ALL orphaned 2D seq_ids (nonce_key=1 and nonce_key=3).
-        // Note: nonce_key=2 is NOT orphaned (it's in the new chain), so it's not in affected_seq_ids.
-        assert_eq!(
-            affected_seq_ids.len(),
-            2,
-            "Expected 2 affected seq_ids, got {}",
-            affected_seq_ids.len()
-        );
-        assert!(
-            affected_seq_ids.contains(&AASequenceId::new(sender_2d, U256::from(1))),
-            "Should contain orphaned tx's seq_id (nonce_key=1)"
-        );
-        assert!(
-            affected_seq_ids.contains(&AASequenceId::new(sender_2d, U256::from(3))),
-            "Should contain in-pool tx's seq_id (nonce_key=3)"
-        );
-        // nonce_key=2 is NOT orphaned (tx is in new chain), so it won't be in affected_seq_ids
-        assert!(
-            !affected_seq_ids.contains(&AASequenceId::new(sender_2d, U256::from(2))),
-            "Should NOT contain re-included tx's seq_id (nonce_key=2) - tx is in new chain"
-        );
     }
 
     mod from_chain_spending_limit_spends {

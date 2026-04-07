@@ -9,7 +9,7 @@ use crate::{
 use alloy_consensus::Transaction;
 use alloy_primitives::{
     Address, B256, TxHash,
-    map::{AddressMap, AddressSet, HashMap},
+    map::{AddressMap, AddressSet},
 };
 use parking_lot::RwLock;
 use reth_chainspec::ChainSpecProvider;
@@ -37,7 +37,6 @@ use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
     error::Result as TempoPrecompileResult,
-    nonce::NonceManager,
     storage::Handler,
     tip20::TIP20Token,
     tip403_registry::{REJECT_ALL_POLICY_ID, TIP403Registry},
@@ -96,46 +95,6 @@ where
         self.protocol_pool
             .inner()
             .notify_on_transaction_updates(promoted, Vec::new());
-    }
-
-    /// Resets the nonce state for the given 2D nonce sequence IDs by reading from a specific
-    /// block's state. Used during reorgs to correct the pool's nonce tracking for slots that
-    /// were modified in the old chain but not in the new chain.
-    pub(crate) fn reset_2d_nonces_from_state(
-        &self,
-        seq_ids: Vec<crate::tt_2d_pool::AASequenceId>,
-        block_hash: B256,
-    ) -> Result<(), reth_provider::ProviderError> {
-        if seq_ids.is_empty() {
-            return Ok(());
-        }
-
-        // Spec doesn't affect raw storage reads (sload), so default is safe here.
-        let spec = TempoHardfork::default();
-        let mut state_provider = self.client().state_by_block_hash(block_hash)?;
-
-        let nonce_changes = state_provider
-            .with_read_only_storage_ctx(spec, || -> TempoPrecompileResult<_> {
-                let mut changes = HashMap::default();
-                // Read the current on-chain nonce for this sequence ID
-                for id in &seq_ids {
-                    let current_nonce =
-                        NonceManager::new().nonces[id.address][id.nonce_key].read()?;
-                    changes.insert(*id, current_nonce);
-                }
-                Ok(changes)
-            })
-            .map_err(reth_provider::ProviderError::other)?;
-
-        // Apply the nonce changes to the 2D pool
-        let (promoted, _mined) = self.aa_2d_pool.write().on_nonce_changes(nonce_changes);
-        if !promoted.is_empty() {
-            self.protocol_pool
-                .inner()
-                .notify_on_transaction_updates(promoted, Vec::new());
-        }
-
-        Ok(())
     }
 
     /// Removes expiring nonce transactions that were included in a block.

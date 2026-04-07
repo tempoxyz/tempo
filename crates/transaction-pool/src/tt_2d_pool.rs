@@ -4996,6 +4996,104 @@ mod tests {
         pool.assert_invariants();
     }
 
+    /// Simulates the full reorg flow as handled by reth's maintain_transaction_pool:
+    ///
+    /// 1. Add txs [3, 4, 5] → all pending
+    /// 2. Mine tx3 and tx4 via on_nonce_changes(nonce=5) → tx5 remains pending
+    /// 3. Reorg reverts the block: reth re-injects orphaned tx3 and tx4 via add_transaction
+    ///    with the correct on_chain_nonce=3 (read from the new tip's state).
+    ///
+    /// This verifies that add_transaction's rescan from on_chain_nonce correctly
+    /// reclassifies all transactions as pending without needing an explicit nonce reset.
+    #[test_case::test_case(U256::ZERO)]
+    #[test_case::test_case(U256::random())]
+    fn reorg_reinjection_via_add_transaction_restores_pending_state(nonce_key: U256) {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+        let seq_id = AASequenceId::new(sender, nonce_key);
+
+        // Step 1: Add txs with nonces [3, 4, 5], on_chain_nonce=3
+        let tx3 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(3).build();
+        let tx4 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(4).build();
+        let tx5 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(5).build();
+        let tx3_hash = *tx3.hash();
+        let tx4_hash = *tx4.hash();
+        let tx5_hash = *tx5.hash();
+
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx3.clone(), TransactionOrigin::Local)),
+            3,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx4.clone(), TransactionOrigin::Local)),
+            3,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx5, TransactionOrigin::Local)),
+            3,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 3);
+        assert_eq!(queued, 0);
+        pool.assert_invariants();
+
+        // Step 2: Mine tx3 and tx4 (on_chain_nonce becomes 5)
+        let mut nonce_changes = HashMap::default();
+        nonce_changes.insert(seq_id, 5u64);
+        let (_promoted, mined) = pool.on_nonce_changes(nonce_changes);
+        assert_eq!(mined.len(), 2);
+
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 1, "only tx5 should remain pending");
+        assert_eq!(queued, 0);
+        pool.assert_invariants();
+
+        // Step 3: Simulate reorg — reth re-injects orphaned tx3 and tx4 via add_transaction
+        // with the correct on_chain_nonce=3 (reverted state).
+        // This is exactly what reth's maintain_transaction_pool does after a reorg.
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx3, TransactionOrigin::External)),
+            3,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx4, TransactionOrigin::External)),
+            3,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        // All 3 txs should be pending again — add_transaction rescans from on_chain_nonce
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 3, "all txs should be pending after re-injection");
+        assert_eq!(queued, 0);
+
+        // tx3 should be independent (at on_chain_nonce)
+        assert_eq!(
+            pool.independent_transactions
+                .get(&seq_id)
+                .unwrap()
+                .transaction
+                .nonce(),
+            3,
+        );
+
+        // All txs should be in the pool
+        assert!(pool.contains(&tx3_hash));
+        assert!(pool.contains(&tx4_hash));
+        assert!(pool.contains(&tx5_hash));
+
+        pool.assert_invariants();
+    }
+
     /// Test that gap demotion marks ALL subsequent transactions as non-pending.
     ///
     /// When a transaction is removed creating a gap, all transactions after the gap
