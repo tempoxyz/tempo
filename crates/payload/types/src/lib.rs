@@ -6,7 +6,7 @@
 mod attrs;
 
 use alloy_primitives::B256;
-pub use attrs::{InterruptHandle, TempoPayloadAttributes, payload_id_from_block_hash};
+pub use attrs::{InterruptHandle, TempoPayloadAttributes};
 use std::sync::Arc;
 
 use alloy_eips::eip7685::Requests;

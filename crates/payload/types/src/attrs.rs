@@ -173,7 +173,7 @@ impl PayloadAttributes for TempoPayloadAttributes {
 }
 
 /// Constructs a [`PayloadId`] from the first 8 bytes of `block_hash`.
-pub fn payload_id_from_block_hash(block_hash: &B256) -> PayloadId {
+fn payload_id_from_block_hash(block_hash: &B256) -> PayloadId {
     PayloadId::new(
         <[u8; 8]>::try_from(&block_hash[0..8])
             .expect("a 32 byte array always has more than 8 bytes"),
