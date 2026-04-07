@@ -1574,13 +1574,14 @@ where
     ) -> Result<ValidationContext, EVMError<DB::Error, TempoInvalidTransaction>> {
         self.validate(evm)?;
         self.pre_execution(evm)?;
-        evm.clear();
-        Ok(ValidationContext {
+        let result = ValidationContext {
             fee_token: evm
                 .fee_token
                 .expect("set in `validate_against_state_and_deduct_caller`"),
             key_expiry: evm.key_expiry,
-        })
+        };
+        evm.clear();
+        Ok(result)
     }
 }
 
