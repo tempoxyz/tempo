@@ -422,9 +422,7 @@ mod tests {
         TempoSignature,
         tt_authorization::tests::{generate_secp256k1_keypair, sign_hash},
     };
-    use alloy_primitives::{address, hex};
     use alloy_rlp::{Decodable, Encodable};
-    use reth_codecs::Compact;
 
     fn make_auth(expiry: Option<u64>, limits: Option<Vec<TokenLimit>>) -> KeyAuthorization {
         KeyAuthorization {
@@ -933,6 +931,13 @@ mod tests {
         assert_eq!(err.expected, expected);
         assert_eq!(err.got, 999);
     }
+}
+
+#[cfg(all(test, feature = "reth-codec"))]
+mod compact_tests {
+    use super::*;
+    use alloy_primitives::{address, hex};
+    use reth_codecs::Compact;
 
     /// Ensures backwards compatibility of compact bitflags.
     ///

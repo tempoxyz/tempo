@@ -141,7 +141,7 @@ impl Sealable for TempoHeader {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "reth-codec"))]
 mod tests {
     use super::*;
     use alloy_primitives::{address, b256, bytes, hex};

@@ -950,7 +950,7 @@ mod tests {
     use crate::{
         TempoTxEnvelope,
         transaction::{
-            KeyAuthorization, SignedKeyAuthorization, TempoSignedAuthorization, TokenLimit,
+            KeyAuthorization, TempoSignedAuthorization,
             tt_signature::{
                 PrimitiveSignature, SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN, TempoSignature,
                 derive_p256_address,
@@ -958,9 +958,8 @@ mod tests {
         },
     };
     use alloy_eips::{Decodable2718, Encodable2718, eip7702::Authorization};
-    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, address, b256, bytes, hex};
+    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, address, bytes, hex};
     use alloy_rlp::{Decodable, Encodable};
-    use reth_codecs::Compact;
 
     #[test]
     fn test_tempo_transaction_validation() {
@@ -2029,6 +2028,18 @@ mod tests {
         };
         assert!(valid_expiring_tx.validate().is_ok());
     }
+}
+
+#[cfg(all(test, feature = "reth-codec"))]
+mod compact_tests {
+    use super::*;
+    use crate::transaction::{
+        KeyAuthorization, SignedKeyAuthorization, TempoSignedAuthorization, TokenLimit,
+        tt_signature::{P256SignatureWithPreHash, PrimitiveSignature, TempoSignature},
+    };
+    use alloy_eips::{eip2930::AccessListItem, eip7702::Authorization};
+    use alloy_primitives::{Signature, U256, address, b256, bytes, hex};
+    use reth_codecs::Compact;
 
     /// Ensures backwards compatibility of compact bitflags.
     ///
@@ -2065,9 +2076,6 @@ mod tests {
 
     #[test]
     fn tempo_transaction_compact_roundtrip() {
-        use crate::transaction::tt_signature::P256SignatureWithPreHash;
-        use alloy_eips::eip2930::AccessListItem;
-
         let tx = TempoTransaction {
             chain_id: 42170,
             fee_token: Some(address!("0x0000000000000000000000000000000000000abc")),

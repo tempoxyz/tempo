@@ -971,13 +971,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{b256, bytes, hex};
+    use alloy_primitives::hex;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use p256::{
         ecdsa::{SigningKey as P256SigningKey, signature::hazmat::PrehashSigner},
         elliptic_curve::rand_core::OsRng,
     };
-    use reth_codecs::Compact;
 
     /// Generate P256 keypair, return (signing_key, pub_key_x, pub_key_y)
     fn generate_p256_keypair() -> (P256SigningKey, B256, B256) {
@@ -2074,6 +2073,13 @@ mod tests {
             assert_eq!(decoded.is_legacy_keychain(), expect_legacy);
         }
     }
+}
+
+#[cfg(all(test, feature = "reth-codec"))]
+mod compact_tests {
+    use super::*;
+    use alloy_primitives::{b256, bytes, hex};
+    use reth_codecs::Compact;
 
     /// Ensures backwards compatibility of compact bitflags.
     ///
