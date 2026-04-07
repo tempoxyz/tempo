@@ -160,6 +160,7 @@ impl TipFeeManager {
         user_token: Address,
         max_amount: U256,
         beneficiary: Address,
+        skip_liquidity_check: bool,
     ) -> Result<Address> {
         // Get the validator's token preference
         let validator_token = self.get_validator_token(beneficiary)?;
@@ -170,7 +171,7 @@ impl TipFeeManager {
         tip20_token.ensure_transfer_authorized(fee_payer, self.address)?;
         tip20_token.transfer_fee_pre_tx(fee_payer, max_amount)?;
 
-        if user_token != validator_token {
+        if user_token != validator_token && !skip_liquidity_check {
             let pool_id = PoolKey::new(user_token, validator_token).get_id();
             let amount_out_needed = self.check_sufficient_liquidity(pool_id, max_amount)?;
 
@@ -474,7 +475,7 @@ mod tests {
 
             // Call collect_fee_pre_tx directly
             let result =
-                fee_manager.collect_fee_pre_tx(user, token.address(), max_amount, validator);
+                fee_manager.collect_fee_pre_tx(user, token.address(), max_amount, validator, false);
             assert!(result.is_ok());
             assert_eq!(result?, token.address());
 
@@ -622,7 +623,7 @@ mod tests {
             let max_amount = U256::from(1000);
 
             // Call collect_fee_pre_tx
-            fee_manager.collect_fee_pre_tx(user, user_token.address(), max_amount, validator)?;
+            fee_manager.collect_fee_pre_tx(user, user_token.address(), max_amount, validator, false)?;
 
             // With different tokens:
             // - Liquidity is checked (not reserved)
@@ -692,7 +693,7 @@ mod tests {
             let refund_amount = U256::from(200);
 
             // First call collect_fee_pre_tx (checks liquidity)
-            fee_manager.collect_fee_pre_tx(user, user_token.address(), max_amount, validator)?;
+            fee_manager.collect_fee_pre_tx(user, user_token.address(), max_amount, validator, false)?;
 
             // Then call collect_fee_post_tx (executes swap immediately)
             fee_manager.collect_fee_post_tx(
@@ -765,7 +766,7 @@ mod tests {
             let max_amount = U256::from(1000);
 
             let result =
-                fee_manager.collect_fee_pre_tx(user, user_token.address(), max_amount, validator);
+                fee_manager.collect_fee_pre_tx(user, user_token.address(), max_amount, validator, false);
 
             assert!(result.is_err(), "Should fail with insufficient liquidity");
 

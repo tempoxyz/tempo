@@ -1243,12 +1243,14 @@ where
 
         let checkpoint = journal.checkpoint();
 
+        let skip_liquidity_check = evm.skip_liquidity_check;
         let result = StorageCtx::enter_evm(journal, &block, cfg, tx, || {
             TipFeeManager::new().collect_fee_pre_tx(
                 fee_payer,
                 fee_token,
                 gas_balance_spending,
                 block.beneficiary(),
+                skip_liquidity_check,
             )
         });
 
