@@ -40,8 +40,7 @@ pub struct TempoEvm<DB: Database, I> {
     /// The expiry timestamp of the access key used by the current transaction.
     /// Populated during validation for keychain-signed transactions or transactions carrying a KeyAuthorization.
     pub(crate) key_expiry: Option<u64>,
-    /// When true, skip the `valid_after` time-window check during
-    /// [`validate_transaction`](Self::validate_transaction).
+    /// When true, skips the `valid_after` time-window check during validation.
     ///
     /// The transaction pool sets this because it intentionally accepts transactions
     /// with a future `valid_after` (queued until executable).
