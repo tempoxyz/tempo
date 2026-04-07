@@ -237,6 +237,11 @@ impl TempoChainSpec {
         self
     }
 
+    /// Returns the moderato chainspec.
+    pub fn moderato() -> Self {
+        MODERATO.as_ref().clone()
+    }
+
     /// Returns the mainnet chainspec.
     pub fn mainnet() -> Self {
         PRESTO.as_ref().clone()

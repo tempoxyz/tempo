@@ -992,7 +992,7 @@ impl AccountKeychain {
         key_id: Address,
         current_timestamp: u64,
         expected_sig_type: Option<u8>,
-    ) -> Result<()> {
+    ) -> Result<AuthorizedKey> {
         let key = self.load_active_key(account, key_id, current_timestamp)?;
 
         // Validate that the signature type matches the key type stored in the keychain
@@ -1007,7 +1007,7 @@ impl AccountKeychain {
             .into());
         }
 
-        Ok(())
+        Ok(key)
     }
 
     /// Computes the effective remaining limit at `current_timestamp` without mutating storage.

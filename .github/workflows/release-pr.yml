@@ -18,6 +18,19 @@ jobs:
         with:
           persist-credentials: true
 
+      - name: Remove changelogs not targeting published crates
+        run: |
+          for f in .changelog/*.md; do
+            [ ! -f "$f" ] && continue
+            # Extract frontmatter (between the two --- lines)
+            fm=$(awk '/^---$/{c++; next} c==1{print} c>=2{exit}' "$f")
+            # Keep only fragments that explicitly target a published crate
+            if ! echo "$fm" | grep -qE '^"?(tempo-alloy|tempo-primitives|tempo-contracts)"?\s*:'; then
+              echo "Removing $f (does not target a published crate)"
+              rm "$f"
+            fi
+          done
+
       - uses: wevm/changelogs@master
         with:
           conventional-commit: true

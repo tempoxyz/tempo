@@ -20,11 +20,11 @@ use tempo_primitives::{
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct KeyRestrictions {
     /// Unix timestamp when the key expires. `None` means never expires.
-    pub expiry: Option<u64>,
+    expiry: Option<u64>,
     /// Optional token spending limits. `None` means unlimited spending.
-    pub limits: Option<Vec<TokenLimit>>,
+    limits: Option<Vec<TokenLimit>>,
     /// Optional call scopes. `None` means unrestricted calls.
-    pub allowed_calls: Option<Vec<CallScope>>,
+    allowed_calls: Option<Vec<CallScope>>,
 }
 
 impl KeyRestrictions {
@@ -56,6 +56,62 @@ impl KeyRestrictions {
     pub fn with_no_calls(mut self) -> Self {
         self.allowed_calls = Some(Vec::new());
         self
+    }
+
+    /// Returns `true` if calls are unrestricted (no call-scope allowlist set).
+    pub fn is_unrestricted(&self) -> bool {
+        self.allowed_calls.is_none()
+    }
+
+    /// Returns `true` if a call to `target` with the given `input` is allowed.
+    ///
+    /// Checks target, selector, and recipient restrictions in order:
+    /// - No scopes configured → unrestricted, always allowed.
+    /// - Target not in any scope → denied.
+    /// - Scope has no selector rules → any call to that target is allowed.
+    /// - Selector not in rules → denied.
+    /// - Rule has no recipients → any recipient is allowed.
+    /// - Otherwise the first ABI word after the selector must match an allowed recipient.
+    pub fn is_call_allowed(&self, target: &Address, input: &[u8]) -> bool {
+        (|| {
+            let Some(scopes) = &self.allowed_calls else {
+                return Some(true);
+            };
+            let scope = scopes.iter().find(|s| s.target == *target)?;
+
+            if scope.selector_rules.is_empty() {
+                return Some(true);
+            }
+
+            let selector: [u8; 4] = input.get(..4)?.try_into().ok()?;
+            let rule = scope
+                .selector_rules
+                .iter()
+                .find(|r| r.selector == selector)?;
+
+            if rule.recipients.is_empty() {
+                return Some(true);
+            }
+
+            let word: [u8; 32] = input.get(4..36)?.try_into().ok()?;
+            Some(rule.recipients.contains(&Address::from_word(word.into())))
+        })()
+        .unwrap_or(false)
+    }
+
+    /// Returns the expiry timestamp, if one is set.
+    pub fn expiry(&self) -> Option<u64> {
+        self.expiry
+    }
+
+    /// Returns the token spending limits, if any.
+    pub fn limits(&self) -> Option<&[TokenLimit]> {
+        self.limits.as_deref()
+    }
+
+    /// Returns the call scope allowlist, if any.
+    pub fn allowed_calls(&self) -> Option<&[CallScope]> {
+        self.allowed_calls.as_deref()
     }
 
     fn has_periodic_limits(&self) -> bool {
@@ -117,6 +173,11 @@ impl From<KeyRestrictions> for AbiKeyRestrictions {
 /// let scope = CallScopeBuilder::new(PATH_USD)
 ///     .transfer(vec![address!("0x1111111111111111111111111111111111111111")])
 ///     .build();
+///
+/// // Allow an arbitrary selector on a contract
+/// let scope = CallScopeBuilder::new(MY_CONTRACT)
+///     .with_selector([0xaa, 0xbb, 0xcc, 0xdd])
+///     .build();
 /// ```
 #[derive(Clone, Debug)]
 pub struct CallScopeBuilder {
@@ -131,6 +192,15 @@ impl CallScopeBuilder {
             target,
             selector_rules: Vec::new(),
         }
+    }
+
+    /// Allow calls matching an arbitrary 4-byte function selector.
+    pub fn with_selector(mut self, selector: [u8; 4]) -> Self {
+        self.selector_rules.push(SelectorRule {
+            selector,
+            recipients: vec![],
+        });
+        self
     }
 
     /// Allow `transfer(address,uint256)` calls, optionally restricted to the given recipients.
@@ -230,7 +300,7 @@ pub fn authorize_key_legacy(
     }))
 }
 
-/// Build a `authorizeKey(address,uint8,KeyRestrictions)` precompile call (T3+).
+/// Build an `authorizeKey(address,uint8,KeyRestrictions)` precompile call.
 pub fn authorize_key(
     key_id: Address,
     signature_type: SignatureType,
@@ -258,6 +328,23 @@ pub fn update_spending_limit(key_id: Address, token: Address, new_limit: U256) -
 }
 
 /// Build a `setAllowedCalls(address,CallScope[])` precompile call.
+///
+/// # Examples
+///
+/// ```ignore
+/// use alloy_primitives::address;
+/// use tempo_alloy::provider::keychain::{CallScopeBuilder, set_allowed_calls};
+///
+/// let key_id = address!("0x1111111111111111111111111111111111111111");
+/// let token = address!("0x20c0000000000000000000000000000000000001");
+///
+/// let scope = CallScopeBuilder::new(token)
+///     .transfer(vec![])
+///     .approve(vec![])
+///     .build();
+///
+/// let call = set_allowed_calls(key_id, vec![scope]);
+/// ```
 pub fn set_allowed_calls(key_id: Address, scopes: Vec<CallScope>) -> Call {
     account_keychain_call(setAllowedCallsCall {
         keyId: key_id,
@@ -266,6 +353,19 @@ pub fn set_allowed_calls(key_id: Address, scopes: Vec<CallScope>) -> Call {
 }
 
 /// Build a `removeAllowedCalls(address,address)` precompile call.
+///
+/// # Examples
+///
+/// ```ignore
+/// use alloy_primitives::address;
+/// use tempo_alloy::provider::keychain::remove_allowed_calls;
+///
+/// let key_id = address!("0x1111111111111111111111111111111111111111");
+/// let token = address!("0x20c0000000000000000000000000000000000001");
+///
+/// // Remove all call-scope rules targeting `token`
+/// let call = remove_allowed_calls(key_id, token);
+/// ```
 pub fn remove_allowed_calls(key_id: Address, target: Address) -> Call {
     account_keychain_call(removeAllowedCallsCall {
         keyId: key_id,
@@ -484,6 +584,114 @@ mod tests {
         assert_eq!(decoded.keyId, key_id);
         assert_eq!(decoded.scopes.len(), 1);
         assert_eq!(decoded.scopes[0].selectorRules.len(), 1);
+    }
+
+    #[test]
+    fn test_is_call_allowed_unrestricted() {
+        let r = KeyRestrictions::default();
+        let target = address!("0x2222222222222222222222222222222222222222");
+        assert!(r.is_call_allowed(&target, &[]));
+        assert!(r.is_call_allowed(&target, &[0xaa, 0xbb, 0xcc, 0xdd]));
+    }
+
+    #[test]
+    fn test_is_call_allowed_empty_scopes_denies_all() {
+        let r = KeyRestrictions::default().with_no_calls();
+        let target = address!("0x2222222222222222222222222222222222222222");
+        assert!(!r.is_call_allowed(&target, &[0xaa, 0xbb, 0xcc, 0xdd]));
+    }
+
+    #[test]
+    fn test_is_call_allowed_target_not_in_scope() {
+        let token = address!("0x20c0000000000000000000000000000000000001");
+        let other = address!("0x3333333333333333333333333333333333333333");
+        let r = KeyRestrictions::default()
+            .with_allowed_calls(vec![CallScopeBuilder::new(token).build()]);
+        assert!(!r.is_call_allowed(&other, &[0xaa, 0xbb, 0xcc, 0xdd]));
+    }
+
+    #[test]
+    fn test_is_call_allowed_no_selector_rules_allows_any_call() {
+        let token = address!("0x20c0000000000000000000000000000000000001");
+        let r = KeyRestrictions::default()
+            .with_allowed_calls(vec![CallScopeBuilder::new(token).build()]);
+        assert!(r.is_call_allowed(&token, &[0xaa, 0xbb, 0xcc, 0xdd]));
+        assert!(r.is_call_allowed(&token, &[]));
+    }
+
+    #[test]
+    fn test_is_call_allowed_selector_match() {
+        let token = address!("0x20c0000000000000000000000000000000000001");
+        let r = KeyRestrictions::default().with_allowed_calls(vec![
+            CallScopeBuilder::new(token)
+                .with_selector([0xaa, 0xbb, 0xcc, 0xdd])
+                .build(),
+        ]);
+
+        assert!(r.is_call_allowed(&token, &[0xaa, 0xbb, 0xcc, 0xdd]));
+        assert!(!r.is_call_allowed(&token, &[0x11, 0x22, 0x33, 0x44]));
+        assert!(!r.is_call_allowed(&token, &[0xaa, 0xbb]));
+    }
+
+    #[test]
+    fn test_is_call_allowed_tip20_transfer_with_recipients() {
+        let token = address!("0x20c0000000000000000000000000000000000001");
+        let allowed = address!("0x4444444444444444444444444444444444444444");
+        let denied = address!("0x5555555555555555555555555555555555555555");
+
+        let r = KeyRestrictions::default().with_allowed_calls(vec![
+            CallScopeBuilder::new(token).transfer(vec![allowed]).build(),
+        ]);
+
+        // Build valid transfer(address,uint256) calldata
+        let mut input = Vec::new();
+        input.extend_from_slice(&ITIP20::transferCall::SELECTOR);
+        // recipient as ABI-encoded address (left-padded to 32 bytes)
+        input.extend_from_slice(&[0u8; 12]);
+        input.extend_from_slice(allowed.as_slice());
+        // amount (unused for scope check, just pad)
+        input.extend_from_slice(&[0u8; 32]);
+
+        assert!(r.is_call_allowed(&token, &input));
+
+        // Same selector but different recipient
+        let mut bad_input = Vec::new();
+        bad_input.extend_from_slice(&ITIP20::transferCall::SELECTOR);
+        bad_input.extend_from_slice(&[0u8; 12]);
+        bad_input.extend_from_slice(denied.as_slice());
+        bad_input.extend_from_slice(&[0u8; 32]);
+
+        assert!(!r.is_call_allowed(&token, &bad_input));
+    }
+
+    #[test]
+    fn test_is_call_allowed_recipient_word_too_short() {
+        let token = address!("0x20c0000000000000000000000000000000000001");
+        let allowed = address!("0x4444444444444444444444444444444444444444");
+        let r = KeyRestrictions::default().with_allowed_calls(vec![
+            CallScopeBuilder::new(token).transfer(vec![allowed]).build(),
+        ]);
+
+        // Selector only, no recipient word
+        let input = ITIP20::transferCall::SELECTOR.to_vec();
+        assert!(!r.is_call_allowed(&token, &input));
+    }
+
+    #[test]
+    fn test_is_call_allowed_no_recipients_allows_any() {
+        let token = address!("0x20c0000000000000000000000000000000000001");
+        let anyone = address!("0x9999999999999999999999999999999999999999");
+
+        let r = KeyRestrictions::default()
+            .with_allowed_calls(vec![CallScopeBuilder::new(token).transfer(vec![]).build()]);
+
+        let mut input = Vec::new();
+        input.extend_from_slice(&ITIP20::transferCall::SELECTOR);
+        input.extend_from_slice(&[0u8; 12]);
+        input.extend_from_slice(anyone.as_slice());
+        input.extend_from_slice(&[0u8; 32]);
+
+        assert!(r.is_call_allowed(&token, &input));
     }
 
     #[test]
