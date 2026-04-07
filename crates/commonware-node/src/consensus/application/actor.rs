@@ -17,6 +17,7 @@ use std::{
 
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{B256, Bytes};
+use alloy_rpc_types_engine::PayloadId;
 use commonware_codec::{Encode as _, ReadExt as _};
 use commonware_consensus::{
     Heightable as _,
@@ -34,7 +35,9 @@ use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
 use futures::{StreamExt as _, TryFutureExt as _, channel::mpsc, future::try_join};
 use rand_08::{CryptoRng, Rng};
 use reth_ethereum::chainspec::EthChainSpec as _;
-use reth_node_builder::{Block as _, BuiltPayload, ConsensusEngineHandle};
+use reth_node_builder::{
+    Block as _, BuiltPayload, ConsensusEngineHandle, PayloadAttributes, PayloadKind,
+};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 use tempo_telemetry_util::display_duration;
@@ -322,8 +325,22 @@ impl Inner<Init> {
             round,
         } = request;
 
+        let (payload_id_tx, mut payload_id_rx) = oneshot::channel();
+
         let proposal = select!(
             () = response.closed() => {
+                // If we got interrupted, fetch payload resolve future and drop it
+                // to make sure that payload building is canceled.
+                if let Ok(payload_id) = payload_id_rx.try_recv() {
+                    let fut = self
+                        .execution_node
+                        .payload_builder_handle
+                        .resolve_kind_fut(payload_id, PayloadKind::WaitForPending)
+                        .await
+                        .wrap_err("failed resolving payload")?;
+                    drop(fut);
+                }
+
                 Err(eyre!(
                     "proposal return channel was closed by consensus \
                     engine before block could be proposed; aborting"
@@ -334,7 +351,8 @@ impl Inner<Init> {
                 context.clone(),
                 parent_view,
                 parent_digest,
-                round
+                round,
+                payload_id_tx,
             ) => {
                 res.wrap_err("failed creating a proposal")
             }
@@ -442,6 +460,7 @@ impl Inner<Init> {
         parent_view: View,
         parent_digest: Digest,
         round: Round,
+        payload_id_tx: oneshot::Sender<PayloadId>,
     ) -> eyre::Result<Block> {
         let propose_start = Instant::now();
 
@@ -565,10 +584,13 @@ impl Inner<Init> {
             },
         );
 
+        let payload_id = attrs.payload_id(&parent.digest().0);
+        payload_id_tx.send(payload_id).map_err(|_| {
+            eyre!("caller went away before payload job ID could be returned; aborting proposal")
+        })?;
         let interrupt_handle = attrs.interrupt_handle().clone();
 
-        let payload_id = self
-            .state
+        self.state
             .executor
             .canonicalize_and_build(parent.height(), parent.digest(), attrs)
             .await

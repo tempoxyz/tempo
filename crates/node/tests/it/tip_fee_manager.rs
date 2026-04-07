@@ -44,7 +44,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
         .mint(user_address, U256::from(1e10))
         .send()
         .await?
-        .watch()
+        .get_receipt()
         .await?;
 
     // Verify default user token matches the genesis-created AlphaUSD (reserved address)
@@ -101,7 +101,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
         .distributeFees(validator, *validator_token.address())
         .send()
         .await?
-        .watch()
+        .get_receipt()
         .await?;
 
     let validator_balance_after = validator_token.balanceOf(validator).call().await?;
@@ -124,7 +124,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
         .distributeFees(validator, *validator_token.address())
         .send()
         .await?
-        .watch()
+        .get_receipt()
         .await?;
     assert!(validator_token.balanceOf(validator).call().await? > validator_balance_after);
 
@@ -165,7 +165,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
         .distributeFees(validator, *validator_token.address())
         .send()
         .await?
-        .watch()
+        .get_receipt()
         .await?;
     let validator_balance_after = validator_token.balanceOf(validator).call().await?;
 
