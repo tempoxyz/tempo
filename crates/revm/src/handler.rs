@@ -1277,6 +1277,14 @@ where
             )?;
 
             evm.initial_gas += scope_validation_gas;
+
+            if tx.gas_limit() < evm.initial_gas {
+                return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
+                    gas_limit: tx.gas_limit(),
+                    initial_gas: evm.initial_gas,
+                }
+                .into());
+            }
         }
 
         // Short-circuit if there is no spending for this transaction and `collectFeePreTx`
@@ -3014,6 +3022,120 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_t3_scope_validation_gas_rechecked_against_gas_limit() {
+        const CALL_SCOPE_SELECTOR: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
+
+        let caller = Address::repeat_byte(0x11);
+        let access_key = Address::repeat_byte(0x22);
+        let target = DEFAULT_FEE_TOKEN;
+
+        let signature =
+            TempoSignature::Keychain(tempo_primitives::transaction::KeychainSignature::new(
+                caller,
+                tempo_primitives::transaction::PrimitiveSignature::Secp256k1(
+                    alloy_primitives::Signature::test_signature(),
+                ),
+            ));
+
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T3;
+
+        let tx_env = TempoTxEnv {
+            inner: revm::context::TxEnv {
+                caller,
+                gas_limit: 1_000_000,
+                kind: TxKind::Call(target),
+                ..Default::default()
+            },
+            fee_token: Some(DEFAULT_FEE_TOKEN),
+            tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                signature,
+                aa_calls: vec![Call {
+                    to: TxKind::Call(target),
+                    value: U256::ZERO,
+                    input: Bytes::from_static(&CALL_SCOPE_SELECTOR),
+                }],
+                signature_hash: B256::ZERO,
+                override_key_id: Some(access_key),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+
+        let ctx = Context::mainnet()
+            .with_db(CacheDB::new(EmptyDB::default()))
+            .with_block(TempoBlockEnv::default())
+            .with_cfg(cfg)
+            .with_tx(tx_env)
+            .with_new_journal(create_test_journal());
+
+        let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
+        let mut handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+
+        StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+            let mut keychain = AccountKeychain::new();
+
+            keychain.initialize().expect("keychain initialized");
+            keychain
+                .set_transaction_key(Address::ZERO)
+                .expect("root key setup succeeds");
+            keychain
+                .set_tx_origin(caller)
+                .expect("tx.origin setup succeeds");
+            keychain
+                .authorize_key(
+                    caller,
+                    authorizeKeyCall {
+                        keyId: access_key,
+                        signatureType: PrecompileSignatureType::Secp256k1,
+                        config: KeyRestrictions {
+                            expiry: u64::MAX,
+                            enforceLimits: false,
+                            limits: vec![],
+                            allowAnyCalls: false,
+                            allowedCalls: vec![PrecompileCallScope {
+                                target,
+                                selectorRules: vec![PrecompileSelectorRule {
+                                    selector: CALL_SCOPE_SELECTOR.into(),
+                                    recipients: vec![],
+                                }],
+                            }],
+                        },
+                    },
+                )
+                .expect("access key authorization succeeds");
+        });
+
+        handler
+            .load_fee_fields(&mut evm)
+            .expect("fee fields should load");
+
+        let init_gas = handler
+            .validate_initial_tx_gas(&mut evm)
+            .expect("initial gas validation should succeed");
+        assert!(
+            init_gas.floor_gas <= init_gas.initial_gas,
+            "test requires floor gas to not exceed intrinsic gas"
+        );
+
+        evm.inner.ctx.tx.inner.gas_limit = init_gas.initial_gas;
+
+        let err = handler
+            .validate_against_state_and_deduct_caller(&mut evm)
+            .expect_err("scope validation gas should force a gas-limit recheck");
+
+        assert!(
+            matches!(
+                err.as_invalid_tx_err(),
+                Some(TempoInvalidTransaction::EthInvalidTransaction(
+                    InvalidTransaction::CallGasCostMoreThanGasLimit { .. }
+                ))
+            ),
+            "expected CallGasCostMoreThanGasLimit, got: {err:?}"
+        );
     }
 
     #[test]
