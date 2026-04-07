@@ -2028,4 +2028,14 @@ mod tests {
         };
         assert!(valid_expiring_tx.validate().is_ok());
     }
+
+    /// Ensures backwards compatibility of compact bitflags.
+    ///
+    /// See reth's `HeaderExt` pattern:
+    /// <https://github.com/paradigmxyz/reth-core/blob/0476d1bc4b71f3c3b080622be297edd91ee4e70c/crates/codecs/src/alloy/header.rs>
+    #[test]
+    fn compact_types_have_unused_bits() {
+        assert_ne!(TempoTransaction::bitflag_unused_bits(), 0, "TempoTransaction");
+        assert_ne!(Call::bitflag_unused_bits(), 0, "Call");
+    }
 }

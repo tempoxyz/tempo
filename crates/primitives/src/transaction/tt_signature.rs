@@ -2073,4 +2073,13 @@ mod tests {
             assert_eq!(decoded.is_legacy_keychain(), expect_legacy);
         }
     }
+
+    /// Ensures backwards compatibility of compact bitflags.
+    ///
+    /// See reth's `HeaderExt` pattern:
+    /// <https://github.com/paradigmxyz/reth-core/blob/0476d1bc4b71f3c3b080622be297edd91ee4e70c/crates/codecs/src/alloy/header.rs>
+    #[test]
+    fn compact_types_have_unused_bits() {
+        assert_ne!(P256SignatureWithPreHash::bitflag_unused_bits(), 0, "P256SignatureWithPreHash");
+    }
 }
