@@ -151,7 +151,7 @@ mod tests {
     /// extension type (e.g. `Option<TempoHeaderExt>`) rather than directly to [`TempoHeader`].
     ///
     /// See reth's `HeaderExt` pattern:
-    /// <https://github.com/paradigmxyz/reth/blob/main/crates/storage/codecs/src/alloy/header.rs>
+    /// <https://github.com/paradigmxyz/reth/blob/677d07041e679aca8345cef203545618fc850d12/crates/storage/codecs/src/alloy/header.rs>
     #[test]
     fn tempo_header_has_unused_compact_bits() {
         assert_ne!(
