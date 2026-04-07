@@ -1,5 +1,5 @@
 use alloy_evm::{
-    Database, Evm, EvmEnv, EvmFactory,
+    Database, Evm, EvmEnv, EvmFactory, IntoTxEnv,
     precompiles::PrecompilesMap,
     revm::{
         Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm,
@@ -11,7 +11,10 @@ use alloy_primitives::{Address, Bytes, TxKind};
 use reth_revm::{InspectSystemCallEvm, MainContext, context::result::ExecutionResult};
 use std::ops::{Deref, DerefMut};
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_revm::{TempoHaltReason, TempoInvalidTransaction, TempoTxEnv, evm::TempoContext};
+use tempo_revm::{
+    TempoHaltReason, TempoInvalidTransaction, TempoTxEnv, ValidationContext, evm::TempoContext,
+    handler::TempoEvmHandler,
+};
 
 use crate::TempoBlockEnv;
 
@@ -91,12 +94,36 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         &mut self.inner.inner.ctx
     }
 
+    /// Provides a mutable reference to the inner [`tempo_revm::TempoEvm`].
+    pub fn inner_mut(&mut self) -> &mut tempo_revm::TempoEvm<DB, I> {
+        &mut self.inner
+    }
+
     /// Sets the inspector for the EVM.
     pub fn with_inspector<OINSP>(self, inspector: OINSP) -> TempoEvm<DB, OINSP> {
         TempoEvm {
             inner: self.inner.with_inspector(inspector),
             inspect: true,
         }
+    }
+
+    /// Runs the full Tempo transaction validation pipeline without executing the transaction.
+    ///
+    /// This performs fee field resolution, environment validation, initial gas validation,
+    /// EIP-7702 auth list application, and state validation with fee deduction.
+    ///
+    /// All state mutations (nonce bumps, fee deduction, key authorization) are applied to the
+    /// journaled state and discarded when the EVM is dropped.
+    ///
+    /// Set [`skip_valid_after_check`](Self::skip_valid_after_check) to skip the `valid_after`
+    /// time-window check (used by the transaction pool).
+    pub fn validate_transaction(
+        &mut self,
+        tx: impl IntoTxEnv<TempoTxEnv>,
+    ) -> Result<ValidationContext, EVMError<DB::Error, TempoInvalidTransaction>> {
+        self.inner.inner.ctx.tx = tx.into_tx_env();
+        let mut handler = TempoEvmHandler::new();
+        handler.validate_transaction(&mut self.inner)
     }
 }
 

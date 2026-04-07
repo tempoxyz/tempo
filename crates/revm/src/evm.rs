@@ -37,6 +37,15 @@ pub struct TempoEvm<DB: Database, I> {
     pub(crate) initial_gas: u64,
     /// The fee token used to pay fees for the current transaction.
     pub(crate) fee_token: Option<Address>,
+    /// The expiry timestamp of the access key used by the current transaction.
+    /// Populated during validation for keychain-signed transactions or transactions carrying a KeyAuthorization.
+    pub(crate) key_expiry: Option<u64>,
+    /// When true, skip the `valid_after` time-window check during
+    /// [`validate_transaction`](Self::validate_transaction).
+    ///
+    /// The transaction pool sets this because it intentionally accepts transactions
+    /// with a future `valid_after` (queued until executable).
+    pub skip_valid_after_check: bool,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -70,6 +79,8 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             collected_fee: U256::ZERO,
             initial_gas: 0,
             fee_token: None,
+            key_expiry: None,
+            skip_valid_after_check: false,
         }
     }
 }
@@ -88,6 +99,13 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     /// Consumes self and returns the inner Inspector.
     pub fn into_inspector(self) -> I {
         self.inner.into_inspector()
+    }
+
+    /// Clears all intermediate state from the EVM.
+    pub fn clear(&mut self) {
+        self.initial_gas = 0;
+        self.fee_token = None;
+        self.key_expiry = None;
     }
 }
 
