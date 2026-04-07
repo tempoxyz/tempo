@@ -41,6 +41,10 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) gas_used: Histogram,
     /// Amount of gas used in the payload.
     pub(crate) gas_used_last: Gauge,
+    /// State gas used in the payload (TIP-1016).
+    pub(crate) state_gas_used: Histogram,
+    /// State gas used in the last payload (TIP-1016).
+    pub(crate) state_gas_used_last: Gauge,
     /// Gas used by general (non-payment) transactions in the payload.
     pub(crate) general_gas_used_last: Gauge,
     /// Gas used by payment transactions in the payload.

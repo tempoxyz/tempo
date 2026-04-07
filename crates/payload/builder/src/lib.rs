@@ -284,6 +284,7 @@ where
         );
 
         let mut cumulative_gas_used = 0;
+        let mut cumulative_state_gas_used = 0u64;
         let mut non_payment_gas_used = 0;
         // initial block size usage - size of withdrawals plus 1Kb of overhead for the block header
         let mut block_size_used = attributes
@@ -392,16 +393,20 @@ where
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
         while let Some(pool_tx) = best_txs.next() {
+            // TIP-1016: State gas does not count toward block gas capacity, so use
+            // execution_gas_limit (= gas_limit - state_gas) for the block-level checks below.
+            let tx_execution_gas_limit = pool_tx.transaction.execution_gas_limit();
+
             // Ensure we still have capacity for this transaction within the non-shared gas limit.
             // The remaining `shared_gas_limit` is reserved for validator subblocks and must not
             // be consumed by proposer's pool transactions.
-            if cumulative_gas_used + pool_tx.gas_limit() > non_shared_gas_limit {
+            if cumulative_gas_used + tx_execution_gas_limit > non_shared_gas_limit {
                 // Mark this transaction as invalid since it doesn't fit
                 // The iterator will handle lane switching internally when appropriate
                 best_txs.mark_invalid(
                     &pool_tx,
                     &InvalidPoolTransactionError::ExceedsGasLimit(
-                        pool_tx.gas_limit(),
+                        tx_execution_gas_limit,
                         non_shared_gas_limit - cumulative_gas_used,
                     ),
                 );
@@ -413,7 +418,7 @@ where
             // If the tx is not a payment and will exceed the general gas limit
             // mark the tx as invalid and continue
             if !pool_tx.transaction.is_payment()
-                && non_payment_gas_used + pool_tx.gas_limit() > general_gas_limit
+                && non_payment_gas_used + tx_execution_gas_limit > general_gas_limit
             {
                 best_txs.mark_invalid(
                     &pool_tx,
@@ -464,7 +469,13 @@ where
 
             let tx_with_env = pool_tx.transaction.clone().into_with_tx_env();
             let tx_execution_start = Instant::now();
-            let gas_used = match builder.execute_transaction(tx_with_env) {
+            let mut tx_state_gas = 0u64;
+            let gas_used = match builder.execute_transaction_with_result_closure(
+                tx_with_env,
+                |result| {
+                    tx_state_gas = result.gas().state_gas_spent();
+                },
+            ) {
                 Ok(gas_used) => gas_used,
                 Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
                     error,
@@ -500,6 +511,7 @@ where
             // update and add to total fees
             total_fees += calc_gas_balance_spending(gas_used, effective_gas_price);
             cumulative_gas_used += gas_used;
+            cumulative_state_gas_used += tx_state_gas;
             if !is_payment {
                 non_payment_gas_used += gas_used;
             }
@@ -542,7 +554,12 @@ where
             let mut subblock_tx_count = 0f64;
 
             for tx in subblock.transactions_recovered() {
-                if let Err(err) = builder.execute_transaction(tx.cloned()) {
+                let mut tx_state_gas = 0u64;
+                if let Err(err) =
+                    builder.execute_transaction_with_result_closure(tx.cloned(), |result| {
+                        tx_state_gas = result.gas().state_gas_spent();
+                    })
+                {
                     if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
                         ..
                     }) = &err
@@ -560,6 +577,7 @@ where
                     }
                 }
 
+                cumulative_state_gas_used += tx_state_gas;
                 subblock_tx_count += 1.0;
             }
 
@@ -590,9 +608,13 @@ where
         let _system_txs_span =
             debug_span!(target: "payload_builder", "execute_system_txs").entered();
         for system_tx in system_txs {
+            let mut tx_state_gas = 0u64;
             builder
-                .execute_transaction(system_tx)
+                .execute_transaction_with_result_closure(system_tx, |result| {
+                    tx_state_gas = result.gas().state_gas_spent();
+                })
                 .map_err(PayloadBuilderError::evm)?;
+            cumulative_state_gas_used += tx_state_gas;
         }
         drop(_system_txs_span);
         let system_txs_execution_elapsed = system_txs_execution_start.elapsed();
@@ -634,6 +656,12 @@ where
         let gas_used = block.gas_used();
         self.metrics.gas_used.record(gas_used as f64);
         self.metrics.gas_used_last.set(gas_used as f64);
+        self.metrics
+            .state_gas_used
+            .record(cumulative_state_gas_used as f64);
+        self.metrics
+            .state_gas_used_last
+            .set(cumulative_state_gas_used as f64);
         self.metrics
             .general_gas_used_last
             .set(non_payment_gas_used as f64);
@@ -681,6 +709,7 @@ where
             timestamp = sealed_block.timestamp_millis(),
             gas_limit = sealed_block.gas_limit(),
             gas_used,
+            cumulative_state_gas_used,
             extra_data = %sealed_block.extra_data(),
             subblocks_count,
             payment_transactions,

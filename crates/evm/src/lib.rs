@@ -135,6 +135,8 @@ impl ConfigureEvm for TempoEvmConfig {
         // Apply TIP-1000 gas params for T1 hardfork.
         let mut cfg_env = cfg_env.with_spec_and_gas_params(spec, tempo_gas_params(spec));
         cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
+        // TIP-1016: Enable state gas tracking for T3+
+        cfg_env.enable_amsterdam_eip8037 = spec.is_t3();
 
         Ok(EvmEnv {
             cfg_env,
@@ -172,6 +174,8 @@ impl ConfigureEvm for TempoEvmConfig {
         // Apply TIP-1000 gas params for T1 hardfork.
         let mut cfg_env = cfg_env.with_spec_and_gas_params(spec, tempo_gas_params(spec));
         cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
+        // TIP-1016: Enable state gas tracking for T3+
+        cfg_env.enable_amsterdam_eip8037 = spec.is_t3();
 
         Ok(EvmEnv {
             cfg_env,
@@ -263,7 +267,7 @@ mod tests {
     use alloy_rlp::{Encodable, bytes::BytesMut};
     use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
     use std::collections::HashMap;
-    use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
     use tempo_primitives::{
         BlockBody, SubBlockMetadata, subblock::SubBlockVersion,
         transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
@@ -319,8 +323,6 @@ mod tests {
     /// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
     #[test]
     fn test_evm_env_t1_gas_cap() {
-        use tempo_chainspec::spec::DEV;
-
         // DEV chainspec has T1 activated at timestamp 0
         let chainspec = DEV.clone();
         let evm_config = TempoEvmConfig::new(chainspec.clone());
@@ -348,6 +350,104 @@ mod tests {
             evm_env.cfg_env.tx_gas_limit_cap,
             Some(tempo_chainspec::spec::TEMPO_T1_TX_GAS_LIMIT_CAP),
             "TIP-1000 requires 30M gas limit cap for T1 hardfork"
+        );
+    }
+
+    /// TIP-1016: enable_amsterdam_eip8037 must be set when T3 hardfork is active.
+    /// This gates the reservoir model, tx cap bypass, and state gas tracking.
+    #[test]
+    fn test_evm_env_t3_enable_amsterdam_eip8037() {
+        let chainspec = DEV.clone();
+        let evm_config = TempoEvmConfig::new(chainspec.clone());
+
+        let header = TempoHeader {
+            inner: alloy_consensus::Header {
+                number: 100,
+                timestamp: 1000, // After T3 activation in DEV
+                gas_limit: 30_000_000,
+                base_fee_per_gas: Some(1000),
+                ..Default::default()
+            },
+            general_gas_limit: 10_000_000,
+            timestamp_millis_part: 0,
+            shared_gas_limit: 3_000_000,
+        };
+
+        // Verify we're in T3
+        assert!(chainspec.tempo_hardfork_at(header.timestamp()).is_t3());
+
+        let evm_env = evm_config.evm_env(&header).unwrap();
+
+        assert!(
+            evm_env.cfg_env.enable_amsterdam_eip8037,
+            "TIP-1016: enable_amsterdam_eip8037 must be true when T3 hardfork is active"
+        );
+    }
+
+    /// TIP-1016: enable_amsterdam_eip8037 must NOT be set for pre-T3 hardforks.
+    #[test]
+    fn test_evm_env_pre_t3_no_state_gas() {
+        let chainspec = DEV.clone();
+        let _evm_config = TempoEvmConfig::new(chainspec);
+
+        // Verify that a T2-only spec does NOT enable state gas
+        let t2_spec = TempoHardfork::T2;
+        let gas_params = tempo_gas_params(t2_spec);
+        let cfg = revm::context::CfgEnv::new_with_spec_and_gas_params(t2_spec, gas_params);
+
+        assert!(
+            !cfg.enable_amsterdam_eip8037,
+            "enable_amsterdam_eip8037 must be false for pre-T3 hardforks"
+        );
+    }
+
+    /// TIP-1016: next_evm_env must also set enable_amsterdam_eip8037 for T3.
+    #[test]
+    fn test_next_evm_env_t3_enable_amsterdam_eip8037() {
+        let chainspec = DEV.clone();
+        let evm_config = TempoEvmConfig::new(chainspec.clone());
+
+        let parent = TempoHeader {
+            inner: alloy_consensus::Header {
+                number: 99,
+                timestamp: 900,
+                gas_limit: 30_000_000,
+                base_fee_per_gas: Some(1000),
+                ..Default::default()
+            },
+            general_gas_limit: 10_000_000,
+            timestamp_millis_part: 0,
+            shared_gas_limit: 3_000_000,
+        };
+
+        let attributes = TempoNextBlockEnvAttributes {
+            inner: NextBlockEnvAttributes {
+                timestamp: 1000, // After T3 activation
+                suggested_fee_recipient: Address::repeat_byte(0x02),
+                prev_randao: B256::repeat_byte(0x03),
+                gas_limit: 30_000_000,
+                parent_beacon_block_root: Some(B256::ZERO),
+                withdrawals: None,
+                extra_data: Default::default(),
+            },
+            general_gas_limit: 10_000_000,
+            shared_gas_limit: 3_000_000,
+            timestamp_millis_part: 0,
+            subblock_fee_recipients: HashMap::new(),
+        };
+
+        // Verify we're in T3
+        assert!(
+            chainspec
+                .tempo_hardfork_at(attributes.inner.timestamp)
+                .is_t3()
+        );
+
+        let evm_env = evm_config.next_evm_env(&parent, &attributes).unwrap();
+
+        assert!(
+            evm_env.cfg_env.enable_amsterdam_eip8037,
+            "TIP-1016: next_evm_env must set enable_amsterdam_eip8037 for T3"
         );
     }
 
