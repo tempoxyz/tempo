@@ -136,7 +136,7 @@ pub struct Setup {
 
     /// The amount of time the node waits for the execution layer to return
     /// a build a payload.
-    pub new_payload_wait_time: Duration,
+    pub payload_interrupt_time: Duration,
 
     /// The t2 hardfork time.
     ///
@@ -164,7 +164,7 @@ impl Setup {
                 success_rate: 1.0,
             },
             epoch_length: 20,
-            new_payload_wait_time: Duration::from_millis(300),
+            payload_interrupt_time: Duration::from_millis(200),
             t2_time: 1,
             with_subblocks: false,
             fee_recipient: Address::ZERO,
@@ -200,9 +200,9 @@ impl Setup {
         }
     }
 
-    pub fn new_payload_wait_time(self, new_payload_wait_time: Duration) -> Self {
+    pub fn payload_interrupt_time(self, payload_interrupt_time: Duration) -> Self {
         Self {
-            new_payload_wait_time,
+            payload_interrupt_time,
             ..self
         }
     }
@@ -245,7 +245,7 @@ pub async fn setup_validators(
         how_many_signers,
         how_many_verifiers,
         linkage,
-        new_payload_wait_time,
+        payload_interrupt_time,
         t2_time,
         with_subblocks,
         fee_recipient,
@@ -316,8 +316,8 @@ pub async fn setup_validators(
             time_for_peer_response: Duration::from_secs(2),
             views_to_track: 10,
             views_until_leader_skip: 5,
-            payload_interrupt_time: Duration::from_millis(200),
-            new_payload_wait_time,
+            payload_interrupt_time,
+            new_payload_wait_time: payload_interrupt_time.max(Duration::from_millis(300)),
             time_to_build_subblock: Duration::from_millis(100),
             subblock_broadcast_interval: Duration::from_millis(50),
             fcu_heartbeat_interval: Duration::from_secs(3),

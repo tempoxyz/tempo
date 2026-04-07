@@ -1,10 +1,11 @@
-use alloy_rpc_types_engine::PayloadId;
+use alloy_rpc_types_engine::{PayloadId, PayloadStatusEnum};
 use commonware_consensus::{Reporter, marshal::Update, types::Height};
 use eyre::{WrapErr as _, eyre};
 use futures::{
     SinkExt as _,
     channel::{mpsc, oneshot},
 };
+use tempo_node::TempoExecutionData;
 use tempo_payload_types::TempoPayloadAttributes;
 use tracing::Span;
 
@@ -70,6 +71,17 @@ impl Mailbox {
             )?;
         rx.await.map_err(|_| eyre!("actor dropped response"))
     }
+
+    pub(crate) async fn new_payload(
+        &self,
+        payload: TempoExecutionData,
+    ) -> eyre::Result<PayloadStatusEnum> {
+        let (response, rx) = oneshot::channel();
+        self.inner
+            .unbounded_send(Message::in_current_span(NewPayload { payload, response }))
+            .wrap_err("failed sending new payload request to agent, this means it exited")?;
+        rx.await.wrap_err("actor dropped response")?
+    }
 }
 
 #[derive(Debug)]
@@ -95,6 +107,8 @@ pub(super) enum Command {
     CanonicalizeAndBuild(CanonicalizeAndBuild),
     /// Requests the agent to forward a finalization event to the execution layer.
     Finalize(Box<Update<Block>>),
+    /// Requests the agent to send a new payload to the execution layer.
+    NewPayload(NewPayload),
     /// Returns once the executor actor has finalized the block at `height`.
     SubscribeFinalized(SubscribeFinalized),
 }
@@ -112,6 +126,12 @@ pub(super) struct CanonicalizeAndBuild {
     pub(super) digest: Digest,
     pub(super) attributes: Box<TempoPayloadAttributes>,
     pub(super) response: oneshot::Sender<eyre::Result<PayloadId>>,
+}
+
+#[derive(Debug)]
+pub(super) struct NewPayload {
+    pub(super) payload: TempoExecutionData,
+    pub(super) response: oneshot::Sender<eyre::Result<PayloadStatusEnum>>,
 }
 
 #[derive(Debug)]
@@ -135,6 +155,12 @@ impl From<CanonicalizeAndBuild> for Command {
 impl From<Update<Block>> for Command {
     fn from(value: Update<Block>) -> Self {
         Self::Finalize(value.into())
+    }
+}
+
+impl From<NewPayload> for Command {
+    fn from(value: NewPayload) -> Self {
+        Self::NewPayload(value)
     }
 }
 

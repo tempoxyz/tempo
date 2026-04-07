@@ -6,7 +6,7 @@
 
 use std::{collections::BTreeMap, pin::Pin, sync::Arc, time::Duration};
 
-use alloy_rpc_types_engine::{ForkchoiceState, PayloadId};
+use alloy_rpc_types_engine::{ForkchoiceState, PayloadId, PayloadStatusEnum};
 use commonware_consensus::{Heightable as _, marshal::Update, types::Height};
 
 use commonware_runtime::{
@@ -22,6 +22,7 @@ use futures::{
     },
     select_biased,
 };
+use reth_node_builder::BeaconOnNewPayloadError;
 use reth_provider::{BlockHashReader, BlockNumReader as _};
 use tempo_node::{TempoExecutionData, TempoFullNode};
 use tempo_payload_types::TempoPayloadAttributes;
@@ -35,7 +36,7 @@ use super::{
 };
 use crate::{
     consensus::{Digest, block::Block},
-    executor::ingress::CanonicalizeAndBuild,
+    executor::ingress::{CanonicalizeAndBuild, NewPayload},
 };
 
 /// Tracks the last forkchoice state that the executor sent to the execution layer.
@@ -343,6 +344,9 @@ where
                     .await
                     .wrap_err("failed handling finalization")?;
             }
+            Command::NewPayload(NewPayload { payload, response }) => {
+                let _ = response.send(self.send_new_payload(payload).await);
+            }
             Command::SubscribeFinalized(SubscribeFinalized { height, response }) => {
                 if self.last_canonicalized.finalized_height >= height {
                     let _ = response.send(());
@@ -519,20 +523,12 @@ where
 
         let block = block.into_inner();
         let payload_status = self
-            .execution_node
-            .add_ons_handle
-            .beacon_engine_handle
-            .new_payload(TempoExecutionData {
+            .send_new_payload(TempoExecutionData {
                 block: Arc::new(block),
                 // can be omitted for finalized blocks
                 validator_set: None,
             })
-            .pace(&self.context, Duration::from_millis(20))
-            .await
-            .wrap_err(
-                "failed sending new-payload request to execution engine to \
-                query payload status of finalized block",
-            )?;
+            .await?;
 
         ensure!(
             payload_status.is_valid() || payload_status.is_syncing(),
@@ -553,6 +549,34 @@ where
         });
 
         Ok(())
+    }
+
+    async fn send_new_payload(
+        &mut self,
+        payload: TempoExecutionData,
+    ) -> eyre::Result<PayloadStatusEnum> {
+        if self
+            .execution_node
+            .provider
+            .block_number(payload.block.hash())
+            .map_err(BeaconOnNewPayloadError::internal)?
+            .is_some()
+        {
+            debug!(
+                "skipping newPayload request for block {} because it is already known to the execution layer",
+                payload.block.hash()
+            );
+            return Ok(PayloadStatusEnum::Valid);
+        }
+
+        self.execution_node
+            .add_ons_handle
+            .beacon_engine_handle
+            .new_payload(payload)
+            .pace(&self.context, Duration::from_millis(20))
+            .await
+            .map(|status| status.status)
+            .wrap_err("newPayload request failed")
     }
 }
 

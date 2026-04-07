@@ -45,7 +45,7 @@ fn subblocks_are_included_1_node() {
             .epoch_length(100)
             // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
             // to ensure that payload builder has enough time to accumulate subblocks.
-            .new_payload_wait_time(Duration::from_millis(500))
+            .payload_interrupt_time(Duration::from_millis(500))
             .subblocks(true);
 
         // Setup and start all nodes.
@@ -133,9 +133,15 @@ fn subblocks_are_included_1_node() {
             }
 
             // Send subblock transactions to all nodes.
-            for node in nodes.iter() {
-                for _ in 0..5 {
-                    expected_transactions.push(submit_subblock_tx(node).await);
+            //
+            // Skip first block as it's taking slightly more to process and it is
+            // likely that by the time we observe it, it's too late to land any
+            // transactions in the next subblock.
+            if block.block_number() > 1 {
+                for node in nodes.iter() {
+                    for _ in 0..5 {
+                        expected_transactions.push(submit_subblock_tx(node).await);
+                    }
                 }
             }
         }
@@ -154,7 +160,7 @@ fn subblocks_are_included_4_nodes() {
             .epoch_length(40)
             // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
             // to ensure that payload builder has enough time to accumulate subblocks.
-            .new_payload_wait_time(Duration::from_millis(500))
+            .payload_interrupt_time(Duration::from_millis(500))
             .subblocks(true);
 
         // Setup and start all nodes.
@@ -263,7 +269,7 @@ fn subblocks_are_included_with_failing_txs_5_nodes() {
             .epoch_length(100)
             // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
             // to ensure that payload builder has enough time to accumulate subblocks.
-            .new_payload_wait_time(Duration::from_millis(500))
+            .payload_interrupt_time(Duration::from_millis(500))
             .subblocks(true);
 
         // Setup and start all nodes.
@@ -446,7 +452,7 @@ fn oversized_subblock_txs_are_removed() {
             .epoch_length(100)
             // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
             // to ensure that payload builder has enough time to accumulate subblocks.
-            .new_payload_wait_time(Duration::from_millis(500))
+            .payload_interrupt_time(Duration::from_millis(500))
             .subblocks(true);
 
         let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup.clone()).await;
