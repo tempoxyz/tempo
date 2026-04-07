@@ -71,6 +71,7 @@ const MAX_KEYCHAIN_SELECTOR_RULES_PER_SCOPE: u8 = 64;
 const MAX_KEYCHAIN_RECIPIENTS_PER_SELECTOR: u8 = 64;
 
 /// Validator for Tempo transactions.
+#[derive(Debug)]
 pub struct TempoTransactionValidator<Client> {
     /// Inner validator that performs default Ethereum tx validation.
     pub(crate) inner: EthTransactionValidator<Client, TempoPooledTransaction, TempoEvmConfig>,
@@ -82,13 +83,6 @@ pub struct TempoTransactionValidator<Client> {
     pub(crate) amm_liquidity_cache: AmmLiquidityCache,
     /// Cached EVM environment from the latest tip block, updated on each `on_new_head_block`.
     cached_evm_env: RwLock<EvmEnv<TempoHardfork, TempoBlockEnv>>,
-}
-
-impl<Client> std::fmt::Debug for TempoTransactionValidator<Client> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TempoTransactionValidator")
-            .finish_non_exhaustive()
-    }
 }
 
 impl<Client> TempoTransactionValidator<Client>
