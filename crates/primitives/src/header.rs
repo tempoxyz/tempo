@@ -140,3 +140,91 @@ impl Sealable for TempoHeader {
         keccak256(alloy_rlp::encode(self))
     }
 }
+
+#[cfg(all(test, feature = "reth-codec"))]
+mod tests {
+    use super::*;
+    use alloy_primitives::{address, b256, bytes, hex};
+    use reth_codecs::Compact;
+
+    /// Ensures backwards compatibility of the compact bitflag.
+    ///
+    /// If this fails because unused bits dropped to zero, new fields should be added via an
+    /// extension type (e.g. `Option<TempoHeaderExt>`) rather than directly to [`TempoHeader`].
+    ///
+    /// See reth's `HeaderExt` pattern:
+    /// <https://github.com/paradigmxyz/reth-core/blob/0476d1bc4b71f3c3b080622be297edd91ee4e70c/crates/codecs/src/alloy/header.rs>
+    #[test]
+    fn tempo_header_has_unused_compact_bits() {
+        assert_ne!(
+            TempoHeader::bitflag_unused_bits(),
+            0,
+            "TempoHeader compact bitflag has no unused bits left — use an extension type"
+        );
+    }
+
+    #[test]
+    fn tempo_header_compact_roundtrip() {
+        let header = TempoHeader {
+            general_gas_limit: 30_000_000,
+            shared_gas_limit: 10_000_000,
+            timestamp_millis_part: 500,
+            inner: Header {
+                parent_hash: b256!(
+                    "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                ),
+                ommers_hash: b256!(
+                    "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347"
+                ),
+                beneficiary: address!("0x000000000000000000000000000000000000beef"),
+                state_root: b256!(
+                    "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                ),
+                transactions_root: b256!(
+                    "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                ),
+                receipts_root: b256!(
+                    "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                ),
+                logs_bloom: Bloom::with_last_byte(0xff),
+                difficulty: U256::from(1u64),
+                number: 1000,
+                gas_limit: 30_000_000,
+                gas_used: 15_000_000,
+                timestamp: 1_700_000_000,
+                extra_data: bytes!("deadbeef"),
+                mix_hash: b256!(
+                    "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                ),
+                nonce: B64::from(42u64),
+                base_fee_per_gas: Some(7),
+                withdrawals_root: Some(b256!(
+                    "0x1111111111111111111111111111111111111111111111111111111111111111"
+                )),
+                blob_gas_used: Some(131072),
+                excess_blob_gas: Some(65536),
+                parent_beacon_block_root: Some(b256!(
+                    "0x2222222222222222222222222222222222222222222222222222222222222222"
+                )),
+                requests_hash: Some(b256!(
+                    "0x3333333333333333333333333333333333333333333333333333333333333333"
+                )),
+            },
+        };
+
+        let expected = hex!(
+            "340201c9c38098968001f403a1a1f8aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347000000000000000000000000000000000000beefbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd1111111111111111111111111111111111111111111111111111111111111111000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ff0103e801c9c380e4e1c06553f100eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee2a01070302000003010000222222222222222222222222222222222222222222222222222222222222222221013333333333333333333333333333333333333333333333333333333333333333deadbeef"
+        );
+
+        let mut buf = vec![];
+        let len = header.to_compact(&mut buf);
+        assert_eq!(
+            buf, expected,
+            "compact encoding changed — this breaks backwards compatibility"
+        );
+        assert_eq!(len, expected.len());
+
+        let (decoded, _) = TempoHeader::from_compact(&expected, expected.len());
+        assert_eq!(decoded, header);
+    }
+}

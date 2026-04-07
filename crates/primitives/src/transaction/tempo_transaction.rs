@@ -2029,3 +2029,150 @@ mod tests {
         assert!(valid_expiring_tx.validate().is_ok());
     }
 }
+
+#[cfg(all(test, feature = "reth-codec"))]
+mod compact_tests {
+    use super::*;
+    use crate::transaction::{
+        KeyAuthorization, SignedKeyAuthorization, TempoSignedAuthorization, TokenLimit,
+        tt_signature::{P256SignatureWithPreHash, PrimitiveSignature, TempoSignature},
+    };
+    use alloy_eips::{eip2930::AccessListItem, eip7702::Authorization};
+    use alloy_primitives::{Signature, U256, address, b256, bytes, hex};
+    use reth_codecs::Compact;
+
+    /// Ensures backwards compatibility of compact bitflags.
+    ///
+    /// See reth's `HeaderExt` pattern:
+    /// <https://github.com/paradigmxyz/reth-core/blob/0476d1bc4b71f3c3b080622be297edd91ee4e70c/crates/codecs/src/alloy/header.rs>
+    #[test]
+    fn compact_types_have_unused_bits() {
+        assert_ne!(
+            TempoTransaction::bitflag_unused_bits(),
+            0,
+            "TempoTransaction"
+        );
+        assert_ne!(Call::bitflag_unused_bits(), 0, "Call");
+    }
+
+    #[test]
+    fn call_compact_roundtrip() {
+        let call = Call {
+            to: TxKind::Call(address!("0x0000000000000000000000000000000000000001")),
+            value: U256::from(1000u64),
+            input: bytes!("deadbeef"),
+        };
+
+        let expected = hex!("05000000000000000000000000000000000000000103e8deadbeef");
+
+        let mut buf = vec![];
+        let len = call.to_compact(&mut buf);
+        assert_eq!(buf, expected, "Call compact encoding changed");
+        assert_eq!(len, expected.len());
+
+        let (decoded, _) = Call::from_compact(&expected, expected.len());
+        assert_eq!(decoded, call);
+    }
+
+    #[test]
+    fn tempo_transaction_compact_roundtrip() {
+        let tx = TempoTransaction {
+            chain_id: 42170,
+            fee_token: Some(address!("0x0000000000000000000000000000000000000abc")),
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 50_000_000_000,
+            gas_limit: 21000,
+            calls: vec![
+                Call {
+                    to: TxKind::Call(address!("0x0000000000000000000000000000000000000001")),
+                    value: U256::from(1000u64),
+                    input: bytes!("cafe"),
+                },
+                Call {
+                    to: TxKind::Create,
+                    value: U256::ZERO,
+                    input: bytes!("6080604052"),
+                },
+            ],
+            access_list: AccessList(vec![AccessListItem {
+                address: address!("0x0000000000000000000000000000000000000001"),
+                storage_keys: vec![B256::ZERO],
+            }]),
+            nonce_key: U256::from(7u64),
+            nonce: 42,
+            fee_payer_signature: Some(Signature::new(U256::from(1u64), U256::from(2u64), false)),
+            valid_before: Some(1_700_001_000),
+            valid_after: Some(1_700_000_000),
+            key_authorization: Some(SignedKeyAuthorization {
+                authorization: KeyAuthorization {
+                    chain_id: 42170,
+                    key_type: SignatureType::P256,
+                    key_id: address!("0x000000000000000000000000000000000000dead"),
+                    expiry: Some(1_700_100_000),
+                    limits: Some(vec![TokenLimit {
+                        token: address!("0x0000000000000000000000000000000000000042"),
+                        limit: U256::from(1_000_000u64),
+                        period: 86400,
+                    }]),
+                    allowed_calls: None,
+                },
+                signature: PrimitiveSignature::P256(P256SignatureWithPreHash {
+                    r: b256!("0x1111111111111111111111111111111111111111111111111111111111111111"),
+                    s: b256!("0x2222222222222222222222222222222222222222222222222222222222222222"),
+                    pub_key_x: b256!(
+                        "0x3333333333333333333333333333333333333333333333333333333333333333"
+                    ),
+                    pub_key_y: b256!(
+                        "0x4444444444444444444444444444444444444444444444444444444444444444"
+                    ),
+                    pre_hash: false,
+                }),
+            }),
+            tempo_authorization_list: vec![TempoSignedAuthorization::new_unchecked(
+                Authorization {
+                    chain_id: U256::from(42170u64),
+                    address: address!("0x0000000000000000000000000000000000000099"),
+                    nonce: 1,
+                },
+                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::new(
+                    U256::from(3u64),
+                    U256::from(4u64),
+                    true,
+                ))),
+            )],
+        };
+
+        let expected = hex!(
+            "921409e201a4ba0000000000000000000000000000000000000abc3b9aca000ba43b74005208021905000000000000000000000000000000000000000103e8cafe0600608060405201350000000000000000000000000000000000000001010000000000000000000000000000000000000000000000000000000000000000072a0001000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000046553f4e8046553f100c501f8c3f83d82a4ba0194000000000000000000000000000000000000dead84655577a0dedd940000000000000000000000000000000000000042830f424083015180b88201111111111111111111111111111111111111111111111111111111111111111122222222222222222222222222222222222222222222222222222222222222223333333333333333333333333333333333333333333333333333333333333333444444444444444444444444444444444444444444444444444444444444444400015ef85c82a4ba94000000000000000000000000000000000000009901b841000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000000000000000000000000000000000000041c"
+        );
+
+        let mut buf = vec![];
+        let len = tx.to_compact(&mut buf);
+        assert_eq!(buf, expected, "TempoTransaction compact encoding changed");
+        assert_eq!(len, expected.len());
+
+        let (decoded, _) = TempoTransaction::from_compact(&expected, expected.len());
+        assert_eq!(decoded, tx);
+    }
+
+    #[test]
+    fn signature_type_compact_roundtrip() {
+        for (variant, expected_byte) in [
+            (SignatureType::Secp256k1, 0x00u8),
+            (SignatureType::P256, 0x01),
+            (SignatureType::WebAuthn, 0x02),
+        ] {
+            let mut buf = vec![];
+            let len = variant.to_compact(&mut buf);
+            assert_eq!(
+                buf,
+                [expected_byte],
+                "SignatureType::{variant:?} compact encoding changed"
+            );
+            assert_eq!(len, 1);
+
+            let (decoded, _) = SignatureType::from_compact(&[expected_byte], 1);
+            assert_eq!(decoded, variant);
+        }
+    }
+}

@@ -932,3 +932,38 @@ mod tests {
         assert_eq!(err.got, 999);
     }
 }
+
+#[cfg(all(test, feature = "reth-codec"))]
+mod compact_tests {
+    use super::*;
+    use alloy_primitives::{address, hex};
+    use reth_codecs::Compact;
+
+    /// Ensures backwards compatibility of compact bitflags.
+    ///
+    /// See reth's `HeaderExt` pattern:
+    /// <https://github.com/paradigmxyz/reth-core/blob/0476d1bc4b71f3c3b080622be297edd91ee4e70c/crates/codecs/src/alloy/header.rs>
+    #[test]
+    fn compact_types_have_unused_bits() {
+        assert_ne!(TokenLimit::bitflag_unused_bits(), 0, "TokenLimit");
+    }
+
+    #[test]
+    fn token_limit_compact_roundtrip() {
+        let token_limit = TokenLimit {
+            token: address!("0x0000000000000000000000000000000000000042"),
+            limit: U256::from(1_000_000u64),
+            period: 86400,
+        };
+
+        let expected = hex!("c30000000000000000000000000000000000000000420f4240015180");
+
+        let mut buf = vec![];
+        let len = token_limit.to_compact(&mut buf);
+        assert_eq!(buf, expected, "TokenLimit compact encoding changed");
+        assert_eq!(len, expected.len());
+
+        let (decoded, _) = TokenLimit::from_compact(&expected, expected.len());
+        assert_eq!(decoded, token_limit);
+    }
+}
