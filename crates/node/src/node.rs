@@ -215,7 +215,7 @@ where
 
                 modules.merge_configured(token.into_rpc())?;
                 modules.merge_configured(eth_ext.into_rpc())?;
-                modules.merge_configured(simulate.into_rpc())?;
+                modules.merge_if_module_configured(RethRpcModule::Eth, simulate.into_rpc())?;
                 modules.merge_configured(fork_schedule.into_rpc())?;
                 modules.merge_if_module_configured(RethRpcModule::Admin, admin.into_rpc())?;
                 modules.merge_if_module_configured(RethRpcModule::Eth, eth_config.into_rpc())?;
