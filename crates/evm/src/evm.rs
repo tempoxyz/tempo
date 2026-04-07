@@ -107,16 +107,9 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         }
     }
 
-    /// Runs the full Tempo transaction validation pipeline without executing the transaction.
+    /// Runs the full transaction validation pipeline without executing the transaction.
     ///
-    /// This performs fee field resolution, environment validation, initial gas validation,
-    /// EIP-7702 auth list application, and state validation with fee deduction.
-    ///
-    /// All state mutations (nonce bumps, fee deduction, key authorization) are applied to the
-    /// journaled state and discarded when the EVM is dropped.
-    ///
-    /// Set [`skip_valid_after_check`](Self::skip_valid_after_check) to skip the `valid_after`
-    /// time-window check (used by the transaction pool).
+    /// Returns a [`ValidationContext`] with context relevant for the transaction pool.
     pub fn validate_transaction(
         &mut self,
         tx: impl IntoTxEnv<TempoTxEnv>,
