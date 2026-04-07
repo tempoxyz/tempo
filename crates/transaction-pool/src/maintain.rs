@@ -30,7 +30,7 @@ use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
     tip20::is_tip20_prefix,
 };
-use tempo_primitives::{AASigned, TempoPrimitives};
+use tempo_primitives::TempoPrimitives;
 use tracing::{debug, error};
 
 /// Evict transactions this many seconds before they expire to reduce propagation
@@ -216,7 +216,7 @@ impl TempoPoolUpdates {
 /// subscribing to all transaction lifecycle events.
 #[derive(Default)]
 struct TempoPoolState {
-    /// Maps `valid_before` timestamp to transaction hashes that expire at that time.
+    /// Maps timestamp to transactions that are going to be invalidated at that time (due to `valid_after` or keychain-related expiry).
     expiry_map: BTreeMap<u64, Vec<TxHash>>,
     /// Reverse mapping: tx_hash -> valid_before timestamp (for cleanup during drain).
     tx_to_expiry: HashMap<TxHash, u64>,
@@ -228,34 +228,37 @@ struct TempoPoolState {
     /// This is a one-time operation that removes transactions with max_fee_per_gas < T1 base fee.
     /// Will be removed after T1 is activated on mainnet.
     t1_transition_cleanup_done: bool,
-    /// Tracks keychain key expiry timestamps for eviction.
-    key_expiry: KeyExpiryTracker,
 }
 
 impl TempoPoolState {
     /// Tracks an AA transaction with a `valid_before` timestamp.
-    fn track_expiry(&mut self, maybe_aa_tx: Option<&AASigned>) {
-        if let Some(aa_tx) = maybe_aa_tx
-            && let Some(valid_before) = aa_tx.tx().valid_before
-        {
-            let hash = *aa_tx.hash();
-            self.expiry_map.entry(valid_before).or_default().push(hash);
-            self.tx_to_expiry.insert(hash, valid_before);
+    fn track(&mut self, tx: &TempoPooledTransaction) {
+        let valid_before = tx.inner().as_aa().and_then(|tx| tx.tx().valid_before);
+        let key_expiry = tx.key_expiry();
+
+        let expiry = match (valid_before, key_expiry) {
+            (Some(valid_before), Some(key_expiry)) => Some(valid_before.min(key_expiry)),
+            (Some(valid_before), None) => Some(valid_before),
+            (None, Some(key_expiry)) => Some(key_expiry),
+            (None, None) => None,
+        };
+
+        if let Some(expiry) = expiry {
+            self.expiry_map.entry(expiry).or_default().push(*tx.hash());
+            self.tx_to_expiry.insert(*tx.hash(), expiry);
         }
     }
 
     /// Removes expiry and key-expiry tracking for a single transaction.
-    fn untrack_expiry(&mut self, hash: &TxHash) {
-        if let Some(valid_before) = self.tx_to_expiry.remove(hash)
-            && let Entry::Occupied(mut entry) = self.expiry_map.entry(valid_before)
+    fn untrack(&mut self, hash: &TxHash) {
+        if let Some(expiry) = self.tx_to_expiry.remove(hash)
+            && let Entry::Occupied(mut entry) = self.expiry_map.entry(expiry)
         {
             entry.get_mut().retain(|h| *h != *hash);
             if entry.get().is_empty() {
                 entry.remove();
             }
         }
-
-        self.key_expiry.untrack(hash);
     }
 
     /// Collects and removes all expired transactions up to the given timestamp.
@@ -272,23 +275,6 @@ impl TempoPoolState {
             expired.extend(expired_hashes);
         }
         expired
-    }
-
-    /// Track a keychain transaction's key expiry for eviction.
-    ///
-    /// Uses the key expiry cached on the transaction during validation.
-    /// Skips if expiry wasn't set (non-keychain tx, key never expires, etc.).
-    fn track_key_expiry(&mut self, tx: &TempoPooledTransaction) {
-        let Some(expiry) = tx.key_expiry() else {
-            return;
-        };
-
-        let Some(subject) = tx.keychain_subject() else {
-            return;
-        };
-
-        self.key_expiry
-            .track(subject.account, subject.key_id, expiry, *tx.hash());
     }
 }
 
@@ -359,103 +345,6 @@ impl Default for PendingStalenessTracker {
     }
 }
 
-/// Composite key identifying a keychain key: (account, key_id).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct KeyId {
-    account: Address,
-    key_id: Address,
-}
-
-/// Tracks keychain key expiry timestamps for eviction.
-///
-/// When a keychain-signed transaction enters the pool, we track its (account, key_id)
-/// along with the key's expiry timestamp. When a block's timestamp passes the expiry,
-/// we evict all transactions using that expired key.
-///
-/// Note: We don't query state here - the expiry is read once when the transaction
-/// enters the pool (during validation) and passed to the tracker.
-#[derive(Debug, Default)]
-struct KeyExpiryTracker {
-    /// Maps expiry timestamp -> set of keys that expire at that time.
-    expiry_map: BTreeMap<u64, HashSet<KeyId>>,
-    /// Maps KeyId -> (expiry timestamp, set of transaction hashes using this key).
-    key_to_txs: HashMap<KeyId, (u64, HashSet<TxHash>)>,
-    /// Reverse map transaction hash -> KeyId for O(1) lookup on removal.
-    tx_to_key: HashMap<TxHash, KeyId>,
-}
-
-impl KeyExpiryTracker {
-    /// Track a keychain transaction with its key expiry timestamp.
-    ///
-    /// Call this when a keychain-signed transaction enters the pool.
-    /// The expiry should be read from the AccountKeychain storage during validation.
-    fn track(&mut self, account: Address, key_id: Address, expiry: u64, tx_hash: TxHash) {
-        let key = KeyId { account, key_id };
-
-        match self.key_to_txs.entry(key) {
-            alloy_primitives::map::Entry::Occupied(mut entry) => {
-                let (existing_expiry, txs) = entry.get_mut();
-                debug_assert_eq!(
-                    *existing_expiry, expiry,
-                    "Key expiry changed unexpectedly - this shouldn't happen"
-                );
-                txs.insert(tx_hash);
-            }
-            alloy_primitives::map::Entry::Vacant(entry) => {
-                entry.insert((expiry, [tx_hash].into_iter().collect()));
-                self.expiry_map.entry(expiry).or_default().insert(key);
-            }
-        }
-        self.tx_to_key.insert(tx_hash, key);
-    }
-
-    /// Removes a single transaction hash from key expiry tracking.
-    fn untrack(&mut self, hash: &TxHash) {
-        let Some(key) = self.tx_to_key.remove(hash) else {
-            return;
-        };
-
-        let Some((expiry, txs)) = self.key_to_txs.get_mut(&key) else {
-            return;
-        };
-        txs.remove(hash);
-
-        if txs.is_empty() {
-            let expiry = *expiry;
-            self.key_to_txs.remove(&key);
-            if let Some(keys) = self.expiry_map.get_mut(&expiry) {
-                keys.remove(&key);
-                if keys.is_empty() {
-                    self.expiry_map.remove(&expiry);
-                }
-            }
-        }
-    }
-
-    /// Drain all expired keys and return the transaction hashes that should be evicted.
-    ///
-    /// Keys with expiry <= tip_timestamp are considered expired.
-    fn drain_expired(&mut self, tip_timestamp: u64) -> Vec<TxHash> {
-        let mut expired_txs = Vec::new();
-
-        while let Some(entry) = self.expiry_map.first_entry()
-            && *entry.key() <= tip_timestamp
-        {
-            let expired_keys = entry.remove();
-            for key in expired_keys {
-                if let Some((_, txs)) = self.key_to_txs.remove(&key) {
-                    for tx in &txs {
-                        self.tx_to_key.remove(tx);
-                    }
-                    expired_txs.extend(txs);
-                }
-            }
-        }
-
-        expired_txs
-    }
-}
-
 /// Unified maintenance task for the Tempo transaction pool.
 ///
 /// Handles:
@@ -486,8 +375,7 @@ where
     // Populate expiry tracking with existing transactions to prevent race conditions at start-up
     let all_txs = pool.all_transactions();
     for tx in all_txs.pending.iter().chain(all_txs.queued.iter()) {
-        state.track_expiry(tx.transaction.inner().as_aa());
-        state.track_key_expiry(&tx.transaction);
+        state.track(&tx.transaction);
     }
 
     let amm_cache = pool.amm_liquidity_cache();
@@ -500,9 +388,7 @@ where
                     break;
                 };
 
-                let tx = &tx_event.transaction.transaction;
-                state.track_expiry(tx.inner().as_aa());
-                state.track_key_expiry(tx);
+                state.track(&tx_event.transaction.transaction);
             }
 
             // Process all maintenance operations on new block commit or reorg
@@ -600,7 +486,7 @@ where
                 tip.blocks_iter()
                     .flat_map(|block| block.body().transactions())
                     .for_each(|tx| {
-                    state.untrack_expiry(tx.tx_hash())
+                    state.untrack(tx.tx_hash())
                 });
 
                 // Evict transactions slightly before they expire to prevent
@@ -611,12 +497,7 @@ where
                 let expired = state.drain_expired(max_expiry);
                 updates.expired_txs = expired.into_iter().filter(|h| pool.contains(h)).collect();
 
-                // Add transactions using expired keychain keys
-                let key_expired = state.key_expiry.drain_expired(max_expiry);
-                let key_expired: Vec<TxHash> =
-                    key_expired.into_iter().filter(|h| pool.contains(h)).collect();
-
-                // 2. Evict expired AA transactions (valid_before expiry)
+                // 2. Evict expired AA transactions
                 let expired_start = Instant::now();
                 let expired_count = updates.expired_txs.len();
                 if expired_count > 0 {
@@ -628,19 +509,6 @@ where
                     );
                     pool.remove_transactions(updates.expired_txs.clone());
                     metrics.expired_transactions_evicted.increment(expired_count as u64);
-                }
-
-                // 2b. Evict transactions using expired keychain keys
-                let key_expired_count = key_expired.len();
-                if key_expired_count > 0 {
-                    debug!(
-                        target: "txpool",
-                        count = key_expired_count,
-                        tip_timestamp,
-                        "Evicting transactions with expired keychain keys"
-                    );
-                    pool.remove_transactions(key_expired);
-                    metrics.expired_transactions_evicted.increment(key_expired_count as u64);
                 }
                 metrics.expired_eviction_duration_seconds.record(expired_start.elapsed());
 
@@ -683,7 +551,7 @@ where
                         if count > 0 {
                             // Clean up expiry tracking for paused txs
                             for tx in &removed_txs {
-                                state.untrack_expiry(tx.hash());
+                                state.untrack(tx.hash());
                             }
 
                             let entries: Vec<_> = removed_txs
@@ -822,7 +690,7 @@ where
                     );
                     let evicted = pool.evict_invalidated_transactions(&updates);
                     for hash in &evicted {
-                        state.untrack_expiry(hash);
+                        state.untrack(hash);
                     }
                     metrics.transactions_invalidated.increment(evicted.len() as u64);
                     metrics
@@ -848,7 +716,7 @@ where
                         );
                         // Clean up expiry tracking for stale txs to prevent orphaned entries
                         for hash in &stale_to_evict {
-                            state.untrack_expiry(hash);
+                            state.untrack(hash);
                         }
                         pool.remove_transactions(stale_to_evict);
                     }
@@ -1047,178 +915,17 @@ mod tests {
         state.tx_to_expiry.insert(hash_b, 1000);
 
         // Mine hash_a and an unknown hash
-        state.untrack_expiry(&hash_a);
-        state.untrack_expiry(&hash_unknown);
+        state.untrack(&hash_a);
+        state.untrack(&hash_unknown);
 
         // hash_a removed from both maps
         assert!(!state.tx_to_expiry.contains_key(&hash_a));
         assert_eq!(state.expiry_map[&1000], vec![hash_b]);
 
         // Mine hash_b should remove the expiry_map entry entirely
-        state.untrack_expiry(&hash_b);
+        state.untrack(&hash_b);
         assert!(!state.tx_to_expiry.contains_key(&hash_b));
         assert!(!state.expiry_map.contains_key(&1000));
-    }
-
-    mod key_expiry_tracker_tests {
-        use super::*;
-
-        #[test]
-        fn tracks_single_key_single_tx() {
-            let mut tracker = KeyExpiryTracker::default();
-            let account = Address::random();
-            let key_id = Address::random();
-            let tx_hash = TxHash::random();
-            let expiry = 1000;
-
-            tracker.track(account, key_id, expiry, tx_hash);
-
-            let key = KeyId { account, key_id };
-            assert!(tracker.key_to_txs.contains_key(&key));
-            assert!(tracker.expiry_map.contains_key(&expiry));
-            assert_eq!(tracker.tx_to_key.get(&tx_hash), Some(&key));
-        }
-
-        #[test]
-        fn tracks_multiple_txs_for_same_key() {
-            let mut tracker = KeyExpiryTracker::default();
-            let account = Address::random();
-            let key_id = Address::random();
-            let expiry = 1000;
-            let tx1 = TxHash::random();
-            let tx2 = TxHash::random();
-
-            tracker.track(account, key_id, expiry, tx1);
-            tracker.track(account, key_id, expiry, tx2);
-
-            let key = KeyId { account, key_id };
-            let (_, txs) = tracker.key_to_txs.get(&key).unwrap();
-            assert_eq!(txs.len(), 2);
-            assert!(txs.contains(&tx1));
-            assert!(txs.contains(&tx2));
-            assert_eq!(tracker.tx_to_key.len(), 2);
-        }
-
-        #[test]
-        fn drain_expired_returns_txs_for_expired_keys() {
-            let mut tracker = KeyExpiryTracker::default();
-            let account = Address::random();
-            let key_id = Address::random();
-            let tx1 = TxHash::random();
-            let tx2 = TxHash::random();
-
-            // Key expires at t=1000
-            tracker.track(account, key_id, 1000, tx1);
-            tracker.track(account, key_id, 1000, tx2);
-
-            // At t=999, nothing should be expired
-            let expired = tracker.drain_expired(999);
-            assert!(expired.is_empty());
-
-            // At t=1000, the key and both txs should be expired
-            let expired = tracker.drain_expired(1000);
-            assert_eq!(expired.len(), 2);
-            assert!(expired.contains(&tx1));
-            assert!(expired.contains(&tx2));
-
-            // Tracker should be empty now
-            assert!(tracker.key_to_txs.is_empty());
-            assert!(tracker.expiry_map.is_empty());
-            assert!(tracker.tx_to_key.is_empty());
-        }
-
-        #[test]
-        fn drain_expired_handles_multiple_keys_with_different_expiries() {
-            let mut tracker = KeyExpiryTracker::default();
-            let account = Address::random();
-            let key1 = Address::random();
-            let key2 = Address::random();
-            let tx1 = TxHash::random();
-            let tx2 = TxHash::random();
-
-            // Key1 expires at t=1000, key2 expires at t=2000
-            tracker.track(account, key1, 1000, tx1);
-            tracker.track(account, key2, 2000, tx2);
-
-            // At t=1500, only key1's tx should be expired
-            let expired = tracker.drain_expired(1500);
-            assert_eq!(expired.len(), 1);
-            assert!(expired.contains(&tx1));
-
-            // At t=2000, key2's tx should be expired
-            let expired = tracker.drain_expired(2000);
-            assert_eq!(expired.len(), 1);
-            assert!(expired.contains(&tx2));
-        }
-
-        #[test]
-        fn remove_tx_cleans_up_tx_from_key() {
-            let mut tracker = KeyExpiryTracker::default();
-            let account = Address::random();
-            let key_id = Address::random();
-            let tx1 = TxHash::random();
-            let tx2 = TxHash::random();
-
-            tracker.track(account, key_id, 1000, tx1);
-            tracker.track(account, key_id, 1000, tx2);
-
-            // Remove one tx — key should still be tracked with the other
-            tracker.untrack(&tx1);
-            let key = KeyId { account, key_id };
-            let (_, txs) = tracker.key_to_txs.get(&key).unwrap();
-            assert_eq!(txs.len(), 1);
-            assert!(txs.contains(&tx2));
-            assert!(tracker.expiry_map.contains_key(&1000));
-            assert!(!tracker.tx_to_key.contains_key(&tx1));
-            assert!(tracker.tx_to_key.contains_key(&tx2));
-
-            // Remove the last tx — all maps should be fully cleaned up
-            tracker.untrack(&tx2);
-            assert!(!tracker.key_to_txs.contains_key(&key));
-            assert!(!tracker.expiry_map.contains_key(&1000));
-            assert!(tracker.tx_to_key.is_empty());
-        }
-
-        #[test]
-        fn remove_tx_ignores_unknown_hashes() {
-            let mut tracker = KeyExpiryTracker::default();
-            let account = Address::random();
-            let key_id = Address::random();
-            let tx = TxHash::random();
-            let unknown = TxHash::random();
-
-            tracker.track(account, key_id, 1000, tx);
-            tracker.untrack(&unknown);
-
-            // Original entry should be untouched
-            let key = KeyId { account, key_id };
-            assert!(tracker.key_to_txs.contains_key(&key));
-            assert!(tracker.expiry_map.contains_key(&1000));
-            assert_eq!(tracker.tx_to_key.len(), 1);
-        }
-
-        #[test]
-        fn remove_tx_then_drain_expired() {
-            let mut tracker = KeyExpiryTracker::default();
-            let account = Address::random();
-            let key_id = Address::random();
-            let tx1 = TxHash::random();
-            let tx2 = TxHash::random();
-
-            tracker.track(account, key_id, 1000, tx1);
-            tracker.track(account, key_id, 1000, tx2);
-
-            // Remove one tx, then drain at expiry — only remaining tx should be returned
-            tracker.untrack(&tx1);
-            let expired = tracker.drain_expired(1000);
-            assert_eq!(expired.len(), 1);
-            assert!(expired.contains(&tx2));
-
-            // All maps should be empty
-            assert!(tracker.key_to_txs.is_empty());
-            assert!(tracker.expiry_map.is_empty());
-            assert!(tracker.tx_to_key.is_empty());
-        }
     }
 
     fn create_test_chain(
