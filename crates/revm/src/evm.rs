@@ -45,6 +45,11 @@ pub struct TempoEvm<DB: Database, I> {
     /// The transaction pool sets this because it intentionally accepts transactions
     /// with a future `valid_after` (queued until executable).
     pub skip_valid_after_check: bool,
+    /// When true, skips the AMM liquidity check in `collect_fee_pre_tx`.
+    ///
+    /// The transaction pool sets this because it performs its own liquidity
+    /// validation against a cached view of the AMM state.
+    pub skip_liquidity_check: bool,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -80,6 +85,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             fee_token: None,
             key_expiry: None,
             skip_valid_after_check: false,
+            skip_liquidity_check: false,
         }
     }
 }
