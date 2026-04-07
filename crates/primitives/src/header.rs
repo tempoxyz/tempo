@@ -144,6 +144,8 @@ impl Sealable for TempoHeader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::hex;
+    use reth_codecs::Compact;
 
     /// Ensures backwards compatibility of the compact bitflag.
     ///
@@ -159,5 +161,31 @@ mod tests {
             0,
             "TempoHeader compact bitflag has no unused bits left — use an extension type"
         );
+    }
+
+    #[test]
+    fn tempo_header_compact_roundtrip() {
+        let header = TempoHeader {
+            general_gas_limit: 30_000_000,
+            shared_gas_limit: 10_000_000,
+            timestamp_millis_part: 500,
+            inner: Header {
+                number: 1000,
+                gas_limit: 30_000_000,
+                timestamp: 1_700_000_000,
+                base_fee_per_gas: Some(7),
+                ..Default::default()
+            },
+        };
+
+        let expected = hex!("340201c9c38098968001f40021200800000000000000000000000000000000000000000000000000000000000000001dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347000000000000000000000000000000000000000056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b42156e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b42156e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b4210000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000003e801c9c3806553f10000000000000000000000000000000000000000000000000000000000000000000107");
+
+        let mut buf = vec![];
+        let len = header.to_compact(&mut buf);
+        assert_eq!(buf, expected, "compact encoding changed — this breaks backwards compatibility");
+        assert_eq!(len, expected.len());
+
+        let (decoded, _) = TempoHeader::from_compact(&expected, expected.len());
+        assert_eq!(decoded, header);
     }
 }

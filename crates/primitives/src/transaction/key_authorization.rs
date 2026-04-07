@@ -422,7 +422,9 @@ mod tests {
         TempoSignature,
         tt_authorization::tests::{generate_secp256k1_keypair, sign_hash},
     };
+    use alloy_primitives::{address, hex};
     use alloy_rlp::{Decodable, Encodable};
+    use reth_codecs::Compact;
 
     fn make_auth(expiry: Option<u64>, limits: Option<Vec<TokenLimit>>) -> KeyAuthorization {
         KeyAuthorization {
@@ -939,5 +941,24 @@ mod tests {
     #[test]
     fn compact_types_have_unused_bits() {
         assert_ne!(TokenLimit::bitflag_unused_bits(), 0, "TokenLimit");
+    }
+
+    #[test]
+    fn token_limit_compact_roundtrip() {
+        let token_limit = TokenLimit {
+            token: address!("0x0000000000000000000000000000000000000042"),
+            limit: U256::from(1_000_000u64),
+            period: 86400,
+        };
+
+        let expected = hex!("c30000000000000000000000000000000000000000420f4240015180");
+
+        let mut buf = vec![];
+        let len = token_limit.to_compact(&mut buf);
+        assert_eq!(buf, expected, "TokenLimit compact encoding changed");
+        assert_eq!(len, expected.len());
+
+        let (decoded, _) = TokenLimit::from_compact(&expected, expected.len());
+        assert_eq!(decoded, token_limit);
     }
 }

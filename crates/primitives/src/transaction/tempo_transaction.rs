@@ -959,6 +959,7 @@ mod tests {
     };
     use alloy_eips::{Decodable2718, Encodable2718, eip7702::Authorization};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, address, bytes, hex};
+    use reth_codecs::Compact;
     use alloy_rlp::{Decodable, Encodable};
 
     #[test]
@@ -2037,5 +2038,68 @@ mod tests {
     fn compact_types_have_unused_bits() {
         assert_ne!(TempoTransaction::bitflag_unused_bits(), 0, "TempoTransaction");
         assert_ne!(Call::bitflag_unused_bits(), 0, "Call");
+    }
+
+    #[test]
+    fn call_compact_roundtrip() {
+        let call = Call {
+            to: TxKind::Call(address!("0x0000000000000000000000000000000000000001")),
+            value: U256::from(1000u64),
+            input: bytes!("deadbeef"),
+        };
+
+        let expected = hex!("05000000000000000000000000000000000000000103e8deadbeef");
+
+        let mut buf = vec![];
+        let len = call.to_compact(&mut buf);
+        assert_eq!(buf, expected, "Call compact encoding changed");
+        assert_eq!(len, expected.len());
+
+        let (decoded, _) = Call::from_compact(&expected, expected.len());
+        assert_eq!(decoded, call);
+    }
+
+    #[test]
+    fn tempo_transaction_compact_roundtrip() {
+        let tx = TempoTransaction {
+            chain_id: 1,
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 50_000_000_000,
+            gas_limit: 21000,
+            calls: vec![Call {
+                to: TxKind::Call(address!("0x0000000000000000000000000000000000000001")),
+                value: U256::from(1000u64),
+                input: Bytes::new(),
+            }],
+            nonce: 42,
+            ..Default::default()
+        };
+
+        let expected = hex!("8114010200013b9aca000ba43b74005208011705000000000000000000000000000000000000000103e8002a00");
+
+        let mut buf = vec![];
+        let len = tx.to_compact(&mut buf);
+        assert_eq!(buf, expected, "TempoTransaction compact encoding changed");
+        assert_eq!(len, expected.len());
+
+        let (decoded, _) = TempoTransaction::from_compact(&expected, expected.len());
+        assert_eq!(decoded, tx);
+    }
+
+    #[test]
+    fn signature_type_compact_roundtrip() {
+        for (variant, expected_byte) in [
+            (SignatureType::Secp256k1, 0x00u8),
+            (SignatureType::P256, 0x01),
+            (SignatureType::WebAuthn, 0x02),
+        ] {
+            let mut buf = vec![];
+            let len = variant.to_compact(&mut buf);
+            assert_eq!(buf, [expected_byte], "SignatureType::{variant:?} compact encoding changed");
+            assert_eq!(len, 1);
+
+            let (decoded, _) = SignatureType::from_compact(&[expected_byte], 1);
+            assert_eq!(decoded, variant);
+        }
     }
 }

@@ -971,8 +971,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::hex;
+    use alloy_primitives::{b256, bytes, hex};
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use reth_codecs::Compact;
     use p256::{
         ecdsa::{SigningKey as P256SigningKey, signature::hazmat::PrehashSigner},
         elliptic_curve::rand_core::OsRng,
@@ -2081,5 +2082,47 @@ mod tests {
     #[test]
     fn compact_types_have_unused_bits() {
         assert_ne!(P256SignatureWithPreHash::bitflag_unused_bits(), 0, "P256SignatureWithPreHash");
+    }
+
+    #[test]
+    fn p256_signature_compact_roundtrip() {
+        let sig = P256SignatureWithPreHash {
+            r: b256!("0x1111111111111111111111111111111111111111111111111111111111111111"),
+            s: b256!("0x2222222222222222222222222222222222222222222222222222222222222222"),
+            pub_key_x: b256!("0x3333333333333333333333333333333333333333333333333333333333333333"),
+            pub_key_y: b256!("0x4444444444444444444444444444444444444444444444444444444444444444"),
+            pre_hash: true,
+        };
+
+        let expected = hex!("011111111111111111111111111111111111111111111111111111111111111111222222222222222222222222222222222222222222222222222222222222222233333333333333333333333333333333333333333333333333333333333333334444444444444444444444444444444444444444444444444444444444444444");
+
+        let mut buf = vec![];
+        let len = sig.to_compact(&mut buf);
+        assert_eq!(buf, expected, "P256SignatureWithPreHash compact encoding changed");
+        assert_eq!(len, expected.len());
+
+        let (decoded, _) = P256SignatureWithPreHash::from_compact(&expected, expected.len());
+        assert_eq!(decoded, sig);
+    }
+
+    #[test]
+    fn webauthn_signature_compact_roundtrip() {
+        let sig = WebAuthnSignature {
+            r: b256!("0x1111111111111111111111111111111111111111111111111111111111111111"),
+            s: b256!("0x2222222222222222222222222222222222222222222222222222222222222222"),
+            pub_key_x: b256!("0x3333333333333333333333333333333333333333333333333333333333333333"),
+            pub_key_y: b256!("0x4444444444444444444444444444444444444444444444444444444444444444"),
+            webauthn_data: bytes!("aabbccdd"),
+        };
+
+        let expected = hex!("1111111111111111111111111111111111111111111111111111111111111111222222222222222222222222222222222222222222222222222222222222222233333333333333333333333333333333333333333333333333333333333333334444444444444444444444444444444444444444444444444444444444444444aabbccdd");
+
+        let mut buf = vec![];
+        let len = sig.to_compact(&mut buf);
+        assert_eq!(buf, expected, "WebAuthnSignature compact encoding changed");
+        assert_eq!(len, expected.len());
+
+        let (decoded, _) = WebAuthnSignature::from_compact(&expected, expected.len());
+        assert_eq!(decoded, sig);
     }
 }
