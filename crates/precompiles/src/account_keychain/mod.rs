@@ -1194,7 +1194,10 @@ impl AccountKeychain {
         }
 
         let mut limit_state = self.spending_limits[limit_key][token].read()?;
-        limit_state.remaining = limit_state.remaining.saturating_add(amount);
+        limit_state.remaining = limit_state
+            .remaining
+            .saturating_add(amount)
+            .min(U256::from(limit_state.max));
 
         self.spending_limits[limit_key][token].write(limit_state)
     }
@@ -3111,6 +3114,58 @@ mod tests {
                 after_refund,
                 U256::from(140),
                 "saturating_add should allow refund beyond original limit without overflow"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t3_refund_spending_limit_clamps_to_max() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let eoa = Address::random();
+        let access_key = Address::random();
+        let token = Address::random();
+        let original_limit = U256::from(100);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(eoa)?;
+
+            let auth_call = authorizeKeyCall {
+                keyId: access_key,
+                signatureType: SignatureType::Secp256k1,
+                config: KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![TokenLimit {
+                        token,
+                        amount: original_limit,
+                        period: 0,
+                    }],
+                    allowAnyCalls: true,
+                    allowedCalls: vec![],
+                },
+            };
+            keychain.authorize_key(eoa, auth_call)?;
+
+            keychain.set_transaction_key(access_key)?;
+            keychain.set_tx_origin(eoa)?;
+
+            keychain.authorize_transfer(eoa, token, U256::from(10))?;
+            keychain.refund_spending_limit(eoa, token, U256::from(50))?;
+
+            let after_refund = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(
+                after_refund, original_limit,
+                "refund should not restore more than the configured max"
             );
 
             Ok(())
