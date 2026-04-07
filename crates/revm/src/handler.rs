@@ -1569,22 +1569,9 @@ impl<DB, I> TempoEvmHandler<DB, I>
 where
     DB: alloy_evm::Database,
 {
-    /// Runs the full Tempo transaction validation pipeline without executing the transaction.
+    /// Runs the full transaction validation pipeline without executing the transaction.
     ///
-    /// This performs:
-    /// 1. Fee field resolution (`load_fee_fields`)
-    /// 2. Environment validation (`validate_env`)
-    /// 3. Initial gas validation (`validate_initial_tx_gas`)
-    /// 4. EIP-7702 auth list application (`apply_eip7702_auth_list`)
-    /// 5. State validation and fee deduction (`validate_against_state_and_deduct_caller`)
-    ///
-    /// All state mutations (nonce bumps, fee deduction, key authorization) are applied to the
-    /// journaled state but can be discarded by the caller (e.g., by dropping the EVM instance).
-    ///
-    /// This is used by the transaction pool to reuse the EVM validation logic without
-    /// duplicating it.
-    ///
-    /// Returns a [`ValidationContext`] with the resolved fee token and key expiry.
+    /// Returns a [`ValidationContext`] with context relevant for the transaction pool.
     pub fn validate_transaction(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
