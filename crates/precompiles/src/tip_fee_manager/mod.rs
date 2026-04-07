@@ -623,7 +623,13 @@ mod tests {
             let max_amount = U256::from(1000);
 
             // Call collect_fee_pre_tx
-            fee_manager.collect_fee_pre_tx(user, user_token.address(), max_amount, validator, false)?;
+            fee_manager.collect_fee_pre_tx(
+                user,
+                user_token.address(),
+                max_amount,
+                validator,
+                false,
+            )?;
 
             // With different tokens:
             // - Liquidity is checked (not reserved)
@@ -693,7 +699,13 @@ mod tests {
             let refund_amount = U256::from(200);
 
             // First call collect_fee_pre_tx (checks liquidity)
-            fee_manager.collect_fee_pre_tx(user, user_token.address(), max_amount, validator, false)?;
+            fee_manager.collect_fee_pre_tx(
+                user,
+                user_token.address(),
+                max_amount,
+                validator,
+                false,
+            )?;
 
             // Then call collect_fee_post_tx (executes swap immediately)
             fee_manager.collect_fee_post_tx(
@@ -765,8 +777,13 @@ mod tests {
             // 1000 * 0.997 = 997 output needed, but only 100 available
             let max_amount = U256::from(1000);
 
-            let result =
-                fee_manager.collect_fee_pre_tx(user, user_token.address(), max_amount, validator, false);
+            let result = fee_manager.collect_fee_pre_tx(
+                user,
+                user_token.address(),
+                max_amount,
+                validator,
+                false,
+            );
 
             assert!(result.is_err(), "Should fail with insufficient liquidity");
 
