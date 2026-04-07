@@ -791,6 +791,63 @@ mod tests {
         })
     }
 
+    /// Test that `skip_liquidity_check = true` bypasses the insufficient-liquidity error
+    /// when `user_token != validator_token`.
+    #[test]
+    fn test_collect_fee_pre_tx_skip_liquidity_check() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let user = Address::random();
+        let validator = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                .with_issuer(admin)
+                .with_mint(user, U256::from(10000))
+                .with_approval(user, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
+                .apply()?;
+
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .with_issuer(admin)
+                .apply()?;
+
+            let mut fee_manager = TipFeeManager::new();
+            fee_manager.set_validator_token(
+                validator,
+                IFeeManager::setValidatorTokenCall {
+                    token: validator_token.address(),
+                },
+                Address::random(),
+            )?;
+
+            // Skip liquidity check = false should fail
+            let result = fee_manager.collect_fee_pre_tx(
+                user,
+                user_token.address(),
+                U256::from(1000),
+                validator,
+                false,
+            );
+            assert!(
+                result.is_err(),
+                "Should fail without liquidity, got: {result:?}"
+            );
+
+            // Skip liquidity check = true should pass
+            let result = fee_manager.collect_fee_pre_tx(
+                user,
+                user_token.address(),
+                U256::from(1000),
+                validator,
+                true,
+            );
+            assert!(result.is_ok());
+            assert_eq!(result?, user_token.address());
+
+            Ok(())
+        })
+    }
+
     /// Test distribute_fees with zero balance is a no-op
     #[test]
     fn test_distribute_fees_zero_balance() -> eyre::Result<()> {
