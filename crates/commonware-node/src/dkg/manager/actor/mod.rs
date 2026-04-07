@@ -126,6 +126,22 @@ where
     metrics: Metrics,
 }
 
+/// Groups the mutable and immutable references needed to process a
+/// finalized block during an epoch transition.
+struct FinalizedBlockContext<'a, TStorageContext, TSender>
+where
+    TStorageContext: commonware_runtime::Metrics + Clock + commonware_runtime::Storage,
+    TSender: Sender<PublicKey = PublicKey>,
+{
+    state: &'a state::State,
+    round: &'a state::Round,
+    round_channel: &'a mut TSender,
+    storage: &'a mut state::Storage<TStorageContext>,
+    dealer_state: &'a mut Option<state::Dealer>,
+    player_state: &'a mut Option<state::Player>,
+    block: Block,
+}
+
 impl<TContext> Actor<TContext>
 where
     TContext: commonware_runtime::BufferPooler
@@ -350,13 +366,15 @@ where
                                     } else {
                                         self.handle_finalized_block(
                                             msg.cause,
-                                            &state,
-                                            &round,
-                                            &mut round_sender,
-                                            storage,
-                                            &mut dealer_state,
-                                            &mut player_state,
-                                            block,
+                                            FinalizedBlockContext {
+                                                state: &state,
+                                                round: &round,
+                                                round_channel: &mut round_sender,
+                                                storage,
+                                                dealer_state: &mut dealer_state,
+                                                player_state: &mut player_state,
+                                                block,
+                                            },
                                         ).await
                                     };
                                     let should_break = match res {
@@ -594,32 +612,31 @@ where
         parent = &cause,
         skip_all,
         fields(
-            dkg.epoch = %round.epoch(),
-            block.height = %block.height(),
-            block.extra_data.bytes = block.header().extra_data().len(),
+            dkg.epoch = %ctx.round.epoch(),
+            block.height = %ctx.block.height(),
+            block.extra_data.bytes = ctx.block.header().extra_data().len(),
         ),
         err,
     )]
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "easiest way to express this for now"
-    )]
-    // TODO(janis): replace this by a struct?
     async fn handle_finalized_block<TStorageContext, TSender>(
         &mut self,
         cause: Span,
-        state: &state::State,
-        round: &state::Round,
-        round_channel: &mut TSender,
-        storage: &mut state::Storage<TStorageContext>,
-        dealer_state: &mut Option<state::Dealer>,
-        player_state: &mut Option<state::Player>,
-        block: Block,
+        ctx: FinalizedBlockContext<'_, TStorageContext, TSender>,
     ) -> eyre::Result<Option<State>>
     where
         TStorageContext: commonware_runtime::Metrics + Clock + commonware_runtime::Storage,
         TSender: Sender<PublicKey = PublicKey>,
     {
+        let FinalizedBlockContext {
+            state,
+            round,
+            round_channel,
+            storage,
+            dealer_state,
+            player_state,
+            block,
+        } = ctx;
+
         let epoch_info = self
             .config
             .epoch_strategy
@@ -671,51 +688,122 @@ where
         }
 
         if block.height() != epoch_info.last() {
-            if !block.header().extra_data().is_empty() {
-                'handle_log: {
-                    let (dealer, log) =
-                        match read_dealer_log(block.header().extra_data().as_ref(), round) {
-                            Err(reason) => {
-                                warn!(
-                                    %reason,
-                                    "failed to read dealer log from block \
-                                    extraData header field");
-                                break 'handle_log;
-                            }
-                            Ok((dealer, log)) => (dealer, log),
-                        };
-                    storage
-                        .append_dealer_log(round.epoch(), dealer.clone(), log)
-                        .await
-                        .wrap_err("failed to append log to journal")?;
-                    if self.config.me.public_key() == dealer
-                        && let Some(dealer_state) = dealer_state
-                    {
-                        info!(
-                            "found own dealing in finalized block; deleting it \
-                            from state to not write it again"
-                        );
-                        dealer_state.take_finalized();
-                    }
-                }
-            }
-
-            storage
-                .append_finalized_block(round.epoch(), block)
-                .await
-                .wrap_err("failed to append finalized block to journal")?;
-
+            self.process_mid_epoch_block(storage, round, dealer_state, block)
+                .await?;
             return Ok(None);
         }
 
+        self.resolve_epoch_outcome(state, round, storage, player_state, block)
+            .await
+            .map(Some)
+    }
+
+    /// Handles the second half of the epoch.
+    ///
+    /// During the Midpoint and Late phases each dealer node writes its signed
+    /// log into the extra data field of a finalized block. On every such
+    /// block this function:
+    ///
+    /// 1. Reads the dealer log from the block's extra data (if present) and
+    ///    persists it to the epoch journal so that all dealer logs are
+    ///    available at the boundary block to complete the ceremony.
+    /// 2. If the log belongs to this node, clears the dealer's own finalized
+    ///    log from in-memory state so it is not written to a block again.
+    /// 3. Appends the block itself to the epoch journal regardless of whether
+    ///    a log was present.
+    #[instrument(
+        skip_all,
+        fields(
+            dkg.epoch = %round.epoch(),
+            block.height = %block.height(),
+            block.extra_data.bytes = block.header().extra_data().len(),
+        ),
+        err,
+    )]
+    async fn process_mid_epoch_block<TStorageContext>(
+        &self,
+        storage: &mut state::Storage<TStorageContext>,
+        round: &state::Round,
+        dealer_state: &mut Option<state::Dealer>,
+        block: Block,
+    ) -> eyre::Result<()>
+    where
+        TStorageContext: commonware_runtime::Metrics + Clock + commonware_runtime::Storage,
+    {
+        if !block.header().extra_data().is_empty() {
+            'handle_log: {
+                let (dealer, log) =
+                    match read_dealer_log(block.header().extra_data().as_ref(), round) {
+                        Err(reason) => {
+                            warn!(
+                                %reason,
+                                "failed to read dealer log from block \
+                                extraData header field");
+                            break 'handle_log;
+                        }
+                        Ok((dealer, log)) => (dealer, log),
+                    };
+                storage
+                    .append_dealer_log(round.epoch(), dealer.clone(), log)
+                    .await
+                    .wrap_err("failed to append log to journal")?;
+                if self.config.me.public_key() == dealer
+                    && let Some(dealer_state) = dealer_state
+                {
+                    info!(
+                        "found own dealing in finalized block; deleting it \
+                        from state to not write it again"
+                    );
+                    dealer_state.take_finalized();
+                }
+            }
+        }
+
+        storage
+            .append_finalized_block(round.epoch(), block)
+            .await
+            .wrap_err("failed to append finalized block to journal")?;
+
+        Ok(())
+    }
+
+    /// Handles the last height of an epoch.
+    ///
+    /// Returns a new [`State`] after finalizing the boundary block of the epoch.
+    ///
+    /// On reaching the boundary block of an epoch, the following steps occur:
+    /// 1. Reads the on-chain DKG outcome embedded in the boundary block.
+    /// 2. Computes the local DKG outcome from the dealer logs collected
+    ///    during the epoch and compares it against the on-chain result.
+    /// 3. Records whether the ceremony was a success or failure.
+    /// 4. Reads the next set of validators from the smart contract.
+    /// 5. Returns the new state that drives the next epoch's DKG round.
+    #[instrument(
+        skip_all,
+        fields(
+            dkg.epoch = %round.epoch(),
+            block.height = %block.height(),
+            block.extra_data.bytes = block.header().extra_data().len(),
+        ),
+        err,
+    )]
+    async fn resolve_epoch_outcome<TStorageContext>(
+        &mut self,
+        state: &state::State,
+        round: &state::Round,
+        storage: &mut state::Storage<TStorageContext>,
+        player_state: &mut Option<state::Player>,
+        block: Block,
+    ) -> eyre::Result<State>
+    where
+        TStorageContext: commonware_runtime::Metrics + Clock + commonware_runtime::Storage,
+    {
         info!("reached last block of epoch; reading DKG outcome from header");
 
         let onchain_outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
             &mut block.header().extra_data().as_ref(),
         )
         .expect("the last block of an epoch must contain the DKG outcome");
-
-        info!("reading validator from contract");
 
         let (local_output, mut share) = if let Some((outcome, share)) =
             storage.get_dkg_outcome(&state.epoch, &block.parent_digest())
@@ -804,7 +892,7 @@ where
             self.metrics.successes.inc();
         }
 
-        Ok(Some(state::State {
+        Ok(state::State {
             epoch: onchain_outcome.epoch,
             seed: Summary::random(&mut self.context),
             output: onchain_outcome.output.clone(),
@@ -812,7 +900,7 @@ where
             players: onchain_outcome.next_players,
             syncers: ordered::Set::default(),
             is_full_dkg: onchain_outcome.is_next_full_dkg,
-        }))
+        })
     }
 
     /// Looks for and handles a finalized boundary block.
