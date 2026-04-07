@@ -51,6 +51,21 @@ pub struct CallScope {
 }
 
 impl CallScope {
+    /// Returns the target contract address.
+    pub fn target(&self) -> Address {
+        self.target
+    }
+
+    /// Returns `true` when any call to this target is allowed (no selector restrictions).
+    pub fn allows_all_selectors(&self) -> bool {
+        self.selector_rules.is_empty()
+    }
+
+    /// Returns the selector rules for this target.
+    pub fn selector_rules(&self) -> &[SelectorRule] {
+        &self.selector_rules
+    }
+
     fn heap_size(&self) -> usize {
         self.selector_rules.capacity() * size_of::<SelectorRule>()
             + self
@@ -83,6 +98,21 @@ pub struct SelectorRule {
 }
 
 impl SelectorRule {
+    /// Returns the 4-byte function selector.
+    pub fn selector(&self) -> [u8; 4] {
+        self.selector
+    }
+
+    /// Returns the allowed recipients for this selector.
+    pub fn recipients(&self) -> &[Address] {
+        &self.recipients
+    }
+
+    /// Returns `true` when any recipient is allowed (no recipient restriction).
+    pub fn allows_all_recipients(&self) -> bool {
+        self.recipients.is_empty()
+    }
+
     fn heap_size(&self) -> usize {
         self.recipients.capacity() * size_of::<Address>()
     }
@@ -930,5 +960,89 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.expected, expected);
         assert_eq!(err.got, 999);
+    }
+
+    #[test]
+    fn test_call_scope_accessors() {
+        let target = Address::repeat_byte(0x11);
+        let rule = SelectorRule {
+            selector: [0xaa, 0xbb, 0xcc, 0xdd],
+            recipients: vec![Address::repeat_byte(0x22)],
+        };
+        let scope = CallScope {
+            target,
+            selector_rules: vec![rule],
+        };
+
+        assert_eq!(scope.target(), target);
+        assert!(!scope.allows_all_selectors());
+        assert_eq!(scope.selector_rules().len(), 1);
+    }
+
+    #[test]
+    fn test_call_scope_allows_all_selectors_when_empty() {
+        let scope = CallScope {
+            target: Address::repeat_byte(0x11),
+            selector_rules: vec![],
+        };
+        assert!(scope.allows_all_selectors());
+    }
+
+    #[test]
+    fn test_selector_rule_accessors() {
+        let selector = [0x12, 0x34, 0x56, 0x78];
+        let recipients = vec![Address::repeat_byte(0x33), Address::repeat_byte(0x44)];
+        let rule = SelectorRule {
+            selector,
+            recipients: recipients.clone(),
+        };
+
+        assert_eq!(rule.selector(), selector);
+        assert_eq!(rule.recipients(), &recipients);
+        assert!(!rule.allows_all_recipients());
+    }
+
+    #[test]
+    fn test_selector_rule_allows_all_recipients_when_empty() {
+        let rule = SelectorRule {
+            selector: [0xaa, 0xbb, 0xcc, 0xdd],
+            recipients: vec![],
+        };
+        assert!(rule.allows_all_recipients());
+    }
+}
+
+#[cfg(all(test, feature = "reth-codec"))]
+mod compact_tests {
+    use super::*;
+    use alloy_primitives::{address, hex};
+    use reth_codecs::Compact;
+
+    /// Ensures backwards compatibility of compact bitflags.
+    ///
+    /// See reth's `HeaderExt` pattern:
+    /// <https://github.com/paradigmxyz/reth-core/blob/0476d1bc4b71f3c3b080622be297edd91ee4e70c/crates/codecs/src/alloy/header.rs>
+    #[test]
+    fn compact_types_have_unused_bits() {
+        assert_ne!(TokenLimit::bitflag_unused_bits(), 0, "TokenLimit");
+    }
+
+    #[test]
+    fn token_limit_compact_roundtrip() {
+        let token_limit = TokenLimit {
+            token: address!("0x0000000000000000000000000000000000000042"),
+            limit: U256::from(1_000_000u64),
+            period: 86400,
+        };
+
+        let expected = hex!("c30000000000000000000000000000000000000000420f4240015180");
+
+        let mut buf = vec![];
+        let len = token_limit.to_compact(&mut buf);
+        assert_eq!(buf, expected, "TokenLimit compact encoding changed");
+        assert_eq!(len, expected.len());
+
+        let (decoded, _) = TokenLimit::from_compact(&expected, expected.len());
+        assert_eq!(decoded, token_limit);
     }
 }

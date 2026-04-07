@@ -1,6 +1,6 @@
 use crate::{TempoBlockEnv, TempoTxEnv, instructions};
 use alloy_evm::{Database, precompiles::PrecompilesMap};
-use alloy_primitives::{Address, Log, U256};
+use alloy_primitives::{Address, U256};
 use revm::{
     Context, Inspector,
     context::{CfgEnv, ContextError, Evm, FrameStack},
@@ -29,8 +29,6 @@ pub struct TempoEvm<DB: Database, I> {
         PrecompilesMap,
         EthFrame<EthInterpreter>,
     >,
-    /// Preserved logs from the last transaction
-    pub logs: Vec<Log>,
     /// The fee collected in `collectFeePreTx` call.
     pub(crate) collected_fee: U256,
     /// Initial gas cost. Used for key_authorization validation in collectFeePreTx.
@@ -69,7 +67,6 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     ) -> Self {
         Self {
             inner,
-            logs: Vec::new(),
             collected_fee: U256::ZERO,
             initial_gas: 0,
             fee_token: None,
@@ -91,12 +88,6 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     /// Consumes self and returns the inner Inspector.
     pub fn into_inspector(self) -> I {
         self.inner.into_inspector()
-    }
-
-    /// Take logs from the EVM.
-    #[inline]
-    pub fn take_logs(&mut self) -> Vec<Log> {
-        std::mem::take(&mut self.logs)
     }
 }
 
@@ -194,7 +185,7 @@ mod tests {
     use crate::gas_params::tempo_gas_params;
     use alloy_eips::eip7702::Authorization;
     use alloy_evm::FromRecoveredTx;
-    use alloy_primitives::{Address, Bytes, Log, TxKind, U256, bytes};
+    use alloy_primitives::{Address, Bytes, TxKind, U256, bytes};
     use alloy_sol_types::SolCall;
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use p256::{
@@ -1675,32 +1666,6 @@ mod tests {
             evm_with_inspector.initial_gas, 0,
             "initial_gas should be 0 after with_inspector"
         );
-    }
-
-    /// Test that take_logs clears logs and returns them.
-    #[test]
-    fn test_tempo_evm_take_logs() {
-        let mut evm = create_evm();
-
-        // Manually add some logs
-        evm.logs.push(Log::new_unchecked(
-            Address::repeat_byte(0x01),
-            vec![],
-            Bytes::new(),
-        ));
-        evm.logs.push(Log::new_unchecked(
-            Address::repeat_byte(0x02),
-            vec![],
-            Bytes::new(),
-        ));
-
-        assert_eq!(evm.logs.len(), 2);
-
-        // Take logs
-        let taken_logs = evm.take_logs();
-
-        assert_eq!(taken_logs.len(), 2, "Should return 2 logs");
-        assert!(evm.logs.is_empty(), "Logs should be cleared after take");
     }
 
     /// Test AA transaction gas usage for simple identity precompile call.

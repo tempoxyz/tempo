@@ -640,14 +640,9 @@ where
         result: <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
         result_gas: ResultGas,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
-        evm.logs.clear();
         // reset initial gas to 0 to avoid gas limit check errors
         evm.initial_gas = 0;
         evm.fee_token = None;
-
-        if !result.instruction_result().is_ok() {
-            evm.logs = evm.journal_mut().take_logs();
-        }
 
         MainnetHandler::default()
             .execution_result(evm, result, result_gas)
