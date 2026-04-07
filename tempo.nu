@@ -280,12 +280,12 @@ def read-bench-marker [datadir: string] {
 # ============================================================================
 
 # Ordered list of all Tempo hardforks (must match TempoHardfork enum in crates/chainspec)
-const TEMPO_HARDFORKS = ["T0" "T1" "T1A" "T1B" "T1C" "T2"]
+const TEMPO_HARDFORKS = ["T0" "T1" "T1A" "T1B" "T1C" "T2" "T3" "T4"]
 
 # Map a hardfork name to generate-genesis CLI args.
 # Forks up to and including the given fork are active at genesis (time=0).
 # Forks after are disabled (time=max u64).
-# Returns a list of CLI flag strings, e.g. ["--t0-time" "0" "--t1-time" "0" "--t1a-time" "18446744073709551615" ...]
+# Returns a list of CLI flag strings, e.g. ["--t0-time" "0" "--t1-time" "0" "--t1a-time" "9223372036854775807" ...]
 def hardfork-to-genesis-args [fork: string] {
     let fork_upper = ($fork | str upcase)
     let idx = ($TEMPO_HARDFORKS | enumerate | where item == $fork_upper)
@@ -296,7 +296,7 @@ def hardfork-to-genesis-args [fork: string] {
     let cutoff = ($idx | get 0.index)
     $TEMPO_HARDFORKS | enumerate | each { |it|
         let flag = $"--($it.item | str downcase)-time"
-        let time = if $it.index <= $cutoff { "0" } else { "18446744073709551615" }
+        let time = if $it.index <= $cutoff { "0" } else { "9223372036854775807" }
         [$flag $time]
     } | flatten
 }

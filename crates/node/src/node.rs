@@ -313,6 +313,7 @@ impl PayloadAttributesBuilder<TempoPayloadAttributes, TempoHeader>
 
         TempoPayloadAttributes::new(
             Address::ZERO,
+            None,
             timestamp_millis,
             Default::default(),
             Vec::new,

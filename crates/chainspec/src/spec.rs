@@ -97,6 +97,9 @@ pub struct TempoGenesisInfo {
     /// Activation timestamp for T3 hardfork.
     #[serde(skip_serializing_if = "Option::is_none")]
     t3_time: Option<u64>,
+    /// Activation timestamp for T4 hardfork.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    t4_time: Option<u64>,
 }
 
 impl TempoGenesisInfo {
@@ -124,6 +127,7 @@ impl TempoGenesisInfo {
             TempoHardfork::T1C => self.t1c_time,
             TempoHardfork::T2 => self.t2_time,
             TempoHardfork::T3 => self.t3_time,
+            TempoHardfork::T4 => self.t4_time,
         }
     }
 }
@@ -231,6 +235,11 @@ impl TempoChainSpec {
     pub fn with_default_follow_url(mut self, url: &'static str) -> Self {
         self.default_follow_url = Some(url);
         self
+    }
+
+    /// Returns the moderato chainspec.
+    pub fn moderato() -> Self {
+        MODERATO.as_ref().clone()
     }
 
     /// Returns the mainnet chainspec.

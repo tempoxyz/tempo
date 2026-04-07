@@ -20,7 +20,7 @@ use reth_engine_tree::tree::instrumented_state::InstrumentedStateProvider;
 use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
     ConfigureEvm, Database, Evm, NextBlockEnvAttributes,
-    block::{BlockExecutionError, BlockValidationError},
+    block::{BlockExecutionError, BlockExecutor, BlockValidationError},
     execute::{BlockBuilder, BlockBuilderOutcome},
 };
 use reth_execution_types::BlockExecutionOutput;
@@ -46,8 +46,9 @@ use std::{
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_consensus::TEMPO_SHARED_GAS_DIVISOR;
-use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
+use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, evm::TempoEvm};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
+use tempo_precompiles::{storage::StorageCtx, validator_config_v2::ValidatorConfigV2};
 use tempo_primitives::{
     RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoTxEnvelope,
     subblock::PartialValidatorKey,
@@ -226,6 +227,7 @@ where
     {
         let BuildArguments {
             mut cached_reads,
+            trie_handle,
             config,
             cancel,
             best_payload,
@@ -234,8 +236,18 @@ where
         let PayloadConfig {
             parent_header,
             attributes,
-            payload_id: _,
+            payload_id,
         } = config;
+
+        macro_rules! check_cancel {
+            () => {
+                if cancel.is_cancelled() {
+                    return Ok(BuildOutcome::Cancelled);
+                }
+            };
+        }
+
+        check_cancel!();
 
         let start = Instant::now();
 
@@ -265,6 +277,8 @@ where
         self.metrics
             .state_setup_duration_seconds
             .record(state_setup_start.elapsed());
+
+        check_cancel!();
 
         let chain_spec = self.provider.chain_spec();
         let is_osaka = self
@@ -357,10 +371,24 @@ where
             )
             .map_err(PayloadBuilderError::other)?;
 
+        check_cancel!();
+
+        // Override the fee recipient with the on-chain value from the V2
+        // validator config contract, if available.
+        maybe_override_fee_recipient(&mut builder, &attributes);
+
+        if let Some(ref handle) = trie_handle {
+            builder
+                .executor_mut()
+                .set_state_hook(Some(Box::new(handle.state_hook())));
+        }
+
         builder.apply_pre_execution_changes().map_err(|err| {
             warn!(%err, "failed to apply pre-execution changes");
             PayloadBuilderError::Internal(err.into())
         })?;
+
+        check_cancel!();
 
         debug!("building new payload");
 
@@ -431,10 +459,7 @@ where
                 break;
             }
 
-            // check if the job was cancelled, if so we can exit early
-            if cancel.is_cancelled() {
-                return Ok(BuildOutcome::Cancelled);
-            }
+            check_cancel!();
 
             let is_payment = pool_tx.transaction.is_payment();
             if is_payment {
@@ -516,6 +541,8 @@ where
         self.metrics
             .payment_transactions_last
             .set(payment_transactions as f64);
+
+        check_cancel!();
 
         // check if we have a better block or received more subblocks
         if !is_better_payload(best_payload.as_ref(), total_fees)
@@ -607,16 +634,52 @@ where
 
         let builder_finish_start = Instant::now();
         let _finish_span = debug_span!(target: "payload_builder", "finish_block").entered();
-        let instrumented_provider = InstrumentedFinishProvider {
+        let finish_provider = || InstrumentedFinishProvider {
             inner: &*state_provider,
             metrics: self.metrics.clone(),
         };
+
+        check_cancel!();
+
         let BlockBuilderOutcome {
             execution_result,
             block,
             hashed_state,
             trie_updates,
-        } = builder.finish(instrumented_provider, None)?;
+        } = if let Some(mut handle) = trie_handle {
+            // Dropping the hook signals that execution is complete and the sparse trie task can
+            // finalize the state root it has been updating incrementally.
+            builder.executor_mut().set_state_hook(None);
+
+            match handle.state_root() {
+                Ok(outcome) => {
+                    debug!(
+                        target: "payload_builder",
+                        id = %payload_id,
+                        state_root = ?outcome.state_root,
+                        "received state root from sparse trie"
+                    );
+                    builder.finish(
+                        finish_provider(),
+                        Some((
+                            outcome.state_root,
+                            Arc::unwrap_or_clone(outcome.trie_updates),
+                        )),
+                    )?
+                }
+                Err(err) => {
+                    warn!(
+                        target: "payload_builder",
+                        id = %payload_id,
+                        %err,
+                        "sparse trie failed, falling back to sync state root"
+                    );
+                    builder.finish(finish_provider(), None)?
+                }
+            }
+        } else {
+            builder.finish(finish_provider(), None)?
+        };
         drop(_finish_span);
         let builder_finish_elapsed = builder_finish_start.elapsed();
         self.metrics
@@ -737,6 +800,52 @@ pub fn is_more_subblocks(
     };
 
     subblocks.len() > best_metadata.len()
+}
+
+/// Overrides the block's fee recipient (beneficiary) with the value from the
+/// V2 validator config contract, if the contract is active and returns a
+/// non-zero address for the given `public_key`.
+fn maybe_override_fee_recipient<DB: Database, I>(
+    builder: &mut impl BlockBuilder<Executor: BlockExecutor<Evm = TempoEvm<DB, I>>>,
+    attributes: &TempoPayloadAttributes,
+) {
+    let Some(public_key) = attributes.proposer_public_key() else {
+        return;
+    };
+    let ctx = builder.evm_mut().ctx_mut();
+    if !ctx.cfg.spec.is_t2() {
+        return;
+    }
+    let parent_number = ctx.block.number.saturating_to::<u64>() - 1;
+    match StorageCtx::enter_ctx(ctx, || -> Result<Option<Address>, PayloadBuilderError> {
+        let config = ValidatorConfigV2::default();
+        if !config
+            .is_initialized()
+            .map_err(PayloadBuilderError::other)?
+        {
+            return Ok(None);
+        }
+        let init_height = config
+            .get_initialized_at_height()
+            .map_err(PayloadBuilderError::other)?;
+        if init_height > parent_number {
+            return Ok(None);
+        }
+        let on_chain = config
+            .validator_by_public_key(*public_key)
+            .map(|v| v.feeRecipient)
+            .map_err(PayloadBuilderError::other)?;
+        Ok((!on_chain.is_zero()).then_some(on_chain))
+    }) {
+        Ok(Some(fee_recipient)) => {
+            debug!(%fee_recipient, "resolved fee recipient from contract");
+            builder.evm_mut().ctx_mut().block.beneficiary = fee_recipient;
+        }
+        Ok(None) => {}
+        Err(err) => {
+            warn!(%err, "failed resolving fee recipient from contract; using fallback");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -868,7 +977,7 @@ mod tests {
         let extra_data = Bytes::from(vec![42, 43, 44, 45, 46]);
 
         let attrs =
-            TempoPayloadAttributes::new(Address::default(), 1000, extra_data.clone(), Vec::new);
+            TempoPayloadAttributes::new(Address::ZERO, None, 1000, extra_data.clone(), Vec::new);
 
         assert_eq!(attrs.extra_data(), &extra_data);
 
