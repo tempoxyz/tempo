@@ -9,17 +9,16 @@ use alloy::{
     primitives::Address,
     sol_types::{SolCall, SolInterface},
 };
-use alloy_evm::precompiles::PrecompileResultExt;
-use revm::precompile::PrecompileError;
+use revm::precompile::{PrecompileHalt, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::IValidatorConfig::{
     IValidatorConfigCalls, changeValidatorStatusByIndexCall,
 };
 
 impl Precompile for ValidatorConfig {
-    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResultExt {
-        self.storage
-            .deduct_gas(input_cost(calldata.len()))
-            .map_err(|_| PrecompileError::OutOfGas)?;
+    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
+        if self.storage.deduct_gas(input_cost(calldata.len())).is_err() {
+            return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, 0));
+        }
 
         dispatch_call(
             calldata,
@@ -91,6 +90,7 @@ mod tests {
         primitives::{Address, FixedBytes},
         sol_types::{SolCall, SolValue},
     };
+    use revm::precompile::PrecompileError;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         IValidatorConfig, IValidatorConfig::IValidatorConfigCalls, ValidatorConfigError,
@@ -108,11 +108,11 @@ mod tests {
             validator_config.initialize(owner)?;
 
             let result = validator_config.call(&[0x12, 0x34, 0x56, 0x78], sender)?;
-            assert!(result.reverted);
+            assert!(result.status.is_revert());
 
             // T1: insufficient calldata also returns reverted output
             let result = validator_config.call(&[0x12, 0x34], sender)?;
-            assert!(result.reverted);
+            assert!(result.status.is_revert());
 
             Ok(())
         })?;
@@ -124,9 +124,7 @@ mod tests {
             validator_config.initialize(owner)?;
 
             let result = validator_config.call(&[0x12, 0x34], sender);
-            assert!(
-                matches!(result, Err(f) if matches!(f.precompile_error, PrecompileError::Other(_)))
-            );
+            assert!(matches!(result, Err(PrecompileError::Fatal(_))));
 
             Ok(())
         })
@@ -148,8 +146,6 @@ mod tests {
             let calldata = owner_call.abi_encode();
 
             let result = validator_config.call(&calldata, sender)?;
-            // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
-            assert_eq!(result.gas.remaining(), 0);
 
             // Verify we get the correct owner
             let decoded = Address::abi_decode(&result.bytes)?;
@@ -181,10 +177,7 @@ mod tests {
             };
             let calldata = add_call.abi_encode();
 
-            let result = validator_config.call(&calldata, owner)?;
-
-            // HashMapStorageProvider does not have gas accounting, so we expect 0
-            assert_eq!(result.gas.remaining(), 0);
+            let _result = validator_config.call(&calldata, owner)?;
 
             // Verify validator was added by calling getValidators
             let validators = validator_config.get_validators()?;
@@ -283,7 +276,7 @@ mod tests {
             let calldata = call.abi_encode();
             let result = validator_config.call(&calldata, owner)?;
 
-            assert!(result.reverted);
+            assert!(result.status.is_revert());
             let decoded = UnknownFunctionSelector::abi_decode(&result.bytes)?;
             assert_eq!(
                 decoded.selector.0,
@@ -320,7 +313,7 @@ mod tests {
             let result = validator_config.call(&calldata, owner)?;
 
             assert!(
-                !result.reverted,
+                result.status.is_success(),
                 "changeValidatorStatusByIndex should succeed in T1"
             );
 

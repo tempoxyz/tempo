@@ -153,6 +153,7 @@ fn init_download_urls() {
         ],
         default_base_url: Cow::Borrowed(DEFAULT_DOWNLOAD_URL),
         default_chain_aware_base_url: None,
+        snapshot_api_url: Cow::Borrowed("https://snapshots.reth.rs/api/snapshots"),
         long_help: None,
     };
 

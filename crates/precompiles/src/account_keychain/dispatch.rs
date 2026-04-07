@@ -9,7 +9,7 @@ use alloy::{
     primitives::Address,
     sol_types::{SolCall, SolInterface},
 };
-use revm::precompile::{PrecompileError, PrecompileResult};
+use revm::precompile::{PrecompileHalt, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::{
     AccountKeychainError,
     IAccountKeychain::{IAccountKeychainCalls, removeAllowedCallsCall, setAllowedCallsCall},
@@ -17,9 +17,9 @@ use tempo_contracts::precompiles::{
 
 impl Precompile for AccountKeychain {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
-        self.storage
-            .deduct_gas(input_cost(calldata.len()))
-            .map_err(|_| PrecompileError::OutOfGas)?;
+        if self.storage.deduct_gas(input_cost(calldata.len())).is_err() {
+            return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, 0));
+        }
 
         dispatch_call(
             calldata,
@@ -32,7 +32,7 @@ impl Precompile for AccountKeychain {
                                 authorizeKeyCall::SELECTOR,
                             ),
                         )
-                        .into_precompile_result(self.storage.gas_used());
+                        .into_precompile_result(self.storage.gas_limit(), self.storage.gas_used());
                     }
 
                     let call = authorizeKeyCall {
@@ -61,6 +61,7 @@ impl Precompile for AccountKeychain {
                     if !self.storage.spec().is_t3() {
                         return unknown_selector(
                             authorizeKeyCall::SELECTOR,
+                            self.storage.gas_limit(),
                             self.storage.gas_used(),
                         );
                     }
@@ -78,6 +79,7 @@ impl Precompile for AccountKeychain {
                     if !self.storage.spec().is_t3() {
                         return unknown_selector(
                             setAllowedCallsCall::SELECTOR,
+                            self.storage.gas_limit(),
                             self.storage.gas_used(),
                         );
                     }
@@ -89,6 +91,7 @@ impl Precompile for AccountKeychain {
                     if !self.storage.spec().is_t3() {
                         return unknown_selector(
                             removeAllowedCallsCall::SELECTOR,
+                            self.storage.gas_limit(),
                             self.storage.gas_used(),
                         );
                     }
@@ -101,6 +104,7 @@ impl Precompile for AccountKeychain {
                     if self.storage.spec().is_t3() {
                         return unknown_selector(
                             tempo_contracts::precompiles::IAccountKeychain::getRemainingLimitCall::SELECTOR,
+                            self.storage.gas_limit(),
                             self.storage.gas_used(),
                         );
                     }
@@ -110,6 +114,7 @@ impl Precompile for AccountKeychain {
                     if !self.storage.spec().is_t3() {
                         return unknown_selector(
                             tempo_contracts::precompiles::getRemainingLimitWithPeriodCall::SELECTOR,
+                            self.storage.gas_limit(),
                             self.storage.gas_used(),
                         );
                     }
@@ -119,6 +124,7 @@ impl Precompile for AccountKeychain {
                     if !self.storage.spec().is_t3() {
                         return unknown_selector(
                             tempo_contracts::precompiles::IAccountKeychain::getAllowedCallsCall::SELECTOR,
+                            self.storage.gas_limit(),
                             self.storage.gas_used(),
                         );
                     }
@@ -234,7 +240,7 @@ mod tests {
             .abi_encode();
 
             let result = keychain.call(&calldata, account)?;
-            assert!(result.reverted);
+            assert!(result.status.is_revert());
 
             Ok(())
         })
@@ -260,7 +266,7 @@ mod tests {
             .abi_encode();
 
             let result = keychain.call(&calldata, account)?;
-            assert!(result.reverted);
+            assert!(result.status.is_revert());
             let decoded = tempo_contracts::precompiles::IAccountKeychain::LegacyAuthorizeKeySelectorChanged::abi_decode(&result.bytes)?;
             assert_eq!(decoded.newSelector, authorizeKeyCall::SELECTOR);
 
@@ -303,7 +309,7 @@ mod tests {
             .abi_encode();
 
             let output = keychain.call(&get_limit_calldata, account)?;
-            assert!(!output.reverted);
+            assert!(output.status.is_success());
             assert_eq!(
                 output.bytes.len(),
                 32,
@@ -334,7 +340,7 @@ mod tests {
             .abi_encode();
 
             let result = keychain.call(&calldata, account)?;
-            assert!(result.reverted);
+            assert!(result.status.is_revert());
 
             Ok(())
         })

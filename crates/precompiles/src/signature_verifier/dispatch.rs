@@ -1,8 +1,7 @@
 use super::SignatureVerifier;
 use crate::{Precompile, dispatch_call, input_cost, view};
 use alloy::{primitives::Address, sol_types::SolInterface};
-use alloy_evm::precompiles::{PrecompileOutputExt, PrecompileResultExt};
-use revm::{interpreter::gas::GasTracker, precompile::PrecompileError};
+use revm::precompile::{PrecompileHalt, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::{
     ISignatureVerifier::ISignatureVerifierCalls as ISVCalls, SignatureVerifierError,
 };
@@ -15,19 +14,17 @@ const MAX_CALLDATA_LEN: usize =
     4 + 32 * 4 + (MAX_WEBAUTHN_SIGNATURE_LENGTH + 1).next_multiple_of(32);
 
 impl Precompile for SignatureVerifier {
-    fn call(&mut self, calldata: &[u8], _msg_sender: Address) -> PrecompileResultExt {
-        self.storage
-            .deduct_gas(input_cost(calldata.len()))
-            .map_err(|_| PrecompileError::OutOfGas)?;
+    fn call(&mut self, calldata: &[u8], _msg_sender: Address) -> PrecompileResult {
+        if self.storage.deduct_gas(input_cost(calldata.len())).is_err() {
+            return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, 0));
+        }
 
         if calldata.len() > MAX_CALLDATA_LEN {
-            let gas_used = self.storage.gas_used();
-            let gas_limit = self.storage.gas_limit();
-            return Ok(PrecompileOutputExt {
-                gas: GasTracker::new(gas_limit, gas_limit - gas_used, 0),
-                bytes: SignatureVerifierError::invalid_format().abi_encode().into(),
-                reverted: true,
-            });
+            return Ok(PrecompileOutput::revert(
+                0,
+                SignatureVerifierError::invalid_format().abi_encode().into(),
+                0,
+            ));
         }
 
         dispatch_call(calldata, ISVCalls::abi_decode, |call| match call {
@@ -163,7 +160,7 @@ mod tests {
             let calldata = vec![0u8; MAX_CALLDATA_LEN];
             let result = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
 
-            assert!(result.reverted);
+            assert!(result.status.is_revert());
             assert!(
                 SignatureVerifierError::abi_decode(&result.bytes).is_err(),
                 "should not be an InvalidFormat revert"

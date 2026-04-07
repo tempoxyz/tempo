@@ -9,18 +9,17 @@ use alloy::{
     primitives::Address,
     sol_types::{SolCall, SolInterface},
 };
-use alloy_evm::precompiles::PrecompileResultExt;
-use revm::precompile::PrecompileError;
+use revm::precompile::{PrecompileHalt, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::ITIP403Registry::{
     ITIP403RegistryCalls, compoundPolicyDataCall, createCompoundPolicyCall,
     isAuthorizedMintRecipientCall, isAuthorizedRecipientCall, isAuthorizedSenderCall,
 };
 
 impl Precompile for TIP403Registry {
-    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResultExt {
-        self.storage
-            .deduct_gas(input_cost(calldata.len()))
-            .map_err(|_| PrecompileError::OutOfGas)?;
+    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
+        if self.storage.deduct_gas(input_cost(calldata.len())).is_err() {
+            return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, 0));
+        }
 
         dispatch_call(
             calldata,
@@ -501,12 +500,12 @@ mod tests {
 
             let invalid_data = vec![0x12, 0x34, 0x56, 0x78];
             let result = registry.call(&invalid_data, sender)?;
-            assert!(result.reverted);
+            assert!(result.status.is_revert());
 
             // T1: insufficient data also returns reverted output
             let short_data = vec![0x12, 0x34];
             let result = registry.call(&short_data, sender)?;
-            assert!(result.reverted);
+            assert!(result.status.is_revert());
 
             Ok(())
         })?;

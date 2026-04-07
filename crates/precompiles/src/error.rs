@@ -14,10 +14,9 @@ use alloy::{
     primitives::{Selector, U256},
     sol_types::{Panic, PanicKind, SolError, SolInterface},
 };
-use alloy_evm::precompiles::{PrecompileOutputExt, PrecompileResultExt};
 use revm::{
-    context::journaled_state::JournalLoadErasedError, interpreter::gas::GasTracker,
-    precompile::PrecompileError,
+    context::journaled_state::JournalLoadErasedError,
+    precompile::{PrecompileError, PrecompileHalt, PrecompileOutput, PrecompileResult},
 };
 use tempo_contracts::precompiles::{
     AccountKeychainError, AddrRegistryError, FeeManagerError, NonceError, RolesAuthError,
@@ -150,16 +149,14 @@ impl TempoPrecompileError {
         Self::Panic(PanicKind::ArrayOutOfBounds)
     }
 
-    /// ABI-encodes this error and wraps it as a reverted [`PrecompileResultExt`].
+    /// ABI-encodes this error and wraps it as a reverted [`PrecompileResult`].
     ///
     /// `gas_limit` is the original call gas budget; `gas_used` is how much has been consumed.
-    /// The resulting [`GasTracker`] will have `remaining = gas_limit - gas_used` so the
-    /// caller recovers unspent gas on revert.
     ///
     /// # Errors
-    /// - `PrecompileError::OutOfGas` — if the variant is [`OutOfGas`](Self::OutOfGas)
+    /// - `PrecompileHalt::OutOfGas` — if the variant is [`OutOfGas`](Self::OutOfGas)
     /// - `PrecompileError::Fatal` — if the variant is [`Fatal`](Self::Fatal)
-    pub fn into_precompile_result(self, gas_limit: u64, gas_used: u64) -> PrecompileResultExt {
+    pub fn into_precompile_result(self, _gas_limit: u64, _gas_used: u64) -> PrecompileResult {
         let bytes = match self {
             Self::StablecoinDEX(e) => e.abi_encode().into(),
             Self::TIP20(e) => e.abi_encode().into(),
@@ -182,7 +179,7 @@ impl TempoPrecompileError {
             Self::AccountKeychainError(e) => e.abi_encode().into(),
             Self::SignatureVerifierError(e) => e.abi_encode().into(),
             Self::OutOfGas => {
-                return Err(PrecompileError::OutOfGas.into());
+                return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, 0));
             }
             Self::UnknownFunctionSelector(selector) => UnknownFunctionSelector {
                 selector: selector.into(),
@@ -190,14 +187,10 @@ impl TempoPrecompileError {
             .abi_encode()
             .into(),
             Self::Fatal(msg) => {
-                return Err(PrecompileError::Fatal(msg).into());
+                return Err(PrecompileError::Fatal(msg));
             }
         };
-        Ok(PrecompileOutputExt {
-            gas: GasTracker::new(gas_limit, gas_limit - gas_used, 0),
-            bytes,
-            reverted: true,
-        })
+        Ok(PrecompileOutput::revert(0, bytes, 0))
     }
 }
 
@@ -274,9 +267,9 @@ pub fn decode_error<'a>(data: &'a [u8]) -> Option<DecodedTempoPrecompileError<'a
         .and_then(|decoder| decoder(data))
 }
 
-/// Extension trait to convert `Result<T, TempoPrecompileError>` into a [`PrecompileResultExt`].
+/// Extension trait to convert `Result<T, TempoPrecompileError>` into a [`PrecompileResult`].
 pub trait IntoPrecompileResult<T> {
-    /// Converts `self` into a [`PrecompileResultExt`], using `encode_ok` for the success path.
+    /// Converts `self` into a [`PrecompileResult`], using `encode_ok` for the success path.
     ///
     /// `gas_limit` is the original call gas budget; `gas_used` is how much has been consumed.
     fn into_precompile_result(
@@ -284,7 +277,7 @@ pub trait IntoPrecompileResult<T> {
         gas_limit: u64,
         gas_used: u64,
         encode_ok: impl FnOnce(T) -> alloy::primitives::Bytes,
-    ) -> PrecompileResultExt;
+    ) -> PrecompileResult;
 }
 
 impl<T> IntoPrecompileResult<T> for Result<T> {
@@ -293,13 +286,9 @@ impl<T> IntoPrecompileResult<T> for Result<T> {
         gas_limit: u64,
         gas_used: u64,
         encode_ok: impl FnOnce(T) -> alloy::primitives::Bytes,
-    ) -> PrecompileResultExt {
+    ) -> PrecompileResult {
         match self {
-            Ok(res) => Ok(PrecompileOutputExt {
-                gas: GasTracker::new(gas_limit, gas_limit - gas_used, 0),
-                bytes: encode_ok(res),
-                reverted: false,
-            }),
+            Ok(res) => Ok(PrecompileOutput::new(0, encode_ok(res), 0)),
             Err(err) => err.into_precompile_result(gas_limit, gas_used),
         }
     }
@@ -311,7 +300,7 @@ impl<T> IntoPrecompileResult<T> for TempoPrecompileError {
         gas_limit: u64,
         gas_used: u64,
         _encode_ok: impl FnOnce(T) -> alloy::primitives::Bytes,
-    ) -> PrecompileResultExt {
+    ) -> PrecompileResult {
         Self::into_precompile_result(self, gas_limit, gas_used)
     }
 }
@@ -405,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn test_into_precompile_result_revert_preserves_remaining_gas() {
+    fn test_into_precompile_result_revert() {
         let gas_limit = 100_000;
         let gas_used = 1_000;
 
@@ -413,21 +402,11 @@ mod tests {
         let result = error.into_precompile_result(gas_limit, gas_used);
 
         let output = result.expect("business-logic revert should be Ok");
-        assert!(output.reverted);
-        assert_eq!(
-            output.gas.limit(),
-            gas_limit,
-            "gas tracker limit should equal the call's gas limit"
-        );
-        assert_eq!(
-            output.gas.remaining(),
-            gas_limit - gas_used,
-            "remaining gas should equal gas_limit - gas_used"
-        );
+        assert!(output.status.is_revert());
     }
 
     #[test]
-    fn test_into_precompile_result_trait_success_preserves_remaining_gas() {
+    fn test_into_precompile_result_trait_success() {
         let gas_limit = 100_000;
         let gas_used = 500;
 
@@ -437,9 +416,7 @@ mod tests {
         });
 
         let output = precompile_result.expect("success should be Ok");
-        assert!(!output.reverted);
-        assert_eq!(output.gas.limit(), gas_limit);
-        assert_eq!(output.gas.remaining(), gas_limit - gas_used);
+        assert!(output.status.is_success());
     }
 
     #[test]

@@ -12,8 +12,7 @@ use alloy::{
     primitives::Address,
     sol_types::{SolCall, SolInterface},
 };
-use alloy_evm::precompiles::PrecompileResultExt;
-use revm::precompile::PrecompileError;
+use revm::precompile::{PrecompileHalt, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls, TIP20Error};
 
 /// Decoded call variant — either a TIP-20 token call or a role-management call.
@@ -36,10 +35,10 @@ impl TIP20Call {
 }
 
 impl Precompile for TIP20Token {
-    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResultExt {
-        self.storage
-            .deduct_gas(input_cost(calldata.len()))
-            .map_err(|_| PrecompileError::OutOfGas)?;
+    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
+        if self.storage.deduct_gas(input_cost(calldata.len())).is_err() {
+            return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, 0));
+        }
 
         // Ensure that the token is initialized (has bytecode)
         // Note that if the initialization check fails, this is treated as uninitialized
@@ -237,6 +236,7 @@ mod tests {
         primitives::{Bytes, U256, address},
         sol_types::{SolCall, SolError, SolInterface, SolValue},
     };
+    use revm::precompile::PrecompileError;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         IRolesAuth, RolesAuthError, TIP20Error, UnknownFunctionSelector,
@@ -252,11 +252,11 @@ mod tests {
             let mut token = TIP20Setup::create("Test", "TST", sender).apply()?;
 
             let result = token.call(&Bytes::from([0x12, 0x34, 0x56, 0x78]), sender)?;
-            assert!(result.reverted);
+            assert!(result.status.is_revert());
 
             // T1: insufficient calldata also returns reverted output
             let result = token.call(&Bytes::from([0x12, 0x34]), sender)?;
-            assert!(result.reverted);
+            assert!(result.status.is_revert());
 
             Ok(())
         })?;
@@ -267,9 +267,7 @@ mod tests {
             let mut token = TIP20Setup::create("Test", "TST", sender).apply()?;
 
             let result = token.call(&Bytes::from([0x12, 0x34]), sender);
-            assert!(
-                matches!(result, Err(f) if matches!(f.precompile_error, PrecompileError::Other(_)))
-            );
+            assert!(matches!(result, Err(PrecompileError::Fatal(_))));
 
             Ok(())
         })
@@ -292,7 +290,7 @@ mod tests {
             let calldata = balance_of_call.abi_encode();
 
             let result = token.call(&calldata, sender)?;
-            assert_eq!(result.gas.remaining(), 0);
+            assert!(result.status.is_success());
 
             let decoded = U256::abi_decode(&result.bytes)?;
             assert_eq!(decoded, test_balance);
@@ -323,7 +321,7 @@ mod tests {
             let calldata = mint_call.abi_encode();
 
             let result = token.call(&calldata, sender)?;
-            assert_eq!(result.gas.remaining(), 0);
+            assert!(result.status.is_success());
 
             let final_balance = token.balance_of(ITIP20::balanceOfCall { account: recipient })?;
             assert_eq!(final_balance, mint_amount);
@@ -361,7 +359,7 @@ mod tests {
             };
             let calldata = transfer_call.abi_encode();
             let result = token.call(&calldata, sender)?;
-            assert_eq!(result.gas.remaining(), 0);
+            assert!(result.status.is_success());
 
             let success = bool::abi_decode(&result.bytes)?;
             assert!(success);
@@ -403,7 +401,7 @@ mod tests {
             };
             let calldata = approve_call.abi_encode();
             let result = token.call(&calldata, owner)?;
-            assert_eq!(result.gas.remaining(), 0);
+            assert!(result.status.is_success());
             let success = bool::abi_decode(&result.bytes)?;
             assert!(success);
 
@@ -417,7 +415,7 @@ mod tests {
             };
             let calldata = transfer_from_call.abi_encode();
             let result = token.call(&calldata, spender)?;
-            assert_eq!(result.gas.remaining(), 0);
+            assert!(result.status.is_success());
             let success = bool::abi_decode(&result.bytes)?;
             assert!(success);
 
@@ -456,14 +454,14 @@ mod tests {
             let pause_call = ITIP20::pauseCall {};
             let calldata = pause_call.abi_encode();
             let result = token.call(&calldata, pauser)?;
-            assert_eq!(result.gas.remaining(), 0);
+            assert!(result.status.is_success());
             assert!(token.paused()?);
 
             // Unpause the token
             let unpause_call = ITIP20::unpauseCall {};
             let calldata = unpause_call.abi_encode();
             let result = token.call(&calldata, unpauser)?;
-            assert_eq!(result.gas.remaining(), 0);
+            assert!(result.status.is_success());
             assert!(!token.paused()?);
 
             Ok(())
@@ -497,7 +495,7 @@ mod tests {
             };
             let calldata = burn_call.abi_encode();
             let result = token.call(&calldata, burner)?;
-            assert_eq!(result.gas.remaining(), 0);
+            assert!(result.status.is_success());
             assert_eq!(
                 token.balance_of(ITIP20::balanceOfCall { account: burner })?,
                 initial_balance - burn_amount
@@ -521,7 +519,7 @@ mod tests {
             let calldata = name_call.abi_encode();
             let result = token.call(&calldata, caller)?;
             // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
-            assert_eq!(result.gas.remaining(), 0);
+            assert!(result.status.is_success());
             let name = String::abi_decode(&result.bytes)?;
             assert_eq!(name, "Test Token");
 
@@ -529,7 +527,7 @@ mod tests {
             let symbol_call = ITIP20::symbolCall {};
             let calldata = symbol_call.abi_encode();
             let result = token.call(&calldata, caller)?;
-            assert_eq!(result.gas.remaining(), 0);
+            assert!(result.status.is_success());
             let symbol = String::abi_decode(&result.bytes)?;
             assert_eq!(symbol, "TEST");
 
@@ -537,7 +535,7 @@ mod tests {
             let decimals_call = ITIP20::decimalsCall {};
             let calldata = decimals_call.abi_encode();
             let result = token.call(&calldata, caller)?;
-            assert_eq!(result.gas.remaining(), 0);
+            assert!(result.status.is_success());
             let decimals = ITIP20::decimalsCall::abi_decode_returns(&result.bytes)?;
             assert_eq!(decimals, 6);
 
@@ -545,7 +543,7 @@ mod tests {
             let currency_call = ITIP20::currencyCall {};
             let calldata = currency_call.abi_encode();
             let result = token.call(&calldata, caller)?;
-            assert_eq!(result.gas.remaining(), 0);
+            assert!(result.status.is_success());
             let currency = String::abi_decode(&result.bytes)?;
             assert_eq!(currency, "USD");
 
@@ -554,7 +552,7 @@ mod tests {
             let calldata = total_supply_call.abi_encode();
             let result = token.call(&calldata, caller)?;
             // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
-            assert_eq!(result.gas.remaining(), 0);
+            assert!(result.status.is_success());
             let total_supply = U256::abi_decode(&result.bytes)?;
             assert_eq!(total_supply, U256::ZERO);
 
@@ -579,7 +577,7 @@ mod tests {
             };
             let calldata = set_cap_call.abi_encode();
             let result = token.call(&calldata, admin)?;
-            assert_eq!(result.gas.remaining(), 0);
+            assert!(result.status.is_success());
 
             let mint_call = ITIP20::mintCall {
                 to: recipient,
@@ -587,7 +585,7 @@ mod tests {
             };
             let calldata = mint_call.abi_encode();
             let output = token.call(&calldata, admin)?;
-            assert!(output.reverted);
+            assert!(output.status.is_revert());
 
             let expected: Bytes = TIP20Error::supply_cap_exceeded().selector().into();
             assert_eq!(output.bytes, expected);
@@ -615,7 +613,7 @@ mod tests {
             };
             let calldata = has_role_call.abi_encode();
             let result = token.call(&calldata, admin)?;
-            assert_eq!(result.gas.remaining(), 0);
+            assert!(result.status.is_success());
             let has_role = bool::abi_decode(&result.bytes)?;
             assert!(has_role);
 
@@ -634,12 +632,12 @@ mod tests {
             };
             let calldata = mint_call.abi_encode();
             let output = token.call(&Bytes::from(calldata.clone()), unauthorized)?;
-            assert!(output.reverted);
+            assert!(output.status.is_revert());
             let expected: Bytes = RolesAuthError::unauthorized().selector().into();
             assert_eq!(output.bytes, expected);
 
             let result = token.call(&calldata, user1)?;
-            assert_eq!(result.gas.remaining(), 0);
+            assert!(result.status.is_success());
 
             Ok(())
         })
@@ -667,7 +665,7 @@ mod tests {
             };
             let calldata = transfer_call.abi_encode();
             let result = token.call(&calldata, sender)?;
-            assert_eq!(result.gas.remaining(), 0);
+            assert!(result.status.is_success());
             assert_eq!(
                 token.balance_of(ITIP20::balanceOfCall { account: sender })?,
                 initial_balance - transfer_amount
@@ -707,7 +705,7 @@ mod tests {
             };
             let calldata = change_policy_call.abi_encode();
             let result = token.call(&calldata, admin)?;
-            assert_eq!(result.gas.remaining(), 0);
+            assert!(result.status.is_success());
             assert_eq!(token.transfer_policy_id()?, new_policy_id);
 
             // Create another valid policy for the unauthorized test
@@ -724,7 +722,7 @@ mod tests {
             };
             let calldata = change_policy_call.abi_encode();
             let output = token.call(&calldata, non_admin)?;
-            assert!(output.reverted);
+            assert!(output.status.is_revert());
             let expected: Bytes = RolesAuthError::unauthorized().selector().into();
             assert_eq!(output.bytes, expected);
 
@@ -748,7 +746,7 @@ mod tests {
             .abi_encode();
             let result = token.call(&calldata, caller)?;
 
-            assert!(result.reverted);
+            assert!(result.status.is_revert());
             let expected: Bytes = TIP20Error::uninitialized().selector().into();
             assert_eq!(result.bytes, expected);
 
@@ -806,7 +804,7 @@ mod tests {
             }
             .abi_encode();
             let result = token.call(&permit_calldata, admin)?;
-            assert!(result.reverted);
+            assert!(result.status.is_revert());
             assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
 
             // Test nonces selector is gated
@@ -815,13 +813,13 @@ mod tests {
             }
             .abi_encode();
             let result = token.call(&nonces_calldata, admin)?;
-            assert!(result.reverted);
+            assert!(result.status.is_revert());
             assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
 
             // Test DOMAIN_SEPARATOR selector is gated
             let ds_calldata = ITIP20::DOMAIN_SEPARATORCall {}.abi_encode();
             let result = token.call(&ds_calldata, admin)?;
-            assert!(result.reverted);
+            assert!(result.status.is_revert());
             assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
 
             Ok(())

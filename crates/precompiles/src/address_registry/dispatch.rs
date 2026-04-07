@@ -6,15 +6,14 @@ use crate::{
     dispatch_call, input_cost, mutate, view,
 };
 use alloy::{primitives::Address, sol_types::SolInterface};
-use alloy_evm::precompiles::PrecompileResultExt;
-use revm::precompile::PrecompileError;
+use revm::precompile::{PrecompileHalt, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::IAddressRegistry::IAddressRegistryCalls;
 
 impl Precompile for AddressRegistry {
-    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResultExt {
-        self.storage
-            .deduct_gas(input_cost(calldata.len()))
-            .map_err(|_| PrecompileError::OutOfGas)?;
+    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
+        if self.storage.deduct_gas(input_cost(calldata.len())).is_err() {
+            return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, 0));
+        }
 
         dispatch_call(
             calldata,
@@ -91,7 +90,7 @@ mod tests {
                 masterId: Default::default(),
             };
             let result = registry.call(&call.abi_encode(), Address::ZERO)?;
-            assert!(!result.reverted);
+            assert!(result.status.is_success());
             let addr = Address::abi_decode(&result.bytes).unwrap();
             assert_eq!(addr, Address::ZERO);
 
