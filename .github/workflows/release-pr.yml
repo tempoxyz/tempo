@@ -18,7 +18,7 @@ jobs:
         with:
           persist-credentials: true
 
-      - uses: wevm/changelogs@master
+      - uses: wevm/changelogs@04ccca87f4785039ced6da0fff27ba29c0dd9f5c # master
         with:
           conventional-commit: true
         env:

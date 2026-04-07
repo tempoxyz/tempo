@@ -22,7 +22,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-
         --bin tempo-sidecar \
         --bin tempo-xtask
 
-FROM debian:bookworm-slim AS base
+FROM debian:bookworm-slim@sha256:13cb01d584d2c23f475c088c168a48f9a08f033a10460572fbfd10912ec5ba7c AS base
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
