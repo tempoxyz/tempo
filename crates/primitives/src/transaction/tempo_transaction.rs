@@ -950,7 +950,7 @@ mod tests {
     use crate::{
         TempoTxEnvelope,
         transaction::{
-            KeyAuthorization, TempoSignedAuthorization,
+            KeyAuthorization, SignedKeyAuthorization, TempoSignedAuthorization, TokenLimit,
             tt_signature::{
                 PrimitiveSignature, SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN, TempoSignature,
                 derive_p256_address,
@@ -958,7 +958,7 @@ mod tests {
         },
     };
     use alloy_eips::{Decodable2718, Encodable2718, eip7702::Authorization};
-    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, address, bytes, hex};
+    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, address, b256, bytes, hex};
     use reth_codecs::Compact;
     use alloy_rlp::{Decodable, Encodable};
 
@@ -2062,6 +2062,7 @@ mod tests {
     #[test]
     fn tempo_transaction_compact_roundtrip() {
         use alloy_eips::eip2930::AccessListItem;
+        use crate::transaction::tt_signature::P256SignatureWithPreHash;
 
         let tx = TempoTransaction {
             chain_id: 42170,
@@ -2094,11 +2095,46 @@ mod tests {
             )),
             valid_before: Some(1_700_001_000),
             valid_after: Some(1_700_000_000),
-            key_authorization: None,
-            tempo_authorization_list: vec![],
+            key_authorization: Some(SignedKeyAuthorization {
+                authorization: KeyAuthorization {
+                    chain_id: 42170,
+                    key_type: SignatureType::P256,
+                    key_id: address!("0x000000000000000000000000000000000000dead"),
+                    expiry: Some(1_700_100_000),
+                    limits: Some(vec![TokenLimit {
+                        token: address!("0x0000000000000000000000000000000000000042"),
+                        limit: U256::from(1_000_000u64),
+                        period: 86400,
+                    }]),
+                    allowed_calls: None,
+                },
+                signature: PrimitiveSignature::P256(P256SignatureWithPreHash {
+                    r: b256!("0x1111111111111111111111111111111111111111111111111111111111111111"),
+                    s: b256!("0x2222222222222222222222222222222222222222222222222222222222222222"),
+                    pub_key_x: b256!("0x3333333333333333333333333333333333333333333333333333333333333333"),
+                    pub_key_y: b256!("0x4444444444444444444444444444444444444444444444444444444444444444"),
+                    pre_hash: false,
+                }),
+            }),
+            tempo_authorization_list: vec![
+                TempoSignedAuthorization::new_unchecked(
+                    Authorization {
+                        chain_id: U256::from(42170u64),
+                        address: address!("0x0000000000000000000000000000000000000099"),
+                        nonce: 1,
+                    },
+                    TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                        Signature::new(
+                            U256::from(3u64),
+                            U256::from(4u64),
+                            true,
+                        ),
+                    )),
+                ),
+            ],
         };
 
-        let expected = hex!("921409e200a4ba0000000000000000000000000000000000000abc3b9aca000ba43b74005208021905000000000000000000000000000000000000000103e8cafe0600608060405201350000000000000000000000000000000000000001010000000000000000000000000000000000000000000000000000000000000000072a0001000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000046553f4e8046553f10000");
+        let expected = hex!("921409e201a4ba0000000000000000000000000000000000000abc3b9aca000ba43b74005208021905000000000000000000000000000000000000000103e8cafe0600608060405201350000000000000000000000000000000000000001010000000000000000000000000000000000000000000000000000000000000000072a0001000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000046553f4e8046553f100c501f8c3f83d82a4ba0194000000000000000000000000000000000000dead84655577a0dedd940000000000000000000000000000000000000042830f424083015180b88201111111111111111111111111111111111111111111111111111111111111111122222222222222222222222222222222222222222222222222222222222222223333333333333333333333333333333333333333333333333333333333333333444444444444444444444444444444444444444444444444444444444444444400015ef85c82a4ba94000000000000000000000000000000000000009901b841000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000000000000000000000000000000000000041c");
 
         let mut buf = vec![];
         let len = tx.to_compact(&mut buf);
