@@ -21,17 +21,13 @@ use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
 };
 use tempo_evm::{TempoEvmConfig, evm::TempoEvm};
-use tempo_precompiles::{
-    account_keychain::AccountKeychain,
-    nonce::{INonce, NonceManager},
-    storage::Handler,
-};
+use tempo_precompiles::nonce::{INonce, NonceManager};
 use tempo_primitives::{
     Block, TempoHeader,
     subblock::has_sub_block_nonce_key_prefix,
     transaction::{TEMPO_EXPIRING_NONCE_KEY, TempoTransaction},
 };
-use tempo_revm::{TempoBlockEnv, TempoInvalidTransaction, TempoStateAccess};
+use tempo_revm::{TempoBlockEnv, TempoInvalidTransaction, TempoStateAccess, ValidationContext};
 
 // Reject AA txs where `valid_before` is too close to current time (or already expired) to prevent block invalidation.
 const AA_VALID_BEFORE_MIN_SECS: u64 = 3;
@@ -179,88 +175,6 @@ where
         Ok(())
     }
 
-    /// Pool-only key-expiry propagation buffer and expiry caching.
-    ///
-    /// The EVM handler checks key expiry against the raw block timestamp. The pool
-    /// applies a stricter propagation buffer (`AA_VALID_BEFORE_MIN_SECS`) so that
-    /// near-expiry keychain txs don't enter the pool only to expire at peers with
-    /// slightly newer tips. Also caches finite key expiry for pool maintenance eviction.
-    fn ensure_key_expiry_and_cache(
-        &self,
-        transaction: &TempoPooledTransaction,
-        state_provider: &mut impl StateProvider,
-        spec: TempoHardfork,
-    ) -> Result<Result<(), TempoPoolTransactionError>, ProviderError> {
-        let Some(tx) = transaction.inner().as_aa() else {
-            return Ok(Ok(()));
-        };
-
-        let current_time = self.inner.fork_tracker().tip_timestamp();
-
-        // Validate KeyAuthorization expiry, reject if expiring within the propagation
-        // buffer. This prevents near-expiry authorizations from entering the pool only to
-        // expire at peers with slightly newer tip timestamps.
-        let min_allowed = current_time.saturating_add(AA_VALID_BEFORE_MIN_SECS);
-
-        // Check inline KeyAuthorization expiry propagation buffer.
-        if let Some(auth) = &tx.tx().key_authorization
-            && let Some(expiry) = auth.expiry
-        {
-            if expiry <= min_allowed {
-                return Ok(Err(TempoPoolTransactionError::KeyAuthorizationExpired {
-                    expiry,
-                    min_allowed,
-                }));
-            }
-
-            // Cache finite inline key-auth expiry for pool maintenance.
-            if expiry < u64::MAX {
-                transaction.set_key_expiry(Some(expiry));
-            }
-        }
-
-        // For keychain-signed txs using an existing stored key, check stored key expiry.
-        let Some(sig) = tx.signature().as_keychain() else {
-            return Ok(Ok(()));
-        };
-
-        let Ok(key_id) = sig.key_id(&tx.signature_hash()) else {
-            return Ok(Ok(()));
-        };
-
-        // Skip stored-key expiry check if this tx also carries an inline KeyAuthorization
-        // for the same key (same-tx auth+use — the key doesn't exist on-chain yet).
-        if tx
-            .tx()
-            .key_authorization
-            .as_ref()
-            .is_some_and(|auth| auth.key_id == key_id)
-        {
-            return Ok(Ok(()));
-        }
-
-        let authorized_key = state_provider
-            .with_read_only_storage_ctx(spec, || {
-                AccountKeychain::new().keys[transaction.sender()][key_id].read()
-            })
-            .map_err(ProviderError::other)?;
-
-        // Check stored key expiry propagation buffer.
-        if authorized_key.expiry > 0 && authorized_key.expiry <= min_allowed {
-            return Ok(Err(TempoPoolTransactionError::AccessKeyExpired {
-                expiry: authorized_key.expiry,
-                min_allowed,
-            }));
-        }
-
-        // Cache finite stored key expiry for pool maintenance eviction.
-        if authorized_key.expiry > 0 && authorized_key.expiry < u64::MAX {
-            transaction.set_key_expiry(Some(authorized_key.expiry));
-        }
-
-        Ok(Ok(()))
-    }
-
     /// Validates that an AA transaction does not exceed the maximum authorization list size.
     fn ensure_authorization_list_size(
         &self,
@@ -395,7 +309,7 @@ where
         &self,
         transaction: &TempoPooledTransaction,
         state_provider: impl StateProvider,
-    ) -> Result<(), EVMError<ProviderError, TempoInvalidTransaction>> {
+    ) -> Result<ValidationContext, EVMError<ProviderError, TempoInvalidTransaction>> {
         let evm_env = self.cached_evm_env.read().clone();
 
         // Create a throwaway EVM and run validation.
@@ -406,7 +320,7 @@ where
         let mut evm = TempoEvm::new(StateProviderDatabase::new(state_provider), evm_env);
         evm.inner_mut().skip_valid_after_check = true;
         evm.ctx_mut().cfg.disable_nonce_check = true;
-        evm.validate_transaction(transaction.inner())
+        evm.validate_transaction(transaction.tx_env().clone())
     }
 
     fn validate_one(
@@ -468,34 +382,14 @@ where
             );
         }
 
-        // Pool-only: key expiry propagation buffer + caching for pool maintenance.
-        match self.ensure_key_expiry_and_cache(&transaction, &mut state_provider, spec) {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => {
-                return TransactionValidationOutcome::Invalid(
-                    transaction,
-                    InvalidPoolTransactionError::other(err),
-                );
-            }
-            Err(err) => {
-                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
-            }
-        }
-
-        // Cache the resolved fee token for pool maintenance.
-        if let Ok(fee_payer) = transaction.inner().fee_payer(transaction.sender())
-            && let Ok(fee_token) =
-                state_provider.get_fee_token(transaction.inner(), fee_payer, spec)
-        {
-            transaction.set_resolved_fee_token(fee_token);
-        }
-
         // Run the unified EVM validation pipeline.
         // This covers: non-zero value, keychain version, intrinsic gas, fee payer/token
         // resolution & validation, nonce checks (protocol, 2D, expiring), keychain
         // authorization, and balance checks.
-        match self.validate_with_evm(&transaction, &state_provider) {
-            Ok(()) => {}
+        //
+        // Returns resolved fee token and key expiry for pool caching.
+        let validation_ctx = match self.validate_with_evm(&transaction, &state_provider) {
+            Ok(ctx) => ctx,
             Err(err) => match err {
                 EVMError::Transaction(err) => {
                     let err = match err {
@@ -517,6 +411,33 @@ where
                     );
                 }
             },
+        };
+
+        // Cache the resolved fee token from EVM validation for pool maintenance.
+        transaction.set_resolved_fee_token(validation_ctx.fee_token);
+
+        // Pool-only key-expiry propagation buffer: reject keychain txs whose key
+        // expires too soon (within AA_VALID_BEFORE_MIN_SECS of tip timestamp).
+        if let Some(key_expiry) = validation_ctx.key_expiry {
+            let min_allowed = self
+                .inner
+                .fork_tracker()
+                .tip_timestamp()
+                .saturating_add(AA_VALID_BEFORE_MIN_SECS);
+            if key_expiry <= min_allowed {
+                return TransactionValidationOutcome::Invalid(
+                    transaction,
+                    InvalidPoolTransactionError::other(
+                        TempoPoolTransactionError::AccessKeyExpired {
+                            expiry: key_expiry,
+                            min_allowed,
+                        },
+                    ),
+                );
+            }
+
+            // Cache the key expiry for pool maintenance eviction.
+            transaction.set_key_expiry(Some(key_expiry));
         }
 
         // Delegate to the inner ETH validator for remaining checks
@@ -586,9 +507,6 @@ where
                         }
                     }
                 }
-
-                // Pre-compute TempoTxEnv to avoid the cost during payload building.
-                transaction.transaction().prepare_tx_env();
 
                 TransactionValidationOutcome::Valid {
                     balance,

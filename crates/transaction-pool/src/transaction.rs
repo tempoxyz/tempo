@@ -177,8 +177,8 @@ impl TempoPooledTransaction {
     ///
     /// This should be called during validation to prepare the transaction environment
     /// ahead of time, avoiding it during payload building.
-    pub fn prepare_tx_env(&self) {
-        self.tx_env.get_or_init(|| self.tx_env_slow());
+    pub fn tx_env(&self) -> &TempoTxEnv {
+        self.tx_env.get_or_init(|| self.tx_env_slow())
     }
 
     /// Returns a [`WithTxEnv`] wrapper containing the cached [`TempoTxEnv`].
