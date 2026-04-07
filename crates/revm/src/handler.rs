@@ -1565,17 +1565,6 @@ where
     }
 }
 
-/// Context returned by [`TempoEvmHandler::validate_transaction`] with resolved
-/// fee token and key expiry information for use by the transaction pool.
-#[derive(Debug, Clone)]
-pub struct ValidationContext {
-    /// The resolved fee token address used to pay for this transaction.
-    pub fee_token: Address,
-    /// The expiry timestamp of the access key used by this transaction.
-    /// Populated for keychain-signed transactions or transactions carrying a KeyAuthorization.
-    pub key_expiry: Option<u64>,
-}
-
 impl<DB, I> TempoEvmHandler<DB, I>
 where
     DB: alloy_evm::Database,
@@ -1610,6 +1599,17 @@ where
             key_expiry: evm.key_expiry,
         })
     }
+}
+
+/// Context returned by [`TempoEvmHandler::validate_transaction`] with resolved
+/// fee token and key expiry information for use by the transaction pool.
+#[derive(Debug, Clone)]
+pub struct ValidationContext {
+    /// The resolved fee token address used to pay for this transaction.
+    pub fee_token: Address,
+    /// The expiry timestamp of the access key used by this transaction.
+    /// Populated for keychain-signed transactions or transactions carrying a KeyAuthorization.
+    pub key_expiry: Option<u64>,
 }
 
 /// Calculates intrinsic gas for an AA transaction batch using revm helpers.
