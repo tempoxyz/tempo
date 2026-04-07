@@ -183,7 +183,7 @@ impl TempoPooledTransaction {
 
     /// Returns a [`WithTxEnv`] wrapper containing the cached [`TempoTxEnv`].
     ///
-    /// If the [`TempoTxEnv`] was pre-computed via [`Self::prepare_tx_env`], the cached
+    /// If the [`TempoTxEnv`] was pre-computed via [`Self::tx_env`], the cached
     /// value is used. Otherwise, it is computed on-demand.
     pub fn into_with_tx_env(mut self) -> WithTxEnv<TempoTxEnv, Recovered<TempoTxEnvelope>> {
         let tx_env = self.tx_env.take().unwrap_or_else(|| self.tx_env_slow());
