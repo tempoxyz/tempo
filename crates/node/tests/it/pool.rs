@@ -278,12 +278,18 @@ async fn test_2d_nonce_tx_reinjected_after_reorg() -> eyre::Result<()> {
         .pool
         .add_consensus_transaction(recovered, TransactionOrigin::Local)
         .await?;
-    assert!(node1.inner.pool.contains(&tx_hash), "tx should be in node1 pool");
+    assert!(
+        node1.inner.pool.contains(&tx_hash),
+        "tx should be in node1 pool"
+    );
 
     node1.advance_block().await?;
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    assert!(!node1.inner.pool.contains(&tx_hash), "tx should be mined out of pool");
+    assert!(
+        !node1.inner.pool.contains(&tx_hash),
+        "tx should be mined out of pool"
+    );
 
     // Step 3: Import block B into node1 and FCU to it → reorg A→B
     node1.submit_payload(block_b).await?;
