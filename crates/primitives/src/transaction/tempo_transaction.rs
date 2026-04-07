@@ -2063,6 +2063,7 @@ mod tests {
     fn tempo_transaction_compact_roundtrip() {
         let tx = TempoTransaction {
             chain_id: 1,
+            fee_token: None,
             max_priority_fee_per_gas: 1_000_000_000,
             max_fee_per_gas: 50_000_000_000,
             gas_limit: 21000,
@@ -2071,8 +2072,14 @@ mod tests {
                 value: U256::from(1000u64),
                 input: Bytes::new(),
             }],
+            access_list: AccessList::default(),
+            nonce_key: U256::ZERO,
             nonce: 42,
-            ..Default::default()
+            fee_payer_signature: None,
+            valid_before: None,
+            valid_after: None,
+            key_authorization: None,
+            tempo_authorization_list: vec![],
         };
 
         let expected = hex!("8114010200013b9aca000ba43b74005208011705000000000000000000000000000000000000000103e8002a00");

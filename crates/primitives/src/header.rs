@@ -144,7 +144,7 @@ impl Sealable for TempoHeader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::hex;
+    use alloy_primitives::{b256, hex};
     use reth_codecs::Compact;
 
     /// Ensures backwards compatibility of the compact bitflag.
@@ -170,11 +170,27 @@ mod tests {
             shared_gas_limit: 10_000_000,
             timestamp_millis_part: 500,
             inner: Header {
+                parent_hash: B256::ZERO,
+                ommers_hash: b256!("0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347"),
+                beneficiary: Address::ZERO,
+                state_root: b256!("0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"),
+                transactions_root: b256!("0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"),
+                receipts_root: b256!("0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"),
+                logs_bloom: Bloom::ZERO,
+                difficulty: U256::ZERO,
                 number: 1000,
                 gas_limit: 30_000_000,
+                gas_used: 0,
                 timestamp: 1_700_000_000,
+                extra_data: Bytes::new(),
+                mix_hash: B256::ZERO,
+                nonce: B64::ZERO,
                 base_fee_per_gas: Some(7),
-                ..Default::default()
+                withdrawals_root: None,
+                blob_gas_used: None,
+                excess_blob_gas: None,
+                parent_beacon_block_root: None,
+                requests_hash: None,
             },
         };
 
