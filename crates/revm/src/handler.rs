@@ -1903,8 +1903,8 @@ mod tests {
     #[test]
     fn test_invalid_fee_token_rejected() {
         // Test that an invalid fee token (non-TIP20 address) is rejected with InvalidFeeToken error
-        // rather than panicking. This validates the check in load_fee_fields that guards against
-        // invalid tokens reaching get_token_balance.
+        // rather than panicking. This validates the check in validate_against_state_and_deduct_caller that
+        // guards against invalid tokens reaching get_token_balance.
         let invalid_token = Address::random(); // Random address won't have TIP20 prefix
         assert!(
             !is_tip20_prefix(invalid_token),
