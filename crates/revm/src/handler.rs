@@ -1568,7 +1568,7 @@ pub struct ValidationContext {
     /// The resolved fee token address used to pay for this transaction.
     pub fee_token: Address,
     /// The expiry timestamp of the access key used by this transaction.
-    /// `None` for non-keychain transactions.
+    /// Populated for keychain-signed transactions or transactions carrying a KeyAuthorization.
     pub key_expiry: Option<u64>,
 }
 
