@@ -1194,10 +1194,36 @@ impl AccountKeychain {
         }
 
         let mut limit_state = self.spending_limits[limit_key][token].read()?;
-        limit_state.remaining = limit_state
-            .remaining
-            .saturating_add(amount)
-            .min(U256::from(limit_state.max));
+        let prior_remaining = limit_state.remaining;
+        let refunded = limit_state.remaining.saturating_add(amount);
+        // Legacy pre-T3 rows only persisted `remaining`, so migrated keys deserialize with
+        // `max = 0`. Preserve that legacy behavior and only clamp rows that were configured
+        // with a real T3 max.
+        limit_state.remaining = if limit_state.max == 0 {
+            refunded
+        } else {
+            let max = U256::from(limit_state.max);
+            if refunded > max {
+                // This should be unreachable in the current fee flow because refunds are derived
+                // from the same pre-tx fee reservation that reduced `remaining` in the first
+                // place. Keep the clamp as defense in depth so future internal callsites cannot
+                // silently restore more spending room than the configured cap.
+                tracing::error!(
+                    target: "tempo::precompiles::account_keychain",
+                    ?account,
+                    transaction_key = ?transaction_key,
+                    ?token,
+                    refunded_amount = ?amount,
+                    ?prior_remaining,
+                    ?refunded,
+                    max = limit_state.max,
+                    "refund_spending_limit exceeded configured T3 max; clamping defensively"
+                );
+                max
+            } else {
+                refunded
+            }
+        };
 
         self.spending_limits[limit_key][token].write(limit_state)
     }
@@ -3166,6 +3192,50 @@ mod tests {
             assert_eq!(
                 after_refund, original_limit,
                 "refund should not restore more than the configured max"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t3_refund_spending_limit_preserves_legacy_rows_without_max() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let eoa = Address::random();
+        let access_key = Address::random();
+        let token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            let limit_key = AccountKeychain::spending_limit_key(eoa, access_key);
+            keychain.keys[eoa][access_key].write(AuthorizedKey {
+                signature_type: SignatureType::Secp256k1 as u8,
+                expiry: u64::MAX,
+                enforce_limits: true,
+                is_revoked: false,
+            })?;
+            keychain.spending_limits[limit_key][token].write(SpendingLimitState {
+                remaining: U256::from(90),
+                max: 0,
+                period: 0,
+                period_end: 0,
+            })?;
+
+            keychain.set_transaction_key(access_key)?;
+            keychain.set_tx_origin(eoa)?;
+            keychain.refund_spending_limit(eoa, token, U256::from(10))?;
+
+            let after_refund = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(
+                after_refund,
+                U256::from(100),
+                "migrated pre-T3 rows should keep legacy saturating-add refund semantics"
             );
 
             Ok(())
