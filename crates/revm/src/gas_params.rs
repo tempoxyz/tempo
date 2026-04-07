@@ -35,30 +35,30 @@ const EIP7702_PER_EMPTY_ACCOUNT_COST_T1: u64 = 12_500;
 //
 // For SSTORE: revm decomposes the cost as sstore_static(WARM_STORAGE_READ=100) +
 // sstore_set_without_load_cost. So the GasId value = 20,000 - 100 = 19,900.
-const T3_SSTORE_SET_REGULAR: u64 = 20_000;
-const T3_SSTORE_SET_WITHOUT_LOAD: u64 = T3_SSTORE_SET_REGULAR - 100; // minus warm_storage_read
-const T3_NEW_ACCOUNT_REGULAR: u64 = 25_000;
-const T3_CREATE_REGULAR: u64 = 32_000;
-const T3_CODE_DEPOSIT_REGULAR: u64 = 200;
-const T3_EIP7702_PER_AUTH_TOTAL: u64 = 250_000; // 25k regular + 225k state
+const T4_SSTORE_SET_REGULAR: u64 = 20_000;
+const T4_SSTORE_SET_WITHOUT_LOAD: u64 = T4_SSTORE_SET_REGULAR - 100; // minus warm_storage_read
+const T4_NEW_ACCOUNT_REGULAR: u64 = 25_000;
+const T4_CREATE_REGULAR: u64 = 32_000;
+const T4_CODE_DEPOSIT_REGULAR: u64 = 200;
+const T4_EIP7702_PER_AUTH_TOTAL: u64 = 250_000; // 25k regular + 225k state
 
 // TIP-1016 state gas (permanent storage burden)
-const T3_SSTORE_SET_STATE: u64 = SSTORE_SET_COST - T3_SSTORE_SET_REGULAR; // 230,000
-const T3_NEW_ACCOUNT_STATE: u64 = NEW_ACCOUNT_COST - T3_NEW_ACCOUNT_REGULAR; // 225,000
-const T3_CREATE_STATE: u64 = CREATE_COST - T3_CREATE_REGULAR; // 468,000
-const T3_CODE_DEPOSIT_STATE: u64 = 2_300;
+const T4_SSTORE_SET_STATE: u64 = SSTORE_SET_COST - T4_SSTORE_SET_REGULAR; // 230,000
+const T4_NEW_ACCOUNT_STATE: u64 = NEW_ACCOUNT_COST - T4_NEW_ACCOUNT_REGULAR; // 225,000
+const T4_CREATE_STATE: u64 = CREATE_COST - T4_CREATE_REGULAR; // 468,000
+const T4_CODE_DEPOSIT_STATE: u64 = 2_300;
 
 // TIP-1016 SSTORE set refund for 0→X→0 restoration (combined state + regular).
 // Spec: state_gas(230,000) + regular(GAS_STORAGE_UPDATE - GAS_COLD_SLOAD - GAS_WARM_ACCESS)
 //      = 230,000 + (20,000 - 2,100 - 100) = 247,800
-const T3_SSTORE_SET_REFUND: u64 = T3_SSTORE_SET_STATE + 17_800; // 230,000 + 17,800 = 247,800
+const T4_SSTORE_SET_REFUND: u64 = T4_SSTORE_SET_STATE + 17_800; // 230,000 + 17,800 = 247,800
 
 /// Tempo gas params override.
 #[inline]
 pub fn tempo_gas_params(spec: TempoHardfork) -> GasParams {
     let mut gas_params = GasParams::new_spec(spec.into());
     let mut overrides = vec![];
-    if spec.is_t3() {
+    if spec.is_t4() {
         // TIP-1016: Split storage creation costs into regular gas + state gas.
         // Regular gas (computational overhead) = at least pre-TIP-1000 EVM cost.
         // State gas (permanent storage burden) = total - regular.
@@ -66,32 +66,32 @@ pub fn tempo_gas_params(spec: TempoHardfork) -> GasParams {
             // SSTORE (zero → non-zero): 20k regular + 230k state
             (
                 GasId::sstore_set_without_load_cost(),
-                T3_SSTORE_SET_WITHOUT_LOAD,
+                T4_SSTORE_SET_WITHOUT_LOAD,
             ),
-            (GasId::sstore_set_state_gas(), T3_SSTORE_SET_STATE),
-            (GasId::sstore_set_refund(), T3_SSTORE_SET_REFUND),
+            (GasId::sstore_set_state_gas(), T4_SSTORE_SET_STATE),
+            (GasId::sstore_set_refund(), T4_SSTORE_SET_REFUND),
             // Contract metadata (CREATE base): 32k regular + 468k state
-            (GasId::tx_create_cost(), T3_CREATE_REGULAR),
-            (GasId::create(), T3_CREATE_REGULAR),
-            (GasId::create_state_gas(), T3_CREATE_STATE),
+            (GasId::tx_create_cost(), T4_CREATE_REGULAR),
+            (GasId::create(), T4_CREATE_REGULAR),
+            (GasId::create_state_gas(), T4_CREATE_STATE),
             // Account creation: 25k regular + 225k state
-            (GasId::new_account_cost(), T3_NEW_ACCOUNT_REGULAR),
-            (GasId::new_account_state_gas(), T3_NEW_ACCOUNT_STATE),
+            (GasId::new_account_cost(), T4_NEW_ACCOUNT_REGULAR),
+            (GasId::new_account_state_gas(), T4_NEW_ACCOUNT_STATE),
             (
                 GasId::new_account_cost_for_selfdestruct(),
-                T3_NEW_ACCOUNT_REGULAR,
+                T4_NEW_ACCOUNT_REGULAR,
             ),
             // Code deposit: 200 regular + 2,300 state per byte
-            (GasId::code_deposit_cost(), T3_CODE_DEPOSIT_REGULAR),
-            (GasId::code_deposit_state_gas(), T3_CODE_DEPOSIT_STATE),
+            (GasId::code_deposit_cost(), T4_CODE_DEPOSIT_REGULAR),
+            (GasId::code_deposit_state_gas(), T4_CODE_DEPOSIT_STATE),
             // EIP-7702 delegation: 25k regular + 225k state = 250k per auth
             (
                 GasId::tx_eip7702_per_empty_account_cost(),
-                T3_EIP7702_PER_AUTH_TOTAL,
+                T4_EIP7702_PER_AUTH_TOTAL,
             ),
             // Auth account creation (keychain): same split as account creation
-            (GasId::new(255), T3_NEW_ACCOUNT_REGULAR),
-            (GasId::new(254), T3_NEW_ACCOUNT_STATE),
+            (GasId::new(255), T4_NEW_ACCOUNT_REGULAR),
+            (GasId::new(254), T4_NEW_ACCOUNT_STATE),
         ]);
     } else if spec.is_t1() {
         // TIP-1000: All storage creation costs in regular gas (no state gas split).
@@ -163,10 +163,10 @@ mod tests {
     /// read cost (100) that revm charges as `sstore_static_gas`. So the GasId value
     /// = spec_regular - WARM_STORAGE_READ_COST = 20,000 - 100 = 19,900.
     #[test]
-    fn test_t3_gas_params_splits_storage_costs() {
-        let gas_params = tempo_gas_params(TempoHardfork::T3);
+    fn test_t4_gas_params_splits_storage_costs() {
+        let gas_params = tempo_gas_params(TempoHardfork::T4);
 
-        // T3 execution gas (regular/computational overhead)
+        // T4 execution gas (regular/computational overhead)
         // SSTORE: spec says 20,000 regular; revm decomposes as static(100) + sstore_set_without_load
         assert_eq!(
             gas_params.get(GasId::sstore_set_without_load_cost()),
@@ -194,7 +194,7 @@ mod tests {
         );
         assert_eq!(gas_params.get(GasId::code_deposit_cost()), 200);
 
-        // T3 state gas (permanent storage burden)
+        // T4 state gas (permanent storage burden)
         assert_eq!(
             gas_params.get(GasId::sstore_set_state_gas()),
             230_000,
@@ -243,51 +243,51 @@ mod tests {
     /// TIP-1016: Verify totals (regular + state) match spec table.
     /// Note: SSTORE total comparison needs to account for revm decomposition.
     /// T1 sstore_set_without_load_cost = 250,000 (full TIP-1000 cost as override).
-    /// T3 total SSTORE = sstore_set_without_load_cost(19,900) + warm_read(100) + state(230,000) = 250,000.
+    /// T4 total SSTORE = sstore_set_without_load_cost(19,900) + warm_read(100) + state(230,000) = 250,000.
     #[test]
-    fn test_t3_totals_match_spec() {
-        let t3 = tempo_gas_params(TempoHardfork::T3);
+    fn test_t4_totals_match_spec() {
+        let t4 = tempo_gas_params(TempoHardfork::T4);
 
         // SSTORE set total: regular(20,000) + state(230,000) = 250,000
         // In revm terms: sstore_set_without_load_cost(19,900) + warm_read(100) + state(230,000)
-        let sstore_regular = t3.get(GasId::sstore_set_without_load_cost()) + 100; // add warm_storage_read
+        let sstore_regular = t4.get(GasId::sstore_set_without_load_cost()) + 100; // add warm_storage_read
         assert_eq!(
-            sstore_regular + t3.get(GasId::sstore_set_state_gas()),
+            sstore_regular + t4.get(GasId::sstore_set_state_gas()),
             250_000,
             "SSTORE total must be 250,000"
         );
 
         // New account: 25,000 + 225,000 = 250,000
         assert_eq!(
-            t3.get(GasId::new_account_cost()) + t3.get(GasId::new_account_state_gas()),
+            t4.get(GasId::new_account_cost()) + t4.get(GasId::new_account_state_gas()),
             250_000,
             "new_account total must be 250,000"
         );
 
         // CREATE: 32,000 + 468,000 = 500,000
         assert_eq!(
-            t3.get(GasId::create()) + t3.get(GasId::create_state_gas()),
+            t4.get(GasId::create()) + t4.get(GasId::create_state_gas()),
             500_000,
             "CREATE total must be 500,000"
         );
 
         // Code deposit: 200 + 2,300 = 2,500/byte
         assert_eq!(
-            t3.get(GasId::code_deposit_cost()) + t3.get(GasId::code_deposit_state_gas()),
+            t4.get(GasId::code_deposit_cost()) + t4.get(GasId::code_deposit_state_gas()),
             2_500,
             "code_deposit total must be 2,500/byte"
         );
 
         // Auth account creation: 25,000 + 225,000 = 250,000
         assert_eq!(
-            t3.get(GasId::new(255)) + t3.get(GasId::new(254)),
+            t4.get(GasId::new(255)) + t4.get(GasId::new(254)),
             250_000,
             "auth_account_creation total must be 250,000"
         );
 
         // EIP-7702: 250,000 total per auth
         assert_eq!(
-            t3.get(GasId::tx_eip7702_per_empty_account_cost()),
+            t4.get(GasId::tx_eip7702_per_empty_account_cost()),
             250_000,
             "EIP-7702 per auth total must be 250,000"
         );

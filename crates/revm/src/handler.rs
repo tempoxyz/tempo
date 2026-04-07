@@ -129,7 +129,7 @@ fn tempo_signature_verification_gas(signature: &TempoSignature) -> u64 {
     }
 }
 
-/// Counts the storage rows written by T3 call-scope configuration.
+/// Counts the storage rows written by T4 call-scope configuration.
 ///
 /// This lets intrinsic gas account for the scoped-call writes that `authorize_key`
 /// persists into keychain storage.
@@ -223,8 +223,8 @@ fn calculate_key_authorization_gas(
         let sload_cost =
             gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
 
-        let limit_slots = if spec.is_t3() {
-            // T3 periodic limits write 2 storage slots per token:
+        let limit_slots = if spec.is_t4() {
+            // T4 periodic limits write 2 storage slots per token:
             // spending_limits[token].remaining + packed {max, period, period_end}
             num_limits.saturating_mul(2)
         } else {
@@ -233,8 +233,8 @@ fn calculate_key_authorization_gas(
 
         let mut total = sig_gas + sload_cost + sstore_cost * (1 + limit_slots) + BUFFER;
 
-        // T3+: include scoped-call storage rows in intrinsic gas.
-        if spec.is_t3() {
+        // T4+: include scoped-call storage rows in intrinsic gas.
+        if spec.is_t4() {
             total = total.saturating_add(
                 sstore_cost.saturating_mul(call_scope_storage_slots(&key_auth.authorization)),
             );
@@ -820,8 +820,8 @@ where
         // This case would create a new account for caller.
         if !nonce_key.is_zero() && tx.kind().is_create() && caller_account.nonce() == 0 {
             evm.initial_gas += cfg.gas_params().get(GasId::new_account_cost());
-            // TIP-1016: Track state gas for new account creation (T3+ only)
-            if spec.is_t3() {
+            // TIP-1016: Track state gas for new account creation (T4+ only)
+            if spec.is_t4() {
                 evm.initial_state_gas += cfg.gas_params().new_account_state_gas();
             }
 
@@ -1005,19 +1005,19 @@ where
                 .validate_chain_id(cfg.chain_id(), spec.is_t1c())
                 .map_err(TempoInvalidTransaction::from)?;
 
-            // T3 gates all TIP-1011 fields. Before activation, transaction semantics must stay
+            // T4 gates all TIP-1011 fields. Before activation, transaction semantics must stay
             // unchanged, so periodic limits and call scopes are rejected.
-            if !spec.is_t3() {
+            if !spec.is_t4() {
                 if key_auth.has_periodic_limits() {
                     return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                        reason: "periodic token limits are not active before T3".to_string(),
+                        reason: "periodic token limits are not active before T4".to_string(),
                     }
                     .into());
                 }
 
                 if key_auth.has_call_scopes() {
                     return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                        reason: "call scopes are not active before T3".to_string(),
+                        reason: "call scopes are not active before T4".to_string(),
                     }
                     .into());
                 }
@@ -1205,7 +1205,7 @@ where
                 tx,
                 |mut keychain: AccountKeychain| {
                     if is_authorizing_this_key {
-                        if spec.is_t3()
+                        if spec.is_t4()
                             && tempo_tx_env
                                 .key_authorization
                                 .as_ref()
@@ -1226,10 +1226,10 @@ where
                         // Extract the signature type from the inner signature to validate it matches
                         // the key_type stored in the keychain. This prevents using a signature of one
                         // type to authenticate as a key registered with a different type.
-                        // Only validate signature type on T3+ to maintain backward compatibility
+                        // Only validate signature type on T4+ to maintain backward compatibility
                         // with historical blocks during re-execution.
                         let sig_type = spec
-                            .is_t3()
+                            .is_t4()
                             .then_some(keychain_sig.signature.signature_type().into());
 
                         keychain
@@ -1251,7 +1251,7 @@ where
                         .set_transaction_key(access_key_addr)
                         .map_err(|e| EVMError::Custom(e.to_string()))?;
 
-                    let scope_validation_gas = if spec.is_t3() {
+                    let scope_validation_gas = if spec.is_t4() {
                         let gas_before = StorageCtx.gas_used();
 
                         let user_address = keychain_sig.user_address;
@@ -1540,7 +1540,7 @@ where
             // Transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas.
             if spec.is_t1() && tx.nonce == 0 {
                 let account_cost = gas_params.get(GasId::new_account_cost());
-                let account_state_gas = if spec.is_t3() {
+                let account_state_gas = if spec.is_t4() {
                     gas_params.new_account_state_gas()
                 } else {
                     0
@@ -1789,7 +1789,7 @@ where
             // TIP-1000: Storage pricing updates for launch
             // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas
             let account_cost = gas_params.get(GasId::new_account_cost());
-            let account_state_gas = if spec.is_t3() {
+            let account_state_gas = if spec.is_t4() {
                 gas_params.new_account_state_gas()
             } else {
                 0
@@ -1824,10 +1824,10 @@ where
     }
 
     // Validate gas limit is sufficient for initial gas
-    // State gas is only included in the intrinsic check for T3+, since pre-T3
+    // State gas is only included in the intrinsic check for T4+, since pre-T4
     // transactions were never validated against state gas.
     let total_intrinsic = batch_gas.initial_total_gas
-        + if spec.is_t3() {
+        + if spec.is_t4() {
             batch_gas.initial_state_gas
         } else {
             0
@@ -2093,7 +2093,7 @@ mod tests {
     }
 
     #[test]
-    fn test_self_sponsored_fee_payer_not_rejected_pre_t2() {
+    fn test_self_sponsored_fee_payer_not_rejected_pre_t4() {
         let caller = Address::random();
         let invalid_token = Address::random();
 
@@ -2716,10 +2716,10 @@ mod tests {
             let gas = calculate_key_authorization_gas(
                 &create_key_auth(num_limits),
                 &t1b_gas_params,
-                TempoHardfork::T3,
+                TempoHardfork::T4,
             );
             let expected = ECRECOVER_GAS + sload + sstore * (1 + 2 * num_limits as u64) + BUFFER;
-            assert_eq!(gas, expected, "T3 with {num_limits} limits");
+            assert_eq!(gas, expected, "T4 with {num_limits} limits");
         }
 
         let scoped = SignedKeyAuthorization {
@@ -2738,12 +2738,12 @@ mod tests {
             signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
         };
 
-        let gas = calculate_key_authorization_gas(&scoped, &t1b_gas_params, TempoHardfork::T3);
+        let gas = calculate_key_authorization_gas(&scoped, &t1b_gas_params, TempoHardfork::T4);
         // 1 key write + 12 scope slots:
         // account mode(1) + target insertion rows(3) + selector insertion rows(3)
         // + constrained selector recipient-length(1) + recipients values+positions(2*2).
         let expected = ECRECOVER_GAS + sload + sstore * (1 + 12) + BUFFER;
-        assert_eq!(gas, expected, "T3 scope writes should be fully charged");
+        assert_eq!(gas, expected, "T4 scope writes should be fully charged");
     }
 
     #[test]
@@ -3004,8 +3004,8 @@ mod tests {
             } else {
                 spec.gas_new_nonce_key()
             };
-            // TIP-1016: For T2+, state gas must also fit within gas_limit
-            let nonce_zero_state_gas = if spec.is_t3() {
+            // TIP-1016: For T4+, state gas must also fit within gas_limit
+            let nonce_zero_state_gas = if spec.is_t4() {
                 gas_params.new_account_state_gas()
             } else {
                 0
@@ -3794,12 +3794,12 @@ mod tests {
     }
 
     /// TIP-1016: Standard CREATE tx should populate initial_state_gas with
-    /// create_state_gas when state gas is enabled (T3+).
+    /// create_state_gas when state gas is enabled (T4+).
     /// Note: new_account_state_gas for the caller (nonce==0 with 2D nonce) is added
     /// later in validate_against_state_and_deduct_caller, not in upstream initial_tx_gas.
     #[test]
     fn test_state_gas_standard_create_tx_populates_initial_state_gas() {
-        let gas_params = tempo_gas_params(TempoHardfork::T3);
+        let gas_params = tempo_gas_params(TempoHardfork::T4);
         let initcode = Bytes::from(vec![0x60, 0x80]);
 
         let init_gas = gas_params.initial_tx_gas(
@@ -3824,7 +3824,7 @@ mod tests {
     /// TIP-1016: Standard CALL tx should have zero initial_state_gas.
     #[test]
     fn test_state_gas_standard_call_tx_zero_initial_state_gas() {
-        let gas_params = tempo_gas_params(TempoHardfork::T3);
+        let gas_params = tempo_gas_params(TempoHardfork::T4);
         let calldata = Bytes::from(vec![1, 2, 3]);
 
         let init_gas = gas_params.initial_tx_gas(
@@ -3841,7 +3841,7 @@ mod tests {
     /// TIP-1016: AA CREATE tx should populate initial_state_gas.
     #[test]
     fn test_state_gas_aa_create_tx_populates_initial_state_gas() {
-        let gas_params = tempo_gas_params(TempoHardfork::T3);
+        let gas_params = tempo_gas_params(TempoHardfork::T4);
         let initcode = Bytes::from(vec![0x60, 0x80]);
 
         let call = Call {
@@ -3864,7 +3864,7 @@ mod tests {
             &aa_env,
             &gas_params,
             None::<std::iter::Empty<&AccessListItem>>,
-            TempoHardfork::T3,
+            TempoHardfork::T4,
         )
         .unwrap();
 
@@ -3879,7 +3879,7 @@ mod tests {
     /// TIP-1016: AA CALL tx should have zero initial_state_gas.
     #[test]
     fn test_state_gas_aa_call_tx_zero_initial_state_gas() {
-        let gas_params = tempo_gas_params(TempoHardfork::T3);
+        let gas_params = tempo_gas_params(TempoHardfork::T4);
         let calldata = Bytes::from(vec![1, 2, 3]);
 
         let call = Call {
@@ -3902,7 +3902,7 @@ mod tests {
             &aa_env,
             &gas_params,
             None::<std::iter::Empty<&AccessListItem>>,
-            TempoHardfork::T3,
+            TempoHardfork::T4,
         )
         .unwrap();
 
@@ -3913,12 +3913,12 @@ mod tests {
     }
 
     /// TIP-1016: validate_initial_tx_gas for standard CREATE tx should set
-    /// initial_state_gas when T2 is active and state gas is enabled.
+    /// initial_state_gas when T4 is active and state gas is enabled.
     #[test]
-    fn test_state_gas_validate_initial_tx_gas_create_t2() {
+    fn test_state_gas_validate_initial_tx_gas_create_t4() {
         let mut cfg = CfgEnv::<TempoHardfork>::default();
-        cfg.spec = TempoHardfork::T3;
-        cfg.gas_params = tempo_gas_params(TempoHardfork::T3);
+        cfg.spec = TempoHardfork::T4;
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T4);
         cfg.enable_amsterdam_eip8037 = true;
 
         let initcode = Bytes::from(vec![0x60, 0x80]);
@@ -3952,7 +3952,7 @@ mod tests {
 
         assert_eq!(
             init_gas.initial_state_gas, expected_state_gas,
-            "T3 CREATE tx with nonce==0 should have create_state_gas + new_account_state_gas"
+            "T4 CREATE tx with nonce==0 should have create_state_gas + new_account_state_gas"
         );
     }
 
@@ -3961,8 +3961,8 @@ mod tests {
     #[test]
     fn test_state_gas_tx_gas_limit_above_cap_allowed() {
         let mut cfg = CfgEnv::<TempoHardfork>::default();
-        cfg.spec = TempoHardfork::T3;
-        cfg.gas_params = tempo_gas_params(TempoHardfork::T3);
+        cfg.spec = TempoHardfork::T4;
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T4);
         cfg.enable_amsterdam_eip8037 = true;
         cfg.tx_gas_limit_cap = Some(30_000_000);
 
@@ -3997,9 +3997,9 @@ mod tests {
         );
     }
 
-    /// TIP-1016: When enable_amsterdam_eip8037 is false (pre-T3), tx gas limit above cap is rejected.
+    /// TIP-1016: When enable_amsterdam_eip8037 is false (pre-T4), tx gas limit above cap is rejected.
     #[test]
-    fn test_state_gas_tx_gas_limit_above_cap_rejected_pre_t2() {
+    fn test_state_gas_tx_gas_limit_above_cap_rejected_pre_t4() {
         let mut cfg = CfgEnv::<TempoHardfork>::default();
         cfg.spec = TempoHardfork::T1;
         cfg.gas_params = tempo_gas_params(TempoHardfork::T1);
@@ -4036,7 +4036,7 @@ mod tests {
         );
     }
 
-    /// TIP-1016: Pre-T2 behavior unchanged - initial_state_gas is still populated
+    /// TIP-1016: Pre-T4 behavior unchanged - initial_state_gas is still populated
     /// by upstream revm for CREATE txs (it's a property of gas_params, not gating).
     /// But enable_amsterdam_eip8037=false means the reservoir won't be used.
     #[test]
@@ -4047,7 +4047,7 @@ mod tests {
 
         assert!(
             !cfg.enable_amsterdam_eip8037,
-            "Pre-T2 should NOT have enable_amsterdam_eip8037"
+            "Pre-T4 should NOT have enable_amsterdam_eip8037"
         );
 
         let calldata = Bytes::from(vec![1, 2, 3]);
@@ -4082,7 +4082,7 @@ mod tests {
     /// state gas for the CREATE call only.
     #[test]
     fn test_state_gas_aa_mixed_batch_create_and_call() {
-        let gas_params = tempo_gas_params(TempoHardfork::T3);
+        let gas_params = tempo_gas_params(TempoHardfork::T4);
         let calldata = Bytes::from(vec![1, 2, 3]);
         let initcode = Bytes::from(vec![0x60, 0x80]);
 
@@ -4113,7 +4113,7 @@ mod tests {
             &aa_env,
             &gas_params,
             None::<std::iter::Empty<&AccessListItem>>,
-            TempoHardfork::T3,
+            TempoHardfork::T4,
         )
         .unwrap();
 
@@ -4136,12 +4136,12 @@ mod tests {
         // init simulates revm output: total=100k (already includes state=57k), state=57k
         let init = InitialAndFloorGas::new_with_state_gas(100_000, 57_000, 21_000);
 
-        // T3: no runtime state gas delta
+        // T4: no runtime state gas delta
         // evm_initial_gas = 100k (already includes state gas from revm)
-        let adjusted = adjusted_initial_gas(TempoHardfork::T3, 100_000, 0, &init);
+        let adjusted = adjusted_initial_gas(TempoHardfork::T4, 100_000, 0, &init);
         assert_eq!(
             adjusted.initial_state_gas, 57_000,
-            "adjusted_initial_gas must preserve initial_state_gas for T3"
+            "adjusted_initial_gas must preserve initial_state_gas for T4"
         );
         assert_eq!(
             adjusted.initial_total_gas, 100_000,
@@ -4159,13 +4159,13 @@ mod tests {
             "initial_total_gas should equal evm_initial_gas (state gas already included)"
         );
 
-        // T3: with runtime state gas delta (evm_initial_state_gas from validate_against_state)
+        // T4: with runtime state gas delta (evm_initial_state_gas from validate_against_state)
         // evm_initial_gas already includes init.initial_state_gas, we only add evm_initial_state_gas
-        let adjusted_with_extra = adjusted_initial_gas(TempoHardfork::T3, 100_000, 245_000, &init);
+        let adjusted_with_extra = adjusted_initial_gas(TempoHardfork::T4, 100_000, 245_000, &init);
         assert_eq!(
             adjusted_with_extra.initial_state_gas,
             57_000 + 245_000,
-            "adjusted_initial_gas must add evm_initial_state_gas for T3"
+            "adjusted_initial_gas must add evm_initial_state_gas for T4"
         );
         assert_eq!(
             adjusted_with_extra.initial_total_gas,
@@ -4177,7 +4177,7 @@ mod tests {
     /// TIP-1016: AA batch with multiple CREATE calls accumulates state gas.
     #[test]
     fn test_state_gas_aa_multiple_create_calls() {
-        let gas_params = tempo_gas_params(TempoHardfork::T3);
+        let gas_params = tempo_gas_params(TempoHardfork::T4);
         let initcode = Bytes::from(vec![0x60, 0x80]);
 
         let calls = vec![
@@ -4207,7 +4207,7 @@ mod tests {
             &aa_env,
             &gas_params,
             None::<std::iter::Empty<&AccessListItem>>,
-            TempoHardfork::T3,
+            TempoHardfork::T4,
         )
         .unwrap();
 
@@ -4302,7 +4302,7 @@ mod tests {
     /// TIP-1016: AA auth list entries with nonce==0 should track state gas.
     #[test]
     fn test_state_gas_aa_auth_list_nonce_zero() {
-        let gas_params = tempo_gas_params(TempoHardfork::T3);
+        let gas_params = tempo_gas_params(TempoHardfork::T4);
 
         let aa_env = TempoBatchCallEnv {
             signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
@@ -4332,7 +4332,7 @@ mod tests {
             &aa_env,
             &gas_params,
             None::<std::iter::Empty<&AccessListItem>>,
-            TempoHardfork::T3,
+            TempoHardfork::T4,
         )
         .unwrap();
 
@@ -4343,10 +4343,10 @@ mod tests {
         );
     }
 
-    /// TIP-1016: AA nonce==0 new account should track state gas in T3.
+    /// TIP-1016: AA nonce==0 new account should track state gas in T4.
     #[test]
     fn test_state_gas_aa_nonce_zero_new_account() {
-        let gas_params = tempo_gas_params(TempoHardfork::T3);
+        let gas_params = tempo_gas_params(TempoHardfork::T4);
 
         let aa_env = TempoBatchCallEnv {
             signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
@@ -4372,7 +4372,7 @@ mod tests {
         };
 
         let mut cfg = CfgEnv::<TempoHardfork>::default();
-        cfg.spec = TempoHardfork::T3;
+        cfg.spec = TempoHardfork::T4;
         cfg.gas_params = gas_params.clone();
         cfg.enable_amsterdam_eip8037 = true;
 
@@ -4391,7 +4391,7 @@ mod tests {
         assert_eq!(
             init_gas.initial_state_gas,
             gas_params.new_account_state_gas(),
-            "AA tx with nonce==0 should track new_account_state_gas in T3"
+            "AA tx with nonce==0 should track new_account_state_gas in T4"
         );
     }
 
@@ -4443,12 +4443,12 @@ mod tests {
         );
     }
 
-    /// TIP-1016: Standard tx with nonce==0 should track state gas on T3 only.
+    /// TIP-1016: Standard tx with nonce==0 should track state gas on T4 only.
     #[test]
-    fn test_state_gas_standard_tx_nonce_zero_t2() {
+    fn test_state_gas_standard_tx_nonce_zero_t4() {
         let mut cfg = CfgEnv::<TempoHardfork>::default();
-        cfg.spec = TempoHardfork::T3;
-        cfg.gas_params = tempo_gas_params(TempoHardfork::T3);
+        cfg.spec = TempoHardfork::T4;
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T4);
         cfg.enable_amsterdam_eip8037 = true;
 
         let calldata = Bytes::from(vec![1, 2, 3]);
@@ -4479,7 +4479,7 @@ mod tests {
         assert_eq!(
             init_gas.initial_state_gas,
             cfg.gas_params.new_account_state_gas(),
-            "T3 standard tx with nonce==0 should track new_account_state_gas"
+            "T4 standard tx with nonce==0 should track new_account_state_gas"
         );
     }
 
