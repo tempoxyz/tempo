@@ -99,15 +99,6 @@ pub struct TempoPoolMaintenanceMetrics {
     /// Number of expired transactions evicted.
     pub expired_transactions_evicted: Counter,
 
-    /// Number of transactions moved to the paused pool.
-    pub transactions_paused: Counter,
-
-    /// Number of transactions restored from the paused pool.
-    pub transactions_unpaused: Counter,
-
     /// Number of transactions evicted due to invalidation events.
     pub transactions_invalidated: Counter,
-
-    /// Number of paused transactions evicted due to the global cap.
-    pub paused_pool_cap_evicted: Counter,
 }
