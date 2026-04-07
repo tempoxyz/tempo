@@ -227,6 +227,7 @@ where
     {
         let BuildArguments {
             mut cached_reads,
+            trie_handle,
             config,
             cancel,
             best_payload,
@@ -235,7 +236,7 @@ where
         let PayloadConfig {
             parent_header,
             attributes,
-            payload_id: _,
+            payload_id,
         } = config;
 
         let start = Instant::now();
@@ -361,6 +362,12 @@ where
         // Override the fee recipient with the on-chain value from the V2
         // validator config contract, if available.
         maybe_override_fee_recipient(&mut builder, &attributes);
+
+        if let Some(ref handle) = trie_handle {
+            builder
+                .executor_mut()
+                .set_state_hook(Some(Box::new(handle.state_hook())));
+        }
 
         builder.apply_pre_execution_changes().map_err(|err| {
             warn!(%err, "failed to apply pre-execution changes");
@@ -612,7 +619,7 @@ where
 
         let builder_finish_start = Instant::now();
         let _finish_span = debug_span!(target: "payload_builder", "finish_block").entered();
-        let instrumented_provider = InstrumentedFinishProvider {
+        let finish_provider = || InstrumentedFinishProvider {
             inner: &*state_provider,
             metrics: self.metrics.clone(),
         };
@@ -621,7 +628,40 @@ where
             block,
             hashed_state,
             trie_updates,
-        } = builder.finish(instrumented_provider, None)?;
+        } = if let Some(mut handle) = trie_handle {
+            // Dropping the hook signals that execution is complete and the sparse trie task can
+            // finalize the state root it has been updating incrementally.
+            builder.executor_mut().set_state_hook(None);
+
+            match handle.state_root() {
+                Ok(outcome) => {
+                    debug!(
+                        target: "payload_builder",
+                        id = %payload_id,
+                        state_root = ?outcome.state_root,
+                        "received state root from sparse trie"
+                    );
+                    builder.finish(
+                        finish_provider(),
+                        Some((
+                            outcome.state_root,
+                            Arc::unwrap_or_clone(outcome.trie_updates),
+                        )),
+                    )?
+                }
+                Err(err) => {
+                    warn!(
+                        target: "payload_builder",
+                        id = %payload_id,
+                        %err,
+                        "sparse trie failed, falling back to sync state root"
+                    );
+                    builder.finish(finish_provider(), None)?
+                }
+            }
+        } else {
+            builder.finish(finish_provider(), None)?
+        };
         drop(_finish_span);
         let builder_finish_elapsed = builder_finish_start.elapsed();
         self.metrics
