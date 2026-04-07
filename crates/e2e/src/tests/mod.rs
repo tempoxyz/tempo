@@ -9,6 +9,7 @@ mod dkg;
 mod linkage;
 mod metrics;
 mod migration_from_v1_to_v2;
+mod payload_builder;
 mod restart;
 mod subblocks;
 mod sync;
