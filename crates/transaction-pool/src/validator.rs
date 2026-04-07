@@ -27,7 +27,10 @@ use tempo_primitives::{
     subblock::has_sub_block_nonce_key_prefix,
     transaction::{TEMPO_EXPIRING_NONCE_KEY, TempoTransaction},
 };
-use tempo_revm::{TempoBlockEnv, TempoInvalidTransaction, TempoStateAccess, ValidationContext};
+use tempo_revm::{
+    TempoBlockEnv, TempoInvalidTransaction, TempoStateAccess, ValidationContext,
+    error::FeePaymentError,
+};
 
 // Reject AA txs where `valid_before` is too close to current time (or already expired) to prevent block invalidation.
 const AA_VALID_BEFORE_MIN_SECS: u64 = 3;
@@ -317,8 +320,10 @@ where
         //   future `valid_after` (queued until executable).
         // - Disable nonce check: the pool accepts future-nonce transactions (queued)
         //   and handles nonce ordering separately.
+        // - Skip liquidity check: the pool performs its own liquidity validation against a cached view of the AMM state.
         let mut evm = TempoEvm::new(StateProviderDatabase::new(state_provider), evm_env);
         evm.inner_mut().skip_valid_after_check = true;
+        evm.inner_mut().skip_liquidity_check = true;
         evm.ctx_mut().cfg.disable_nonce_check = true;
         evm.validate_transaction(transaction.tx_env().clone())
     }
@@ -438,6 +443,29 @@ where
 
             // Cache the key expiry for pool maintenance eviction.
             transaction.set_key_expiry(Some(key_expiry));
+        }
+
+        // Validate that transaction has enough liquidity against at least one of the recent validator tokens.
+        let fee = transaction.fee_token_cost();
+        match self.amm_liquidity_cache.has_enough_liquidity(
+            validation_ctx.fee_token,
+            fee,
+            &mut state_provider,
+        ) {
+            Ok(true) => {}
+            Ok(false) => {
+                return TransactionValidationOutcome::Invalid(
+                    transaction,
+                    InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
+                        TempoInvalidTransaction::CollectFeePreTx(
+                            FeePaymentError::InsufficientAmmLiquidity { fee },
+                        ),
+                    )),
+                );
+            }
+            Err(err) => {
+                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+            }
         }
 
         // Delegate to the inner ETH validator for remaining checks
