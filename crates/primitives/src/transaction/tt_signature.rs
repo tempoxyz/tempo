@@ -973,11 +973,11 @@ mod tests {
     use super::*;
     use alloy_primitives::{b256, bytes, hex};
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    use reth_codecs::Compact;
     use p256::{
         ecdsa::{SigningKey as P256SigningKey, signature::hazmat::PrehashSigner},
         elliptic_curve::rand_core::OsRng,
     };
+    use reth_codecs::Compact;
 
     /// Generate P256 keypair, return (signing_key, pub_key_x, pub_key_y)
     fn generate_p256_keypair() -> (P256SigningKey, B256, B256) {
@@ -2081,7 +2081,11 @@ mod tests {
     /// <https://github.com/paradigmxyz/reth-core/blob/0476d1bc4b71f3c3b080622be297edd91ee4e70c/crates/codecs/src/alloy/header.rs>
     #[test]
     fn compact_types_have_unused_bits() {
-        assert_ne!(P256SignatureWithPreHash::bitflag_unused_bits(), 0, "P256SignatureWithPreHash");
+        assert_ne!(
+            P256SignatureWithPreHash::bitflag_unused_bits(),
+            0,
+            "P256SignatureWithPreHash"
+        );
     }
 
     #[test]
@@ -2094,11 +2098,16 @@ mod tests {
             pre_hash: true,
         };
 
-        let expected = hex!("011111111111111111111111111111111111111111111111111111111111111111222222222222222222222222222222222222222222222222222222222222222233333333333333333333333333333333333333333333333333333333333333334444444444444444444444444444444444444444444444444444444444444444");
+        let expected = hex!(
+            "011111111111111111111111111111111111111111111111111111111111111111222222222222222222222222222222222222222222222222222222222222222233333333333333333333333333333333333333333333333333333333333333334444444444444444444444444444444444444444444444444444444444444444"
+        );
 
         let mut buf = vec![];
         let len = sig.to_compact(&mut buf);
-        assert_eq!(buf, expected, "P256SignatureWithPreHash compact encoding changed");
+        assert_eq!(
+            buf, expected,
+            "P256SignatureWithPreHash compact encoding changed"
+        );
         assert_eq!(len, expected.len());
 
         let (decoded, _) = P256SignatureWithPreHash::from_compact(&expected, expected.len());
@@ -2115,7 +2124,9 @@ mod tests {
             webauthn_data: bytes!("aabbccdd"),
         };
 
-        let expected = hex!("1111111111111111111111111111111111111111111111111111111111111111222222222222222222222222222222222222222222222222222222222222222233333333333333333333333333333333333333333333333333333333333333334444444444444444444444444444444444444444444444444444444444444444aabbccdd");
+        let expected = hex!(
+            "1111111111111111111111111111111111111111111111111111111111111111222222222222222222222222222222222222222222222222222222222222222233333333333333333333333333333333333333333333333333333333333333334444444444444444444444444444444444444444444444444444444444444444aabbccdd"
+        );
 
         let mut buf = vec![];
         let len = sig.to_compact(&mut buf);

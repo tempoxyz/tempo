@@ -170,12 +170,22 @@ mod tests {
             shared_gas_limit: 10_000_000,
             timestamp_millis_part: 500,
             inner: Header {
-                parent_hash: b256!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-                ommers_hash: b256!("0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347"),
+                parent_hash: b256!(
+                    "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                ),
+                ommers_hash: b256!(
+                    "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347"
+                ),
                 beneficiary: address!("0x000000000000000000000000000000000000beef"),
-                state_root: b256!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
-                transactions_root: b256!("0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"),
-                receipts_root: b256!("0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"),
+                state_root: b256!(
+                    "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                ),
+                transactions_root: b256!(
+                    "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                ),
+                receipts_root: b256!(
+                    "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                ),
                 logs_bloom: Bloom::with_last_byte(0xff),
                 difficulty: U256::from(1u64),
                 number: 1000,
@@ -183,22 +193,35 @@ mod tests {
                 gas_used: 15_000_000,
                 timestamp: 1_700_000_000,
                 extra_data: bytes!("deadbeef"),
-                mix_hash: b256!("0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"),
+                mix_hash: b256!(
+                    "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                ),
                 nonce: B64::from(42u64),
                 base_fee_per_gas: Some(7),
-                withdrawals_root: Some(b256!("0x1111111111111111111111111111111111111111111111111111111111111111")),
+                withdrawals_root: Some(b256!(
+                    "0x1111111111111111111111111111111111111111111111111111111111111111"
+                )),
                 blob_gas_used: Some(131072),
                 excess_blob_gas: Some(65536),
-                parent_beacon_block_root: Some(b256!("0x2222222222222222222222222222222222222222222222222222222222222222")),
-                requests_hash: Some(b256!("0x3333333333333333333333333333333333333333333333333333333333333333")),
+                parent_beacon_block_root: Some(b256!(
+                    "0x2222222222222222222222222222222222222222222222222222222222222222"
+                )),
+                requests_hash: Some(b256!(
+                    "0x3333333333333333333333333333333333333333333333333333333333333333"
+                )),
             },
         };
 
-        let expected = hex!("340201c9c38098968001f403a1a1f8aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347000000000000000000000000000000000000beefbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd1111111111111111111111111111111111111111111111111111111111111111000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ff0103e801c9c380e4e1c06553f100eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee2a01070302000003010000222222222222222222222222222222222222222222222222222222222222222221013333333333333333333333333333333333333333333333333333333333333333deadbeef");
+        let expected = hex!(
+            "340201c9c38098968001f403a1a1f8aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347000000000000000000000000000000000000beefbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd1111111111111111111111111111111111111111111111111111111111111111000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ff0103e801c9c380e4e1c06553f100eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee2a01070302000003010000222222222222222222222222222222222222222222222222222222222222222221013333333333333333333333333333333333333333333333333333333333333333deadbeef"
+        );
 
         let mut buf = vec![];
         let len = header.to_compact(&mut buf);
-        assert_eq!(buf, expected, "compact encoding changed — this breaks backwards compatibility");
+        assert_eq!(
+            buf, expected,
+            "compact encoding changed — this breaks backwards compatibility"
+        );
         assert_eq!(len, expected.len());
 
         let (decoded, _) = TempoHeader::from_compact(&expected, expected.len());
