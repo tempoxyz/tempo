@@ -34,6 +34,6 @@ ignore = [
     "tempo-xtask",
 ]
 
-# All three published crates share the same version (workspace.package.version).
+# The published SDK crates release together and share one version.
 [[fixed]]
 members = ["tempo-contracts", "tempo-primitives", "tempo-alloy"]

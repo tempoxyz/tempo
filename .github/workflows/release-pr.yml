@@ -18,18 +18,43 @@ jobs:
         with:
           persist-credentials: true
 
-      - name: Remove changelogs not targeting published crates
+      - name: Keep only SDK changelog entries
         run: |
-          for f in .changelog/*.md; do
-            [ ! -f "$f" ] && continue
-            # Extract frontmatter (between the two --- lines)
-            fm=$(awk '/^---$/{c++; next} c==1{print} c>=2{exit}' "$f")
-            # Keep only fragments that explicitly target a published crate
-            if ! echo "$fm" | grep -qE '^"?(tempo-alloy|tempo-primitives|tempo-contracts)"?\s*:'; then
-              echo "Removing $f (does not target a published crate)"
-              rm "$f"
-            fi
-          done
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          targets = {"tempo-alloy", "tempo-primitives", "tempo-contracts"}
+
+          for path in Path(".changelog").glob("*.md"):
+              text = path.read_text(encoding="utf-8")
+              lines = text.splitlines(keepends=True)
+
+              if not lines or lines[0].strip() != "---":
+                  print(f"Removing {path} (missing changelog frontmatter)")
+                  path.unlink()
+                  continue
+
+              end = next((i for i, line in enumerate(lines[1:], start=1) if line.strip() == "---"), None)
+              if end is None:
+                  print(f"Removing {path} (unterminated changelog frontmatter)")
+                  path.unlink()
+                  continue
+
+              kept = []
+              for line in lines[1:end]:
+                  match = re.match(r'^\s*"?([A-Za-z0-9_-]+)"?\s*:', line)
+                  if match and match.group(1) in targets:
+                      kept.append(line if line.endswith("\n") else f"{line}\n")
+
+              if not kept:
+                  print(f"Removing {path} (does not target SDK crates)")
+                  path.unlink()
+                  continue
+
+              body = "".join(lines[end + 1:])
+              path.write_text("---\n" + "".join(kept) + "---\n" + body, encoding="utf-8")
+          PY
 
       - uses: wevm/changelogs@master
         with:
