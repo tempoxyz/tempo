@@ -200,10 +200,23 @@ if $SEMVER_CHECK; then
     log "Running cargo-semver-checks …"
     SEMVER_FAILED=false
     SEMVER_SKIPPED_ALL=true
+    PUBLISH_CRATES=("tempo-contracts" "tempo-primitives" "tempo-alloy")
     for crate_dir in "$TMP_WORK_DIR/contracts" "$TMP_WORK_DIR/primitives" "$TMP_WORK_DIR/alloy"; do
         crate_name=$(grep -m1 'name = ' "$crate_dir/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')
         crate_ver=$(grep -m1 'version = ' "$crate_dir/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')
         log "Checking $crate_name@$crate_ver …"
+
+        internal_deps=()
+        for dep in "${PUBLISH_CRATES[@]}"; do
+            [ "$dep" = "$crate_name" ] && continue
+            if grep -qE "^\s*${dep}\s*=" "$crate_dir/Cargo.toml"; then
+                internal_deps+=("$dep")
+            fi
+        done
+        if ((${#internal_deps[@]} > 0)); then
+            log "$crate_name depends on releasable internal crates (${internal_deps[*]}), skipping semver-check"
+            continue
+        fi
 
         # Query crates.io for the latest published version.
         # Using the API directly instead of `cargo info` which resolves
