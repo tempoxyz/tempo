@@ -325,13 +325,13 @@ impl Inner<Init> {
             round,
         } = request;
 
-        let (id_tx, mut id_rx) = oneshot::channel();
+        let (payload_id_tx, mut payload_id_rx) = oneshot::channel();
 
         let proposal = select!(
             () = response.closed() => {
                 // If we got interrupted, fetch payload resolve future and drop it
                 // to make sure that payload building is canceled.
-                if let Ok(payload_id) = id_rx.try_recv() {
+                if let Ok(payload_id) = payload_id_rx.try_recv() {
                     let fut = self
                         .execution_node
                         .payload_builder_handle
@@ -352,7 +352,7 @@ impl Inner<Init> {
                 parent_view,
                 parent_digest,
                 round,
-                id_tx,
+                payload_id_tx,
             ) => {
                 res.wrap_err("failed creating a proposal")
             }
@@ -460,7 +460,7 @@ impl Inner<Init> {
         parent_view: View,
         parent_digest: Digest,
         round: Round,
-        id_tx: oneshot::Sender<PayloadId>,
+        payload_id_tx: oneshot::Sender<PayloadId>,
     ) -> eyre::Result<Block> {
         let propose_start = Instant::now();
 
@@ -585,9 +585,9 @@ impl Inner<Init> {
         );
 
         let payload_id = attrs.payload_id(&parent.digest().0);
-        id_tx
-            .send(payload_id)
-            .map_err(|_| eyre!("failed sending payload ID to `handle_propose`"))?;
+        payload_id_tx.send(payload_id).map_err(|_| {
+            eyre!("caller went away before payload job ID could be returned; aborting proposal")
+        })?;
         let interrupt_handle = attrs.interrupt_handle().clone();
 
         self.state
