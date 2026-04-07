@@ -1155,6 +1155,8 @@ impl AccountKeychain {
     ///
     /// Restores the spending limit by the refunded amount.
     /// Should be called after a fee refund to avoid permanently reducing the spending limit.
+    /// On T3, this should never restore more than the configured max in the current fee flow,
+    /// but we still clamp as defense in depth in case a future caller violates that invariant.
     pub fn refund_spending_limit(
         &mut self,
         account: Address,
@@ -1194,7 +1196,6 @@ impl AccountKeychain {
         }
 
         let mut limit_state = self.spending_limits[limit_key][token].read()?;
-        let prior_remaining = limit_state.remaining;
         let refunded = limit_state.remaining.saturating_add(amount);
         // Legacy pre-T3 rows only persisted `remaining`, so migrated keys deserialize with
         // `max = 0`. Preserve that legacy behavior and only clamp rows that were configured
@@ -1202,27 +1203,7 @@ impl AccountKeychain {
         limit_state.remaining = if limit_state.max == 0 {
             refunded
         } else {
-            let max = U256::from(limit_state.max);
-            if refunded > max {
-                // This should be unreachable in the current fee flow because refunds are derived
-                // from the same pre-tx fee reservation that reduced `remaining` in the first
-                // place. Keep the clamp as defense in depth so future internal callsites cannot
-                // silently restore more spending room than the configured cap.
-                tracing::error!(
-                    target: "tempo::precompiles::account_keychain",
-                    ?account,
-                    transaction_key = ?transaction_key,
-                    ?token,
-                    refunded_amount = ?amount,
-                    ?prior_remaining,
-                    ?refunded,
-                    max = limit_state.max,
-                    "refund_spending_limit exceeded configured T3 max; clamping defensively"
-                );
-                max
-            } else {
-                refunded
-            }
+            refunded.min(U256::from(limit_state.max))
         };
 
         self.spending_limits[limit_key][token].write(limit_state)
