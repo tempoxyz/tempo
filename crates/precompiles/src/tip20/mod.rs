@@ -1141,6 +1141,7 @@ impl TIP20Token {
 /// recipients, `virtual_addr` carries the original virtual address for event emission.
 ///
 /// [TIP-1022]: <https://docs.tempo.xyz/protocol/tip1022>
+#[derive(Debug, PartialEq)]
 pub(crate) struct Recipient {
     /// The effective (resolved) address where the balance is credited.
     pub(crate) target: Address,
@@ -1222,66 +1223,67 @@ mod recipient_tests {
     use tempo_chainspec::hardfork::TempoHardfork;
 
     #[test]
-    fn test_direct() {
+    fn test_resolve() -> eyre::Result<()> {
+        // direct (non-virtual)
         let addr = Address::repeat_byte(0x11);
-        let r = Recipient::direct(addr);
-        assert_eq!(r.target, addr);
-        assert_eq!(r.virtual_addr, None);
-    }
+        assert_eq!(
+            Recipient::direct(addr),
+            Recipient {
+                target: addr,
+                virtual_addr: None
+            }
+        );
 
-    #[test]
-    fn test_resolve_non_virtual_returns_direct() -> eyre::Result<()> {
+        // T3: non-virtual → direct
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
-        let addr = Address::repeat_byte(0x11);
         StorageCtx::enter(&mut storage, || {
             let r = Recipient::resolve(addr)?;
-            assert_eq!(r.target, addr);
-            assert_eq!(r.virtual_addr, None);
-            Ok::<_, TempoPrecompileError>(())
-        })?;
-        Ok(())
-    }
+            assert_eq!(
+                r,
+                Recipient {
+                    target: addr,
+                    virtual_addr: None
+                }
+            );
 
-    #[test]
-    fn test_resolve_virtual_returns_master() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
-        StorageCtx::enter(&mut storage, || {
+            // T3: registered virtual → master
             let mut registry = AddressRegistry::new();
             let (_, virtual_addr) = register_virtual_master(&mut registry)?;
             let r = Recipient::resolve(virtual_addr)?;
-            assert_eq!(r.target, VIRTUAL_MASTER);
-            assert_eq!(r.virtual_addr, Some(virtual_addr));
-            Ok::<_, TempoPrecompileError>(())
-        })?;
-        Ok(())
-    }
+            assert_eq!(
+                r,
+                Recipient {
+                    target: VIRTUAL_MASTER,
+                    virtual_addr: Some(virtual_addr)
+                }
+            );
 
-    #[test]
-    fn test_resolve_unregistered_virtual_reverts() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
-        StorageCtx::enter(&mut storage, || {
+            // T3: unregistered virtual → error
             let unregistered = make_virtual_address(MasterId::ZERO, UserTag::ZERO);
             assert!(Recipient::resolve(unregistered).is_err());
+
             Ok::<_, TempoPrecompileError>(())
         })?;
-        Ok(())
-    }
 
-    #[test]
-    fn test_resolve_virtual_pre_t3_returns_literal() -> eyre::Result<()> {
+        // Pre-T3: virtual address passed through as literal
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
         StorageCtx::enter(&mut storage, || {
             let virtual_addr = make_virtual_address(MasterId::ZERO, UserTag::ZERO);
             let r = Recipient::resolve(virtual_addr)?;
-            assert_eq!(r.target, virtual_addr);
-            assert_eq!(r.virtual_addr, None);
+            assert_eq!(
+                r,
+                Recipient {
+                    target: virtual_addr,
+                    virtual_addr: None
+                }
+            );
             Ok::<_, TempoPrecompileError>(())
         })?;
         Ok(())
     }
 
     #[test]
-    fn test_validate_rejects_zero_and_tip20_prefix() {
+    fn test_validate() {
         assert!(Recipient::direct(Address::ZERO).validate().is_err());
         assert!(
             Recipient::direct(crate::PATH_USD_ADDRESS)
@@ -1296,48 +1298,30 @@ mod recipient_tests {
     }
 
     #[test]
-    fn test_build_transfer_event_direct_vs_virtual() {
+    fn test_build_events() {
         let from = Address::repeat_byte(0x01);
         let target = Address::repeat_byte(0x02);
-        let virtual_addr = Address::repeat_byte(0x03);
+        let vaddr = Address::repeat_byte(0x03);
         let amount = U256::from(42);
 
         let direct = Recipient::direct(target);
-        let evt = direct.build_transfer_event(from, amount);
-        assert!(matches!(evt, TIP20Event::Transfer(ITIP20::Transfer { to, .. }) if to == target));
-
         let virt = Recipient {
             target,
-            virtual_addr: Some(virtual_addr),
+            virtual_addr: Some(vaddr),
         };
-        let evt = virt.build_transfer_event(from, amount);
-        assert!(
-            matches!(evt, TIP20Event::Transfer(ITIP20::Transfer { to, .. }) if to == virtual_addr)
-        );
-    }
 
-    #[test]
-    fn test_build_virtual_transfer_event() {
-        let target = Address::repeat_byte(0x02);
-        let virtual_addr = Address::repeat_byte(0x03);
-        let amount = U256::from(42);
+        // transfer event uses virtual_addr when present, target otherwise
+        assert!(matches!(direct.build_transfer_event(from, amount),
+            TIP20Event::Transfer(ITIP20::Transfer { to, .. }) if to == target));
+        assert!(matches!(virt.build_transfer_event(from, amount),
+            TIP20Event::Transfer(ITIP20::Transfer { to, .. }) if to == vaddr));
 
-        assert!(
-            Recipient::direct(target)
-                .build_virtual_transfer_event(amount)
-                .is_none()
-        );
-
-        let virt = Recipient {
-            target,
-            virtual_addr: Some(virtual_addr),
-        };
+        // virtual transfer event: None for direct, Some(virtual→master) for virtual
+        assert!(direct.build_virtual_transfer_event(amount).is_none());
         let hop = virt.build_virtual_transfer_event(amount).unwrap();
-        assert!(matches!(
-            hop,
+        assert!(matches!(hop,
             TIP20Event::Transfer(ITIP20::Transfer { from, to, .. })
-            if from == virtual_addr && to == target
-        ));
+            if from == vaddr && to == target));
     }
 }
 
@@ -2716,7 +2700,6 @@ pub(crate) mod tests {
     #[test]
     fn test_mint_to_virtual_address_credits_master() -> eyre::Result<()> {
         let amount = U256::from(1000);
-        let memo = FixedBytes::<32>::repeat_byte(0xAA);
 
         for hardfork in [TempoHardfork::T2, TempoHardfork::T3] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
@@ -2725,12 +2708,18 @@ pub(crate) mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut registry = AddressRegistry::new();
                 let (_, virtual_addr) = register_virtual_master(&mut registry)?;
+                let credited = if hardfork.is_t3() {
+                    VIRTUAL_MASTER
+                } else {
+                    virtual_addr
+                };
 
                 let mut token = TIP20Setup::create("Test", "TST", admin)
                     .with_issuer(admin)
                     .clear_events()
                     .apply()?;
 
+                // mint
                 token.mint(
                     admin,
                     ITIP20::mintCall {
@@ -2769,26 +2758,16 @@ pub(crate) mod tests {
                 }
 
                 // mintWithMemo: same resolution behavior
-                token.clear_emitted_events();
-                let pre_balance = token.get_balance(if hardfork.is_t3() {
-                    VIRTUAL_MASTER
-                } else {
-                    virtual_addr
-                })?;
+                let pre = token.get_balance(credited)?;
                 token.mint_with_memo(
                     admin,
                     ITIP20::mintWithMemoCall {
                         to: virtual_addr,
                         amount,
-                        memo,
+                        memo: FixedBytes::ZERO,
                     },
                 )?;
-                let post_balance = token.get_balance(if hardfork.is_t3() {
-                    VIRTUAL_MASTER
-                } else {
-                    virtual_addr
-                })?;
-                assert_eq!(post_balance - pre_balance, amount);
+                assert_eq!(token.get_balance(credited)? - pre, amount);
 
                 Ok::<_, TempoPrecompileError>(())
             })?;
@@ -2799,7 +2778,6 @@ pub(crate) mod tests {
     #[test]
     fn test_transfer_to_virtual_address_credits_master() -> eyre::Result<()> {
         let amount = U256::from(500);
-        let memo = FixedBytes::<32>::repeat_byte(0xBB);
 
         for hardfork in [TempoHardfork::T2, TempoHardfork::T3] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
@@ -2809,6 +2787,11 @@ pub(crate) mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut registry = AddressRegistry::new();
                 let (_, virtual_addr) = register_virtual_master(&mut registry)?;
+                let credited = if hardfork.is_t3() {
+                    VIRTUAL_MASTER
+                } else {
+                    virtual_addr
+                };
 
                 let mut token = TIP20Setup::create("Test", "TST", admin)
                     .with_issuer(admin)
@@ -2816,6 +2799,7 @@ pub(crate) mod tests {
                     .clear_events()
                     .apply()?;
 
+                // transfer
                 token.transfer(
                     sender,
                     ITIP20::transferCall {
@@ -2847,26 +2831,16 @@ pub(crate) mod tests {
                 }
 
                 // transferWithMemo: same resolution behavior
-                token.clear_emitted_events();
-                let pre_master = token.get_balance(if hardfork.is_t3() {
-                    VIRTUAL_MASTER
-                } else {
-                    virtual_addr
-                })?;
+                let pre = token.get_balance(credited)?;
                 token.transfer_with_memo(
                     sender,
                     ITIP20::transferWithMemoCall {
                         to: virtual_addr,
                         amount,
-                        memo,
+                        memo: FixedBytes::ZERO,
                     },
                 )?;
-                let post_master = token.get_balance(if hardfork.is_t3() {
-                    VIRTUAL_MASTER
-                } else {
-                    virtual_addr
-                })?;
-                assert_eq!(post_master - pre_master, amount);
+                assert_eq!(token.get_balance(credited)? - pre, amount);
 
                 Ok::<_, TempoPrecompileError>(())
             })?;
@@ -2877,7 +2851,6 @@ pub(crate) mod tests {
     #[test]
     fn test_transfer_from_to_virtual_address_credits_master() -> eyre::Result<()> {
         let amount = U256::from(300);
-        let memo = FixedBytes::<32>::repeat_byte(0xCC);
 
         for hardfork in [TempoHardfork::T2, TempoHardfork::T3] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
@@ -2888,6 +2861,11 @@ pub(crate) mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut registry = AddressRegistry::new();
                 let (_, virtual_addr) = register_virtual_master(&mut registry)?;
+                let credited = if hardfork.is_t3() {
+                    VIRTUAL_MASTER
+                } else {
+                    virtual_addr
+                };
 
                 let total = amount * U256::from(2);
                 let mut token = TIP20Setup::create("Test", "TST", admin)
@@ -2897,6 +2875,7 @@ pub(crate) mod tests {
                     .clear_events()
                     .apply()?;
 
+                // transferFrom
                 token.transfer_from(
                     spender,
                     ITIP20::transferFromCall {
@@ -2915,27 +2894,17 @@ pub(crate) mod tests {
                 }
 
                 // transferFromWithMemo: same resolution behavior
-                token.clear_emitted_events();
-                let pre = token.get_balance(if hardfork.is_t3() {
-                    VIRTUAL_MASTER
-                } else {
-                    virtual_addr
-                })?;
+                let pre = token.get_balance(credited)?;
                 token.transfer_from_with_memo(
                     spender,
                     ITIP20::transferFromWithMemoCall {
                         from: owner,
                         to: virtual_addr,
                         amount,
-                        memo,
+                        memo: FixedBytes::ZERO,
                     },
                 )?;
-                let post = token.get_balance(if hardfork.is_t3() {
-                    VIRTUAL_MASTER
-                } else {
-                    virtual_addr
-                })?;
-                assert_eq!(post - pre, amount);
+                assert_eq!(token.get_balance(credited)? - pre, amount);
 
                 Ok::<_, TempoPrecompileError>(())
             })?;
@@ -2944,13 +2913,15 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[rustfmt::skip]
     fn test_unregistered_virtual_reverts_on_t3() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         let admin = Address::random();
         let sender = Address::random();
         let spender = Address::random();
-        let unregistered = make_virtual_address(MasterId::ZERO, UserTag::ZERO);
+        let to = make_virtual_address(MasterId::ZERO, UserTag::ZERO);
         let amount = U256::from(100);
+        let memo = FixedBytes::ZERO;
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
@@ -2959,83 +2930,13 @@ pub(crate) mod tests {
                 .with_approval(sender, spender, amount)
                 .apply()?;
 
-            // mint
-            assert!(
-                token
-                    .mint(
-                        admin,
-                        ITIP20::mintCall {
-                            to: unregistered,
-                            amount
-                        }
-                    )
-                    .is_err()
-            );
-            // mintWithMemo
-            assert!(
-                token
-                    .mint_with_memo(
-                        admin,
-                        ITIP20::mintWithMemoCall {
-                            to: unregistered,
-                            amount,
-                            memo: FixedBytes::ZERO,
-                        }
-                    )
-                    .is_err()
-            );
-            // transfer
-            assert!(
-                token
-                    .transfer(
-                        sender,
-                        ITIP20::transferCall {
-                            to: unregistered,
-                            amount
-                        }
-                    )
-                    .is_err()
-            );
-            // transferWithMemo
-            assert!(
-                token
-                    .transfer_with_memo(
-                        sender,
-                        ITIP20::transferWithMemoCall {
-                            to: unregistered,
-                            amount,
-                            memo: FixedBytes::ZERO,
-                        }
-                    )
-                    .is_err()
-            );
-            // transferFrom
-            assert!(
-                token
-                    .transfer_from(
-                        spender,
-                        ITIP20::transferFromCall {
-                            from: sender,
-                            to: unregistered,
-                            amount,
-                        }
-                    )
-                    .is_err()
-            );
-            // transferFromWithMemo
-            assert!(
-                token
-                    .transfer_from_with_memo(
-                        spender,
-                        ITIP20::transferFromWithMemoCall {
-                            from: sender,
-                            to: unregistered,
-                            amount,
-                            memo: FixedBytes::ZERO,
-                        }
-                    )
-                    .is_err()
-            );
+            // All 6 entrypoints should revert for an unregistered virtual address
+            assert!(token.mint(admin, ITIP20::mintCall { to, amount }).is_err());
+            assert!(token.mint_with_memo(admin, ITIP20::mintWithMemoCall { to, amount, memo }).is_err());
+            assert!(token.transfer(sender, ITIP20::transferCall { to, amount }).is_err());
+            assert!(token.transfer_with_memo(sender, ITIP20::transferWithMemoCall { to, amount, memo }).is_err());
+            assert!(token.transfer_from(spender, ITIP20::transferFromCall { from: sender, to, amount }).is_err());
+            assert!(token.transfer_from_with_memo(spender, ITIP20::transferFromWithMemoCall { from: sender, to, amount, memo }).is_err());
 
             Ok(())
         })
