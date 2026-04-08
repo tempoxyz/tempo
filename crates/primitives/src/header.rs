@@ -74,7 +74,7 @@ impl TempoHeader {
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact))]
 struct TempoHeaderCompactTrailing {
-    consensus_context: TempoConsensusContext,
+    consensus_context: Option<TempoConsensusContext>,
 }
 
 /// Private helper for Reth's Compat encoding where the last type
@@ -101,9 +101,9 @@ impl reth_codecs::Compact for TempoHeader {
     where
         B: alloy_rlp::bytes::BufMut + AsMut<[u8]>,
     {
-        let trailing = self
-            .consensus_context
-            .map(|consensus_context| TempoHeaderCompactTrailing { consensus_context });
+        let trailing = self.consensus_context.map(|ctx| TempoHeaderCompactTrailing {
+            consensus_context: Some(ctx),
+        });
 
         let header = TempoHeaderCompact {
             general_gas_limit: self.general_gas_limit,
@@ -122,7 +122,7 @@ impl reth_codecs::Compact for TempoHeader {
             general_gas_limit: header_compat.general_gas_limit,
             shared_gas_limit: header_compat.shared_gas_limit,
             timestamp_millis_part: header_compat.timestamp_millis_part,
-            consensus_context: header_compat.trailing.map(|f| f.consensus_context),
+            consensus_context: header_compat.trailing.and_then(|f| f.consensus_context),
             inner: header_compat.inner.clone(),
         };
 
@@ -248,7 +248,16 @@ mod tests {
         assert_ne!(
             TempoHeaderCompact::bitflag_unused_bits(),
             0,
-            "TempoHeader compact bitflag has no unused bits left — use an extension type"
+            "TempoHeaderCompact bitflag has no unused bits left — use an extension type"
+        );
+    }
+
+    #[test]
+    fn tempo_trailing_has_unused_compact_bits() {
+        assert_ne!(
+            TempoHeaderCompactTrailing::bitflag_unused_bits(),
+            0,
+            "TempoHeaderCompactTrailing bitflag has no unused bits left — use an extension type"
         );
     }
 
