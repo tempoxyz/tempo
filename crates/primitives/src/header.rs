@@ -123,12 +123,12 @@ impl reth_codecs::Compact for TempoHeader {
 
     fn from_compact(buf: &[u8], len: usize) -> (Self, &[u8]) {
         let (header_compat, buf) = TempoHeaderCompact::from_compact(buf, len);
-        let header = TempoHeader {
+        let header = Self {
             general_gas_limit: header_compat.general_gas_limit,
             shared_gas_limit: header_compat.shared_gas_limit,
             timestamp_millis_part: header_compat.timestamp_millis_part,
             consensus_context: header_compat.trailing.and_then(|f| f.consensus_context),
-            inner: header_compat.inner.clone(),
+            inner: header_compat.inner,
         };
 
         (header, buf)
