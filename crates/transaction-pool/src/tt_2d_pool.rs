@@ -725,8 +725,7 @@ impl AA2dPool {
 
         // Check if this is an expiring nonce transaction
         if tx.transaction.is_expiring_nonce() {
-            let expiring_nonce_hash = Self::expiring_nonce_hash(&tx);
-            let tx = self.remove_expiring_nonce_tx(&expiring_nonce_hash)?;
+            let tx = self.remove_expiring_nonce_tx(&Self::expiring_nonce_hash(&tx))?;
             return Some((tx, None));
         }
 
@@ -796,8 +795,7 @@ impl AA2dPool {
             .collect::<Vec<_>>();
         for tx in txs {
             if tx.transaction.is_expiring_nonce() {
-                let expiring_nonce_hash = Self::expiring_nonce_hash(&tx);
-                if let Some(tx) = self.remove_expiring_nonce_tx(&expiring_nonce_hash) {
+                if let Some(tx) = self.remove_expiring_nonce_tx(&Self::expiring_nonce_hash(&tx)) {
                     removed.push(tx);
                 }
             } else if let Some(tx) = tx
