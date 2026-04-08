@@ -1,0 +1,42 @@
+name: Build devnet from branch
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event.issue.pull_request &&
+      github.event.comment.author_association == 'MEMBER' &&
+      startsWith(github.event.comment.body, '/build-devnet')
+    steps:
+      - name: Get PR details
+        id: pr
+        run: |
+          PR_DATA=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.issue.number }})
+          echo "sha=$(echo "$PR_DATA" | jq -r .head.sha)" >> "$GITHUB_OUTPUT"
+          echo "branch=$(echo "$PR_DATA" | jq -r .head.ref)" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish event
+        run: |
+          set -euo pipefail
+
+          echo "${{ secrets.EVENTS_KEY }}" > ${{ runner.temp }}/key
+          echo "${{ secrets.EVENTS_CERT }}" > ${{ runner.temp }}/cert
+
+          curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }} \
+            -H "Content-Type: application/json" \
+            --key "${{ runner.temp }}/key" \
+            --cert "${{ runner.temp }}/cert" \
+            -d '{
+              "repository": "${{ github.repository }}",
+              "event": "build_devnet",
+              "data": {
+                "name": "devnet-pr-${{ github.event.issue.number }}",
+                "branch": "${{ steps.pr.outputs.branch }}"
+              }
+            }'

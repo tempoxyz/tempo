@@ -6,7 +6,7 @@ set -e
 
 # NOTE: if you make modifications to this script, please increment the version number.
 # WARNING: the SemVer pattern: major.minor.patch must be followed as we use it to determine if the script is up to date.
-TEMPOUP_INSTALLER_VERSION="0.0.7"
+TEMPOUP_INSTALLER_VERSION="0.0.8"
 
 REPO="tempoxyz/tempo"
 # GPG key fingerprint for release signing verification
@@ -372,10 +372,13 @@ main() {
 
             # Import the release signing key if not already present
             if ! gpg --list-keys "$GPG_KEY_FINGERPRINT" >/dev/null 2>&1; then
-                info "Fetching Tempo release signing key from $GPG_KEYSERVER..."
-                if ! gpg --keyserver "$GPG_KEYSERVER" --recv-keys "$GPG_KEY_FINGERPRINT" 2>/dev/null; then
-                    warn "Failed to fetch GPG key from keyserver. Skipping signature verification."
-                    warn "You can manually import the key: gpg --keyserver $GPG_KEYSERVER --recv-keys $GPG_KEY_FINGERPRINT"
+                GPG_KEY_URL="https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x${GPG_KEY_FINGERPRINT}"
+                info "Fetching Tempo release signing key..."
+                if curl -sSfL "$GPG_KEY_URL" 2>/dev/null | gpg --import 2>/dev/null; then
+                    : # key imported via HTTPS
+                else
+                    warn "Failed to fetch GPG key. Skipping signature verification."
+                    warn "To import manually: curl -sSfL '$GPG_KEY_URL' | gpg --import"
                 fi
             fi
 

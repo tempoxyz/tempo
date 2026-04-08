@@ -45,6 +45,25 @@ impl ForkSchedule {
         }
     }
 
+    /// Returns whether the given Tempo hardfork is active for this schedule.
+    ///
+    /// For [`Devnet`](Self::Devnet) all forks from the dev genesis are active.
+    /// For other schedules, a fork is active only if its timestamp in the
+    /// reference genesis is in the past.
+    pub(crate) fn is_active(&self, fork: TempoHardfork) -> bool {
+        let Some(reference_json) = self.reference_genesis() else {
+            return true; // devnet: all forks active
+        };
+        let reference: serde_json::Value =
+            serde_json::from_str(reference_json).expect("reference genesis must parse");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let time_key = format!("{}Time", fork.to_string().to_lowercase());
+        matches!(reference["config"][&time_key].as_u64(), Some(ts) if ts <= now)
+    }
+
     /// Apply this profile's fork timestamps to a test genesis JSON value.
     ///
     /// Scans the test genesis config for all `*Time` keys and checks each
@@ -78,6 +97,36 @@ impl ForkSchedule {
     }
 }
 
+/// Build a genesis JSON string from `test-genesis.json` with only forks up to
+/// (and including) `last_active` enabled.  All subsequent forks are removed so
+/// the node starts in a "pre-<next fork>" configuration.
+///
+/// This scales automatically when new hardforks are appended to
+/// `TempoHardfork` — no manual maintenance required.
+pub(crate) fn make_genesis_at(last_active: TempoHardfork) -> String {
+    let mut genesis: serde_json::Value =
+        serde_json::from_str(include_str!("../assets/test-genesis.json"))
+            .expect("test-genesis.json must parse");
+    let config = genesis["config"]
+        .as_object_mut()
+        .expect("genesis must have config");
+
+    let mut past_cutoff = false;
+    for &fork in TempoHardfork::VARIANTS {
+        if fork == TempoHardfork::Genesis {
+            continue;
+        }
+        if past_cutoff {
+            let key = format!("{}Time", fork.name().to_lowercase());
+            config.remove(&key);
+        }
+        if fork == last_active {
+            past_cutoff = true;
+        }
+    }
+    serde_json::to_string(&genesis).expect("genesis must serialize")
+}
+
 /// Standard test mnemonic phrase used across integration tests
 pub(crate) const TEST_MNEMONIC: &str =
     "test test test test test test test test test test test junk";
@@ -93,7 +142,7 @@ use alloy_primitives::B256;
 use alloy_rpc_types_engine::PayloadAttributes;
 use reth_e2e_test_utils::setup;
 use reth_ethereum::tasks::Runtime;
-use reth_node_api::{FullNodeComponents, PayloadBuilderAttributes};
+use reth_node_api::FullNodeComponents;
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle, rpc::RethRpcAddOns};
 use reth_node_core::args::RpcServerArgs;
 use reth_rpc_builder::RpcModuleSelection;
@@ -108,7 +157,7 @@ use tempo_contracts::precompiles::{
     ITIP20Factory,
 };
 use tempo_node::node::TempoNode;
-use tempo_payload_types::{TempoPayloadAttributes, TempoPayloadBuilderAttributes};
+use tempo_payload_types::TempoPayloadAttributes;
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::ISSUER_ROLE};
 
 /// Creates a test TIP20 token with issuer role granted to the caller
@@ -428,17 +477,13 @@ impl TestNodeBuilder {
 }
 
 /// Default attributes generator for payload building
-fn default_attributes_generator(timestamp: u64) -> TempoPayloadBuilderAttributes {
-    let attributes = TempoPayloadAttributes {
-        inner: PayloadAttributes {
-            timestamp,
-            prev_randao: alloy::primitives::B256::ZERO,
-            suggested_fee_recipient: alloy::primitives::Address::ZERO,
-            withdrawals: Some(vec![]),
-            parent_beacon_block_root: Some(alloy::primitives::B256::ZERO),
-        },
-        timestamp_millis_part: 0,
-    };
-
-    TempoPayloadBuilderAttributes::try_new(B256::ZERO, attributes, 0).unwrap()
+fn default_attributes_generator(timestamp: u64) -> TempoPayloadAttributes {
+    PayloadAttributes {
+        timestamp,
+        prev_randao: alloy::primitives::B256::ZERO,
+        suggested_fee_recipient: alloy::primitives::Address::ZERO,
+        withdrawals: Some(vec![]),
+        parent_beacon_block_root: Some(alloy::primitives::B256::ZERO),
+    }
+    .into()
 }

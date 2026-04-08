@@ -77,6 +77,11 @@ impl TempoEvmConfig {
         &self.inner
     }
 
+    /// Returns the moderato EVM config.
+    pub fn moderato() -> Self {
+        Self::new(Arc::new(TempoChainSpec::moderato()))
+    }
+
     /// Returns the mainnet EVM config.
     pub fn mainnet() -> Self {
         Self::new(Arc::new(TempoChainSpec::mainnet()))

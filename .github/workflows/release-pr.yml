@@ -1,0 +1,64 @@
+name: Release PR
+
+on:
+  push:
+    branches: [main]
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  release-pr:
+    name: Release PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.TEMPO_GITHUB_PAT }}
+          persist-credentials: true
+
+      - name: Keep only SDK changelog entries
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          targets = {"tempo-alloy", "tempo-primitives", "tempo-contracts"}
+
+          for path in Path(".changelog").glob("*.md"):
+              text = path.read_text(encoding="utf-8")
+              lines = text.splitlines(keepends=True)
+
+              if not lines or lines[0].strip() != "---":
+                  print(f"Removing {path} (missing changelog frontmatter)")
+                  path.unlink()
+                  continue
+
+              end = next((i for i, line in enumerate(lines[1:], start=1) if line.strip() == "---"), None)
+              if end is None:
+                  print(f"Removing {path} (unterminated changelog frontmatter)")
+                  path.unlink()
+                  continue
+
+              kept = []
+              for line in lines[1:end]:
+                  match = re.match(r'^\s*"?([A-Za-z0-9_-]+)"?\s*:', line)
+                  if match and match.group(1) in targets:
+                      kept.append(line if line.endswith("\n") else f"{line}\n")
+
+              if not kept:
+                  print(f"Removing {path} (does not target SDK crates)")
+                  path.unlink()
+                  continue
+
+              body = "".join(lines[end + 1:])
+              path.write_text("---\n" + "".join(kept) + "---\n" + body, encoding="utf-8")
+          PY
+
+      - uses: tempoxyz/changelogs@master
+        with:
+          conventional-commit: true
+          post-version-command: cargo update -w
+          github-token: ${{ secrets.TEMPO_GITHUB_PAT }}
