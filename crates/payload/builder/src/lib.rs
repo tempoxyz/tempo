@@ -425,9 +425,7 @@ where
                 break;
             }
 
-            if cancel.is_cancelled() {
-                return Ok(BuildOutcome::Cancelled);
-            }
+            check_cancel!();
 
             let Some(pool_tx) = best_txs.next() else {
                 if build_until_interrupt && cumulative_gas_used < non_shared_gas_limit {
