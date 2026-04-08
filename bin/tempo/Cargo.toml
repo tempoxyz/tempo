@@ -74,6 +74,7 @@ jiff.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
+opentelemetry-otlp = { version = "0.31", default-features = false, optional = true }
 pyroscope = { workspace = true, optional = true }
 pyroscope_pprofrs = { workspace = true, optional = true }
 tracy-client = { workspace = true, optional = true }
@@ -97,6 +98,8 @@ otlp = [
 	"reth-ethereum-cli/otlp-logs",
 	"reth-ethereum/otlp",
 	"tempo-node/otlp",
+	"dep:opentelemetry-otlp",
+	"opentelemetry-otlp/reqwest-rustls",
 ]
 
 pyroscope = ["dep:pyroscope", "dep:pyroscope_pprofrs"]
