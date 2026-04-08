@@ -185,11 +185,11 @@ contract GasPricingInvariantTest is InvariantBase {
 
         uint64 nonce = uint64(vm.getNonce(sender));
 
-        // Test 1: Insufficient gas — below intrinsic tx cost so the tx cannot execute at all.
-        // Under TIP-1016, SSTORE only costs 20k regular gas (state gas comes from
-        // reservoir), so any gas above BASE_TX_GAS + CALL_OVERHEAD + 20k would suffice.
-        // We set gas below intrinsic cost to guarantee failure.
-        uint64 lowGas = uint64(BASE_TX_GAS - 1);
+        // Test 1: Insufficient gas — not enough for base tx + call overhead + SSTORE regular gas.
+        // Note: tempo-foundry does not apply TIP-1000's 250k SSTORE override (tempo_gas_params
+        // is not wired in), so the EVM charges standard EIP-2200 costs (~20k for SSTORE set).
+        // We set gas below BASE_TX_GAS + CALL_OVERHEAD + SSTORE_REGULAR_GAS to guarantee failure.
+        uint64 lowGas = uint64(BASE_TX_GAS + SSTORE_REGULAR_GAS);
         bytes memory lowGasTx = TxBuilder.buildLegacyCallWithGas(
             vmRlp, vm, address(storageContract), callData, nonce, lowGas, privateKey
         );
@@ -248,10 +248,9 @@ contract GasPricingInvariantTest is InvariantBase {
 
         uint64 nonce = uint64(vm.getNonce(sender));
 
-        // Test 1: Insufficient gas — below intrinsic cost for CREATE tx.
-        // Under TIP-1016, CREATE splits into regular + state gas, so the threshold
-        // is much lower than the total 800k. Use gas below intrinsic cost.
-        uint64 lowGas = uint64(BASE_TX_GAS - 1);
+        // Test 1: Insufficient gas — barely covers intrinsic gas, far below CREATE + code deposit.
+        // See handler_sstoreNewSlot comment: tempo-foundry uses standard EVM gas costs.
+        uint64 lowGas = uint64(BASE_TX_GAS + 1000);
         bytes memory lowGasTx =
             TxBuilder.buildLegacyCreateWithGas(vmRlp, vm, initcode, nonce, lowGas, privateKey);
 
@@ -310,10 +309,9 @@ contract GasPricingInvariantTest is InvariantBase {
         bytes memory callData = abi.encodeCall(GasTestStorage.storeMultiple, (slots));
         uint64 nonce = uint64(vm.getNonce(sender));
 
-        // Test 1: Insufficient gas — below intrinsic tx cost.
-        // Under TIP-1016, each SSTORE only needs 20k regular gas (state gas from
-        // reservoir), so even a small gas limit above intrinsic cost would write slots.
-        uint64 lowGas = uint64(BASE_TX_GAS - 1);
+        // Test 1: Insufficient gas — enough for base tx + call overhead but not enough for
+        // any SSTORE regular gas. See handler_sstoreNewSlot comment re: tempo-foundry gas costs.
+        uint64 lowGas = uint64(BASE_TX_GAS + CALL_OVERHEAD);
         bytes memory lowGasTx = TxBuilder.buildLegacyCallWithGas(
             vmRlp, vm, address(storageContract), callData, nonce, lowGas, privateKey
         );
