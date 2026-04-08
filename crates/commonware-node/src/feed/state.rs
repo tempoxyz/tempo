@@ -1,7 +1,7 @@
 //! Shared state for the feed module.
 
 use crate::alias::marshal;
-use alloy_consensus::{BlockHeader as _, Sealable};
+use alloy_consensus::BlockHeader as _;
 use alloy_primitives::hex;
 use commonware_codec::{Encode, ReadExt as _};
 use commonware_consensus::{
@@ -10,8 +10,10 @@ use commonware_consensus::{
 };
 use commonware_cryptography::bls12381::primitives::variant::{MinSig, Variant};
 use parking_lot::RwLock;
+use reth_node_core::rpc::compat::FromConsensusHeader;
 use reth_provider::HeaderProvider as _;
 use std::sync::{Arc, OnceLock};
+use tempo_alloy::rpc::TempoHeaderResponse;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{
     TempoFullNode,
@@ -20,7 +22,6 @@ use tempo_node::{
         IdentityTransition, IdentityTransitionResponse, Query, TransitionProofData,
     },
 };
-use tempo_primitives::TempoHeader;
 use tokio::sync::broadcast;
 use tracing::instrument;
 
@@ -246,7 +247,7 @@ impl FeedStateHandle {
                     old_identity: hex::encode(prev_pubkey.encode()),
                     new_identity: hex::encode(pubkey.encode()),
                     proof: Some(TransitionProofData {
-                        header: header.into_header().into(),
+                        header: TempoHeaderResponse::from_consensus_header(header, 0),
                         finalization_certificate: hex::encode(finalization.encode()),
                     }),
                 });

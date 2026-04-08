@@ -11856,6 +11856,7 @@ dependencies = [
  "reth-primitives-traits",
  "reth-provider",
  "reth-revm",
+ "tempo-alloy",
  "tempo-chainspec",
  "tempo-commonware-node-config",
  "tempo-dkg-onchain-artifacts",

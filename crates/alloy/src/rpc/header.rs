@@ -20,15 +20,6 @@ pub struct TempoHeaderResponse {
     pub timestamp_millis: u64,
 }
 
-impl From<TempoHeader> for TempoHeaderResponse {
-    fn from(header: TempoHeader) -> Self {
-        Self {
-            timestamp_millis: header.timestamp_millis(),
-            inner: Header::new(header),
-        }
-    }
-}
-
 impl BlockHeader for TempoHeaderResponse {
     fn parent_hash(&self) -> B256 {
         self.inner.parent_hash()
