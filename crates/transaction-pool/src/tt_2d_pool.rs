@@ -725,7 +725,7 @@ impl AA2dPool {
 
         // Check if this is an expiring nonce transaction
         if tx.transaction.is_expiring_nonce() {
-            let expiring_nonce_hash = Self::expiring_nonce_hash(tx);
+            let expiring_nonce_hash = Self::expiring_nonce_hash(&tx);
             let tx = self.remove_expiring_nonce_tx(&expiring_nonce_hash)?;
             return Some((tx, None));
         }
