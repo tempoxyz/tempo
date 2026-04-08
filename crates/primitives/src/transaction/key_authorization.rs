@@ -5,36 +5,6 @@ use alloy_consensus::crypto::RecoveryError;
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::Encodable;
 
-#[cfg(feature = "serde")]
-mod selector_hex_serde {
-    use alloy_primitives::FixedBytes;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum SelectorValue {
-        Hex(FixedBytes<4>),
-        Array([u8; 4]),
-    }
-
-    pub(super) fn serialize<S>(selector: &[u8; 4], serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        FixedBytes::<4>::from(*selector).serialize(serializer)
-    }
-
-    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<[u8; 4], D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Ok(match SelectorValue::deserialize(deserializer)? {
-            SelectorValue::Hex(selector) => selector.into(),
-            SelectorValue::Array(selector) => selector,
-        })
-    }
-}
-
 /// Token spending limit for access keys
 ///
 /// Defines a per-token spending limit for an access key provisioned via key_authorization.
@@ -473,6 +443,36 @@ mod rlp {
         fn length(&self) -> usize {
             TokenLimitWire::from(self).length()
         }
+    }
+}
+
+#[cfg(feature = "serde")]
+mod selector_hex_serde {
+    use alloy_primitives::FixedBytes;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum SelectorValue {
+        Hex(FixedBytes<4>),
+        Array([u8; 4]),
+    }
+
+    pub(super) fn serialize<S>(selector: &[u8; 4], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        FixedBytes::<4>::from(*selector).serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<[u8; 4], D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(match SelectorValue::deserialize(deserializer)? {
+            SelectorValue::Hex(selector) => selector.into(),
+            SelectorValue::Array(selector) => selector,
+        })
     }
 }
 

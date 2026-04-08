@@ -18,13 +18,27 @@ use tempo_node::rpc::TempoTransactionRequest;
 use tempo_primitives::{
     SignatureType, TempoTransaction, TempoTxEnvelope,
     transaction::{
-        KeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, TokenLimit,
+        KeyAuthorization, SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, TokenLimit,
         tempo_transaction::Call,
         tt_signature::{PrimitiveSignature, TempoSignature},
     },
 };
 
 use super::{helpers::*, types::*};
+
+fn pre_t3_tip1011_rejection_reason(
+    key_authorization: Option<&SignedKeyAuthorization>,
+) -> Option<&'static str> {
+    let key_authorization = key_authorization?;
+
+    if key_authorization.authorization.has_periodic_limits() {
+        Some("periodic token limits are not active before T3")
+    } else if key_authorization.authorization.has_call_scopes() {
+        Some("call scopes are not active before T3")
+    } else {
+        None
+    }
+}
 
 // ===========================================================================
 // Matrix runners
@@ -443,6 +457,8 @@ fn gas_estimation_cases() -> Vec<GasCase> {
 pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
     env: &mut E,
 ) -> eyre::Result<std::collections::BTreeMap<String, u64>> {
+    let is_t3 = env.hardfork().is_t3();
+
     // Fixed signer and recipient so calldata/storage costs are deterministic.
     let signer = PrivateKeySigner::from_bytes(&B256::with_last_byte(1)).unwrap();
     let signer_addr = signer.address();
@@ -541,7 +557,34 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
             }
         }
 
-        let gas = estimate_gas(provider, &request).await?;
+        let expected_rejection = (!is_t3)
+            .then(|| pre_t3_tip1011_rejection_reason(request.key_authorization.as_ref()))
+            .flatten();
+
+        let gas = match estimate_gas(provider, &request).await {
+            Ok(gas) => {
+                if let Some(reason) = expected_rejection {
+                    return Err(eyre::eyre!(
+                        "[{}] eth_estimateGas should reject before T3 with '{reason}'",
+                        test_case.name,
+                    ));
+                }
+                gas
+            }
+            Err(err) => {
+                if let Some(reason) = expected_rejection {
+                    let err_str = err.to_string();
+                    assert!(
+                        err_str.contains(reason),
+                        "[{}] expected pre-T3 rejection containing '{reason}', got: {err}",
+                        test_case.name,
+                    );
+                    println!("  rejected as expected: {reason}");
+                    continue;
+                }
+                return Err(err);
+            }
+        };
         println!("  gas: {gas}");
 
         // Run range/relational assertions
@@ -588,10 +631,26 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
 /// For fee-payer cases, also verifies that the fee-payer signature hash is
 /// deterministic by signing + recovering with a random signer.
 pub(super) async fn run_fill_transaction_matrix<E: TestEnv>(env: &mut E) -> eyre::Result<()> {
+    let is_t3 = env.hardfork().is_t3();
     let signer = PrivateKeySigner::random();
     let signer_addr = signer.address();
     let current_timestamp = env.current_block_timestamp().await?;
     let fee_payer_signer = PrivateKeySigner::random();
+    let scoped_fill_case = |name, num_limits, allowed_calls| {
+        let case = FillTestCase::new(NonceMode::Protocol, KeyType::Secp256k1).key_authorization(
+            name,
+            create_signed_key_authorization(
+                &signer,
+                SignatureType::Secp256k1,
+                num_limits,
+                env.chain_id(),
+                allowed_calls,
+                Address::with_last_byte(0x11),
+            ),
+        );
+
+        if is_t3 { case } else { case.reject() }
+    };
 
     let matrix = [
         FillTestCase::new(NonceMode::Protocol, KeyType::Secp256k1).omit_nonce_key(),
@@ -607,38 +666,20 @@ pub(super) async fn run_fill_transaction_matrix<E: TestEnv>(env: &mut E) -> eyre
         FillTestCase::new(NonceMode::Protocol, KeyType::Secp256k1)
             .fee_payer()
             .fee_token(DEFAULT_FEE_TOKEN),
-        FillTestCase::new(NonceMode::Protocol, KeyType::Secp256k1).key_authorization(
+        scoped_fill_case(
             "key_auth_selector_recipient",
-            create_signed_key_authorization(
-                &signer,
-                SignatureType::Secp256k1,
-                2,
-                env.chain_id(),
-                AllowedCallsMode::SelectorRecipient,
-                Address::with_last_byte(0x11),
-            ),
+            2,
+            AllowedCallsMode::SelectorRecipient,
         ),
-        FillTestCase::new(NonceMode::Protocol, KeyType::Secp256k1).key_authorization(
+        scoped_fill_case(
             "key_auth_selector_any_recipient",
-            create_signed_key_authorization(
-                &signer,
-                SignatureType::Secp256k1,
-                0,
-                env.chain_id(),
-                AllowedCallsMode::SelectorAnyRecipient,
-                Address::with_last_byte(0x11),
-            ),
+            0,
+            AllowedCallsMode::SelectorAnyRecipient,
         ),
-        FillTestCase::new(NonceMode::Protocol, KeyType::Secp256k1).key_authorization(
+        scoped_fill_case(
             "key_auth_target_any_selector",
-            create_signed_key_authorization(
-                &signer,
-                SignatureType::Secp256k1,
-                0,
-                env.chain_id(),
-                AllowedCallsMode::TargetAnySelector,
-                Address::with_last_byte(0x11),
-            ),
+            0,
+            AllowedCallsMode::TargetAnySelector,
         ),
     ];
 
@@ -648,9 +689,37 @@ pub(super) async fn run_fill_transaction_matrix<E: TestEnv>(env: &mut E) -> eyre
     for (index, test_case) in matrix.iter().enumerate() {
         println!("[{}/{}] {}", index + 1, matrix.len(), test_case.name);
 
-        let (filled_tx, request_context) =
+        let fill_result =
             fill_transaction_from_case(env.provider(), test_case, signer_addr, current_timestamp)
-                .await?;
+                .await;
+        let (filled_tx, request_context) = match fill_result {
+            Ok(pair) => {
+                if matches!(test_case.expected, ExpectedOutcome::Rejection) {
+                    return Err(eyre::eyre!(
+                        "[{}] eth_fillTransaction should reject before T3",
+                        test_case.name,
+                    ));
+                }
+                pair
+            }
+            Err(err) => {
+                if matches!(test_case.expected, ExpectedOutcome::Rejection) {
+                    if let Some(reason) =
+                        pre_t3_tip1011_rejection_reason(test_case.key_authorization.as_ref())
+                    {
+                        let err_str = err.to_string();
+                        assert!(
+                            err_str.contains(reason),
+                            "[{}] expected pre-T3 rejection containing '{reason}', got: {err}",
+                            test_case.name,
+                        );
+                    }
+                    println!("  Fill rejected as expected: {err}");
+                    continue;
+                }
+                return Err(err);
+            }
+        };
         assert_fill_request_expectations(&filled_tx, &request_context, test_case)?;
 
         if test_case.fee_payer {
