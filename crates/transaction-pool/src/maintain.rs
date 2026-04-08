@@ -22,7 +22,7 @@ use std::{
     collections::{BTreeMap, btree_map::Entry},
     time::Instant,
 };
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks, spec::TEMPO_T1_BASE_FEE};
+use tempo_chainspec::TempoChainSpec;
 use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
@@ -649,37 +649,6 @@ where
             }
         }
     }
-}
-
-/// Removes transactions with max_fee_per_gas below the T1 base fee from the pool.
-///
-/// This is a one-time cleanup performed when the T0 → T1 hardfork transition is detected.
-/// After T1 activation, transactions with max_fee_per_gas < 20 billion attodollars are never includable
-/// and should be evicted from the pool.
-///
-/// # Note
-/// This function is temporary and will be removed after T1 is activated on mainnet.
-fn evict_underpriced_transactions_for_t1<Pool>(pool: &Pool) -> usize
-where
-    Pool: TransactionPool,
-{
-    let all_txs = pool.all_transactions();
-    let t1_base_fee = TEMPO_T1_BASE_FEE as u128;
-
-    let underpriced_hashes: Vec<TxHash> = all_txs
-        .pending
-        .iter()
-        .chain(all_txs.queued.iter())
-        .filter(|tx| tx.max_fee_per_gas() < t1_base_fee)
-        .map(|tx| *tx.hash())
-        .collect();
-
-    let count = underpriced_hashes.len();
-    if count > 0 {
-        pool.remove_transactions(underpriced_hashes);
-    }
-
-    count
 }
 
 #[cfg(test)]
