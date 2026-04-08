@@ -6,35 +6,11 @@ import { Test } from "forge-std/Test.sol";
 import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
 import { InvariantBase } from "../helpers/InvariantBase.sol";
 import { Counter, InitcodeHelper, SimpleStorage } from "../helpers/TestContracts.sol";
+import { GasTestStorage } from "../helpers/GasTestStorage.sol";
 import { TxBuilder } from "../helpers/TxBuilder.sol";
 
 import { VmExecuteTransaction, VmRlp } from "tempo-std/StdVm.sol";
 import { LegacyTransaction, LegacyTransactionLib } from "tempo-std/tx/LegacyTransactionLib.sol";
-
-/*//////////////////////////////////////////////////////////////
-                        HELPER CONTRACTS
-//////////////////////////////////////////////////////////////*/
-
-/// @title GasTestStorage - Contract for testing SSTORE gas costs
-contract GasTestStorage {
-
-    mapping(bytes32 => uint256) private _storage;
-
-    function storeValue(bytes32 slot, uint256 value) external {
-        _storage[slot] = value;
-    }
-
-    function storeMultiple(bytes32[] calldata slots) external {
-        for (uint256 i = 0; i < slots.length; i++) {
-            _storage[slots[i]] = 1;
-        }
-    }
-
-    function getValue(bytes32 slot) external view returns (uint256) {
-        return _storage[slot];
-    }
-
-}
 
 /// @title TIP-1000 / TIP-1016 Gas Pricing Invariant Tests
 /// @notice Fuzz-based invariant tests for Tempo's state creation gas costs
