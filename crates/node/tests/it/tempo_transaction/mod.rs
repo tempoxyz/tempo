@@ -80,6 +80,7 @@ async fn run_all_matrices(env: &mut impl TestEnv) -> eyre::Result<()> {
     check(env.run_nonce_rejection_scenario().await)?;
     check(env.run_fee_payer_negative_scenario().await)?;
     check(env.run_gas_fee_boundary_scenario().await)?;
+    check(env.run_fill_transaction_error_decoding_scenario().await)?;
     Ok(())
 }
 

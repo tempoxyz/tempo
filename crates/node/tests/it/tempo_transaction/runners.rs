@@ -2505,3 +2505,54 @@ pub(super) async fn run_create_contract_address_scenario<E: TestEnv>(
     println!("✓ Create contract address scenario passed");
     Ok(())
 }
+
+/// Regression test: `eth_fillTransaction` must decode revert errors during gas estimation
+/// instead of returning raw hex revert data.
+///
+/// Before the fix, `fill_transaction` delegated to `inner.fill_transaction` which routed
+/// estimation errors through `EthApiError` and skipped Tempo's `from_revert` implementation.
+/// This caused raw selectors (e.g. `0x832f98b5...`) to be returned instead of decoded error
+/// names like `InsufficientBalance(...)`.
+pub(super) async fn run_fill_transaction_error_decoding_scenario<E: TestEnv>(
+    env: &mut E,
+) -> eyre::Result<()> {
+    println!("\n=== eth_fillTransaction error decoding regression ===\n");
+
+    // Use an unfunded address so a TIP-20 transfer reverts with InsufficientBalance.
+    let unfunded_addr = Address::random();
+    let recipient = Address::random();
+
+    let request = TempoTransactionRequest {
+        inner: TransactionRequest {
+            from: Some(unfunded_addr),
+            ..Default::default()
+        },
+        calls: vec![create_transfer_call(
+            DEFAULT_FEE_TOKEN,
+            recipient,
+            U256::from(1_000_000u64),
+        )],
+        key_type: Some(SignatureType::Secp256k1),
+        ..Default::default()
+    };
+
+    let result: Result<serde_json::Value, _> = env
+        .provider()
+        .raw_request(
+            "eth_fillTransaction".into(),
+            [serde_json::to_value(&request)?],
+        )
+        .await;
+
+    let err = result.expect_err("eth_fillTransaction should fail for unfunded address");
+    let err_str = err.to_string();
+
+    // The error must contain the decoded error name, not raw hex.
+    assert!(
+        err_str.contains("InsufficientBalance"),
+        "Error should contain decoded 'InsufficientBalance', got: {err_str}"
+    );
+
+    println!("✓ eth_fillTransaction error decoding regression passed");
+    Ok(())
+}
