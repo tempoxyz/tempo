@@ -428,7 +428,7 @@ where
         if self.inner.spec.is_t2_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(VALIDATOR_CONFIG_V2_ADDRESS)?;
         }
-        if self.inner.spec.is_t3_active_at_timestamp(timestamp) {
+        if self.inner.spec.is_t4_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(SIGNATURE_VERIFIER_ADDRESS)?;
             self.deploy_precompile_at_boundary(ADDRESS_REGISTRY_ADDRESS)?;
         }
@@ -1361,7 +1361,7 @@ mod tests {
         use std::sync::Arc;
         use tempo_chainspec::spec::DEV;
 
-        // Dev chainspec has t3Time: 0, so T3 is active at any timestamp.
+        // Dev chainspec has t3Time: 0, so T4 is active at any timestamp.
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()
@@ -1376,8 +1376,8 @@ mod tests {
     }
 
     #[test]
-    fn test_pre_t3_does_not_deploy_signature_verifier_code() {
-        // Moderato does not have T3 active (no t3Time set), so the code should NOT be deployed.
+    fn test_pre_t4_does_not_deploy_signature_verifier_code() {
+        // Moderato does not have T4 active (no t3Time set), so the code should NOT be deployed.
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()
@@ -1390,7 +1390,7 @@ mod tests {
         let info = acc.account_info();
         assert!(
             info.is_none() || info.unwrap().is_empty_code_hash(),
-            "SignatureVerifier code should not be deployed before T3"
+            "SignatureVerifier code should not be deployed before T4"
         );
     }
 

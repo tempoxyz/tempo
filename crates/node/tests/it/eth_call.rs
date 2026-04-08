@@ -293,7 +293,7 @@ async fn test_eth_estimate_gas(schedule: ForkSchedule) -> eyre::Result<()> {
     let gas = provider.estimate_gas(tx.clone()).await?;
     // gas estimation is calldata dependent, but should be consistent with same calldata
     // TIP-1000 (T1): gas includes 250k new account cost when nonce=0
-    // T3 (devnet): state gas split changes the estimate
+    // T4 (devnet): state gas split changes the estimate
     let expected_gas = match schedule {
         ForkSchedule::Devnet => 86763,
         _ => 549423,

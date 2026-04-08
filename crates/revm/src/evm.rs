@@ -332,12 +332,12 @@ mod tests {
         evm
     }
 
-    /// Create an EVM with T3 hardfork enabled and a funded account.
+    /// Create an EVM with T4 hardfork enabled and a funded account.
     fn create_funded_evm_t3(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
         let db = CacheDB::new(EmptyDB::new());
         let mut cfg = CfgEnv::<TempoHardfork>::default();
-        cfg.spec = TempoHardfork::T3;
-        cfg.gas_params = tempo_gas_params(TempoHardfork::T3);
+        cfg.spec = TempoHardfork::T4;
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T4);
 
         let ctx = Context::mainnet()
             .with_db(db)
@@ -1123,7 +1123,7 @@ mod tests {
     }
 
     #[test]
-    fn test_t3_key_authorization_deny_all_scopes_blocks_same_tx_call() -> eyre::Result<()> {
+    fn test_t4_key_authorization_deny_all_scopes_blocks_same_tx_call() -> eyre::Result<()> {
         let key_pair = P256KeyPair::random();
         let caller = key_pair.address;
 
@@ -1178,7 +1178,7 @@ mod tests {
     }
 
     #[test]
-    fn test_t3_key_authorization_accepts_empty_recipient_allowlist_as_unconstrained()
+    fn test_t4_key_authorization_accepts_empty_recipient_allowlist_as_unconstrained()
     -> eyre::Result<()> {
         let key_pair = P256KeyPair::random();
         let caller = key_pair.address;
