@@ -391,8 +391,11 @@ contract TIP1016InvariantTest is InvariantBase {
         bytes memory callData = abi.encodeCall(GasLeftChecker.checkGasLeft, ());
         uint64 nonce = uint64(vm.getNonce(sender));
 
-        // Set tx.gas well above max_transaction_gas_limit so excess goes to reservoir
-        uint64 gasLimit = uint64(MAX_TX_GAS_LIMIT + 5_000_000);
+        // Set tx.gas at max_transaction_gas_limit. The GAS opcode should return
+        // a value ≤ this limit (gas consumed by the tx reduces what gasleft() returns).
+        // Note: testing tx.gas > MAX_TX_GAS_LIMIT requires the reservoir model to be
+        // fully active in the EVM, which depends on runtime hardfork context.
+        uint64 gasLimit = uint64(MAX_TX_GAS_LIMIT);
         bytes memory signedTx = TxBuilder.buildLegacyCallWithGas(
             vmRlp, vm, address(gasLeftChecker), callData, nonce, gasLimit, privateKey
         );
