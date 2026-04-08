@@ -174,7 +174,7 @@ impl AmmLiquidityCache {
         }
     }
 
-    /// Processes a new block and records the validator's fee token from on-chain state.
+    /// Processes new blocks and records recent validators and their fee token preferences in the cache.
     pub fn on_new_blocks<'a, P>(
         &self,
         headers: impl IntoIterator<Item = &'a SealedHeader<TempoHeader>>,
