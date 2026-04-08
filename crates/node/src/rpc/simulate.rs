@@ -29,8 +29,7 @@ static TRANSFER_TOPIC: LazyLock<B256> =
 
 /// TIP-20 token metadata returned alongside simulation results.
 ///
-/// `decimals` is omitted because all TIP-20 tokens use a fixed decimal count
-/// ([`TIP20_DECIMALS`]). The top-level response includes a `decimals` field instead.
+/// `decimals` is omitted because all TIP-20 tokens use a fixed decimal count.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Tip20TokenMetadata {
