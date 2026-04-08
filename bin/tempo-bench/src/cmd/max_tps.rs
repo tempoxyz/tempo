@@ -16,7 +16,8 @@ use alloy::{
     consensus::BlockHeader,
     eips::Encodable2718,
     network::{EthereumWallet, ReceiptResponse, TransactionBuilder, TxSignerSync},
-    primitives::{Address, B256, BlockNumber, U256},
+    primitives::{Address, B256, BlockNumber, U256, address, hex_literal::hex},
+    sol_types::SolEvent,
     providers::{
         DynProvider, PendingTransactionBuilder, PendingTransactionError, Provider, ProviderBuilder,
         SendableTx, WatchTxError, fillers::TxFiller,
@@ -53,14 +54,16 @@ use std::{
     time::Duration,
 };
 use tempo_contracts::precompiles::{
+    IAddressRegistry::{self, IAddressRegistryInstance},
     IFeeManager::IFeeManagerInstance,
     IRolesAuth,
     IStablecoinDEX::IStablecoinDEXInstance,
     ITIP20::{self, ITIP20Instance},
-    ITIP20Factory, STABLECOIN_DEX_ADDRESS, TIP20_FACTORY_ADDRESS,
+    ITIP20Factory, ADDRESS_REGISTRY_ADDRESS, STABLECOIN_DEX_ADDRESS, TIP20_FACTORY_ADDRESS,
 };
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
+    address_registry::{MasterId, VIRTUAL_MAGIC},
     stablecoin_dex::{MAX_TICK, MIN_ORDER_AMOUNT, MIN_TICK, TICK_SPACING},
     tip_fee_manager::DEFAULT_FEE_TOKEN,
     tip20::ISSUER_ROLE,
@@ -133,6 +136,16 @@ pub struct MaxTpsArgs {
     /// A weight that determines the likelihood of generating a TIP-20 transfer transaction.
     #[arg(long, default_value_t = 1.0)]
     tip20_weight: f64,
+
+    /// Percentage of TIP-20 transfers sent to virtual addresses (0.0–1.0).
+    ///
+    /// Requires the anvil mnemonic (`-m "test test test ... junk"`) with
+    /// `--from-mnemonic-index` covering indices 0–5, since virtual-address
+    /// registration needs pre-mined TIP-1022 PoW salts that are only embedded
+    /// for the first 6 anvil accounts. Each registered master can receive
+    /// transfers at an unlimited number of virtual addresses (random userTags).
+    #[arg(long, default_value_t = 0.0)]
+    tip20_virtual_pct: f64,
 
     /// A weight that determines the likelihood of generating a DEX place transaction.
     #[arg(long, default_value_t = 0.0)]
@@ -356,6 +369,58 @@ impl MaxTpsArgs {
         .await
         .context("Failed to set default fee token")?;
 
+        // Register virtual-address masters using pre-mined anvil salts.
+        // Only signers with a known salt are registered; each master supports
+        // unlimited virtual addresses via random userTags.
+        let virtual_master_ids = if self.tip20_virtual_pct > 0.0 {
+            eyre::ensure!(
+                self.tip20_virtual_pct <= 1.0,
+                "--virtual-address-pct must be between 0.0 and 1.0"
+            );
+
+            let mut master_ids = Vec::new();
+            for (signer, signer_provider) in signer_providers.iter() {
+                let Some(&(_, salt)) = ANVIL_VIRTUAL_SALTS
+                    .iter()
+                    .find(|(a, _)| *a == signer.address())
+                else {
+                    continue;
+                };
+                let registry = IAddressRegistryInstance::new(
+                    ADDRESS_REGISTRY_ADDRESS,
+                    signer_provider.clone(),
+                );
+                let receipt = registry
+                    .registerVirtualMaster(salt)
+                    .send()
+                    .await?
+                    .get_receipt()
+                    .await?;
+                eyre::ensure!(receipt.status(), "registerVirtualMaster failed");
+                let event = receipt
+                    .logs()
+                    .iter()
+                    .filter_map(|log| {
+                        IAddressRegistry::MasterRegistered::decode_log(&log.inner).ok()
+                    })
+                    .next()
+                    .ok_or_eyre("MasterRegistered event not found")?;
+                master_ids.push(event.masterId);
+            }
+            eyre::ensure!(
+                !master_ids.is_empty(),
+                "no signers matched the pre-mined anvil salts — use the anvil mnemonic"
+            );
+            info!(
+                masters = master_ids.len(),
+                pct = self.tip20_virtual_pct,
+                "Registered virtual-address masters"
+            );
+            master_ids
+        } else {
+            Vec::new()
+        };
+
         // Setup DEX tokens, pairs, and liquidity only if any DEX transaction type has non-zero
         // weight. Otherwise, use the fee token for TIP-20 transfers directly.
         let (quote_token, user_tokens) = if self.place_order_weight > 0.0 || self.swap_weight > 0.0
@@ -448,6 +513,8 @@ impl MaxTpsArgs {
             chain_id,
             recipients,
             expiry_secs,
+            tip20_virtual_pct: self.tip20_virtual_pct,
+            virtual_master_ids,
         };
 
         info!(total_txs, "Generating and sending transactions");
@@ -535,6 +602,7 @@ impl MaxTpsArgs {
 
         info!(
             tip20_transfers = counters.tip20_transfers.load(Ordering::Relaxed),
+            tip20_virtual = counters.tip20_virtual.load(Ordering::Relaxed),
             swaps = counters.swaps.load(Ordering::Relaxed),
             orders = counters.orders.load(Ordering::Relaxed),
             erc20_transfers = counters.erc20_transfers.load(Ordering::Relaxed),
@@ -625,6 +693,7 @@ impl MnemonicArg {
 struct TransactionCounters {
     /// Per-type generation counters
     tip20_transfers: Arc<AtomicUsize>,
+    tip20_virtual: Arc<AtomicUsize>,
     swaps: Arc<AtomicUsize>,
     orders: Arc<AtomicUsize>,
     erc20_transfers: Arc<AtomicUsize>,
@@ -653,6 +722,10 @@ struct GenerateTransactionsInput {
     /// When `Some`, sets `valid_before` on each transaction right before signing
     /// to keep it fresh for expiring nonces.
     expiry_secs: Option<u64>,
+    /// Fraction of TIP-20 transfers sent to virtual addresses (0.0–1.0).
+    tip20_virtual_pct: f64,
+    /// Registered master IDs for constructing virtual address recipients.
+    virtual_master_ids: Vec<MasterId>,
 }
 
 /// Returns an infinite stream of futures, each generating, signing, and encoding one transaction.
@@ -674,6 +747,8 @@ fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
         chain_id,
         recipients,
         expiry_secs,
+        tip20_virtual_pct,
+        virtual_master_ids,
     } = input;
 
     const TX_TYPES: usize = 5;
@@ -698,6 +773,7 @@ fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
         let recipients = recipients.clone();
         let user_tokens = user_tokens.clone();
         let erc20_tokens = erc20_tokens.clone();
+        let virtual_master_ids = virtual_master_ids.clone();
         let counters = counters.clone();
 
         async move {
@@ -723,9 +799,22 @@ fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                     counters.tip20_transfers.fetch_add(1, Ordering::Relaxed);
                     let token = ITIP20Instance::new(token, provider.clone());
 
+                    // Pick a virtual address recipient for the configured fraction of
+                    // TIP-20 transfers to measure the perf impact of address resolution.
+                    let to = if !virtual_master_ids.is_empty()
+                        && rand::random::<f64>() < tip20_virtual_pct
+                    {
+                        counters.tip20_virtual.fetch_add(1, Ordering::Relaxed);
+                        let master_id =
+                            virtual_master_ids.choose(&mut rand::rng()).copied().unwrap();
+                        make_virtual_address(master_id)
+                    } else {
+                        recipient
+                    };
+
                     // Transfer minimum possible amount
                     token
-                        .transfer(recipient, U256::ONE)
+                        .transfer(to, U256::ONE)
                         .into_transaction_request()
                 }
                 1 => {
@@ -947,6 +1036,7 @@ struct BenchmarkMetadata {
     swap_weight: f64,
     erc20_weight: f64,
     mpp_weight: f64,
+    tip20_virtual_pct: f64,
 }
 
 #[derive(Serialize)]
@@ -1031,6 +1121,7 @@ pub async fn generate_report(
         swap_weight: args.swap_weight,
         erc20_weight: args.erc20_weight,
         mpp_weight: args.mpp_weight,
+        tip20_virtual_pct: args.tip20_virtual_pct,
     };
 
     let report = BenchmarkReport {
@@ -1125,4 +1216,30 @@ async fn assert_receipt<R: ReceiptResponse>(receipt: R) -> eyre::Result<()> {
         receipt.transaction_hash()
     );
     Ok(())
+}
+
+/// Pre-mined TIP-1022 PoW salts for the first 7 anvil mnemonic accounts.
+///
+/// These match the `POW_SALTS` in `tips/ref-impls/test/invariants/VirtualAddresses.t.sol`
+/// and the `VIRTUAL_SALT` in `crates/precompiles/src/test_util.rs`.
+///
+/// Mnemonic: `"test test test test test test test test test test test junk"`
+const ANVIL_VIRTUAL_SALTS: [(Address, B256); 6] = [
+    (address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266"), B256::new(hex!("00000000000000000000000000000000000000000000000000000000abf52baf"))),
+    (address!("70997970C51812dc3A010C7d01b50e0d17dc79C8"), B256::new(hex!("0000000000000000000000000000000000000000000000000000000213f67626"))),
+    (address!("3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"), B256::new(hex!("00000000000000000000000000000000000000000000000000000000490a6a7e"))),
+    (address!("90F79bf6EB2c4f870365E785982E1f101E93b906"), B256::new(hex!("00000000000000000000000000000000000000000000000000000000e9380f73"))),
+    (address!("15d34AAf54267DB7D7c367839AAf71A00a2C6A65"), B256::new(hex!("00000000000000000000000000000000000000000000000000000000bf34bdba"))),
+    (address!("9965507D1a55bcC2695C58ba16FB37d819B0A4dc"), B256::new(hex!("000000000000000000000000000000000000000000000000000000011e93c2f3"))),
+];
+
+/// Builds a virtual address from a `masterId` and a random `userTag`.
+///
+/// Layout: `[4-byte masterId][10-byte 0xFD MAGIC][6-byte random userTag]`.
+fn make_virtual_address(master_id: MasterId) -> Address {
+    let mut bytes = [0u8; 20];
+    bytes[0..4].copy_from_slice(master_id.as_slice());
+    bytes[4..14].copy_from_slice(&VIRTUAL_MAGIC);
+    rand::fill(&mut bytes[14..20]);
+    Address::from(bytes)
 }
