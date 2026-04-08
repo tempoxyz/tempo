@@ -17,7 +17,6 @@ use std::{
     sync::LazyLock,
 };
 use tempo_chainspec::hardfork::TempoHardforks;
-use tempo_contracts::precompiles::DECIMALS as TIP20_DECIMALS;
 use tempo_evm::TempoStateAccess;
 use tempo_precompiles::{
     error::TempoPrecompileError,
@@ -49,9 +48,6 @@ pub struct Tip20TokenMetadata {
 pub struct TempoSimulateV1Response<B> {
     /// Standard simulation results (one per simulated block).
     pub blocks: Vec<SimulatedBlock<B>>,
-    /// Decimal count shared by all TIP-20 tokens.
-    #[serde(with = "alloy_serde::quantity")]
-    pub decimals: u8,
     /// Token metadata for TIP-20 addresses that appear in Transfer logs.
     pub token_metadata: BTreeMap<Address, Tip20TokenMetadata>,
 }
@@ -170,7 +166,6 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoSimulateApiServer for TempoSimula
 
         Ok(TempoSimulateV1Response {
             blocks,
-            decimals: TIP20_DECIMALS,
             token_metadata,
         })
     }
