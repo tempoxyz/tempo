@@ -154,7 +154,7 @@ impl FeedStateHandle {
         }
 
         // Identity active at epoch N is set by the last block of epoch N-1
-        let (_, epoch_outcome) = get_outcome(execution, epocher, start_epoch.saturating_sub(1))?;
+        let epoch_outcome = get_outcome(execution, epocher, start_epoch.saturating_sub(1))?;
         let epoch_pubkey = *epoch_outcome.sharing().public();
 
         // Fast path: if the identity matches the cached one, no new transitions
@@ -193,14 +193,39 @@ impl FeedStateHandle {
                 break;
             }
 
-            let (header, prev_outcome) = get_outcome(execution, epocher, search_epoch - 1)?;
-            let prev_pubkey = *prev_outcome.sharing().public();
+            let prev_outcome = match get_outcome(execution, epocher, search_epoch - 1) {
+                Ok(outcome) => outcome,
+                Err(IdentityProofError::PrunedData(height)) => {
+                    tracing::info!(
+                        %height,
+                        search_epoch = search_epoch - 1,
+                        "stopping identity transition walk early (header not available)"
+                    );
+                    break;
+                }
+                Err(e) => return Err(e),
+            };
 
             // If keys differ, there was a full DKG at search_epoch
+            let prev_pubkey = *prev_outcome.sharing().public();
             if pubkey != prev_pubkey {
                 let height = epocher
                     .last(Epoch::new(search_epoch))
                     .expect("fixed epocher is valid for all epochs");
+
+                let Some(header) = execution
+                    .provider
+                    .sealed_header(height.get())
+                    .ok()
+                    .flatten()
+                else {
+                    tracing::info!(
+                        height = height.get(),
+                        search_epoch,
+                        "stopping identity transition walk early (header not available)"
+                    );
+                    break;
+                };
 
                 let Some(finalization) = marshal.get_finalization(height).await else {
                     tracing::info!(
@@ -212,7 +237,7 @@ impl FeedStateHandle {
                 };
 
                 // Since we parse dkg info from the EL, sanity check the digest
-                if finalization.proposal.payload.0 != header.hash_slow() {
+                if finalization.proposal.payload.0 != header.hash() {
                     return Err(IdentityProofError::MalformedData(height.get()));
                 }
 
@@ -221,7 +246,7 @@ impl FeedStateHandle {
                     old_identity: hex::encode(prev_pubkey.encode()),
                     new_identity: hex::encode(pubkey.encode()),
                     proof: Some(TransitionProofData {
-                        header: header.into(),
+                        header: header.into_header().into(),
                         finalization_certificate: hex::encode(finalization.encode()),
                     }),
                 });
@@ -239,7 +264,7 @@ impl FeedStateHandle {
 
             if !has_genesis {
                 match get_outcome(execution, epocher, 0) {
-                    Ok((_, genesis_outcome)) => {
+                    Ok(genesis_outcome) => {
                         let genesis_pubkey = *genesis_outcome.sharing().public();
                         let genesis_identity = hex::encode(genesis_pubkey.encode());
                         transitions.push(IdentityTransition {
@@ -438,7 +463,7 @@ fn get_outcome(
     execution: &TempoFullNode,
     epocher: &FixedEpocher,
     epoch: u64,
-) -> Result<(TempoHeader, OnchainDkgOutcome), IdentityProofError> {
+) -> Result<OnchainDkgOutcome, IdentityProofError> {
     let height = epocher
         .last(Epoch::new(epoch))
         .expect("fixed epocher is valid for all epochs");
@@ -453,5 +478,5 @@ fn get_outcome(
     let outcome = OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
         .map_err(|_| IdentityProofError::MalformedData(height.get()))?;
 
-    Ok((header, outcome))
+    Ok(outcome)
 }
