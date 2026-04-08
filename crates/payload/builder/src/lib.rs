@@ -49,8 +49,7 @@ use tempo_consensus::TEMPO_SHARED_GAS_DIVISOR;
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, evm::TempoEvm};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS, storage::StorageCtx,
-    tip_fee_manager::TipFeeManager, validator_config_v2::ValidatorConfigV2,
+    storage::StorageCtx, tip_fee_manager::TipFeeManager, validator_config_v2::ValidatorConfigV2,
 };
 use tempo_primitives::{
     RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoTxEnvelope,
@@ -60,29 +59,11 @@ use tempo_primitives::{
         envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
     },
 };
-use tempo_revm::IntoAddress;
 use tempo_transaction_pool::{
     TempoTransactionPool,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
-
-/// Resolves the validator's preferred fee token from state, falling back to [`DEFAULT_FEE_TOKEN`].
-fn resolve_validator_fee_token(
-    state_provider: &dyn StateProvider,
-    beneficiary: Address,
-) -> Result<Address, PayloadBuilderError> {
-    let slot = TipFeeManager::new().validator_tokens[beneficiary].slot();
-    let raw = state_provider
-        .storage(TIP_FEE_MANAGER_ADDRESS, slot.into())?
-        .unwrap_or_default();
-    let token = raw.into_address();
-    Ok(if token.is_zero() {
-        DEFAULT_FEE_TOKEN
-    } else {
-        token
-    })
-}
 
 /// Returns true if a subblock has any expired transactions for the given timestamp.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
@@ -426,8 +407,7 @@ where
             .record(prepare_system_txs_elapsed);
 
         let base_fee = builder.evm_mut().block().basefee;
-        let validator_fee_token =
-            resolve_validator_fee_token(&*state_provider, builder.evm_mut().block().beneficiary)?;
+        let validator_fee_token = resolve_validator_fee_token(&mut builder)?;
         let pool_fetch_start = Instant::now();
         let mut best_txs = best_txs(BestTransactionsAttributes::new(
             base_fee,
@@ -562,14 +542,18 @@ where
             // Score payload value by actual validator payout, applying the AMM
             // haircut when the transaction's fee token differs from the validator's.
             let nominal_spending = calc_gas_balance_spending(gas_used, effective_gas_price);
-            let validator_payout =
-                if pool_tx.transaction.resolved_fee_token_or_default() == validator_fee_token {
-                    nominal_spending
+            if let Some(fee_token) = pool_tx.transaction.resolved_fee_token() {
+                if fee_token == validator_fee_token {
+                    total_fees += nominal_spending;
                 } else {
-                    tempo_precompiles::tip_fee_manager::amm::compute_amount_out(nominal_spending)
-                        .map_err(PayloadBuilderError::other)?
-                };
-            total_fees += validator_payout;
+                    total_fees += tempo_precompiles::tip_fee_manager::amm::compute_amount_out(
+                        nominal_spending,
+                    )
+                    .map_err(PayloadBuilderError::other)?;
+                }
+            } else {
+                warn!("no resolved fee token for a pool transaction")
+            }
             cumulative_gas_used += gas_used;
             if !is_payment {
                 non_payment_gas_used += gas_used;
@@ -855,8 +839,8 @@ pub fn is_more_subblocks(
 /// Overrides the block's fee recipient (beneficiary) with the value from the
 /// V2 validator config contract, if the contract is active and returns a
 /// non-zero address for the given `public_key`.
-fn maybe_override_fee_recipient<DB: Database, I>(
-    builder: &mut impl BlockBuilder<Executor: BlockExecutor<Evm = TempoEvm<DB, I>>>,
+fn maybe_override_fee_recipient<DB: Database>(
+    builder: &mut impl BlockBuilder<Executor: BlockExecutor<Evm = TempoEvm<DB>>>,
     attributes: &TempoPayloadAttributes,
 ) {
     let Some(public_key) = attributes.proposer_public_key() else {
@@ -896,6 +880,19 @@ fn maybe_override_fee_recipient<DB: Database, I>(
             warn!(%err, "failed resolving fee recipient from contract; using fallback");
         }
     }
+}
+
+/// Resolves the validator's preferred fee token.
+fn resolve_validator_fee_token(
+    builder: &mut impl BlockBuilder<Executor: BlockExecutor<Evm = TempoEvm<impl Database>>>,
+) -> Result<Address, PayloadBuilderError> {
+    let ctx = builder.evm_mut().ctx_mut();
+    let beneficiary = ctx.block.beneficiary;
+    StorageCtx::enter_ctx(ctx, || {
+        TipFeeManager::new()
+            .get_validator_token(beneficiary)
+            .map_err(PayloadBuilderError::other)
+    })
 }
 
 #[cfg(test)]
