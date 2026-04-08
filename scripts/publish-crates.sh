@@ -37,9 +37,9 @@ cp -R "$REPO_ROOT/crates/primitives" "$TMP_WORK_DIR/primitives"
 cp -R "$REPO_ROOT/crates/alloy"      "$TMP_WORK_DIR/alloy"
 
 # ── 1. Delete compat modules ──────────────────────────────────────────────────
-log "Deleting reth_compat/ and alloy rpc/compat.rs …"
+log "Deleting reth_compat modules …"
 rm -rf "$TMP_WORK_DIR/primitives/src/reth_compat"
-rm -f  "$TMP_WORK_DIR/alloy/src/rpc/compat.rs"
+rm -f  "$TMP_WORK_DIR/alloy/src/rpc/reth_compat.rs"
 
 # ── 2. Strip reth/compat references from source ──────────────────────────────
 log "Stripping reth references from source …"
@@ -125,6 +125,10 @@ for feat in reth reth-codec serde-bincode-compat rpc; do
         err "Feature '$feat' still defined in tempo-primitives Cargo.toml"
 done
 
+# Alloy: no reth feature
+grep -qE "^\s*reth\s*=" "$TMP_WORK_DIR/alloy/Cargo.toml" && \
+    err "Feature 'reth' still defined in tempo-alloy Cargo.toml"
+
 # Source: no forbidden references
 (
     grep -rq 'feature = "reth"' "$TMP_WORK_DIR/primitives/src/" || \
@@ -132,6 +136,9 @@ done
     grep -rq 'reth_codecs' "$TMP_WORK_DIR/primitives/src/" || \
     grep -rq 'feature = "rpc"' "$TMP_WORK_DIR/primitives/src/"
 ) && err "reth-gated code still in tempo-primitives source"
+
+grep -rq 'feature = "reth"' "$TMP_WORK_DIR/alloy/src/" && \
+    err "reth-gated code still in tempo-alloy source"
 
 log "Pre-resolve validation passed ✓"
 

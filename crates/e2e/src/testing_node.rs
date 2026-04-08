@@ -470,7 +470,7 @@ where
         .with_metrics();
 
         let static_file_provider =
-            StaticFileProvider::read_only(self.execution_node_datadir.join("static_files"), true)
+            StaticFileProvider::read_only(self.execution_node_datadir.join("static_files"))
                 .expect("failed to open static files");
 
         let rocksdb = RocksDBProvider::builder(self.execution_node_datadir.join("rocksdb"))

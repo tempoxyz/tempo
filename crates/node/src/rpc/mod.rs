@@ -2,6 +2,8 @@ pub mod admin;
 pub mod consensus;
 pub mod error;
 pub mod eth_ext;
+pub mod fork_schedule;
+pub mod simulate;
 pub mod token;
 
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
@@ -9,6 +11,7 @@ use alloy_primitives::B256;
 use alloy_rpc_types_eth::{Log, ReceiptWithBloom};
 pub use consensus::{TempoConsensusApiServer, TempoConsensusRpc};
 pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
+pub use fork_schedule::{TempoForkScheduleApiServer, TempoForkScheduleRpc};
 use futures::{TryFutureExt, future::Either};
 use reth_errors::RethError;
 use reth_primitives_traits::{
@@ -16,6 +19,7 @@ use reth_primitives_traits::{
 };
 use reth_rpc_eth_api::{FromEthApiError, RpcTxReq};
 use reth_transaction_pool::{PoolPooledTx, TransactionOrigin};
+pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Response};
 use std::sync::Arc;
 pub use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::TempoChainSpec;
@@ -46,7 +50,8 @@ use reth_rpc_eth_api::{
     helpers::{
         Call, EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthTransactions, LoadBlock,
         LoadFee, LoadPendingBlock, LoadReceipt, LoadState, LoadTransaction, SpawnBlocking, Trace,
-        estimate::EstimateCall, pending_block::PendingEnvBuilder, spec::SignersForRpc,
+        bal::GetBlockAccessList, estimate::EstimateCall, pending_block::PendingEnvBuilder,
+        spec::SignersForRpc,
     },
     transaction::{ConvertReceiptInput, ReceiptConverter},
 };
@@ -84,7 +89,7 @@ pub const SUBBLOCK_TX_CHANNEL_CAPACITY: usize = 10_000;
 ///
 /// This type implements the [`FullEthApi`](reth_rpc_eth_api::helpers::FullEthApi) by implemented
 /// all the `Eth` helper traits and prerequisite traits.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct TempoEthApi<N: FullNodeTypes<Types = TempoNode>> {
     /// Gateway to node's core components.
     inner: EthApi<NodeAdapter<N>, DynRpcConverter<TempoEvmConfig, TempoNetwork>>,
@@ -255,6 +260,8 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthFees for TempoEthApi<N> {}
 impl<N: FullNodeTypes<Types = TempoNode>> Trace for TempoEthApi<N> {}
 
 impl<N: FullNodeTypes<Types = TempoNode>> EthCall for TempoEthApi<N> {}
+
+impl<N: FullNodeTypes<Types = TempoNode>> GetBlockAccessList for TempoEthApi<N> {}
 
 impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
     #[inline]

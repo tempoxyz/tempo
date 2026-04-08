@@ -68,7 +68,7 @@ contract AccountKeychain is IAccountKeychain {
         SignatureType signatureType,
         uint64 expiry,
         bool enforceLimits,
-        TokenLimit[] calldata limits
+        LegacyTokenLimit[] calldata limits
     )
         external
     {
@@ -117,6 +117,55 @@ contract AccountKeychain is IAccountKeychain {
 
         // Emit event
         emit KeyAuthorized(msg.sender, keyId, sigType, expiry);
+    }
+
+    /// @inheritdoc IAccountKeychain
+    function authorizeKey(
+        address keyId,
+        SignatureType signatureType,
+        KeyRestrictions calldata config
+    )
+        external
+    {
+        _requireRootKey();
+
+        if (keyId == address(0)) {
+            revert ZeroPublicKey();
+        }
+
+        if (config.expiry <= block.timestamp) {
+            revert ExpiryInPast();
+        }
+
+        AuthorizedKey storage existingKey = keys[msg.sender][keyId];
+        if (existingKey.expiry > 0) {
+            revert KeyAlreadyExists();
+        }
+
+        if (existingKey.isRevoked) {
+            revert KeyAlreadyRevoked();
+        }
+
+        uint8 sigType = uint8(signatureType);
+        if (sigType > 2) {
+            revert InvalidSignatureType();
+        }
+
+        keys[msg.sender][keyId] = AuthorizedKey({
+            signatureType: sigType,
+            expiry: config.expiry,
+            enforceLimits: config.enforceLimits,
+            isRevoked: false
+        });
+
+        if (config.enforceLimits) {
+            bytes32 limitKey = _spendingLimitKey(msg.sender, keyId);
+            for (uint256 i = 0; i < config.limits.length; i++) {
+                spendingLimits[limitKey][config.limits[i].token] = config.limits[i].amount;
+            }
+        }
+
+        emit KeyAuthorized(msg.sender, keyId, sigType, config.expiry);
     }
 
     /// @inheritdoc IAccountKeychain
@@ -233,6 +282,48 @@ contract AccountKeychain is IAccountKeychain {
 
         bytes32 limitKey = _spendingLimitKey(account, keyId);
         return spendingLimits[limitKey][token];
+    }
+
+    /// @inheritdoc IAccountKeychain
+    function getRemainingLimitWithPeriod(
+        address account,
+        address keyId,
+        address token
+    )
+        external
+        view
+        returns (uint256 remaining, uint64 periodEnd)
+    {
+        AuthorizedKey storage key = keys[account][keyId];
+
+        if (key.expiry == 0 || key.isRevoked) {
+            return (0, 0);
+        }
+
+        bytes32 limitKey = _spendingLimitKey(account, keyId);
+        return (spendingLimits[limitKey][token], 0);
+    }
+
+    /// @inheritdoc IAccountKeychain
+    function getAllowedCalls(
+        address,
+        address
+    )
+        external
+        pure
+        returns (bool isScoped, CallScope[] memory scopes)
+    {
+        return (false, new CallScope[](0));
+    }
+
+    /// @inheritdoc IAccountKeychain
+    function setAllowedCalls(address, CallScope[] calldata) external {
+        _requireRootKey();
+    }
+
+    /// @inheritdoc IAccountKeychain
+    function removeAllowedCalls(address, address) external {
+        _requireRootKey();
     }
 
     /// @inheritdoc IAccountKeychain

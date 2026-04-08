@@ -97,6 +97,36 @@ impl ForkSchedule {
     }
 }
 
+/// Build a genesis JSON string from `test-genesis.json` with only forks up to
+/// (and including) `last_active` enabled.  All subsequent forks are removed so
+/// the node starts in a "pre-<next fork>" configuration.
+///
+/// This scales automatically when new hardforks are appended to
+/// `TempoHardfork` — no manual maintenance required.
+pub(crate) fn make_genesis_at(last_active: TempoHardfork) -> String {
+    let mut genesis: serde_json::Value =
+        serde_json::from_str(include_str!("../assets/test-genesis.json"))
+            .expect("test-genesis.json must parse");
+    let config = genesis["config"]
+        .as_object_mut()
+        .expect("genesis must have config");
+
+    let mut past_cutoff = false;
+    for &fork in TempoHardfork::VARIANTS {
+        if fork == TempoHardfork::Genesis {
+            continue;
+        }
+        if past_cutoff {
+            let key = format!("{}Time", fork.name().to_lowercase());
+            config.remove(&key);
+        }
+        if fork == last_active {
+            past_cutoff = true;
+        }
+    }
+    serde_json::to_string(&genesis).expect("genesis must serialize")
+}
+
 /// Standard test mnemonic phrase used across integration tests
 pub(crate) const TEST_MNEMONIC: &str =
     "test test test test test test test test test test test junk";
