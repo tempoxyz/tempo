@@ -236,12 +236,7 @@ impl TempoPoolState {
         let valid_before = tx.inner().as_aa().and_then(|tx| tx.tx().valid_before);
         let key_expiry = tx.key_expiry();
 
-        let expiry = match (valid_before, key_expiry) {
-            (Some(valid_before), Some(key_expiry)) => Some(valid_before.min(key_expiry)),
-            (Some(valid_before), None) => Some(valid_before),
-            (None, Some(key_expiry)) => Some(key_expiry),
-            (None, None) => None,
-        };
+        let expiry = [valid_before, key_expiry].into_iter().flatten().min();
 
         if let Some(expiry) = expiry {
             self.expiry_map.entry(expiry).or_default().push(*tx.hash());
