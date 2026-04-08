@@ -63,8 +63,6 @@ use tempo_transaction_pool::{
 };
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 
-const SINGLE_BUILD_IDLE_WAIT: Duration = Duration::from_millis(1);
-
 /// Returns true if a subblock has any expired transactions for the given timestamp.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
     subblock.transactions.iter().any(|tx| {
@@ -433,7 +431,7 @@ where
             let Some(pool_tx) = best_txs.next() else {
                 if attributes.build_until_interrupt() && cumulative_gas_used < non_shared_gas_limit
                 {
-                    std::thread::sleep(SINGLE_BUILD_IDLE_WAIT);
+                    std::thread::sleep(Duration::from_millis(1));
                     continue;
                 }
                 break;

@@ -54,11 +54,11 @@ pub struct TempoPayloadAttributes {
     /// validator config contract. When `None`, `suggested_fee_recipient` from
     /// the inner attributes is used as-is.
     proposer_public_key: Option<B256>,
-    /// Whether the payload job should keep building until interrupted.
+    /// Whether a single payload job should keep building until interrupted.
     ///
-    /// Tempo proposals should keep one build alive until consensus interrupts
-    /// it for finalization, instead of letting reth schedule repeated rebuilds
-    /// from scratch.
+    /// Tempo proposals keep one build alive and feed it new transactions until
+    /// consensus interrupts it for finalization, instead of relying on reth to
+    /// start fresh rebuilds.
     #[serde(default)]
     build_until_interrupt: bool,
     /// Subblocks closure.
