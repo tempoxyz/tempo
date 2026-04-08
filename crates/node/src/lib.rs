@@ -20,6 +20,8 @@ pub use tempo_consensus as consensus;
 pub use tempo_evm as evm;
 pub use tempo_primitives as primitives;
 
+use tempo_contracts as _;
+
 mod version;
 
 type TempoFullNodeTypes = RethFullAdapter<DatabaseEnv, TempoNode>;
