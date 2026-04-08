@@ -15,7 +15,7 @@ use alloy_sol_types::SolEvent;
 use futures::StreamExt;
 use reth_chainspec::ChainSpecProvider;
 use reth_primitives_traits::AlloyBlockHeader;
-use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain};
+use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain, HeaderProvider};
 use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::{PoolTransaction, TransactionPool};
 use std::{
@@ -28,7 +28,7 @@ use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
     tip20::is_tip20_prefix,
 };
-use tempo_primitives::TempoPrimitives;
+use tempo_primitives::{TempoHeader, TempoPrimitives};
 use tracing::{debug, error};
 
 /// Evict transactions this many seconds before they expire to reduce propagation
@@ -353,7 +353,7 @@ impl Default for PendingStalenessTracker {
 pub async fn maintain_tempo_pool<Client>(pool: TempoTransactionPool<Client>)
 where
     Client: StateProviderFactory
-        + reth_provider::HeaderProvider<Header: reth_primitives_traits::BlockHeader>
+        + HeaderProvider<Header = TempoHeader>
         + ChainSpecProvider<ChainSpec = TempoChainSpec>
         + CanonStateSubscriptions<Primitives = TempoPrimitives>
         + 'static,
@@ -602,10 +602,8 @@ where
                 // 7. Update AMM liquidity cache (must happen before validator token eviction)
                 let amm_start = Instant::now();
                 amm_cache.on_new_state(tip.execution_outcome());
-                for block in tip.blocks_iter() {
-                    if let Err(err) = amm_cache.on_new_block(block.sealed_header(), pool.client()) {
-                        error!(target: "txpool", ?err, "AMM liquidity cache update failed");
-                    }
+                if let Err(err) = amm_cache.on_new_blocks(tip.blocks_iter().map(|block| block.sealed_header()), pool.client()) {
+                    error!(target: "txpool", ?err, "AMM liquidity cache update failed");
                 }
                 metrics.amm_cache_update_duration_seconds.record(amm_start.elapsed());
 

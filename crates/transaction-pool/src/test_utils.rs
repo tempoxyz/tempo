@@ -19,7 +19,7 @@ use tempo_chainspec::{
 };
 use tempo_precompiles::storage::{StorageCtx, hashmap::HashMapStorageProvider};
 use tempo_primitives::{
-    TempoTxEnvelope,
+    TempoPrimitives, TempoTxEnvelope,
     transaction::{
         TempoSignedAuthorization, TempoTransaction,
         tempo_transaction::Call,
@@ -355,9 +355,8 @@ pub(crate) fn wrap_valid_tx(
 }
 
 /// Creates a mock provider with the DEV chain spec (all hardforks active at genesis).
-pub(crate) fn create_mock_provider()
--> MockEthProvider<reth_ethereum_primitives::EthPrimitives, TempoChainSpec> {
-    MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(DEV.clone()))
+pub(crate) fn create_mock_provider() -> MockEthProvider<TempoPrimitives, TempoChainSpec> {
+    MockEthProvider::new().with_chain_spec(std::sync::Arc::unwrap_or_clone(DEV.clone()))
 }
 
 /// Extension trait that lets tests populate `MockEthProvider` storage using the typed precompile
