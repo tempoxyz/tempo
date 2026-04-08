@@ -698,7 +698,7 @@ mod tests {
     #[test]
     fn test_zero_expiry_is_unrepresentable() {
         assert_eq!(NonZeroU64::new(0), None);
-        assert_eq!(Some(nonzero(1)).map(NonZeroU64::get), Some(1));
+        assert_eq!(Some(NonZeroU64::get(nonzero(1))), Some(1));
     }
 
     fn make_auth_with_chain_id(chain_id: u64) -> KeyAuthorization {

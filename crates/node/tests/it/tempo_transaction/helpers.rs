@@ -330,7 +330,7 @@ pub(crate) fn create_key_authorization(
     access_key_addr: Address,
     access_key_signature: TempoSignature,
     chain_id: u64,
-    expiry: Option<u64>,
+    expiry: Option<std::num::NonZeroU64>,
     spending_limits: Option<Vec<tempo_primitives::transaction::TokenLimit>>,
 ) -> eyre::Result<SignedKeyAuthorization> {
     // Infer key_type from the access key signature
