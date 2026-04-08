@@ -97,19 +97,6 @@ where
             .notify_on_transaction_updates(promoted, Vec::new());
     }
 
-    /// Removes expiring nonce transactions that were included in a block.
-    ///
-    /// This is called with the transaction hashes from mined blocks to clean up
-    /// expiring nonce transactions on inclusion, rather than waiting for expiry.
-    pub(crate) fn remove_included_expiring_nonce_txs<'a>(
-        &self,
-        tx_hashes: impl Iterator<Item = &'a TxHash>,
-    ) {
-        self.aa_2d_pool
-            .write()
-            .remove_included_expiring_nonce_txs(tx_hashes);
-    }
-
     /// Evicts transactions that are no longer valid due to on-chain events.
     ///
     /// This performs a single scan of all pooled transactions and checks for:

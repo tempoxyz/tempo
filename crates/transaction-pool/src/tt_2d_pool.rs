@@ -56,6 +56,10 @@ pub struct AA2dPool {
     /// Expiring nonce transactions, keyed by expiring nonce hash (always pending/independent).
     /// These use expiring nonce replay protection instead of sequential nonces.
     expiring_nonce_txs: HashMap<B256, PendingTransaction<TxOrdering>>,
+    /// A mapping of `expiring_nonce_seen` slot to expiring nonce hash.
+    ///
+    /// Used to track inclusion of expiring nonce transactions.
+    slot_to_expiring_nonce_hash: U256Map<B256>,
     /// Reverse index for the storage slot of an account's nonce
     ///
     /// ```solidity
@@ -64,8 +68,6 @@ pub struct AA2dPool {
     ///
     /// This identifies the account and nonce key based on the slot in the `NonceManager`.
     slot_to_seq_id: U256Map<AASequenceId>,
-    /// Reverse index for cleaning up `slots_to_seq_id`.
-    seq_id_to_slot: HashMap<AASequenceId, U256>,
     /// Settings for this sub-pool.
     config: AA2dPoolConfig,
     /// Metrics for tracking pool statistics
@@ -107,8 +109,8 @@ impl AA2dPool {
             by_id: Default::default(),
             by_hash: Default::default(),
             expiring_nonce_txs: Default::default(),
+            slot_to_expiring_nonce_hash: Default::default(),
             slot_to_seq_id: Default::default(),
-            seq_id_to_slot: Default::default(),
             config,
             metrics: AA2dPoolMetrics::default(),
             by_eviction_order: Default::default(),
@@ -354,6 +356,10 @@ impl AA2dPool {
         // Insert into expiring nonce map and by_hash
         self.expiring_nonce_txs
             .insert(expiring_nonce_hash, pending_tx);
+        if let Some(slot) = transaction.transaction.expiring_nonce_slot() {
+            self.slot_to_expiring_nonce_hash
+                .insert(slot, expiring_nonce_hash);
+        }
         self.by_hash.insert(tx_hash, transaction.clone());
 
         // Increment sender count
@@ -605,7 +611,7 @@ impl AA2dPool {
 
         // Clean up cached nonce key slots if this was the last transaction of the sequence
         if self.by_id.range(id.seq_id.range()).next().is_none()
-            && let Some(slot) = self.seq_id_to_slot.remove(&id.seq_id)
+            && let Some(slot) = tx.inner.transaction.transaction.nonce_key_slot()
         {
             self.slot_to_seq_id.remove(&slot);
         }
@@ -719,10 +725,8 @@ impl AA2dPool {
 
         // Check if this is an expiring nonce transaction
         if tx.transaction.is_expiring_nonce() {
-            self.expiring_nonce_txs
-                .remove(&Self::expiring_nonce_hash(&tx));
-            // Decrement sender count for expiring nonce txs
-            self.decrement_sender_count(tx.sender());
+            let expiring_nonce_hash = Self::expiring_nonce_hash(tx);
+            let tx = self.remove_expiring_nonce_tx(&expiring_nonce_hash)?;
             return Some((tx, None));
         }
 
@@ -791,16 +795,9 @@ impl AA2dPool {
             .get_transactions_by_sender_iter(sender_id)
             .collect::<Vec<_>>();
         for tx in txs {
-            // Handle expiring nonce transactions separately - they are stored by hash
             if tx.transaction.is_expiring_nonce() {
-                if self
-                    .expiring_nonce_txs
-                    .remove(&Self::expiring_nonce_hash(&tx))
-                    .is_some()
-                {
-                    let hash = *tx.hash();
-                    self.by_hash.remove(&hash);
-                    self.decrement_sender_count(tx.sender());
+                let expiring_nonce_hash = Self::expiring_nonce_hash(&tx);
+                if let Some(tx) = self.remove_expiring_nonce_tx(&expiring_nonce_hash) {
                     removed.push(tx);
                 }
             } else if let Some(tx) = tx
@@ -920,15 +917,6 @@ impl AA2dPool {
             }
         }
 
-        // Record metrics
-        if !promoted.is_empty() {
-            self.metrics.inc_promoted(promoted.len());
-        }
-        if !mined.is_empty() {
-            self.metrics.inc_removed(mined.len());
-        }
-        self.update_metrics();
-
         (promoted, mined)
     }
 
@@ -1040,13 +1028,13 @@ impl AA2dPool {
                     .then_with(|| sid_2d.cmp(&sid_exp))
                     .is_le();
                 if evict_expiring {
-                    self.evict_expiring_nonce_tx(&hash)
+                    self.remove_expiring_nonce_tx(&hash)
                 } else {
                     self.evict_2d_pending_tx(&id)
                 }
             }
             (Some((id, ..)), None) => self.evict_2d_pending_tx(&id),
-            (None, Some((hash, ..))) => self.evict_expiring_nonce_tx(&hash),
+            (None, Some((hash, ..))) => self.remove_expiring_nonce_tx(&hash),
             (None, None) => None,
         }
     }
@@ -1061,14 +1049,19 @@ impl AA2dPool {
         Some(tx)
     }
 
-    /// Evicts an expiring nonce transaction by hash.
-    fn evict_expiring_nonce_tx(
+    /// Removes an expiring nonce transaction by its expiring nonce hash from all internal sets.
+    ///
+    /// Cleans up `expiring_nonce_txs`, `by_hash`, `slot_to_expiring_nonce_hash`, and sender count.
+    fn remove_expiring_nonce_tx(
         &mut self,
         expiring_hash: &B256,
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let pending_tx = self.expiring_nonce_txs.remove(expiring_hash)?;
         let tx_hash = *pending_tx.transaction.hash();
         self.by_hash.remove(&tx_hash);
+        if let Some(slot) = pending_tx.transaction.transaction.expiring_nonce_slot() {
+            self.slot_to_expiring_nonce_hash.remove(&slot);
+        }
         self.decrement_sender_count(pending_tx.transaction.sender());
         Some(pending_tx.transaction)
     }
@@ -1076,38 +1069,6 @@ impl AA2dPool {
     /// Returns a reference to the metrics for this pool
     pub fn metrics(&self) -> &AA2dPoolMetrics {
         &self.metrics
-    }
-
-    /// Removes expiring nonce transactions that were included in a block.
-    ///
-    /// This should be called with the transaction hashes from mined blocks to clean up
-    /// expiring nonce transactions on inclusion, rather than waiting for expiry.
-    pub(crate) fn remove_included_expiring_nonce_txs<'a>(
-        &mut self,
-        tx_hashes: impl Iterator<Item = &'a TxHash>,
-    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        let mut removed = Vec::new();
-        for tx_hash in tx_hashes {
-            let Some(tx) = self.by_hash.get(tx_hash).cloned() else {
-                continue;
-            };
-            if !tx.transaction.is_expiring_nonce() {
-                continue;
-            }
-            if let Some(pending_tx) = self
-                .expiring_nonce_txs
-                .remove(&Self::expiring_nonce_hash(&tx))
-            {
-                self.by_hash.remove(tx_hash);
-                self.decrement_sender_count(pending_tx.transaction.sender());
-                removed.push(pending_tx.transaction);
-            }
-        }
-        if !removed.is_empty() {
-            self.metrics.inc_removed(removed.len());
-            self.update_metrics();
-        }
-        removed
     }
 
     /// Returns `true` if the transaction with the given hash is already included in this pool.
@@ -1149,7 +1110,6 @@ impl AA2dPool {
 
         if self.slot_to_seq_id.insert(slot, seq_id).is_none() {
             self.metrics.inc_nonce_key_count(1);
-            self.seq_id_to_slot.insert(seq_id, slot);
         }
     }
 
@@ -1163,6 +1123,7 @@ impl AA2dPool {
         Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
     ) {
         let mut changes = HashMap::default();
+        let mut included_expiring_nonce_hashes = Vec::new();
 
         for (account, state) in state {
             if account == &NONCE_PRECOMPILE_ADDRESS {
@@ -1170,6 +1131,14 @@ impl AA2dPool {
                 for (slot, value) in state.storage.iter() {
                     if let Some(seq_id) = self.slot_to_seq_id.get(slot) {
                         changes.insert(*seq_id, value.present_value.saturating_to());
+                    }
+                    // Detect included expiring nonce transactions via their
+                    // `expiring_nonce_seen` slot being set to a non-zero value.
+                    if !value.present_value.is_zero()
+                        && let Some(expiring_nonce_hash) =
+                            self.slot_to_expiring_nonce_hash.get(slot)
+                    {
+                        included_expiring_nonce_hashes.push(*expiring_nonce_hash);
                     }
                 }
             }
@@ -1180,7 +1149,25 @@ impl AA2dPool {
             changes.insert(AASequenceId::new(*account, U256::ZERO), nonce);
         }
 
-        self.on_nonce_changes(changes)
+        let (promoted, mut mined) = self.on_nonce_changes(changes);
+
+        // Remove included expiring nonce transactions
+        for expiring_nonce_hash in included_expiring_nonce_hashes {
+            if let Some(tx) = self.remove_expiring_nonce_tx(&expiring_nonce_hash) {
+                mined.push(tx);
+            }
+        }
+
+        // Record metrics for all changes
+        if !promoted.is_empty() {
+            self.metrics.inc_promoted(promoted.len());
+        }
+        if !mined.is_empty() {
+            self.metrics.inc_removed(mined.len());
+        }
+        self.update_metrics();
+
+        (promoted, mined)
     }
 
     /// Asserts that all assumptions are valid.
@@ -5284,9 +5271,8 @@ mod tests {
         pool.assert_invariants();
     }
 
-    /// Verifies that `remove_included_expiring_nonce_txs` (called on block mining) correctly
-    /// removes an expiring nonce tx using the two-step lookup: tx_hash → by_hash → derive
-    /// expiring_nonce_hash → remove from expiring_nonce_txs.
+    /// Verifies that removing an expiring nonce tx by hash correctly cleans up
+    /// both `expiring_nonce_txs` and `by_hash`.
     #[test]
     fn remove_included_expiring_nonce_tx_uses_correct_key() {
         let mut pool = AA2dPool::default();
@@ -5334,8 +5320,8 @@ mod tests {
         assert!(pool.by_hash.contains_key(&tx_hash));
         pool.assert_invariants();
 
-        // Simulate block mining: remove by tx_hash (what the block contains)
-        let removed = pool.remove_included_expiring_nonce_txs(std::iter::once(&tx_hash));
+        // Simulate block mining: remove by tx_hash
+        let removed = pool.remove_transactions(std::iter::once(&tx_hash));
         assert_eq!(removed.len(), 1, "should remove the tx by its tx_hash");
         assert_eq!(*removed[0].hash(), tx_hash);
 
@@ -5627,8 +5613,8 @@ mod tests {
         assert_eq!(pending, 2, "Should have 2 pending transactions");
         pool.assert_invariants();
 
-        // Remove one via the included txs path
-        let removed = pool.remove_included_expiring_nonce_txs(std::iter::once(&tx1_hash));
+        // Remove one via hash
+        let removed = pool.remove_transactions(std::iter::once(&tx1_hash));
         assert_eq!(removed.len(), 1, "Should remove exactly 1 transaction");
 
         // Verify pending count decremented
@@ -5737,7 +5723,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(pool.slot_to_seq_id.len(), 1);
-        assert_eq!(pool.seq_id_to_slot.len(), 1);
 
         for i in 2..12u64 {
             let tx = TxBuilder::aa(sender)
@@ -5760,12 +5745,6 @@ mod tests {
             1,
             "rejected txs with new nonce keys should not grow slot_to_seq_id"
         );
-        assert_eq!(
-            pool.seq_id_to_slot.len(),
-            1,
-            "rejected txs with new nonce keys should not grow seq_id_to_slot"
-        );
-
         pool.assert_invariants();
     }
 }
