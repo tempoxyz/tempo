@@ -37,6 +37,8 @@ pub struct TempoPooledTransaction {
     is_expiring_nonce: bool,
     /// Cached slot of the 2D nonce, if any.
     nonce_key_slot: OnceLock<Option<U256>>,
+    /// Cached `expiring_nonce_seen` storage slot for expiring nonce transactions.
+    expiring_nonce_slot: OnceLock<Option<U256>>,
     /// Cached prepared [`TempoTxEnv`] for payload building.
     tx_env: OnceLock<TempoTxEnv>,
     /// Keychain key expiry timestamp (set during validation for keychain-signed txs).
@@ -73,6 +75,7 @@ impl TempoPooledTransaction {
             is_payment,
             is_expiring_nonce,
             nonce_key_slot: OnceLock::new(),
+            expiring_nonce_slot: OnceLock::new(),
             tx_env: OnceLock::new(),
             key_expiry: OnceLock::new(),
             resolved_fee_token: OnceLock::new(),
@@ -219,6 +222,14 @@ impl TempoPooledTransaction {
     pub fn expiring_nonce_hash(&self) -> Option<B256> {
         let aa_tx = self.inner().as_aa()?;
         Some(aa_tx.expiring_nonce_hash(self.sender()))
+    }
+
+    /// Returns the cached `expiring_nonce_seen` storage slot for this transaction.
+    pub fn expiring_nonce_slot(&self) -> Option<U256> {
+        *self.expiring_nonce_slot.get_or_init(|| {
+            let hash = self.expiring_nonce_hash()?;
+            Some(NonceManager::new().expiring_nonce_seen[hash].slot())
+        })
     }
 }
 

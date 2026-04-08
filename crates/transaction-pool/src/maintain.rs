@@ -593,21 +593,13 @@ where
                 }
                 metrics.pause_events_duration_seconds.record(pause_start.elapsed());
 
-                // 6. Update 2D nonce pool
+                // 6. Update 2D nonce pool (also removes included expiring nonce txs
+                // via slot changes on the nonce precompile)
                 let nonce_pool_start = Instant::now();
                 pool.notify_aa_pool_on_state_updates(bundle_state);
-
-                // 7. Remove included expiring nonce transactions
-                // Expiring nonce txs don't have sequential nonces, so we need to remove them
-                // on inclusion rather than relying on nonce changes.
-                pool.remove_included_expiring_nonce_txs(
-                    tip.blocks_iter()
-                        .flat_map(|block| block.body().transactions())
-                        .map(|tx| tx.tx_hash()),
-                );
                 metrics.nonce_pool_update_duration_seconds.record(nonce_pool_start.elapsed());
 
-                // 8. Update AMM liquidity cache (must happen before validator token eviction)
+                // 7. Update AMM liquidity cache (must happen before validator token eviction)
                 let amm_start = Instant::now();
                 amm_cache.on_new_state(tip.execution_outcome());
                 if let Err(err) = amm_cache.on_new_blocks(tip.blocks_iter().map(|block| block.sealed_header()), pool.client()) {
@@ -615,7 +607,7 @@ where
                 }
                 metrics.amm_cache_update_duration_seconds.record(amm_start.elapsed());
 
-                // 9. Evict invalidated transactions in a single pool scan
+                // 8. Evict invalidated transactions in a single pool scan
                 // This checks revoked keys, spending limit changes, validator token changes,
                 // blacklist additions, and whitelist removals together to avoid scanning
                 // all transactions multiple times per block.
@@ -642,7 +634,7 @@ where
                         .record(invalidation_start.elapsed());
                 }
 
-                // 10. Evict stale pending transactions (must happen after AA pool promotions in step 6)
+                // 9. Evict stale pending transactions (must happen after AA pool promotions in step 6)
                 // Only runs once per interval (~30 min) to avoid overhead on every block.
                 // Transactions pending across two consecutive snapshots are considered stale.
                 if state.pending_staleness.should_check(tip_timestamp) {
