@@ -54,6 +54,13 @@ pub struct TempoPayloadAttributes {
     /// validator config contract. When `None`, `suggested_fee_recipient` from
     /// the inner attributes is used as-is.
     proposer_public_key: Option<B256>,
+    /// Whether the payload job should keep building until interrupted.
+    ///
+    /// Tempo proposals should keep one build alive until consensus interrupts
+    /// it for finalization, instead of letting reth schedule repeated rebuilds
+    /// from scratch.
+    #[serde(default)]
+    build_until_interrupt: bool,
     /// Subblocks closure.
     #[debug(skip)]
     #[serde(skip, default = "default_subblocks")]
@@ -88,8 +95,15 @@ impl TempoPayloadAttributes {
             timestamp_millis_part: millis,
             extra_data,
             proposer_public_key,
+            build_until_interrupt: false,
             subblocks: Arc::new(subblocks),
         }
+    }
+
+    /// Configures the payload job to keep building until interrupted.
+    pub fn with_build_until_interrupt(mut self) -> Self {
+        self.build_until_interrupt = true;
+        self
     }
 
     /// Returns the extra data to be included in the block header.
@@ -100,6 +114,11 @@ impl TempoPayloadAttributes {
     /// Returns the proposer's public key.
     pub fn proposer_public_key(&self) -> Option<&B256> {
         self.proposer_public_key.as_ref()
+    }
+
+    /// Returns whether the payload job should keep building until interrupted.
+    pub fn build_until_interrupt(&self) -> bool {
+        self.build_until_interrupt
     }
 
     /// Returns the `interrupt` flag. If true, it marks that a payload is requested to stop
@@ -143,6 +162,7 @@ impl From<EthPayloadAttributes> for TempoPayloadAttributes {
             timestamp_millis_part: 0,
             extra_data: Bytes::default(),
             proposer_public_key: None,
+            build_until_interrupt: false,
             subblocks: Arc::new(Vec::new),
         }
     }
@@ -308,6 +328,15 @@ mod tests {
     }
 
     #[test]
+    fn test_builder_attributes_build_until_interrupt_flag() {
+        let attrs = TempoPayloadAttributes::random();
+        assert!(!attrs.build_until_interrupt());
+
+        let attrs = attrs.with_build_until_interrupt();
+        assert!(attrs.build_until_interrupt());
+    }
+
+    #[test]
     fn test_builder_attributes_timestamp_handling() {
         // Exact second boundary
         let attrs = TempoPayloadAttributes::random().with_timestamp(3000);
@@ -388,6 +417,7 @@ mod tests {
         assert_eq!(tempo_attrs.timestamp_millis_part(), 0);
         assert_eq!(tempo_attrs.extra_data(), &Bytes::default());
         assert!(!tempo_attrs.is_interrupted());
+        assert!(!tempo_attrs.build_until_interrupt());
         assert!(tempo_attrs.subblocks().is_empty());
     }
 
@@ -414,6 +444,7 @@ mod tests {
         let deserialized: TempoPayloadAttributes = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.inner.timestamp, timestamp);
         assert_eq!(deserialized.timestamp_millis_part, timestamp_millis_part);
+        assert!(!deserialized.build_until_interrupt);
 
         // Deref works
         assert_eq!(attrs.timestamp, timestamp);

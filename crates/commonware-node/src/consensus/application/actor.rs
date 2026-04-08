@@ -57,6 +57,8 @@ use crate::{
     subblocks,
 };
 
+const PAYLOAD_FINALIZE_SLACK: Duration = Duration::from_millis(10);
+
 pub(in crate::consensus) struct Actor<TContext, TState = Uninit> {
     context: ContextCell<TContext>,
     mailbox: mpsc::Receiver<Message>,
@@ -569,6 +571,11 @@ impl Inner<Init> {
             current_timestamp
         };
 
+        let share_sparse_trie_with_payload_builder = self
+            .execution_node
+            .config
+            .engine
+            .share_sparse_trie_with_payload_builder;
         let parent_hash = parent.block_hash();
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
         let attrs = TempoPayloadAttributes::new(
@@ -583,6 +590,11 @@ impl Inner<Init> {
                     .unwrap_or_default()
             },
         );
+        let attrs = if share_sparse_trie_with_payload_builder {
+            attrs.with_build_until_interrupt()
+        } else {
+            attrs
+        };
 
         let payload_id = attrs.payload_id(&parent.digest().0);
         payload_id_tx.send(payload_id).map_err(|_| {
@@ -597,13 +609,17 @@ impl Inner<Init> {
             .wrap_err("failed requesting a new payload build")?;
 
         let elapsed = propose_start.elapsed();
-        let remaining_resolve = self.payload_resolve_time.saturating_sub(elapsed);
+        let mut remaining_resolve = self.payload_resolve_time.saturating_sub(elapsed);
         let remaining_return = self.payload_return_time.saturating_sub(elapsed);
+        if share_sparse_trie_with_payload_builder {
+            remaining_resolve = remaining_return.saturating_sub(PAYLOAD_FINALIZE_SLACK);
+        }
         debug!(
             elapsed = %display_duration(elapsed),
             resolve_time = %display_duration(remaining_resolve),
             return_time = %display_duration(remaining_return),
-            "sleeping before payload builder resolving"
+            shared_sparse_trie = share_sparse_trie_with_payload_builder,
+            "sleeping before payload builder interrupt"
         );
 
         // Start the timer for `remaining_return`
@@ -613,11 +629,13 @@ impl Inner<Init> {
         // plus whatever time is needed to finish building the block.
         let payload_return_time = context.current() + remaining_return;
 
-        // Give payload builder at least `remaining_resolve` until we interrupt it.
+        // With shared sparse trie enabled, keep executing pool transactions until
+        // the end of the proposal window and leave a small slack to finalize the
+        // state root and seal. Otherwise keep the original earlier interrupt.
         //
-        // The interrupt doesn't mean we'll immediately get the payload back,
-        // but only signals the builder to stop executing transactions,
-        // and start calculating the state root and sealing the block.
+        // The interrupt doesn't mean we'll immediately get the payload back, but
+        // only signals the builder to stop executing transactions and start
+        // calculating the state root and sealing the block.
         context.sleep(remaining_resolve).await;
 
         interrupt_handle.interrupt();

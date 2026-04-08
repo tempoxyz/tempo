@@ -42,7 +42,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_consensus::TEMPO_SHARED_GAS_DIVISOR;
@@ -62,6 +62,8 @@ use tempo_transaction_pool::{
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
+
+const SINGLE_BUILD_IDLE_WAIT: Duration = Duration::from_millis(1);
 
 /// Returns true if a subblock has any expired transactions for the given timestamp.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
@@ -419,7 +421,24 @@ where
 
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
-        while let Some(pool_tx) = best_txs.next() {
+        loop {
+            if attributes.is_interrupted() {
+                break;
+            }
+
+            if cancel.is_cancelled() {
+                return Ok(BuildOutcome::Cancelled);
+            }
+
+            let Some(pool_tx) = best_txs.next() else {
+                if attributes.build_until_interrupt() && cumulative_gas_used < non_shared_gas_limit
+                {
+                    std::thread::sleep(SINGLE_BUILD_IDLE_WAIT);
+                    continue;
+                }
+                break;
+            };
+
             // Ensure we still have capacity for this transaction within the non-shared gas limit.
             // The remaining `shared_gas_limit` is reserved for validator subblocks and must not
             // be consumed by proposer's pool transactions.
@@ -460,7 +479,6 @@ where
             }
 
             check_cancel!();
-
             let is_payment = pool_tx.transaction.is_payment();
             if is_payment {
                 payment_transactions += 1;
@@ -774,10 +792,14 @@ where
         let payload = TempoBuiltPayload::new(eth_payload, Some(executed_block));
 
         drop(db);
-        Ok(BuildOutcome::Better {
-            payload,
-            cached_reads,
-        })
+        if attributes.build_until_interrupt() {
+            Ok(BuildOutcome::Freeze(payload))
+        } else {
+            Ok(BuildOutcome::Better {
+                payload,
+                cached_reads,
+            })
+        }
     }
 }
 
