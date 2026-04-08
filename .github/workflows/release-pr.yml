@@ -16,7 +16,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          persist-credentials: true
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install changelogs
+        run: cargo install --git https://github.com/wevm/changelogs --branch master changelogs
 
       - name: Keep only SDK changelog entries
         run: |
@@ -56,7 +61,82 @@ jobs:
               path.write_text("---\n" + "".join(kept) + "---\n" + body, encoding="utf-8")
           PY
 
-      - uses: wevm/changelogs@master
+      - name: Check for changelogs
+        id: check
+        run: |
+          if [ -d ".changelog" ] && [ "$(find .changelog -name '*.md' ! -name 'README.md' 2>/dev/null | head -1)" ]; then
+            echo "hasChangelogs=true" >> "$GITHUB_OUTPUT"
+            echo "Found pending changelogs"
+          else
+            echo "hasChangelogs=false" >> "$GITHUB_OUTPUT"
+            echo "No pending changelogs"
+          fi
+
+      - name: Setup Git user
+        if: steps.check.outputs.hasChangelogs == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Run version command
+        if: steps.check.outputs.hasChangelogs == 'true'
+        id: version
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          output=$(changelogs version 2>&1) && version_exit=0 || version_exit=$?
+          echo "$output"
+          if [ $version_exit -ne 0 ]; then
+            echo "::error::changelogs version failed with exit code $version_exit"
+            exit $version_exit
+          fi
+
+          all_versions=$(echo "$output" | grep -oE '[a-zA-Z0-9_-]+ [0-9]+\.[0-9]+\.[0-9]+ → [0-9]+\.[0-9]+\.[0-9]+' | sed 's/ .* → /@/')
+          count=$(echo "$all_versions" | grep -c . || echo 0)
+
+          if [ "$count" -eq 0 ]; then
+            versions=""
+          elif [ "$count" -eq 1 ]; then
+            versions="\`$(echo "$all_versions" | head -1)\`"
+          elif [ "$count" -eq 2 ]; then
+            first=$(echo "$all_versions" | head -1)
+            second=$(echo "$all_versions" | tail -1)
+            versions="\`$first\` and \`$second\`"
+          else
+            first=$(echo "$all_versions" | head -1)
+            second=$(echo "$all_versions" | sed -n '2p')
+            remaining=$((count - 2))
+            versions="\`$first\`, \`$second\` and $remaining more"
+          fi
+
+          echo "title=chore: release $versions" >> "$GITHUB_OUTPUT"
+          echo "commit-msg=chore: release $versions" >> "$GITHUB_OUTPUT"
+
+      - name: Refresh Cargo.lock
+        if: steps.check.outputs.hasChangelogs == 'true'
+        run: cargo metadata --format-version=1 > /dev/null
+
+      - name: Generate PR body
+        if: steps.check.outputs.hasChangelogs == 'true'
+        id: body
+        run: |
+          {
+            echo "This PR was opened by the Changelogs release workflow."
+            echo
+            echo "When you're ready to release, merge this PR and the packages will be published."
+            echo
+            echo "---"
+            echo
+          } > /tmp/pr-body.md
+          echo "body-file=/tmp/pr-body.md" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update PR
+        if: steps.check.outputs.hasChangelogs == 'true'
+        uses: peter-evans/create-pull-request@v7
         with:
-          conventional-commit: true
-          github-token: ${{ secrets.TEMPO_GITHUB_PAT }}
+          token: ${{ secrets.TEMPO_GITHUB_PAT }}
+          branch: changelog-release/main
+          base: ${{ github.ref_name }}
+          title: ${{ steps.version.outputs.title }}
+          body-path: ${{ steps.body.outputs.body-file }}
+          commit-message: ${{ steps.version.outputs.commit-msg }}
+          delete-branch: true
