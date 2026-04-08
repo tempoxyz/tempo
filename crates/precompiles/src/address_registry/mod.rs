@@ -434,11 +434,17 @@ mod tests {
             let mut registry = AddressRegistry::new();
 
             // Non-virtual → zero
-            assert_eq!(registry.resolve_virtual_address(Address::random())?, Address::ZERO);
+            assert_eq!(
+                registry.resolve_virtual_address(Address::random())?,
+                Address::ZERO
+            );
 
             // Unregistered virtual → zero
             let unregistered = make_virtual_address(MasterId::ZERO, UserTag::ZERO);
-            assert_eq!(registry.resolve_virtual_address(unregistered)?, Address::ZERO);
+            assert_eq!(
+                registry.resolve_virtual_address(unregistered)?,
+                Address::ZERO
+            );
 
             // Registered virtual → master
             let master_id = registry.register_virtual_master(
