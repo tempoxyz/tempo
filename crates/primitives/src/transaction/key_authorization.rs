@@ -51,6 +51,21 @@ pub struct CallScope {
 }
 
 impl CallScope {
+    /// Returns the target contract address.
+    pub fn target(&self) -> Address {
+        self.target
+    }
+
+    /// Returns `true` when any call to this target is allowed (no selector restrictions).
+    pub fn allows_all_selectors(&self) -> bool {
+        self.selector_rules.is_empty()
+    }
+
+    /// Returns the selector rules for this target.
+    pub fn selector_rules(&self) -> &[SelectorRule] {
+        &self.selector_rules
+    }
+
     fn heap_size(&self) -> usize {
         self.selector_rules.capacity() * size_of::<SelectorRule>()
             + self
@@ -83,8 +98,63 @@ pub struct SelectorRule {
 }
 
 impl SelectorRule {
+    /// Returns the 4-byte function selector.
+    pub fn selector(&self) -> [u8; 4] {
+        self.selector
+    }
+
+    /// Returns the allowed recipients for this selector.
+    pub fn recipients(&self) -> &[Address] {
+        &self.recipients
+    }
+
+    /// Returns `true` when any recipient is allowed (no recipient restriction).
+    pub fn allows_all_recipients(&self) -> bool {
+        self.recipients.is_empty()
+    }
+
     fn heap_size(&self) -> usize {
         self.recipients.capacity() * size_of::<Address>()
+    }
+}
+
+use tempo_contracts::precompiles::IAccountKeychain::{
+    CallScope as AbiCallScope, SelectorRule as AbiSelectorRule,
+};
+
+impl From<AbiCallScope> for CallScope {
+    fn from(scope: AbiCallScope) -> Self {
+        Self {
+            target: scope.target,
+            selector_rules: scope.selectorRules.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<CallScope> for AbiCallScope {
+    fn from(scope: CallScope) -> Self {
+        Self {
+            target: scope.target,
+            selectorRules: scope.selector_rules.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<AbiSelectorRule> for SelectorRule {
+    fn from(rule: AbiSelectorRule) -> Self {
+        Self {
+            selector: rule.selector.into(),
+            recipients: rule.recipients,
+        }
+    }
+}
+
+impl From<SelectorRule> for AbiSelectorRule {
+    fn from(rule: SelectorRule) -> Self {
+        Self {
+            selector: rule.selector.into(),
+            recipients: rule.recipients,
+        }
     }
 }
 
@@ -136,6 +206,49 @@ pub struct KeyAuthorization {
 }
 
 impl KeyAuthorization {
+    /// Create a fully unrestricted key authorization: no expiry, no spending limits, no call
+    /// scopes.
+    pub fn unrestricted(chain_id: u64, key_type: SignatureType, key_id: Address) -> Self {
+        Self {
+            chain_id,
+            key_type,
+            key_id,
+            expiry: None,
+            limits: None,
+            allowed_calls: None,
+        }
+    }
+
+    /// Set an expiry timestamp on this key authorization.
+    pub fn with_expiry(mut self, expiry: u64) -> Self {
+        self.expiry = Some(expiry);
+        self
+    }
+
+    /// Set token spending limits on this key authorization.
+    pub fn with_limits(mut self, limits: Vec<TokenLimit>) -> Self {
+        self.limits = Some(limits);
+        self
+    }
+
+    /// Set call-scope restrictions on this key authorization.
+    pub fn with_allowed_calls(mut self, allowed_calls: Vec<CallScope>) -> Self {
+        self.allowed_calls = Some(allowed_calls);
+        self
+    }
+
+    /// Deny all spending (enforce limits with an empty allowlist).
+    pub fn with_no_spending(mut self) -> Self {
+        self.limits = Some(Vec::new());
+        self
+    }
+
+    /// Deny all calls (scoped mode with an empty allowlist).
+    pub fn with_no_calls(mut self) -> Self {
+        self.allowed_calls = Some(Vec::new());
+        self
+    }
+
     /// Computes the authorization message hash for this key authorization.
     pub fn signature_hash(&self) -> B256 {
         let mut buf = Vec::new();
@@ -163,6 +276,11 @@ impl KeyAuthorization {
     /// Returns whether this key never expires (expiry is None)
     pub fn never_expires(&self) -> bool {
         self.expiry.is_none()
+    }
+
+    /// Returns whether this authorization can be encoded with the legacy pre-T3 ABI.
+    pub fn is_legacy_compatible(&self) -> bool {
+        !(self.has_periodic_limits() || self.has_call_scopes())
     }
 
     /// Convert the key authorization into a [`SignedKeyAuthorization`] with a signature.
@@ -426,14 +544,9 @@ mod tests {
             selector_rules: rules,
         });
 
-        let auth = KeyAuthorization {
-            chain_id: 1,
-            key_type: SignatureType::Secp256k1,
-            key_id: Address::repeat_byte(0x44),
-            expiry: None,
-            limits: None,
-            allowed_calls: Some(scopes),
-        };
+        let auth =
+            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::repeat_byte(0x44))
+                .with_allowed_calls(scopes);
 
         let scope_rules = auth.allowed_calls.as_ref().unwrap();
         let selector_rules = &scope_rules[0].selector_rules;
@@ -525,26 +638,21 @@ mod tests {
 
     #[test]
     fn test_key_authorization_roundtrip_preserves_explicit_nested_allow_all_lists() {
-        let auth = KeyAuthorization {
-            chain_id: 1,
-            key_type: SignatureType::Secp256k1,
-            key_id: Address::repeat_byte(0x11),
-            expiry: None,
-            limits: None,
-            allowed_calls: Some(vec![
-                CallScope {
-                    target: Address::repeat_byte(0x22),
-                    selector_rules: vec![],
-                },
-                CallScope {
-                    target: Address::repeat_byte(0x33),
-                    selector_rules: vec![SelectorRule {
-                        selector: [0xaa, 0xbb, 0xcc, 0xdd],
-                        recipients: vec![],
-                    }],
-                },
-            ]),
-        };
+        let auth =
+            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::repeat_byte(0x11))
+                .with_allowed_calls(vec![
+                    CallScope {
+                        target: Address::repeat_byte(0x22),
+                        selector_rules: vec![],
+                    },
+                    CallScope {
+                        target: Address::repeat_byte(0x33),
+                        selector_rules: vec![SelectorRule {
+                            selector: [0xaa, 0xbb, 0xcc, 0xdd],
+                            recipients: vec![],
+                        }],
+                    },
+                ]);
 
         let mut encoded = Vec::new();
         auth.encode(&mut encoded);
@@ -852,5 +960,89 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.expected, expected);
         assert_eq!(err.got, 999);
+    }
+
+    #[test]
+    fn test_call_scope_accessors() {
+        let target = Address::repeat_byte(0x11);
+        let rule = SelectorRule {
+            selector: [0xaa, 0xbb, 0xcc, 0xdd],
+            recipients: vec![Address::repeat_byte(0x22)],
+        };
+        let scope = CallScope {
+            target,
+            selector_rules: vec![rule],
+        };
+
+        assert_eq!(scope.target(), target);
+        assert!(!scope.allows_all_selectors());
+        assert_eq!(scope.selector_rules().len(), 1);
+    }
+
+    #[test]
+    fn test_call_scope_allows_all_selectors_when_empty() {
+        let scope = CallScope {
+            target: Address::repeat_byte(0x11),
+            selector_rules: vec![],
+        };
+        assert!(scope.allows_all_selectors());
+    }
+
+    #[test]
+    fn test_selector_rule_accessors() {
+        let selector = [0x12, 0x34, 0x56, 0x78];
+        let recipients = vec![Address::repeat_byte(0x33), Address::repeat_byte(0x44)];
+        let rule = SelectorRule {
+            selector,
+            recipients: recipients.clone(),
+        };
+
+        assert_eq!(rule.selector(), selector);
+        assert_eq!(rule.recipients(), &recipients);
+        assert!(!rule.allows_all_recipients());
+    }
+
+    #[test]
+    fn test_selector_rule_allows_all_recipients_when_empty() {
+        let rule = SelectorRule {
+            selector: [0xaa, 0xbb, 0xcc, 0xdd],
+            recipients: vec![],
+        };
+        assert!(rule.allows_all_recipients());
+    }
+}
+
+#[cfg(all(test, feature = "reth-codec"))]
+mod compact_tests {
+    use super::*;
+    use alloy_primitives::{address, hex};
+    use reth_codecs::Compact;
+
+    /// Ensures backwards compatibility of compact bitflags.
+    ///
+    /// See reth's `HeaderExt` pattern:
+    /// <https://github.com/paradigmxyz/reth-core/blob/0476d1bc4b71f3c3b080622be297edd91ee4e70c/crates/codecs/src/alloy/header.rs>
+    #[test]
+    fn compact_types_have_unused_bits() {
+        assert_ne!(TokenLimit::bitflag_unused_bits(), 0, "TokenLimit");
+    }
+
+    #[test]
+    fn token_limit_compact_roundtrip() {
+        let token_limit = TokenLimit {
+            token: address!("0x0000000000000000000000000000000000000042"),
+            limit: U256::from(1_000_000u64),
+            period: 86400,
+        };
+
+        let expected = hex!("c30000000000000000000000000000000000000000420f4240015180");
+
+        let mut buf = vec![];
+        let len = token_limit.to_compact(&mut buf);
+        assert_eq!(buf, expected, "TokenLimit compact encoding changed");
+        assert_eq!(len, expected.len());
+
+        let (decoded, _) = TokenLimit::from_compact(&expected, expected.len());
+        assert_eq!(decoded, token_limit);
     }
 }

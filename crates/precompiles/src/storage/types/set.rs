@@ -43,6 +43,7 @@
 
 use alloy::primitives::{Address, U256};
 use std::{
+    collections::HashSet,
     fmt,
     hash::Hash,
     ops::{Deref, Index},
@@ -77,6 +78,18 @@ impl<T> Set<T> {
     pub fn new() -> Self {
         Self(Vec::new())
     }
+
+    /// Creates a set from a vector that is already known to contain no duplicates.
+    ///
+    /// # IMPORTANT
+    ///
+    /// The caller **must** guarantee that `vec` contains no duplicate elements.
+    /// Violating this breaks the position-mapping invariant in storage: two equal values would
+    /// share a single position slot, causing silent data corruption on subsequent `remove()` calls.
+    #[inline]
+    pub fn new_unchecked(vec: Vec<T>) -> Self {
+        Self(vec)
+    }
 }
 
 impl<T> Deref for Set<T> {
@@ -95,22 +108,22 @@ impl<T> From<Set<T>> for Vec<T> {
     }
 }
 
-impl<T: Eq + Clone> From<Vec<T>> for Set<T> {
+impl<T: Eq + Hash + Clone> From<Vec<T>> for Set<T> {
     /// Creates a set from a vector, removing duplicates.
     ///
     /// Preserves the order of first occurrences.
     fn from(vec: Vec<T>) -> Self {
-        let mut seen = Vec::new();
+        let (mut seen, mut deduped) = (HashSet::new(), Vec::new());
         for item in vec {
-            if !seen.contains(&item) {
-                seen.push(item);
+            if seen.insert(item.clone()) {
+                deduped.push(item);
             }
         }
-        Self(seen)
+        Self(deduped)
     }
 }
 
-impl<T: Eq + Clone> FromIterator<T> for Set<T> {
+impl<T: Eq + Hash + Clone> FromIterator<T> for Set<T> {
     /// Creates a set from an iterator, removing duplicates.
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
         let vec: Vec<T> = iter.into_iter().collect();

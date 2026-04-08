@@ -2,11 +2,11 @@
 name = "tempo-alloy"
 description = "Tempo extensions of Alloy"
 
-version.workspace = true
+version = "1.5.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-publish.workspace = true
+publish = true
 
 [lints]
 workspace = true
@@ -27,6 +27,7 @@ alloy-provider.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy-serde.workspace = true
 alloy-signer-local.workspace = true
+alloy-sol-types.workspace = true
 alloy-transport.workspace = true
 
 reth-evm = { workspace = true, optional = true }

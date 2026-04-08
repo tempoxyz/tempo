@@ -9,7 +9,6 @@ use alloy::{
     providers::Provider,
     rpc::types::TransactionRequest,
     signers::{SignerSync, local::PrivateKeySigner},
-    sol_types::SolCall,
 };
 use alloy_eips::{Decodable2718, Encodable2718};
 use alloy_primitives::TxKind;
@@ -641,8 +640,6 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
     env: &mut E,
     test_case: &RawSendTestCase,
 ) -> eyre::Result<()> {
-    use tempo_precompiles::account_keychain::updateSpendingLimitCall;
-
     println!("\n=== Raw send test: {} ===\n", test_case.name);
     let chain_id = env.chain_id();
 
@@ -680,17 +677,11 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
                 *amount,
             )]
         }
-        TestAction::AdminCall => vec![Call {
-            to: tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS.into(),
-            value: U256::ZERO,
-            input: updateSpendingLimitCall {
-                keyId: Address::random(),
-                token: DEFAULT_FEE_TOKEN,
-                newLimit: U256::from(20u64) * U256::from(10).pow(U256::from(18)),
-            }
-            .abi_encode()
-            .into(),
-        }],
+        TestAction::AdminCall => vec![tempo_alloy::provider::keychain::update_spending_limit(
+            Address::random(),
+            DEFAULT_FEE_TOKEN,
+            U256::from(20u64) * U256::from(10).pow(U256::from(18)),
+        )],
     };
 
     let nonce_before = env.provider().get_transaction_count(root_addr).await?;
@@ -707,29 +698,18 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
             // Sign with root key directly (handled below)
         }
         KeySetup::ZeroPubKey => {
-            use tempo_precompiles::{
-                ACCOUNT_KEYCHAIN_ADDRESS,
-                account_keychain::{
-                    KeyRestrictions, SignatureType as KCSignatureType, authorizeKeyCall,
-                },
+            use tempo_alloy::provider::keychain::{
+                KeyRestrictions, authorize_key, authorize_key_legacy,
             };
 
-            let authorize_call = authorizeKeyCall {
-                keyId: Address::ZERO,
-                signatureType: KCSignatureType::P256,
-                config: KeyRestrictions {
-                    expiry: u64::MAX,
-                    enforceLimits: true,
-                    limits: vec![],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
+            let restrictions = KeyRestrictions::default().with_no_spending();
+            let call = if env.hardfork().is_t3() {
+                authorize_key(Address::ZERO, SignatureType::P256, restrictions)
+            } else {
+                authorize_key_legacy(Address::ZERO, SignatureType::P256, restrictions)
+                    .expect("default restrictions are legacy-compatible")
             };
-            tx.calls = vec![Call {
-                to: ACCOUNT_KEYCHAIN_ADDRESS.into(),
-                value: U256::ZERO,
-                input: authorize_call.abi_encode().into(),
-            }];
+            tx.calls = vec![call];
             tx.fee_token = None;
         }
         KeySetup::AccessKey { limits, expiry } => {
@@ -878,14 +858,11 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
                     let access_addr = access_signer.address();
                     let wrong_root = PrivateKeySigner::random();
 
-                    let key_auth = KeyAuthorization {
+                    let key_auth = KeyAuthorization::unrestricted(
                         chain_id,
-                        key_type: SignatureType::Secp256k1,
-                        key_id: access_addr,
-                        expiry: None,
-                        limits: None,
-                        allowed_calls: None,
-                    };
+                        SignatureType::Secp256k1,
+                        access_addr,
+                    );
                     let wrong_sig = wrong_root.sign_hash_sync(&key_auth.signature_hash())?;
                     let invalid_key_auth =
                         key_auth.into_signed(PrimitiveSignature::Secp256k1(wrong_sig));
@@ -907,15 +884,9 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
                     let (wrong_signer_key, wrong_pub_x, wrong_pub_y, _) =
                         generate_p256_access_key();
 
-                    let auth_message_hash = KeyAuthorization {
-                        chain_id,
-                        key_type: SignatureType::P256,
-                        key_id: addr_3,
-                        expiry: None,
-                        limits: None,
-                        allowed_calls: None,
-                    }
-                    .signature_hash();
+                    let auth_message_hash =
+                        KeyAuthorization::unrestricted(chain_id, SignatureType::P256, addr_3)
+                            .signature_hash();
 
                     use p256::ecdsa::signature::hazmat::PrehashSigner;
                     use sha2::{Digest, Sha256};
@@ -925,21 +896,16 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
                         wrong_signer_key.sign_prehash(wrong_sig_hash.as_slice())?;
                     let wrong_sig_bytes = wrong_signature.to_bytes();
 
-                    let invalid_key_auth = KeyAuthorization {
-                        chain_id,
-                        key_type: SignatureType::P256,
-                        key_id: addr_3,
-                        expiry: None,
-                        limits: None,
-                        allowed_calls: None,
-                    }
-                    .into_signed(PrimitiveSignature::P256(P256SignatureWithPreHash {
-                        r: B256::from_slice(&wrong_sig_bytes[0..32]),
-                        s: normalize_p256_s(&wrong_sig_bytes[32..64]),
-                        pub_key_x: wrong_pub_x,
-                        pub_key_y: wrong_pub_y,
-                        pre_hash: true,
-                    }));
+                    let invalid_key_auth =
+                        KeyAuthorization::unrestricted(chain_id, SignatureType::P256, addr_3)
+                            .into_signed(PrimitiveSignature::P256(P256SignatureWithPreHash {
+                                r: B256::from_slice(&wrong_sig_bytes[0..32]),
+                                s: normalize_p256_s(&wrong_sig_bytes[32..64])
+                                    .expect("p256 crate produces valid s"),
+                                pub_key_x: wrong_pub_x,
+                                pub_key_y: wrong_pub_y,
+                                pre_hash: true,
+                            }));
 
                     tx.key_authorization = Some(invalid_key_auth);
                     let sig = sign_aa_tx_with_p256_access_key(

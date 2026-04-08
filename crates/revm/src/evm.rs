@@ -1,6 +1,6 @@
 use crate::{TempoBlockEnv, TempoTxEnv, instructions};
 use alloy_evm::{Database, precompiles::PrecompilesMap};
-use alloy_primitives::{Log, U256};
+use alloy_primitives::{Address, U256};
 use revm::{
     Context, Inspector,
     context::{CfgEnv, ContextError, Evm, FrameStack},
@@ -29,14 +29,27 @@ pub struct TempoEvm<DB: Database, I> {
         PrecompilesMap,
         EthFrame<EthInterpreter>,
     >,
-    /// Preserved logs from the last transaction
-    pub logs: Vec<Log>,
     /// The fee collected in `collectFeePreTx` call.
     pub(crate) collected_fee: U256,
     /// Initial gas cost. Used for key_authorization validation in collectFeePreTx.
     ///
     /// Additional initial gas cost is added for authorization_key setting in pre execution.
     pub(crate) initial_gas: u64,
+    /// The fee token used to pay fees for the current transaction.
+    pub(crate) fee_token: Option<Address>,
+    /// The expiry timestamp of the access key used by the current transaction.
+    /// Populated during validation for keychain-signed transactions or transactions carrying a KeyAuthorization.
+    pub(crate) key_expiry: Option<u64>,
+    /// When true, skips the `valid_after` time-window check during validation.
+    ///
+    /// The transaction pool sets this because it intentionally accepts transactions
+    /// with a future `valid_after` (queued until executable).
+    pub skip_valid_after_check: bool,
+    /// When true, skips the AMM liquidity check in `collect_fee_pre_tx`.
+    ///
+    /// The transaction pool sets this because it performs its own liquidity
+    /// validation against a cached view of the AMM state.
+    pub skip_liquidity_check: bool,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -67,9 +80,12 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     ) -> Self {
         Self {
             inner,
-            logs: Vec::new(),
             collected_fee: U256::ZERO,
             initial_gas: 0,
+            fee_token: None,
+            key_expiry: None,
+            skip_valid_after_check: false,
+            skip_liquidity_check: false,
         }
     }
 }
@@ -90,10 +106,11 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         self.inner.into_inspector()
     }
 
-    /// Take logs from the EVM.
-    #[inline]
-    pub fn take_logs(&mut self) -> Vec<Log> {
-        std::mem::take(&mut self.logs)
+    /// Clears all intermediate state from the EVM.
+    pub fn clear(&mut self) {
+        self.initial_gas = 0;
+        self.fee_token = None;
+        self.key_expiry = None;
     }
 }
 
@@ -191,7 +208,7 @@ mod tests {
     use crate::gas_params::tempo_gas_params;
     use alloy_eips::eip7702::Authorization;
     use alloy_evm::FromRecoveredTx;
-    use alloy_primitives::{Address, Bytes, Log, TxKind, U256, bytes};
+    use alloy_primitives::{Address, Bytes, TxKind, U256, bytes};
     use alloy_sol_types::SolCall;
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use p256::{
@@ -433,7 +450,7 @@ mod tests {
             Ok(WebAuthnSignature {
                 webauthn_data: Bytes::from(webauthn_data),
                 r: alloy_primitives::B256::from_slice(&sig_bytes[0..32]),
-                s: normalize_p256_s(&sig_bytes[32..64]),
+                s: normalize_p256_s(&sig_bytes[32..64]).map_err(|e| eyre::eyre!(e))?,
                 pub_key_x: self.pub_key_x,
                 pub_key_y: self.pub_key_y,
             })
@@ -988,14 +1005,7 @@ mod tests {
         assert!(result.is_success());
 
         // Test with KeychainSignature using key_authorization to provision the access key
-        let key_auth = KeyAuthorization {
-            chain_id: 1,
-            key_type: SignatureType::WebAuthn,
-            key_id: caller,
-            expiry: None,
-            limits: None,
-            allowed_calls: None,
-        };
+        let key_auth = KeyAuthorization::unrestricted(1, SignatureType::WebAuthn, caller);
         let key_auth_webauthn_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
         let signed_key_auth =
             key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_webauthn_sig));
@@ -1131,14 +1141,8 @@ mod tests {
         }
 
         // Explicit deny-all marker in protocol payload: Some([]).
-        let key_auth = KeyAuthorization {
-            chain_id: 1,
-            key_type: SignatureType::WebAuthn,
-            key_id: caller,
-            expiry: None,
-            limits: None,
-            allowed_calls: Some(Vec::new()),
-        };
+        let key_auth =
+            KeyAuthorization::unrestricted(1, SignatureType::WebAuthn, caller).with_no_calls();
         let key_auth_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
         let signed_key_auth = key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig));
 
@@ -1198,20 +1202,14 @@ mod tests {
         }
         .abi_encode();
 
-        let key_auth = KeyAuthorization {
-            chain_id: 1,
-            key_type: SignatureType::WebAuthn,
-            key_id: caller,
-            expiry: None,
-            limits: None,
-            allowed_calls: Some(vec![tempo_primitives::transaction::CallScope {
+        let key_auth = KeyAuthorization::unrestricted(1, SignatureType::WebAuthn, caller)
+            .with_allowed_calls(vec![tempo_primitives::transaction::CallScope {
                 target: PATH_USD_ADDRESS,
                 selector_rules: vec![tempo_primitives::transaction::SelectorRule {
                     selector: ITIP20::transferCall::SELECTOR,
                     recipients: Vec::new(),
                 }],
-            }]),
-        };
+            }]);
         let key_auth_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
         let signed_key_auth = key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig));
 
@@ -1237,14 +1235,7 @@ mod tests {
 
         let mut evm = create_funded_evm_t3(caller);
 
-        let key_auth = KeyAuthorization {
-            chain_id: 1,
-            key_type: SignatureType::Secp256k1,
-            key_id: caller,
-            expiry: None,
-            limits: None,
-            allowed_calls: None,
-        };
+        let key_auth = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, caller);
         let key_auth_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
         let signed_key_auth = key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig));
 
@@ -1700,32 +1691,6 @@ mod tests {
         );
     }
 
-    /// Test that take_logs clears logs and returns them.
-    #[test]
-    fn test_tempo_evm_take_logs() {
-        let mut evm = create_evm();
-
-        // Manually add some logs
-        evm.logs.push(Log::new_unchecked(
-            Address::repeat_byte(0x01),
-            vec![],
-            Bytes::new(),
-        ));
-        evm.logs.push(Log::new_unchecked(
-            Address::repeat_byte(0x02),
-            vec![],
-            Bytes::new(),
-        ));
-
-        assert_eq!(evm.logs.len(), 2);
-
-        // Take logs
-        let taken_logs = evm.take_logs();
-
-        assert_eq!(taken_logs.len(), 2, "Should return 2 logs");
-        assert!(evm.logs.is_empty(), "Logs should be cleared after take");
-    }
-
     /// Test AA transaction gas usage for simple identity precompile call.
     /// This establishes a baseline for gas comparison.
     /// Uses T1 hardfork for TIP-1000 gas costs.
@@ -1916,7 +1881,7 @@ mod tests {
         // Simple initcode: PUSH1 0x00 PUSH1 0x00 RETURN (deploys empty contract)
         let initcode = vec![0x60, 0x00, 0x60, 0x00, 0xF3];
 
-        // T1 costs: CREATE cost (500k) + new account for sender (250k) + new account for contract (250k)
+        // T1 costs: CREATE cost (500k, fixed upfront contract creation cost) + new account for sender (250k) + base costs
         let tx = TxBuilder::new()
             .create(&initcode)
             .gas_limit(1_000_000)
@@ -2280,14 +2245,8 @@ mod tests {
         // First, try with insufficient gas - key should NOT be authorized
 
         let access_key = P256KeyPair::random();
-        let key_auth = KeyAuthorization {
-            chain_id: 1,
-            key_type: SignatureType::WebAuthn,
-            key_id: access_key.address,
-            expiry: None,
-            limits: None,
-            allowed_calls: None,
-        };
+        let key_auth =
+            KeyAuthorization::unrestricted(1, SignatureType::WebAuthn, access_key.address);
         let key_auth_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
         let signed_key_auth = key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig));
 
@@ -2374,14 +2333,8 @@ mod tests {
         // Now try with sufficient gas - key should be authorized
 
         let access_key2 = P256KeyPair::random();
-        let key_auth2 = KeyAuthorization {
-            chain_id: 1,
-            key_type: SignatureType::WebAuthn,
-            key_id: access_key2.address,
-            expiry: None, // Never expires (u64::MAX)
-            limits: None, // No spending limits
-            allowed_calls: None,
-        };
+        let key_auth2 =
+            KeyAuthorization::unrestricted(1, SignatureType::WebAuthn, access_key2.address);
         let key_auth_sig2 = key_pair.sign_webauthn(key_auth2.signature_hash().as_slice())?;
         let signed_key_auth2 = key_auth2.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig2));
 
@@ -2484,14 +2437,8 @@ mod tests {
             }
 
             let access_key = P256KeyPair::random();
-            let key_auth = KeyAuthorization {
-                chain_id: 1,
-                key_type: SignatureType::WebAuthn,
-                key_id: access_key.address,
-                expiry: None,
-                limits: None,
-                allowed_calls: None,
-            };
+            let key_auth =
+                KeyAuthorization::unrestricted(1, SignatureType::WebAuthn, access_key.address);
             let key_auth_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
             let signed_key_auth = key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig));
 
@@ -2605,14 +2552,8 @@ mod tests {
             }
 
             let access_key = P256KeyPair::random();
-            let key_auth = KeyAuthorization {
-                chain_id: 1,
-                key_type: SignatureType::Secp256k1,
-                key_id: access_key.address,
-                expiry: None,
-                limits: None,
-                allowed_calls: None,
-            };
+            let key_auth =
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, access_key.address);
             let key_auth_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
             let signed_key_auth = key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig));
 

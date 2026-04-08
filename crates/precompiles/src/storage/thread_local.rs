@@ -1,7 +1,9 @@
 use alloy::primitives::{Address, B256, LogData, U256};
 use alloy_evm::{Database, EvmInternals};
 use revm::{
-    context::{Block, CfgEnv, JournalTr, Transaction, journaled_state::JournalCheckpoint},
+    context::{
+        Block, CfgEnv, ContextTr, JournalTr, Transaction, journaled_state::JournalCheckpoint,
+    },
     state::{AccountInfo, Bytecode},
 };
 use scoped_tls::scoped_thread_local;
@@ -286,6 +288,16 @@ impl<'evm> StorageCtx {
 
         // The core logic of setting up thread-local storage is here.
         Self::enter(&mut provider, f)
+    }
+
+    /// Like [`enter_evm`](Self::enter_evm), but takes a `&mut impl ContextTr`
+    /// directly instead of requiring the caller to destructure the context.
+    pub fn enter_ctx<C, R>(ctx: &mut C, f: impl FnOnce() -> R) -> R
+    where
+        C: ContextTr<Cfg = CfgEnv<TempoHardfork>, Journal: Debug, Db: Database>,
+    {
+        let (tx, block, cfg, journal) = ctx.tx_block_cfg_journal_mut();
+        Self::enter_evm(journal, block, cfg, tx, f)
     }
 
     /// Entry point for a "canonical" precompile (with unique known address).

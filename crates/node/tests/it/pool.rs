@@ -8,6 +8,7 @@ use alloy::{
 };
 use alloy_eips::Decodable2718;
 use alloy_primitives::{Address, TxKind, U256};
+use reth_chainspec::EthChainSpec;
 use reth_ethereum::{
     evm::revm::primitives::hex,
     node::builder::{NodeBuilder, NodeHandle},
@@ -87,7 +88,7 @@ async fn test_insufficient_funds() -> eyre::Result<()> {
         "../assets/test-genesis.json"
     ))?);
 
-    let node_config = NodeConfig::new(Arc::new(chain_spec))
+    let node_config = NodeConfig::new(Arc::new(chain_spec.clone()))
         .with_unused_ports()
         .dev()
         .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
@@ -102,7 +103,7 @@ async fn test_insufficient_funds() -> eyre::Result<()> {
         .await?;
 
     let tx = TempoTransaction {
-        chain_id: 1,
+        chain_id: chain_spec.chain_id(),
         nonce: U256::random().saturating_to(),
         fee_token: Some(DEFAULT_FEE_TOKEN),
         max_priority_fee_per_gas: 74982851675,
