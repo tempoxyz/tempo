@@ -426,20 +426,6 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_recipient_pre_t3_returns_literal() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
-        let virtual_addr = make_virtual_address(MasterId::ZERO, UserTag::ZERO);
-
-        StorageCtx::enter(&mut storage, || {
-            let registry = AddressRegistry::new();
-            // Pre-T3: virtual address returned unchanged, no resolution
-            let resolved = registry.resolve_recipient(virtual_addr)?;
-            assert_eq!(resolved, virtual_addr);
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_resolve_virtual_address_view() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         let (master, salt) = (VIRTUAL_MASTER, VIRTUAL_SALT.into());
@@ -448,17 +434,11 @@ mod tests {
             let mut registry = AddressRegistry::new();
 
             // Non-virtual → zero
-            assert_eq!(
-                registry.resolve_virtual_address(Address::random())?,
-                Address::ZERO
-            );
+            assert_eq!(registry.resolve_virtual_address(Address::random())?, Address::ZERO);
 
             // Unregistered virtual → zero
             let unregistered = make_virtual_address(MasterId::ZERO, UserTag::ZERO);
-            assert_eq!(
-                registry.resolve_virtual_address(unregistered)?,
-                Address::ZERO
-            );
+            assert_eq!(registry.resolve_virtual_address(unregistered)?, Address::ZERO);
 
             // Registered virtual → master
             let master_id = registry.register_virtual_master(
@@ -468,6 +448,18 @@ mod tests {
             let virtual_addr = make_virtual_address(master_id, UserTag::new(hex!("aabbccddeeff")));
             assert_eq!(registry.resolve_virtual_address(virtual_addr)?, master);
 
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_resolve_recipient_pre_t3_returns_literal() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let virtual_addr = make_virtual_address(MasterId::ZERO, UserTag::ZERO);
+
+        StorageCtx::enter(&mut storage, || {
+            let registry = AddressRegistry::new();
+            assert_eq!(registry.resolve_recipient(virtual_addr)?, virtual_addr);
             Ok(())
         })
     }
