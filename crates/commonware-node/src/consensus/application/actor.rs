@@ -57,8 +57,6 @@ use crate::{
     subblocks,
 };
 
-const PAYLOAD_FINALIZE_SLACK: Duration = Duration::from_millis(10);
-
 pub(in crate::consensus) struct Actor<TContext, TState = Uninit> {
     context: ContextCell<TContext>,
     mailbox: mpsc::Receiver<Message>,
@@ -590,11 +588,6 @@ impl Inner<Init> {
                     .unwrap_or_default()
             },
         );
-        let attrs = if share_sparse_trie_with_payload_builder {
-            attrs.with_build_until_interrupt()
-        } else {
-            attrs
-        };
 
         let payload_id = attrs.payload_id(&parent.digest().0);
         payload_id_tx.send(payload_id).map_err(|_| {
@@ -612,7 +605,7 @@ impl Inner<Init> {
         let mut remaining_resolve = self.payload_resolve_time.saturating_sub(elapsed);
         let remaining_return = self.payload_return_time.saturating_sub(elapsed);
         if share_sparse_trie_with_payload_builder {
-            remaining_resolve = remaining_return.saturating_sub(PAYLOAD_FINALIZE_SLACK);
+            remaining_resolve = remaining_return;
         }
         debug!(
             elapsed = %display_duration(elapsed),
@@ -630,8 +623,8 @@ impl Inner<Init> {
         let payload_return_time = context.current() + remaining_return;
 
         // With shared sparse trie enabled, keep executing pool transactions until
-        // the end of the proposal window and leave a small slack to finalize the
-        // state root and seal. Otherwise keep the original earlier interrupt.
+        // the end of the proposal window. Otherwise keep the original earlier
+        // interrupt.
         //
         // The interrupt doesn't mean we'll immediately get the payload back, but
         // only signals the builder to stop executing transactions and start

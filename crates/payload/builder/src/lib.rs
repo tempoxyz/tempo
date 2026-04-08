@@ -238,6 +238,7 @@ where
             attributes,
             payload_id,
         } = config;
+        let build_until_interrupt = trie_handle.is_some();
 
         macro_rules! check_cancel {
             () => {
@@ -429,8 +430,7 @@ where
             }
 
             let Some(pool_tx) = best_txs.next() else {
-                if attributes.build_until_interrupt() && cumulative_gas_used < non_shared_gas_limit
-                {
+                if build_until_interrupt && cumulative_gas_used < non_shared_gas_limit {
                     std::thread::sleep(Duration::from_millis(1));
                     continue;
                 }
@@ -790,7 +790,7 @@ where
         let payload = TempoBuiltPayload::new(eth_payload, Some(executed_block));
 
         drop(db);
-        if attributes.build_until_interrupt() {
+        if build_until_interrupt {
             Ok(BuildOutcome::Freeze(payload))
         } else {
             Ok(BuildOutcome::Better {
