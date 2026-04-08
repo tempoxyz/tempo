@@ -11,6 +11,47 @@ import { TxBuilder } from "../helpers/TxBuilder.sol";
 import { VmExecuteTransaction, VmRlp } from "tempo-std/StdVm.sol";
 import { LegacyTransaction, LegacyTransactionLib } from "tempo-std/tx/LegacyTransactionLib.sol";
 
+/*//////////////////////////////////////////////////////////////
+                        HELPER CONTRACTS
+//////////////////////////////////////////////////////////////*/
+
+/// @title TIP1016Storage - Contract for testing TIP-1016 gas semantics
+contract TIP1016Storage {
+
+    mapping(bytes32 => uint256) private _storage;
+
+    function storeValue(bytes32 slot, uint256 value) external {
+        _storage[slot] = value;
+    }
+
+    function storeMultiple(bytes32[] calldata slots) external {
+        for (uint256 i = 0; i < slots.length; i++) {
+            _storage[slots[i]] = 1;
+        }
+    }
+
+    function storeAndClear(bytes32 slot, uint256 value) external {
+        _storage[slot] = value;
+        _storage[slot] = 0;
+    }
+
+    function getValue(bytes32 slot) external view returns (uint256) {
+        return _storage[slot];
+    }
+
+}
+
+/// @title GasLeftChecker - Contract that records gasleft() for RES1 testing
+contract GasLeftChecker {
+
+    uint256 public lastGasLeft;
+
+    function checkGasLeft() external {
+        lastGasLeft = gasleft();
+    }
+
+}
+
 /// @title TIP-1016 State Gas Exemption Invariant Tests
 /// @notice Fuzz-based invariant tests for TIP-1016's gas dimension split, reservoir model,
 ///         block accounting, and refund semantics
@@ -582,47 +623,6 @@ contract TIP1016InvariantTest is InvariantBase {
         initcode[13] = 0xf3; // RETURN
 
         return initcode;
-    }
-
-}
-
-/*//////////////////////////////////////////////////////////////
-                        HELPER CONTRACTS
-//////////////////////////////////////////////////////////////*/
-
-/// @title TIP1016Storage - Contract for testing TIP-1016 gas semantics
-contract TIP1016Storage {
-
-    mapping(bytes32 => uint256) private _storage;
-
-    function storeValue(bytes32 slot, uint256 value) external {
-        _storage[slot] = value;
-    }
-
-    function storeMultiple(bytes32[] calldata slots) external {
-        for (uint256 i = 0; i < slots.length; i++) {
-            _storage[slots[i]] = 1;
-        }
-    }
-
-    function storeAndClear(bytes32 slot, uint256 value) external {
-        _storage[slot] = value;
-        _storage[slot] = 0;
-    }
-
-    function getValue(bytes32 slot) external view returns (uint256) {
-        return _storage[slot];
-    }
-
-}
-
-/// @title GasLeftChecker - Contract that records gasleft() for RES1 testing
-contract GasLeftChecker {
-
-    uint256 public lastGasLeft;
-
-    function checkGasLeft() external {
-        lastGasLeft = gasleft();
     }
 
 }
