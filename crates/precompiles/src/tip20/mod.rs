@@ -2729,10 +2729,12 @@ pub(crate) mod tests {
                 )?;
 
                 if hardfork.is_t3() {
+                    // T3: master is credited, virtual balance stays zero
                     assert_eq!(token.get_balance(VIRTUAL_MASTER)?, amount);
                     assert_eq!(token.get_balance(virtual_addr)?, U256::ZERO);
                     assert_eq!(token.total_supply()?, amount);
 
+                    // Events: Transfer(0→virtual) + Mint(virtual) + Transfer(virtual→master)
                     token.assert_emitted_events(vec![
                         TIP20Event::Transfer(ITIP20::Transfer {
                             from: Address::ZERO,
@@ -2750,6 +2752,7 @@ pub(crate) mod tests {
                         }),
                     ]);
                 } else {
+                    // Pre-T3: virtual address treated as literal, balance goes there
                     assert_eq!(token.get_balance(virtual_addr)?, amount);
                     assert_eq!(token.get_balance(VIRTUAL_MASTER)?, U256::ZERO);
                 }
@@ -2809,6 +2812,7 @@ pub(crate) mod tests {
                     assert_eq!(token.get_balance(VIRTUAL_MASTER)?, amount);
                     assert_eq!(token.get_balance(virtual_addr)?, U256::ZERO);
 
+                    // Events: Transfer(sender→virtual) + Transfer(virtual→master)
                     token.assert_emitted_events(vec![
                         TIP20Event::Transfer(ITIP20::Transfer {
                             from: sender,
