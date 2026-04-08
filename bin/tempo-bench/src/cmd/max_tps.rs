@@ -340,21 +340,41 @@ impl MaxTpsArgs {
         }
 
         info!(fee_token = %self.fee_token, "Setting default fee token");
-        join_all(
-            signer_providers
-                .iter()
-                .map(async |(_, provider)| {
-                    IFeeManagerInstance::new(TIP_FEE_MANAGER_ADDRESS, provider.clone())
-                        .setUserToken(self.fee_token)
-                        .send()
-                        .await
-                })
-                .progress(),
-            self.max_concurrent_requests,
-            self.max_concurrent_transactions,
-        )
-        .await
-        .context("Failed to set default fee token")?;
+        // Filter out accounts that already have the desired fee token set
+        let fee_token = self.fee_token;
+        let needs_update: Vec<_> = stream::iter(signer_providers.iter())
+            .filter_map(async |(signer, provider)| {
+                let fee_manager =
+                    IFeeManagerInstance::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+                match fee_manager.userTokens(signer.address()).call().await {
+                    Ok(current) if *current == *fee_token => {
+                        debug!(address = %signer.address(), "Fee token already set, skipping");
+                        None
+                    }
+                    _ => Some((signer, provider)),
+                }
+            })
+            .collect()
+            .await;
+        if needs_update.is_empty() {
+            info!("All accounts already have the correct fee token set");
+        } else {
+            join_all(
+                needs_update
+                    .into_iter()
+                    .map(async |(_, provider)| {
+                        IFeeManagerInstance::new(TIP_FEE_MANAGER_ADDRESS, provider.clone())
+                            .setUserToken(fee_token)
+                            .send()
+                            .await
+                    })
+                    .progress(),
+                self.max_concurrent_requests,
+                self.max_concurrent_transactions,
+            )
+            .await
+            .context("Failed to set default fee token")?;
+        }
 
         // Setup DEX tokens, pairs, and liquidity only if any DEX transaction type has non-zero
         // weight. Otherwise, use the fee token for TIP-20 transfers directly.
