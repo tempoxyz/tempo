@@ -20,6 +20,11 @@
 #[cfg(feature = "tracy")]
 use tracy_client as _;
 
+// opentelemetry-otlp is an optional dependency activated by the `otlp` feature.
+// It is not used directly but must be present to enable reqwest rustls support.
+#[cfg(feature = "otlp")]
+use opentelemetry_otlp as _;
+
 #[global_allocator]
 static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::new_allocator();
 
