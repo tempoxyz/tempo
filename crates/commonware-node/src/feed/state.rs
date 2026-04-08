@@ -237,7 +237,6 @@ impl FeedStateHandle {
                     break;
                 };
 
-                // Since we parse dkg info from the EL, sanity check the digest
                 if finalization.proposal.payload.0 != header.hash() {
                     return Err(IdentityProofError::MalformedData(height.get()));
                 }
@@ -476,8 +475,6 @@ fn get_outcome(
         .flatten()
         .ok_or(IdentityProofError::PrunedData(height.get()))?;
 
-    let outcome = OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
-        .map_err(|_| IdentityProofError::MalformedData(height.get()))?;
-
-    Ok(outcome)
+    OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
+        .map_err(|_| IdentityProofError::MalformedData(height.get()))
 }
