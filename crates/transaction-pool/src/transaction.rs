@@ -22,7 +22,7 @@ use std::{
 };
 use tempo_precompiles::{DEFAULT_FEE_TOKEN, nonce::NonceManager};
 use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
-use tempo_revm::TempoTxEnv;
+use tempo_revm::{TempoInvalidTransaction, TempoTxEnv};
 use thiserror::Error;
 
 /// Tempo pooled transaction representation.
@@ -177,13 +177,13 @@ impl TempoPooledTransaction {
     ///
     /// This should be called during validation to prepare the transaction environment
     /// ahead of time, avoiding it during payload building.
-    pub fn prepare_tx_env(&self) {
-        self.tx_env.get_or_init(|| self.tx_env_slow());
+    pub fn tx_env(&self) -> &TempoTxEnv {
+        self.tx_env.get_or_init(|| self.tx_env_slow())
     }
 
     /// Returns a [`WithTxEnv`] wrapper containing the cached [`TempoTxEnv`].
     ///
-    /// If the [`TempoTxEnv`] was pre-computed via [`Self::prepare_tx_env`], the cached
+    /// If the [`TempoTxEnv`] was pre-computed via [`Self::tx_env`], the cached
     /// value is used. Otherwise, it is computed on-demand.
     pub fn into_with_tx_env(mut self) -> WithTxEnv<TempoTxEnv, Recovered<TempoTxEnvelope>> {
         let tx_env = self.tx_env.take().unwrap_or_else(|| self.tx_env_slow());
@@ -230,19 +230,6 @@ pub enum TempoPoolTransactionError {
     ExceedsNonPaymentLimit,
 
     #[error(
-        "Invalid fee token: {0}, please see https://docs.tempo.xyz/errors/tx/InvalidFeeToken for more"
-    )]
-    InvalidFeeToken(Address),
-
-    #[error(
-        "Fee token {0} is paused, please see https://docs.tempo.xyz/errors/tx/PausedFeeToken for more"
-    )]
-    PausedFeeToken(Address),
-
-    #[error("No fee token preference configured")]
-    MissingFeeToken,
-
-    #[error(
         "'valid_before' {valid_before} is too close to current time (min allowed: {min_allowed})"
     )]
     InvalidValidBefore { valid_before: u64, min_allowed: u64 },
@@ -251,53 +238,13 @@ pub enum TempoPoolTransactionError {
     InvalidValidAfter { valid_after: u64, max_allowed: u64 },
 
     #[error(
-        "max_fee_per_gas {max_fee_per_gas} is below the minimum base fee {min_base_fee} for the current hardfork"
-    )]
-    FeeCapBelowMinBaseFee {
-        max_fee_per_gas: u128,
-        min_base_fee: u64,
-    },
-
-    #[error(
         "Keychain signature validation failed: {0}, please see https://docs.tempo.xyz/errors/tx/Keychain for more"
     )]
     Keychain(&'static str),
 
-    #[error("Fee payer signature recovery failed")]
-    InvalidFeePayerSignature,
-
-    #[error("Fee payer cannot resolve to sender address")]
-    SelfSponsoredFeePayer,
-
-    #[error(
-        "Native transfers are not supported, if you were trying to transfer a stablecoin, please call TIP20::Transfer"
-    )]
-    NonZeroValue,
-
     /// Thrown if a Tempo Transaction with a nonce key prefixed with the sub-block prefix marker added to the pool
     #[error("Tempo Transaction with subblock nonce key prefix aren't supported in the pool")]
     SubblockNonceKey,
-
-    /// Thrown if the fee payer of a transaction cannot transfer (is blacklisted) the fee token, thus making the payment impossible.
-    #[error("Fee payer {fee_payer} is blacklisted by fee token: {fee_token}")]
-    BlackListedFeePayer {
-        fee_token: Address,
-        fee_payer: Address,
-    },
-
-    /// Thrown when we couldn't find a recently used validator token that has enough liquidity
-    /// in fee AMM pair with the user token this transaction will pay fees in.
-    #[error(
-        "Insufficient liquidity for fee token: {0}, please see https://docs.tempo.xyz/protocol/fees for more"
-    )]
-    InsufficientLiquidity(Address),
-
-    /// Thrown when an AA transaction's gas limit is insufficient for the calculated intrinsic gas.
-    /// This includes per-call costs, signature verification, and other AA-specific gas costs.
-    #[error(
-        "Insufficient gas for AA transaction: gas limit {gas_limit} is less than intrinsic gas {intrinsic_gas}"
-    )]
-    InsufficientGasForAAIntrinsicCost { gas_limit: u64, intrinsic_gas: u64 },
 
     /// Thrown when an AA transaction has too many authorizations in its authorization list.
     #[error(
@@ -308,18 +255,6 @@ pub enum TempoPoolTransactionError {
     /// Thrown when an AA transaction has too many calls.
     #[error("Too many calls in AA transaction: {count} exceeds maximum allowed {max_allowed}")]
     TooManyCalls { count: usize, max_allowed: usize },
-
-    /// Thrown when an AA transaction has no calls.
-    #[error("AA transaction has no calls")]
-    NoCalls,
-
-    /// Thrown when a call in an AA transaction is the second call and is a CREATE.
-    #[error("CREATE calls must be the first call in an AA transaction")]
-    CreateCallNotFirst,
-
-    /// Thrown when an AA transaction contains both a CREATE call and an authorization list.
-    #[error("CREATE calls are not allowed in the same transaction that has an authorization list")]
-    CreateCallWithAuthorizationList,
 
     /// Thrown when a call in an AA transaction has input data exceeding the maximum allowed size.
     #[error(
@@ -357,24 +292,6 @@ pub enum TempoPoolTransactionError {
     )]
     TooManyTokenLimits { count: usize, max_allowed: usize },
 
-    /// Thrown when an expiring nonce transaction's valid_before is too far in the future.
-    #[error(
-        "Expiring nonce 'valid_before' {valid_before} exceeds max allowed {max_allowed} (must be within 30s)"
-    )]
-    ExpiringNonceValidBeforeTooFar { valid_before: u64, max_allowed: u64 },
-
-    /// Thrown when an expiring nonce transaction's hash has already been seen (replay).
-    #[error("Expiring nonce transaction replay: tx hash already seen and not expired")]
-    ExpiringNonceReplay,
-
-    /// Thrown when an expiring nonce transaction is missing the required valid_before field.
-    #[error("Expiring nonce transactions must have 'valid_before' set")]
-    ExpiringNonceMissingValidBefore,
-
-    /// Thrown when an expiring nonce transaction has a non-zero nonce.
-    #[error("Expiring nonce transactions must have nonce == 0")]
-    ExpiringNonceNonceNotZero,
-
     /// Thrown when an access key has expired or is expiring within the propagation buffer.
     #[error("Access key expired: expiry {expiry} <= min allowed {min_allowed}")]
     AccessKeyExpired { expiry: u64, min_allowed: u64 },
@@ -383,80 +300,34 @@ pub enum TempoPoolTransactionError {
     #[error("KeyAuthorization expired: expiry {expiry} <= min allowed {min_allowed}")]
     KeyAuthorizationExpired { expiry: u64, min_allowed: u64 },
 
-    /// Thrown when a keychain transaction's fee token cost exceeds the spending limit.
-    #[error(
-        "Fee token spending limit exceeded: cost {cost} exceeds remaining limit {remaining} for token {fee_token}"
-    )]
-    SpendingLimitExceeded {
-        fee_token: Address,
-        cost: U256,
-        remaining: U256,
-    },
-
-    /// Legacy V1 keychain signature rejected post-T1C (permanently invalid).
-    #[error("legacy V1 keychain signature is no longer accepted, use V2 (type 0x04)")]
-    LegacyKeychainPostT1C,
-
-    /// V2 keychain signature rejected pre-T1C (not yet valid).
-    #[error("V2 keychain signature (type 0x04) is not valid before T1C activation")]
-    V2KeychainPreT1C,
+    /// EVM validation pipeline error.
+    #[error(transparent)]
+    Evm(TempoInvalidTransaction),
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
     fn is_bad_transaction(&self) -> bool {
         match self {
+            Self::Evm(err) => err.is_bad_transaction(),
             Self::ExceedsNonPaymentLimit
-            | Self::InvalidFeeToken(_)
-            | Self::PausedFeeToken(_)
-            | Self::MissingFeeToken
-            | Self::BlackListedFeePayer { .. }
             | Self::InvalidValidBefore { .. }
             | Self::InvalidValidAfter { .. }
-            | Self::ExpiringNonceValidBeforeTooFar { .. }
-            | Self::ExpiringNonceReplay
             | Self::AccessKeyExpired { .. }
             | Self::KeyAuthorizationExpired { .. }
-            | Self::Keychain(_)
-            | Self::InsufficientLiquidity(_)
-            | Self::SpendingLimitExceeded { .. }
-            | Self::V2KeychainPreT1C => false,
-            Self::NonZeroValue
-            | Self::SubblockNonceKey
-            | Self::InsufficientGasForAAIntrinsicCost { .. }
+            | Self::Keychain(_) => false,
+            Self::SubblockNonceKey
             | Self::TooManyAuthorizations { .. }
             | Self::TooManyCalls { .. }
             | Self::CallInputTooLarge { .. }
             | Self::TooManyAccessListAccounts { .. }
             | Self::TooManyStorageKeysPerAccount { .. }
             | Self::TooManyTotalStorageKeys { .. }
-            | Self::TooManyTokenLimits { .. }
-            | Self::ExpiringNonceMissingValidBefore
-            | Self::ExpiringNonceNonceNotZero
-            | Self::InvalidFeePayerSignature
-            | Self::SelfSponsoredFeePayer
-            | Self::NoCalls
-            | Self::CreateCallWithAuthorizationList
-            | Self::CreateCallNotFirst
-            | Self::FeeCapBelowMinBaseFee { .. }
-            | Self::LegacyKeychainPostT1C => true,
+            | Self::TooManyTokenLimits { .. } => true,
         }
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
-    }
-}
-
-impl From<tempo_primitives::transaction::KeychainVersionError> for TempoPoolTransactionError {
-    fn from(err: tempo_primitives::transaction::KeychainVersionError) -> Self {
-        match err {
-            tempo_primitives::transaction::KeychainVersionError::LegacyPostT1C => {
-                Self::LegacyKeychainPostT1C
-            }
-            tempo_primitives::transaction::KeychainVersionError::V2BeforeActivation => {
-                Self::V2KeychainPreT1C
-            }
-        }
     }
 }
 
@@ -835,11 +706,6 @@ mod tests {
         let cases: &[(TempoPoolTransactionError, bool)] = &[
             (TempoPoolTransactionError::ExceedsNonPaymentLimit, false),
             (
-                TempoPoolTransactionError::InvalidFeeToken(Address::ZERO),
-                false,
-            ),
-            (TempoPoolTransactionError::MissingFeeToken, false),
-            (
                 TempoPoolTransactionError::InvalidValidBefore {
                     valid_before: 100,
                     min_allowed: 200,
@@ -854,17 +720,10 @@ mod tests {
                 false,
             ),
             (TempoPoolTransactionError::Keychain("test error"), false),
-            (TempoPoolTransactionError::LegacyKeychainPostT1C, true),
-            (TempoPoolTransactionError::V2KeychainPreT1C, false),
             (
-                TempoPoolTransactionError::InsufficientLiquidity(Address::ZERO),
-                false,
-            ),
-            (
-                TempoPoolTransactionError::BlackListedFeePayer {
-                    fee_token: Address::ZERO,
-                    fee_payer: Address::ZERO,
-                },
+                TempoPoolTransactionError::Evm(TempoInvalidTransaction::NonceManagerError(
+                    "nonce error".to_string(),
+                )),
                 false,
             ),
             (
@@ -881,15 +740,11 @@ mod tests {
                 },
                 false,
             ),
-            (TempoPoolTransactionError::InvalidFeePayerSignature, true),
-            (TempoPoolTransactionError::SelfSponsoredFeePayer, true),
-            (TempoPoolTransactionError::NonZeroValue, true),
             (TempoPoolTransactionError::SubblockNonceKey, true),
             (
-                TempoPoolTransactionError::InsufficientGasForAAIntrinsicCost {
-                    gas_limit: 21000,
-                    intrinsic_gas: 50000,
-                },
+                TempoPoolTransactionError::Evm(TempoInvalidTransaction::CallsValidation(
+                    "calls error",
+                )),
                 true,
             ),
         ];
@@ -1033,7 +888,7 @@ mod tests {
             .build();
 
         // Test various Transaction trait methods
-        assert_eq!(tx.chain_id(), Some(1));
+        assert_eq!(tx.chain_id(), Some(42431));
         assert_eq!(tx.nonce(), 0);
         assert_eq!(tx.gas_limit(), 1_000_000);
         assert_eq!(tx.max_fee_per_gas(), 20_000_000_000);

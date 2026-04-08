@@ -4,7 +4,9 @@
 //! which spins up an in-process node with direct pool/block access, plus tests
 //! that require pool introspection or controlled block mining.
 
-use crate::utils::{ForkSchedule, SingleNodeSetup, TEST_MNEMONIC, TestNodeBuilder};
+use crate::utils::{
+    ForkSchedule, SingleNodeSetup, TEST_MNEMONIC, TestNodeBuilder, make_genesis_at,
+};
 use alloy::{
     consensus::{BlockHeader, Transaction},
     network::{EthereumWallet, ReceiptResponse},
@@ -2062,17 +2064,8 @@ async fn test_v1_keychain_cross_account_replay_pre_t1c() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Pre-T1C genesis so V1 keychain sigs are accepted.
-    // Set t1cTime and t2Time far in the future instead of removing them,
-    // because the genesis deserializer requires all hardfork fields.
-    let genesis_json = include_str!("../../assets/test-genesis.json").to_string();
-    let mut genesis: serde_json::Value = serde_json::from_str(&genesis_json)?;
-    let config = genesis["config"].as_object_mut().unwrap();
-    let far_future = serde_json::Value::Number(serde_json::Number::from(u64::MAX));
-    config.insert("t1cTime".to_string(), far_future.clone());
-    config.insert("t2Time".to_string(), far_future.clone());
-    config.insert("t3Time".to_string(), far_future);
     let mut setup = TestNodeBuilder::new()
-        .with_genesis(serde_json::to_string(&genesis)?)
+        .with_genesis(make_genesis_at(TempoHardfork::T1B))
         .build_with_node_access()
         .await?;
 

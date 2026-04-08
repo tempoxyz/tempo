@@ -92,7 +92,8 @@ mod tests {
             let hash = B256::from([0xBB; 32]);
             let (signature, _) = signing_key.sign_prehash_recoverable(hash.as_slice())?;
             let r = B256::from_slice(&signature.r().to_bytes());
-            let s = normalize_p256_s(&signature.s().to_bytes());
+            let s =
+                normalize_p256_s(&signature.s().to_bytes()).expect("p256 crate produces valid s");
 
             // Build encoded P256 signature: 0x01 || r || s || x || y || prehash(0)
             let mut sig_bytes = Vec::new();

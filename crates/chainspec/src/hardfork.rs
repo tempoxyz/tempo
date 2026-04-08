@@ -184,6 +184,8 @@ tempo_hardfork! (
         T2,
         /// T3 hardfork
         T3,
+        /// T4 hardfork
+        T4,
     }
 );
 
@@ -238,6 +240,70 @@ impl TempoHardfork {
             return crate::spec::TEMPO_T2_NEW_NONCE_KEY_GAS;
         }
         crate::spec::TEMPO_T1_NEW_NONCE_KEY_GAS
+    }
+
+    /// Retrieves the activation block for this hardfork on mainnet.
+    pub const fn mainnet_activation_block(&self) -> Option<u64> {
+        use crate::constants::mainnet::*;
+        match self {
+            Self::Genesis => Some(MAINNET_GENESIS_BLOCK),
+            Self::T0 => Some(MAINNET_T0_BLOCK),
+            Self::T1 => Some(MAINNET_T1_BLOCK),
+            Self::T1A => Some(MAINNET_T1A_BLOCK),
+            Self::T1B => Some(MAINNET_T1B_BLOCK),
+            Self::T1C => Some(MAINNET_T1C_BLOCK),
+            Self::T2 => Some(MAINNET_T2_BLOCK),
+            Self::T3 => None,
+            Self::T4 => None,
+        }
+    }
+
+    /// Retrieves the activation timestamp for this hardfork on mainnet.
+    pub const fn mainnet_activation_timestamp(&self) -> Option<u64> {
+        use crate::constants::mainnet::*;
+        match self {
+            Self::Genesis => Some(MAINNET_GENESIS_TIMESTAMP),
+            Self::T0 => Some(MAINNET_T0_TIMESTAMP),
+            Self::T1 => Some(MAINNET_T1_TIMESTAMP),
+            Self::T1A => Some(MAINNET_T1A_TIMESTAMP),
+            Self::T1B => Some(MAINNET_T1B_TIMESTAMP),
+            Self::T1C => Some(MAINNET_T1C_TIMESTAMP),
+            Self::T2 => Some(MAINNET_T2_TIMESTAMP),
+            Self::T3 => None,
+            Self::T4 => None,
+        }
+    }
+
+    /// Retrieves the activation block for this hardfork on moderato testnet.
+    pub const fn moderato_activation_block(&self) -> Option<u64> {
+        use crate::constants::moderato::*;
+        match self {
+            Self::Genesis => Some(MODERATO_GENESIS_BLOCK),
+            Self::T0 => Some(MODERATO_T0_BLOCK),
+            Self::T1 => Some(MODERATO_T1_BLOCK),
+            Self::T1A => Some(MODERATO_T1A_BLOCK),
+            Self::T1B => Some(MODERATO_T1B_BLOCK),
+            Self::T1C => Some(MODERATO_T1C_BLOCK),
+            Self::T2 => Some(MODERATO_T2_BLOCK),
+            Self::T3 => None,
+            Self::T4 => None,
+        }
+    }
+
+    /// Retrieves the activation timestamp for this hardfork on moderato testnet.
+    pub const fn moderato_activation_timestamp(&self) -> Option<u64> {
+        use crate::constants::moderato::*;
+        match self {
+            Self::Genesis => Some(MODERATO_GENESIS_TIMESTAMP),
+            Self::T0 => Some(MODERATO_T0_TIMESTAMP),
+            Self::T1 => Some(MODERATO_T1_TIMESTAMP),
+            Self::T1A => Some(MODERATO_T1A_TIMESTAMP),
+            Self::T1B => Some(MODERATO_T1B_TIMESTAMP),
+            Self::T1C => Some(MODERATO_T1C_TIMESTAMP),
+            Self::T2 => Some(MODERATO_T2_TIMESTAMP),
+            Self::T3 => None,
+            Self::T4 => None,
+        }
     }
 }
 

@@ -171,6 +171,14 @@ def sanitize_primitives(prim_dir):
         expected=2,
     )
 
+    # ── #[cfg(all(test, feature = "reth-codec"))] compact test modules ────
+    for rs_file in find_rs_files(src):
+        _delete_cfg_gated_block(
+            rs_file,
+            '#[cfg(all(test, feature = "reth-codec"))]',
+            expected=None,
+        )
+
 
 def _delete_cfg_gated_block(path, gate_line, *, expected=1):
     """Delete an exact cfg gate line and the block/item it gates.
@@ -223,7 +231,7 @@ def _delete_cfg_gated_block(path, gate_line, *, expected=1):
         result.append(lines[i])
         i += 1
 
-    if count != expected:
+    if expected is not None and count != expected:
         print(
             f"error: _delete_cfg_gated_block({path!r}, {gate_line!r}): "
             f"expected {expected} occurrences, got {count}",
