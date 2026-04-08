@@ -222,10 +222,6 @@ struct TempoPoolState {
     paused_pool: PausedFeeTokenPool,
     /// Tracks pending transaction staleness for DoS mitigation.
     pending_staleness: PendingStalenessTracker,
-    /// Tracks whether the T1 transition cleanup has been performed.
-    /// This is a one-time operation that removes transactions with max_fee_per_gas < T1 base fee.
-    /// Will be removed after T1 is activated on mainnet.
-    t1_transition_cleanup_done: bool,
 }
 
 impl TempoPoolState {
@@ -404,26 +400,6 @@ where
                 let tip = &new;
                 let bundle_state = tip.execution_outcome().state().state();
                 let tip_timestamp = tip.tip().header().timestamp();
-
-                // T1 transition: one-time cleanup of underpriced transactions.
-                // When T1 activates, transactions with max_fee_per_gas < 20 billion attodollars become
-                // never-includable and should be evicted. This check runs once per node lifetime.
-                // TODO: Remove this after T1 is activated on mainnet.
-                if !state.t1_transition_cleanup_done {
-                    let chain_spec = pool.client().chain_spec();
-                    if chain_spec.is_t1_active_at_timestamp(tip_timestamp) {
-                        let evicted = evict_underpriced_transactions_for_t1(&pool);
-                        if evicted > 0 {
-                            debug!(
-                                target: "txpool",
-                                count = evicted,
-                                tip_timestamp,
-                                "T1 transition: evicted underpriced transactions (max_fee_per_gas < 20 billion attodollars)"
-                            );
-                        }
-                        state.t1_transition_cleanup_done = true;
-                    }
-                }
 
                 // 1. Collect all block-level invalidation events
                 let mut updates = TempoPoolUpdates::from_chain(tip);
