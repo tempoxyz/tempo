@@ -18,6 +18,7 @@ tempo-chainspec.workspace = true
 tempo-consensus.workspace = true
 tempo-payload-builder.workspace = true
 tempo-payload-types.workspace = true
+tempo-contracts.workspace = true
 tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["default"] }
 

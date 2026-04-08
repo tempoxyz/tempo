@@ -22,7 +22,8 @@ pub use tempo_primitives as primitives;
 
 mod version;
 
-type TempoNodeAdapter = NodeAdapter<RethFullAdapter<DatabaseEnv, TempoNode>>;
+type TempoFullNodeTypes = RethFullAdapter<DatabaseEnv, TempoNode>;
+type TempoNodeAdapter = NodeAdapter<TempoFullNodeTypes>;
 
 /// Type alias for a launched tempo node.
-pub type TempoFullNode = FullNode<TempoNodeAdapter, TempoAddOns<TempoNodeAdapter>>;
+pub type TempoFullNode = FullNode<TempoNodeAdapter, TempoAddOns<TempoFullNodeTypes>>;

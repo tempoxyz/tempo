@@ -3,6 +3,7 @@ pub mod consensus;
 pub mod error;
 pub mod eth_ext;
 pub mod fork_schedule;
+pub mod simulate;
 pub mod token;
 
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
@@ -18,6 +19,7 @@ use reth_primitives_traits::{
 };
 use reth_rpc_eth_api::{FromEthApiError, RpcTxReq};
 use reth_transaction_pool::{PoolPooledTx, TransactionOrigin};
+pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Response};
 use std::sync::Arc;
 pub use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::TempoChainSpec;
@@ -87,7 +89,7 @@ pub const SUBBLOCK_TX_CHANNEL_CAPACITY: usize = 10_000;
 ///
 /// This type implements the [`FullEthApi`](reth_rpc_eth_api::helpers::FullEthApi) by implemented
 /// all the `Eth` helper traits and prerequisite traits.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct TempoEthApi<N: FullNodeTypes<Types = TempoNode>> {
     /// Gateway to node's core components.
     inner: EthApi<NodeAdapter<N>, DynRpcConverter<TempoEvmConfig, TempoNetwork>>,
