@@ -25,7 +25,7 @@ use eyre::{OptionExt as _, Report, WrapErr as _, eyre};
 use reth_cli_runner::CliRunner;
 use reth_ethereum_cli::ExtendedCommand;
 use serde::Serialize;
-use tempo_alloy::TempoNetwork;
+use tempo_alloy::{TempoNetwork, TempoWallet};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_commonware_node_config::SigningKey;
 use tempo_contracts::precompiles::{
@@ -401,7 +401,7 @@ impl ValidatorTransactionArgs {
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .fetch_chain_id()
             .with_gas_estimation()
-            .wallet(signer)
+            .wallet(TempoWallet::from(signer))
             .connect(&self.rpc_url)
             .await
             .wrap_err("failed to connect to RPC")?;

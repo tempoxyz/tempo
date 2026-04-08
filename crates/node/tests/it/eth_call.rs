@@ -37,7 +37,7 @@ fn extract_revert_data(
 /// Expected revert bytes for `Panic(UnderOverflow)`.
 fn under_overflow_revert() -> Bytes {
     TempoPrecompileError::under_overflow()
-        .into_precompile_result(0)
+        .into_precompile_result(0, 0)
         .unwrap()
         .bytes
 }

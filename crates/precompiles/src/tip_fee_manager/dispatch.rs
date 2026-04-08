@@ -10,7 +10,7 @@ use crate::{
     view,
 };
 use alloy::{primitives::Address, sol_types::SolInterface};
-use revm::precompile::{PrecompileError, PrecompileResult};
+use revm::precompile::{PrecompileHalt, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::{IFeeManager::IFeeManagerCalls, ITIPFeeAMM::ITIPFeeAMMCalls};
 
 /// Unified calldata discriminant for both `IFeeManager` and `ITIPFeeAMM` selectors.
@@ -34,9 +34,9 @@ impl TipFeeManagerCall {
 
 impl Precompile for TipFeeManager {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
-        self.storage
-            .deduct_gas(input_cost(calldata.len()))
-            .map_err(|_| PrecompileError::OutOfGas)?;
+        if self.storage.deduct_gas(input_cost(calldata.len())).is_err() {
+            return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, 0));
+        }
 
         dispatch_call(calldata, TipFeeManagerCall::decode, |call| match call {
             // IFeeManager view functions
@@ -162,12 +162,12 @@ mod tests {
             }
             .abi_encode();
             let result = fee_manager.call(&calldata, validator)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
 
             // Verify token was set
             let calldata = IFeeManager::validatorTokensCall { validator }.abi_encode();
             let result = fee_manager.call(&calldata, validator)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
             let returned_token = Address::abi_decode(&result.bytes)?;
             assert_eq!(returned_token, token.address());
 
@@ -207,12 +207,12 @@ mod tests {
             }
             .abi_encode();
             let result = fee_manager.call(&calldata, user)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
 
             // Verify token was set
             let calldata = IFeeManager::userTokensCall { user }.abi_encode();
             let result = fee_manager.call(&calldata, user)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
             let returned_token = Address::abi_decode(&result.bytes)?;
             assert_eq!(returned_token, token.address());
 
@@ -253,7 +253,7 @@ mod tests {
             }
             .abi_encode();
             let result = fee_manager.call(&calldata, sender)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
 
             let returned_id = B256::abi_decode(&result.bytes)?;
             let expected_id = PoolKey::new(token_a, token_b).get_id();
@@ -279,7 +279,7 @@ mod tests {
             };
             let calldata = get_pool_call.abi_encode();
             let result = fee_manager.call(&calldata, sender)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
 
             // Decode and verify pool (should be empty initially)
             let pool = ITIPFeeAMM::Pool::abi_decode(&result.bytes)?;
@@ -359,7 +359,7 @@ mod tests {
 
             let result =
                 fee_manager.call(&ITIPFeeAMM::MIN_LIQUIDITYCall {}.abi_encode(), sender)?;
-            assert!(!result.reverted);
+            assert!(result.status.is_success());
             assert_eq!(U256::abi_decode(&result.bytes)?, MIN_LIQUIDITY);
 
             let result = fee_manager.call(&ITIPFeeAMM::MCall {}.abi_encode(), sender)?;

@@ -1,7 +1,7 @@
 use super::SignatureVerifier;
 use crate::{Precompile, dispatch_call, input_cost, view};
 use alloy::{primitives::Address, sol_types::SolInterface};
-use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
+use revm::precompile::{PrecompileHalt, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::{
     ISignatureVerifier::ISignatureVerifierCalls as ISVCalls, SignatureVerifierError,
 };
@@ -15,14 +15,15 @@ const MAX_CALLDATA_LEN: usize =
 
 impl Precompile for SignatureVerifier {
     fn call(&mut self, calldata: &[u8], _msg_sender: Address) -> PrecompileResult {
-        self.storage
-            .deduct_gas(input_cost(calldata.len()))
-            .map_err(|_| PrecompileError::OutOfGas)?;
+        if self.storage.deduct_gas(input_cost(calldata.len())).is_err() {
+            return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, 0));
+        }
 
         if calldata.len() > MAX_CALLDATA_LEN {
-            return Ok(PrecompileOutput::new_reverted(
-                self.storage.gas_used(),
+            return Ok(PrecompileOutput::revert(
+                0,
                 SignatureVerifierError::invalid_format().abi_encode().into(),
+                0,
             ));
         }
 
@@ -159,7 +160,7 @@ mod tests {
             let calldata = vec![0u8; MAX_CALLDATA_LEN];
             let result = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
 
-            assert!(result.reverted);
+            assert!(result.status.is_revert());
             assert!(
                 SignatureVerifierError::abi_decode(&result.bytes).is_err(),
                 "should not be an InvalidFormat revert"
