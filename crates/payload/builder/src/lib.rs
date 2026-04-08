@@ -42,7 +42,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_consensus::TEMPO_SHARED_GAS_DIVISOR;
@@ -238,6 +238,7 @@ where
             attributes,
             payload_id,
         } = config;
+        let build_until_interrupt = trie_handle.is_some();
 
         macro_rules! check_cancel {
             () => {
@@ -419,7 +420,21 @@ where
 
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
-        while let Some(pool_tx) = best_txs.next() {
+        loop {
+            if attributes.is_interrupted() {
+                break;
+            }
+
+            check_cancel!();
+
+            let Some(pool_tx) = best_txs.next() else {
+                if build_until_interrupt && cumulative_gas_used < non_shared_gas_limit {
+                    std::thread::sleep(Duration::from_millis(1));
+                    continue;
+                }
+                break;
+            };
+
             // Ensure we still have capacity for this transaction within the non-shared gas limit.
             // The remaining `shared_gas_limit` is reserved for validator subblocks and must not
             // be consumed by proposer's pool transactions.
@@ -460,7 +475,6 @@ where
             }
 
             check_cancel!();
-
             let is_payment = pool_tx.transaction.is_payment();
             if is_payment {
                 payment_transactions += 1;
@@ -774,10 +788,14 @@ where
         let payload = TempoBuiltPayload::new(eth_payload, Some(executed_block));
 
         drop(db);
-        Ok(BuildOutcome::Better {
-            payload,
-            cached_reads,
-        })
+        if build_until_interrupt {
+            Ok(BuildOutcome::Freeze(payload))
+        } else {
+            Ok(BuildOutcome::Better {
+                payload,
+                cached_reads,
+            })
+        }
     }
 }
 
