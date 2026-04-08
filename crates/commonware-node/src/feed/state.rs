@@ -1,7 +1,7 @@
 //! Shared state for the feed module.
 
 use crate::alias::marshal;
-use alloy_consensus::BlockHeader as _;
+use alloy_consensus::{BlockHeader as _, Sealable};
 use alloy_primitives::hex;
 use commonware_codec::{Encode, ReadExt as _};
 use commonware_consensus::{
@@ -11,9 +11,7 @@ use commonware_consensus::{
 use commonware_cryptography::bls12381::primitives::variant::{MinSig, Variant};
 use parking_lot::RwLock;
 use reth_provider::HeaderProvider as _;
-use reth_rpc_convert::FromConsensusHeader;
 use std::sync::{Arc, OnceLock};
-use tempo_alloy::rpc::TempoHeaderResponse;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{
     TempoFullNode,
@@ -22,6 +20,7 @@ use tempo_node::{
         IdentityTransition, IdentityTransitionResponse, Query, TransitionProofData,
     },
 };
+use tempo_primitives::TempoHeader;
 use tokio::sync::broadcast;
 use tracing::instrument;
 
@@ -155,7 +154,7 @@ impl FeedStateHandle {
         }
 
         // Identity active at epoch N is set by the last block of epoch N-1
-        let epoch_outcome = get_outcome(execution, epocher, start_epoch.saturating_sub(1))?;
+        let (_, epoch_outcome) = get_outcome(execution, epocher, start_epoch.saturating_sub(1))?;
         let epoch_pubkey = *epoch_outcome.sharing().public();
 
         // Fast path: if the identity matches the cached one, no new transitions
@@ -194,7 +193,7 @@ impl FeedStateHandle {
                 break;
             }
 
-            let prev_outcome = get_outcome(execution, epocher, search_epoch - 1)?;
+            let (header, prev_outcome) = get_outcome(execution, epocher, search_epoch - 1)?;
             let prev_pubkey = *prev_outcome.sharing().public();
 
             // If keys differ, there was a full DKG at search_epoch
@@ -202,20 +201,6 @@ impl FeedStateHandle {
                 let height = epocher
                     .last(Epoch::new(search_epoch))
                     .expect("fixed epocher is valid for all epochs");
-
-                let Some(header) = execution
-                    .provider
-                    .sealed_header(height.get())
-                    .ok()
-                    .flatten()
-                else {
-                    tracing::info!(
-                        height = height.get(),
-                        search_epoch,
-                        "stopping identity transition walk early (header not available)"
-                    );
-                    break;
-                };
 
                 let Some(finalization) = marshal.get_finalization(height).await else {
                     tracing::info!(
@@ -226,12 +211,17 @@ impl FeedStateHandle {
                     break;
                 };
 
+                // Since we parse dkg info from the EL, sanity check the digest
+                if finalization.proposal.payload.0 != header.hash_slow() {
+                    return Err(IdentityProofError::MalformedData(height.get()));
+                }
+
                 transitions.push(IdentityTransition {
                     transition_epoch: search_epoch,
                     old_identity: hex::encode(prev_pubkey.encode()),
                     new_identity: hex::encode(pubkey.encode()),
                     proof: Some(TransitionProofData {
-                        header: TempoHeaderResponse::from_consensus_header(header, 0),
+                        header: header.into(),
                         finalization_certificate: hex::encode(finalization.encode()),
                     }),
                 });
@@ -249,7 +239,7 @@ impl FeedStateHandle {
 
             if !has_genesis {
                 match get_outcome(execution, epocher, 0) {
-                    Ok(genesis_outcome) => {
+                    Ok((_, genesis_outcome)) => {
                         let genesis_pubkey = *genesis_outcome.sharing().public();
                         let genesis_identity = hex::encode(genesis_pubkey.encode());
                         transitions.push(IdentityTransition {
@@ -448,16 +438,20 @@ fn get_outcome(
     execution: &TempoFullNode,
     epocher: &FixedEpocher,
     epoch: u64,
-) -> Result<OnchainDkgOutcome, IdentityProofError> {
+) -> Result<(TempoHeader, OnchainDkgOutcome), IdentityProofError> {
     let height = epocher
         .last(Epoch::new(epoch))
         .expect("fixed epocher is valid for all epochs");
+
     let header = execution
         .provider
         .header_by_number(height.get())
         .ok()
         .flatten()
         .ok_or(IdentityProofError::PrunedData(height.get()))?;
-    OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
-        .map_err(|_| IdentityProofError::MalformedData(height.get()))
+
+    let outcome = OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
+        .map_err(|_| IdentityProofError::MalformedData(height.get()))?;
+
+    Ok((header, outcome))
 }
