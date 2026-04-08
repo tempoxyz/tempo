@@ -137,15 +137,16 @@ pub struct MaxTpsArgs {
     #[arg(long, default_value_t = 1.0)]
     tip20_weight: f64,
 
-    /// Percentage of TIP-20 transfers sent to virtual addresses (0.0–1.0).
+    /// A weight that determines the likelihood of generating a TIP-20 transfer
+    /// to a virtual address. Treated as a separate transaction type alongside
+    /// `--tip20-weight`, not a fraction of it.
     ///
     /// Requires the anvil mnemonic (`-m "test test test ... junk"`) with
     /// `--from-mnemonic-index` covering indices 0–5, since virtual-address
     /// registration needs pre-mined TIP-1022 PoW salts that are only embedded
-    /// for the first 6 anvil accounts. Each registered master can receive
-    /// transfers at an unlimited number of virtual addresses (random userTags).
+    /// for the first 6 anvil accounts.
     #[arg(long, default_value_t = 0.0)]
-    tip20_virtual_pct: f64,
+    tip20_virtual_weight: f64,
 
     /// A weight that determines the likelihood of generating a DEX place transaction.
     #[arg(long, default_value_t = 0.0)]
@@ -372,12 +373,7 @@ impl MaxTpsArgs {
         // Register virtual-address masters using pre-mined anvil salts.
         // Only signers with a known salt are registered; each master supports
         // unlimited virtual addresses via random userTags.
-        let virtual_master_ids = if self.tip20_virtual_pct > 0.0 {
-            eyre::ensure!(
-                self.tip20_virtual_pct <= 1.0,
-                "--virtual-address-pct must be between 0.0 and 1.0"
-            );
-
+        let virtual_master_ids = if self.tip20_virtual_weight > 0.0 {
             let mut master_ids = Vec::new();
             for (signer, signer_provider) in signer_providers.iter() {
                 let Some(&(_, salt)) = ANVIL_VIRTUAL_SALTS
@@ -413,7 +409,7 @@ impl MaxTpsArgs {
             );
             info!(
                 masters = master_ids.len(),
-                pct = self.tip20_virtual_pct,
+                weight = self.tip20_virtual_weight,
                 "Registered virtual-address masters"
             );
             master_ids
@@ -472,6 +468,8 @@ impl MaxTpsArgs {
         // Generate and send transactions
         let total_txs = self.tps * self.duration;
         let tip20_weight = (self.tip20_weight * Self::WEIGHT_PRECISION).trunc() as u64;
+        let tip20_virtual_weight =
+            (self.tip20_virtual_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let place_order_weight = (self.place_order_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let swap_weight = (self.swap_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let erc20_weight = (self.erc20_weight * Self::WEIGHT_PRECISION).trunc() as u64;
@@ -502,6 +500,7 @@ impl MaxTpsArgs {
 
         let gen_input = GenerateTransactionsInput {
             tip20_weight,
+            tip20_virtual_weight,
             place_order_weight,
             swap_weight,
             erc20_weight,
@@ -513,7 +512,6 @@ impl MaxTpsArgs {
             chain_id,
             recipients,
             expiry_secs,
-            tip20_virtual_pct: self.tip20_virtual_pct,
             virtual_master_ids,
         };
 
@@ -708,6 +706,7 @@ struct TransactionCounters {
 #[derive(Clone)]
 struct GenerateTransactionsInput {
     tip20_weight: u64,
+    tip20_virtual_weight: u64,
     place_order_weight: u64,
     swap_weight: u64,
     erc20_weight: u64,
@@ -722,8 +721,6 @@ struct GenerateTransactionsInput {
     /// When `Some`, sets `valid_before` on each transaction right before signing
     /// to keep it fresh for expiring nonces.
     expiry_secs: Option<u64>,
-    /// Fraction of TIP-20 transfers sent to virtual addresses (0.0–1.0).
-    tip20_virtual_pct: f64,
     /// Registered master IDs for constructing virtual address recipients.
     virtual_master_ids: Vec<MasterId>,
 }
@@ -736,6 +733,7 @@ fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
 ) -> impl Stream<Item = impl Future<Output = eyre::Result<Vec<u8>>>> {
     let GenerateTransactionsInput {
         tip20_weight,
+        tip20_virtual_weight,
         place_order_weight,
         swap_weight,
         erc20_weight,
@@ -747,14 +745,14 @@ fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
         chain_id,
         recipients,
         expiry_secs,
-        tip20_virtual_pct,
         virtual_master_ids,
     } = input;
 
-    const TX_TYPES: usize = 5;
+    const TX_TYPES: usize = 6;
     // Weights for random sampling for each transaction type
     let tx_weights: [u64; TX_TYPES] = [
         tip20_weight,
+        tip20_virtual_weight,
         swap_weight,
         place_order_weight,
         erc20_weight,
@@ -799,25 +797,25 @@ fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                     counters.tip20_transfers.fetch_add(1, Ordering::Relaxed);
                     let token = ITIP20Instance::new(token, provider.clone());
 
-                    // Pick a virtual address recipient for the configured fraction of
-                    // TIP-20 transfers to measure the perf impact of address resolution.
-                    let to = if !virtual_master_ids.is_empty()
-                        && rand::random::<f64>() < tip20_virtual_pct
-                    {
-                        counters.tip20_virtual.fetch_add(1, Ordering::Relaxed);
-                        let master_id =
-                            virtual_master_ids.choose(&mut rand::rng()).copied().unwrap();
-                        make_virtual_address(master_id)
-                    } else {
-                        recipient
-                    };
-
                     // Transfer minimum possible amount
+                    token
+                        .transfer(recipient, U256::ONE)
+                        .into_transaction_request()
+                }
+                1 => {
+                    // TIP-20 transfer to a virtual address
+                    counters.tip20_transfers.fetch_add(1, Ordering::Relaxed);
+                    counters.tip20_virtual.fetch_add(1, Ordering::Relaxed);
+                    let token = ITIP20Instance::new(token, provider.clone());
+                    let master_id =
+                        virtual_master_ids.choose(&mut rand::rng()).copied().unwrap();
+                    let to = make_virtual_address(master_id);
+
                     token
                         .transfer(to, U256::ONE)
                         .into_transaction_request()
                 }
-                1 => {
+                2 => {
                     counters.swaps.fetch_add(1, Ordering::Relaxed);
                     let exchange =
                         IStablecoinDEXInstance::new(STABLECOIN_DEX_ADDRESS, provider.clone());
@@ -829,7 +827,7 @@ fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                         .quoteSwapExactAmountIn(token, quote_token, 1)
                         .into_transaction_request()
                 }
-                2 => {
+                3 => {
                     counters.orders.fetch_add(1, Ordering::Relaxed);
                     let exchange =
                         IStablecoinDEXInstance::new(STABLECOIN_DEX_ADDRESS, provider.clone());
@@ -841,7 +839,7 @@ fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                         .place(token, MIN_ORDER_AMOUNT, true, tick)
                         .into_transaction_request()
                 }
-                3 => {
+                4 => {
                     counters.erc20_transfers.fetch_add(1, Ordering::Relaxed);
                     let token_address = erc20_tokens.choose(&mut rand::rng()).copied().unwrap();
                     let token = erc20::MockERC20::new(token_address, provider.clone());
@@ -851,7 +849,7 @@ fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                         .transfer(recipient, U256::ONE)
                         .into_transaction_request()
                 }
-                4 => {
+                5 => {
                     counters.mpp_open_close.fetch_add(1, Ordering::Relaxed);
                     let contract = mpp_contract_address
                         .expect("mpp_channel_address must be set when mpp_weight > 0");
@@ -1032,11 +1030,11 @@ struct BenchmarkMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     mode: Option<String>,
     tip20_weight: f64,
+    tip20_virtual_weight: f64,
     place_order_weight: f64,
     swap_weight: f64,
     erc20_weight: f64,
     mpp_weight: f64,
-    tip20_virtual_pct: f64,
 }
 
 #[derive(Serialize)]
@@ -1117,11 +1115,11 @@ pub async fn generate_report(
         build_profile: args.build_profile.clone(),
         mode: args.benchmark_mode.clone(),
         tip20_weight: args.tip20_weight,
+        tip20_virtual_weight: args.tip20_virtual_weight,
         place_order_weight: args.place_order_weight,
         swap_weight: args.swap_weight,
         erc20_weight: args.erc20_weight,
         mpp_weight: args.mpp_weight,
-        tip20_virtual_pct: args.tip20_virtual_pct,
     };
 
     let report = BenchmarkReport {
