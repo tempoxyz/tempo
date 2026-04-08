@@ -22,7 +22,7 @@ pub struct TempoConsensusContext {
 /// consensus_context?]`. The `consensus_context` is trailing and omitted for pre-fork blocks.
 ///
 /// RLP is implemented manually because `consensus_context` must be trailing (optional) while
-/// `inner: Header` must be the last field for `reth_codecs::Compact`.
+/// `inner: Header` must be the last field for compact encoding.
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq, RlpEncodable, RlpDecodable)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
@@ -69,16 +69,18 @@ impl TempoHeader {
 /// Trailing fields grouped into a dedicated struct to maximize the use of bits
 /// in a type's bitfields. We add to this prior to occupying another slot in
 /// `TempoHeaderCompact`
+#[cfg(feature = "reth-codec")]
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 #[cfg_attr(feature = "reth-codec", derive(reth_codecs::Compact))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact))]
-struct TempoHeaderCompactTrailing {
+struct TempoHeaderTrailingCompact {
     consensus_context: Option<TempoConsensusContext>,
 }
 
 /// Private helper for Reth's Compat encoding where the last type
 /// must be `Header` as an unknown variable length field.
+#[cfg(feature = "reth-codec")]
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 #[cfg_attr(feature = "reth-codec", derive(reth_codecs::Compact))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
@@ -91,19 +93,22 @@ struct TempoHeaderCompact {
     /// Sub-second (milliseconds) portion of the timestamp.
     pub timestamp_millis_part: u64,
     /// Consensus metadata for the block. `None` for pre-fork blocks.
-    pub trailing: Option<TempoHeaderCompactTrailing>,
+    pub trailing: Option<TempoHeaderTrailingCompact>,
     /// Inner Ethereum [`Header`].
     pub inner: Header,
 }
 
+#[cfg(feature = "reth-codec")]
 impl reth_codecs::Compact for TempoHeader {
     fn to_compact<B>(&self, buf: &mut B) -> usize
     where
         B: alloy_rlp::bytes::BufMut + AsMut<[u8]>,
     {
-        let trailing = self.consensus_context.map(|ctx| TempoHeaderCompactTrailing {
-            consensus_context: Some(ctx),
-        });
+        let trailing = self
+            .consensus_context
+            .map(|ctx| TempoHeaderTrailingCompact {
+                consensus_context: Some(ctx),
+            });
 
         let header = TempoHeaderCompact {
             general_gas_limit: self.general_gas_limit,
@@ -253,11 +258,11 @@ mod tests {
     }
 
     #[test]
-    fn tempo_trailing_has_unused_compact_bits() {
+    fn tempo_header_trailing_has_unused_compact_bits() {
         assert_ne!(
-            TempoHeaderCompactTrailing::bitflag_unused_bits(),
+            TempoHeaderTrailingCompact::bitflag_unused_bits(),
             0,
-            "TempoHeaderCompactTrailing bitflag has no unused bits left — use an extension type"
+            "TempoHeaderTrailingCompact bitflag has no unused bits left — use an extension type"
         );
     }
 
