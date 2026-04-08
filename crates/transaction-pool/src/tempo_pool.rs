@@ -9,7 +9,7 @@ use crate::{
 use alloy_consensus::Transaction;
 use alloy_primitives::{
     Address, B256, TxHash,
-    map::{AddressMap, AddressSet, HashMap},
+    map::{AddressMap, AddressSet},
 };
 use parking_lot::RwLock;
 use reth_chainspec::ChainSpecProvider;
@@ -37,7 +37,6 @@ use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
     error::Result as TempoPrecompileResult,
-    nonce::NonceManager,
     storage::Handler,
     tip20::TIP20Token,
     tip403_registry::{REJECT_ALL_POLICY_ID, TIP403Registry},
@@ -96,46 +95,6 @@ where
         self.protocol_pool
             .inner()
             .notify_on_transaction_updates(promoted, Vec::new());
-    }
-
-    /// Resets the nonce state for the given 2D nonce sequence IDs by reading from a specific
-    /// block's state. Used during reorgs to correct the pool's nonce tracking for slots that
-    /// were modified in the old chain but not in the new chain.
-    pub(crate) fn reset_2d_nonces_from_state(
-        &self,
-        seq_ids: Vec<crate::tt_2d_pool::AASequenceId>,
-        block_hash: B256,
-    ) -> Result<(), reth_provider::ProviderError> {
-        if seq_ids.is_empty() {
-            return Ok(());
-        }
-
-        // Spec doesn't affect raw storage reads (sload), so default is safe here.
-        let spec = TempoHardfork::default();
-        let mut state_provider = self.client().state_by_block_hash(block_hash)?;
-
-        let nonce_changes = state_provider
-            .with_read_only_storage_ctx(spec, || -> TempoPrecompileResult<_> {
-                let mut changes = HashMap::default();
-                // Read the current on-chain nonce for this sequence ID
-                for id in &seq_ids {
-                    let current_nonce =
-                        NonceManager::new().nonces[id.address][id.nonce_key].read()?;
-                    changes.insert(*id, current_nonce);
-                }
-                Ok(changes)
-            })
-            .map_err(reth_provider::ProviderError::other)?;
-
-        // Apply the nonce changes to the 2D pool
-        let (promoted, _mined) = self.aa_2d_pool.write().on_nonce_changes(nonce_changes);
-        if !promoted.is_empty() {
-            self.protocol_pool
-                .inner()
-                .notify_on_transaction_updates(promoted, Vec::new());
-        }
-
-        Ok(())
     }
 
     /// Removes expiring nonce transactions that were included in a block.
@@ -276,7 +235,13 @@ where
                 && let Some(ref subject) = keychain_subject
                 && subject.matches_spending_limit_update(&updates.spending_limit_spends)
                 && let Some(ref mut provider) = state_provider
-                && exceeds_spending_limit(provider, subject, tx.transaction.fee_token_cost())
+                && exceeds_spending_limit(
+                    provider,
+                    subject,
+                    tx.transaction.fee_token_cost(),
+                    tip_timestamp,
+                    spec,
+                )
             {
                 to_remove.push(*tx.hash());
                 spending_limit_spend_count += 1;
@@ -1147,20 +1112,18 @@ where
     }
 }
 
-/// Checks whether a pending keychain tx exceeds its remaining spending limit.
+/// Checks whether a pending keychain tx exceeds its effective remaining spending limit.
 ///
-/// Re-reads the current remaining limit from state for the tx's (account, key_id,
-/// fee_token) combo. Returns true if the tx's fee cost exceeds the remaining limit,
-/// meaning it should be evicted.
+/// Re-reads the current limit from state for the tx's `(account, key_id, fee_token)` combo,
+/// including any T3 periodic-limit rollover at `current_timestamp`. Returns true if the tx's
+/// fee cost exceeds the effective remaining limit, meaning it should be evicted.
 pub(crate) fn exceeds_spending_limit(
     provider: &mut impl StateProvider,
     subject: &crate::transaction::KeychainSubject,
     fee_token_cost: alloy_primitives::U256,
+    current_timestamp: u64,
+    spec: TempoHardfork,
 ) -> bool {
-    // Spec doesn't affect raw storage reads (sload), so default is safe here.
-    let spec = TempoHardfork::default();
-    let limit_key = AccountKeychain::spending_limit_key(subject.account, subject.key_id);
-
     provider
         .with_read_only_storage_ctx(spec, || -> TempoPrecompileResult<bool> {
             let keychain = AccountKeychain::new();
@@ -1171,7 +1134,12 @@ pub(crate) fn exceeds_spending_limit(
                 return Ok(false);
             }
 
-            let remaining = keychain.spending_limits[limit_key][subject.fee_token].read()?;
+            let remaining = keychain.effective_remaining_limit(
+                subject.account,
+                subject.key_id,
+                subject.fee_token,
+                current_timestamp,
+            )?;
             Ok(fee_token_cost > remaining)
         })
         .unwrap_or_default()
@@ -1264,7 +1232,7 @@ mod tests {
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::ITIP403Registry;
     use tempo_precompiles::{
-        account_keychain::{AccountKeychain, AuthorizedKey},
+        account_keychain::{AccountKeychain, AuthorizedKey, SpendingLimitState},
         tip20::slots as tip20_slots,
         tip403_registry::{CompoundPolicyData, PolicyData, TIP403Registry},
     };
@@ -1275,13 +1243,32 @@ mod tests {
         fee_token: Address,
         remaining_limit: alloy_primitives::U256,
     ) -> Box<dyn reth_storage_api::StateProvider> {
+        provider_with_spending_limit_state(
+            account,
+            key_id,
+            fee_token,
+            SpendingLimitState {
+                remaining: remaining_limit,
+                ..Default::default()
+            },
+            TempoHardfork::default(),
+        )
+    }
+
+    fn provider_with_spending_limit_state(
+        account: Address,
+        key_id: Address,
+        fee_token: Address,
+        limit_state: SpendingLimitState,
+        setup_spec: TempoHardfork,
+    ) -> Box<dyn reth_storage_api::StateProvider> {
         let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
             tempo_chainspec::spec::MODERATO.clone(),
         ));
 
         // Write AuthorizedKey with enforce_limits=true
         provider
-            .setup_storage(TempoHardfork::default(), || {
+            .setup_storage(setup_spec, || {
                 let mut keychain = AccountKeychain::new();
                 keychain.keys[account][key_id].write(AuthorizedKey {
                     signature_type: 0,
@@ -1290,7 +1277,7 @@ mod tests {
                     is_revoked: false,
                 })?;
                 let limit_key = AccountKeychain::spending_limit_key(account, key_id);
-                keychain.spending_limits[limit_key][fee_token].write(remaining_limit)?;
+                keychain.spending_limits[limit_key][fee_token].write(limit_state)?;
                 Ok::<(), tempo_precompiles::error::TempoPrecompileError>(())
             })
             .unwrap();
@@ -1592,7 +1579,9 @@ mod tests {
         assert!(exceeds_spending_limit(
             &mut state,
             &subject,
-            alloy_primitives::U256::from(200)
+            alloy_primitives::U256::from(200),
+            0,
+            TempoHardfork::default(),
         ));
     }
 
@@ -1617,7 +1606,9 @@ mod tests {
         assert!(!exceeds_spending_limit(
             &mut state,
             &subject,
-            alloy_primitives::U256::from(200)
+            alloy_primitives::U256::from(200),
+            0,
+            TempoHardfork::default(),
         ));
     }
 
@@ -1650,7 +1641,9 @@ mod tests {
         assert!(exceeds_spending_limit(
             &mut provider.latest().unwrap(),
             &subject,
-            alloy_primitives::U256::from(1)
+            alloy_primitives::U256::from(1),
+            0,
+            TempoHardfork::default(),
         ));
     }
 
@@ -1683,7 +1676,49 @@ mod tests {
         assert!(!exceeds_spending_limit(
             &mut provider.latest().unwrap(),
             &subject,
-            alloy_primitives::U256::from(1)
+            alloy_primitives::U256::from(1),
+            0,
+            TempoHardfork::default(),
+        ));
+    }
+
+    #[test]
+    fn exceeds_spending_limit_uses_period_reset_after_rollover() {
+        let account = Address::random();
+        let key_id = Address::random();
+        let fee_token = Address::random();
+        let subject = KeychainSubject {
+            account,
+            key_id,
+            fee_token,
+        };
+
+        let mut state = provider_with_spending_limit_state(
+            account,
+            key_id,
+            fee_token,
+            SpendingLimitState {
+                remaining: alloy_primitives::U256::ZERO,
+                max: 100,
+                period: 60,
+                period_end: 10,
+            },
+            TempoHardfork::T3,
+        );
+
+        assert!(!exceeds_spending_limit(
+            &mut state,
+            &subject,
+            alloy_primitives::U256::from(50),
+            10,
+            TempoHardfork::T3,
+        ));
+        assert!(exceeds_spending_limit(
+            &mut state,
+            &subject,
+            alloy_primitives::U256::from(150),
+            10,
+            TempoHardfork::T3,
         ));
     }
 }

@@ -1,6 +1,6 @@
 use crate::{TempoBlockEnv, TempoTxEnv, instructions};
 use alloy_evm::{Database, precompiles::PrecompilesMap};
-use alloy_primitives::{Log, U256};
+use alloy_primitives::{Address, U256};
 use revm::{
     Context, Inspector,
     context::{CfgEnv, ContextError, Evm, FrameStack},
@@ -29,14 +29,27 @@ pub struct TempoEvm<DB: Database, I> {
         PrecompilesMap,
         EthFrame<EthInterpreter>,
     >,
-    /// Preserved logs from the last transaction
-    pub logs: Vec<Log>,
     /// The fee collected in `collectFeePreTx` call.
     pub(crate) collected_fee: U256,
     /// Initial gas cost. Used for key_authorization validation in collectFeePreTx.
     ///
     /// Additional initial gas cost is added for authorization_key setting in pre execution.
     pub(crate) initial_gas: u64,
+    /// The fee token used to pay fees for the current transaction.
+    pub(crate) fee_token: Option<Address>,
+    /// The expiry timestamp of the access key used by the current transaction.
+    /// Populated during validation for keychain-signed transactions or transactions carrying a KeyAuthorization.
+    pub(crate) key_expiry: Option<u64>,
+    /// When true, skips the `valid_after` time-window check during validation.
+    ///
+    /// The transaction pool sets this because it intentionally accepts transactions
+    /// with a future `valid_after` (queued until executable).
+    pub skip_valid_after_check: bool,
+    /// When true, skips the AMM liquidity check in `collect_fee_pre_tx`.
+    ///
+    /// The transaction pool sets this because it performs its own liquidity
+    /// validation against a cached view of the AMM state.
+    pub skip_liquidity_check: bool,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -67,9 +80,12 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     ) -> Self {
         Self {
             inner,
-            logs: Vec::new(),
             collected_fee: U256::ZERO,
             initial_gas: 0,
+            fee_token: None,
+            key_expiry: None,
+            skip_valid_after_check: false,
+            skip_liquidity_check: false,
         }
     }
 }
@@ -90,10 +106,11 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         self.inner.into_inspector()
     }
 
-    /// Take logs from the EVM.
-    #[inline]
-    pub fn take_logs(&mut self) -> Vec<Log> {
-        std::mem::take(&mut self.logs)
+    /// Clears all intermediate state from the EVM.
+    pub fn clear(&mut self) {
+        self.initial_gas = 0;
+        self.fee_token = None;
+        self.key_expiry = None;
     }
 }
 
@@ -191,7 +208,7 @@ mod tests {
     use crate::gas_params::tempo_gas_params;
     use alloy_eips::eip7702::Authorization;
     use alloy_evm::FromRecoveredTx;
-    use alloy_primitives::{Address, Bytes, Log, TxKind, U256, bytes};
+    use alloy_primitives::{Address, Bytes, TxKind, U256, bytes};
     use alloy_sol_types::SolCall;
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use p256::{
@@ -311,6 +328,24 @@ mod tests {
         evm
     }
 
+    /// Create an EVM with T3 hardfork enabled and a funded account.
+    fn create_funded_evm_t3(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T3;
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T3);
+
+        let ctx = Context::mainnet()
+            .with_db(db)
+            .with_block(Default::default())
+            .with_cfg(cfg)
+            .with_tx(Default::default());
+
+        let mut evm = TempoEvm::new(ctx, ());
+        fund_account(&mut evm, address);
+        evm
+    }
+
     /// Create an EVM with a specific timestamp and a funded account.
     fn create_funded_evm_with_timestamp(
         address: Address,
@@ -415,7 +450,7 @@ mod tests {
             Ok(WebAuthnSignature {
                 webauthn_data: Bytes::from(webauthn_data),
                 r: alloy_primitives::B256::from_slice(&sig_bytes[0..32]),
-                s: normalize_p256_s(&sig_bytes[32..64]),
+                s: normalize_p256_s(&sig_bytes[32..64]).map_err(|e| eyre::eyre!(e))?,
                 pub_key_x: self.pub_key_x,
                 pub_key_y: self.pub_key_y,
             })
@@ -970,13 +1005,7 @@ mod tests {
         assert!(result.is_success());
 
         // Test with KeychainSignature using key_authorization to provision the access key
-        let key_auth = KeyAuthorization {
-            chain_id: 1,
-            key_type: SignatureType::WebAuthn,
-            key_id: caller,
-            expiry: None,
-            limits: None,
-        };
+        let key_auth = KeyAuthorization::unrestricted(1, SignatureType::WebAuthn, caller);
         let key_auth_webauthn_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
         let signed_key_auth =
             key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_webauthn_sig));
@@ -1085,6 +1114,153 @@ mod tests {
             .storage_ref(NONCE_PRECOMPILE_ADDRESS, nonce_slot)
             .unwrap_or_default();
         assert_eq!(stored_nonce_2, U256::from(2));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_t3_key_authorization_deny_all_scopes_blocks_same_tx_call() -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+
+        let mut evm = create_funded_evm_t3(caller);
+
+        // Set up TIP20 for fee payment.
+        let block = TempoBlockEnv::default();
+        {
+            let ctx = &mut evm.ctx;
+            let internals = EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
+            let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
+
+            StorageCtx::enter(&mut provider, || {
+                TIP20Setup::path_usd(caller)
+                    .with_issuer(caller)
+                    .with_mint(caller, U256::from(10_000_000))
+                    .apply()
+            })?;
+        }
+
+        // Explicit deny-all marker in protocol payload: Some([]).
+        let key_auth =
+            KeyAuthorization::unrestricted(1, SignatureType::WebAuthn, caller).with_no_calls();
+        let key_auth_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
+        let signed_key_auth = key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig));
+
+        let tx = TxBuilder::new()
+            .call_identity(&[0x01])
+            .key_authorization(signed_key_auth)
+            .gas_limit(5_000_000)
+            .build();
+
+        // Use keychain signature so call-scope validation runs in the same tx.
+        let signed_tx = key_pair.sign_tx_keychain(tx)?;
+        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+
+        let err = evm
+            .transact_commit(tx_env)
+            .expect_err("deny-all scope should reject the call");
+
+        assert!(
+            matches!(
+                err,
+                revm::context::result::EVMError::Transaction(
+                    TempoInvalidTransaction::KeychainValidationFailed { .. }
+                )
+            ),
+            "expected KeychainValidationFailed, got: {err:?}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_t3_key_authorization_accepts_empty_recipient_allowlist_as_unconstrained()
+    -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+
+        let mut evm = create_funded_evm_t3(caller);
+
+        let block = TempoBlockEnv::default();
+        {
+            let ctx = &mut evm.ctx;
+            let internals = EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
+            let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
+
+            StorageCtx::enter(&mut provider, || {
+                TIP20Setup::path_usd(caller)
+                    .with_issuer(caller)
+                    .with_mint(caller, U256::from(10_000_000))
+                    .apply()
+            })?;
+        }
+
+        let transfer_to = Address::repeat_byte(0xaa);
+        let transfer_input = ITIP20::transferCall {
+            to: transfer_to,
+            amount: U256::from(1_u64),
+        }
+        .abi_encode();
+
+        let key_auth = KeyAuthorization::unrestricted(1, SignatureType::WebAuthn, caller)
+            .with_allowed_calls(vec![tempo_primitives::transaction::CallScope {
+                target: PATH_USD_ADDRESS,
+                selector_rules: vec![tempo_primitives::transaction::SelectorRule {
+                    selector: ITIP20::transferCall::SELECTOR,
+                    recipients: Vec::new(),
+                }],
+            }]);
+        let key_auth_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
+        let signed_key_auth = key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig));
+
+        let tx = TxBuilder::new()
+            .call(PATH_USD_ADDRESS, &transfer_input)
+            .key_authorization(signed_key_auth)
+            .gas_limit(5_000_000)
+            .build();
+
+        let signed_tx = key_pair.sign_tx_keychain(tx)?;
+        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+
+        evm.transact_commit(tx_env)
+            .expect("empty recipient allowlist should allow the call");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_same_tx_key_authorization_rejects_key_type_mismatch() -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+
+        let mut evm = create_funded_evm_t3(caller);
+
+        let key_auth = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, caller);
+        let key_auth_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
+        let signed_key_auth = key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig));
+
+        let tx = TxBuilder::new()
+            .call_identity(&[0x01])
+            .key_authorization(signed_key_auth)
+            .gas_limit(5_000_000)
+            .build();
+
+        let signed_tx = key_pair.sign_tx_keychain(tx)?;
+        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+
+        let err = evm
+            .transact_commit(tx_env)
+            .expect_err("mismatched key_type should reject same-tx auth+use");
+
+        assert!(
+            matches!(
+                err,
+                revm::context::result::EVMError::Transaction(
+                    TempoInvalidTransaction::KeychainValidationFailed { .. }
+                )
+            ),
+            "expected KeychainValidationFailed, got: {err:?}"
+        );
 
         Ok(())
     }
@@ -1515,32 +1691,6 @@ mod tests {
         );
     }
 
-    /// Test that take_logs clears logs and returns them.
-    #[test]
-    fn test_tempo_evm_take_logs() {
-        let mut evm = create_evm();
-
-        // Manually add some logs
-        evm.logs.push(Log::new_unchecked(
-            Address::repeat_byte(0x01),
-            vec![],
-            Bytes::new(),
-        ));
-        evm.logs.push(Log::new_unchecked(
-            Address::repeat_byte(0x02),
-            vec![],
-            Bytes::new(),
-        ));
-
-        assert_eq!(evm.logs.len(), 2);
-
-        // Take logs
-        let taken_logs = evm.take_logs();
-
-        assert_eq!(taken_logs.len(), 2, "Should return 2 logs");
-        assert!(evm.logs.is_empty(), "Logs should be cleared after take");
-    }
-
     /// Test AA transaction gas usage for simple identity precompile call.
     /// This establishes a baseline for gas comparison.
     /// Uses T1 hardfork for TIP-1000 gas costs.
@@ -1731,7 +1881,7 @@ mod tests {
         // Simple initcode: PUSH1 0x00 PUSH1 0x00 RETURN (deploys empty contract)
         let initcode = vec![0x60, 0x00, 0x60, 0x00, 0xF3];
 
-        // T1 costs: CREATE cost (500k) + new account for sender (250k) + new account for contract (250k)
+        // T1 costs: CREATE cost (500k, fixed upfront contract creation cost) + new account for sender (250k) + base costs
         let tx = TxBuilder::new()
             .create(&initcode)
             .gas_limit(1_000_000)
@@ -2095,13 +2245,8 @@ mod tests {
         // First, try with insufficient gas - key should NOT be authorized
 
         let access_key = P256KeyPair::random();
-        let key_auth = KeyAuthorization {
-            chain_id: 1,
-            key_type: SignatureType::WebAuthn,
-            key_id: access_key.address,
-            expiry: None,
-            limits: None,
-        };
+        let key_auth =
+            KeyAuthorization::unrestricted(1, SignatureType::WebAuthn, access_key.address);
         let key_auth_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
         let signed_key_auth = key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig));
 
@@ -2188,13 +2333,8 @@ mod tests {
         // Now try with sufficient gas - key should be authorized
 
         let access_key2 = P256KeyPair::random();
-        let key_auth2 = KeyAuthorization {
-            chain_id: 1,
-            key_type: SignatureType::WebAuthn,
-            key_id: access_key2.address,
-            expiry: None, // Never expires (u64::MAX)
-            limits: None, // No spending limits
-        };
+        let key_auth2 =
+            KeyAuthorization::unrestricted(1, SignatureType::WebAuthn, access_key2.address);
         let key_auth_sig2 = key_pair.sign_webauthn(key_auth2.signature_hash().as_slice())?;
         let signed_key_auth2 = key_auth2.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig2));
 
@@ -2297,13 +2437,8 @@ mod tests {
             }
 
             let access_key = P256KeyPair::random();
-            let key_auth = KeyAuthorization {
-                chain_id: 1,
-                key_type: SignatureType::WebAuthn,
-                key_id: access_key.address,
-                expiry: None,
-                limits: None,
-            };
+            let key_auth =
+                KeyAuthorization::unrestricted(1, SignatureType::WebAuthn, access_key.address);
             let key_auth_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
             let signed_key_auth = key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig));
 
@@ -2417,13 +2552,8 @@ mod tests {
             }
 
             let access_key = P256KeyPair::random();
-            let key_auth = KeyAuthorization {
-                chain_id: 1,
-                key_type: SignatureType::Secp256k1,
-                key_id: access_key.address,
-                expiry: None,
-                limits: None,
-            };
+            let key_auth =
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, access_key.address);
             let key_auth_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
             let signed_key_auth = key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig));
 
@@ -2456,6 +2586,81 @@ mod tests {
         assert!(
             t1b_gas < t1_gas,
             "T1B fix: gas ({t1b_gas}) must be less than T1 double-charge ({t1_gas})"
+        );
+
+        Ok(())
+    }
+
+    /// Regression: `eth_estimateGas` must NOT add an extra 250k `new_account_cost` for AA
+    /// token transfers using the `calls` format when `nonce_key != 0` and
+    /// `caller.nonce == 0`.
+    ///
+    /// Root cause: `tx.kind()` reads `inner.to`, which is `None` for the
+    /// `calls` format, causing it to return `TxKind::Create` for a plain
+    /// transfer — incorrectly triggering a second 250k account-creation charge
+    /// on top of the legitimate 250k already charged by `validate_aa_initial_tx_gas`.
+    ///
+    /// The fix inspects `aa_calls[0].to` directly for AA transactions instead
+    /// of relying on `tx.kind()`.
+    #[test]
+    fn test_aa_tx_transfer_calls_format_no_extra_250k() -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+        let recipient = Address::with_last_byte(0xff);
+
+        // Baseline: calls-format transfer with nonce_key=0 (protocol nonce).
+        // validate_aa_initial_tx_gas charges 250k (nonce==0 branch).
+        // handler.rs does NOT fire because !nonce_key.is_zero() is false.
+        let mut evm_baseline = create_funded_evm_t1(caller);
+        let tx_baseline = TxBuilder::new()
+            .call(recipient, &[])
+            .nonce_key(U256::ZERO)
+            .nonce(0)
+            .gas_limit(500_000)
+            .build();
+        let result_baseline = evm_baseline.transact_commit(TempoTxEnv::from_recovered_tx(
+            &key_pair.sign_tx(tx_baseline)?,
+            caller,
+        ))?;
+        assert!(
+            result_baseline.is_success(),
+            "baseline transfer should succeed"
+        );
+        let gas_baseline = result_baseline.gas_used();
+
+        // Issue #3178 scenario: calls-format transfer with nonce_key != 0, caller.nonce == 0.
+        // validate_aa_initial_tx_gas still charges the same 250k (nonce==0 branch).
+        // Before fix: handler.rs also fired (tx.kind() wrongly returned Create) → extra 250k.
+        // After fix:  handler.rs does NOT fire (aa_calls[0].to is Call) → no extra 250k.
+        let nonce_key = U256::from(42);
+        let mut evm_2d = create_funded_evm_t1(caller);
+        let tx_2d = TxBuilder::new()
+            .call(recipient, &[])
+            .nonce_key(nonce_key)
+            .nonce(0)
+            .gas_limit(500_000)
+            .build();
+        let result_2d = evm_2d.transact_commit(TempoTxEnv::from_recovered_tx(
+            &key_pair.sign_tx(tx_2d)?,
+            caller,
+        ))?;
+        assert!(
+            result_2d.is_success(),
+            "calls-format transfer with 2D nonce should succeed"
+        );
+        let gas_2d = result_2d.gas_used();
+
+        // After the fix the gas should be nearly identical for both cases because
+        // both go through the same validate_aa_initial_tx_gas branch and handler.rs
+        // no longer fires for transfers.
+        // Before the fix gas_2d would have been ~250k higher than gas_baseline.
+        let diff = gas_2d.saturating_sub(gas_baseline);
+        assert!(
+            diff < 10_000,
+            "calls-format transfer with nonceKey={nonce_key} (gas={gas_2d}) must not cost \
+             ~250k more than baseline (gas={gas_baseline}, diff={diff}). \
+             A diff near 250_000 means new_account_cost is incorrectly added for \
+             transfers (issue #3178)."
         );
 
         Ok(())

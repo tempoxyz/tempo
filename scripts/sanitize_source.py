@@ -171,6 +171,14 @@ def sanitize_primitives(prim_dir):
         expected=2,
     )
 
+    # ── #[cfg(all(test, feature = "reth-codec"))] compact test modules ────
+    for rs_file in find_rs_files(src):
+        _delete_cfg_gated_block(
+            rs_file,
+            '#[cfg(all(test, feature = "reth-codec"))]',
+            expected=None,
+        )
+
 
 def _delete_cfg_gated_block(path, gate_line, *, expected=1):
     """Delete an exact cfg gate line and the block/item it gates.
@@ -223,7 +231,7 @@ def _delete_cfg_gated_block(path, gate_line, *, expected=1):
         result.append(lines[i])
         i += 1
 
-    if count != expected:
+    if expected is not None and count != expected:
         print(
             f"error: _delete_cfg_gated_block({path!r}, {gate_line!r}): "
             f"expected {expected} occurrences, got {count}",
@@ -268,15 +276,15 @@ def _strip_rust_strings(line):
 def sanitize_alloy(alloy_dir):
     """Strip node-internal code from tempo-alloy source files.
 
-    The compat.rs file is already deleted by the shell script (publish-crates.sh).
-    This function removes the `mod compat;` declaration from rpc/mod.rs so the
-    crate compiles without the file.
+    The reth_compat.rs file is already deleted by the shell script (publish-crates.sh).
+    This function removes the cfg-gated `mod reth_compat;` declaration from rpc/mod.rs
+    so the crate compiles without the file.
     """
     src = f"{alloy_dir}/src"
 
-    # Delete the bare `mod compat;` line from rpc/mod.rs
-    delete_lines(f"{src}/rpc/mod.rs", r'^mod compat;\n', expected=1)
-    print(f"  rpc/mod.rs: deleted mod compat declaration", file=sys.stderr)
+    # Delete the cfg-gated `mod reth_compat;` block from rpc/mod.rs
+    delete_lines(f"{src}/rpc/mod.rs", r'^#\[cfg\(feature = "reth"\)\]\nmod reth_compat;\n', expected=1)
+    print(f"  rpc/mod.rs: deleted mod reth_compat declaration", file=sys.stderr)
 
 
 if __name__ == '__main__':

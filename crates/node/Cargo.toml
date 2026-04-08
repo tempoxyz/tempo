@@ -11,18 +11,20 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-tempo-alloy.workspace = true
+tempo-alloy = { workspace = true, features = ["reth"] }
 tempo-evm = { workspace = true, features = ["rpc", "engine"] }
 tempo-transaction-pool.workspace = true
 tempo-chainspec.workspace = true
 tempo-consensus.workspace = true
 tempo-payload-builder.workspace = true
 tempo-payload-types.workspace = true
+tempo-contracts.workspace = true
 tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["default"] }
 
 thiserror.workspace = true
 
+reth-chainspec.workspace = true
 reth-errors.workspace = true
 reth-ethereum = { workspace = true, features = ["node", "rpc"] }
 reth-primitives-traits = { workspace = true, features = ["secp256k1", "rayon"] }

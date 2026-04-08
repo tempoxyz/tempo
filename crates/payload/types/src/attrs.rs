@@ -50,6 +50,10 @@ pub struct TempoPayloadAttributes {
     /// This is empty when no DKG data is available (e.g., when the DKG manager
     /// hasn't produced ceremony outcomes yet, or when DKG operations fail).
     extra_data: Bytes,
+    /// The proposer's public key used to resolve the fee recipient from the
+    /// validator config contract. When `None`, `suggested_fee_recipient` from
+    /// the inner attributes is used as-is.
+    proposer_public_key: Option<B256>,
     /// Subblocks closure.
     #[debug(skip)]
     #[serde(skip, default = "default_subblocks")]
@@ -66,6 +70,7 @@ impl TempoPayloadAttributes {
     /// Creates new `TempoPayloadAttributes` with `inner` attributes.
     pub fn new(
         suggested_fee_recipient: Address,
+        proposer_public_key: Option<B256>,
         timestamp_millis: u64,
         extra_data: Bytes,
         subblocks: impl Fn() -> Vec<RecoveredSubBlock> + Send + Sync + 'static,
@@ -82,6 +87,7 @@ impl TempoPayloadAttributes {
             interrupt: InterruptHandle::default(),
             timestamp_millis_part: millis,
             extra_data,
+            proposer_public_key,
             subblocks: Arc::new(subblocks),
         }
     }
@@ -89,6 +95,11 @@ impl TempoPayloadAttributes {
     /// Returns the extra data to be included in the block header.
     pub fn extra_data(&self) -> &Bytes {
         &self.extra_data
+    }
+
+    /// Returns the proposer's public key.
+    pub fn proposer_public_key(&self) -> Option<&B256> {
+        self.proposer_public_key.as_ref()
     }
 
     /// Returns the `interrupt` flag. If true, it marks that a payload is requested to stop
@@ -131,6 +142,7 @@ impl From<EthPayloadAttributes> for TempoPayloadAttributes {
             interrupt: InterruptHandle::default(),
             timestamp_millis_part: 0,
             extra_data: Bytes::default(),
+            proposer_public_key: None,
             subblocks: Arc::new(Vec::new),
         }
     }
@@ -188,7 +200,7 @@ mod tests {
 
     impl TestExt for TempoPayloadAttributes {
         fn random() -> Self {
-            Self::new(Address::random(), 1000, Bytes::default(), Vec::new)
+            Self::new(Address::random(), None, 1000, Bytes::default(), Vec::new)
         }
 
         fn with_timestamp(mut self, millis: u64) -> Self {
@@ -241,8 +253,13 @@ mod tests {
         let timestamp_millis = 1500; // 1s + 500ms
 
         // With extra_data
-        let attrs =
-            TempoPayloadAttributes::new(recipient, timestamp_millis, extra_data.clone(), Vec::new);
+        let attrs = TempoPayloadAttributes::new(
+            recipient,
+            None,
+            timestamp_millis,
+            extra_data.clone(),
+            Vec::new,
+        );
         assert_eq!(attrs.extra_data(), &extra_data);
         assert_eq!(attrs.suggested_fee_recipient, recipient);
         assert_eq!(
@@ -260,6 +277,7 @@ mod tests {
         // Without extra_data
         let attrs2 = TempoPayloadAttributes::new(
             recipient,
+            None,
             timestamp_millis + 500, // 1.5 seconds + 500ms
             Bytes::default(),
             Vec::new,
