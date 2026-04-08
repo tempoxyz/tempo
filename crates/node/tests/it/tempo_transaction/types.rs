@@ -10,7 +10,7 @@ use alloy::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_node::rpc::TempoTransactionRequest;
-use tempo_primitives::SignatureType;
+use tempo_primitives::{SignatureType, transaction::SignedKeyAuthorization};
 
 /// Test environment abstraction for matrix tests and scenario runners.
 ///
@@ -207,6 +207,20 @@ pub(crate) enum KeyExpiry {
     None,
     /// Already expired (expiry: Some(1)) → rejection.
     Past,
+}
+
+/// Scoped-call shape carried by a key authorization.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub(crate) enum AllowedCallsMode {
+    /// Unrestricted access key.
+    #[default]
+    None,
+    /// One selector with a single allowed recipient.
+    SelectorRecipient,
+    /// One selector with an empty recipient list (allow any recipient).
+    SelectorAnyRecipient,
+    /// One target with an empty selector list (allow any selector for that target).
+    TargetAnySelector,
 }
 
 /// How the access key / keychain is set up for the raw send case.
@@ -563,6 +577,8 @@ pub(crate) struct FillTestCase {
     pub nonce_mode: NonceMode,
     pub key_type: KeyType,
     pub include_nonce_key: bool,
+    pub key_authorization_name: Option<&'static str>,
+    pub key_authorization: Option<SignedKeyAuthorization>,
     pub fee_token: Option<Address>,
     pub fee_payer: bool,
     pub valid_before_offset: Option<i64>,
@@ -580,6 +596,8 @@ impl FillTestCase {
             nonce_mode,
             key_type,
             include_nonce_key: true,
+            key_authorization_name: None,
+            key_authorization: None,
             fee_token: None,
             fee_payer: false,
             valid_before_offset: None,
@@ -598,6 +616,17 @@ impl FillTestCase {
 
     pub(crate) fn fee_payer(mut self) -> Self {
         self.fee_payer = true;
+        self.rebuild_name();
+        self
+    }
+
+    pub(crate) fn key_authorization(
+        mut self,
+        name: &'static str,
+        key_authorization: SignedKeyAuthorization,
+    ) -> Self {
+        self.key_authorization_name = Some(name);
+        self.key_authorization = Some(key_authorization);
         self.rebuild_name();
         self
     }
@@ -660,6 +689,9 @@ impl FillTestCase {
 
     fn opt_names(&self) -> Vec<&'static str> {
         let mut opts = Vec::new();
+        if let Some(name) = self.key_authorization_name {
+            opts.push(name);
+        }
         if self.fee_token.is_some() {
             opts.push("fee_token");
         }
@@ -683,6 +715,7 @@ pub(crate) struct FillRequestContext {
     pub request: TempoTransactionRequest,
     pub expected_nonce: Option<u64>,
     pub expected_nonce_key: U256,
+    pub expected_key_authorization: Option<SignedKeyAuthorization>,
     pub expected_valid_before: Option<u64>,
     pub expected_valid_after: Option<u64>,
 }
@@ -712,11 +745,13 @@ pub(crate) enum AuthKind {
     Keychain {
         key_type: Option<SignatureType>,
         num_limits: usize,
+        allowed_calls: AllowedCallsMode,
     },
     /// Inline key authorization: sets key_authorization only.
     KeyAuth {
         key_type: SignatureType,
         num_limits: usize,
+        allowed_calls: AllowedCallsMode,
     },
 }
 

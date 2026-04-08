@@ -5,6 +5,36 @@ use alloy_consensus::crypto::RecoveryError;
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::Encodable;
 
+#[cfg(feature = "serde")]
+mod selector_hex_serde {
+    use alloy_primitives::FixedBytes;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum SelectorValue {
+        Hex(FixedBytes<4>),
+        Array([u8; 4]),
+    }
+
+    pub(super) fn serialize<S>(selector: &[u8; 4], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        FixedBytes::<4>::from(*selector).serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<[u8; 4], D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(match SelectorValue::deserialize(deserializer)? {
+            SelectorValue::Hex(selector) => selector.into(),
+            SelectorValue::Array(selector) => selector,
+        })
+    }
+}
+
 /// Token spending limit for access keys
 ///
 /// Defines a per-token spending limit for an access key provisioned via key_authorization.
@@ -88,6 +118,7 @@ impl CallScope {
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(rlp))]
 pub struct SelectorRule {
     /// 4-byte function selector.
+    #[cfg_attr(feature = "serde", serde(with = "selector_hex_serde"))]
     pub selector: [u8; 4],
     /// Recipient allowlist. Empty means no recipient restriction.
     #[cfg_attr(
@@ -832,6 +863,46 @@ mod tests {
         .expect("serialize token limit");
 
         assert_eq!(value["period"], serde_json::json!("0x7"));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_selector_rule_json_accepts_hex_selector() {
+        let recipient = Address::repeat_byte(0x11);
+
+        let decoded: SelectorRule = serde_json::from_value(serde_json::json!({
+            "selector": "0xaabbccdd",
+            "recipients": [recipient],
+        }))
+        .expect("deserialize selector rule with hex selector");
+
+        assert_eq!(decoded.selector, [0xaa, 0xbb, 0xcc, 0xdd]);
+        assert_eq!(decoded.recipients, vec![recipient]);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_selector_rule_json_accepts_legacy_selector_array() {
+        let decoded: SelectorRule = serde_json::from_value(serde_json::json!({
+            "selector": [170, 187, 204, 221],
+            "recipients": [],
+        }))
+        .expect("deserialize selector rule with legacy selector array");
+
+        assert_eq!(decoded.selector, [0xaa, 0xbb, 0xcc, 0xdd]);
+        assert!(decoded.recipients.is_empty());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_selector_rule_json_serializes_selector_as_hex() {
+        let value = serde_json::to_value(SelectorRule {
+            selector: [0xaa, 0xbb, 0xcc, 0xdd],
+            recipients: Vec::new(),
+        })
+        .expect("serialize selector rule");
+
+        assert_eq!(value["selector"], serde_json::json!("0xaabbccdd"));
     }
 
     #[test]

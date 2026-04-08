@@ -25,8 +25,8 @@ use tempo_precompiles::tip20::ITIP20::{self, transferCall};
 use tempo_primitives::{
     SignatureType, TempoTransaction, TempoTxEnvelope,
     transaction::{
-        KeyAuthorization, SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY,
-        TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS, TokenLimit,
+        CallScope, KeyAuthorization, SelectorRule, SignedKeyAuthorization,
+        TEMPO_EXPIRING_NONCE_KEY, TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS, TokenLimit,
         tempo_transaction::Call,
         tt_signature::{
             KeychainSignature, P256SignatureWithPreHash, PrimitiveSignature, TempoSignature,
@@ -177,12 +177,40 @@ pub(crate) async fn estimate_gas(
     Ok(u64::from_str_radix(hex.trim_start_matches("0x"), 16)?)
 }
 
+pub(crate) fn create_allowed_call_scopes(
+    mode: AllowedCallsMode,
+    allowed_recipient: Address,
+) -> Option<Vec<CallScope>> {
+    let rule = |recipients| SelectorRule {
+        selector: ITIP20::transferCall::SELECTOR,
+        recipients,
+    };
+
+    match mode {
+        AllowedCallsMode::None => None,
+        AllowedCallsMode::SelectorRecipient => Some(vec![CallScope {
+            target: DEFAULT_FEE_TOKEN,
+            selector_rules: vec![rule(vec![allowed_recipient])],
+        }]),
+        AllowedCallsMode::SelectorAnyRecipient => Some(vec![CallScope {
+            target: DEFAULT_FEE_TOKEN,
+            selector_rules: vec![rule(Vec::new())],
+        }]),
+        AllowedCallsMode::TargetAnySelector => Some(vec![CallScope {
+            target: DEFAULT_FEE_TOKEN,
+            selector_rules: Vec::new(),
+        }]),
+    }
+}
+
 /// Helper function to create a signed KeyAuthorization for gas estimation tests
 pub(crate) fn create_signed_key_authorization(
     signer: &impl SignerSync,
     key_type: SignatureType,
     num_limits: usize,
     chain_id: u64,
+    allowed_calls: AllowedCallsMode,
+    allowed_recipient: Address,
 ) -> SignedKeyAuthorization {
     let limits = if num_limits == 0 {
         None
@@ -209,6 +237,7 @@ pub(crate) fn create_signed_key_authorization(
         Address::random(), // Random key being authorized
     );
     authorization.limits = limits;
+    authorization.allowed_calls = create_allowed_call_scopes(allowed_calls, allowed_recipient);
 
     // Sign the key authorization
     let sig_hash = authorization.signature_hash();
@@ -940,6 +969,12 @@ pub(crate) fn parse_filled_tx(filled: &serde_json::Value) -> eyre::Result<TempoT
     let nonce_key = parse_hex_u256(tx, "nonceKey")?.unwrap_or(U256::ZERO);
     let valid_before = parse_hex_u64(tx, "validBefore")?;
     let valid_after = parse_hex_u64(tx, "validAfter")?;
+    let key_authorization = tx
+        .get("keyAuthorization")
+        .filter(|value| !value.is_null())
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()?;
 
     let fee_token = tx
         .get("feeToken")
@@ -996,6 +1031,7 @@ pub(crate) fn parse_filled_tx(filled: &serde_json::Value) -> eyre::Result<TempoT
         nonce_key,
         valid_before,
         valid_after,
+        key_authorization,
         fee_token,
         calls,
         ..Default::default()
@@ -1072,6 +1108,7 @@ pub(crate) fn build_fill_request_context(
         }],
         key_type: Some(key_type_to_signature_type(test_case.key_type)),
         key_data: None,
+        key_authorization: test_case.key_authorization.clone(),
         fee_token: test_case.fee_token,
         fee_payer_signature,
         valid_before,
@@ -1084,6 +1121,7 @@ pub(crate) fn build_fill_request_context(
         request,
         expected_nonce: test_case.explicit_nonce,
         expected_nonce_key,
+        expected_key_authorization: test_case.key_authorization.clone(),
         expected_valid_before: valid_before,
         expected_valid_after: valid_after_offset,
     }
@@ -1127,6 +1165,10 @@ pub(crate) fn assert_fill_request_expectations(
     assert_eq!(
         tx.valid_after, request_context.expected_valid_after,
         "validAfter should match"
+    );
+    assert_eq!(
+        tx.key_authorization, request_context.expected_key_authorization,
+        "keyAuthorization should match"
     );
 
     if let Some(expected_nonce) = request_context.expected_nonce {

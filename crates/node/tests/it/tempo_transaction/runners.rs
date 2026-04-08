@@ -219,6 +219,7 @@ fn gas_estimation_cases() -> Vec<GasCase> {
             auth: AuthKind::Keychain {
                 key_type: None,
                 num_limits: 0,
+                allowed_calls: AllowedCallsMode::None,
             },
             noop_expected: ExpectedGasDiff::Range(250_000..=310_000),
         },
@@ -227,6 +228,7 @@ fn gas_estimation_cases() -> Vec<GasCase> {
             auth: AuthKind::Keychain {
                 key_type: Some(SignatureType::P256),
                 num_limits: 0,
+                allowed_calls: AllowedCallsMode::None,
             },
             noop_expected: ExpectedGasDiff::GreaterThan("keychain_secp256k1::noop".into()),
         },
@@ -235,6 +237,7 @@ fn gas_estimation_cases() -> Vec<GasCase> {
             auth: AuthKind::KeyAuth {
                 key_type: SignatureType::Secp256k1,
                 num_limits: 0,
+                allowed_calls: AllowedCallsMode::None,
             },
             noop_expected: ExpectedGasDiff::Range(250_000..=310_000),
         },
@@ -243,6 +246,7 @@ fn gas_estimation_cases() -> Vec<GasCase> {
             auth: AuthKind::KeyAuth {
                 key_type: SignatureType::Secp256k1,
                 num_limits: 1,
+                allowed_calls: AllowedCallsMode::None,
             },
             noop_expected: ExpectedGasDiff::GreaterThan("key_auth_secp256k1_0_limits::noop".into()),
         },
@@ -251,6 +255,7 @@ fn gas_estimation_cases() -> Vec<GasCase> {
             auth: AuthKind::KeyAuth {
                 key_type: SignatureType::Secp256k1,
                 num_limits: 3,
+                allowed_calls: AllowedCallsMode::None,
             },
             noop_expected: ExpectedGasDiff::GreaterThan("key_auth_secp256k1_0_limits::noop".into()),
         },
@@ -259,6 +264,7 @@ fn gas_estimation_cases() -> Vec<GasCase> {
             auth: AuthKind::KeyAuth {
                 key_type: SignatureType::WebAuthn,
                 num_limits: 0,
+                allowed_calls: AllowedCallsMode::None,
             },
             noop_expected: ExpectedGasDiff::Range(250_000..=310_000),
         },
@@ -267,6 +273,7 @@ fn gas_estimation_cases() -> Vec<GasCase> {
             auth: AuthKind::KeyAuth {
                 key_type: SignatureType::WebAuthn,
                 num_limits: 1,
+                allowed_calls: AllowedCallsMode::None,
             },
             noop_expected: ExpectedGasDiff::GreaterThan("key_auth_webauthn_0_limits::noop".into()),
         },
@@ -275,6 +282,7 @@ fn gas_estimation_cases() -> Vec<GasCase> {
             auth: AuthKind::KeyAuth {
                 key_type: SignatureType::WebAuthn,
                 num_limits: 3,
+                allowed_calls: AllowedCallsMode::None,
             },
             noop_expected: ExpectedGasDiff::GreaterThan("key_auth_webauthn_0_limits::noop".into()),
         },
@@ -283,6 +291,7 @@ fn gas_estimation_cases() -> Vec<GasCase> {
             auth: AuthKind::KeyAuth {
                 key_type: SignatureType::P256,
                 num_limits: 0,
+                allowed_calls: AllowedCallsMode::None,
             },
             noop_expected: ExpectedGasDiff::Range(250_000..=310_000),
         },
@@ -291,6 +300,7 @@ fn gas_estimation_cases() -> Vec<GasCase> {
             auth: AuthKind::KeyAuth {
                 key_type: SignatureType::P256,
                 num_limits: 1,
+                allowed_calls: AllowedCallsMode::None,
             },
             noop_expected: ExpectedGasDiff::GreaterThan("key_auth_p256_0_limits::noop".into()),
         },
@@ -299,6 +309,7 @@ fn gas_estimation_cases() -> Vec<GasCase> {
             auth: AuthKind::KeyAuth {
                 key_type: SignatureType::P256,
                 num_limits: 3,
+                allowed_calls: AllowedCallsMode::None,
             },
             noop_expected: ExpectedGasDiff::GreaterThan("key_auth_p256_0_limits::noop".into()),
         },
@@ -357,6 +368,70 @@ fn gas_estimation_cases() -> Vec<GasCase> {
                 expected,
             });
         }
+    }
+
+    for (name, auth, expected) in [
+        (
+            "keychain_secp256k1_selector_recipient::transfer",
+            AuthKind::Keychain {
+                key_type: None,
+                num_limits: 0,
+                allowed_calls: AllowedCallsMode::SelectorRecipient,
+            },
+            ExpectedGasDiff::GreaterThan("keychain_secp256k1::noop".into()),
+        ),
+        (
+            "keychain_secp256k1_selector_any_recipient::transfer",
+            AuthKind::Keychain {
+                key_type: None,
+                num_limits: 0,
+                allowed_calls: AllowedCallsMode::SelectorAnyRecipient,
+            },
+            ExpectedGasDiff::GreaterThan("keychain_secp256k1::noop".into()),
+        ),
+        (
+            "keychain_secp256k1_target_any_selector::transfer",
+            AuthKind::Keychain {
+                key_type: None,
+                num_limits: 0,
+                allowed_calls: AllowedCallsMode::TargetAnySelector,
+            },
+            ExpectedGasDiff::GreaterThan("keychain_secp256k1::noop".into()),
+        ),
+        (
+            "key_auth_secp256k1_selector_recipient::transfer",
+            AuthKind::KeyAuth {
+                key_type: SignatureType::Secp256k1,
+                num_limits: 0,
+                allowed_calls: AllowedCallsMode::SelectorRecipient,
+            },
+            ExpectedGasDiff::GreaterThan("key_auth_secp256k1_0_limits::noop".into()),
+        ),
+        (
+            "key_auth_secp256k1_selector_any_recipient::transfer",
+            AuthKind::KeyAuth {
+                key_type: SignatureType::Secp256k1,
+                num_limits: 0,
+                allowed_calls: AllowedCallsMode::SelectorAnyRecipient,
+            },
+            ExpectedGasDiff::GreaterThan("key_auth_secp256k1_0_limits::noop".into()),
+        ),
+        (
+            "key_auth_secp256k1_target_any_selector::transfer",
+            AuthKind::KeyAuth {
+                key_type: SignatureType::Secp256k1,
+                num_limits: 0,
+                allowed_calls: AllowedCallsMode::TargetAnySelector,
+            },
+            ExpectedGasDiff::GreaterThan("key_auth_secp256k1_0_limits::noop".into()),
+        ),
+    ] {
+        cases.push(GasCase {
+            name: name.into(),
+            auth,
+            payload: GasPayload::Transfer,
+            expected,
+        });
     }
 
     cases
@@ -433,12 +508,15 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
             AuthKind::Keychain {
                 key_type,
                 num_limits,
+                allowed_calls,
             } => {
                 let auth = create_signed_key_authorization(
                     &signer,
                     key_type.unwrap_or(SignatureType::Secp256k1),
                     *num_limits,
                     env.chain_id(),
+                    *allowed_calls,
+                    recipient,
                 );
                 request.key_id = Some(auth.key_id);
                 request.key_authorization = Some(auth);
@@ -449,12 +527,15 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
             AuthKind::KeyAuth {
                 key_type,
                 num_limits,
+                allowed_calls,
             } => {
                 let auth = create_signed_key_authorization(
                     &signer,
                     *key_type,
                     *num_limits,
                     env.chain_id(),
+                    *allowed_calls,
+                    recipient,
                 );
                 request.key_authorization = Some(auth);
             }
@@ -507,7 +588,8 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
 /// For fee-payer cases, also verifies that the fee-payer signature hash is
 /// deterministic by signing + recovering with a random signer.
 pub(super) async fn run_fill_transaction_matrix<E: TestEnv>(env: &mut E) -> eyre::Result<()> {
-    let signer_addr = Address::random();
+    let signer = PrivateKeySigner::random();
+    let signer_addr = signer.address();
     let current_timestamp = env.current_block_timestamp().await?;
     let fee_payer_signer = PrivateKeySigner::random();
 
@@ -525,6 +607,39 @@ pub(super) async fn run_fill_transaction_matrix<E: TestEnv>(env: &mut E) -> eyre
         FillTestCase::new(NonceMode::Protocol, KeyType::Secp256k1)
             .fee_payer()
             .fee_token(DEFAULT_FEE_TOKEN),
+        FillTestCase::new(NonceMode::Protocol, KeyType::Secp256k1).key_authorization(
+            "key_auth_selector_recipient",
+            create_signed_key_authorization(
+                &signer,
+                SignatureType::Secp256k1,
+                2,
+                env.chain_id(),
+                AllowedCallsMode::SelectorRecipient,
+                Address::with_last_byte(0x11),
+            ),
+        ),
+        FillTestCase::new(NonceMode::Protocol, KeyType::Secp256k1).key_authorization(
+            "key_auth_selector_any_recipient",
+            create_signed_key_authorization(
+                &signer,
+                SignatureType::Secp256k1,
+                0,
+                env.chain_id(),
+                AllowedCallsMode::SelectorAnyRecipient,
+                Address::with_last_byte(0x11),
+            ),
+        ),
+        FillTestCase::new(NonceMode::Protocol, KeyType::Secp256k1).key_authorization(
+            "key_auth_target_any_selector",
+            create_signed_key_authorization(
+                &signer,
+                SignatureType::Secp256k1,
+                0,
+                env.chain_id(),
+                AllowedCallsMode::TargetAnySelector,
+                Address::with_last_byte(0x11),
+            ),
+        ),
     ];
 
     println!("\n=== eth_fillTransaction matrix ===\n");
