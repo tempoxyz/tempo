@@ -43,15 +43,16 @@ pub(super) struct FeedState {
 struct IdentityTransitionCache {
     /// The epoch from which the chain was built (inclusive).
     from_epoch: u64,
+    /// Public key at `from_epoch`.
+    from_pubkey: <MinSig as Variant>::Public,
     /// The earliest epoch we walked to (0 if we reached genesis).
     to_epoch: u64,
+    /// The public key at `to_epoch`.
+    to_pubkey: <MinSig as Variant>::Public,
     /// Identity at `from_epoch`.
     identity: String,
     /// Cached transitions, ordered newest to oldest.
     transitions: Arc<Vec<IdentityTransition>>,
-    /// The public key at `to_epoch`. Used to resume an incomplete walk
-    /// without re-fetching the outcome from the DB.
-    to_pubkey: <MinSig as Variant>::Public,
 }
 
 /// Handle to shared feed state.
@@ -164,23 +165,19 @@ impl FeedStateHandle {
         let epoch_outcome = get_outcome(execution, epocher, start_epoch.saturating_sub(1))?;
         let epoch_pubkey = *epoch_outcome.sharing().public();
 
-        // Fast path: if the identity matches the cached one, no new transitions
+        // Fast path: if the identity matches the cached one and the cache is
+        // complete, just extend the upper bound — no new transitions needed.
         if let Some(cache) = &cached
             && start_epoch > cache.from_epoch
+            && cache.to_epoch == 0
+            && cache.from_pubkey == epoch_pubkey
         {
-            let cache_pubkey_bytes = hex::decode(&cache.identity)
-                .map_err(|_| IdentityProofError::MalformedData(cache.from_epoch))?;
-            let cache_pubkey =
-                <MinSig as Variant>::Public::read(&mut cache_pubkey_bytes.as_slice())
-                    .map_err(|_| IdentityProofError::MalformedData(cache.from_epoch))?;
+            let mut updated = cache.clone();
+            updated.from_epoch = start_epoch;
+            updated.from_pubkey = epoch_pubkey;
 
-            if cache_pubkey == epoch_pubkey {
-                let mut updated = cache.clone();
-                updated.from_epoch = start_epoch;
-
-                *self.identity_cache.write() = Some(updated);
-                return Ok(());
-            }
+            *self.identity_cache.write() = Some(updated);
+            return Ok(());
         }
 
         // Walk backwards to find all identity transitions
@@ -297,15 +294,18 @@ impl FeedStateHandle {
         // Build updated cache. The walk absorbs cached transitions in the correct order.
         // `pubkey` is the identity at the point where the walk stopped.
         let new_cache = if let Some(c) = &cached {
+            let (from, from_pk) = if start_epoch >= c.from_epoch {
+                (start_epoch, epoch_pubkey)
+            } else {
+                (c.from_epoch, c.from_pubkey)
+            };
+
             IdentityTransitionCache {
-                from_epoch: start_epoch.max(c.from_epoch),
-                to_epoch: search_epoch.min(c.to_epoch),
+                from_epoch: from,
+                to_epoch: search_epoch,
+                identity: hex::encode(from_pk.encode()),
+                from_pubkey: from_pk,
                 transitions: Arc::new(transitions),
-                identity: if start_epoch >= c.from_epoch {
-                    hex::encode(epoch_pubkey.encode())
-                } else {
-                    c.identity.clone()
-                },
                 to_pubkey: pubkey,
             }
         } else {
@@ -313,6 +313,7 @@ impl FeedStateHandle {
                 from_epoch: start_epoch,
                 to_epoch: search_epoch,
                 identity: hex::encode(epoch_pubkey.encode()),
+                from_pubkey: epoch_pubkey,
                 transitions: Arc::new(transitions),
                 to_pubkey: pubkey,
             }
