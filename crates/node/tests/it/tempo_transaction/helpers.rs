@@ -64,6 +64,94 @@ pub(super) fn normalize_tempo_rpc_error(err: RpcError<TransportErrorKind>) -> ey
     }
 }
 
+// TODO: remove once all RPC providers accept hex-serialized scoped key auth selectors.
+mod legacy_compat {
+    use alloy::{
+        hex,
+        providers::Provider,
+        transports::{RpcError, TransportErrorKind},
+    };
+    use serde::de::DeserializeOwned;
+    use tempo_node::rpc::TempoTransactionRequest;
+
+    fn should_retry_with_selector_arrays(err: &RpcError<TransportErrorKind>) -> bool {
+        let err_str = err.to_string().to_lowercase();
+        err_str.contains("invalid params")
+            && err_str.contains("expected an array of length 4")
+            && err_str.contains("invalid type: string")
+    }
+
+    pub(super) fn request_value_with_selector_arrays(
+        mut request: serde_json::Value,
+    ) -> serde_json::Value {
+        let Some(allowed_calls) = request
+            .get_mut("keyAuthorization")
+            .and_then(|key_authorization| key_authorization.get_mut("allowedCalls"))
+            .and_then(serde_json::Value::as_array_mut)
+        else {
+            return request;
+        };
+
+        for scope in allowed_calls {
+            let Some(selector_rules) = scope
+                .get_mut("selectorRules")
+                .and_then(serde_json::Value::as_array_mut)
+            else {
+                continue;
+            };
+
+            for rule in selector_rules {
+                let Some(selector) = rule.get_mut("selector") else {
+                    continue;
+                };
+                let Some(selector_hex) = selector.as_str() else {
+                    continue;
+                };
+                let selector_hex = selector_hex
+                    .strip_prefix("0x")
+                    .or_else(|| selector_hex.strip_prefix("0X"))
+                    .unwrap_or(selector_hex);
+                let Ok(bytes) = hex::decode(selector_hex) else {
+                    continue;
+                };
+                let Ok(selector_bytes) = <[u8; 4]>::try_from(bytes.as_slice()) else {
+                    continue;
+                };
+                *selector = serde_json::json!(selector_bytes);
+            }
+        }
+
+        request
+    }
+
+    pub(super) async fn raw_request<T: DeserializeOwned>(
+        provider: &impl Provider,
+        method: &'static str,
+        request: &TempoTransactionRequest,
+    ) -> Result<T, RpcError<TransportErrorKind>>
+    where
+        T: std::fmt::Debug + Send + Sync + Unpin + 'static,
+    {
+        let request_value = serde_json::to_value(request).map_err(RpcError::local_usage)?;
+
+        match provider
+            .raw_request::<_, T>(method.into(), [request_value.clone()])
+            .await
+        {
+            Ok(response) => Ok(response),
+            Err(err) if should_retry_with_selector_arrays(&err) => {
+                provider
+                    .raw_request::<_, T>(
+                        method.into(),
+                        [request_value_with_selector_arrays(request_value)],
+                    )
+                    .await
+            }
+            Err(err) => Err(err),
+        }
+    }
+}
+
 /// Polls until the pool no longer contains the given tx hash, or returns error after timeout.
 pub(super) async fn wait_until_pool_not_contains(
     pool: &impl TransactionPool,
@@ -198,9 +286,7 @@ pub(crate) async fn estimate_gas(
     provider: &impl Provider,
     request: &TempoTransactionRequest,
 ) -> eyre::Result<u64> {
-    let hex: String = provider
-        .raw_request("eth_estimateGas".into(), [serde_json::to_value(request)?])
-        .await?;
+    let hex: String = legacy_compat::raw_request(provider, "eth_estimateGas", request).await?;
     Ok(u64::from_str_radix(hex.trim_start_matches("0x"), 16)?)
 }
 
@@ -1164,13 +1250,10 @@ pub(crate) async fn fill_transaction_from_case(
     let request_context =
         build_fill_request_context(test_case, signer_addr, recipient, current_timestamp);
 
-    let filled: serde_json::Value = provider
-        .raw_request(
-            "eth_fillTransaction".into(),
-            [serde_json::to_value(&request_context.request)?],
-        )
-        .await
-        .map_err(normalize_tempo_rpc_error)?;
+    let filled: serde_json::Value =
+        legacy_compat::raw_request(provider, "eth_fillTransaction", &request_context.request)
+            .await
+            .map_err(normalize_tempo_rpc_error)?;
 
     let tx = parse_filled_tx(&filled)?;
 
