@@ -12,6 +12,7 @@ use alloy::{
     rpc::types::TransactionRequest,
     signers::{SignerSync, local::PrivateKeySigner},
     sol_types::SolCall,
+    transports::{RpcError, TransportErrorKind},
 };
 use alloy_eips::Encodable2718;
 use alloy_primitives::TxKind;
@@ -36,6 +37,32 @@ use tempo_primitives::{
 };
 
 use super::types::*;
+
+/// Returns a deterministic decoded Tempo revert string when the RPC only returns raw revert data.
+pub(super) fn decoded_tempo_rpc_error_message(
+    err: &RpcError<TransportErrorKind>,
+) -> Option<String> {
+    let revert_data = err.as_error_resp()?.as_revert_data()?;
+    let decoded = tempo_precompiles::error::decode_error(&revert_data.0)?;
+    Some(format!("execution reverted: {}", decoded.error))
+}
+
+/// Returns true if either the transport error string or client-side decoded revert matches.
+pub(super) fn rpc_error_contains_reason(err: &RpcError<TransportErrorKind>, reason: &str) -> bool {
+    let reason = reason.to_lowercase();
+    err.to_string().to_lowercase().contains(&reason)
+        || decoded_tempo_rpc_error_message(err)
+            .is_some_and(|message| message.to_lowercase().contains(&reason))
+}
+
+/// Normalizes Tempo revert errors so tests do not depend on server-side formatting.
+pub(super) fn normalize_tempo_rpc_error(err: RpcError<TransportErrorKind>) -> eyre::Report {
+    if let Some(message) = decoded_tempo_rpc_error_message(&err) {
+        eyre::eyre!(message)
+    } else {
+        err.into()
+    }
+}
 
 /// Polls until the pool no longer contains the given tx hash, or returns error after timeout.
 pub(super) async fn wait_until_pool_not_contains(
@@ -1104,7 +1131,8 @@ pub(crate) async fn fill_transaction_from_case(
             "eth_fillTransaction".into(),
             [serde_json::to_value(&request_context.request)?],
         )
-        .await?;
+        .await
+        .map_err(normalize_tempo_rpc_error)?;
 
     let tx = parse_filled_tx(&filled)?;
 
@@ -1149,4 +1177,51 @@ pub(crate) fn assert_fill_request_expectations(
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::sol_types::SolInterface;
+    use tempo_contracts::precompiles::TIP20Error;
+
+    #[test]
+    fn normalize_tempo_rpc_error_decodes_raw_revert_data() {
+        let expected_revert_bytes = hex!(
+            "832f98b5000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000f424000000000000000000000000020c0000000000000000000000000000000000000"
+        );
+        let expected_revert_hex = hex::encode(expected_revert_bytes);
+        let revert_data = TIP20Error::InsufficientBalance(ITIP20::InsufficientBalance {
+            available: U256::ZERO,
+            required: U256::from(1_000_000u64),
+            token: DEFAULT_FEE_TOKEN,
+        })
+        .abi_encode();
+        assert_eq!(
+            revert_data.as_slice(),
+            expected_revert_bytes.as_slice(),
+            "ABI encoding should match the raw revert bytes observed in CI"
+        );
+        let error_json = serde_json::json!({
+            "code": 3,
+            "message": "execution reverted",
+            "data": format!("0x{expected_revert_hex}"),
+        })
+        .to_string();
+        let parse_err = serde_json::from_str::<serde_json::Value>("not json")
+            .expect_err("fixture should produce a serde error");
+        let err = RpcError::deser_err(parse_err, &error_json);
+
+        assert!(
+            rpc_error_contains_reason(&err, "InsufficientBalance"),
+            "client-side revert decoding should recognize Tempo precompile errors"
+        );
+
+        let normalized = normalize_tempo_rpc_error(err).to_string();
+        assert!(
+            normalized.contains("execution reverted:")
+                && normalized.contains("InsufficientBalance"),
+            "normalized error should prefer decoded Tempo revert, got: {normalized}"
+        );
+    }
 }
