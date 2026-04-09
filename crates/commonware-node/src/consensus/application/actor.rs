@@ -479,22 +479,23 @@ impl Inner<Init> {
             .containing(parent.height())
             .expect("epoch strategy is for all heights");
 
-        // XXX: Re-propose the parent if the parent is the last height of the
-        // epoch. parent.height+1 should be proposed as the first block of the
+        // If in the same epoch, re-propose the parent if the parent is the last height
+        // of the epoch. parent.height+1 should be proposed as the first block of the
         // next epoch.
-        let repropose_boundary = parent_epoch_info.last() == parent.height()
-            && parent_epoch_info.epoch() == round.epoch();
-
-        if repropose_boundary {
+        if parent_epoch_info.last() == parent.height() && parent_epoch_info.epoch() == round.epoch()
+        {
             info!("parent is last height of epoch; re-proposing parent");
             return Ok(parent);
         }
 
-        let is_reproposed_boundary = parent_epoch_info.first() == parent.height();
+        // Detect when we're building the genesis block of a new epoch
+        let is_genesis_block = parent_epoch_info.last() == parent.height()
+            && parent_epoch_info.epoch().next() == round.epoch();
 
-        // Send the proposal parent to reth to cover edge cases when we were not asked to verify
-        // it directly, skipping a re-proposed boundary which is already verified by the EL.
-        if !is_reproposed_boundary
+        // Send the proposal parent to reth to cover edge cases when we were not asked to
+        // to verify. If the genesis block, the genesis digest (previous boundary) must
+        // have already been verified before the engine for this epoch was created.
+        if !is_genesis_block
             && !verify_block(
                 context.clone(),
                 parent_epoch_info.epoch(),
