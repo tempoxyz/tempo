@@ -12,6 +12,7 @@ use jsonrpsee::{
     proc_macros::rpc,
     types::{ErrorObject, error::INTERNAL_ERROR_CODE},
 };
+use reth_tracing::tracing::warn;
 
 pub use types::{
     CertifiedBlock, ConsensusFeed, ConsensusState, Event, IdentityProofError, IdentityTransition,
@@ -100,7 +101,21 @@ impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        // The broadcast buffer overflowed: n events were irrecoverably
+                        // dropped from this subscriber's view. Continuing would silently
+                        // deliver a gapped event stream to the client with no indication
+                        // that finalization or notarization events were missed.
+                        //
+                        // Close the subscription instead so the client receives a
+                        // SubscriptionClosed error and knows to reconnect and re-sync
+                        // from the current chain head.
+                        warn!(
+                            missed_events = n,
+                            "consensus subscription lagged; closing so client can reconnect"
+                        );
+                        break;
+                    }
                 }
             }
         });
