@@ -242,6 +242,34 @@ impl TempoHardfork {
         crate::spec::TEMPO_T1_NEW_NONCE_KEY_GAS
     }
 
+    /// Returns the active hardfork at the given timestamp for the specified chain.
+    ///
+    /// Returns `None` if the chain ID is not a known Tempo chain.
+    pub const fn from_chain_and_timestamp(chain_id: u64, timestamp: u64) -> Option<Self> {
+        use crate::constants::{mainnet::*, moderato::*};
+        match chain_id {
+            // Mainnet (Presto) — Genesis and T0 activate at timestamp 0,
+            // T1 and T1A share the same activation timestamp.
+            4217 => Some(match timestamp {
+                _ if timestamp < MAINNET_T1_TIMESTAMP => Self::T0,
+                _ if timestamp < MAINNET_T1B_TIMESTAMP => Self::T1A,
+                _ if timestamp < MAINNET_T1C_TIMESTAMP => Self::T1B,
+                _ if timestamp < MAINNET_T2_TIMESTAMP => Self::T1C,
+                _ => Self::T2,
+            }),
+            // Moderato testnet — Genesis activates at timestamp 0,
+            // T0 and T1 share the same timestamp, T1A and T1B share the same timestamp.
+            42431 => Some(match timestamp {
+                _ if timestamp < MODERATO_T0_TIMESTAMP => Self::Genesis,
+                _ if timestamp < MODERATO_T1A_TIMESTAMP => Self::T1,
+                _ if timestamp < MODERATO_T1C_TIMESTAMP => Self::T1B,
+                _ if timestamp < MODERATO_T2_TIMESTAMP => Self::T1C,
+                _ => Self::T2,
+            }),
+            _ => None,
+        }
+    }
+
     /// Retrieves the activation block for this hardfork on mainnet.
     pub const fn mainnet_activation_block(&self) -> Option<u64> {
         use crate::constants::mainnet::*;
@@ -325,5 +353,42 @@ impl From<SpecId> for TempoHardfork {
         // Default to the default hardfork when converting from SpecId.
         // The actual hardfork should be passed explicitly where needed.
         Self::default()
+    }
+}
+
+#[cfg(test)]
+mod from_chain_and_timestamp_tests {
+    use super::TempoHardfork::{self, *};
+    use crate::constants::{mainnet::*, moderato::*};
+
+    #[test]
+    fn mainnet() {
+        let f = |ts| TempoHardfork::from_chain_and_timestamp(4217, ts);
+        assert_eq!(f(0), Some(T0));
+        assert_eq!(f(MAINNET_T1_TIMESTAMP - 1), Some(T0));
+        assert_eq!(f(MAINNET_T1_TIMESTAMP), Some(T1A));
+        assert_eq!(f(MAINNET_T1B_TIMESTAMP - 1), Some(T1A));
+        assert_eq!(f(MAINNET_T1B_TIMESTAMP), Some(T1B));
+        assert_eq!(f(MAINNET_T1C_TIMESTAMP), Some(T1C));
+        assert_eq!(f(MAINNET_T2_TIMESTAMP), Some(T2));
+        assert_eq!(f(u64::MAX), Some(T2));
+    }
+
+    #[test]
+    fn moderato() {
+        let f = |ts| TempoHardfork::from_chain_and_timestamp(42431, ts);
+        assert_eq!(f(0), Some(Genesis));
+        assert_eq!(f(MODERATO_T0_TIMESTAMP - 1), Some(Genesis));
+        assert_eq!(f(MODERATO_T0_TIMESTAMP), Some(T1));
+        assert_eq!(f(MODERATO_T1A_TIMESTAMP - 1), Some(T1));
+        assert_eq!(f(MODERATO_T1A_TIMESTAMP), Some(T1B));
+        assert_eq!(f(MODERATO_T1C_TIMESTAMP), Some(T1C));
+        assert_eq!(f(MODERATO_T2_TIMESTAMP), Some(T2));
+        assert_eq!(f(u64::MAX), Some(T2));
+    }
+
+    #[test]
+    fn unknown_chain() {
+        assert_eq!(TempoHardfork::from_chain_and_timestamp(1, 0), None);
     }
 }
