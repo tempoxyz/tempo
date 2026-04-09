@@ -489,14 +489,14 @@ impl Inner<Init> {
             return Ok(parent);
         }
 
-        // Detect when we're building on top of the genesis block
+        // Detect when we're building on top of the genesis digest
         let is_genesis_parent = parent.height().is_zero()
             || parent_epoch_info.last() == parent.height()
                 && parent_epoch_info.epoch().next() == round.epoch();
 
         // Send the proposal parent to reth to cover edge cases when we were not asked to
-        // to verify. If the genesis block, the genesis digest (previous boundary) must
-        // have already been verified before the engine for this epoch was created.
+        // to verify. If first block, the genesis digest (previous boundary) must have
+        // been locally verified before the engine for this epoch was created.
         if !is_genesis_parent
             && !verify_block(
                 context.clone(),
