@@ -139,7 +139,7 @@ jobs:
     steps:
       - name: Check org membership
         if: github.event_name == 'issue_comment'
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -158,32 +158,50 @@ jobs:
 
       - name: Parse arguments
         id: args
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          INPUT_ACTOR: ${{ github.actor }}
+          INPUT_PRESET: ${{ github.event.inputs.preset }}
+          INPUT_DURATION: ${{ github.event.inputs.duration }}
+          INPUT_BLOAT: ${{ github.event.inputs.bloat }}
+          INPUT_TPS: ${{ github.event.inputs.tps }}
+          INPUT_BASELINE: ${{ github.event.inputs.baseline }}
+          INPUT_FEATURE: ${{ github.event.inputs.feature }}
+          INPUT_SAMPLY: ${{ github.event.inputs.samply }}
+          INPUT_TRACY: ${{ github.event.inputs.tracy }}
+          INPUT_TRACY_SECONDS: ${{ github.event.inputs.tracy-seconds }}
+          INPUT_TRACY_OFFSET: ${{ github.event.inputs.tracy-offset }}
+          INPUT_BASELINE_HARDFORK: ${{ github.event.inputs.baseline-hardfork }}
+          INPUT_FEATURE_HARDFORK: ${{ github.event.inputs.feature-hardfork }}
+          INPUT_RUN_TYPE: ${{ github.event.inputs.run-type }}
+          INPUT_FORCE_BLOAT: ${{ github.event.inputs.force-bloat }}
+          INPUT_NO_SLACK: ${{ github.event.inputs.no_slack }}
+          INPUT_REF_NAME: ${{ github.ref_name }}
         with:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |
             let pr, actor, preset, duration, bloat, tps, baseline, feature, samply, tracy, tracySeconds, tracyOffset, baselineHardfork, featureHardfork, runType, forceBloat, noSlack;
 
             if (context.eventName === 'workflow_dispatch') {
-              actor = '${{ github.actor }}';
-              preset = '${{ github.event.inputs.preset }}' || 'tip20';
-              duration = '${{ github.event.inputs.duration }}' || '300';
-              bloat = String(parseInt('${{ github.event.inputs.bloat }}' || '1', 10) * 1000);
-              tps = '${{ github.event.inputs.tps }}' || '10000';
-              baseline = '${{ github.event.inputs.baseline }}';
-              feature = '${{ github.event.inputs.feature }}';
-              samply = '${{ github.event.inputs.samply }}' === 'true' ? 'true' : 'false';
-              tracy = '${{ github.event.inputs.tracy }}' || 'off';
-              tracySeconds = '${{ github.event.inputs.tracy-seconds }}' || '30';
-              tracyOffset = '${{ github.event.inputs.tracy-offset }}' || '120';
-              baselineHardfork = '${{ github.event.inputs.baseline-hardfork }}' || '';
-              featureHardfork = '${{ github.event.inputs.feature-hardfork }}' || '';
-              runType = '${{ github.event.inputs.run-type }}' || 'manual';
-              forceBloat = '${{ github.event.inputs.force-bloat }}' === 'true' ? 'true' : 'false';
-              noSlack = '${{ github.event.inputs.no_slack }}' !== 'false' ? 'true' : 'false';
+              actor = process.env.INPUT_ACTOR;
+              preset = process.env.INPUT_PRESET || 'tip20';
+              duration = process.env.INPUT_DURATION || '300';
+              bloat = String(parseInt(process.env.INPUT_BLOAT || '1', 10) * 1000);
+              tps = process.env.INPUT_TPS || '10000';
+              baseline = process.env.INPUT_BASELINE;
+              feature = process.env.INPUT_FEATURE;
+              samply = process.env.INPUT_SAMPLY === 'true' ? 'true' : 'false';
+              tracy = process.env.INPUT_TRACY || 'off';
+              tracySeconds = process.env.INPUT_TRACY_SECONDS || '30';
+              tracyOffset = process.env.INPUT_TRACY_OFFSET || '120';
+              baselineHardfork = process.env.INPUT_BASELINE_HARDFORK || '';
+              featureHardfork = process.env.INPUT_FEATURE_HARDFORK || '';
+              runType = process.env.INPUT_RUN_TYPE || 'manual';
+              forceBloat = process.env.INPUT_FORCE_BLOAT === 'true' ? 'true' : 'false';
+              noSlack = process.env.INPUT_NO_SLACK !== 'false' ? 'true' : 'false';
 
               // Find PR for the selected branch
-              const branch = '${{ github.ref_name }}';
+              const branch = process.env.INPUT_REF_NAME;
               const { data: prs } = await github.rest.pulls.list({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -344,7 +362,7 @@ jobs:
                 });
                 featureName = prData.head.ref;
               } else {
-                featureName = '${{ github.ref_name }}';
+                featureName = process.env.INPUT_REF_NAME;
               }
             }
 
@@ -370,7 +388,20 @@ jobs:
 
       - name: Acknowledge request
         id: ack
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          ACK_PR: ${{ steps.args.outputs.pr }}
+          ACK_ACTOR: ${{ steps.args.outputs.actor }}
+          ACK_PRESET: ${{ steps.args.outputs.preset }}
+          ACK_DURATION: ${{ steps.args.outputs.duration }}
+          ACK_BLOAT: ${{ steps.args.outputs.bloat }}
+          ACK_TPS: ${{ steps.args.outputs.tps }}
+          ACK_BASELINE_NAME: ${{ steps.args.outputs.baseline-name }}
+          ACK_FEATURE_NAME: ${{ steps.args.outputs.feature-name }}
+          ACK_SAMPLY: ${{ steps.args.outputs.samply }}
+          ACK_TRACY: ${{ steps.args.outputs.tracy }}
+          ACK_BASELINE_HARDFORK: ${{ steps.args.outputs.baseline-hardfork }}
+          ACK_FEATURE_HARDFORK: ${{ steps.args.outputs.feature-hardfork }}
         with:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |
@@ -383,24 +414,24 @@ jobs:
               });
             }
 
-            const pr = '${{ steps.args.outputs.pr }}';
+            const pr = process.env.ACK_PR;
             if (!pr) return;
 
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
 
-            const actor = '${{ steps.args.outputs.actor }}';
-            const preset = '${{ steps.args.outputs.preset }}';
-            const duration = '${{ steps.args.outputs.duration }}';
-            const bloat = '${{ steps.args.outputs.bloat }}';
-            const tps = '${{ steps.args.outputs.tps }}';
-            const baseline = '${{ steps.args.outputs.baseline-name }}';
-            const feature = '${{ steps.args.outputs.feature-name }}';
-            const samply = '${{ steps.args.outputs.samply }}' === 'true';
+            const actor = process.env.ACK_ACTOR;
+            const preset = process.env.ACK_PRESET;
+            const duration = process.env.ACK_DURATION;
+            const bloat = process.env.ACK_BLOAT;
+            const tps = process.env.ACK_TPS;
+            const baseline = process.env.ACK_BASELINE_NAME;
+            const feature = process.env.ACK_FEATURE_NAME;
+            const samply = process.env.ACK_SAMPLY === 'true';
             const samplyNote = samply ? ', samply: `enabled`' : '';
-            const tracy = '${{ steps.args.outputs.tracy }}';
+            const tracy = process.env.ACK_TRACY;
             const tracyNote = tracy !== 'off' ? `, tracy: \`${tracy}\`` : '';
-            const bHf = '${{ steps.args.outputs.baseline-hardfork }}';
-            const fHf = '${{ steps.args.outputs.feature-hardfork }}';
+            const bHf = process.env.ACK_BASELINE_HARDFORK || '';
+            const fHf = process.env.ACK_FEATURE_HARDFORK || '';
             const hfNote = bHf ? `, baseline-hardfork: \`${bHf}\`, feature-hardfork: \`${fHf}\`` : '';
             const config = `**Config:** preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} MiB\`, tps: \`${tps}\`, baseline: \`${baseline}\`, feature: \`${feature}\`${samplyNote}${tracyNote}${hfNote}`;
 
@@ -461,17 +492,19 @@ jobs:
 
       - name: Resolve checkout ref
         id: checkout-ref
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          INPUT_GITHUB_REF: ${{ github.ref }}
         with:
           script: |
             // workflow_dispatch: always use the branch ref directly
             if (context.eventName === 'workflow_dispatch') {
-              core.setOutput('ref', '${{ github.ref }}');
+              core.setOutput('ref', process.env.INPUT_GITHUB_REF);
               return;
             }
             // issue_comment: use PR merge ref (with head SHA fallback)
             if (!process.env.BENCH_PR) {
-              core.setOutput('ref', '${{ github.ref }}');
+              core.setOutput('ref', process.env.INPUT_GITHUB_REF);
               return;
             }
             const { data: pr } = await github.rest.pulls.get({
@@ -486,14 +519,18 @@ jobs:
               core.setOutput('ref', `refs/pull/${process.env.BENCH_PR}/merge`);
             }
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          persist-credentials: false
           fetch-depth: 0
           ref: ${{ steps.checkout-ref.outputs.ref }}
 
       - name: Resolve job URL and update status
         if: env.BENCH_COMMENT_ID
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          BENCH_BASELINE_NAME: ${{ needs.tempo-bench-ack.outputs.baseline-name }}
+          BENCH_FEATURE_NAME: ${{ needs.tempo-bench-ack.outputs.feature-name }}
         with:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |
@@ -510,11 +547,11 @@ jobs:
             const duration = process.env.BENCH_DURATION;
             const bloat = process.env.BENCH_BLOAT;
             const tps = process.env.BENCH_TPS;
-            const baseline = '${{ needs.tempo-bench-ack.outputs.baseline-name }}';
-            const feature = '${{ needs.tempo-bench-ack.outputs.feature-name }}';
-            const samply = '${{ needs.tempo-bench-ack.outputs.samply }}' === 'true';
+            const baseline = process.env.BENCH_BASELINE_NAME;
+            const feature = process.env.BENCH_FEATURE_NAME;
+            const samply = process.env.BENCH_SAMPLY === 'true';
             const samplyNote = samply ? ', samply: `enabled`' : '';
-            const tracy = '${{ needs.tempo-bench-ack.outputs.tracy }}';
+            const tracy = process.env.BENCH_TRACY;
             const tracyNote = tracy !== 'off' ? `, tracy: \`${tracy}\`` : '';
             const bHf2 = process.env.BENCH_BASELINE_HARDFORK || '';
             const fHf2 = process.env.BENCH_FEATURE_HARDFORK || '';
@@ -530,12 +567,15 @@ jobs:
             });
 
       - uses: dtolnay/rust-toolchain@stable
-      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
         continue-on-error: true
 
       - name: Resolve PR head branch
         id: pr-info
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          INPUT_REF_NAME: ${{ github.ref_name }}
+          INPUT_SHA: ${{ github.sha }}
         with:
           script: |
             if (process.env.BENCH_PR) {
@@ -547,51 +587,57 @@ jobs:
               core.setOutput('head-ref', pr.head.ref);
               core.setOutput('head-sha', pr.head.sha);
             } else {
-              core.setOutput('head-ref', '${{ github.ref_name }}');
-              core.setOutput('head-sha', '${{ github.sha }}');
+              core.setOutput('head-ref', process.env.INPUT_REF_NAME);
+              core.setOutput('head-sha', process.env.INPUT_SHA);
             }
 
       - name: Resolve baseline and feature refs
         id: refs
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          INPUT_BASELINE: ${{ needs.tempo-bench-ack.outputs.baseline }}
+          INPUT_FEATURE: ${{ needs.tempo-bench-ack.outputs.feature }}
+          INPUT_HEAD_SHA: ${{ steps.pr-info.outputs.head-sha }}
+          INPUT_HEAD_REF: ${{ steps.pr-info.outputs.head-ref }}
+          INPUT_GITHUB_SHA: ${{ github.sha }}
         with:
           script: |
-            const { execSync } = require('child_process');
-            const run = (cmd) => execSync(cmd, { encoding: 'utf8' }).trim();
+            const { execFileSync } = require('child_process');
+            const run = (args) => execFileSync('git', args, { encoding: 'utf8' }).trim();
 
-            const baselineArg = '${{ needs.tempo-bench-ack.outputs.baseline }}';
-            const featureArg = '${{ needs.tempo-bench-ack.outputs.feature }}';
+            const baselineArg = process.env.INPUT_BASELINE || '';
+            const featureArg = process.env.INPUT_FEATURE || '';
 
             let baselineRef, baselineName, featureRef, featureName;
 
             if (baselineArg) {
-              try { run(`git fetch origin "${baselineArg}" --quiet`); } catch {}
+              try { run(['fetch', 'origin', baselineArg, '--quiet']); } catch {}
               try {
-                baselineRef = run(`git rev-parse "${baselineArg}"`);
+                baselineRef = run(['rev-parse', baselineArg]);
               } catch {
-                baselineRef = run(`git rev-parse "origin/${baselineArg}"`);
+                baselineRef = run(['rev-parse', `origin/${baselineArg}`]);
               }
               baselineName = baselineArg;
             } else {
               try {
-                baselineRef = run('git merge-base HEAD origin/main');
+                baselineRef = run(['merge-base', 'HEAD', 'origin/main']);
               } catch {
-                baselineRef = '${{ github.sha }}';
+                baselineRef = process.env.INPUT_GITHUB_SHA;
               }
               baselineName = 'main';
             }
 
             if (featureArg) {
-              try { run(`git fetch origin "${featureArg}" --quiet`); } catch {}
+              try { run(['fetch', 'origin', featureArg, '--quiet']); } catch {}
               try {
-                featureRef = run(`git rev-parse "${featureArg}"`);
+                featureRef = run(['rev-parse', featureArg]);
               } catch {
-                featureRef = run(`git rev-parse "origin/${featureArg}"`);
+                featureRef = run(['rev-parse', `origin/${featureArg}`]);
               }
               featureName = featureArg;
             } else {
-              featureRef = '${{ steps.pr-info.outputs.head-sha }}';
-              featureName = '${{ steps.pr-info.outputs.head-ref }}';
+              featureRef = process.env.INPUT_HEAD_SHA;
+              featureName = process.env.INPUT_HEAD_REF;
             }
 
             core.setOutput('baseline-ref', baselineRef);
@@ -600,12 +646,14 @@ jobs:
             core.setOutput('feature-name', featureName);
 
       - name: Resolve PR attribution
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          INPUT_FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
         with:
           script: |
             let pr = process.env.BENCH_PR || '';
             if (!pr) {
-              const featureRef = '${{ steps.refs.outputs.feature-ref }}';
+              const featureRef = process.env.INPUT_FEATURE_REF;
               try {
                 const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
                   owner: context.repo.owner,
@@ -625,7 +673,7 @@ jobs:
 
       - name: Update status (running benchmark)
         if: success() && env.BENCH_COMMENT_ID
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         with:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |
@@ -668,7 +716,7 @@ jobs:
 
       - name: Upload results
         if: "!cancelled()"
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: tempo-bench-results
           path: bench-results/
@@ -680,16 +728,19 @@ jobs:
           BENCH_FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
           BENCH_RUN_TYPE: ${{ env.BENCH_RUN_TYPE }}
           BENCH_JOB_URL: ${{ env.BENCH_JOB_URL }}
-        run: bash contrib/bench/upload-clickhouse.sh "${{ steps.results-dir.outputs.path }}"
+          BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
+        run: bash contrib/bench/upload-clickhouse.sh "$BENCH_RESULTS_DIR"
 
       - name: Post results to PR
         if: success()
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
         with:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |
             const fs = require('fs');
-            const resultsDir = '${{ steps.results-dir.outputs.path }}';
+            const resultsDir = process.env.BENCH_RESULTS_DIR;
 
             let summary = '';
             try {
@@ -798,7 +849,7 @@ jobs:
 
       - name: Send Slack notification (success)
         if: success() && steps.results-dir.outputs.path && env.BENCH_NO_SLACK != 'true'
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         env:
           BENCH_WORK_DIR: ${{ steps.results-dir.outputs.path }}
           BENCH_BASELINE_NAME: ${{ steps.refs.outputs.baseline-name }}
@@ -810,7 +861,7 @@ jobs:
 
       - name: Send Slack notification (failure)
         if: failure() && env.BENCH_NO_SLACK != 'true'
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         with:
           script: |
             const notify = require('./.github/scripts/bench-slack-notify.js');
@@ -818,7 +869,7 @@ jobs:
 
       - name: Update status (failed)
         if: failure() && env.BENCH_COMMENT_ID
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         with:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |
@@ -832,7 +883,7 @@ jobs:
 
       - name: Update status (cancelled)
         if: cancelled() && env.BENCH_COMMENT_ID
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         with:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |
