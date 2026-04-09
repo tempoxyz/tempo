@@ -246,28 +246,22 @@ impl TempoHardfork {
     ///
     /// Returns `None` if the chain ID is not a known Tempo chain.
     pub const fn from_chain_and_timestamp(chain_id: u64, timestamp: u64) -> Option<Self> {
-        use crate::constants::{mainnet::*, moderato::*};
-        match chain_id {
-            // Mainnet (Presto) — Genesis and T0 activate at timestamp 0,
-            // T1 and T1A share the same activation timestamp.
-            4217 => Some(match timestamp {
-                _ if timestamp < MAINNET_T1_TIMESTAMP => Self::T0,
-                _ if timestamp < MAINNET_T1B_TIMESTAMP => Self::T1A,
-                _ if timestamp < MAINNET_T1C_TIMESTAMP => Self::T1B,
-                _ if timestamp < MAINNET_T2_TIMESTAMP => Self::T1C,
-                _ => Self::T2,
-            }),
-            // Moderato testnet — Genesis activates at timestamp 0,
-            // T0 and T1 share the same timestamp, T1A and T1B share the same timestamp.
-            42431 => Some(match timestamp {
-                _ if timestamp < MODERATO_T0_TIMESTAMP => Self::Genesis,
-                _ if timestamp < MODERATO_T1A_TIMESTAMP => Self::T1,
-                _ if timestamp < MODERATO_T1C_TIMESTAMP => Self::T1B,
-                _ if timestamp < MODERATO_T2_TIMESTAMP => Self::T1C,
-                _ => Self::T2,
-            }),
-            _ => None,
+        // Walk variants in reverse to find the latest active fork, mirroring
+        // `TempoHardforks::tempo_hardfork_at` but without needing a chainspec instance.
+        let variants = Self::VARIANTS;
+        let mut i = variants.len();
+        while i > 0 {
+            i -= 1;
+            let activation = match chain_id {
+                4217 => variants[i].mainnet_activation_timestamp(),
+                42431 => variants[i].moderato_activation_timestamp(),
+                _ => return None,
+            };
+            if let Some(ts) = activation && timestamp >= ts {
+                return Some(variants[i]);
+            }
         }
+        Some(Self::Genesis)
     }
 
     /// Retrieves the activation block for this hardfork on mainnet.
