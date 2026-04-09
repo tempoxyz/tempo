@@ -207,7 +207,6 @@ where
             }
         }
     }
-
 }
 
 impl<I> Iterator for StateAwareBestTransactions<I>

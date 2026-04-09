@@ -233,9 +233,9 @@ impl TempoPooledTransaction {
     /// lazily computed and cached on first access.
     pub fn fee_balance_slot(&self) -> Option<(Address, U256)> {
         *self.fee_balance_slot.get_or_init(|| {
-            let fee_token = self.resolved_fee_token().unwrap_or_else(|| {
-                self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN)
-            });
+            let fee_token = self
+                .resolved_fee_token()
+                .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN));
             let fee_payer = self.inner().fee_payer(self.sender()).ok()?;
             let slot = TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
             Some((fee_token, slot))
