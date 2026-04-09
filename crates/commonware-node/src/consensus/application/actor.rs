@@ -831,24 +831,25 @@ async fn verify_block<TContext: Pacer>(
         return Ok(false);
     }
 
-    // FIXME: in cases where validate_block is called on the boundary block,
-    // the scheme might not be available.
+    // When called on the re-proposed boundary block in the genesis view, there is
+    // a small race between the dkg loop entering the next epoch or the epoch manager
+    // handling finalized update of the parent (the boundary block of the last epoch).
+    // For all other blocks, the scheme must be available.
     //
-    // The fix is to track directly track notarizations and feed them to the
-    // EL that way, instead of doing this at the automaton/proposal level.
-    //
-    // https://github.com/tempoxyz/tempo/issues/1411
-    //
-    // let scheme = scheme_provider
-    //     .scoped(epoch)
-    //     .ok_or_eyre("cannot determine participants in the current epoch")?;
-    let validator_set = scheme_provider.scoped(epoch).map(|scheme| {
+    // Thus by erroring here, we're making sure the proposer has fully processed and
+    // registered the outcome of the previous boundary (most likely) otherwise moving
+    // into the next round with a new proposer.
+    let scheme = scheme_provider
+        .scoped(epoch)
+        .ok_or_eyre("cannot determine participants in the current epoch")?;
+
+    let validator_set = Some(
         scheme
             .participants()
             .into_iter()
             .map(|p| B256::from_slice(p))
-            .collect()
-    });
+            .collect(),
+    );
     let block = block.clone().into_inner();
     let execution_data = TempoExecutionData {
         block: Arc::new(block),
