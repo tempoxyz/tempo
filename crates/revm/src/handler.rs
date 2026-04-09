@@ -311,6 +311,98 @@ impl<DB, I> TempoEvmHandler<DB, I>
 where
     DB: alloy_evm::Database,
 {
+    fn prevalidate_keychain_call_scopes(
+        &self,
+        evm: &mut TempoEvm<DB, I>,
+        calls: &[tempo_primitives::transaction::Call],
+        remaining_gas: &mut u64,
+    ) -> Result<Option<FrameResult>, EVMError<DB::Error, TempoInvalidTransaction>> {
+        let spec = *evm.ctx().cfg().spec();
+        if !spec.is_t3() {
+            return Ok(None);
+        }
+
+        let (access_key_addr, user_address) = {
+            let ctx = evm.ctx();
+            let tx = ctx.tx();
+            let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref() else {
+                return Ok(None);
+            };
+            let Some(keychain_sig) = tempo_tx_env.signature.as_keychain() else {
+                return Ok(None);
+            };
+
+            let access_key_addr = if let Some(override_key_id) = tempo_tx_env.override_key_id {
+                override_key_id
+            } else {
+                keychain_sig
+                    .key_id(&tempo_tx_env.signature_hash)
+                    .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
+            };
+
+            (access_key_addr, keychain_sig.user_address)
+        };
+        let kind = calls
+            .first()
+            .expect("AA transactions must contain at least one call")
+            .to;
+
+        let ctx = evm.ctx_mut();
+        let internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+        let mut provider =
+            EvmPrecompileStorageProvider::new_with_gas_limit(internals, &ctx.cfg, *remaining_gas);
+
+        let validation = StorageCtx::enter(&mut provider, || {
+            let keychain = AccountKeychain::default();
+            for call in calls {
+                keychain.validate_call_scope_for_transaction(
+                    user_address,
+                    access_key_addr,
+                    &call.to,
+                    call.input.as_ref(),
+                )?;
+            }
+            Ok::<(), TempoPrecompileError>(())
+        });
+
+        let gas_used = provider.gas_used();
+
+        match validation {
+            Ok(()) => {
+                *remaining_gas = remaining_gas.saturating_sub(gas_used);
+                Ok(None)
+            }
+            Err(TempoPrecompileError::OutOfGas) => Ok(Some(oog_frame_result(kind, *remaining_gas))),
+            Err(TempoPrecompileError::Fatal(err)) => Err(EVMError::Custom(err)),
+            Err(_) => {
+                let mut gas = Gas::new(gas_used);
+                gas.set_spent(gas_used);
+
+                let frame_result = if kind.is_call() {
+                    FrameResult::Call(revm::interpreter::CallOutcome::new(
+                        revm::interpreter::InterpreterResult::new(
+                            revm::interpreter::InstructionResult::Revert,
+                            Default::default(),
+                            gas,
+                        ),
+                        0..0,
+                    ))
+                } else {
+                    FrameResult::Create(revm::interpreter::CreateOutcome::new(
+                        revm::interpreter::InterpreterResult::new(
+                            revm::interpreter::InstructionResult::Revert,
+                            Default::default(),
+                            gas,
+                        ),
+                        None,
+                    ))
+                };
+
+                Ok(Some(frame_result))
+            }
+        }
+    }
+
     /// Generic single-call execution that works with both standard and inspector exec loops.
     ///
     /// This is the core implementation that both `execute_single_call` and inspector-aware
@@ -396,6 +488,23 @@ where
 
         let mut final_result = None;
 
+        if let Some(mut frame_result) =
+            self.prevalidate_keychain_call_scopes(evm, &calls, &mut remaining_gas)?
+        {
+            let total_gas_spent = (gas_limit - remaining_gas) + frame_result.gas().spent();
+
+            let mut corrected_gas = Gas::new(gas_limit);
+            if frame_result.instruction_result().is_revert() {
+                corrected_gas.set_spent(total_gas_spent);
+            } else {
+                corrected_gas.spend_all();
+            }
+            corrected_gas.set_refund(0);
+            *frame_result.gas_mut() = corrected_gas;
+
+            return Ok(frame_result);
+        }
+
         for call in calls.iter() {
             // Update TxEnv to point to this specific call
             {
@@ -419,12 +528,14 @@ where
                 tx.inner.gas_limit = gas_limit;
             }
 
-            let mut frame_result = frame_result?;
+            let frame_result = frame_result?;
 
             // Check if call succeeded
             let instruction_result = frame_result.instruction_result();
             if !instruction_result.is_ok() {
-                // Revert checkpoint - rolls back ALL state changes from ALL calls
+                let mut frame_result = frame_result;
+
+                // Revert checkpoint - rolls back ALL state changes from all executed calls.
                 evm.ctx().journal_mut().checkpoint_revert(checkpoint);
 
                 // For AA transactions with CREATE as the first call, the nonce was bumped by
@@ -453,19 +564,18 @@ where
                     }
                 }
 
-                // Include gas from all previous successful calls + failed call
-                let gas_spent_by_failed_call = frame_result.gas().spent();
-                let total_gas_spent = (gas_limit - remaining_gas) + gas_spent_by_failed_call;
+                let gas_spent_by_failed_step = frame_result.gas().spent();
+                let total_gas_spent = (gas_limit - remaining_gas) + gas_spent_by_failed_step;
 
                 // Create new Gas with correct limit, because Gas does not have a set_limit method
-                // (the frame_result has the limit from just the last call)
+                // (the frame_result limit only covers the failed step).
                 let mut corrected_gas = Gas::new(gas_limit);
-                if instruction_result.is_revert() {
+                if frame_result.instruction_result().is_revert() {
                     corrected_gas.set_spent(total_gas_spent);
                 } else {
                     corrected_gas.spend_all();
                 }
-                corrected_gas.set_refund(0); // No refunds when batch fails and all state is reverted
+                corrected_gas.set_refund(0); // No refunds when batch fails and all state is reverted.
                 *frame_result.gas_mut() = corrected_gas;
 
                 return Ok(frame_result);
@@ -1146,7 +1256,7 @@ where
                 .unwrap_or(false);
 
             // Always need to set the transaction key for Keychain signatures
-            let (scope_validation_gas, stored_key_expiry) = StorageCtx::enter_precompile(
+            let stored_key_expiry = StorageCtx::enter_precompile(
                 journal,
                 block,
                 cfg,
@@ -1207,45 +1317,11 @@ where
                         .set_transaction_key(access_key_addr)
                         .map_err(|e| EVMError::Custom(e.to_string()))?;
 
-                    let scope_validation_gas = if spec.is_t3() {
-                        let gas_before = StorageCtx.gas_used();
-
-                        let user_address = keychain_sig.user_address;
-                        for (to, input) in tx.calls() {
-                            keychain
-                                .validate_call_scope_for_transaction(
-                                    user_address,
-                                    access_key_addr,
-                                    to,
-                                    input,
-                                )
-                                .map_err(|e| TempoInvalidTransaction::KeychainValidationFailed {
-                                    reason: format!("{e:?}"),
-                                })?;
-                        }
-
-                        StorageCtx.gas_used().saturating_sub(gas_before)
-                    } else {
-                        0
-                    };
-
-                    Ok::<_, EVMError<_, TempoInvalidTransaction>>((
-                        scope_validation_gas,
-                        key_expiry,
-                    ))
+                    Ok::<_, EVMError<_, TempoInvalidTransaction>>(key_expiry)
                 },
             )?;
 
             evm.key_expiry = stored_key_expiry;
-            evm.initial_gas += scope_validation_gas;
-
-            if spec.is_t3() && tx.gas_limit() < evm.initial_gas {
-                return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
-                    gas_limit: tx.gas_limit(),
-                    initial_gas: evm.initial_gas,
-                }
-                .into());
-            }
         }
 
         // Short-circuit if there is no spending for this transaction and `collectFeePreTx`
@@ -3021,7 +3097,7 @@ mod tests {
     }
 
     #[test]
-    fn test_t3_scope_validation_gas_rechecked_against_gas_limit() {
+    fn test_t3_scope_validation_moves_to_execution() {
         const CALL_SCOPE_SELECTOR: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
 
         let caller = Address::repeat_byte(0x11);
@@ -3069,7 +3145,7 @@ mod tests {
             .with_new_journal(create_test_journal());
 
         let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
-        let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+        let mut handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
 
         StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
             let mut keychain = AccountKeychain::new();
@@ -3115,18 +3191,21 @@ mod tests {
 
         evm.inner.ctx.tx.inner.gas_limit = init_gas.initial_gas;
 
-        let err = handler
+        handler
             .validate_against_state_and_deduct_caller(&mut evm)
-            .expect_err("scope validation gas should force a gas-limit recheck");
+            .expect("scope validation no longer runs during state validation");
+
+        let result = handler
+            .execution(&mut evm, &init_gas)
+            .expect("execution should return a frame result");
 
         assert!(
             matches!(
-                err.as_invalid_tx_err(),
-                Some(TempoInvalidTransaction::EthInvalidTransaction(
-                    InvalidTransaction::CallGasCostMoreThanGasLimit { .. }
-                ))
+                result.instruction_result(),
+                revm::interpreter::InstructionResult::OutOfGas
             ),
-            "expected CallGasCostMoreThanGasLimit, got: {err:?}"
+            "expected scope validation to fail during execution with OOG, got: {:?}",
+            result.instruction_result()
         );
     }
 
