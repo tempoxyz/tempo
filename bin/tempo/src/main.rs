@@ -20,6 +20,11 @@
 #[cfg(feature = "tracy")]
 use tracy_client as _;
 
+// opentelemetry-otlp is an optional dependency activated by the `otlp` feature.
+// It is not used directly but must be present to enable reqwest rustls support.
+#[cfg(feature = "otlp")]
+use opentelemetry_otlp as _;
+
 #[global_allocator]
 static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::new_allocator();
 
@@ -435,26 +440,6 @@ fn main() -> eyre::Result<()> {
             .consensus
             .public_key()?
             .map(|key| B256::from_slice(key.as_ref()));
-
-        // Validators must not prune account or storage history — the consensus
-        // implementation relies on historical state to fetch the validator set.
-        if validator_key.is_some()
-            && let Some(prune_config) = builder.config().prune_config()
-        {
-            let modes = &prune_config.segments;
-            if let Some(mode) = &modes.account_history {
-                eyre::bail!(
-                    "validator nodes must not prune account history \
-                     (configured: {mode:?}). Remove --prune.account-history.* flags."
-                );
-            }
-            if let Some(mode) = &modes.storage_history {
-                eyre::bail!(
-                    "validator nodes must not prune storage history \
-                     (configured: {mode:?}). Remove --prune.storage-history.* flags."
-                );
-            }
-        }
 
         // Initialize Pyroscope profiling if enabled
         #[cfg(feature = "pyroscope")]
