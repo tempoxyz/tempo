@@ -458,6 +458,7 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
     env: &mut E,
 ) -> eyre::Result<std::collections::BTreeMap<String, u64>> {
     let is_t3 = env.hardfork().is_t3();
+    let supports_scoped_key_auth_rpc = env.supports_scoped_key_auth_rpc();
 
     // Fixed signer and recipient so calldata/storage costs are deterministic.
     let signer = PrivateKeySigner::from_bytes(&B256::with_last_byte(1)).unwrap();
@@ -473,10 +474,26 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
         input: Bytes::new(),
     };
 
-    let cases = gas_estimation_cases();
+    let cases: Vec<_> = gas_estimation_cases()
+        .into_iter()
+        .filter(|case| {
+            supports_scoped_key_auth_rpc
+                || !matches!(
+                    &case.auth,
+                    AuthKind::Keychain { allowed_calls, .. }
+                        | AuthKind::KeyAuth { allowed_calls, .. }
+                        if !matches!(allowed_calls, AllowedCallsMode::None)
+                )
+        })
+        .collect();
     let provider = env.provider();
 
     println!("\n=== eth_estimateGas matrix ===\n");
+    if !supports_scoped_key_auth_rpc {
+        println!(
+            "Skipping scoped estimateGas cases: RPC endpoint still expects legacy selector JSON"
+        );
+    }
     println!("Running {} gas estimation cases...\n", cases.len());
 
     let mut results = std::collections::BTreeMap::<String, u64>::new();
@@ -632,6 +649,7 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
 /// deterministic by signing + recovering with a random signer.
 pub(super) async fn run_fill_transaction_matrix<E: TestEnv>(env: &mut E) -> eyre::Result<()> {
     let is_t3 = env.hardfork().is_t3();
+    let supports_scoped_key_auth_rpc = env.supports_scoped_key_auth_rpc();
     let signer = PrivateKeySigner::random();
     let signer_addr = signer.address();
     let current_timestamp = env.current_block_timestamp().await?;
@@ -652,7 +670,7 @@ pub(super) async fn run_fill_transaction_matrix<E: TestEnv>(env: &mut E) -> eyre
         if is_t3 { case } else { case.reject() }
     };
 
-    let matrix = [
+    let mut matrix = vec![
         FillTestCase::new(NonceMode::Protocol, KeyType::Secp256k1).omit_nonce_key(),
         FillTestCase::new(NonceMode::TwoD(42), KeyType::Secp256k1),
         FillTestCase::new(NonceMode::Expiring, KeyType::Secp256k1).valid_before_offset(20),
@@ -666,24 +684,33 @@ pub(super) async fn run_fill_transaction_matrix<E: TestEnv>(env: &mut E) -> eyre
         FillTestCase::new(NonceMode::Protocol, KeyType::Secp256k1)
             .fee_payer()
             .fee_token(DEFAULT_FEE_TOKEN),
-        scoped_fill_case(
-            "key_auth_selector_recipient",
-            2,
-            AllowedCallsMode::SelectorRecipient,
-        ),
-        scoped_fill_case(
-            "key_auth_selector_any_recipient",
-            0,
-            AllowedCallsMode::SelectorAnyRecipient,
-        ),
-        scoped_fill_case(
-            "key_auth_target_any_selector",
-            0,
-            AllowedCallsMode::TargetAnySelector,
-        ),
     ];
+    if supports_scoped_key_auth_rpc {
+        matrix.extend([
+            scoped_fill_case(
+                "key_auth_selector_recipient",
+                2,
+                AllowedCallsMode::SelectorRecipient,
+            ),
+            scoped_fill_case(
+                "key_auth_selector_any_recipient",
+                0,
+                AllowedCallsMode::SelectorAnyRecipient,
+            ),
+            scoped_fill_case(
+                "key_auth_target_any_selector",
+                0,
+                AllowedCallsMode::TargetAnySelector,
+            ),
+        ]);
+    }
 
     println!("\n=== eth_fillTransaction matrix ===\n");
+    if !supports_scoped_key_auth_rpc {
+        println!(
+            "Skipping scoped fillTransaction cases: RPC endpoint still expects legacy selector JSON"
+        );
+    }
     println!("Running {} fillTransaction cases...\n", matrix.len());
 
     for (index, test_case) in matrix.iter().enumerate() {

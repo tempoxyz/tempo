@@ -10,6 +10,7 @@ use alloy::{
     consensus::BlockHeader,
     primitives::{Address, B256, Bytes, U256},
     providers::Provider,
+    rpc::types::TransactionRequest,
     signers::local::PrivateKeySigner,
     transports::{
         RpcError, TransportErrorKind,
@@ -17,11 +18,14 @@ use alloy::{
     },
 };
 use alloy_eips::Encodable2718;
+use alloy_primitives::TxKind;
 use reth_primitives_traits::transaction::TxHashRef;
 use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
     spec::{DEV, MODERATO, PRESTO},
 };
+use tempo_node::rpc::TempoTransactionRequest;
+use tempo_primitives::SignatureType;
 use tempo_primitives::{TempoTxEnvelope, transaction::tempo_transaction::Call};
 
 use super::helpers::*;
@@ -63,6 +67,7 @@ pub(super) struct RpcEnv {
     provider: alloy::providers::RootProvider,
     chain_id: u64,
     hardfork: TempoHardfork,
+    supports_scoped_key_auth_rpc: bool,
 }
 
 impl RpcEnv {
@@ -96,11 +101,20 @@ impl RpcEnv {
             .await?
             .ok_or_else(|| eyre::eyre!("latest block missing"))?;
         let hardfork = chain_spec.tempo_hardfork_at(latest_block.header.timestamp());
+        let supports_scoped_key_auth_rpc = detect_scoped_key_auth_rpc_support(&provider, chain_id)
+            .await
+            .unwrap_or_else(|err| {
+                eprintln!(
+                    "Skipping scoped key auth RPC cases: failed to probe selector support: {err}"
+                );
+                false
+            });
 
         Ok(Self {
             provider,
             chain_id,
             hardfork,
+            supports_scoped_key_auth_rpc,
         })
     }
 
@@ -132,6 +146,10 @@ impl super::types::TestEnv for RpcEnv {
 
     fn hardfork(&self) -> TempoHardfork {
         self.hardfork
+    }
+
+    fn supports_scoped_key_auth_rpc(&self) -> bool {
+        self.supports_scoped_key_auth_rpc
     }
 
     async fn fund_account(&mut self, addr: Address) -> eyre::Result<U256> {
@@ -280,6 +298,50 @@ impl super::types::TestEnv for RpcEnv {
             .ok_or_else(|| eyre::eyre!("Receipt missing status field for {tx_hash}"))?;
         assert_eq!(status, "0x1", "Receipt status mismatch for {tx_hash}");
         Ok(receipt)
+    }
+}
+
+async fn detect_scoped_key_auth_rpc_support(
+    provider: &alloy::providers::RootProvider,
+    chain_id: u64,
+) -> eyre::Result<bool> {
+    let signer = PrivateKeySigner::random();
+    let scoped_auth = create_signed_key_authorization(
+        &signer,
+        SignatureType::Secp256k1,
+        1,
+        chain_id,
+        super::types::AllowedCallsMode::SelectorRecipient,
+        Address::with_last_byte(0x11),
+    );
+    let request = TempoTransactionRequest {
+        inner: TransactionRequest {
+            from: Some(signer.address()),
+            ..Default::default()
+        },
+        calls: vec![Call {
+            to: TxKind::Call(Address::with_last_byte(0x22)),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        key_authorization: Some(scoped_auth),
+        ..Default::default()
+    };
+
+    let result: Result<serde_json::Value, _> = provider
+        .raw_request(
+            "eth_fillTransaction".into(),
+            [serde_json::to_value(request)?],
+        )
+        .await;
+
+    match result {
+        Ok(_) => Ok(true),
+        Err(err) => {
+            let err_str = err.to_string();
+            Ok(!err_str.contains("invalid type: string")
+                || !err_str.contains("expected an array of length 4"))
+        }
     }
 }
 

@@ -26,6 +26,12 @@ pub(crate) trait TestEnv: Sized {
     /// Currently active hardfork
     fn hardfork(&self) -> TempoHardfork;
 
+    /// Whether the RPC endpoint accepts selector-scoped key auth JSON using the current
+    /// `0x...` selector encoding.
+    fn supports_scoped_key_auth_rpc(&self) -> bool {
+        true
+    }
+
     /// Fund `addr` with fee tokens so it can transact.
     /// Returns the funded amount.
     async fn fund_account(&mut self, addr: Address) -> eyre::Result<U256>;
