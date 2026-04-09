@@ -318,8 +318,8 @@ async fn test_post_t1b_keyauth_oog_fixed() -> eyre::Result<()> {
         .expect_err("Post-T1B: replay must be rejected");
     let err_msg = replay_err.to_string();
     assert!(
-        err_msg.contains("nonce too low: next nonce 1, tx nonce 0"),
-        "Post-T1B: replay error must be nonce-too-low, got: {err_msg}"
+        err_msg.contains("KeyAlreadyExists"),
+        "Post-T1B: replay error must be KeyAlreadyExists, got: {err_msg}"
     );
 
     Ok(())

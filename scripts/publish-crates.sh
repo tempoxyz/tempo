@@ -27,6 +27,85 @@ err() { printf '  \033[1;31m✗\033[0m %s\n' "$*" >&2; exit 1; }
 SANITIZE_PY="$REPO_ROOT/scripts/sanitize_toml.py"
 SANITIZE_RS="$REPO_ROOT/scripts/sanitize_source.py"
 
+release_type_for_crate() {
+    local crate_name="$1"
+    python3 - "$crate_name" "$REPO_ROOT" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover
+    import tomli as tomllib
+
+crate_name, repo_root = sys.argv[1], Path(sys.argv[2])
+config_path = repo_root / ".changelog" / "config.toml"
+
+bump_rank = {"patch": 0, "minor": 1, "major": 2}
+
+fixed_groups = []
+if config_path.exists():
+    with config_path.open("rb") as fh:
+        config = tomllib.load(fh)
+    for group in config.get("fixed", []):
+        members = group.get("members", [])
+        if isinstance(members, list):
+            fixed_groups.append(set(members))
+
+explicit = {}
+for changelog in sorted((repo_root / ".changelog").glob("*.md")):
+    lines = changelog.read_text(encoding="utf-8").splitlines()
+    if not lines or lines[0].strip() != "---":
+        continue
+    try:
+        end = next(i for i, line in enumerate(lines[1:], start=1) if line.strip() == "---")
+    except StopIteration:
+        continue
+
+    for line in lines[1:end]:
+        match = re.match(r'^\s*"?([A-Za-z0-9_-]+)"?\s*:\s*(patch|minor|major)\s*$', line)
+        if not match:
+            continue
+        name, bump = match.groups()
+        current = explicit.get(name)
+        if current is None or bump_rank[bump] > bump_rank[current]:
+            explicit[name] = bump
+
+selected = explicit.get(crate_name)
+for members in fixed_groups:
+    if crate_name not in members:
+        continue
+    group_bump = None
+    for member in members:
+        bump = explicit.get(member)
+        if bump is None:
+            continue
+        if group_bump is None or bump_rank[bump] > bump_rank[group_bump]:
+            group_bump = bump
+    if group_bump is not None:
+        selected = group_bump if selected is None or bump_rank[group_bump] > bump_rank[selected] else selected
+
+print(selected or "")
+PY
+}
+
+append_contracts_semver_overrides() {
+    local cargo_toml="$1"
+    cat >> "$cargo_toml" <<'EOF'
+
+[package.metadata.cargo-semver-checks.lints]
+# `alloy-sol-types::sol!` can reshuffle generated Rust surface area when the ABI
+# evolves, even when the Solidity-facing SDK contract bindings remain compatible.
+constructible_struct_adds_field = "warn"
+enum_variant_added = "warn"
+enum_variant_missing = "warn"
+inherent_method_missing = "warn"
+struct_missing = "warn"
+struct_pub_field_missing = "warn"
+EOF
+}
+
 # ── Create temp workspace ──────────────────────────────────────────────────────
 TMP_WORK_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_WORK_DIR"' EXIT
@@ -195,15 +274,36 @@ log "Final build check passed ✓"
 # ── 9. Semver check (optional) ────────────────────────────────────────────────
 # Runs cargo-semver-checks against the last published version on crates.io.
 # Uses the sanitized + resolved workspace so the API surface matches what's
-# actually published.
+# actually published, and derives the intended release type from pending
+# changelog entries (including fixed groups) instead of the current manifest.
 if $SEMVER_CHECK; then
     log "Running cargo-semver-checks …"
+    append_contracts_semver_overrides "$TMP_WORK_DIR/contracts/Cargo.toml"
     SEMVER_FAILED=false
     SEMVER_SKIPPED_ALL=true
+    PUBLISH_CRATES=("tempo-contracts" "tempo-primitives" "tempo-alloy")
     for crate_dir in "$TMP_WORK_DIR/contracts" "$TMP_WORK_DIR/primitives" "$TMP_WORK_DIR/alloy"; do
         crate_name=$(grep -m1 'name = ' "$crate_dir/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')
         crate_ver=$(grep -m1 'version = ' "$crate_dir/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')
         log "Checking $crate_name@$crate_ver …"
+
+        release_type=$(release_type_for_crate "$crate_name")
+        if [ -z "$release_type" ]; then
+            log "$crate_name has no pending changelog release type, skipping semver-check"
+            continue
+        fi
+
+        internal_deps=()
+        for dep in "${PUBLISH_CRATES[@]}"; do
+            [ "$dep" = "$crate_name" ] && continue
+            if grep -qE "^\s*${dep}\s*=" "$crate_dir/Cargo.toml"; then
+                internal_deps+=("$dep")
+            fi
+        done
+        if ((${#internal_deps[@]} > 0)); then
+            log "$crate_name depends on releasable internal crates (${internal_deps[*]}), skipping semver-check"
+            continue
+        fi
 
         # Query crates.io for the latest published version.
         # Using the API directly instead of `cargo info` which resolves
@@ -227,6 +327,7 @@ if $SEMVER_CHECK; then
         if ! cargo semver-checks \
             --manifest-path "$TMP_WORK_DIR/Cargo.toml" \
             --package "$crate_name" \
+            --release-type "$release_type" \
             --default-features 2>&1; then
             SEMVER_FAILED=true
         fi

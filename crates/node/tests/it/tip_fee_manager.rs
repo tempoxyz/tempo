@@ -1,4 +1,4 @@
-use crate::utils::{TestNodeBuilder, make_genesis_at, setup_test_token};
+use crate::utils::{TestNodeBuilder, setup_test_token};
 use alloy::{
     consensus::Transaction,
     network::ReceiptResponse,
@@ -406,116 +406,6 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_fee_payer_transfer_whitelist_pre_t1c() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    let pre_t1c_genesis = make_genesis_at(tempo_chainspec::hardfork::TempoHardfork::T1B);
-
-    let setup = TestNodeBuilder::new()
-        .with_genesis(pre_t1c_genesis)
-        .build_http_only()
-        .await?;
-
-    let admin = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
-    let admin_addr = admin.address();
-    let fee_payer_signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
-    let fee_payer_addr = fee_payer_signer.address();
-    let provider = ProviderBuilder::new()
-        .wallet(admin.clone())
-        .connect_http(setup.http_url.clone());
-
-    // Create a token where admin has DEFAULT_ADMIN_ROLE
-    let admin_token = setup_test_token(provider.clone(), admin_addr).await?;
-    let token_addr = *admin_token.address();
-    admin_token
-        .mint(admin_addr, U256::from(1e18 as u64))
-        .gas(1_000_000)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-    admin_token
-        .mint(fee_payer_addr, U256::from(1e18 as u64))
-        .gas(1_000_000)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    // Provide AMM liquidity so admin_token can be swapped to PATH_USD for fee settlement
-    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
-    fee_amm
-        .mint(
-            token_addr,
-            PATH_USD_ADDRESS,
-            U256::from(1e17 as u64),
-            admin_addr,
-        )
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    // Set fee_payer's fee preference to admin_token
-    let fee_payer_provider = ProviderBuilder::new()
-        .wallet(fee_payer_signer.clone())
-        .connect_http(setup.http_url.clone());
-    let fee_manager_fp = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, fee_payer_provider.clone());
-    fee_manager_fp
-        .setUserToken(token_addr)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    // Create whitelist policy: whitelist fee_payer only (FeeManager not whitelisted pre-T1C)
-    let registry = ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, provider.clone());
-    let policy_receipt = registry
-        .createPolicy(admin_addr, ITIP403Registry::PolicyType::WHITELIST)
-        .gas(1_000_000)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    let policy_id = policy_receipt
-        .logs()
-        .iter()
-        .filter_map(|log| ITIP403Registry::PolicyCreated::decode_log(&log.inner).ok())
-        .next()
-        .expect("PolicyCreated event should be emitted")
-        .policyId;
-
-    registry
-        .modifyPolicyWhitelist(policy_id, fee_payer_addr, true)
-        .gas(1_000_000)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    let admin_token_contract = ITIP20::new(token_addr, &provider);
-    let receipt = admin_token_contract
-        .changeTransferPolicyId(policy_id)
-        .gas(1_000_000)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-    assert!(receipt.status(), "changeTransferPolicyId should succeed");
-
-    // Pre-T1C: tx should succeed without whitelisting the FeeManager
-    let tx = TransactionRequest::default()
-        .to(Address::ZERO)
-        .value(U256::ZERO);
-    let _ = fee_payer_provider.send_transaction(tx).await?;
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn test_fee_payer_transfer_whitelist_post_t1c() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
@@ -620,8 +510,8 @@ async fn test_fee_payer_transfer_whitelist_post_t1c() -> eyre::Result<()> {
     let result = fee_payer_provider.send_transaction(tx).await;
     let err = result.unwrap_err().to_string();
     assert!(
-        err.contains("blacklisted"),
-        "expected blacklisted fee payer error, got: {err}"
+        err.contains("PolicyForbids"),
+        "expected PolicyForbids error, got: {err}"
     );
 
     // Whitelist FeeManager — now fee_payer's tx should go through

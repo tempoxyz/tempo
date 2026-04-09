@@ -257,9 +257,19 @@ def parse_workspace_deps(ws_toml_path):
 
             if 'path = ' in body or 'path =' in body:
                 ws_path_deps.add(name)
-                # Path-only deps get the workspace package version
-                if name not in ws_deps and ws_pkg_version:
-                    ws_deps[name] = ws_pkg_version
+                # Path-only deps: read version from the crate's own Cargo.toml
+                if name not in ws_deps:
+                    path_m = re.search(r'path\s*=\s*"([^"]+)"', body)
+                    if path_m:
+                        crate_toml = Path(ws_toml_path).parent / path_m.group(1) / "Cargo.toml"
+                        if crate_toml.exists():
+                            crate_text = crate_toml.read_text(encoding='utf-8')
+                            cv = re.search(r'^version\s*=\s*"([^"]+)"', crate_text, re.MULTILINE)
+                            if cv:
+                                ws_deps[name] = cv.group(1)
+                    # Fall back to workspace version if crate uses version.workspace = true
+                    if name not in ws_deps and ws_pkg_version:
+                        ws_deps[name] = ws_pkg_version
 
             git_m = re.search(r'git\s*=\s*"([^"]+)"', body)
             if git_m and name not in ws_deps:
