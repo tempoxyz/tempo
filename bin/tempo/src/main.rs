@@ -252,6 +252,17 @@ fn main() -> eyre::Result<()> {
         );
     }
 
+    // When the sparse trie is shared with the payload builder, state root
+    // calculation is pipelined and completes faster. Give the builder more
+    // time to execute transactions (200ms → 440ms) since the sealing phase
+    // after interrupt is shorter.
+    if let Commands::Node(node_cmd) = &mut cli.command
+        && node_cmd.engine.share_sparse_trie_with_payload_builder
+    {
+        node_cmd.ext.consensus.time_to_prepare_proposal_transactions =
+            "440ms".parse().expect("valid duration");
+    }
+
     // If telemetry is enabled, set logs OTLP (conflicts_with in TelemetryArgs prevents both being set)
     let mut telemetry_config = None;
     if let Commands::Node(node_cmd) = &cli.command
