@@ -7,15 +7,18 @@ use alloy::{
     sol_types::SolEvent,
 };
 use alloy_eips::eip2718::Encodable2718;
-use alloy_network::{Ethereum, TxSignerSync};
+use alloy_network::{Ethereum, ReceiptResponse, TxSignerSync};
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::TransactionRequest;
 use reth_node_api::BuiltPayload;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-use tempo_contracts::precompiles::{IRolesAuth, ITIP20, ITIP20Factory};
+use tempo_contracts::precompiles::{IFeeManager, IRolesAuth, ITIP20, ITIP20Factory, ITIPFeeAMM};
 use tempo_node::node::TempoNode;
-use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::ISSUER_ROLE};
-use tempo_primitives::TempoTxEnvelope;
+use tempo_precompiles::{
+    PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
+    tip_fee_manager::amm::compute_amount_out, tip20::ISSUER_ROLE,
+};
+use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
 
 /// Helper to setup a test token by manually injecting transactions and advancing blocks
 async fn setup_token_manual<P>(
@@ -166,6 +169,33 @@ where
         node.rpc.inject_tx(tx_bytes).await?;
     }
     Ok(())
+}
+
+async fn sign_and_inject(
+    node: &mut reth_e2e_test_utils::NodeHelperType<TempoNode>,
+    signer: &alloy::signers::local::PrivateKeySigner,
+    chain_id: u64,
+    mut tx_request: TransactionRequest,
+    nonce: u64,
+) -> eyre::Result<B256> {
+    let signer_wallet = EthereumWallet::from(signer.clone());
+    tx_request.nonce = Some(nonce);
+    tx_request.chain_id = Some(chain_id);
+    tx_request.gas = tx_request.gas.or(Some(5_000_000));
+    tx_request.max_fee_per_gas = tx_request
+        .max_fee_per_gas
+        .or(Some(TEMPO_T1_BASE_FEE as u128));
+    tx_request.max_priority_fee_per_gas = tx_request
+        .max_priority_fee_per_gas
+        .or(Some(TEMPO_T1_BASE_FEE as u128));
+
+    let signed_tx =
+        <TransactionRequest as TransactionBuilder<Ethereum>>::build(tx_request, &signer_wallet)
+            .await?;
+    let tx_hash = *signed_tx.tx_hash();
+    let tx_bytes: Bytes = signed_tx.encoded_2718().into();
+    node.rpc.inject_tx(tx_bytes).await?;
+    Ok(tx_hash)
 }
 
 /// Helper to count payment and non-payment transactions
@@ -537,6 +567,122 @@ async fn test_block_building_more_txs_than_fit() -> eyre::Result<()> {
         total_user_txs,
         num_payment_txs + num_non_payment_txs,
         "All injected transactions should be included across blocks"
+    );
+
+    Ok(())
+}
+
+/// Verifies that the payload builder's fee score accounts for the AMM haircut
+/// when a transaction pays in a token different from the validator's preferred token.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let mut setup = crate::utils::TestNodeBuilder::new()
+        .build_with_node_access()
+        .await?;
+
+    let user_signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+        .index(1)?
+        .build()?;
+    let user_address = user_signer.address();
+    let user_provider = ProviderBuilder::new()
+        .wallet(EthereumWallet::from(user_signer.clone()))
+        .connect_http(setup.node.rpc_url());
+    let chain_id = user_provider.get_chain_id().await?;
+
+    let fee_beneficiary = Address::ZERO;
+
+    // Create a custom fee token for the user
+    let user_fee_token =
+        setup_token_manual(&mut setup.node, &user_provider, &user_signer, chain_id).await?;
+
+    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, user_provider.clone());
+    let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, user_provider.clone());
+
+    // Seed AMM liquidity for user_token <-> PATH_USD
+    let liquidity = U256::from(500_000u64);
+    sign_and_inject(
+        &mut setup.node,
+        &user_signer,
+        chain_id,
+        fee_amm
+            .mint(
+                *user_fee_token.address(),
+                PATH_USD_ADDRESS,
+                liquidity,
+                user_address,
+            )
+            .into_transaction_request(),
+        3,
+    )
+    .await?;
+    setup.node.advance_block().await?;
+
+    // Set the user's fee token preference to the custom token
+    sign_and_inject(
+        &mut setup.node,
+        &user_signer,
+        chain_id,
+        fee_manager
+            .setUserToken(*user_fee_token.address())
+            .into_transaction_request(),
+        4,
+    )
+    .await?;
+    setup.node.advance_block().await?;
+
+    // Record collected fees before the attack block
+    let collected_before = fee_manager
+        .collectedFees(fee_beneficiary, PATH_USD_ADDRESS)
+        .call()
+        .await?;
+
+    // Submit a transaction that pays fees in user_fee_token (not validator's PATH_USD)
+    let attack_tx_hash = sign_and_inject(
+        &mut setup.node,
+        &user_signer,
+        chain_id,
+        ITIP20::new(PATH_USD_ADDRESS, user_provider.clone())
+            .transfer(Address::random(), U256::from(1))
+            .into_transaction_request(),
+        5,
+    )
+    .await?;
+
+    // Build and commit the block
+    let payload = setup.node.advance_block().await?;
+    let payload_fees = payload.fees();
+
+    let attack_receipt = user_provider
+        .get_transaction_receipt(attack_tx_hash)
+        .await?
+        .expect("attack tx receipt must exist");
+    let nominal_spending = calc_gas_balance_spending(
+        attack_receipt.gas_used,
+        attack_receipt.effective_gas_price(),
+    );
+    let expected_post_swap = compute_amount_out(nominal_spending)?;
+
+    // Verify collected fees reflect the haircut
+    let collected_after = fee_manager
+        .collectedFees(fee_beneficiary, PATH_USD_ADDRESS)
+        .call()
+        .await?;
+    let collected_delta = collected_after - collected_before;
+
+    // The payload fee score must not exceed the actual validator revenue
+    assert!(
+        payload_fees <= nominal_spending,
+        "payload fees ({payload_fees}) should not exceed nominal spending ({nominal_spending})"
+    );
+    assert_eq!(
+        collected_delta, expected_post_swap,
+        "validator accrual should reflect AMM haircut"
+    );
+    assert!(
+        payload_fees <= collected_delta,
+        "payload fee score ({payload_fees}) should not overstate actual validator revenue ({collected_delta})"
     );
 
     Ok(())
