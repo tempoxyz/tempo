@@ -39,7 +39,7 @@ pub(super) struct FeedState {
 ///
 /// Stores transitions from a starting epoch back towards genesis.
 /// Can be extended for newer epochs or subsectioned for older queries.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct IdentityTransitionCache {
     /// The epoch from which the chain was built (inclusive).
     from_epoch: u64,
@@ -49,6 +49,9 @@ struct IdentityTransitionCache {
     identity: String,
     /// Cached transitions, ordered newest to oldest.
     transitions: Arc<Vec<IdentityTransition>>,
+    /// The public key at `to_epoch`. Used to resume an incomplete walk
+    /// without re-fetching the outcome from the DB.
+    to_pubkey: <MinSig as Variant>::Public,
 }
 
 /// Handle to shared feed state.
@@ -146,9 +149,12 @@ impl FeedStateHandle {
         epocher: &FixedEpocher,
         start_epoch: u64,
     ) -> Result<(), IdentityProofError> {
-        // Check if the cache already covers this epoch
+        // Check if the cache already covers this epoch.
+        // If the cache is incomplete, skip the early return so we re-attempt
+        // the walk from where it previously stopped.
         let cached = self.identity_cache.read().clone();
         if let Some(cache) = &cached
+            && cache.to_epoch == 0
             && (cache.to_epoch..=cache.from_epoch).contains(&start_epoch)
         {
             return Ok(());
@@ -182,16 +188,20 @@ impl FeedStateHandle {
         let mut pubkey = epoch_pubkey;
         let mut search_epoch = start_epoch.saturating_sub(1);
         while search_epoch > 0 {
-            // Absorb cached transitions and stop.
+            // Absorb cached transitions. If the cache reached genesis we can
+            // stop; otherwise update pubkey and fall through to continue the
+            // walk from where the cache left off.
             if let Some(cache) = &cached
                 && search_epoch <= cache.from_epoch
+                && search_epoch > cache.to_epoch
             {
                 transitions.extend(cache.transitions.iter().cloned());
                 search_epoch = cache.to_epoch;
-                // We dont continue downwards past to_epoch since the walk only stops if
-                // DKG parsing fails (Internal Error state) or data is unavailable (Pruned).
-                // Both which are not recoverable in the current runtime.
-                break;
+                if cache.to_epoch == 0 {
+                    break;
+                }
+
+                pubkey = cache.to_pubkey;
             }
 
             let prev_outcome = match get_outcome(execution, epocher, search_epoch - 1) {
@@ -284,7 +294,8 @@ impl FeedStateHandle {
             }
         }
 
-        // Build updated cache. The walk absorbs cached transitions in the correct order
+        // Build updated cache. The walk absorbs cached transitions in the correct order.
+        // `pubkey` is the identity at the point where the walk stopped.
         let new_cache = if let Some(c) = &cached {
             IdentityTransitionCache {
                 from_epoch: start_epoch.max(c.from_epoch),
@@ -295,6 +306,7 @@ impl FeedStateHandle {
                 } else {
                     c.identity.clone()
                 },
+                to_pubkey: pubkey,
             }
         } else {
             IdentityTransitionCache {
@@ -302,6 +314,7 @@ impl FeedStateHandle {
                 to_epoch: search_epoch,
                 identity: hex::encode(epoch_pubkey.encode()),
                 transitions: Arc::new(transitions),
+                to_pubkey: pubkey,
             }
         };
 
