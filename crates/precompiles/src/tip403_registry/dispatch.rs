@@ -9,7 +9,7 @@ use alloy::{
     primitives::Address,
     sol_types::{SolCall, SolInterface},
 };
-use revm::precompile::{PrecompileError, PrecompileResult};
+use revm::precompile::{PrecompileHalt, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::ITIP403Registry::{
     ITIP403RegistryCalls, compoundPolicyDataCall, createCompoundPolicyCall,
     isAuthorizedMintRecipientCall, isAuthorizedRecipientCall, isAuthorizedSenderCall,
@@ -17,9 +17,9 @@ use tempo_contracts::precompiles::ITIP403Registry::{
 
 impl Precompile for TIP403Registry {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
-        self.storage
-            .deduct_gas(input_cost(calldata.len()))
-            .map_err(|_| PrecompileError::OutOfGas)?;
+        if self.storage.deduct_gas(input_cost(calldata.len())).is_err() {
+            return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, 0));
+        }
 
         dispatch_call(
             calldata,
@@ -38,6 +38,7 @@ impl Precompile for TIP403Registry {
                     if !self.storage.spec().is_t2() {
                         return unknown_selector(
                             isAuthorizedSenderCall::SELECTOR,
+                            self.storage.gas_limit(),
                             self.storage.gas_used(),
                         );
                     }
@@ -49,6 +50,7 @@ impl Precompile for TIP403Registry {
                     if !self.storage.spec().is_t2() {
                         return unknown_selector(
                             isAuthorizedRecipientCall::SELECTOR,
+                            self.storage.gas_limit(),
                             self.storage.gas_used(),
                         );
                     }
@@ -60,6 +62,7 @@ impl Precompile for TIP403Registry {
                     if !self.storage.spec().is_t2() {
                         return unknown_selector(
                             isAuthorizedMintRecipientCall::SELECTOR,
+                            self.storage.gas_limit(),
                             self.storage.gas_used(),
                         );
                     }
@@ -71,6 +74,7 @@ impl Precompile for TIP403Registry {
                     if !self.storage.spec().is_t2() {
                         return unknown_selector(
                             compoundPolicyDataCall::SELECTOR,
+                            self.storage.gas_limit(),
                             self.storage.gas_used(),
                         );
                     }
@@ -98,6 +102,7 @@ impl Precompile for TIP403Registry {
                     if !self.storage.spec().is_t2() {
                         return unknown_selector(
                             createCompoundPolicyCall::SELECTOR,
+                            self.storage.gas_limit(),
                             self.storage.gas_used(),
                         );
                     }
@@ -495,12 +500,12 @@ mod tests {
 
             let invalid_data = vec![0x12, 0x34, 0x56, 0x78];
             let result = registry.call(&invalid_data, sender)?;
-            assert!(result.reverted);
+            assert!(result.status.is_revert());
 
             // T1: insufficient data also returns reverted output
             let short_data = vec![0x12, 0x34];
             let result = registry.call(&short_data, sender)?;
-            assert!(result.reverted);
+            assert!(result.status.is_revert());
 
             Ok(())
         })?;
