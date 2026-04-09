@@ -50,7 +50,7 @@ jobs:
           if-no-files-found: "error"
           name: ${{ matrix.binary }}
           path: target/${{ inputs.profile || 'debug' }}/${{ matrix.binary }}
-      - uses: cloudposse/github-action-matrix-outputs-write@ed06cf3a6bf23b8dce36d1cf0d63123885bb8375 # v1
+      - uses: cloudposse/github-action-matrix-outputs-write@ed06cf3a6bf23b8dce36d1cf0d63123885bb8375 # v1.0.0
         id: out
         with:
           matrix-step-name: ${{ github.job }}

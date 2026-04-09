@@ -30,7 +30,7 @@ jobs:
     outputs:
       coverage: ${{ steps.check.outputs.coverage }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -59,7 +59,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
@@ -95,7 +95,7 @@ jobs:
       matrix:
         partition: [1, 2]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
@@ -138,7 +138,7 @@ jobs:
           find target/debug/deps -name 'tempo_contracts-*' -type f -executable ! -name '*.d' -exec cp {} coverage/precompiles-bin/ \;
       - name: Upload precompiles coverage artifacts
         if: needs.check-precompiles.outputs.coverage == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: cargo-test-coverage-${{ matrix.partition }}
           path: |
@@ -160,7 +160,7 @@ jobs:
       # Set to 8 MiB because some tests run into stack overflows with jemalloc
       RUST_MIN_STACK: 8388608
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
@@ -184,7 +184,7 @@ jobs:
     env:
       RUST_MIN_STACK: 8388608
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
@@ -205,7 +205,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
@@ -223,7 +223,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@master
