@@ -490,9 +490,7 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
 
     println!("\n=== eth_estimateGas matrix ===\n");
     if !supports_scoped_key_auth_rpc {
-        println!(
-            "Skipping scoped estimateGas cases: RPC endpoint still expects legacy selector JSON"
-        );
+        println!("Skipping scoped estimateGas cases on this pre-T3 RPC environment");
     }
     println!("Running {} gas estimation cases...\n", cases.len());
 
@@ -707,9 +705,7 @@ pub(super) async fn run_fill_transaction_matrix<E: TestEnv>(env: &mut E) -> eyre
 
     println!("\n=== eth_fillTransaction matrix ===\n");
     if !supports_scoped_key_auth_rpc {
-        println!(
-            "Skipping scoped fillTransaction cases: RPC endpoint still expects legacy selector JSON"
-        );
+        println!("Skipping scoped fillTransaction cases on this pre-T3 RPC environment");
     }
     println!("Running {} fillTransaction cases...\n", matrix.len());
 

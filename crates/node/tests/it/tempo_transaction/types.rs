@@ -26,8 +26,10 @@ pub(crate) trait TestEnv: Sized {
     /// Currently active hardfork
     fn hardfork(&self) -> TempoHardfork;
 
-    /// Whether the RPC endpoint accepts selector-scoped key auth JSON using the current
-    /// `0x...` selector encoding.
+    /// Whether this environment should run selector-scoped key auth RPC cases.
+    ///
+    /// Local test nodes exercise the current branch's RPC implementation, while remote networks
+    /// may lag until the relevant hardfork is deployed there.
     fn supports_scoped_key_auth_rpc(&self) -> bool {
         true
     }
