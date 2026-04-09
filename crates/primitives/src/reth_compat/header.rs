@@ -1,5 +1,5 @@
-use alloy_consensus::Header;
 use crate::{TempoConsensusContext, TempoHeader};
+use alloy_consensus::Header;
 use alloy_primitives::{B256, BlockNumber, U256};
 
 /// Trailing fields grouped into a dedicated struct to maximize the use of bits

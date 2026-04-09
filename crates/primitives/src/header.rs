@@ -163,4 +163,3 @@ impl Sealable for TempoHeader {
         keccak256(alloy_rlp::encode(self))
     }
 }
-
