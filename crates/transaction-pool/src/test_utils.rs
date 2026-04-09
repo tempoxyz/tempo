@@ -7,16 +7,12 @@ use crate::transaction::TempoPooledTransaction;
 use alloy_consensus::{Transaction, TxEip1559};
 use alloy_eips::eip2930::AccessList;
 use alloy_primitives::{Address, B256, Signature, TxKind, U256};
-use reth_chainspec::EthChainSpec;
+
 use reth_primitives_traits::Recovered;
 use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
 use reth_transaction_pool::{TransactionOrigin, ValidPoolTransaction};
 use std::time::Instant;
-use tempo_chainspec::{
-    TempoChainSpec,
-    hardfork::TempoHardfork,
-    spec::{DEV, MODERATO},
-};
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork, spec::DEV};
 use tempo_precompiles::storage::{StorageCtx, hashmap::HashMapStorageProvider};
 use tempo_primitives::{
     TempoPrimitives, TempoTxEnvelope,
@@ -175,12 +171,6 @@ impl TxBuilder {
         authorization_list: Vec<TempoSignedAuthorization>,
     ) -> Self {
         self.authorization_list = Some(authorization_list);
-        self
-    }
-
-    /// Set the chain ID.
-    pub(crate) fn chain_id(mut self, chain_id: u64) -> Self {
-        self.chain_id = chain_id;
         self
     }
 

@@ -3238,11 +3238,11 @@ mod tests {
             .validate_initial_tx_gas(&mut evm)
             .expect("initial gas validation should succeed");
         assert!(
-            init_gas.floor_gas <= init_gas.initial_gas,
+            init_gas.floor_gas <= init_gas.initial_total_gas,
             "test requires floor gas to not exceed intrinsic gas"
         );
 
-        evm.inner.ctx.tx.inner.gas_limit = init_gas.initial_gas;
+        evm.inner.ctx.tx.inner.gas_limit = init_gas.initial_total_gas;
 
         let err = handler
             .validate_against_state_and_deduct_caller(&mut evm)

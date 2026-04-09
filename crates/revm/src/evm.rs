@@ -2634,7 +2634,7 @@ mod tests {
             result_baseline.is_success(),
             "baseline transfer should succeed"
         );
-        let gas_baseline = result_baseline.gas_used();
+        let gas_baseline = result_baseline.tx_gas_used();
 
         // Issue #3178 scenario: calls-format transfer with nonce_key != 0, caller.nonce == 0.
         // validate_aa_initial_tx_gas still charges the same 250k (nonce==0 branch).
@@ -2656,7 +2656,7 @@ mod tests {
             result_2d.is_success(),
             "calls-format transfer with 2D nonce should succeed"
         );
-        let gas_2d = result_2d.gas_used();
+        let gas_2d = result_2d.tx_gas_used();
 
         // After the fix the gas should be nearly identical for both cases because
         // both go through the same validate_aa_initial_tx_gas branch and handler.rs

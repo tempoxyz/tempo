@@ -64,6 +64,7 @@ impl Clone for TempoPooledTransaction {
             inner: self.inner.clone(),
             is_payment: self.is_payment,
             is_expiring_nonce: self.is_expiring_nonce,
+            expiring_nonce_slot: self.expiring_nonce_slot.clone(),
             nonce_key_slot: self.nonce_key_slot.clone(),
             tx_env: self.tx_env.clone(),
             key_expiry: self.key_expiry.clone(),
