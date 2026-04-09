@@ -302,20 +302,20 @@ impl FeedStateHandle {
 
             IdentityTransitionCache {
                 from_epoch: from,
-                to_epoch: search_epoch,
-                identity: hex::encode(from_pk.encode()),
                 from_pubkey: from_pk,
-                transitions: Arc::new(transitions),
+                to_epoch: search_epoch,
                 to_pubkey: pubkey,
+                identity: hex::encode(from_pk.encode()),
+                transitions: Arc::new(transitions),
             }
         } else {
             IdentityTransitionCache {
                 from_epoch: start_epoch,
-                to_epoch: search_epoch,
-                identity: hex::encode(epoch_pubkey.encode()),
                 from_pubkey: epoch_pubkey,
-                transitions: Arc::new(transitions),
+                to_epoch: search_epoch,
                 to_pubkey: pubkey,
+                identity: hex::encode(epoch_pubkey.encode()),
+                transitions: Arc::new(transitions),
             }
         };
 
