@@ -18,13 +18,27 @@ use tempo_node::rpc::TempoTransactionRequest;
 use tempo_primitives::{
     SignatureType, TempoTransaction, TempoTxEnvelope,
     transaction::{
-        KeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, TokenLimit,
+        KeyAuthorization, SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, TokenLimit,
         tempo_transaction::Call,
         tt_signature::{PrimitiveSignature, TempoSignature},
     },
 };
 
 use super::{helpers::*, types::*};
+
+fn pre_t3_tip1011_rejection_reason(
+    key_authorization: Option<&SignedKeyAuthorization>,
+) -> Option<&'static str> {
+    let key_authorization = key_authorization?;
+
+    if key_authorization.authorization.has_periodic_limits() {
+        Some("periodic token limits are not active before T3")
+    } else if key_authorization.authorization.has_call_scopes() {
+        Some("call scopes are not active before T3")
+    } else {
+        None
+    }
+}
 
 // ===========================================================================
 // Matrix runners
@@ -219,6 +233,7 @@ fn gas_estimation_cases() -> Vec<GasCase> {
             auth: AuthKind::Keychain {
                 key_type: None,
                 num_limits: 0,
+                allowed_calls: AllowedCallsMode::None,
             },
             noop_expected: ExpectedGasDiff::Range(250_000..=310_000),
         },
@@ -227,6 +242,7 @@ fn gas_estimation_cases() -> Vec<GasCase> {
             auth: AuthKind::Keychain {
                 key_type: Some(SignatureType::P256),
                 num_limits: 0,
+                allowed_calls: AllowedCallsMode::None,
             },
             noop_expected: ExpectedGasDiff::GreaterThan("keychain_secp256k1::noop".into()),
         },
@@ -235,6 +251,7 @@ fn gas_estimation_cases() -> Vec<GasCase> {
             auth: AuthKind::KeyAuth {
                 key_type: SignatureType::Secp256k1,
                 num_limits: 0,
+                allowed_calls: AllowedCallsMode::None,
             },
             noop_expected: ExpectedGasDiff::Range(250_000..=310_000),
         },
@@ -243,6 +260,7 @@ fn gas_estimation_cases() -> Vec<GasCase> {
             auth: AuthKind::KeyAuth {
                 key_type: SignatureType::Secp256k1,
                 num_limits: 1,
+                allowed_calls: AllowedCallsMode::None,
             },
             noop_expected: ExpectedGasDiff::GreaterThan("key_auth_secp256k1_0_limits::noop".into()),
         },
@@ -251,6 +269,7 @@ fn gas_estimation_cases() -> Vec<GasCase> {
             auth: AuthKind::KeyAuth {
                 key_type: SignatureType::Secp256k1,
                 num_limits: 3,
+                allowed_calls: AllowedCallsMode::None,
             },
             noop_expected: ExpectedGasDiff::GreaterThan("key_auth_secp256k1_0_limits::noop".into()),
         },
@@ -259,6 +278,7 @@ fn gas_estimation_cases() -> Vec<GasCase> {
             auth: AuthKind::KeyAuth {
                 key_type: SignatureType::WebAuthn,
                 num_limits: 0,
+                allowed_calls: AllowedCallsMode::None,
             },
             noop_expected: ExpectedGasDiff::Range(250_000..=310_000),
         },
@@ -267,6 +287,7 @@ fn gas_estimation_cases() -> Vec<GasCase> {
             auth: AuthKind::KeyAuth {
                 key_type: SignatureType::WebAuthn,
                 num_limits: 1,
+                allowed_calls: AllowedCallsMode::None,
             },
             noop_expected: ExpectedGasDiff::GreaterThan("key_auth_webauthn_0_limits::noop".into()),
         },
@@ -275,6 +296,7 @@ fn gas_estimation_cases() -> Vec<GasCase> {
             auth: AuthKind::KeyAuth {
                 key_type: SignatureType::WebAuthn,
                 num_limits: 3,
+                allowed_calls: AllowedCallsMode::None,
             },
             noop_expected: ExpectedGasDiff::GreaterThan("key_auth_webauthn_0_limits::noop".into()),
         },
@@ -283,6 +305,7 @@ fn gas_estimation_cases() -> Vec<GasCase> {
             auth: AuthKind::KeyAuth {
                 key_type: SignatureType::P256,
                 num_limits: 0,
+                allowed_calls: AllowedCallsMode::None,
             },
             noop_expected: ExpectedGasDiff::Range(250_000..=310_000),
         },
@@ -291,6 +314,7 @@ fn gas_estimation_cases() -> Vec<GasCase> {
             auth: AuthKind::KeyAuth {
                 key_type: SignatureType::P256,
                 num_limits: 1,
+                allowed_calls: AllowedCallsMode::None,
             },
             noop_expected: ExpectedGasDiff::GreaterThan("key_auth_p256_0_limits::noop".into()),
         },
@@ -299,6 +323,7 @@ fn gas_estimation_cases() -> Vec<GasCase> {
             auth: AuthKind::KeyAuth {
                 key_type: SignatureType::P256,
                 num_limits: 3,
+                allowed_calls: AllowedCallsMode::None,
             },
             noop_expected: ExpectedGasDiff::GreaterThan("key_auth_p256_0_limits::noop".into()),
         },
@@ -359,6 +384,70 @@ fn gas_estimation_cases() -> Vec<GasCase> {
         }
     }
 
+    for (name, auth, expected) in [
+        (
+            "keychain_secp256k1_selector_recipient::transfer",
+            AuthKind::Keychain {
+                key_type: None,
+                num_limits: 0,
+                allowed_calls: AllowedCallsMode::SelectorRecipient,
+            },
+            ExpectedGasDiff::GreaterThan("keychain_secp256k1::noop".into()),
+        ),
+        (
+            "keychain_secp256k1_selector_any_recipient::transfer",
+            AuthKind::Keychain {
+                key_type: None,
+                num_limits: 0,
+                allowed_calls: AllowedCallsMode::SelectorAnyRecipient,
+            },
+            ExpectedGasDiff::GreaterThan("keychain_secp256k1::noop".into()),
+        ),
+        (
+            "keychain_secp256k1_target_any_selector::transfer",
+            AuthKind::Keychain {
+                key_type: None,
+                num_limits: 0,
+                allowed_calls: AllowedCallsMode::TargetAnySelector,
+            },
+            ExpectedGasDiff::GreaterThan("keychain_secp256k1::noop".into()),
+        ),
+        (
+            "key_auth_secp256k1_selector_recipient::transfer",
+            AuthKind::KeyAuth {
+                key_type: SignatureType::Secp256k1,
+                num_limits: 0,
+                allowed_calls: AllowedCallsMode::SelectorRecipient,
+            },
+            ExpectedGasDiff::GreaterThan("key_auth_secp256k1_0_limits::noop".into()),
+        ),
+        (
+            "key_auth_secp256k1_selector_any_recipient::transfer",
+            AuthKind::KeyAuth {
+                key_type: SignatureType::Secp256k1,
+                num_limits: 0,
+                allowed_calls: AllowedCallsMode::SelectorAnyRecipient,
+            },
+            ExpectedGasDiff::GreaterThan("key_auth_secp256k1_0_limits::noop".into()),
+        ),
+        (
+            "key_auth_secp256k1_target_any_selector::transfer",
+            AuthKind::KeyAuth {
+                key_type: SignatureType::Secp256k1,
+                num_limits: 0,
+                allowed_calls: AllowedCallsMode::TargetAnySelector,
+            },
+            ExpectedGasDiff::GreaterThan("key_auth_secp256k1_0_limits::noop".into()),
+        ),
+    ] {
+        cases.push(GasCase {
+            name: name.into(),
+            auth,
+            payload: GasPayload::Transfer,
+            expected,
+        });
+    }
+
     cases
 }
 
@@ -368,6 +457,9 @@ fn gas_estimation_cases() -> Vec<GasCase> {
 pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
     env: &mut E,
 ) -> eyre::Result<std::collections::BTreeMap<String, u64>> {
+    let is_t3 = env.hardfork().is_t3();
+    let supports_scoped_key_auth_rpc = env.supports_scoped_key_auth_rpc();
+
     // Fixed signer and recipient so calldata/storage costs are deterministic.
     let signer = PrivateKeySigner::from_bytes(&B256::with_last_byte(1)).unwrap();
     let signer_addr = signer.address();
@@ -382,10 +474,24 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
         input: Bytes::new(),
     };
 
-    let cases = gas_estimation_cases();
+    let cases: Vec<_> = gas_estimation_cases()
+        .into_iter()
+        .filter(|case| {
+            supports_scoped_key_auth_rpc
+                || !matches!(
+                    &case.auth,
+                    AuthKind::Keychain { allowed_calls, .. }
+                        | AuthKind::KeyAuth { allowed_calls, .. }
+                        if !matches!(allowed_calls, AllowedCallsMode::None)
+                )
+        })
+        .collect();
     let provider = env.provider();
 
     println!("\n=== eth_estimateGas matrix ===\n");
+    if !supports_scoped_key_auth_rpc {
+        println!("Skipping scoped estimateGas cases on this pre-T3 RPC environment");
+    }
     println!("Running {} gas estimation cases...\n", cases.len());
 
     let mut results = std::collections::BTreeMap::<String, u64>::new();
@@ -433,12 +539,15 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
             AuthKind::Keychain {
                 key_type,
                 num_limits,
+                allowed_calls,
             } => {
                 let auth = create_signed_key_authorization(
                     &signer,
                     key_type.unwrap_or(SignatureType::Secp256k1),
                     *num_limits,
                     env.chain_id(),
+                    *allowed_calls,
+                    recipient,
                 );
                 request.key_id = Some(auth.key_id);
                 request.key_authorization = Some(auth);
@@ -449,18 +558,48 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
             AuthKind::KeyAuth {
                 key_type,
                 num_limits,
+                allowed_calls,
             } => {
                 let auth = create_signed_key_authorization(
                     &signer,
                     *key_type,
                     *num_limits,
                     env.chain_id(),
+                    *allowed_calls,
+                    recipient,
                 );
                 request.key_authorization = Some(auth);
             }
         }
 
-        let gas = estimate_gas(provider, &request).await?;
+        let expected_rejection = (!is_t3)
+            .then(|| pre_t3_tip1011_rejection_reason(request.key_authorization.as_ref()))
+            .flatten();
+
+        let gas = match estimate_gas(provider, &request).await {
+            Ok(gas) => {
+                if let Some(reason) = expected_rejection {
+                    return Err(eyre::eyre!(
+                        "[{}] eth_estimateGas should reject before T3 with '{reason}'",
+                        test_case.name,
+                    ));
+                }
+                gas
+            }
+            Err(err) => {
+                if let Some(reason) = expected_rejection {
+                    let err_str = err.to_string();
+                    assert!(
+                        err_str.contains(reason),
+                        "[{}] expected pre-T3 rejection containing '{reason}', got: {err}",
+                        test_case.name,
+                    );
+                    println!("  rejected as expected: {reason}");
+                    continue;
+                }
+                return Err(err);
+            }
+        };
         println!("  gas: {gas}");
 
         // Run range/relational assertions
@@ -507,11 +646,29 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
 /// For fee-payer cases, also verifies that the fee-payer signature hash is
 /// deterministic by signing + recovering with a random signer.
 pub(super) async fn run_fill_transaction_matrix<E: TestEnv>(env: &mut E) -> eyre::Result<()> {
-    let signer_addr = Address::random();
+    let is_t3 = env.hardfork().is_t3();
+    let supports_scoped_key_auth_rpc = env.supports_scoped_key_auth_rpc();
+    let signer = PrivateKeySigner::random();
+    let signer_addr = signer.address();
     let current_timestamp = env.current_block_timestamp().await?;
     let fee_payer_signer = PrivateKeySigner::random();
+    let scoped_fill_case = |name, num_limits, allowed_calls| {
+        let case = FillTestCase::new(NonceMode::Protocol, KeyType::Secp256k1).key_authorization(
+            name,
+            create_signed_key_authorization(
+                &signer,
+                SignatureType::Secp256k1,
+                num_limits,
+                env.chain_id(),
+                allowed_calls,
+                Address::with_last_byte(0x11),
+            ),
+        );
 
-    let matrix = [
+        if is_t3 { case } else { case.reject() }
+    };
+
+    let mut matrix = vec![
         FillTestCase::new(NonceMode::Protocol, KeyType::Secp256k1).omit_nonce_key(),
         FillTestCase::new(NonceMode::TwoD(42), KeyType::Secp256k1),
         FillTestCase::new(NonceMode::Expiring, KeyType::Secp256k1).valid_before_offset(20),
@@ -526,16 +683,66 @@ pub(super) async fn run_fill_transaction_matrix<E: TestEnv>(env: &mut E) -> eyre
             .fee_payer()
             .fee_token(DEFAULT_FEE_TOKEN),
     ];
+    if supports_scoped_key_auth_rpc {
+        matrix.extend([
+            scoped_fill_case(
+                "key_auth_selector_recipient",
+                2,
+                AllowedCallsMode::SelectorRecipient,
+            ),
+            scoped_fill_case(
+                "key_auth_selector_any_recipient",
+                0,
+                AllowedCallsMode::SelectorAnyRecipient,
+            ),
+            scoped_fill_case(
+                "key_auth_target_any_selector",
+                0,
+                AllowedCallsMode::TargetAnySelector,
+            ),
+        ]);
+    }
 
     println!("\n=== eth_fillTransaction matrix ===\n");
+    if !supports_scoped_key_auth_rpc {
+        println!("Skipping scoped fillTransaction cases on this pre-T3 RPC environment");
+    }
     println!("Running {} fillTransaction cases...\n", matrix.len());
 
     for (index, test_case) in matrix.iter().enumerate() {
         println!("[{}/{}] {}", index + 1, matrix.len(), test_case.name);
 
-        let (filled_tx, request_context) =
+        let fill_result =
             fill_transaction_from_case(env.provider(), test_case, signer_addr, current_timestamp)
-                .await?;
+                .await;
+        let (filled_tx, request_context) = match fill_result {
+            Ok(pair) => {
+                if matches!(test_case.expected, ExpectedOutcome::Rejection) {
+                    return Err(eyre::eyre!(
+                        "[{}] eth_fillTransaction should reject before T3",
+                        test_case.name,
+                    ));
+                }
+                pair
+            }
+            Err(err) => {
+                if matches!(test_case.expected, ExpectedOutcome::Rejection) {
+                    if let Some(reason) =
+                        pre_t3_tip1011_rejection_reason(test_case.key_authorization.as_ref())
+                    {
+                        let err_str = err.to_string();
+                        assert!(
+                            err_str.contains(reason),
+                            "[{}] expected pre-T3 rejection containing '{reason}', got: {err}",
+                            test_case.name,
+                        );
+                    }
+                    println!("  Fill rejected as expected: {err}");
+                    continue;
+                }
+                return Err(err);
+            }
+        };
         assert_fill_request_expectations(&filled_tx, &request_context, test_case)?;
 
         if test_case.fee_payer {
@@ -2503,5 +2710,56 @@ pub(super) async fn run_create_contract_address_scenario<E: TestEnv>(
     assert_eq!(deployed_code.as_ref(), &expected_code);
 
     println!("✓ Create contract address scenario passed");
+    Ok(())
+}
+
+/// Regression test: `eth_fillTransaction` must decode revert errors during gas estimation
+/// instead of returning raw hex revert data.
+///
+/// Before the fix, `fill_transaction` delegated to `inner.fill_transaction` which routed
+/// estimation errors through `EthApiError` and skipped Tempo's `from_revert` implementation.
+/// This caused raw selectors (e.g. `0x832f98b5...`) to be returned instead of decoded error
+/// names like `InsufficientBalance(...)`.
+pub(super) async fn run_fill_transaction_error_decoding_scenario<E: TestEnv>(
+    env: &mut E,
+) -> eyre::Result<()> {
+    println!("\n=== eth_fillTransaction error decoding regression ===\n");
+
+    // Use an unfunded address so a TIP-20 transfer reverts with InsufficientBalance.
+    let unfunded_addr = Address::random();
+    let recipient = Address::random();
+
+    let request = TempoTransactionRequest {
+        inner: TransactionRequest {
+            from: Some(unfunded_addr),
+            ..Default::default()
+        },
+        calls: vec![create_transfer_call(
+            DEFAULT_FEE_TOKEN,
+            recipient,
+            U256::from(1_000_000u64),
+        )],
+        key_type: Some(SignatureType::Secp256k1),
+        ..Default::default()
+    };
+
+    let result: Result<serde_json::Value, _> = env
+        .provider()
+        .raw_request(
+            "eth_fillTransaction".into(),
+            [serde_json::to_value(&request)?],
+        )
+        .await;
+
+    let err = result.expect_err("eth_fillTransaction should fail for unfunded address");
+    let err_str = decoded_tempo_rpc_error_message(&err).unwrap_or_else(|| err.to_string());
+
+    // The error must contain the decoded error name, not raw hex.
+    assert!(
+        rpc_error_contains_reason(&err, "InsufficientBalance"),
+        "Error should contain decoded 'InsufficientBalance', got: {err_str}"
+    );
+
+    println!("✓ eth_fillTransaction error decoding regression passed");
     Ok(())
 }

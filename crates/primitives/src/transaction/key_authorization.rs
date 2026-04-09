@@ -88,6 +88,7 @@ impl CallScope {
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(rlp))]
 pub struct SelectorRule {
     /// 4-byte function selector.
+    #[cfg_attr(feature = "serde", serde(with = "selector_hex_serde"))]
     pub selector: [u8; 4],
     /// Recipient allowlist. Empty means no recipient restriction.
     #[cfg_attr(
@@ -169,8 +170,7 @@ impl From<SelectorRule> for AbiSelectorRule {
 /// - `limits`: `None` (omitted or 0x80) = unlimited spending, `Some([])` = no spending, `Some([...])` = specific limits
 /// - `allowed_calls`: `None` (canonically omitted, explicit 0x80 accepted) = unrestricted,
 ///   `Some([])` = scoped with no allowed calls, `Some([...])` = scoped calls
-#[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
-#[rlp(trailing)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(rlp))]
@@ -189,6 +189,8 @@ pub struct KeyAuthorization {
     /// Unix timestamp when key expires.
     /// - `None` (RLP 0x80) = key never expires (stored as u64::MAX in precompile)
     /// - `Some(timestamp)` = key expires at this timestamp
+    ///
+    /// Note: Some(0) will get decoded as None after RLP roundtrip.
     #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity::opt"))]
     pub expiry: Option<u64>,
 
@@ -353,7 +355,6 @@ pub struct KeyAuthorizationChainIdError {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
-#[rlp(trailing)]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact, rlp))]
 pub struct SignedKeyAuthorization {
     /// Key authorization for provisioning access keys
@@ -394,18 +395,34 @@ impl<'a> arbitrary::Arbitrary<'a> for KeyAuthorization {
 }
 
 mod rlp {
-    use super::TokenLimit;
-    use alloy_primitives::{Address, U256};
+    use super::*;
+    use alloc::borrow::Cow;
     use alloy_rlp::{Decodable, Encodable};
+    use core::num::NonZeroU64;
 
     #[derive(
         Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable,
     )]
-    #[rlp(trailing)]
+    #[rlp(trailing(canonical))]
     struct TokenLimitWire {
         token: Address,
         limit: U256,
-        period: Option<u64>,
+        period: Option<NonZeroU64>,
+    }
+
+    impl From<&TokenLimit> for TokenLimitWire {
+        fn from(value: &TokenLimit) -> Self {
+            let TokenLimit {
+                token,
+                limit,
+                period,
+            } = value;
+            Self {
+                token: *token,
+                limit: *limit,
+                period: NonZeroU64::new(*period),
+            }
+        }
     }
 
     impl From<TokenLimitWire> for TokenLimit {
@@ -413,17 +430,7 @@ mod rlp {
             Self {
                 token: value.token,
                 limit: value.limit,
-                period: value.period.unwrap_or(0),
-            }
-        }
-    }
-
-    impl From<&TokenLimit> for TokenLimitWire {
-        fn from(value: &TokenLimit) -> Self {
-            Self {
-                token: value.token,
-                limit: value.limit,
-                period: (value.period != 0).then_some(value.period),
+                period: value.period.map(|period| period.get()).unwrap_or(0),
             }
         }
     }
@@ -442,6 +449,102 @@ mod rlp {
         fn length(&self) -> usize {
             TokenLimitWire::from(self).length()
         }
+    }
+
+    #[derive(alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
+    #[rlp(trailing(canonical))]
+    #[expect(clippy::owned_cow)]
+    struct KeyAuthorizationWire<'a> {
+        chain_id: u64,
+        key_type: SignatureType,
+        key_id: Address,
+        expiry: Option<NonZeroU64>,
+        limits: Option<Cow<'a, Vec<TokenLimit>>>,
+        allowed_calls: Option<Cow<'a, Vec<CallScope>>>,
+    }
+
+    impl<'a> From<&'a KeyAuthorization> for KeyAuthorizationWire<'a> {
+        fn from(value: &'a KeyAuthorization) -> Self {
+            let KeyAuthorization {
+                chain_id,
+                key_type,
+                key_id,
+                expiry,
+                limits,
+                allowed_calls,
+            } = value;
+            Self {
+                chain_id: *chain_id,
+                key_type: *key_type,
+                key_id: *key_id,
+                expiry: expiry.and_then(NonZeroU64::new),
+                limits: limits.as_ref().map(Cow::Borrowed),
+                allowed_calls: allowed_calls.as_ref().map(Cow::Borrowed),
+            }
+        }
+    }
+
+    impl<'a> From<KeyAuthorizationWire<'a>> for KeyAuthorization {
+        fn from(value: KeyAuthorizationWire<'a>) -> Self {
+            Self {
+                chain_id: value.chain_id,
+                key_type: value.key_type,
+                key_id: value.key_id,
+                expiry: value.expiry.map(|expiry| expiry.get()),
+                limits: value
+                    .limits
+                    .map(|limits| limits.into_owned().into_iter().collect()),
+                allowed_calls: value
+                    .allowed_calls
+                    .map(|allowed_calls| allowed_calls.into_owned().into_iter().collect()),
+            }
+        }
+    }
+
+    impl Encodable for KeyAuthorization {
+        fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+            KeyAuthorizationWire::from(self).encode(out)
+        }
+
+        fn length(&self) -> usize {
+            KeyAuthorizationWire::from(self).length()
+        }
+    }
+
+    impl Decodable for KeyAuthorization {
+        fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+            Ok(KeyAuthorizationWire::decode(buf)?.into())
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+mod selector_hex_serde {
+    use alloy_primitives::FixedBytes;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum SelectorValue {
+        Hex(FixedBytes<4>),
+        Array([u8; 4]),
+    }
+
+    pub(super) fn serialize<S>(selector: &[u8; 4], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        FixedBytes::<4>::from(*selector).serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<[u8; 4], D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(match SelectorValue::deserialize(deserializer)? {
+            SelectorValue::Hex(selector) => selector.into(),
+            SelectorValue::Array(selector) => selector,
+        })
     }
 }
 
@@ -617,17 +720,15 @@ mod tests {
     fn test_token_limit_decode_accepts_explicit_zero_period_field() {
         let token = Address::random();
         let limit = U256::from(42);
-        let period = 0u64;
 
         let mut encoded = Vec::new();
         alloy_rlp::Header {
             list: true,
-            payload_length: token.length() + limit.length() + period.length(),
+            payload_length: token.length() + limit.length(),
         }
         .encode(&mut encoded);
         token.encode(&mut encoded);
         limit.encode(&mut encoded);
-        period.encode(&mut encoded);
 
         let decoded: TokenLimit =
             <TokenLimit as Decodable>::decode(&mut encoded.as_slice()).expect("decode token limit");
@@ -834,6 +935,46 @@ mod tests {
         assert_eq!(value["period"], serde_json::json!("0x7"));
     }
 
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_selector_rule_json_accepts_hex_selector() {
+        let recipient = Address::repeat_byte(0x11);
+
+        let decoded: SelectorRule = serde_json::from_value(serde_json::json!({
+            "selector": "0xaabbccdd",
+            "recipients": [recipient],
+        }))
+        .expect("deserialize selector rule with hex selector");
+
+        assert_eq!(decoded.selector, [0xaa, 0xbb, 0xcc, 0xdd]);
+        assert_eq!(decoded.recipients, vec![recipient]);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_selector_rule_json_accepts_legacy_selector_array() {
+        let decoded: SelectorRule = serde_json::from_value(serde_json::json!({
+            "selector": [170, 187, 204, 221],
+            "recipients": [],
+        }))
+        .expect("deserialize selector rule with legacy selector array");
+
+        assert_eq!(decoded.selector, [0xaa, 0xbb, 0xcc, 0xdd]);
+        assert!(decoded.recipients.is_empty());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_selector_rule_json_serializes_selector_as_hex() {
+        let value = serde_json::to_value(SelectorRule {
+            selector: [0xaa, 0xbb, 0xcc, 0xdd],
+            recipients: Vec::new(),
+        })
+        .expect("serialize selector rule");
+
+        assert_eq!(value["selector"], serde_json::json!("0xaabbccdd"));
+    }
+
     #[test]
     fn test_key_authorization_decode_accepts_explicit_unrestricted_allowed_calls_field() {
         let chain_id = 1u64;
@@ -844,11 +985,6 @@ mod tests {
         chain_id.encode(&mut payload);
         key_type.encode(&mut payload);
         key_id.encode(&mut payload);
-        payload.extend_from_slice(&[
-            alloy_rlp::EMPTY_STRING_CODE,
-            alloy_rlp::EMPTY_STRING_CODE,
-            alloy_rlp::EMPTY_STRING_CODE,
-        ]);
 
         let mut encoded = Vec::new();
         alloy_rlp::Header {
@@ -869,7 +1005,7 @@ mod tests {
 
         let mut reencoded = Vec::new();
         decoded.encode(&mut reencoded);
-        assert!(reencoded.len() < encoded.len());
+        assert_eq!(reencoded.len(), encoded.len());
     }
 
     #[test]

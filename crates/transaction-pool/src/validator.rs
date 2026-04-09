@@ -477,6 +477,25 @@ where
                 propagate,
                 authorities,
             } => {
+                let mut authorities = authorities;
+                if let Some(aa_tx) = transaction.transaction().inner().as_aa() {
+                    let mut recovered_aa_authorities = aa_tx
+                        .tx()
+                        .tempo_authorization_list
+                        .iter()
+                        .filter_map(|authorization| authorization.recover_authority().ok())
+                        .collect::<Vec<_>>();
+
+                    if !recovered_aa_authorities.is_empty() {
+                        match authorities.as_mut() {
+                            Some(existing_authorities) => {
+                                existing_authorities.append(&mut recovered_aa_authorities)
+                            }
+                            None => authorities = Some(recovered_aa_authorities),
+                        }
+                    }
+                }
+
                 // Additional nonce validations for non-protocol nonce keys
                 if let Some(nonce_key) = transaction.transaction().nonce_key()
                     && !nonce_key.is_zero()
@@ -646,7 +665,7 @@ mod tests {
         tip20::{TIP20Token, slots as tip20_slots},
     };
     use tempo_primitives::{
-        Block, TempoHeader, TempoPrimitives, TempoTxEnvelope,
+        Block, TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType,
         transaction::{
             TempoTransaction,
             envelope::TEMPO_SYSTEM_TX_SIGNATURE,
@@ -747,6 +766,7 @@ mod tests {
 
         let inner =
             EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::moderato())
+                .with_custom_tx_type(TempoTxType::AA as u8)
                 .disable_balance_check()
                 .build(InMemoryBlobStore::default());
         let amm_cache =
@@ -763,6 +783,60 @@ mod tests {
         validator.on_new_head_block(&mock_block);
 
         validator
+    }
+
+    #[tokio::test]
+    async fn test_aa_authorization_list_authorities_tracked() {
+        use alloy_eips::eip7702::Authorization;
+        use alloy_signer::SignerSync;
+        use alloy_signer_local::PrivateKeySigner;
+        use tempo_primitives::transaction::{
+            TempoSignedAuthorization,
+            tt_signature::{PrimitiveSignature, TempoSignature},
+        };
+
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let authority_signer = PrivateKeySigner::random();
+        let expected_authority = authority_signer.address();
+        let authorization = Authorization {
+            chain_id: U256::from(1),
+            nonce: 0,
+            address: Address::random(),
+        };
+        let signature = authority_signer
+            .sign_hash_sync(&authorization.signature_hash())
+            .expect("authorization signing should succeed");
+        let tempo_authorization = TempoSignedAuthorization::new_unchecked(
+            authorization,
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+        );
+
+        let transaction = TxBuilder::aa(Address::random())
+            .fee_token(PATH_USD_ADDRESS)
+            .authorization_list(vec![tempo_authorization])
+            .build();
+        let validator = setup_validator(&transaction, current_time);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Valid { authorities, .. } => {
+                let authorities = authorities.expect(
+                    "AA transactions with tempo_authorization_list should return authorities",
+                );
+                assert!(
+                    authorities.contains(&expected_authority),
+                    "AA authority recovered from tempo_authorization_list must be tracked"
+                );
+            }
+            other => panic!("Expected Valid outcome with recovered authorities, got: {other:?}"),
+        }
     }
 
     #[tokio::test]

@@ -63,7 +63,8 @@ async fn run_all_matrices(env: &mut impl TestEnv) -> eyre::Result<()> {
     env.run_send_negative_scenario().await?;
     env.run_nonce_rejection_scenario().await?;
     env.run_fee_payer_negative_scenario().await?;
-    env.run_gas_fee_boundary_scenario().await
+    env.run_gas_fee_boundary_scenario().await;
+    env.run_fill_transaction_error_decoding_scenario().await
 }
 
 #[test_case(ForkSchedule::Devnet ; "devnet")]
