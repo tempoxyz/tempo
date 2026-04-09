@@ -322,6 +322,10 @@ where
             return Ok(None);
         }
 
+        // Call-scope matching scales with batch size, so it runs under a metered storage provider.
+        // This keeps unpaid transaction validation bounded while still failing before the first
+        // user call executes.
+
         let (access_key_addr, user_address) = {
             let ctx = evm.ctx();
             let tx = ctx.tx();
@@ -491,6 +495,9 @@ where
         if let Some(mut frame_result) =
             self.prevalidate_keychain_call_scopes(evm, &calls, &mut remaining_gas)?
         {
+            // This return happens before any call frame is constructed. `make_create_frame` has
+            // not run yet, so the protocol nonce is still untouched and there is nothing to bump
+            // or preserve here.
             let total_gas_spent = (gas_limit - remaining_gas) + frame_result.gas().spent();
 
             let mut corrected_gas = Gas::new(gas_limit);
@@ -1486,6 +1493,22 @@ where
                 !aa_env.tempo_authorization_list.is_empty(),
             )
             .map_err(TempoInvalidTransaction::from)?;
+
+            // Access-key CREATE is a cheap structural rejection that does not depend on any
+            // per-call scope walk or state mutation. Rejecting it here keeps validation work
+            // constant and avoids entering CREATE execution paths that require special protocol-
+            // nonce preservation on failure.
+            if cfg.spec().is_t3()
+                && aa_env.signature.is_keychain()
+                && aa_env.aa_calls.first().is_some_and(|call| call.to.is_create())
+            {
+                return Err(
+                    TempoInvalidTransaction::CallsValidation(
+                        "access-key transactions cannot use CREATE as the first call",
+                    )
+                    .into(),
+                );
+            }
 
             // Validate keychain signature version (outer + authorization list).
             aa_env
