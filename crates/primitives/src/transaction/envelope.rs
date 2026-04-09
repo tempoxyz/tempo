@@ -195,11 +195,24 @@ impl TempoTxEnvelope {
     pub fn is_payment_v2(&self) -> bool {
         match self {
             Self::Legacy(tx) => is_tip20_payment(tx.tx().to.to(), &tx.tx().input),
-            Self::Eip2930(tx) => is_tip20_payment(tx.tx().to.to(), &tx.tx().input),
-            Self::Eip1559(tx) => is_tip20_payment(tx.tx().to.to(), &tx.tx().input),
-            Self::Eip7702(tx) => is_tip20_payment(Some(&tx.tx().to), &tx.tx().input),
+            Self::Eip2930(tx) => {
+                tx.tx().access_list.0.is_empty()
+                    && is_tip20_payment(tx.tx().to.to(), &tx.tx().input)
+            }
+            Self::Eip1559(tx) => {
+                tx.tx().access_list.0.is_empty()
+                    && is_tip20_payment(tx.tx().to.to(), &tx.tx().input)
+            }
+            Self::Eip7702(tx) => {
+                tx.tx().access_list.0.is_empty()
+                    && tx.tx().authorization_list.is_empty()
+                    && is_tip20_payment(Some(&tx.tx().to), &tx.tx().input)
+            }
             Self::AA(tx) => {
-                !tx.tx().calls.is_empty()
+                tx.tx().access_list.0.is_empty()
+                    && tx.tx().key_authorization.is_none()
+                    && tx.tx().tempo_authorization_list.is_empty()
+                    && !tx.tx().calls.is_empty()
                     && tx
                         .tx()
                         .calls
