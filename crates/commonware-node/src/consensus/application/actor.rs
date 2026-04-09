@@ -494,9 +494,10 @@ impl Inner<Init> {
             || parent_epoch_info.last() == parent.height()
                 && parent_epoch_info.epoch().next() == round.epoch();
 
-        // Send the proposal parent to reth to cover edge cases when we were not asked to
-        // to verify. If first block, the genesis digest (previous boundary) must have
-        // been locally verified before the engine for this epoch was created.
+        // Send the proposal parent to execution layer to cover edge cases when we were not asked to
+        // to verify it (and hence are missing it in the EL).
+        //
+        // If proposing the first block of an epoch, its parent (genesis/boundary block) must exist and be finalized, so we can skip it.
         if !is_genesis_parent
             && !verify_block(
                 context.clone(),
