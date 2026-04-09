@@ -316,24 +316,6 @@ pub enum TempoPoolTransactionError {
     #[error("KeyAuthorization expired: expiry {expiry} <= min allowed {min_allowed}")]
     KeyAuthorizationExpired { expiry: u64, min_allowed: u64 },
 
-    /// Thrown when a keychain transaction's fee token cost exceeds the spending limit.
-    #[error(
-        "Fee token spending limit exceeded: cost {cost} exceeds remaining limit {remaining} for token {fee_token}"
-    )]
-    SpendingLimitExceeded {
-        fee_token: Address,
-        cost: U256,
-        remaining: U256,
-    },
-
-    /// Legacy V1 keychain signature rejected post-T1C (permanently invalid).
-    #[error("legacy V1 keychain signature is no longer accepted, use V2 (type 0x04)")]
-    LegacyKeychainPostT1C,
-
-    /// V2 keychain signature rejected pre-T1C (not yet valid).
-    #[error("V2 keychain signature (type 0x04) is not valid before T1C activation")]
-    V2KeychainPreT1C,
-
     /// EVM validation pipeline error.
     #[error(transparent)]
     Evm(TempoInvalidTransaction),
@@ -348,9 +330,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::InvalidValidAfter { .. }
             | Self::AccessKeyExpired { .. }
             | Self::KeyAuthorizationExpired { .. }
-            | Self::Keychain(_)
-            | Self::SpendingLimitExceeded { .. }
-            | Self::V2KeychainPreT1C => false,
+            | Self::Keychain(_) => false,
             Self::SubblockNonceKey
             | Self::TooManyAuthorizations { .. }
             | Self::TooManyCalls { .. }
@@ -358,26 +338,12 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::TooManyAccessListAccounts { .. }
             | Self::TooManyStorageKeysPerAccount { .. }
             | Self::TooManyTotalStorageKeys { .. }
-            | Self::TooManyTokenLimits { .. }
-            | Self::LegacyKeychainPostT1C => true,
+            | Self::TooManyTokenLimits { .. } => true,
         }
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
-    }
-}
-
-impl From<tempo_primitives::transaction::KeychainVersionError> for TempoPoolTransactionError {
-    fn from(err: tempo_primitives::transaction::KeychainVersionError) -> Self {
-        match err {
-            tempo_primitives::transaction::KeychainVersionError::LegacyPostT1C => {
-                Self::LegacyKeychainPostT1C
-            }
-            tempo_primitives::transaction::KeychainVersionError::V2BeforeActivation => {
-                Self::V2KeychainPreT1C
-            }
-        }
     }
 }
 
