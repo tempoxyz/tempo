@@ -2,10 +2,13 @@
 
 use super::{AccountKeychain, KeyRestrictions, TokenLimit, authorizeKeyCall};
 use crate::{
-    Precompile, SelectorHardforkDiff, dispatch_hardfork_gated_call, error::TempoPrecompileError,
-    input_cost, mutate_void, view,
+    Precompile, SelectorHardforkDiff, dispatch_call, error::TempoPrecompileError, input_cost,
+    mutate_void, view,
 };
-use alloy::{primitives::Address, sol_types::SolCall};
+use alloy::{
+    primitives::Address,
+    sol_types::{SolCall, SolInterface},
+};
 use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
@@ -30,7 +33,8 @@ impl Precompile for AccountKeychain {
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
 
-        dispatch_hardfork_gated_call(
+        dispatch_call(
+            calldata,
             &[(
                 TempoHardfork::T3,
                 SelectorHardforkDiff {
@@ -38,7 +42,7 @@ impl Precompile for AccountKeychain {
                     removed: T3_REMOVED_SELECTORS,
                 },
             )],
-            calldata,
+            IAccountKeychainCalls::abi_decode,
             |call| match call {
                 IAccountKeychainCalls::authorizeKey_0(call) => {
                     if self.storage.spec().is_t3() {

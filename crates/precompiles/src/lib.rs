@@ -345,60 +345,17 @@ impl SelectorHardforkDiff<'_> {
     }
 }
 
-/// Decodes a Solidity interface while applying a simple hardfork selector diff first.
+/// Applies hardfork selector gates, decodes calldata via `decode`, then dispatches to `f`.
 ///
-/// This is useful when a hardfork adds or removes selectors: unsupported selectors should still
-/// surface as `UnknownFunctionSelector`, even if their calldata would otherwise partially decode.
-#[inline]
-fn decode_hardfork_gated_call<I>(
-    calldata: &[u8],
-    spec: TempoHardfork,
-    hardforks: &[SelectorHardforkRule<'_>],
-) -> core::result::Result<I, alloy::sol_types::Error>
-where
-    I: alloy::sol_types::SolInterface,
-{
-    let selector: [u8; 4] = calldata[..4].try_into().expect("calldata len >= 4");
-
-    if hardforks
-        .iter()
-        .any(|(hardfork, diff)| diff.rejects(selector, *hardfork <= spec))
-    {
-        return Err(alloy::sol_types::Error::unknown_selector(I::NAME, selector));
-    }
-
-    I::abi_decode(calldata)
-}
-
-/// Dispatches a Solidity interface while applying one or more hardfork selector diffs first.
-/// The main handler receives the plain decoded interface type.
-#[inline]
-pub(crate) fn dispatch_hardfork_gated_call<I>(
-    hardforks: &[SelectorHardforkRule<'_>],
-    calldata: &[u8],
-    f: impl FnOnce(I) -> PrecompileResult,
-) -> PrecompileResult
-where
-    I: alloy::sol_types::SolInterface,
-{
-    let spec = StorageCtx::default().spec();
-
-    dispatch_call(
-        calldata,
-        |data| decode_hardfork_gated_call::<I>(data, spec, hardforks),
-        f,
-    )
-}
-
-/// Decodes calldata via `decode`, then dispatches to `f`.
-///
-/// Handles missing selectors (revert on T1+, error on earlier forks), unknown selectors
-/// (ABI-encoded `UnknownFunctionSelector`), and malformed ABI data (empty revert).
+/// Handles missing selectors (revert on T1+, error on earlier forks), hardfork-gated selectors,
+/// unknown selectors (ABI-encoded `UnknownFunctionSelector`), and malformed ABI data (empty
+/// revert).
 ///
 /// Gas accounting is applied via [`fill_precompile_output`].
 #[inline]
-fn dispatch_call<T>(
+pub(crate) fn dispatch_call<T>(
     calldata: &[u8],
+    hardforks: &[SelectorHardforkRule<'_>],
     decode: impl FnOnce(&[u8]) -> core::result::Result<T, alloy::sol_types::Error>,
     f: impl FnOnce(T) -> PrecompileResult,
 ) -> PrecompileResult {
@@ -416,6 +373,16 @@ fn dispatch_call<T>(
             ));
         }
     }
+
+    let selector: [u8; 4] = calldata[..4].try_into().expect("calldata len >= 4");
+    if hardforks
+        .iter()
+        .any(|(hardfork, diff)| diff.rejects(selector, *hardfork <= storage.spec()))
+    {
+        return unknown_selector(selector, storage.gas_used())
+            .map(|res| fill_precompile_output(res, &storage));
+    }
+
     let result = decode(calldata);
 
     match result {
@@ -652,7 +619,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dispatch_hardfork_gated_call_across_multiple_hardforks() -> eyre::Result<()> {
+    fn test_dispatch_call_applies_hardfork_selector_gates() -> eyre::Result<()> {
         alloy::sol! {
             interface ISelectorGatedTest {
                 function stable() external;
@@ -681,9 +648,10 @@ mod tests {
         let call_with_spec = |spec: TempoHardfork, calldata: &[u8]| {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || {
-                dispatch_hardfork_gated_call::<ISelectorGatedTest::ISelectorGatedTestCalls>(
-                    SELECTOR_GATED_TEST_RULES,
+                dispatch_call(
                     calldata,
+                    SELECTOR_GATED_TEST_RULES,
+                    ISelectorGatedTest::ISelectorGatedTestCalls::abi_decode,
                     |call| match call {
                         ISelectorGatedTest::ISelectorGatedTestCalls::stable(_) => {
                             Ok(PrecompileOutput::new(0, Bytes::from_static(b"stable")))

@@ -23,6 +23,7 @@ impl Precompile for TIP403Registry {
 
         dispatch_call(
             calldata,
+            &[],
             ITIP403RegistryCalls::abi_decode,
             |call| match call {
                 ITIP403RegistryCalls::policyIdCounter(call) => {

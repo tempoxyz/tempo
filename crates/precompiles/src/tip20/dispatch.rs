@@ -47,7 +47,7 @@ impl Precompile for TIP20Token {
                 .into_precompile_result(self.storage.gas_used());
         }
 
-        dispatch_call(calldata, TIP20Call::decode, |call| match call {
+        dispatch_call(calldata, &[], TIP20Call::decode, |call| match call {
             // Metadata functions (no calldata decoding needed)
             TIP20Call::TIP20(ITIP20Calls::name(_)) => metadata::<ITIP20::nameCall>(|| self.name()),
             TIP20Call::TIP20(ITIP20Calls::symbol(_)) => {

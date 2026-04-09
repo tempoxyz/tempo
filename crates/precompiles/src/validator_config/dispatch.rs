@@ -22,6 +22,7 @@ impl Precompile for ValidatorConfig {
 
         dispatch_call(
             calldata,
+            &[],
             IValidatorConfigCalls::abi_decode,
             |call| match call {
                 // View functions
