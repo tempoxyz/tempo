@@ -1155,6 +1155,8 @@ impl AccountKeychain {
     ///
     /// Restores the spending limit by the refunded amount.
     /// Should be called after a fee refund to avoid permanently reducing the spending limit.
+    /// On T3, this should never restore more than the configured max in the current fee flow,
+    /// but we still clamp as defense in depth in case a future caller violates that invariant.
     pub fn refund_spending_limit(
         &mut self,
         account: Address,
@@ -1194,7 +1196,15 @@ impl AccountKeychain {
         }
 
         let mut limit_state = self.spending_limits[limit_key][token].read()?;
-        limit_state.remaining = limit_state.remaining.saturating_add(amount);
+        let refunded = limit_state.remaining.saturating_add(amount);
+        // Legacy pre-T3 rows only persisted `remaining`, so migrated keys deserialize with
+        // `max = 0`. Preserve that legacy behavior and only clamp rows that were configured
+        // with a real T3 max.
+        limit_state.remaining = if limit_state.max == 0 {
+            refunded
+        } else {
+            refunded.min(U256::from(limit_state.max))
+        };
 
         self.spending_limits[limit_key][token].write(limit_state)
     }
@@ -3111,6 +3121,115 @@ mod tests {
                 after_refund,
                 U256::from(140),
                 "saturating_add should allow refund beyond original limit without overflow"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t3_refund_spending_limit_clamps_to_max() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let eoa = Address::random();
+        let access_key = Address::random();
+        let token = Address::random();
+        let original_limit = U256::from(100);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(eoa)?;
+
+            let auth_call = authorizeKeyCall {
+                keyId: access_key,
+                signatureType: SignatureType::Secp256k1,
+                config: KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![TokenLimit {
+                        token,
+                        amount: original_limit,
+                        period: 0,
+                    }],
+                    allowAnyCalls: true,
+                    allowedCalls: vec![],
+                },
+            };
+            keychain.authorize_key(eoa, auth_call)?;
+
+            keychain.set_transaction_key(access_key)?;
+            keychain.set_tx_origin(eoa)?;
+
+            keychain.authorize_transfer(eoa, token, U256::from(60))?;
+            keychain.refund_spending_limit(eoa, token, U256::from(30))?;
+
+            let after_partial_refund = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(
+                after_partial_refund,
+                U256::from(70),
+                "refund should restore the spent amount without forcing the max"
+            );
+
+            keychain.refund_spending_limit(eoa, token, U256::from(50))?;
+
+            let after_refund = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(
+                after_refund, original_limit,
+                "refund should not restore more than the configured max"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t3_refund_spending_limit_preserves_legacy_rows_without_max() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let eoa = Address::random();
+        let access_key = Address::random();
+        let token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            let limit_key = AccountKeychain::spending_limit_key(eoa, access_key);
+            keychain.keys[eoa][access_key].write(AuthorizedKey {
+                signature_type: SignatureType::Secp256k1 as u8,
+                expiry: u64::MAX,
+                enforce_limits: true,
+                is_revoked: false,
+            })?;
+            keychain.spending_limits[limit_key][token].write(SpendingLimitState {
+                remaining: U256::from(90),
+                max: 0,
+                period: 0,
+                period_end: 0,
+            })?;
+
+            keychain.set_transaction_key(access_key)?;
+            keychain.set_tx_origin(eoa)?;
+            keychain.refund_spending_limit(eoa, token, U256::from(10))?;
+
+            let after_refund = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(
+                after_refund,
+                U256::from(100),
+                "migrated pre-T3 rows should keep legacy saturating-add refund semantics"
             );
 
             Ok(())
