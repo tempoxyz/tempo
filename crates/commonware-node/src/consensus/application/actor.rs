@@ -478,31 +478,38 @@ impl Inner<Init> {
             .epoch_strategy
             .containing(parent.height())
             .expect("epoch strategy is for all heights");
+
         // XXX: Re-propose the parent if the parent is the last height of the
         // epoch. parent.height+1 should be proposed as the first block of the
         // next epoch.
-        if parent_epoch_info.last() == parent.height() && parent_epoch_info.epoch() == round.epoch()
-        {
+        let repropose_boundary = parent_epoch_info.last() == parent.height()
+            && parent_epoch_info.epoch() == round.epoch();
+
+        if repropose_boundary {
             info!("parent is last height of epoch; re-proposing parent");
             return Ok(parent);
         }
 
-        // Send the proposal parent to reth to cover edge cases when we were not asked to verify it directly.
-        if !verify_block(
-            context.clone(),
-            parent_epoch_info.epoch(),
-            &self.epoch_strategy,
-            self.execution_node
-                .add_ons_handle
-                .beacon_engine_handle
-                .clone(),
-            &parent,
-            // It is safe to not verify the parent of the parent because this block is already notarized.
-            parent.parent_digest(),
-            &self.scheme_provider,
-        )
-        .await
-        .wrap_err("failed verifying block against execution layer")?
+        let is_reproposed_boundary = parent_epoch_info.first() == parent.height();
+
+        // Send the proposal parent to reth to cover edge cases when we were not asked to verify
+        // it directly, skipping a re-proposed boundary which is already verified by the EL.
+        if !is_reproposed_boundary
+            && !verify_block(
+                context.clone(),
+                parent_epoch_info.epoch(),
+                &self.epoch_strategy,
+                self.execution_node
+                    .add_ons_handle
+                    .beacon_engine_handle
+                    .clone(),
+                &parent,
+                // It is safe to not verify the parent of the parent because this block is already notarized.
+                parent.parent_digest(),
+                &self.scheme_provider,
+            )
+            .await
+            .wrap_err("failed verifying block against execution layer")?
         {
             eyre::bail!("the proposal parent block is not valid");
         }
@@ -831,14 +838,7 @@ async fn verify_block<TContext: Pacer>(
         return Ok(false);
     }
 
-    // When called on the re-proposed boundary block in the genesis view, there is
-    // a small race between the dkg loop entering the next epoch or the epoch manager
-    // handling finalized update of the parent (the boundary block of the last epoch).
-    // For all other blocks, the scheme must be available.
-    //
-    // Thus by erroring here, we're making sure the proposer has fully processed and
-    // registered the outcome of the previous boundary (most likely) otherwise moving
-    // into the next round with a new proposer.
+    // Scheme registration precedes engine creation, so the scheme must exist
     let scheme = scheme_provider
         .scoped(epoch)
         .ok_or_eyre("cannot determine participants in the current epoch")?;
