@@ -139,24 +139,42 @@ impl super::types::TestEnv for RpcEnv {
     }
 
     async fn fund_account(&mut self, addr: Address) -> eyre::Result<U256> {
-        let tx_hashes: Vec<B256> = self
-            .provider
-            .raw_request("tempo_fundAddress".into(), [addr])
-            .await?;
+        const FUND_RETRIES: usize = 3;
 
-        for tx_hash in tx_hashes {
-            wait_for_receipt(&self.provider, tx_hash).await?;
+        for attempt in 1..=FUND_RETRIES {
+            let tx_hashes: Vec<B256> = self
+                .provider
+                .raw_request("tempo_fundAddress".into(), [addr])
+                .await?;
+
+            for tx_hash in tx_hashes {
+                wait_for_receipt(&self.provider, tx_hash).await?;
+            }
+
+            for _ in 0..RPC_POLL_RETRIES {
+                let balance = tempo_precompiles::tip20::ITIP20::new(
+                    tempo_contracts::precompiles::DEFAULT_FEE_TOKEN,
+                    &self.provider,
+                )
+                .balanceOf(addr)
+                .call()
+                .await?;
+
+                if !balance.is_zero() {
+                    return Ok(balance);
+                }
+
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+
+            eprintln!(
+                "tempo_fundAddress attempt {attempt}/{FUND_RETRIES} did not fund {addr}; retrying"
+            );
         }
 
-        let balance = tempo_precompiles::tip20::ITIP20::new(
-            tempo_contracts::precompiles::DEFAULT_FEE_TOKEN,
-            &self.provider,
+        eyre::bail!(
+            "tempo_fundAddress did not fund {addr}; fee token balance remained zero after {FUND_RETRIES} attempts"
         )
-        .balanceOf(addr)
-        .call()
-        .await?;
-
-        Ok(balance)
     }
 
     async fn submit_tx(
