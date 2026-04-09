@@ -472,6 +472,7 @@ impl Inner<Init> {
             &self.marshal,
         )
         .await?;
+
         debug!(height = %parent.height(), "retrieved parent block",);
 
         let parent_epoch_info = self
@@ -488,14 +489,15 @@ impl Inner<Init> {
             return Ok(parent);
         }
 
-        // Detect when we're building the genesis block of a new epoch
-        let is_genesis_block = parent_epoch_info.last() == parent.height()
-            && parent_epoch_info.epoch().next() == round.epoch();
+        // Detect when we're building on top of the genesis block
+        let is_genesis_parent = parent.height().is_zero()
+            || parent_epoch_info.last() == parent.height()
+                && parent_epoch_info.epoch().next() == round.epoch();
 
         // Send the proposal parent to reth to cover edge cases when we were not asked to
         // to verify. If the genesis block, the genesis digest (previous boundary) must
         // have already been verified before the engine for this epoch was created.
-        if !is_genesis_block
+        if !is_genesis_parent
             && !verify_block(
                 context.clone(),
                 parent_epoch_info.epoch(),
