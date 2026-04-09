@@ -49,7 +49,7 @@ use commonware_consensus::{
     Reporters,
     marshal::Update,
     simplex::{self, elector, scheme::bls12381_threshold::vrf::Scheme},
-    types::{Epoch, Epocher as _, Height},
+    types::{Epoch, EpochDelta, Epocher as _, Height},
 };
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_macros::select;
@@ -406,8 +406,13 @@ where
             );
         }
 
-        if !self.config.scheme_provider.delete(&epoch) {
-            warn!(
+        // Keep the last 2 epochs around.
+        if let Some(to_delete) = epoch.checked_sub(EpochDelta::new(2))
+            && !self.config.scheme_provider.delete(&to_delete)
+        {
+            debug!(
+                to_exit = %epoch,
+                %to_delete,
                 "attempted to delete scheme for epoch, but epoch had no scheme \
                 registered"
             );
