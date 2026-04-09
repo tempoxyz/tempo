@@ -27,6 +27,13 @@ impl BestPriorityTransactions<CoinbaseTipOrdering<TempoPooledTransaction>>
     }
 }
 
+/// Tracks which side of a [`MergeBestTransactions`] yielded the last transaction.
+#[derive(Debug, Clone, Copy)]
+enum MergeSource {
+    Left,
+    Right,
+}
+
 /// A [`BestTransactions`] iterator that merges two individual implementations and always yields the next best item from either of the iterators.
 pub struct MergeBestTransactions<L, R, T>
 where
@@ -38,6 +45,7 @@ where
     right: R,
     next_left: Option<(L::Item, Priority<T::PriorityValue>)>,
     next_right: Option<(L::Item, Priority<T::PriorityValue>)>,
+    last_source: Option<MergeSource>,
 }
 
 impl<L, R, T> MergeBestTransactions<L, R, T>
@@ -53,6 +61,7 @@ where
             right,
             next_left: None,
             next_right: None,
+            last_source: None,
         }
     }
 }
@@ -79,11 +88,13 @@ where
             }
             // Only left has an item - take it
             (Some(_), None) => {
+                self.last_source = Some(MergeSource::Left);
                 let (item, priority) = self.next_left.take()?;
                 Some((item, priority))
             }
             // Only right has an item - take it
             (None, Some(_)) => {
+                self.last_source = Some(MergeSource::Right);
                 let (item, priority) = self.next_right.take()?;
                 Some((item, priority))
             }
@@ -91,9 +102,11 @@ where
             (Some((_, left_priority)), Some((_, right_priority))) => {
                 // Higher priority value is better
                 if left_priority >= right_priority {
+                    self.last_source = Some(MergeSource::Left);
                     let (item, priority) = self.next_left.take()?;
                     Some((item, priority))
                 } else {
+                    self.last_source = Some(MergeSource::Right);
                     let (item, priority) = self.next_right.take()?;
                     Some((item, priority))
                 }
@@ -122,8 +135,14 @@ where
     T: TransactionOrdering,
 {
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: &InvalidPoolTransactionError) {
-        self.left.mark_invalid(transaction, kind);
-        self.right.mark_invalid(transaction, kind);
+        match self.last_source {
+            Some(MergeSource::Left) => self.left.mark_invalid(transaction, kind),
+            Some(MergeSource::Right) => self.right.mark_invalid(transaction, kind),
+            None => {
+                self.left.mark_invalid(transaction, kind);
+                self.right.mark_invalid(transaction, kind);
+            }
+        }
     }
 
     fn no_updates(&mut self) {
@@ -140,11 +159,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reth_primitives_traits::transaction::error::InvalidTransactionError;
+    use std::sync::{Arc, Mutex};
 
     /// A simple mock iterator for testing that yields items with priorities
     struct MockBestTransactions<T> {
         items: Vec<(T, Priority<u128>)>,
         index: usize,
+        invalidated: Arc<Mutex<Vec<T>>>,
     }
 
     impl<T> MockBestTransactions<T> {
@@ -153,7 +175,15 @@ mod tests {
                 .into_iter()
                 .map(|(item, priority)| (item, Priority::Value(priority)))
                 .collect();
-            Self { items, index: 0 }
+            Self {
+                items,
+                index: 0,
+                invalidated: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn invalidated(&self) -> Arc<Mutex<Vec<T>>> {
+            self.invalidated.clone()
         }
     }
 
@@ -188,8 +218,8 @@ mod tests {
     }
 
     impl<T: Clone + Send> BestTransactions for MockBestTransactions<T> {
-        fn mark_invalid(&mut self, _transaction: &Self::Item, _kind: &InvalidPoolTransactionError) {
-            // No-op for mock
+        fn mark_invalid(&mut self, transaction: &Self::Item, _kind: &InvalidPoolTransactionError) {
+            self.invalidated.lock().unwrap().push(transaction.clone());
         }
 
         fn no_updates(&mut self) {
@@ -316,6 +346,44 @@ mod tests {
         assert_eq!(merged.next(), Some("R2")); // 6
         assert_eq!(merged.next(), Some("L3")); // 5
         assert_eq!(merged.next(), Some("R3")); // 4
+        assert_eq!(merged.next(), None);
+    }
+
+    #[test]
+    fn test_mark_invalid_only_forwards_to_source_pool() {
+        // Invalidating a right-side (AA-2D) tx must NOT propagate to the
+        // left-side (protocol) pool.
+        let left = MockBestTransactions::new(vec![("L1", 5), ("L2", 3)]);
+        let right = MockBestTransactions::new(vec![("R1", 10)]);
+
+        let left_invalidated = left.invalidated();
+        let right_invalidated = right.invalidated();
+
+        let mut merged = MergeBestTransactions::new(left, right);
+
+        // Right has highest priority, so R1 is yielded first
+        let first = merged.next().unwrap();
+        assert_eq!(first, "R1");
+
+        // Simulate payload builder marking R1 as invalid
+        let kind =
+            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported);
+        merged.mark_invalid(&first, &kind);
+
+        // Only the right (source) pool should have received the invalidation
+        assert!(
+            left_invalidated.lock().unwrap().is_empty(),
+            "left pool must NOT be invalidated when a right-side tx fails"
+        );
+        assert_eq!(
+            *right_invalidated.lock().unwrap(),
+            vec!["R1"],
+            "right pool must receive the invalidation"
+        );
+
+        // Remaining left-side txs must still be yielded
+        assert_eq!(merged.next(), Some("L1"));
+        assert_eq!(merged.next(), Some("L2"));
         assert_eq!(merged.next(), None);
     }
 }

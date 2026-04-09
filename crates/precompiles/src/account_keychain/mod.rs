@@ -1031,7 +1031,7 @@ impl AccountKeychain {
         token: Address,
         current_timestamp: u64,
     ) -> Result<(U256, u64)> {
-        if key_id.is_zero() {
+        if key_id.is_zero() && self.storage.spec().is_t3() {
             return Ok((U256::ZERO, 0));
         }
 
@@ -3757,6 +3757,39 @@ mod tests {
 
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_zero_key_remaining_limit_reads_storage_on_t2_but_not_t3() -> eyre::Result<()> {
+        let (account, token) = (Address::random(), Address::random());
+
+        for (hardfork, expected_sloads) in [(TempoHardfork::T2, 1_u64), (TempoHardfork::T3, 0)] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
+            StorageCtx::enter(&mut storage, || {
+                let mut keychain = AccountKeychain::new();
+                let _ = keychain.initialize();
+
+                let sloads_before = StorageCtx.counter_sload();
+                assert_eq!(
+                    keychain.get_remaining_limit(getRemainingLimitCall {
+                        account,
+                        keyId: Address::ZERO,
+                        token,
+                    })?,
+                    U256::ZERO
+                );
+
+                assert_eq!(
+                    StorageCtx.counter_sload() - sloads_before,
+                    expected_sloads,
+                    "{hardfork:?} should perform the expected number of storage reads for zero key_id"
+                );
+
+                Ok::<_, eyre::Report>(())
+            })?;
+        }
+
+        Ok(())
     }
 
     #[test]

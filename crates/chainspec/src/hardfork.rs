@@ -242,6 +242,30 @@ impl TempoHardfork {
         crate::spec::TEMPO_T1_NEW_NONCE_KEY_GAS
     }
 
+    /// Returns the active hardfork at the given timestamp for the specified chain.
+    ///
+    /// Returns `None` if the chain ID is not a known Tempo chain.
+    pub const fn from_chain_and_timestamp(chain_id: u64, timestamp: u64) -> Option<Self> {
+        // Walk variants in reverse to find the latest active fork, mirroring
+        // `TempoHardforks::tempo_hardfork_at` but without needing a chainspec instance.
+        let variants = Self::VARIANTS;
+        let mut i = variants.len();
+        while i > 0 {
+            i -= 1;
+            let activation = match chain_id {
+                4217 => variants[i].mainnet_activation_timestamp(),
+                42431 => variants[i].moderato_activation_timestamp(),
+                _ => return None,
+            };
+            if let Some(ts) = activation
+                && timestamp >= ts
+            {
+                return Some(variants[i]);
+            }
+        }
+        Some(Self::Genesis)
+    }
+
     /// Retrieves the activation block for this hardfork on mainnet.
     pub const fn mainnet_activation_block(&self) -> Option<u64> {
         use crate::constants::mainnet::*;
