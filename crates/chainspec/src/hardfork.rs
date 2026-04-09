@@ -257,7 +257,9 @@ impl TempoHardfork {
                 42431 => variants[i].moderato_activation_timestamp(),
                 _ => return None,
             };
-            if let Some(ts) = activation && timestamp >= ts {
+            if let Some(ts) = activation
+                && timestamp >= ts
+            {
                 return Some(variants[i]);
             }
         }
