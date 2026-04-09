@@ -171,7 +171,8 @@ impl From<SelectorRule> for AbiSelectorRule {
 /// - `limits`: `None` (omitted or 0x80) = unlimited spending, `Some([])` = no spending, `Some([...])` = specific limits
 /// - `allowed_calls`: `None` (canonically omitted, explicit 0x80 accepted) = unrestricted,
 ///   `Some([])` = scoped with no allowed calls, `Some([...])` = scoped calls
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
+#[rlp(trailing(canonical))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(rlp))]
@@ -425,7 +426,6 @@ mod serde_nonzero_quantity_opt {
 
 mod rlp {
     use super::*;
-    use alloc::borrow::Cow;
     use alloy_rlp::{Decodable, Encodable};
 
     #[derive(
@@ -476,72 +476,6 @@ mod rlp {
 
         fn length(&self) -> usize {
             TokenLimitWire::from(self).length()
-        }
-    }
-
-    #[derive(alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
-    #[rlp(trailing(canonical))]
-    #[expect(clippy::owned_cow)]
-    struct KeyAuthorizationWire<'a> {
-        chain_id: u64,
-        key_type: SignatureType,
-        key_id: Address,
-        expiry: Option<NonZeroU64>,
-        limits: Option<Cow<'a, Vec<TokenLimit>>>,
-        allowed_calls: Option<Cow<'a, Vec<CallScope>>>,
-    }
-
-    impl<'a> From<&'a KeyAuthorization> for KeyAuthorizationWire<'a> {
-        fn from(value: &'a KeyAuthorization) -> Self {
-            let KeyAuthorization {
-                chain_id,
-                key_type,
-                key_id,
-                expiry,
-                limits,
-                allowed_calls,
-            } = value;
-            Self {
-                chain_id: *chain_id,
-                key_type: *key_type,
-                key_id: *key_id,
-                expiry: *expiry,
-                limits: limits.as_ref().map(Cow::Borrowed),
-                allowed_calls: allowed_calls.as_ref().map(Cow::Borrowed),
-            }
-        }
-    }
-
-    impl<'a> From<KeyAuthorizationWire<'a>> for KeyAuthorization {
-        fn from(value: KeyAuthorizationWire<'a>) -> Self {
-            Self {
-                chain_id: value.chain_id,
-                key_type: value.key_type,
-                key_id: value.key_id,
-                expiry: value.expiry,
-                limits: value
-                    .limits
-                    .map(|limits| limits.into_owned().into_iter().collect()),
-                allowed_calls: value
-                    .allowed_calls
-                    .map(|allowed_calls| allowed_calls.into_owned().into_iter().collect()),
-            }
-        }
-    }
-
-    impl Encodable for KeyAuthorization {
-        fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-            KeyAuthorizationWire::from(self).encode(out)
-        }
-
-        fn length(&self) -> usize {
-            KeyAuthorizationWire::from(self).length()
-        }
-    }
-
-    impl Decodable for KeyAuthorization {
-        fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-            Ok(KeyAuthorizationWire::decode(buf)?.into())
         }
     }
 }

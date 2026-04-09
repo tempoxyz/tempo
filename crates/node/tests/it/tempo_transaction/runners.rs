@@ -928,7 +928,7 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
 
             let expiry_value = match expiry {
                 KeyExpiry::None => None,
-                KeyExpiry::Past => Some(1u64),
+                KeyExpiry::Past => std::num::NonZeroU64::new(1),
             };
 
             let spending_limits = match limits {
