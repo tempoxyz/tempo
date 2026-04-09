@@ -244,6 +244,10 @@ function buildFailureBlocks({ prNumber, actor, actorSlackId, jobUrl, repo, faile
       text: { type: 'mrkdwn', text: parts.join(' | ') },
     },
     {
+      type: 'section',
+      text: { type: 'mrkdwn', text: '<@U0AAA8F0JEM> investigate' },
+    },
+    {
       type: 'actions',
       elements: [{
         type: 'button',
@@ -323,10 +327,16 @@ async function failure({ core, context, failedStep }) {
   const blocks = buildFailureBlocks({ prNumber, actor, actorSlackId, jobUrl, repo, failedStep });
   const text = `Bench failed while ${failedStep}`;
 
-  // DM the actor on failure
-  if (actorSlackId) {
+  // Post to public channel so @ai can investigate
+  const channel = process.env.SLACK_BENCH_CHANNEL;
+  if (channel) {
+    await postToSlack(token, channel, blocks, text, core);
+  }
+
+  // DM the actor on failure (skip if already posted to channel)
+  if (!channel && actorSlackId) {
     await postToSlack(token, actorSlackId, blocks, text, core);
-  } else {
+  } else if (!channel) {
     core.info(`No Slack user mapping for GitHub user '${actor}', skipping DM`);
   }
 }
