@@ -38,30 +38,25 @@ use tempo_primitives::{
 
 use super::types::*;
 
-/// Returns a deterministic decoded Tempo revert string when the RPC only returns raw revert data.
-pub(super) fn decoded_tempo_rpc_error_message(
-    err: &RpcError<TransportErrorKind>,
-) -> Option<String> {
-    let revert_data = err.as_error_resp()?.as_revert_data()?;
-    let decoded = tempo_precompiles::error::decode_error(&revert_data.0)?;
-    Some(format!("execution reverted: {}", decoded.error))
+fn decoded_tempo_rpc_error_message(err: &RpcError<TransportErrorKind>) -> Option<String> {
+    tempo_precompiles::error::decode_error(&err.as_error_resp()?.as_revert_data()?.0)
+        .map(|decoded| format!("execution reverted: {}", decoded.error))
 }
 
-/// Returns true if either the transport error string or client-side decoded revert matches.
+/// Returns a decoded Tempo revert message when possible, else the original RPC error string.
+pub(super) fn tempo_rpc_error_message(err: &RpcError<TransportErrorKind>) -> String {
+    decoded_tempo_rpc_error_message(err).unwrap_or_else(|| err.to_string())
+}
+
 pub(super) fn rpc_error_contains_reason(err: &RpcError<TransportErrorKind>, reason: &str) -> bool {
-    let reason = reason.to_lowercase();
-    err.to_string().to_lowercase().contains(&reason)
-        || decoded_tempo_rpc_error_message(err)
-            .is_some_and(|message| message.to_lowercase().contains(&reason))
+    tempo_rpc_error_message(err)
+        .to_ascii_lowercase()
+        .contains(&reason.to_ascii_lowercase())
 }
 
 /// Normalizes Tempo revert errors so tests do not depend on server-side formatting.
 pub(super) fn normalize_tempo_rpc_error(err: RpcError<TransportErrorKind>) -> eyre::Report {
-    if let Some(message) = decoded_tempo_rpc_error_message(&err) {
-        eyre::eyre!(message)
-    } else {
-        err.into()
-    }
+    decoded_tempo_rpc_error_message(&err).map_or_else(|| err.into(), eyre::Report::msg)
 }
 
 // TODO: remove once all RPC providers accept hex-serialized scoped key auth selectors.
@@ -124,13 +119,13 @@ mod legacy_compat {
         request
     }
 
-    pub(super) async fn raw_request<T: DeserializeOwned>(
+    pub(super) async fn raw_request<T>(
         provider: &impl Provider,
         method: &'static str,
         request: &TempoTransactionRequest,
     ) -> Result<T, RpcError<TransportErrorKind>>
     where
-        T: std::fmt::Debug + Send + Sync + Unpin + 'static,
+        T: DeserializeOwned + std::fmt::Debug + Send + Sync + Unpin + 'static,
     {
         let request_value = serde_json::to_value(request).map_err(RpcError::local_usage)?;
 

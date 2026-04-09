@@ -2752,7 +2752,7 @@ pub(super) async fn run_fill_transaction_error_decoding_scenario<E: TestEnv>(
         .await;
 
     let err = result.expect_err("eth_fillTransaction should fail for unfunded address");
-    let err_str = decoded_tempo_rpc_error_message(&err).unwrap_or_else(|| err.to_string());
+    let err_str = tempo_rpc_error_message(&err);
 
     // The error must contain the decoded error name, not raw hex.
     assert!(
