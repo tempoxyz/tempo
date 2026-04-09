@@ -489,7 +489,6 @@ impl Inner<Init> {
             return Ok(parent);
         }
 
-        // Detect when we're building on top of the genesis digest
         let is_genesis_parent = parent.height().is_zero()
             || parent_epoch_info.last() == parent.height()
                 && parent_epoch_info.epoch().next() == round.epoch();
