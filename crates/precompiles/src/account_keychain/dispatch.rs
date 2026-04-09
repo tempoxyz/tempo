@@ -2,18 +2,27 @@
 
 use super::{AccountKeychain, KeyRestrictions, TokenLimit, authorizeKeyCall};
 use crate::{
-    Precompile, dispatch_call, error::TempoPrecompileError, input_cost, mutate_void,
-    unknown_selector, view,
+    Precompile, SelectorHardforkDiff, dispatch_hardfork_gated_call, error::TempoPrecompileError,
+    input_cost, mutate_void, view,
 };
-use alloy::{
-    primitives::Address,
-    sol_types::{SolCall, SolInterface},
-};
+use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     AccountKeychainError,
     IAccountKeychain::{IAccountKeychainCalls, removeAllowedCallsCall, setAllowedCallsCall},
 };
+
+const T3_ADDED_SELECTORS: &[[u8; 4]] = &[
+    authorizeKeyCall::SELECTOR,
+    setAllowedCallsCall::SELECTOR,
+    removeAllowedCallsCall::SELECTOR,
+    tempo_contracts::precompiles::getRemainingLimitWithPeriodCall::SELECTOR,
+    tempo_contracts::precompiles::IAccountKeychain::getAllowedCallsCall::SELECTOR,
+];
+
+const T3_REMOVED_SELECTORS: &[[u8; 4]] =
+    &[tempo_contracts::precompiles::IAccountKeychain::getRemainingLimitCall::SELECTOR];
 
 impl Precompile for AccountKeychain {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -21,9 +30,15 @@ impl Precompile for AccountKeychain {
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
 
-        dispatch_call(
+        dispatch_hardfork_gated_call(
+            &[(
+                TempoHardfork::T3,
+                SelectorHardforkDiff {
+                    added: T3_ADDED_SELECTORS,
+                    removed: T3_REMOVED_SELECTORS,
+                },
+            )],
             calldata,
-            IAccountKeychainCalls::abi_decode,
             |call| match call {
                 IAccountKeychainCalls::authorizeKey_0(call) => {
                     if self.storage.spec().is_t3() {
@@ -58,12 +73,6 @@ impl Precompile for AccountKeychain {
                     mutate_void(call, msg_sender, |sender, c| self.authorize_key(sender, c))
                 }
                 IAccountKeychainCalls::authorizeKey_1(call) => {
-                    if !self.storage.spec().is_t3() {
-                        return unknown_selector(
-                            authorizeKeyCall::SELECTOR,
-                            self.storage.gas_used(),
-                        );
-                    }
                     mutate_void(call, msg_sender, |sender, c| self.authorize_key(sender, c))
                 }
                 IAccountKeychainCalls::revokeKey(call) => {
@@ -75,53 +84,23 @@ impl Precompile for AccountKeychain {
                     })
                 }
                 IAccountKeychainCalls::setAllowedCalls(call) => {
-                    if !self.storage.spec().is_t3() {
-                        return unknown_selector(
-                            setAllowedCallsCall::SELECTOR,
-                            self.storage.gas_used(),
-                        );
-                    }
                     mutate_void(call, msg_sender, |sender, c| {
                         self.set_allowed_calls(sender, c)
                     })
                 }
                 IAccountKeychainCalls::removeAllowedCalls(call) => {
-                    if !self.storage.spec().is_t3() {
-                        return unknown_selector(
-                            removeAllowedCallsCall::SELECTOR,
-                            self.storage.gas_used(),
-                        );
-                    }
                     mutate_void(call, msg_sender, |sender, c| {
                         self.remove_allowed_calls(sender, c)
                     })
                 }
                 IAccountKeychainCalls::getKey(call) => view(call, |c| self.get_key(c)),
                 IAccountKeychainCalls::getRemainingLimit(call) => {
-                    if self.storage.spec().is_t3() {
-                        return unknown_selector(
-                            tempo_contracts::precompiles::IAccountKeychain::getRemainingLimitCall::SELECTOR,
-                            self.storage.gas_used(),
-                        );
-                    }
                     view(call, |c| self.get_remaining_limit(c))
                 }
                 IAccountKeychainCalls::getRemainingLimitWithPeriod(call) => {
-                    if !self.storage.spec().is_t3() {
-                        return unknown_selector(
-                            tempo_contracts::precompiles::getRemainingLimitWithPeriodCall::SELECTOR,
-                            self.storage.gas_used(),
-                        );
-                    }
                     view(call, |c| self.get_remaining_limit_with_period(c))
                 }
                 IAccountKeychainCalls::getAllowedCalls(call) => {
-                    if !self.storage.spec().is_t3() {
-                        return unknown_selector(
-                            tempo_contracts::precompiles::IAccountKeychain::getAllowedCallsCall::SELECTOR,
-                            self.storage.gas_used(),
-                        );
-                    }
                     view(call, |c| self.get_allowed_calls(c))
                 }
                 IAccountKeychainCalls::getTransactionKey(call) => {
@@ -146,17 +125,22 @@ mod tests {
         sol_types::{SolCall, SolError},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::legacyAuthorizeKeyCall;
+    use tempo_contracts::precompiles::{UnknownFunctionSelector, legacyAuthorizeKeyCall};
 
     #[test]
     fn test_account_keychain_selector_coverage() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         StorageCtx::enter(&mut storage, || {
             let mut fee_manager = AccountKeychain::new();
+            let selectors: Vec<_> = IAccountKeychainCalls::SELECTORS
+                .iter()
+                .copied()
+                .filter(|selector| *selector != getRemainingLimitCall::SELECTOR)
+                .collect();
 
             let unsupported = check_selector_coverage(
                 &mut fee_manager,
-                IAccountKeychainCalls::SELECTORS,
+                &selectors,
                 "IAccountKeychain",
                 IAccountKeychainCalls::name_by_selector,
             );
@@ -335,6 +319,25 @@ mod tests {
 
             let result = keychain.call(&calldata, account)?;
             assert!(result.reverted);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t3_selector_with_malformed_data_returns_unknown_selector_error() -> eyre::Result<()> {
+        let selector = getRemainingLimitWithPeriodCall::SELECTOR;
+        let calldata = selector.to_vec();
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+
+            let result = keychain.call(&calldata, Address::ZERO)?;
+            assert!(result.reverted, "expected revert");
+
+            let decoded = UnknownFunctionSelector::abi_decode(&result.bytes)?;
+            assert_eq!(decoded.selector.as_slice(), &selector);
 
             Ok(())
         })

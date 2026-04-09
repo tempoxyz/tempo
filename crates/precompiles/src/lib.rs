@@ -324,6 +324,72 @@ pub fn unknown_selector(selector: [u8; 4], gas: u64) -> PrecompileResult {
     error::TempoPrecompileError::UnknownFunctionSelector(selector).into_precompile_result(gas)
 }
 
+/// A selector diff at a single hardfork boundary.
+///
+/// Before the hardfork activates, selectors in `added` are treated as unknown.
+/// After it activates, selectors in `removed` are treated as unknown.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct SelectorHardforkDiff<'a> {
+    pub added: &'a [[u8; 4]],
+    pub removed: &'a [[u8; 4]],
+}
+
+/// One hardfork boundary rule for selector gating.
+pub(crate) type SelectorHardforkRule<'a> = (TempoHardfork, SelectorHardforkDiff<'a>);
+
+impl SelectorHardforkDiff<'_> {
+    #[inline]
+    fn rejects(self, selector: [u8; 4], active: bool) -> bool {
+        let gated = if active { self.removed } else { self.added };
+        gated.contains(&selector)
+    }
+}
+
+/// Decodes a Solidity interface while applying a simple hardfork selector diff first.
+///
+/// This is useful when a hardfork adds or removes selectors: unsupported selectors should still
+/// surface as `UnknownFunctionSelector`, even if their calldata would otherwise partially decode.
+#[inline]
+fn decode_hardfork_gated_call<I>(
+    calldata: &[u8],
+    spec: TempoHardfork,
+    hardforks: &[SelectorHardforkRule<'_>],
+) -> core::result::Result<I, alloy::sol_types::Error>
+where
+    I: alloy::sol_types::SolInterface,
+{
+    let selector: [u8; 4] = calldata[..4].try_into().expect("calldata len >= 4");
+
+    if hardforks
+        .iter()
+        .any(|(hardfork, diff)| diff.rejects(selector, *hardfork <= spec))
+    {
+        return Err(alloy::sol_types::Error::unknown_selector(I::NAME, selector));
+    }
+
+    I::abi_decode(calldata)
+}
+
+/// Dispatches a Solidity interface while applying one or more hardfork selector diffs first.
+/// The main handler receives the plain decoded interface type.
+#[inline]
+pub(crate) fn dispatch_hardfork_gated_call<I>(
+    hardforks: &[SelectorHardforkRule<'_>],
+    calldata: &[u8],
+    f: impl FnOnce(I) -> PrecompileResult,
+) -> PrecompileResult
+where
+    I: alloy::sol_types::SolInterface,
+{
+    let spec = StorageCtx::default().spec();
+
+    dispatch_call(
+        calldata,
+        |data| decode_hardfork_gated_call::<I>(data, spec, hardforks),
+        f,
+    )
+}
+
 /// Decodes calldata via `decode`, then dispatches to `f`.
 ///
 /// Handles missing selectors (revert on T1+, error on earlier forks), unknown selectors
@@ -386,7 +452,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tip20::TIP20Token;
+    use crate::{
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        tip20::TIP20Token,
+    };
     use alloy::primitives::{Address, Bytes, U256, bytes};
     use alloy_evm::{
         EthEvmFactory, EvmEnv, EvmFactory, EvmInternals,
@@ -397,7 +466,7 @@ mod tests {
         database::{CacheDB, EmptyDB},
         state::{AccountInfo, Bytecode},
     };
-    use tempo_contracts::precompiles::ITIP20;
+    use tempo_contracts::precompiles::{ITIP20, UnknownFunctionSelector};
 
     #[test]
     fn test_precompile_delegatecall() {
@@ -580,6 +649,100 @@ mod tests {
             ),
             "T0: expected PrecompileError for invalid calldata, got {result:?}"
         );
+    }
+
+    #[test]
+    fn test_dispatch_hardfork_gated_call_across_multiple_hardforks() -> eyre::Result<()> {
+        alloy::sol! {
+            interface ISelectorGatedTest {
+                function stable() external;
+                function t2Added(uint256 value) external;
+                function t3Removed() external;
+            }
+        }
+
+        const SELECTOR_GATED_TEST_RULES: &[SelectorHardforkRule<'static>] = &[
+            (
+                TempoHardfork::T2,
+                SelectorHardforkDiff {
+                    added: &[ISelectorGatedTest::t2AddedCall::SELECTOR],
+                    removed: &[],
+                },
+            ),
+            (
+                TempoHardfork::T3,
+                SelectorHardforkDiff {
+                    added: &[],
+                    removed: &[ISelectorGatedTest::t3RemovedCall::SELECTOR],
+                },
+            ),
+        ];
+
+        let call_with_spec = |spec: TempoHardfork, calldata: &[u8]| {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || {
+                dispatch_hardfork_gated_call::<ISelectorGatedTest::ISelectorGatedTestCalls>(
+                    SELECTOR_GATED_TEST_RULES,
+                    calldata,
+                    |call| match call {
+                        ISelectorGatedTest::ISelectorGatedTestCalls::stable(_) => {
+                            Ok(PrecompileOutput::new(0, Bytes::from_static(b"stable")))
+                        }
+                        ISelectorGatedTest::ISelectorGatedTestCalls::t2Added(_) => {
+                            Ok(PrecompileOutput::new(0, Bytes::from_static(b"added")))
+                        }
+                        ISelectorGatedTest::ISelectorGatedTestCalls::t3Removed(_) => {
+                            Ok(PrecompileOutput::new(0, Bytes::from_static(b"removed")))
+                        }
+                    },
+                )
+            })
+        };
+
+        let t2_added_calldata = ISelectorGatedTest::t2AddedCall { value: U256::ZERO }.abi_encode();
+        let t3_removed_calldata = ISelectorGatedTest::t3RemovedCall {}.abi_encode();
+
+        // pre-T2: selectors introduced at T2 must still look unknown.
+        let pre_t2_added = call_with_spec(TempoHardfork::T1, &t2_added_calldata)?;
+        assert!(pre_t2_added.reverted);
+        let decoded = UnknownFunctionSelector::abi_decode(&pre_t2_added.bytes)?;
+        assert_eq!(
+            decoded.selector.as_slice(),
+            &ISelectorGatedTest::t2AddedCall::SELECTOR
+        );
+
+        // T2+: that selector becomes available and dispatches normally.
+        let post_t2_added = call_with_spec(TempoHardfork::T2, &t2_added_calldata)?;
+        assert!(!post_t2_added.reverted);
+        assert_eq!(post_t2_added.bytes.as_ref(), b"added");
+
+        // pre-T3: selectors removed at T3 still dispatch normally.
+        let pre_t3_removed = call_with_spec(TempoHardfork::T2, &t3_removed_calldata)?;
+        assert!(!pre_t3_removed.reverted);
+        assert_eq!(pre_t3_removed.bytes.as_ref(), b"removed");
+
+        // T3+: the removed selector must now revert as unknown.
+        let post_t3_removed = call_with_spec(TempoHardfork::T3, &t3_removed_calldata)?;
+        assert!(post_t3_removed.reverted);
+        let decoded = UnknownFunctionSelector::abi_decode(&post_t3_removed.bytes)?;
+        assert_eq!(
+            decoded.selector.as_slice(),
+            &ISelectorGatedTest::t3RemovedCall::SELECTOR
+        );
+
+        // preT2: gated selectors must return `UnknownFunctionSelector` even for selector-only calldata.
+        let malformed_added = call_with_spec(
+            TempoHardfork::T1,
+            &ISelectorGatedTest::t2AddedCall::SELECTOR,
+        )?;
+        assert!(malformed_added.reverted);
+        let decoded = UnknownFunctionSelector::abi_decode(&malformed_added.bytes)?;
+        assert_eq!(
+            decoded.selector.as_slice(),
+            &ISelectorGatedTest::t2AddedCall::SELECTOR
+        );
+
+        Ok(())
     }
 
     #[test]
