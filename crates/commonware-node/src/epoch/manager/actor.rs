@@ -406,7 +406,15 @@ where
             );
         }
 
-        // Keep the last 2 epochs around.
+        // XXX: Keep the last 2 epochs around: the marshal actor might get
+        // finalization certificates from straggling nodes that have not yet
+        // transitioned and are still (re-)propsing the boundary block of the
+        // outgoing epoch with new certificate.
+        //
+        // If we delete the scheme too eagerly here, then i) we won't be able
+        // to verify the certificate, ii) consider their message invalid, and
+        // finally iii) block them because this is treated as Byzantine
+        // behavior.
         if let Some(to_delete) = epoch.checked_sub(EpochDelta::new(2))
             && !self.config.scheme_provider.delete(&to_delete)
         {
