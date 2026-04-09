@@ -1500,14 +1500,15 @@ where
             // nonce preservation on failure.
             if cfg.spec().is_t3()
                 && aa_env.signature.is_keychain()
-                && aa_env.aa_calls.first().is_some_and(|call| call.to.is_create())
+                && aa_env
+                    .aa_calls
+                    .first()
+                    .is_some_and(|call| call.to.is_create())
             {
-                return Err(
-                    TempoInvalidTransaction::CallsValidation(
-                        "access-key transactions cannot use CREATE as the first call",
-                    )
-                    .into(),
-                );
+                return Err(TempoInvalidTransaction::CallsValidation(
+                    "access-key transactions cannot use CREATE as the first call",
+                )
+                .into());
             }
 
             // Validate keychain signature version (outer + authorization list).
