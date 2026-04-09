@@ -49,8 +49,6 @@ struct IdentityTransitionCache {
     to_epoch: u64,
     /// The public key at `to_epoch`.
     to_pubkey: <MinSig as Variant>::Public,
-    /// Identity at `from_epoch`.
-    identity: String,
     /// Cached transitions, ordered newest to oldest.
     transitions: Arc<Vec<IdentityTransition>>,
 }
@@ -174,8 +172,6 @@ impl FeedStateHandle {
         {
             let mut updated = cache.clone();
             updated.from_epoch = start_epoch;
-            updated.from_pubkey = epoch_pubkey;
-
             *self.identity_cache.write() = Some(updated);
             return Ok(());
         }
@@ -189,7 +185,7 @@ impl FeedStateHandle {
             // stop; otherwise update pubkey and fall through to continue the
             // walk from where the cache left off.
             if let Some(cache) = &cached
-                && search_epoch <= cache.from_epoch
+                && search_epoch < cache.from_epoch
                 && search_epoch > cache.to_epoch
             {
                 transitions.extend(cache.transitions.iter().cloned());
@@ -305,7 +301,6 @@ impl FeedStateHandle {
                 from_pubkey: from_pk,
                 to_epoch: search_epoch,
                 to_pubkey: pubkey,
-                identity: hex::encode(from_pk.encode()),
                 transitions: Arc::new(transitions),
             }
         } else {
@@ -314,7 +309,6 @@ impl FeedStateHandle {
                 from_pubkey: epoch_pubkey,
                 to_epoch: search_epoch,
                 to_pubkey: pubkey,
-                identity: hex::encode(epoch_pubkey.encode()),
                 transitions: Arc::new(transitions),
             }
         };
@@ -452,7 +446,7 @@ impl ConsensusFeed for FeedStateHandle {
             .filter(|t| t.transition_epoch > start_epoch)
             .last()
             .map(|t| t.old_identity.clone())
-            .unwrap_or_else(|| cache.identity.clone());
+            .unwrap_or_else(|| hex::encode(cache.from_pubkey.encode()));
 
         // If not full, only return the most recent real transition (exclude genesis marker)
         let transitions = if full {
