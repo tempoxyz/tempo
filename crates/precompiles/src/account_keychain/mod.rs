@@ -3162,7 +3162,20 @@ mod tests {
             keychain.set_transaction_key(access_key)?;
             keychain.set_tx_origin(eoa)?;
 
-            keychain.authorize_transfer(eoa, token, U256::from(10))?;
+            keychain.authorize_transfer(eoa, token, U256::from(60))?;
+            keychain.refund_spending_limit(eoa, token, U256::from(30))?;
+
+            let after_partial_refund = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(
+                after_partial_refund,
+                U256::from(70),
+                "refund should restore the spent amount without forcing the max"
+            );
+
             keychain.refund_spending_limit(eoa, token, U256::from(50))?;
 
             let after_refund = keychain.get_remaining_limit(getRemainingLimitCall {
