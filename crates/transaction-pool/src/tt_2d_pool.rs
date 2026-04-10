@@ -1492,6 +1492,15 @@ impl PartialOrd for EvictionKey {
 /// Maximum number of new transactions to drain from the channel per `next()` call.
 const MAX_NEW_TRANSACTIONS_PER_BATCH: usize = 16;
 
+/// Determines how a newly received transaction should be handled based on its priority
+/// relative to transactions already yielded by the iterator.
+enum IncomingAA2dTransaction {
+    /// Priority ≤ last yielded — safe to add to both `by_id` and `independent`.
+    Process(PendingTransaction<TxOrdering>),
+    /// Priority > last yielded — add only to `by_id` for nonce chain lookups, not `independent`.
+    Stash(PendingTransaction<TxOrdering>),
+}
+
 /// A snapshot of the sub-pool containing all executable transactions.
 #[derive(Debug)]
 pub(crate) struct BestAA2dTransactions {
@@ -1522,19 +1531,18 @@ impl BestAA2dTransactions {
     }
 
     /// Non-blocking read on the new pending transactions subscription channel.
-    fn try_recv(&mut self) -> Option<PendingTransaction<TxOrdering>> {
+    fn try_recv(&mut self) -> Option<IncomingAA2dTransaction> {
         loop {
             match self.new_transaction_receiver.as_mut()?.try_recv() {
                 Ok(tx) => {
                     if let Some(last_priority) = &self.last_priority
                         && &tx.priority > last_priority
                     {
-                        // Higher priority than what we already yielded — skip to maintain
-                        // descending priority order. For AA2d transactions we don't need to
-                        // track ancestors, so we can simply drop it.
-                        continue;
+                        // Higher priority than what we already yielded — stash in `by_id`
+                        // only (not `independent`) to preserve nonce chain lookups.
+                        return Some(IncomingAA2dTransaction::Stash(tx));
                     }
-                    return Some(tx);
+                    return Some(IncomingAA2dTransaction::Process(tx));
                 }
                 Err(broadcast::error::TryRecvError::Lagged(_)) => {
                     // Buffer overflowed; self-corrects on next call.
@@ -1547,18 +1555,26 @@ impl BestAA2dTransactions {
     /// Drains new pending transactions from the broadcast channel and inserts them.
     fn add_new_transactions(&mut self) {
         for _ in 0..MAX_NEW_TRANSACTIONS_PER_BATCH {
-            if let Some(tx) = self.try_recv() {
+            if let Some(incoming) = self.try_recv() {
+                let (tx, process) = match incoming {
+                    IncomingAA2dTransaction::Process(tx) => (tx, true),
+                    IncomingAA2dTransaction::Stash(tx) => (tx, false),
+                };
                 if tx.transaction.transaction.is_expiring_nonce() {
-                    // Expiring nonce transactions are always independent
-                    self.independent.insert(tx);
+                    if process {
+                        // Expiring nonce transactions are always independent
+                        self.independent.insert(tx);
+                    }
                 } else if let Some(id) = tx.transaction.transaction.aa_transaction_id() {
-                    // Only mark as independent if no ancestor is already tracked
-                    if !self.by_id.contains_key(&AA2dTransactionId::new(
-                        id.seq_id,
-                        id.nonce.saturating_sub(1),
-                    )) || id.nonce == 0
-                    {
-                        self.independent.insert(tx.clone());
+                    if process {
+                        // Only mark as independent if no ancestor is already tracked
+                        if !self.by_id.contains_key(&AA2dTransactionId::new(
+                            id.seq_id,
+                            id.nonce.saturating_sub(1),
+                        )) || id.nonce == 0
+                        {
+                            self.independent.insert(tx.clone());
+                        }
                     }
                     self.by_id.insert(id, tx);
                 }
