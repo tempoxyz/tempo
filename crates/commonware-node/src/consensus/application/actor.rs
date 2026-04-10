@@ -472,14 +472,16 @@ impl Inner<Init> {
             &self.marshal,
         )
         .await?;
+
         debug!(height = %parent.height(), "retrieved parent block",);
 
         let parent_epoch_info = self
             .epoch_strategy
             .containing(parent.height())
             .expect("epoch strategy is for all heights");
-        // XXX: Re-propose the parent if the parent is the last height of the
-        // epoch. parent.height+1 should be proposed as the first block of the
+
+        // If in the same epoch, re-propose the parent if the parent is the last height
+        // of the epoch. parent.height+1 should be proposed as the first block of the
         // next epoch.
         if parent_epoch_info.last() == parent.height() && parent_epoch_info.epoch() == round.epoch()
         {
@@ -487,22 +489,30 @@ impl Inner<Init> {
             return Ok(parent);
         }
 
-        // Send the proposal parent to reth to cover edge cases when we were not asked to verify it directly.
-        if !verify_block(
-            context.clone(),
-            parent_epoch_info.epoch(),
-            &self.epoch_strategy,
-            self.execution_node
-                .add_ons_handle
-                .beacon_engine_handle
-                .clone(),
-            &parent,
-            // It is safe to not verify the parent of the parent because this block is already notarized.
-            parent.parent_digest(),
-            &self.scheme_provider,
-        )
-        .await
-        .wrap_err("failed verifying block against execution layer")?
+        let is_genesis_parent = parent.height().is_zero()
+            || parent_epoch_info.last() == parent.height()
+                && parent_epoch_info.epoch().next() == round.epoch();
+
+        // Send the proposal parent to execution layer to cover edge cases when we were not asked to
+        // to verify it (and hence are missing it in the EL).
+        //
+        // If proposing the first block of an epoch, its parent (genesis/boundary block) must exist and be finalized, so we can skip it.
+        if !is_genesis_parent
+            && !verify_block(
+                context.clone(),
+                parent_epoch_info.epoch(),
+                &self.epoch_strategy,
+                self.execution_node
+                    .add_ons_handle
+                    .beacon_engine_handle
+                    .clone(),
+                &parent,
+                // It is safe to not verify the parent of the parent because this block is already notarized.
+                parent.parent_digest(),
+                &self.scheme_provider,
+            )
+            .await
+            .wrap_err("failed verifying block against execution layer")?
         {
             eyre::bail!("the proposal parent block is not valid");
         }
@@ -831,24 +841,18 @@ async fn verify_block<TContext: Pacer>(
         return Ok(false);
     }
 
-    // FIXME: in cases where validate_block is called on the boundary block,
-    // the scheme might not be available.
-    //
-    // The fix is to track directly track notarizations and feed them to the
-    // EL that way, instead of doing this at the automaton/proposal level.
-    //
-    // https://github.com/tempoxyz/tempo/issues/1411
-    //
-    // let scheme = scheme_provider
-    //     .scoped(epoch)
-    //     .ok_or_eyre("cannot determine participants in the current epoch")?;
-    let validator_set = scheme_provider.scoped(epoch).map(|scheme| {
+    // Scheme registration precedes engine creation, so the scheme must exist
+    let scheme = scheme_provider
+        .scoped(epoch)
+        .ok_or_eyre("cannot determine participants in the current epoch")?;
+
+    let validator_set = Some(
         scheme
             .participants()
             .into_iter()
             .map(|p| B256::from_slice(p))
-            .collect()
-    });
+            .collect(),
+    );
     let block = block.clone().into_inner();
     let execution_data = TempoExecutionData {
         block: Arc::new(block),

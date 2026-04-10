@@ -12,6 +12,7 @@ use alloy::{
     rpc::types::TransactionRequest,
     signers::{SignerSync, local::PrivateKeySigner},
     sol_types::SolCall,
+    transports::{RpcError, TransportErrorKind},
 };
 use alloy_eips::Encodable2718;
 use alloy_primitives::TxKind;
@@ -36,6 +37,115 @@ use tempo_primitives::{
 };
 
 use super::types::*;
+
+fn decoded_tempo_rpc_error_message(err: &RpcError<TransportErrorKind>) -> Option<String> {
+    tempo_precompiles::error::decode_error(&err.as_error_resp()?.as_revert_data()?.0)
+        .map(|decoded| format!("execution reverted: {}", decoded.error))
+}
+
+/// Returns a decoded Tempo revert message when possible, else the original RPC error string.
+pub(super) fn tempo_rpc_error_message(err: &RpcError<TransportErrorKind>) -> String {
+    decoded_tempo_rpc_error_message(err).unwrap_or_else(|| err.to_string())
+}
+
+pub(super) fn rpc_error_contains_reason(err: &RpcError<TransportErrorKind>, reason: &str) -> bool {
+    tempo_rpc_error_message(err)
+        .to_ascii_lowercase()
+        .contains(&reason.to_ascii_lowercase())
+}
+
+/// Normalizes Tempo revert errors so tests do not depend on server-side formatting.
+pub(super) fn normalize_tempo_rpc_error(err: RpcError<TransportErrorKind>) -> eyre::Report {
+    decoded_tempo_rpc_error_message(&err).map_or_else(|| err.into(), eyre::Report::msg)
+}
+
+// TODO: remove once all RPC providers accept hex-serialized scoped key auth selectors.
+mod legacy_compat {
+    use alloy::{
+        hex,
+        providers::Provider,
+        transports::{RpcError, TransportErrorKind},
+    };
+    use serde::de::DeserializeOwned;
+    use tempo_node::rpc::TempoTransactionRequest;
+
+    fn should_retry_with_selector_arrays(err: &RpcError<TransportErrorKind>) -> bool {
+        let err_str = err.to_string().to_lowercase();
+        err_str.contains("invalid params")
+            && err_str.contains("expected an array of length 4")
+            && err_str.contains("invalid type: string")
+    }
+
+    pub(super) fn request_value_with_selector_arrays(
+        mut request: serde_json::Value,
+    ) -> serde_json::Value {
+        let Some(allowed_calls) = request
+            .get_mut("keyAuthorization")
+            .and_then(|key_authorization| key_authorization.get_mut("allowedCalls"))
+            .and_then(serde_json::Value::as_array_mut)
+        else {
+            return request;
+        };
+
+        for scope in allowed_calls {
+            let Some(selector_rules) = scope
+                .get_mut("selectorRules")
+                .and_then(serde_json::Value::as_array_mut)
+            else {
+                continue;
+            };
+
+            for rule in selector_rules {
+                let Some(selector) = rule.get_mut("selector") else {
+                    continue;
+                };
+                let Some(selector_hex) = selector.as_str() else {
+                    continue;
+                };
+                let selector_hex = selector_hex
+                    .strip_prefix("0x")
+                    .or_else(|| selector_hex.strip_prefix("0X"))
+                    .unwrap_or(selector_hex);
+                let Ok(bytes) = hex::decode(selector_hex) else {
+                    continue;
+                };
+                let Ok(selector_bytes) = <[u8; 4]>::try_from(bytes.as_slice()) else {
+                    continue;
+                };
+                *selector = serde_json::json!(selector_bytes);
+            }
+        }
+
+        request
+    }
+
+    pub(super) async fn raw_request<T>(
+        provider: &impl Provider,
+        method: &'static str,
+        request: &TempoTransactionRequest,
+    ) -> Result<T, RpcError<TransportErrorKind>>
+    where
+        T: DeserializeOwned + std::fmt::Debug + Send + Sync + Unpin + 'static,
+    {
+        let request_value = serde_json::to_value(request).map_err(RpcError::local_usage)?;
+
+        match provider
+            .raw_request::<_, T>(method.into(), [request_value.clone()])
+            .await
+        {
+            Ok(response) => Ok(response),
+            Err(err) if should_retry_with_selector_arrays(&err) => {
+                provider
+                    .raw_request::<_, T>(
+                        method.into(),
+                        [request_value_with_selector_arrays(request_value)],
+                    )
+                    .await
+            }
+            Err(err) => Err(err),
+        }
+    }
+}
 
 /// Polls until the pool no longer contains the given tx hash, or returns error after timeout.
 pub(super) async fn wait_until_pool_not_contains(
@@ -171,9 +281,7 @@ pub(crate) async fn estimate_gas(
     provider: &impl Provider,
     request: &TempoTransactionRequest,
 ) -> eyre::Result<u64> {
-    let hex: String = provider
-        .raw_request("eth_estimateGas".into(), [serde_json::to_value(request)?])
-        .await?;
+    let hex: String = legacy_compat::raw_request(provider, "eth_estimateGas", request).await?;
     Ok(u64::from_str_radix(hex.trim_start_matches("0x"), 16)?)
 }
 
@@ -1137,12 +1245,10 @@ pub(crate) async fn fill_transaction_from_case(
     let request_context =
         build_fill_request_context(test_case, signer_addr, recipient, current_timestamp);
 
-    let filled: serde_json::Value = provider
-        .raw_request(
-            "eth_fillTransaction".into(),
-            [serde_json::to_value(&request_context.request)?],
-        )
-        .await?;
+    let filled: serde_json::Value =
+        legacy_compat::raw_request(provider, "eth_fillTransaction", &request_context.request)
+            .await
+            .map_err(normalize_tempo_rpc_error)?;
 
     let tx = parse_filled_tx(&filled)?;
 
@@ -1191,4 +1297,51 @@ pub(crate) fn assert_fill_request_expectations(
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::sol_types::SolInterface;
+    use tempo_contracts::precompiles::TIP20Error;
+
+    #[test]
+    fn normalize_tempo_rpc_error_decodes_raw_revert_data() {
+        let expected_revert_bytes = hex!(
+            "832f98b5000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000f424000000000000000000000000020c0000000000000000000000000000000000000"
+        );
+        let expected_revert_hex = hex::encode(expected_revert_bytes);
+        let revert_data = TIP20Error::InsufficientBalance(ITIP20::InsufficientBalance {
+            available: U256::ZERO,
+            required: U256::from(1_000_000u64),
+            token: DEFAULT_FEE_TOKEN,
+        })
+        .abi_encode();
+        assert_eq!(
+            revert_data.as_slice(),
+            expected_revert_bytes.as_slice(),
+            "ABI encoding should match the raw revert bytes observed in CI"
+        );
+        let error_json = serde_json::json!({
+            "code": 3,
+            "message": "execution reverted",
+            "data": format!("0x{expected_revert_hex}"),
+        })
+        .to_string();
+        let parse_err = serde_json::from_str::<serde_json::Value>("not json")
+            .expect_err("fixture should produce a serde error");
+        let err = RpcError::deser_err(parse_err, &error_json);
+
+        assert!(
+            rpc_error_contains_reason(&err, "InsufficientBalance"),
+            "client-side revert decoding should recognize Tempo precompile errors"
+        );
+
+        let normalized = normalize_tempo_rpc_error(err).to_string();
+        assert!(
+            normalized.contains("execution reverted:")
+                && normalized.contains("InsufficientBalance"),
+            "normalized error should prefer decoded Tempo revert, got: {normalized}"
+        );
+    }
 }

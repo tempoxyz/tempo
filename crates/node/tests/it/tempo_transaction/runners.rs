@@ -2752,11 +2752,11 @@ pub(super) async fn run_fill_transaction_error_decoding_scenario<E: TestEnv>(
         .await;
 
     let err = result.expect_err("eth_fillTransaction should fail for unfunded address");
-    let err_str = err.to_string();
+    let err_str = tempo_rpc_error_message(&err);
 
     // The error must contain the decoded error name, not raw hex.
     assert!(
-        err_str.contains("InsufficientBalance"),
+        rpc_error_contains_reason(&err, "InsufficientBalance"),
         "Error should contain decoded 'InsufficientBalance', got: {err_str}"
     );
 

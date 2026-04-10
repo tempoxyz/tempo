@@ -51,37 +51,20 @@ mod rpc;
 
 /// Run all matrix tests and scenario runners against a single environment.
 async fn run_all_matrices(env: &mut impl TestEnv) -> eyre::Result<()> {
-    // TODO(rusowsky): remove `skip_pre_t1c` and `check` after T1C activation on all networks
-    let skip_pre_t1c = !env.hardfork().is_t1c();
-
-    let check = |r: eyre::Result<()>| match r {
-        Err(e)
-            if skip_pre_t1c
-                && (e.to_string().contains("not valid before T1C activation")
-                    || e.to_string()
-                        .contains("failed to decode signed transaction")) =>
-        {
-            eprintln!("SKIPPED: network is pre-T1C");
-            Ok(())
-        }
-        other => other,
-    };
-
-    check(env.run_send_matrix().await)?;
-    check(env.run_raw_send_matrix().await)?;
-    check(env.run_fill_transaction_matrix().await)?;
-    check(env.run_fill_sign_send_matrix().await)?;
-    check(env.run_fee_payer_cosign_scenario().await)?;
-    check(env.run_authorization_list_scenario().await)?;
-    check(env.run_keychain_auth_list_skipped_scenario().await)?;
-    check(env.run_keychain_expiry_scenario().await)?;
-    check(env.run_create_contract_address_scenario().await)?;
-    check(env.run_send_negative_scenario().await)?;
-    check(env.run_nonce_rejection_scenario().await)?;
-    check(env.run_fee_payer_negative_scenario().await)?;
-    check(env.run_gas_fee_boundary_scenario().await)?;
-    check(env.run_fill_transaction_error_decoding_scenario().await)?;
-    Ok(())
+    env.run_send_matrix().await?;
+    env.run_raw_send_matrix().await?;
+    env.run_fill_transaction_matrix().await?;
+    env.run_fill_sign_send_matrix().await?;
+    env.run_fee_payer_cosign_scenario().await?;
+    env.run_authorization_list_scenario().await?;
+    env.run_keychain_auth_list_skipped_scenario().await?;
+    env.run_keychain_expiry_scenario().await?;
+    env.run_create_contract_address_scenario().await?;
+    env.run_send_negative_scenario().await?;
+    env.run_nonce_rejection_scenario().await?;
+    env.run_fee_payer_negative_scenario().await?;
+    env.run_gas_fee_boundary_scenario().await?;
+    env.run_fill_transaction_error_decoding_scenario().await
 }
 
 #[test_case(ForkSchedule::Devnet ; "devnet")]
