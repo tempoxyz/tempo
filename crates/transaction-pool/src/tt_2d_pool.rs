@@ -26,9 +26,9 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use tokio::sync::broadcast;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
+use tokio::sync::broadcast;
 
 type TxOrdering = CoinbaseTipOrdering<TempoPooledTransaction>;
 /// A sub-pool that keeps track of 2D nonce transactions.
@@ -1551,9 +1551,7 @@ impl BestAA2dTransactions {
                 if tx.transaction.transaction.is_expiring_nonce() {
                     // Expiring nonce transactions are always independent
                     self.independent.insert(tx);
-                } else if let Some(id) =
-                    tx.transaction.transaction.aa_transaction_id()
-                {
+                } else if let Some(id) = tx.transaction.transaction.aa_transaction_id() {
                     // Only mark as independent if no ancestor is already tracked
                     if !self.by_id.contains_key(&AA2dTransactionId::new(
                         id.seq_id,
@@ -5869,7 +5867,10 @@ mod tests {
             yielded.insert(*tx.hash());
         }
 
-        assert!(yielded.contains(&tx0_hash), "should always yield pre-existing tx");
+        assert!(
+            yielded.contains(&tx0_hash),
+            "should always yield pre-existing tx"
+        );
         assert_eq!(
             yielded.contains(&tx1_hash),
             !no_updates,
