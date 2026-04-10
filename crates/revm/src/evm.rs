@@ -113,6 +113,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     /// Clears all intermediate state from the EVM.
     pub fn clear(&mut self) {
         self.initial_gas = 0;
+        self.initial_state_gas = 0;
         self.fee_token = None;
         self.key_expiry = None;
     }
