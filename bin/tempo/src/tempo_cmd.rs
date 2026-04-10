@@ -865,7 +865,7 @@ pub(crate) struct ValidatorInfo {
     #[arg()]
     id: ValidatorId,
 
-    /// Chain to query (presto, testnet, moderato, or path to chainspec file)
+    /// Chain to query (mainnet, testnet, moderato, or path to chainspec file)
     #[arg(long, short, default_value = "mainnet", value_parser = tempo_chainspec::spec::chain_value_parser)]
     chain: Arc<TempoChainSpec>,
 
@@ -1087,7 +1087,7 @@ struct ValidatorEntry {
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct ValidatorsInfo {
-    /// Chain to query (presto, testnet, moderato, or path to chainspec file)
+    /// Chain to query (mainnet, testnet, moderato, or path to chainspec file)
     #[arg(long, short, default_value = "mainnet", value_parser = tempo_chainspec::spec::chain_value_parser)]
     chain: Arc<TempoChainSpec>,
 
