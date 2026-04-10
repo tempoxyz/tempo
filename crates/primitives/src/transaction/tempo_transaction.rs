@@ -1,3 +1,5 @@
+#[cfg(feature = "serde")]
+use crate::transaction::key_authorization::serde_nonzero_quantity_opt;
 use crate::{
     subblock::{PartialValidatorKey, has_sub_block_nonce_key_prefix},
     transaction::{
@@ -106,11 +108,6 @@ fn rlp_header(payload_length: usize) -> alloy_rlp::Header {
         list: true,
         payload_length,
     }
-}
-
-#[inline]
-fn decode_optional_nonzero_u64(buf: &mut &[u8]) -> alloy_rlp::Result<Option<NonZeroU64>> {
-    u64::decode(buf).map(NonZeroU64::new)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -242,17 +239,11 @@ pub struct TempoTransaction {
     pub fee_payer_signature: Option<Signature>,
 
     /// Transaction can only be included in a block before this timestamp
-    #[cfg_attr(
-        feature = "serde",
-        serde(with = "crate::transaction::key_authorization::serde_nonzero_quantity_opt")
-    )]
+    #[cfg_attr(feature = "serde", serde(with = "serde_nonzero_quantity_opt"))]
     pub valid_before: Option<NonZeroU64>,
 
     /// Transaction can only be included in a block after this timestamp
-    #[cfg_attr(
-        feature = "serde",
-        serde(with = "crate::transaction::key_authorization::serde_nonzero_quantity_opt")
-    )]
+    #[cfg_attr(feature = "serde", serde(with = "serde_nonzero_quantity_opt"))]
     pub valid_after: Option<NonZeroU64>,
 
     /// Optional key authorization for provisioning a new access key
@@ -532,8 +523,8 @@ impl TempoTransaction {
         let nonce_key = Decodable::decode(buf)?;
         let nonce = Decodable::decode(buf)?;
 
-        let valid_before = decode_optional_nonzero_u64(buf)?;
-        let valid_after = decode_optional_nonzero_u64(buf)?;
+        let valid_before = u64::decode(buf).map(NonZeroU64::new)?;
+        let valid_after = u64::decode(buf).map(NonZeroU64::new)?;
 
         let fee_token = if let Some(first) = buf.first() {
             if *first == EMPTY_STRING_CODE {
