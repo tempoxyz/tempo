@@ -24,7 +24,7 @@ use revm::{
     },
     inspector::{Inspector, InspectorHandler},
     interpreter::{
-        Gas, InitialAndFloorGas,
+        CallOutcome, CreateOutcome, Gas, InitialAndFloorGas, InstructionResult, InterpreterResult,
         gas::{
             COLD_SLOAD_COST, STANDARD_TOKEN_COST, WARM_SSTORE_RESET,
             get_tokens_in_calldata_istanbul,
@@ -399,26 +399,21 @@ where
             }
             Err(TempoPrecompileError::OutOfGas) => Ok(Some(oog_frame_result(kind, *remaining_gas))),
             Err(TempoPrecompileError::Fatal(err)) => Err(EVMError::Custom(err)),
-            Err(_) => {
+            Err(err) => {
+                let revert_output = err
+                    .into_precompile_result(gas_used)
+                    .expect("non-fatal prevalidation errors must encode as a revert");
                 let mut gas = Gas::new(gas_used);
                 gas.set_spent(gas_used);
 
                 let frame_result = if kind.is_call() {
-                    FrameResult::Call(revm::interpreter::CallOutcome::new(
-                        revm::interpreter::InterpreterResult::new(
-                            revm::interpreter::InstructionResult::Revert,
-                            Default::default(),
-                            gas,
-                        ),
+                    FrameResult::Call(CallOutcome::new(
+                        InterpreterResult::new(InstructionResult::Revert, revert_output.bytes, gas),
                         0..0,
                     ))
                 } else {
-                    FrameResult::Create(revm::interpreter::CreateOutcome::new(
-                        revm::interpreter::InterpreterResult::new(
-                            revm::interpreter::InstructionResult::Revert,
-                            Default::default(),
-                            gas,
-                        ),
+                    FrameResult::Create(CreateOutcome::new(
+                        InterpreterResult::new(InstructionResult::Revert, revert_output.bytes, gas),
                         None,
                     ))
                 };
@@ -545,13 +540,10 @@ where
                 tx.inner.gas_limit = gas_limit;
             }
 
-            let frame_result = frame_result?;
+            let mut frame_result = frame_result?;
 
             // Check if call succeeded
-            let instruction_result = frame_result.instruction_result();
-            if !instruction_result.is_ok() {
-                let mut frame_result = frame_result;
-
+            if !frame_result.instruction_result().is_ok() {
                 // Revert checkpoint - rolls back ALL state changes from all executed calls.
                 evm.ctx().journal_mut().checkpoint_revert(checkpoint);
 
@@ -3228,6 +3220,113 @@ mod tests {
             "expected scope validation to fail during execution with OOG, got: {:?}",
             result.instruction_result()
         );
+    }
+
+    #[test]
+    fn test_t3_scope_validation_returns_call_not_allowed_revert_data() {
+        use alloy_sol_types::SolInterface;
+        use tempo_contracts::precompiles::AccountKeychainError;
+
+        const ALLOWED_SELECTOR: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
+        const DENIED_SELECTOR: [u8; 4] = [0xca, 0xfe, 0xba, 0xbe];
+
+        let caller = Address::repeat_byte(0x11);
+        let access_key = Address::repeat_byte(0x22);
+        let target = DEFAULT_FEE_TOKEN;
+
+        let signature =
+            TempoSignature::Keychain(tempo_primitives::transaction::KeychainSignature::new(
+                caller,
+                tempo_primitives::transaction::PrimitiveSignature::Secp256k1(
+                    alloy_primitives::Signature::test_signature(),
+                ),
+            ));
+
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T3;
+
+        let tx_env = TempoTxEnv {
+            inner: revm::context::TxEnv {
+                caller,
+                gas_limit: 1_000_000,
+                kind: TxKind::Call(target),
+                ..Default::default()
+            },
+            fee_token: Some(DEFAULT_FEE_TOKEN),
+            tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                signature,
+                aa_calls: vec![Call {
+                    to: TxKind::Call(target),
+                    value: U256::ZERO,
+                    input: Bytes::from_static(&DENIED_SELECTOR),
+                }],
+                signature_hash: B256::ZERO,
+                override_key_id: Some(access_key),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+
+        let ctx = Context::mainnet()
+            .with_db(CacheDB::new(EmptyDB::default()))
+            .with_block(TempoBlockEnv::default())
+            .with_cfg(cfg)
+            .with_tx(tx_env)
+            .with_new_journal(create_test_journal());
+
+        let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
+        let mut handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+
+        StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+            let mut keychain = AccountKeychain::new();
+
+            keychain.initialize().expect("keychain initialized");
+            keychain
+                .set_transaction_key(Address::ZERO)
+                .expect("root key setup succeeds");
+            keychain
+                .set_tx_origin(caller)
+                .expect("tx.origin setup succeeds");
+            keychain
+                .authorize_key(
+                    caller,
+                    authorizeKeyCall {
+                        keyId: access_key,
+                        signatureType: PrecompileSignatureType::Secp256k1,
+                        config: KeyRestrictions {
+                            expiry: u64::MAX,
+                            enforceLimits: false,
+                            limits: vec![],
+                            allowAnyCalls: false,
+                            allowedCalls: vec![PrecompileCallScope {
+                                target,
+                                selectorRules: vec![PrecompileSelectorRule {
+                                    selector: ALLOWED_SELECTOR.into(),
+                                    recipients: vec![],
+                                }],
+                            }],
+                        },
+                    },
+                )
+                .expect("access key authorization succeeds");
+        });
+
+        let init_gas = handler
+            .validate_initial_tx_gas(&mut evm)
+            .expect("initial gas validation should succeed");
+
+        handler
+            .validate_against_state_and_deduct_caller(&mut evm)
+            .expect("scope validation no longer runs during state validation");
+
+        let result = handler
+            .execution(&mut evm, &init_gas)
+            .expect("execution should return a frame result");
+
+        let expected_revert: Bytes = AccountKeychainError::call_not_allowed().abi_encode().into();
+
+        assert_eq!(result.instruction_result(), InstructionResult::Revert);
+        assert_eq!(result.output().data(), &expected_revert);
     }
 
     #[test]
