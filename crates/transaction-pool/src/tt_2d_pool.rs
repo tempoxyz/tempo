@@ -5934,6 +5934,78 @@ mod tests {
     }
 
     #[test]
+    fn best_transactions_live_gapped_unblock_higher_fee_not_promoted() {
+        // Scenario: tx at nonce=1 is queued (gap). A new tx arrives at nonce=0 that fills the
+        // gap but has higher priority than the last yielded tx. The gap-filler should be stashed
+        // (not added to `independent`) so neither nonce=0 nor nonce=1 gets yielded.
+        let mut pool = AA2dPool::default();
+
+        let sender_low = Address::random();
+        let sender_gapped = Address::random();
+
+        // Add a low-priority tx from sender_low so the iterator has something to yield first.
+        // max_fee must exceed the T1 base fee (20 gwei) so that effective_tip > 0.
+        let tx_low = TxBuilder::aa(sender_low)
+            .nonce_key(U256::ZERO)
+            .max_priority_fee(1_000_000_000)
+            .max_fee(30_000_000_000)
+            .build();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx_low, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        // Add a gapped tx (nonce=1) for sender_gapped — this will be queued.
+        let tx_n1 = TxBuilder::aa(sender_gapped)
+            .nonce_key(U256::ZERO)
+            .nonce(1)
+            .max_priority_fee(2_000_000_000)
+            .max_fee(30_000_000_000)
+            .build();
+        let tx_n1_hash = *tx_n1.hash();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx_n1, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        // Create iterator and yield the low-priority tx to set `last_priority`.
+        let mut best = pool.best_transactions();
+        let first = best.next();
+        assert!(first.is_some(), "should yield the low-priority tx");
+
+        // Now fill the gap with nonce=0 that has HIGHER priority than the already-yielded tx.
+        let tx_n0 = TxBuilder::aa(sender_gapped)
+            .nonce_key(U256::ZERO)
+            .nonce(0)
+            .max_priority_fee(2_000_000_000)
+            .max_fee(30_000_000_000)
+            .build();
+        let tx_n0_hash = *tx_n0.hash();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx_n0, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        // Neither nonce=0 nor nonce=1 should be yielded because nonce=0's priority is higher
+        // than what was already yielded, so it gets stashed rather than added to `independent`.
+        let remaining: Vec<_> = best.map(|tx| *tx.hash()).collect();
+        assert!(
+            !remaining.contains(&tx_n0_hash),
+            "gap-filler with higher fee must not be yielded"
+        );
+        assert!(
+            !remaining.contains(&tx_n1_hash),
+            "gapped tx must not be promoted when gap-filler is stashed"
+        );
+    }
+
+    #[test]
     fn best_transactions_live_expiring_nonce() {
         let mut pool = AA2dPool::default();
 
