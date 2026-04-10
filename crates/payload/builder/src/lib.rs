@@ -504,8 +504,16 @@ where
                 .then(|| format!("{:?}", pool_tx.transaction))
                 .unwrap_or_default();
 
+            let tx_hash = *pool_tx.hash();
             let tx_with_env = pool_tx.transaction.clone().into_with_tx_env();
             let tx_execution_start = Instant::now();
+            let tx_span = debug_span!(
+                target: "payload_builder",
+                "execute_tx",
+                tx_hash = %tx_hash,
+                gas_used = tracing::field::Empty,
+            );
+            let _tx_guard = tx_span.enter();
             let gas_used = match builder.execute_transaction(tx_with_env) {
                 Ok(gas_used) => gas_used,
                 Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
@@ -528,12 +536,15 @@ where
                         );
                         self.metrics.inc_pool_tx_skipped("invalid_tx");
                     }
+                    drop(_tx_guard);
                     continue;
                 }
                 // this is an error that we should treat as fatal for this attempt
                 Err(err) => return Err(PayloadBuilderError::evm(err)),
             };
             let elapsed = tx_execution_start.elapsed();
+            tx_span.record("gas_used", gas_used);
+            drop(_tx_guard);
             self.metrics
                 .transaction_execution_duration_seconds
                 .record(elapsed);
@@ -715,6 +726,25 @@ where
         self.metrics
             .payload_finalization_duration_seconds
             .record(builder_finish_elapsed);
+
+        // Emit a summary span with state change counts for observability tooling.
+        if tracing::enabled!(target: "payload_builder", Level::DEBUG) {
+            let accounts_changed = hashed_state.accounts.len();
+            let storage_slots_changed: usize = hashed_state
+                .storages
+                .values()
+                .map(|s| s.storage.len())
+                .sum();
+            let accounts_with_storage_changes = hashed_state.storages.len();
+            let _state_changes_span = debug_span!(
+                target: "payload_builder",
+                "state_changes",
+                accounts_changed,
+                storage_slots_changed,
+                accounts_with_storage_changes,
+            )
+            .entered();
+        }
 
         let total_transactions = block.transaction_count();
         self.metrics
