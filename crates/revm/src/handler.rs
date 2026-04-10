@@ -163,6 +163,27 @@ fn call_scope_storage_slots(auth: &tempo_primitives::transaction::KeyAuthorizati
     }
 }
 
+fn correct_failed_batch_gas(
+    mut frame_result: FrameResult,
+    gas_limit: u64,
+    remaining_gas: u64,
+) -> FrameResult {
+    let gas_spent_by_failed_step = frame_result.gas().spent();
+    let total_gas_spent = (gas_limit - remaining_gas) + gas_spent_by_failed_step;
+
+    // Create new Gas with correct limit, because Gas does not have a set_limit method
+    // (the frame_result limit only covers the failed step).
+    let mut corrected_gas = Gas::new(gas_limit);
+    if frame_result.instruction_result().is_revert() {
+        corrected_gas.set_spent(total_gas_spent);
+    } else {
+        corrected_gas.spend_all();
+    }
+    corrected_gas.set_refund(0); // No refunds when batch fails and all state is reverted.
+    *frame_result.gas_mut() = corrected_gas;
+    frame_result
+}
+
 fn translate_allowed_calls_for_precompile(
     key_auth: &tempo_primitives::transaction::SignedKeyAuthorization,
 ) -> Vec<PrecompileCallScope> {
@@ -495,20 +516,9 @@ where
         if let Some(mut frame_result) =
             self.prevalidate_keychain_call_scopes(evm, &calls, &mut remaining_gas)?
         {
-            // This return happens before any call frame is constructed. `make_create_frame` has
-            // not run yet, so the protocol nonce is still untouched and there is nothing to bump
-            // or preserve here.
-            let total_gas_spent = (gas_limit - remaining_gas) + frame_result.gas().spent();
-
-            let mut corrected_gas = Gas::new(gas_limit);
-            if frame_result.instruction_result().is_revert() {
-                corrected_gas.set_spent(total_gas_spent);
-            } else {
-                corrected_gas.spend_all();
-            }
-            corrected_gas.set_refund(0);
-            *frame_result.gas_mut() = corrected_gas;
-
+            // This path only runs for keychain batches that already passed the structural CREATE
+            // rejection in validation, so there is no first-call CREATE nonce to preserve here.
+            frame_result = correct_failed_batch_gas(frame_result, gas_limit, remaining_gas);
             return Ok(frame_result);
         }
 
@@ -571,20 +581,7 @@ where
                     }
                 }
 
-                let gas_spent_by_failed_step = frame_result.gas().spent();
-                let total_gas_spent = (gas_limit - remaining_gas) + gas_spent_by_failed_step;
-
-                // Create new Gas with correct limit, because Gas does not have a set_limit method
-                // (the frame_result limit only covers the failed step).
-                let mut corrected_gas = Gas::new(gas_limit);
-                if frame_result.instruction_result().is_revert() {
-                    corrected_gas.set_spent(total_gas_spent);
-                } else {
-                    corrected_gas.spend_all();
-                }
-                corrected_gas.set_refund(0); // No refunds when batch fails and all state is reverted.
-                *frame_result.gas_mut() = corrected_gas;
-
+                frame_result = correct_failed_batch_gas(frame_result, gas_limit, remaining_gas);
                 return Ok(frame_result);
             }
 
