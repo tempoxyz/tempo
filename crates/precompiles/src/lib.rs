@@ -358,7 +358,7 @@ fn dispatch_call<T>(
                 &storage,
             ));
         } else {
-            return Err(PrecompileError::Fatal(
+            return Err(PrecompileError::Other(
                 "Invalid input: missing function selector".into(),
             ));
         }
@@ -646,7 +646,7 @@ mod tests {
         assert!(
             matches!(
                 &result,
-                Err(PrecompileError::Fatal(msg)) if msg.contains("missing function selector")
+                Err(PrecompileError::Other(msg)) if msg.contains("missing function selector")
             ),
             "T0: expected PrecompileError for invalid calldata, got {result:?}"
         );
