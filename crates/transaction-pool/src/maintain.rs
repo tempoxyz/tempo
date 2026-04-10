@@ -601,8 +601,7 @@ where
                         .chain(all_txs.queued.iter())
                         .filter(|tx| {
                             tx.transaction
-                                .inner()
-                                .fee_token()
+                                .resolved_fee_token()
                                 .is_some_and(|t| updates.transfer_policy_updates.contains(&t))
                         })
                         .map(|tx| *tx.hash())
