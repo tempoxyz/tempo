@@ -5863,7 +5863,7 @@ mod tests {
         .unwrap();
 
         let mut yielded = HashSet::new();
-        while let Some(tx) = best.next() {
+        for tx in best {
             yielded.insert(*tx.hash());
         }
 
@@ -5908,7 +5908,7 @@ mod tests {
         .unwrap();
 
         let mut yielded = HashSet::new();
-        while let Some(tx) = best.next() {
+        for tx in best {
             yielded.insert(*tx.hash());
         }
 
