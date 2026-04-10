@@ -59,9 +59,8 @@ pub(crate) trait TestEnv: Sized {
             .await;
         assert!(result.is_err(), "Transaction should be rejected");
         if let (Some(reason), Err(err)) = (expected_reason, &result) {
-            let err_str = err.to_string().to_lowercase();
             assert!(
-                err_str.contains(&reason.to_lowercase()),
+                super::helpers::rpc_error_contains_reason(err, reason),
                 "Rejection error should contain '{reason}', got: {err}"
             );
         }
@@ -154,6 +153,10 @@ pub(crate) trait TestEnv: Sized {
 
     async fn run_send_negative_scenario(&mut self) -> eyre::Result<()> {
         super::runners::run_send_negative_scenario(self).await
+    }
+
+    async fn run_fill_transaction_error_decoding_scenario(&mut self) -> eyre::Result<()> {
+        super::runners::run_fill_transaction_error_decoding_scenario(self).await
     }
 }
 

@@ -928,7 +928,7 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
 
             let expiry_value = match expiry {
                 KeyExpiry::None => None,
-                KeyExpiry::Past => Some(1u64),
+                KeyExpiry::Past => std::num::NonZeroU64::new(1),
             };
 
             let spending_limits = match limits {
@@ -1236,7 +1236,7 @@ async fn run_raw_access_key_case<E: TestEnv>(
     nonce_before: u64,
     chain_id: u64,
     auth_chain_id_value: u64,
-    expiry: Option<u64>,
+    expiry: Option<std::num::NonZeroU64>,
     spending_limits: Option<Vec<TokenLimit>>,
     pre_step: Option<AccessKeyPreStep>,
 ) -> eyre::Result<()> {
@@ -2201,7 +2201,7 @@ pub(super) async fn run_keychain_expiry_scenario<E: TestEnv>(env: &mut E) -> eyr
         short_addr,
         create_mock_p256_sig(short_pub_x, short_pub_y),
         chain_id,
-        Some(short_expiry),
+        std::num::NonZeroU64::new(short_expiry),
         Some(create_default_token_limit(funded)),
     )?;
     let mut auth_tx = create_basic_aa_tx(
@@ -2291,7 +2291,7 @@ pub(super) async fn run_keychain_expiry_scenario<E: TestEnv>(env: &mut E) -> eyr
         past_addr,
         create_mock_p256_sig(past_pub_x, past_pub_y),
         chain_id,
-        Some(1),
+        std::num::NonZeroU64::new(1),
         Some(create_default_token_limit(funded)),
     )?;
     let mut past_tx = create_basic_aa_tx(
@@ -2710,5 +2710,56 @@ pub(super) async fn run_create_contract_address_scenario<E: TestEnv>(
     assert_eq!(deployed_code.as_ref(), &expected_code);
 
     println!("✓ Create contract address scenario passed");
+    Ok(())
+}
+
+/// Regression test: `eth_fillTransaction` must decode revert errors during gas estimation
+/// instead of returning raw hex revert data.
+///
+/// Before the fix, `fill_transaction` delegated to `inner.fill_transaction` which routed
+/// estimation errors through `EthApiError` and skipped Tempo's `from_revert` implementation.
+/// This caused raw selectors (e.g. `0x832f98b5...`) to be returned instead of decoded error
+/// names like `InsufficientBalance(...)`.
+pub(super) async fn run_fill_transaction_error_decoding_scenario<E: TestEnv>(
+    env: &mut E,
+) -> eyre::Result<()> {
+    println!("\n=== eth_fillTransaction error decoding regression ===\n");
+
+    // Use an unfunded address so a TIP-20 transfer reverts with InsufficientBalance.
+    let unfunded_addr = Address::random();
+    let recipient = Address::random();
+
+    let request = TempoTransactionRequest {
+        inner: TransactionRequest {
+            from: Some(unfunded_addr),
+            ..Default::default()
+        },
+        calls: vec![create_transfer_call(
+            DEFAULT_FEE_TOKEN,
+            recipient,
+            U256::from(1_000_000u64),
+        )],
+        key_type: Some(SignatureType::Secp256k1),
+        ..Default::default()
+    };
+
+    let result: Result<serde_json::Value, _> = env
+        .provider()
+        .raw_request(
+            "eth_fillTransaction".into(),
+            [serde_json::to_value(&request)?],
+        )
+        .await;
+
+    let err = result.expect_err("eth_fillTransaction should fail for unfunded address");
+    let err_str = tempo_rpc_error_message(&err);
+
+    // The error must contain the decoded error name, not raw hex.
+    assert!(
+        rpc_error_contains_reason(&err, "InsufficientBalance"),
+        "Error should contain decoded 'InsufficientBalance', got: {err_str}"
+    );
+
+    println!("✓ eth_fillTransaction error decoding regression passed");
     Ok(())
 }

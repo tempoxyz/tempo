@@ -2108,7 +2108,7 @@ mod compact_tests {
                     chain_id: 42170,
                     key_type: SignatureType::P256,
                     key_id: address!("0x000000000000000000000000000000000000dead"),
-                    expiry: Some(1_700_100_000),
+                    expiry: Some(core::num::NonZeroU64::new(1_700_100_000).unwrap()),
                     limits: Some(vec![TokenLimit {
                         token: address!("0x0000000000000000000000000000000000000042"),
                         limit: U256::from(1_000_000u64),

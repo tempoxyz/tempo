@@ -125,9 +125,8 @@ impl super::types::TestEnv for Localnet {
         assert!(rpc_result.is_err(), "RPC should reject the transaction");
 
         if let (Some(reason), Err(err)) = (expected_reason, &rpc_result) {
-            let err_str = err.to_string().to_lowercase();
             assert!(
-                err_str.contains(&reason.to_lowercase()),
+                rpc_error_contains_reason(err, reason),
                 "Rejection error should contain '{reason}', got: {err}"
             );
         }

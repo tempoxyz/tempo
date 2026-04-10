@@ -4,6 +4,7 @@ use alloc::vec::Vec;
 use alloy_consensus::crypto::RecoveryError;
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::Encodable;
+use core::num::NonZeroU64;
 
 /// Token spending limit for access keys
 ///
@@ -171,7 +172,7 @@ impl From<SelectorRule> for AbiSelectorRule {
 /// - `allowed_calls`: `None` (canonically omitted, explicit 0x80 accepted) = unrestricted,
 ///   `Some([])` = scoped with no allowed calls, `Some([...])` = scoped calls
 #[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
-#[rlp(trailing)]
+#[rlp(trailing(canonical))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(rlp))]
@@ -190,8 +191,11 @@ pub struct KeyAuthorization {
     /// Unix timestamp when key expires.
     /// - `None` (RLP 0x80) = key never expires (stored as u64::MAX in precompile)
     /// - `Some(timestamp)` = key expires at this timestamp
-    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity::opt"))]
-    pub expiry: Option<u64>,
+    ///
+    /// This uses `Option<NonZeroU64>` so `Some(0)` is unrepresentable and cannot silently
+    /// roundtrip into `None`.
+    #[cfg_attr(feature = "serde", serde(with = "serde_nonzero_quantity_opt"))]
+    pub expiry: Option<NonZeroU64>,
 
     /// TIP20 spending limits for this key.
     /// - `None` (RLP 0x80) = unlimited spending (no limits enforced)
@@ -222,7 +226,7 @@ impl KeyAuthorization {
 
     /// Set an expiry timestamp on this key authorization.
     pub fn with_expiry(mut self, expiry: u64) -> Self {
-        self.expiry = Some(expiry);
+        self.expiry = NonZeroU64::new(expiry);
         self
     }
 
@@ -354,7 +358,6 @@ pub struct KeyAuthorizationChainIdError {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
-#[rlp(trailing)]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact, rlp))]
 pub struct SignedKeyAuthorization {
     /// Key authorization for provisioning access keys
@@ -386,27 +389,68 @@ impl<'a> arbitrary::Arbitrary<'a> for KeyAuthorization {
             chain_id: u.arbitrary()?,
             key_type: u.arbitrary()?,
             key_id: u.arbitrary()?,
-            // Ensure that Some(0) is not generated as it's becoming `None` after RLP roundtrip.
-            expiry: u.arbitrary::<Option<u64>>()?.filter(|v| *v != 0),
+            expiry: u.arbitrary()?,
             limits: u.arbitrary()?,
             allowed_calls: u.arbitrary()?,
         })
     }
 }
 
+#[cfg(feature = "serde")]
+mod serde_nonzero_quantity_opt {
+    use core::num::NonZeroU64;
+
+    use serde::{Deserializer, Serializer, de::Error as _};
+
+    pub(super) fn serialize<S>(value: &Option<NonZeroU64>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        alloy_serde::quantity::opt::serialize(&value.map(NonZeroU64::get), serializer)
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<Option<NonZeroU64>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        alloy_serde::quantity::opt::deserialize(deserializer).and_then(|value: Option<u64>| {
+            value
+                .map(|value| {
+                    NonZeroU64::new(value)
+                        .ok_or_else(|| D::Error::custom("expected non-zero quantity"))
+                })
+                .transpose()
+        })
+    }
+}
+
 mod rlp {
-    use super::TokenLimit;
-    use alloy_primitives::{Address, U256};
+    use super::*;
     use alloy_rlp::{Decodable, Encodable};
 
     #[derive(
         Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable,
     )]
-    #[rlp(trailing)]
+    #[rlp(trailing(canonical))]
     struct TokenLimitWire {
         token: Address,
         limit: U256,
-        period: Option<u64>,
+        period: Option<NonZeroU64>,
+    }
+
+    impl From<&TokenLimit> for TokenLimitWire {
+        fn from(value: &TokenLimit) -> Self {
+            let TokenLimit {
+                token,
+                limit,
+                period,
+            } = value;
+            Self {
+                token: *token,
+                limit: *limit,
+                period: NonZeroU64::new(*period),
+            }
+        }
     }
 
     impl From<TokenLimitWire> for TokenLimit {
@@ -414,17 +458,7 @@ mod rlp {
             Self {
                 token: value.token,
                 limit: value.limit,
-                period: value.period.unwrap_or(0),
-            }
-        }
-    }
-
-    impl From<&TokenLimit> for TokenLimitWire {
-        fn from(value: &TokenLimit) -> Self {
-            Self {
-                token: value.token,
-                limit: value.limit,
-                period: (value.period != 0).then_some(value.period),
+                period: value.period.map(|period| period.get()).unwrap_or(0),
             }
         }
     }
@@ -485,12 +519,16 @@ mod tests {
     };
     use alloy_rlp::{Decodable, Encodable};
 
+    fn nonzero(value: u64) -> NonZeroU64 {
+        NonZeroU64::new(value).expect("test expiry must be non-zero")
+    }
+
     fn make_auth(expiry: Option<u64>, limits: Option<Vec<TokenLimit>>) -> KeyAuthorization {
         KeyAuthorization {
             chain_id: 1,
             key_type: SignatureType::Secp256k1,
             key_id: Address::random(),
-            expiry,
+            expiry: expiry.and_then(NonZeroU64::new),
             limits,
             allowed_calls: None,
         }
@@ -557,7 +595,7 @@ mod tests {
         // never_expires: None = true, Some = false
         assert!(make_auth(None, None).never_expires());
         assert!(!make_auth(Some(1000), None).never_expires());
-        assert!(!make_auth(Some(0), None).never_expires()); // 0 is still Some
+        assert_eq!(NonZeroU64::new(0), None);
     }
 
     #[test]
@@ -589,6 +627,12 @@ mod tests {
             + recipients.capacity() * size_of::<Address>();
 
         assert_eq!(auth.size(), expected);
+    }
+
+    #[test]
+    fn test_zero_expiry_is_unrepresentable() {
+        assert_eq!(NonZeroU64::new(0), None);
+        assert_eq!(Some(NonZeroU64::get(nonzero(1))), Some(1));
     }
 
     fn make_auth_with_chain_id(chain_id: u64) -> KeyAuthorization {
@@ -648,17 +692,15 @@ mod tests {
     fn test_token_limit_decode_accepts_explicit_zero_period_field() {
         let token = Address::random();
         let limit = U256::from(42);
-        let period = 0u64;
 
         let mut encoded = Vec::new();
         alloy_rlp::Header {
             list: true,
-            payload_length: token.length() + limit.length() + period.length(),
+            payload_length: token.length() + limit.length(),
         }
         .encode(&mut encoded);
         token.encode(&mut encoded);
         limit.encode(&mut encoded);
-        period.encode(&mut encoded);
 
         let decoded: TokenLimit =
             <TokenLimit as Decodable>::decode(&mut encoded.as_slice()).expect("decode token limit");
@@ -905,6 +947,20 @@ mod tests {
         assert_eq!(value["selector"], serde_json::json!("0xaabbccdd"));
     }
 
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_key_authorization_json_rejects_zero_expiry() {
+        let err = serde_json::from_value::<KeyAuthorization>(serde_json::json!({
+            "chainId": "0x1",
+            "keyType": "secp256k1",
+            "keyId": Address::repeat_byte(0x11),
+            "expiry": "0x0",
+        }))
+        .expect_err("zero expiry must be rejected");
+
+        assert!(err.to_string().contains("expected non-zero quantity"));
+    }
+
     #[test]
     fn test_key_authorization_decode_accepts_explicit_unrestricted_allowed_calls_field() {
         let chain_id = 1u64;
@@ -915,11 +971,6 @@ mod tests {
         chain_id.encode(&mut payload);
         key_type.encode(&mut payload);
         key_id.encode(&mut payload);
-        payload.extend_from_slice(&[
-            alloy_rlp::EMPTY_STRING_CODE,
-            alloy_rlp::EMPTY_STRING_CODE,
-            alloy_rlp::EMPTY_STRING_CODE,
-        ]);
 
         let mut encoded = Vec::new();
         alloy_rlp::Header {
@@ -940,7 +991,7 @@ mod tests {
 
         let mut reencoded = Vec::new();
         decoded.encode(&mut reencoded);
-        assert!(reencoded.len() < encoded.len());
+        assert_eq!(reencoded.len(), encoded.len());
     }
 
     #[test]
