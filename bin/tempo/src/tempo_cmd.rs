@@ -864,13 +864,43 @@ pub(crate) struct ValidatorInfo {
     /// Validator ethereum address, ed25519 public key, or index
     #[arg()]
     id: ValidatorId,
+
+    /// Chain to query (presto, testnet, moderato, or path to chainspec file)
+    #[arg(long, short, default_value = "mainnet", value_parser = tempo_chainspec::spec::chain_value_parser)]
+    chain: Arc<TempoChainSpec>,
+
     /// RPC URL to query.
     #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
     rpc_url: String,
 }
 
+/// Output for the single-validator lookup enriched with DKG role info.
+#[derive(Debug, Serialize)]
+struct SingleValidatorOutput {
+    onchain_address: Address,
+    public_key: String,
+    inbound_address: String,
+    outbound_address: String,
+    fee_recipient: Address,
+    index: u64,
+    active: bool,
+    current_epoch: u64,
+    current_height: u64,
+    is_dkg_dealer: bool,
+    is_dkg_player: bool,
+    in_committee: bool,
+}
+
 impl ValidatorInfo {
     async fn run(self) -> eyre::Result<()> {
+        use alloy_consensus::BlockHeader;
+
+        let epoch_length = self
+            .chain
+            .info
+            .epoch_length()
+            .ok_or_eyre("epochLength not found in chainspec")?;
+
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect(&self.rpc_url)
             .await
@@ -947,7 +977,67 @@ impl ValidatorInfo {
         }
 
         let validator = read_validator_from_contract(&provider, self.id).await?;
-        println!("{}", serde_json::to_string_pretty(&validator)?);
+
+        let latest_block_number = provider
+            .get_block_number()
+            .await
+            .wrap_err("failed to get latest block number")?;
+
+        let epoch_strategy = FixedEpocher::new(NZU64!(epoch_length));
+        let current_height = Height::new(latest_block_number);
+        let current_epoch_info = epoch_strategy
+            .containing(current_height)
+            .ok_or_else(|| eyre!("failed to determine epoch for height {latest_block_number}"))?;
+
+        let current_epoch = current_epoch_info.epoch();
+        let boundary_height = current_epoch
+            .previous()
+            .map(|epoch| epoch_strategy.last(epoch).expect("valid epoch"))
+            .unwrap_or_default();
+
+        let boundary_block = provider
+            .get_block_by_number(boundary_height.get().into())
+            .hashes()
+            .await
+            .wrap_err_with(|| {
+                format!(
+                    "failed to get block header at height {}",
+                    boundary_height.get()
+                )
+            })?
+            .ok_or_eyre("boundary block not found")?;
+
+        let extra_data = boundary_block.header.extra_data();
+        if extra_data.is_empty() {
+            return Err(eyre!(
+                "boundary block at height {} has no DKG outcome in extra_data",
+                boundary_height.get()
+            ));
+        }
+
+        let dkg_outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref())
+            .wrap_err("failed to decode DKG outcome from extra_data")?;
+
+        let pubkey_bytes = validator.publicKey.0;
+        let key = PublicKey::decode(&mut &pubkey_bytes[..])
+            .wrap_err("failed decoding on-chain ed25519 key")?;
+
+        let output = SingleValidatorOutput {
+            onchain_address: validator.validatorAddress,
+            public_key: alloy_primitives::hex::encode(pubkey_bytes),
+            inbound_address: validator.ingress,
+            outbound_address: validator.egress,
+            fee_recipient: validator.feeRecipient,
+            index: validator.index,
+            active: validator.deactivatedAtHeight == 0,
+            current_epoch: current_epoch.get(),
+            current_height: current_height.get(),
+            is_dkg_dealer: dkg_outcome.players().position(&key).is_some(),
+            is_dkg_player: dkg_outcome.next_players().position(&key).is_some(),
+            in_committee: dkg_outcome.players().position(&key).is_some(),
+        };
+
+        println!("{}", serde_json::to_string_pretty(&output)?);
 
         Ok(())
     }
