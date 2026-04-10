@@ -872,13 +872,19 @@ pub(crate) struct ValidatorInfo {
     /// RPC URL to query.
     #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
     rpc_url: String,
+
+    /// Skip crosschecking the validator with the last DKG round.
+    #[arg(long)]
+    no_dkg_information: bool,
 }
 
 /// Output for the single-validator lookup enriched with DKG role and epoch context.
 #[derive(Debug, Serialize)]
 struct SingleValidatorOutput {
-    current_epoch: u64,
-    current_height: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    current_epoch: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    current_height: Option<u64>,
     #[serde(flatten)]
     validator: ValidatorEntry,
 }
@@ -970,6 +976,29 @@ impl ValidatorInfo {
 
         let validator = read_validator_from_contract(&provider, self.id).await?;
 
+        if self.no_dkg_information {
+            let pubkey_bytes = validator.publicKey.0;
+            let output = SingleValidatorOutput {
+                current_epoch: None,
+                current_height: None,
+                validator: ValidatorEntry {
+                    onchain_address: validator.validatorAddress,
+                    public_key: alloy_primitives::hex::encode(pubkey_bytes),
+                    inbound_address: validator.ingress,
+                    outbound_address: validator.egress,
+                    fee_recipient: Some(validator.feeRecipient),
+                    index: Some(validator.index),
+                    active: validator.deactivatedAtHeight == 0,
+                    is_dkg_dealer: None,
+                    is_dkg_player: None,
+                    in_committee: None,
+                },
+            };
+
+            println!("{}", serde_json::to_string_pretty(&output)?);
+            return Ok(());
+        }
+
         let latest_block_number = provider
             .get_block_number()
             .await
@@ -1017,8 +1046,8 @@ impl ValidatorInfo {
         let in_committee = dkg_outcome.players().position(&key).is_some();
 
         let output = SingleValidatorOutput {
-            current_epoch: current_epoch.get(),
-            current_height: current_height.get(),
+            current_epoch: Some(current_epoch.get()),
+            current_height: Some(current_height.get()),
             validator: ValidatorEntry {
                 onchain_address: validator.validatorAddress,
                 public_key: alloy_primitives::hex::encode(pubkey_bytes),
@@ -1027,9 +1056,9 @@ impl ValidatorInfo {
                 fee_recipient: Some(validator.feeRecipient),
                 index: Some(validator.index),
                 active: validator.deactivatedAtHeight == 0,
-                is_dkg_dealer: in_committee,
-                is_dkg_player: dkg_outcome.next_players().position(&key).is_some(),
-                in_committee,
+                is_dkg_dealer: Some(in_committee),
+                is_dkg_player: Some(dkg_outcome.next_players().position(&key).is_some()),
+                in_committee: Some(in_committee),
             },
         };
 
@@ -1078,11 +1107,14 @@ struct ValidatorEntry {
     /// Whether the validator is active in the current contract state
     active: bool,
     // Whether the validator is a dealer in the current epoch.
-    is_dkg_dealer: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_dkg_dealer: Option<bool>,
     /// Whether the validator is a player in the current epoch.
-    is_dkg_player: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_dkg_player: Option<bool>,
     /// Whether the validator is in the committee for the given epoch.
-    in_committee: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    in_committee: Option<bool>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -1216,9 +1248,9 @@ impl ValidatorsInfo {
                         fee_recipient: None,
                         index: None,
                         active: validator.active,
-                        is_dkg_dealer: dkg_outcome.players().position(&key).is_some(),
-                        is_dkg_player: dkg_outcome.next_players().position(&key).is_some(),
-                        in_committee,
+                        is_dkg_dealer: Some(dkg_outcome.players().position(&key).is_some()),
+                        is_dkg_player: Some(dkg_outcome.next_players().position(&key).is_some()),
+                        in_committee: Some(in_committee),
                     });
                 }
             }
@@ -1274,9 +1306,9 @@ impl ValidatorsInfo {
                     fee_recipient: None,
                     index: None,
                     active: true,
-                    is_dkg_dealer: dkg_outcome.players().position(&key).is_some(),
-                    is_dkg_player: dkg_outcome.next_players().position(&key).is_some(),
-                    in_committee,
+                    is_dkg_dealer: Some(dkg_outcome.players().position(&key).is_some()),
+                    is_dkg_player: Some(dkg_outcome.next_players().position(&key).is_some()),
+                    in_committee: Some(in_committee),
                 });
             }
         }
