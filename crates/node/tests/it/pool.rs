@@ -419,7 +419,7 @@ async fn test_evict_tx_on_validator_token_change() -> eyre::Result<()> {
 async fn test_evict_txs_on_transfer_policy_change() -> eyre::Result<()> {
     use alloy::sol_types::SolCall;
     use tempo_contracts::precompiles::{ITIP20, ITIP403Registry};
-    use tempo_precompiles::{TIP403_REGISTRY_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
+    use tempo_precompiles::{TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS};
 
     reth_tracing::init_test_tracing();
 
@@ -578,7 +578,10 @@ async fn test_evict_txs_on_transfer_policy_change() -> eyre::Result<()> {
 
     // Verify all 10 transactions are in node1's pool
     for hash in &evictable_hashes {
-        assert!(node1.inner.pool.contains(hash), "tx should be in pool before import");
+        assert!(
+            node1.inner.pool.contains(hash),
+            "tx should be in pool before import"
+        );
     }
     assert!(
         node1.inner.pool.contains(&whitelisted_hash),
