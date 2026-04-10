@@ -51,7 +51,7 @@ use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
 use revm::{
     context::CfgEnv,
     handler::EthPrecompiles,
-    precompile::{PrecompileError, PrecompileId, PrecompileOutput, PrecompileResult},
+    precompile::{PrecompileError, PrecompileHalt, PrecompileId, PrecompileOutput, PrecompileResult},
     primitives::hardfork::SpecId,
 };
 
@@ -358,8 +358,9 @@ fn dispatch_call<T>(
                 &storage,
             ));
         } else {
-            return Err(PrecompileError::Other(
-                "Invalid input: missing function selector".into(),
+            return Ok(fill_precompile_output(
+                PrecompileOutput::halt(PrecompileHalt::Other("Invalid input: missing function selector".into()), 0),
+                &storage,
             ));
         }
     }
@@ -641,15 +642,10 @@ mod tests {
         // Verify gas is tracked for both cases (unknown selector may cost slightly more due `INPUT_PER_WORD_COST`)
         assert!(unknown.gas_used >= empty.gas_used);
 
-        // Pre-T1 (T0): invalid calldata should return PrecompileError
+        // Pre-T1 (T0): invalid calldata should return a halted output
         let result = call_with_spec(Bytes::new(), TempoHardfork::T0);
-        assert!(
-            matches!(
-                &result,
-                Err(PrecompileError::Other(msg)) if msg.contains("missing function selector")
-            ),
-            "T0: expected PrecompileError for invalid calldata, got {result:?}"
-        );
+        let output = result.expect("T0: expected Ok with halted output");
+        assert!(output.status.is_halt(), "T0: expected halted output for invalid calldata");
     }
 
     /// Pre-T4 precompile calls must not report state_gas_used, because the new revm's
