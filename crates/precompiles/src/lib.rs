@@ -527,6 +527,61 @@ mod tests {
         );
     }
 
+    /// Verifies that early-return revert paths in precompile `call()` methods correctly
+    /// report gas_used. When a TIP-20 precompile reverts before reaching `dispatch_call`
+    /// (e.g., uninitialized token), the gas consumed for input decoding and account info
+    /// checks must still be reported in the `PrecompileOutput.gas_used` field.
+    #[test]
+    fn test_early_return_revert_reports_gas_used() {
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.set_spec(TempoHardfork::T1);
+        let tx = TxEnv::default();
+        let precompile = tempo_precompile!("TIP20Token", &cfg, |input| {
+            TIP20Token::from_address(PATH_USD_ADDRESS).expect("PATH_USD_ADDRESS is valid")
+        });
+
+        let token_address = PATH_USD_ADDRESS;
+
+        // NO bytecode set -- token is uninitialized, early revert before dispatch_call
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
+        let block = evm.block.clone();
+        let evm_internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
+
+        let calldata = Bytes::from(
+            ITIP20::transferCall {
+                to: Address::random(),
+                amount: U256::from(100),
+            }
+            .abi_encode(),
+        );
+
+        let input = PrecompileInput {
+            data: &calldata,
+            caller: Address::ZERO,
+            internals: evm_internals,
+            gas: 1_000_000,
+            is_static: false,
+            value: U256::ZERO,
+            target_address: token_address,
+            bytecode_address: token_address,
+            reservoir: 0,
+        };
+
+        let result = AlloyEvmPrecompile::call(&precompile, input);
+        let output = result.expect("expected Ok");
+        assert!(
+            output.status.is_revert(),
+            "uninitialized token should revert"
+        );
+        // Gas used should include input_cost(68) = 18 + with_account_info cost
+        assert!(
+            output.gas_used > 0,
+            "early-return revert should report non-zero gas_used, got {}",
+            output.gas_used
+        );
+    }
+
     #[test]
     fn test_invalid_calldata_hardfork_behavior() {
         let call_with_spec = |calldata: Bytes, spec: TempoHardfork| {
