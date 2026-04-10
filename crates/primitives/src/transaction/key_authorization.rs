@@ -4,6 +4,7 @@ use alloc::vec::Vec;
 use alloy_consensus::crypto::RecoveryError;
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::Encodable;
+use core::num::NonZeroU64;
 
 /// Token spending limit for access keys
 ///
@@ -170,7 +171,8 @@ impl From<SelectorRule> for AbiSelectorRule {
 /// - `limits`: `None` (omitted or 0x80) = unlimited spending, `Some([])` = no spending, `Some([...])` = specific limits
 /// - `allowed_calls`: `None` (canonically omitted, explicit 0x80 accepted) = unrestricted,
 ///   `Some([])` = scoped with no allowed calls, `Some([...])` = scoped calls
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
+#[rlp(trailing(canonical))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(rlp))]
@@ -190,9 +192,10 @@ pub struct KeyAuthorization {
     /// - `None` (RLP 0x80) = key never expires (stored as u64::MAX in precompile)
     /// - `Some(timestamp)` = key expires at this timestamp
     ///
-    /// Note: Some(0) will get decoded as None after RLP roundtrip.
-    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity::opt"))]
-    pub expiry: Option<u64>,
+    /// This uses `Option<NonZeroU64>` so `Some(0)` is unrepresentable and cannot silently
+    /// roundtrip into `None`.
+    #[cfg_attr(feature = "serde", serde(with = "serde_nonzero_quantity_opt"))]
+    pub expiry: Option<NonZeroU64>,
 
     /// TIP20 spending limits for this key.
     /// - `None` (RLP 0x80) = unlimited spending (no limits enforced)
@@ -223,7 +226,7 @@ impl KeyAuthorization {
 
     /// Set an expiry timestamp on this key authorization.
     pub fn with_expiry(mut self, expiry: u64) -> Self {
-        self.expiry = Some(expiry);
+        self.expiry = NonZeroU64::new(expiry);
         self
     }
 
@@ -386,19 +389,44 @@ impl<'a> arbitrary::Arbitrary<'a> for KeyAuthorization {
             chain_id: u.arbitrary()?,
             key_type: u.arbitrary()?,
             key_id: u.arbitrary()?,
-            // Ensure that Some(0) is not generated as it's becoming `None` after RLP roundtrip.
-            expiry: u.arbitrary::<Option<u64>>()?.filter(|v| *v != 0),
+            expiry: u.arbitrary()?,
             limits: u.arbitrary()?,
             allowed_calls: u.arbitrary()?,
         })
     }
 }
 
+#[cfg(feature = "serde")]
+mod serde_nonzero_quantity_opt {
+    use core::num::NonZeroU64;
+
+    use serde::{Deserializer, Serializer, de::Error as _};
+
+    pub(super) fn serialize<S>(value: &Option<NonZeroU64>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        alloy_serde::quantity::opt::serialize(&value.map(NonZeroU64::get), serializer)
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<Option<NonZeroU64>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        alloy_serde::quantity::opt::deserialize(deserializer).and_then(|value: Option<u64>| {
+            value
+                .map(|value| {
+                    NonZeroU64::new(value)
+                        .ok_or_else(|| D::Error::custom("expected non-zero quantity"))
+                })
+                .transpose()
+        })
+    }
+}
+
 mod rlp {
     use super::*;
-    use alloc::borrow::Cow;
     use alloy_rlp::{Decodable, Encodable};
-    use core::num::NonZeroU64;
 
     #[derive(
         Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable,
@@ -450,72 +478,6 @@ mod rlp {
             TokenLimitWire::from(self).length()
         }
     }
-
-    #[derive(alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
-    #[rlp(trailing(canonical))]
-    #[expect(clippy::owned_cow)]
-    struct KeyAuthorizationWire<'a> {
-        chain_id: u64,
-        key_type: SignatureType,
-        key_id: Address,
-        expiry: Option<NonZeroU64>,
-        limits: Option<Cow<'a, Vec<TokenLimit>>>,
-        allowed_calls: Option<Cow<'a, Vec<CallScope>>>,
-    }
-
-    impl<'a> From<&'a KeyAuthorization> for KeyAuthorizationWire<'a> {
-        fn from(value: &'a KeyAuthorization) -> Self {
-            let KeyAuthorization {
-                chain_id,
-                key_type,
-                key_id,
-                expiry,
-                limits,
-                allowed_calls,
-            } = value;
-            Self {
-                chain_id: *chain_id,
-                key_type: *key_type,
-                key_id: *key_id,
-                expiry: expiry.and_then(NonZeroU64::new),
-                limits: limits.as_ref().map(Cow::Borrowed),
-                allowed_calls: allowed_calls.as_ref().map(Cow::Borrowed),
-            }
-        }
-    }
-
-    impl<'a> From<KeyAuthorizationWire<'a>> for KeyAuthorization {
-        fn from(value: KeyAuthorizationWire<'a>) -> Self {
-            Self {
-                chain_id: value.chain_id,
-                key_type: value.key_type,
-                key_id: value.key_id,
-                expiry: value.expiry.map(|expiry| expiry.get()),
-                limits: value
-                    .limits
-                    .map(|limits| limits.into_owned().into_iter().collect()),
-                allowed_calls: value
-                    .allowed_calls
-                    .map(|allowed_calls| allowed_calls.into_owned().into_iter().collect()),
-            }
-        }
-    }
-
-    impl Encodable for KeyAuthorization {
-        fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-            KeyAuthorizationWire::from(self).encode(out)
-        }
-
-        fn length(&self) -> usize {
-            KeyAuthorizationWire::from(self).length()
-        }
-    }
-
-    impl Decodable for KeyAuthorization {
-        fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-            Ok(KeyAuthorizationWire::decode(buf)?.into())
-        }
-    }
 }
 
 #[cfg(feature = "serde")]
@@ -557,12 +519,16 @@ mod tests {
     };
     use alloy_rlp::{Decodable, Encodable};
 
+    fn nonzero(value: u64) -> NonZeroU64 {
+        NonZeroU64::new(value).expect("test expiry must be non-zero")
+    }
+
     fn make_auth(expiry: Option<u64>, limits: Option<Vec<TokenLimit>>) -> KeyAuthorization {
         KeyAuthorization {
             chain_id: 1,
             key_type: SignatureType::Secp256k1,
             key_id: Address::random(),
-            expiry,
+            expiry: expiry.and_then(NonZeroU64::new),
             limits,
             allowed_calls: None,
         }
@@ -629,7 +595,7 @@ mod tests {
         // never_expires: None = true, Some = false
         assert!(make_auth(None, None).never_expires());
         assert!(!make_auth(Some(1000), None).never_expires());
-        assert!(!make_auth(Some(0), None).never_expires()); // 0 is still Some
+        assert_eq!(NonZeroU64::new(0), None);
     }
 
     #[test]
@@ -661,6 +627,12 @@ mod tests {
             + recipients.capacity() * size_of::<Address>();
 
         assert_eq!(auth.size(), expected);
+    }
+
+    #[test]
+    fn test_zero_expiry_is_unrepresentable() {
+        assert_eq!(NonZeroU64::new(0), None);
+        assert_eq!(Some(NonZeroU64::get(nonzero(1))), Some(1));
     }
 
     fn make_auth_with_chain_id(chain_id: u64) -> KeyAuthorization {
@@ -973,6 +945,20 @@ mod tests {
         .expect("serialize selector rule");
 
         assert_eq!(value["selector"], serde_json::json!("0xaabbccdd"));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_key_authorization_json_rejects_zero_expiry() {
+        let err = serde_json::from_value::<KeyAuthorization>(serde_json::json!({
+            "chainId": "0x1",
+            "keyType": "secp256k1",
+            "keyId": Address::repeat_byte(0x11),
+            "expiry": "0x0",
+        }))
+        .expect_err("zero expiry must be rejected");
+
+        assert!(err.to_string().contains("expected non-zero quantity"));
     }
 
     #[test]

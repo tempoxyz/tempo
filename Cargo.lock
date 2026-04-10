@@ -11856,7 +11856,6 @@ dependencies = [
  "reth-primitives-traits",
  "reth-provider",
  "reth-revm",
- "reth-rpc-convert",
  "tempo-alloy",
  "tempo-chainspec",
  "tempo-commonware-node-config",
