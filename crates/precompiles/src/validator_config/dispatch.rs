@@ -27,10 +27,7 @@ impl Precompile for ValidatorConfig {
             calldata,
             &[(
                 TempoHardfork::T1,
-                SelectorHardforkDiff {
-                    added: T1_ADDED_SELECTORS,
-                    removed: &[],
-                },
+                SelectorHardforkDiff::new().added(T1_ADDED_SELECTORS),
             )],
             IValidatorConfigCalls::abi_decode,
             |call| match call {

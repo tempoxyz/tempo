@@ -58,10 +58,7 @@ impl Precompile for TIP20Token {
             calldata,
             &[(
                 TempoHardfork::T2,
-                SelectorHardforkDiff {
-                    added: T2_ADDED_SELECTORS,
-                    removed: &[],
-                },
+                SelectorHardforkDiff::new().added(T2_ADDED_SELECTORS),
             )],
             TIP20Call::decode,
             |call| match call {

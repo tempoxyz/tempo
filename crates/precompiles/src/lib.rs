@@ -337,7 +337,24 @@ pub(crate) struct SelectorHardforkDiff<'a> {
 /// One hardfork boundary rule for selector gating.
 pub(crate) type SelectorHardforkRule<'a> = (TempoHardfork, SelectorHardforkDiff<'a>);
 
-impl SelectorHardforkDiff<'_> {
+impl<'a> SelectorHardforkDiff<'a> {
+    pub(crate) const fn new() -> Self {
+        Self {
+            added: &[],
+            removed: &[],
+        }
+    }
+
+    pub(crate) const fn added(mut self, selectors: &'a [[u8; 4]]) -> Self {
+        self.added = selectors;
+        self
+    }
+
+    pub(crate) const fn removed(mut self, selectors: &'a [[u8; 4]]) -> Self {
+        self.removed = selectors;
+        self
+    }
+
     #[inline]
     fn rejects(self, selector: [u8; 4], active: bool) -> bool {
         let gated = if active { self.removed } else { self.added };
@@ -631,17 +648,11 @@ mod tests {
         const SELECTOR_GATED_TEST_RULES: &[SelectorHardforkRule<'static>] = &[
             (
                 TempoHardfork::T2,
-                SelectorHardforkDiff {
-                    added: &[ISelectorGatedTest::t2AddedCall::SELECTOR],
-                    removed: &[],
-                },
+                SelectorHardforkDiff::new().added(&[ISelectorGatedTest::t2AddedCall::SELECTOR]),
             ),
             (
                 TempoHardfork::T3,
-                SelectorHardforkDiff {
-                    added: &[],
-                    removed: &[ISelectorGatedTest::t3RemovedCall::SELECTOR],
-                },
+                SelectorHardforkDiff::new().removed(&[ISelectorGatedTest::t3RemovedCall::SELECTOR]),
             ),
         ];
 

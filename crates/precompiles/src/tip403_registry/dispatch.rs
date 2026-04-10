@@ -34,10 +34,7 @@ impl Precompile for TIP403Registry {
             calldata,
             &[(
                 TempoHardfork::T2,
-                SelectorHardforkDiff {
-                    added: T2_ADDED_SELECTORS,
-                    removed: &[],
-                },
+                SelectorHardforkDiff::new().added(T2_ADDED_SELECTORS),
             )],
             ITIP403RegistryCalls::abi_decode,
             |call| match call {
