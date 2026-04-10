@@ -37,10 +37,9 @@ impl Precompile for AccountKeychain {
             calldata,
             &[(
                 TempoHardfork::T3,
-                SelectorHardforkDiff {
-                    added: T3_ADDED_SELECTORS,
-                    removed: T3_REMOVED_SELECTORS,
-                },
+                SelectorHardforkDiff::new()
+                    .added(T3_ADDED_SELECTORS)
+                    .removed(T3_REMOVED_SELECTORS),
             )],
             IAccountKeychainCalls::abi_decode,
             |call| match call {
