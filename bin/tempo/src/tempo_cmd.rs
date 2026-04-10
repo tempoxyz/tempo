@@ -881,10 +881,8 @@ pub(crate) struct ValidatorInfo {
 /// Output for the single-validator lookup enriched with DKG role and epoch context.
 #[derive(Debug, Serialize)]
 struct SingleValidatorOutput {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    current_epoch: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    current_height: Option<u64>,
+    current_epoch: u64,
+    current_height: u64,
     #[serde(flatten)]
     validator: ValidatorEntry,
 }
@@ -975,69 +973,65 @@ impl ValidatorInfo {
         let validator = read_validator_from_contract(&provider, self.id).await?;
         let pubkey_bytes = validator.publicKey.0;
 
-        let (current_epoch, current_height, is_dkg_dealer, is_dkg_player, in_committee) =
-            if self.no_dkg_information {
-                (None, None, None, None, None)
-            } else {
-                use alloy_consensus::BlockHeader;
+        let latest_block_number = provider
+            .get_block_number()
+            .await
+            .wrap_err("failed to get latest block number")?;
 
-                let latest_block_number = provider
-                    .get_block_number()
-                    .await
-                    .wrap_err("failed to get latest block number")?;
+        let epoch_strategy = FixedEpocher::new(NZU64!(epoch_length));
+        let current_height = Height::new(latest_block_number);
+        let current_epoch_info = epoch_strategy
+            .containing(current_height)
+            .ok_or_else(|| eyre!("failed to determine epoch for height {latest_block_number}"))?;
+        let current_epoch = current_epoch_info.epoch();
 
-                let epoch_strategy = FixedEpocher::new(NZU64!(epoch_length));
-                let current_height = Height::new(latest_block_number);
-                let current_epoch_info = epoch_strategy.containing(current_height).ok_or_else(
-                    || eyre!("failed to determine epoch for height {latest_block_number}"),
-                )?;
+        let mut is_dkg_dealer = None;
+        let mut is_dkg_player = None;
+        let mut in_committee = None;
 
-                let current_epoch = current_epoch_info.epoch();
-                let boundary_height = current_epoch
-                    .previous()
-                    .map(|epoch| epoch_strategy.last(epoch).expect("valid epoch"))
-                    .unwrap_or_default();
+        if !self.no_dkg_information {
+            use alloy_consensus::BlockHeader;
 
-                let boundary_block = provider
-                    .get_block_by_number(boundary_height.get().into())
-                    .hashes()
-                    .await
-                    .wrap_err_with(|| {
-                        format!(
-                            "failed to get block header at height {}",
-                            boundary_height.get()
-                        )
-                    })?
-                    .ok_or_eyre("boundary block not found")?;
+            let boundary_height = current_epoch
+                .previous()
+                .map(|epoch| epoch_strategy.last(epoch).expect("valid epoch"))
+                .unwrap_or_default();
 
-                let extra_data = boundary_block.header.extra_data();
-                if extra_data.is_empty() {
-                    return Err(eyre!(
-                        "boundary block at height {} has no DKG outcome in extra_data",
+            let boundary_block = provider
+                .get_block_by_number(boundary_height.get().into())
+                .hashes()
+                .await
+                .wrap_err_with(|| {
+                    format!(
+                        "failed to get block header at height {}",
                         boundary_height.get()
-                    ));
-                }
+                    )
+                })?
+                .ok_or_eyre("boundary block not found")?;
 
-                let dkg_outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref())
-                    .wrap_err("failed to decode DKG outcome from extra_data")?;
+            let extra_data = boundary_block.header.extra_data();
+            if extra_data.is_empty() {
+                return Err(eyre!(
+                    "boundary block at height {} has no DKG outcome in extra_data",
+                    boundary_height.get()
+                ));
+            }
 
-                let key = PublicKey::decode(&mut &pubkey_bytes[..])
-                    .wrap_err("failed decoding on-chain ed25519 key")?;
+            let dkg_outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref())
+                .wrap_err("failed to decode DKG outcome from extra_data")?;
 
-                let in_committee = dkg_outcome.players().position(&key).is_some();
+            let key = PublicKey::decode(&mut &pubkey_bytes[..])
+                .wrap_err("failed decoding on-chain ed25519 key")?;
 
-                (
-                    Some(current_epoch.get()),
-                    Some(current_height.get()),
-                    Some(in_committee),
-                    Some(dkg_outcome.next_players().position(&key).is_some()),
-                    Some(in_committee),
-                )
-            };
+            let committee = dkg_outcome.players().position(&key).is_some();
+            is_dkg_dealer = Some(committee);
+            is_dkg_player = Some(dkg_outcome.next_players().position(&key).is_some());
+            in_committee = Some(committee);
+        }
 
         let output = SingleValidatorOutput {
-            current_epoch,
-            current_height,
+            current_epoch: current_epoch.get(),
+            current_height: current_height.get(),
             validator: ValidatorEntry {
                 onchain_address: validator.validatorAddress,
                 public_key: alloy_primitives::hex::encode(pubkey_bytes),
