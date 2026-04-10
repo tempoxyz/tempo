@@ -874,21 +874,13 @@ pub(crate) struct ValidatorInfo {
     rpc_url: String,
 }
 
-/// Output for the single-validator lookup enriched with DKG role info.
+/// Output for the single-validator lookup enriched with DKG role and epoch context.
 #[derive(Debug, Serialize)]
 struct SingleValidatorOutput {
-    onchain_address: Address,
-    public_key: String,
-    inbound_address: String,
-    outbound_address: String,
-    fee_recipient: Address,
-    index: u64,
-    active: bool,
     current_epoch: u64,
     current_height: u64,
-    is_dkg_dealer: bool,
-    is_dkg_player: bool,
-    in_committee: bool,
+    #[serde(flatten)]
+    validator: ValidatorEntry,
 }
 
 impl ValidatorInfo {
@@ -1022,19 +1014,23 @@ impl ValidatorInfo {
         let key = PublicKey::decode(&mut &pubkey_bytes[..])
             .wrap_err("failed decoding on-chain ed25519 key")?;
 
+        let in_committee = dkg_outcome.players().position(&key).is_some();
+
         let output = SingleValidatorOutput {
-            onchain_address: validator.validatorAddress,
-            public_key: alloy_primitives::hex::encode(pubkey_bytes),
-            inbound_address: validator.ingress,
-            outbound_address: validator.egress,
-            fee_recipient: validator.feeRecipient,
-            index: validator.index,
-            active: validator.deactivatedAtHeight == 0,
             current_epoch: current_epoch.get(),
             current_height: current_height.get(),
-            is_dkg_dealer: dkg_outcome.players().position(&key).is_some(),
-            is_dkg_player: dkg_outcome.next_players().position(&key).is_some(),
-            in_committee: dkg_outcome.players().position(&key).is_some(),
+            validator: ValidatorEntry {
+                onchain_address: validator.validatorAddress,
+                public_key: alloy_primitives::hex::encode(pubkey_bytes),
+                inbound_address: validator.ingress,
+                outbound_address: validator.egress,
+                fee_recipient: Some(validator.feeRecipient),
+                index: Some(validator.index),
+                active: validator.deactivatedAtHeight == 0,
+                is_dkg_dealer: in_committee,
+                is_dkg_player: dkg_outcome.next_players().position(&key).is_some(),
+                in_committee,
+            },
         };
 
         println!("{}", serde_json::to_string_pretty(&output)?);
@@ -1073,9 +1069,15 @@ struct ValidatorEntry {
     inbound_address: String,
     /// Outbound IP address
     outbound_address: String,
+    /// Fee recipient address
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fee_recipient: Option<Address>,
+    /// Validator index
+    #[serde(skip_serializing_if = "Option::is_none")]
+    index: Option<u64>,
     /// Whether the validator is active in the current contract state
     active: bool,
-    // Whether the validator is a dealer in th ecurrent epoch.
+    // Whether the validator is a dealer in the current epoch.
     is_dkg_dealer: bool,
     /// Whether the validator is a player in the current epoch.
     is_dkg_player: bool,
@@ -1211,6 +1213,8 @@ impl ValidatorsInfo {
                         public_key: alloy_primitives::hex::encode(pubkey_bytes),
                         inbound_address: validator.inboundAddress,
                         outbound_address: validator.outboundAddress,
+                        fee_recipient: None,
+                        index: None,
                         active: validator.active,
                         is_dkg_dealer: dkg_outcome.players().position(&key).is_some(),
                         is_dkg_player: dkg_outcome.next_players().position(&key).is_some(),
@@ -1267,6 +1271,8 @@ impl ValidatorsInfo {
                     public_key: alloy_primitives::hex::encode(pubkey_bytes),
                     inbound_address: validator.ingress,
                     outbound_address: validator.egress,
+                    fee_recipient: None,
+                    index: None,
                     active: true,
                     is_dkg_dealer: dkg_outcome.players().position(&key).is_some(),
                     is_dkg_player: dkg_outcome.next_players().position(&key).is_some(),
