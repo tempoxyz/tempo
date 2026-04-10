@@ -103,8 +103,6 @@ where
         let reason = 'event_loop: loop {
             tokio::select!(
                 biased;
-
-
                 msg = self.mailbox.next() => {
                     match msg {
                         None => break 'event_loop eyre::eyre!("mailbox closed unexpectedly"),
@@ -116,11 +114,10 @@ where
                         }
                     }
                 }
-
                 // Perform aggressive retries if no peer set is tracked yet.
                 // Otherwise just do it every minute.
                 _ = &mut self.peer_update_timer => {
-                    let _ = self.update_peer_set(None).await;
+                    let _ = self.refresh_peers().await;
                     self.reset_peer_update_timer();
                 }
             )
@@ -149,73 +146,13 @@ where
                 let _ = response.send(receiver);
             }
             Message::Finalized(update) => match *update {
-                Update::Block(block, ack) => {
-                    let _ = self.update_peer_set(Some(block)).await;
+                Update::Block(_, ack) => {
+                    let _ = self.refresh_peers().await;
                     ack.acknowledge();
                     self.reset_peer_update_timer();
                 }
                 Update::Tip { .. } => {}
             },
-        }
-        Ok(())
-    }
-
-    /// Updates the peer set.
-    #[instrument(
-        skip_all,
-        fields(
-            block.height = block.as_ref().map(|b| tracing::field::display(b.height())),
-        ),
-        err,
-    )]
-    async fn update_peer_set(&mut self, block: Option<Block>) -> eyre::Result<()> {
-        if let Some(block) = &block
-            && let Err(reason) = self.executor.subscribe_finalized(block.height()).await
-        {
-            warn!(
-                %reason,
-                "unable to clarify whether the finalized block was already \
-                forwarded to execution layer; will try to read validator \
-                config contract, but it will likely fail",
-            );
-        }
-
-        let maybe_latest_finalized_header = self.read_highest_finalized_header();
-        let reference_timestamp = match &block {
-            Some(block) => maybe_latest_finalized_header.ok().map_or_else(
-                || block.timestamp(),
-                |header| header.timestamp().max(block.timestamp()),
-            ),
-            None => maybe_latest_finalized_header
-                .wrap_err("could not determine a timestamp to determine peer behavior")?
-                .timestamp(),
-        };
-
-        // Post T2 behavior: do a best-effort update of the peerset, to whatever
-        // is available as long as it is newer than what we are already tracking.
-        //
-        // Also run this if we do not yet have any peer set available.
-        if self
-            .execution_node
-            .chain_spec()
-            .is_t2_active_at_timestamp(reference_timestamp)
-            || self.last_tracked_peer_set.is_none()
-        {
-            self.refresh_peers()
-                .await
-                .wrap_err("failed refreshing peer set")?;
-        } else if let Some(block) = block {
-            let height = block.number();
-            if let Some(peers) = read_peer_set_if_boundary(
-                &self.context,
-                &self.epoch_strategy,
-                &self.execution_node,
-                block,
-            )
-            .await
-            {
-                self.track_or_overwrite(height, peers).await;
-            }
         }
         Ok(())
     }
