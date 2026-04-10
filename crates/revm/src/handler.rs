@@ -1022,7 +1022,7 @@ where
                 };
 
                 // Handle expiry: None means never expires (store as u64::MAX)
-                let expiry = key_auth.expiry.unwrap_or(u64::MAX);
+                let expiry = key_auth.expiry.map_or(u64::MAX, |expiry| expiry.get());
 
                 // Validate expiry is not in the past
                 let current_timestamp = block.timestamp().saturating_to::<u64>();
@@ -1088,7 +1088,7 @@ where
 
             // Cache inline key authorization expiry.
             if let Some(expiry) = key_auth.expiry {
-                evm.key_expiry = Some(expiry);
+                evm.key_expiry = Some(expiry.get());
             }
 
             // activated only on T1/T1A fork.
@@ -1171,7 +1171,7 @@ where
                         tempo_tx_env
                             .key_authorization
                             .as_ref()
-                            .and_then(|ka| ka.expiry)
+                            .and_then(|ka| ka.expiry.map(|expiry| expiry.get()))
                     } else {
                         // Validate that user_address has authorized this access key in the keychain
                         let user_address = &keychain_sig.user_address;
