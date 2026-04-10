@@ -68,6 +68,10 @@ pub struct TempoPoolUpdates {
     pub whitelist_removals: Vec<(u64, Address)>,
     /// Fee token pause state changes: (token, is_paused).
     pub pause_events: Vec<(Address, bool)>,
+    /// Tokens whose transfer policy was changed via `changeTransferPolicyId()`.
+    /// Pending transactions using these tokens as fee tokens need to be re-validated
+    /// because the new policy may forbid the fee payer or fee manager.
+    pub transfer_policy_updates: HashSet<Address>,
     /// Fee token balance changes keyed by token.
     ///
     /// We only track the debited `from` account from TIP20 `Transfer` logs because credits to the
@@ -99,6 +103,7 @@ impl TempoPoolUpdates {
             && self.blacklist_additions.is_empty()
             && self.whitelist_removals.is_empty()
             && self.pause_events.is_empty()
+            && self.transfer_policy_updates.is_empty()
             && self.fee_balance_changes.is_empty()
             && self.spending_limit_spends.is_empty()
     }
@@ -160,6 +165,8 @@ impl TempoPoolUpdates {
             else if is_tip20_prefix(log.address) {
                 if let Ok(event) = ITIP20::PauseStateUpdate::decode_log(log) {
                     updates.pause_events.push((log.address, event.isPaused));
+                } else if ITIP20::TransferPolicyUpdate::decode_log(log).is_ok() {
+                    updates.transfer_policy_updates.insert(log.address);
                 } else if let Ok(event) = ITIP20::Transfer::decode_log(log) {
                     updates
                         .fee_balance_changes
@@ -585,6 +592,58 @@ where
                 }
                 metrics.pause_events_duration_seconds.record(pause_start.elapsed());
 
+                // 5b. Handle transfer policy updates
+                // When a token's transfer policy changes, pending transactions using that
+                // token may become invalid under the new policy. We remove them and re-add
+                // so they go through full validation against the updated policy.
+                if !updates.transfer_policy_updates.is_empty() {
+                    let all_txs = pool.all_transactions();
+                    let hashes: Vec<TxHash> = all_txs
+                        .pending
+                        .iter()
+                        .chain(all_txs.queued.iter())
+                        .filter(|tx| {
+                            tx.transaction
+                                .resolved_fee_token()
+                                .is_some_and(|t| updates.transfer_policy_updates.contains(&t))
+                        })
+                        .map(|tx| *tx.hash())
+                        .collect();
+
+                    if !hashes.is_empty() {
+                        let removed_txs = pool.remove_transactions(hashes);
+                        let count = removed_txs.len();
+
+                        for tx in &removed_txs {
+                            state.untrack(tx.hash());
+                        }
+
+                        metrics
+                            .transfer_policy_revalidated
+                            .increment(count as u64);
+
+                        let pool_clone = pool.clone();
+                        tokio::spawn(async move {
+                            let txs: Vec<_> = removed_txs
+                                .into_iter()
+                                .map(|tx| (tx.origin, tx.transaction.clone()))
+                                .collect();
+
+                            let results =
+                                pool_clone.add_transactions_with_origins(txs).await;
+
+                            let success =
+                                results.iter().filter(|r| r.is_ok()).count();
+                            debug!(
+                                target: "txpool",
+                                total = count,
+                                success,
+                                "Re-validated transactions after transfer policy update"
+                            );
+                        });
+                    }
+                }
+
                 // 6. Update 2D nonce pool (also removes included expiring nonce txs
                 // via slot changes on the nonce precompile)
                 let nonce_pool_start = Instant::now();
@@ -995,6 +1054,79 @@ mod tests {
                 "TIP20 transfer logs should only mark the debited sender as balance-changed"
             );
             assert!(updates.has_invalidation_events());
+        }
+
+        /// TransferPolicyUpdate events are parsed from TIP20 token logs.
+        #[test]
+        fn extracts_transfer_policy_updates() {
+            let fee_token = tempo_precompiles::PATH_USD_ADDRESS;
+            let updater = Address::random();
+            let new_policy_id = 42u64;
+            let log_data = ITIP20::TransferPolicyUpdate {
+                updater,
+                newPolicyId: new_policy_id,
+            }
+            .into_log_data();
+            let log =
+                Log::new_unchecked(fee_token, log_data.topics().to_vec(), log_data.data.clone());
+            let receipt = TempoReceipt {
+                tx_type: TempoTxType::Legacy,
+                success: true,
+                cumulative_gas_used: 21_000,
+                logs: vec![log],
+            };
+
+            let block = create_block_with_txs(1, vec![], vec![]);
+            let chain = create_test_chain_with_receipts(vec![block], vec![vec![receipt]]);
+            let updates = TempoPoolUpdates::from_chain(&chain);
+
+            assert!(
+                updates.transfer_policy_updates.contains(&fee_token),
+                "TransferPolicyUpdate should be tracked by token address"
+            );
+        }
+
+        /// Duplicate TransferPolicyUpdate events for the same token are deduplicated.
+        #[test]
+        fn transfer_policy_updates_deduplicates_by_token() {
+            let fee_token = tempo_precompiles::PATH_USD_ADDRESS;
+
+            let log_data_1 = ITIP20::TransferPolicyUpdate {
+                updater: Address::random(),
+                newPolicyId: 1,
+            }
+            .into_log_data();
+            let log_data_2 = ITIP20::TransferPolicyUpdate {
+                updater: Address::random(),
+                newPolicyId: 2,
+            }
+            .into_log_data();
+            let log1 = Log::new_unchecked(
+                fee_token,
+                log_data_1.topics().to_vec(),
+                log_data_1.data.clone(),
+            );
+            let log2 = Log::new_unchecked(
+                fee_token,
+                log_data_2.topics().to_vec(),
+                log_data_2.data.clone(),
+            );
+            let receipt = TempoReceipt {
+                tx_type: TempoTxType::Legacy,
+                success: true,
+                cumulative_gas_used: 21_000,
+                logs: vec![log1, log2],
+            };
+
+            let block = create_block_with_txs(1, vec![], vec![]);
+            let chain = create_test_chain_with_receipts(vec![block], vec![vec![receipt]]);
+            let updates = TempoPoolUpdates::from_chain(&chain);
+
+            assert_eq!(
+                updates.transfer_policy_updates.len(),
+                1,
+                "duplicate policy updates for the same token should be deduplicated"
+            );
         }
 
         /// Duplicate validator token changes must be deduplicated (last-write-wins).
