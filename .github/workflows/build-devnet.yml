@@ -8,6 +8,8 @@ permissions: {}
 
 jobs:
   publish:
+    permissions:
+      pull-requests: read
     runs-on: ubuntu-latest
     if: >-
       github.event.issue.pull_request &&
