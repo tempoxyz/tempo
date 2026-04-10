@@ -311,10 +311,16 @@ fn mutate_void<T: SolCall>(
 }
 
 /// Fills gas accounting fields on a [`PrecompileOutput`] from the storage context.
+///
+/// State gas is only set for T4+ where the state gas / reservoir model is active.
+/// Pre-T4, `state_gas_used` must remain 0 to avoid leaking into revm's reservoir
+/// accounting and corrupting `tx_gas_used()` via `handle_reservoir_remaining_gas`.
 #[inline]
 fn fill_precompile_output(mut output: PrecompileOutput, storage: &StorageCtx) -> PrecompileOutput {
     output.gas_used = storage.gas_used();
-    output.state_gas_used = storage.gas_used();
+    if storage.spec().is_t4() {
+        output.state_gas_used = storage.gas_used();
+    }
     output
 }
 
@@ -582,6 +588,71 @@ mod tests {
                 Err(PrecompileError::Fatal(msg)) if msg.contains("missing function selector")
             ),
             "T0: expected PrecompileError for invalid calldata, got {result:?}"
+        );
+    }
+
+    /// Pre-T4 precompile calls must not report state_gas_used, because the new revm's
+    /// reservoir model propagates it via `handle_reservoir_remaining_gas` on revert/halt,
+    /// corrupting `tx_gas_used()`.
+    #[test]
+    fn test_precompile_state_gas_zero_pre_t4() {
+        let call_with_spec = |calldata: Bytes, spec: TempoHardfork| {
+            let mut cfg = CfgEnv::<TempoHardfork>::default();
+            cfg.set_spec(spec);
+            let tx = TxEnv::default();
+            let precompile = tempo_precompile!("TIP20Token", &cfg, |input| {
+                TIP20Token::from_address(PATH_USD_ADDRESS).expect("PATH_USD_ADDRESS is valid")
+            });
+
+            let mut db = CacheDB::new(EmptyDB::new());
+            db.insert_account_info(
+                PATH_USD_ADDRESS,
+                AccountInfo {
+                    code: Some(Bytecode::new_raw(bytes!("0xEF"))),
+                    ..Default::default()
+                },
+            );
+            let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
+            let block = evm.block.clone();
+            let evm_internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
+
+            let input = PrecompileInput {
+                data: &calldata,
+                caller: Address::ZERO,
+                internals: evm_internals,
+                gas: 1_000_000,
+                is_static: false,
+                value: U256::ZERO,
+                target_address: PATH_USD_ADDRESS,
+                bytecode_address: PATH_USD_ADDRESS,
+                reservoir: 0,
+            };
+
+            AlloyEvmPrecompile::call(&precompile, input)
+        };
+
+        // Pre-T4 (T2): state_gas_used must be 0
+        let result = call_with_spec(
+            ITIP20::balanceOfCall::new((Address::ZERO,))
+                .abi_encode()
+                .into(),
+            TempoHardfork::T2,
+        )
+        .expect("T2 balanceOf should succeed");
+        assert!(result.gas_used > 0, "precompile should consume gas");
+        assert_eq!(
+            result.state_gas_used, 0,
+            "pre-T4 precompile must not report state_gas_used, got {}",
+            result.state_gas_used
+        );
+
+        // Pre-T4 (T1): reverted call should also have state_gas_used == 0
+        let reverted =
+            call_with_spec(Bytes::new(), TempoHardfork::T1).expect("T1 empty should revert");
+        assert!(reverted.status.is_revert());
+        assert_eq!(
+            reverted.state_gas_used, 0,
+            "pre-T4 reverted precompile must not report state_gas_used"
         );
     }
 

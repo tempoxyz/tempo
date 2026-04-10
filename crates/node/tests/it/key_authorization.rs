@@ -284,11 +284,13 @@ async fn test_post_t1b_keyauth_oog_fixed() -> eyre::Result<()> {
 
     // Same gas_limit that triggers OOG on pre-T1B. On T1B+ the precompile
     // runs with unlimited gas so it never OOGs.
+    // TIP-1016 (T4): intrinsic includes state gas for CREATE + KeyAuth + sender
+    // new account (~103k regular + ~918k state = ~1,021k total minimum).
     let encoded = build_create_key_auth_tx(
         &signer,
         chain_id,
         nonce,
-        1_050_000,
+        2_000_000,
         TEMPO_T1_BASE_FEE as u128,
     )?;
 

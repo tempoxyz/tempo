@@ -50,6 +50,9 @@ pub struct TempoEvm<DB: Database, I> {
     /// The transaction pool sets this because it performs its own liquidity
     /// validation against a cached view of the AMM state.
     pub skip_liquidity_check: bool,
+    /// Initial state gas accumulated during validate_against_state_and_deduct_caller.
+    /// Tracks state gas from runtime checks (e.g. 2D nonce account creation, CREATE state gas).
+    pub(crate) initial_state_gas: u64,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -86,6 +89,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             key_expiry: None,
             skip_valid_after_check: false,
             skip_liquidity_check: false,
+            initial_state_gas: 0,
         }
     }
 }
@@ -328,12 +332,12 @@ mod tests {
         evm
     }
 
-    /// Create an EVM with T3 hardfork enabled and a funded account.
+    /// Create an EVM with T4 hardfork enabled and a funded account.
     fn create_funded_evm_t3(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
         let db = CacheDB::new(EmptyDB::new());
         let mut cfg = CfgEnv::<TempoHardfork>::default();
-        cfg.spec = TempoHardfork::T3;
-        cfg.gas_params = tempo_gas_params(TempoHardfork::T3);
+        cfg.spec = TempoHardfork::T4;
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T4);
 
         let ctx = Context::mainnet()
             .with_db(db)
@@ -1119,7 +1123,7 @@ mod tests {
     }
 
     #[test]
-    fn test_t3_key_authorization_deny_all_scopes_blocks_same_tx_call() -> eyre::Result<()> {
+    fn test_t4_key_authorization_deny_all_scopes_blocks_same_tx_call() -> eyre::Result<()> {
         let key_pair = P256KeyPair::random();
         let caller = key_pair.address;
 
@@ -1174,7 +1178,7 @@ mod tests {
     }
 
     #[test]
-    fn test_t3_key_authorization_accepts_empty_recipient_allowlist_as_unconstrained()
+    fn test_t4_key_authorization_accepts_empty_recipient_allowlist_as_unconstrained()
     -> eyre::Result<()> {
         let key_pair = P256KeyPair::random();
         let caller = key_pair.address;
@@ -2630,7 +2634,7 @@ mod tests {
             result_baseline.is_success(),
             "baseline transfer should succeed"
         );
-        let gas_baseline = result_baseline.gas_used();
+        let gas_baseline = result_baseline.tx_gas_used();
 
         // Issue #3178 scenario: calls-format transfer with nonce_key != 0, caller.nonce == 0.
         // validate_aa_initial_tx_gas still charges the same 250k (nonce==0 branch).
@@ -2652,7 +2656,7 @@ mod tests {
             result_2d.is_success(),
             "calls-format transfer with 2D nonce should succeed"
         );
-        let gas_2d = result_2d.gas_used();
+        let gas_2d = result_2d.tx_gas_used();
 
         // After the fix the gas should be nearly identical for both cases because
         // both go through the same validate_aa_initial_tx_gas branch and handler.rs
