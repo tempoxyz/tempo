@@ -891,8 +891,6 @@ struct SingleValidatorOutput {
 
 impl ValidatorInfo {
     async fn run(self) -> eyre::Result<()> {
-        use alloy_consensus::BlockHeader;
-
         let epoch_length = self
             .chain
             .info
@@ -975,79 +973,71 @@ impl ValidatorInfo {
         }
 
         let validator = read_validator_from_contract(&provider, self.id).await?;
+        let pubkey_bytes = validator.publicKey.0;
 
-        if self.no_dkg_information {
-            let pubkey_bytes = validator.publicKey.0;
-            let output = SingleValidatorOutput {
-                current_epoch: None,
-                current_height: None,
-                validator: ValidatorEntry {
-                    onchain_address: validator.validatorAddress,
-                    public_key: alloy_primitives::hex::encode(pubkey_bytes),
-                    inbound_address: validator.ingress,
-                    outbound_address: validator.egress,
-                    fee_recipient: Some(validator.feeRecipient),
-                    index: Some(validator.index),
-                    active: validator.deactivatedAtHeight == 0,
-                    is_dkg_dealer: None,
-                    is_dkg_player: None,
-                    in_committee: None,
-                },
+        let (current_epoch, current_height, is_dkg_dealer, is_dkg_player, in_committee) =
+            if self.no_dkg_information {
+                (None, None, None, None, None)
+            } else {
+                use alloy_consensus::BlockHeader;
+
+                let latest_block_number = provider
+                    .get_block_number()
+                    .await
+                    .wrap_err("failed to get latest block number")?;
+
+                let epoch_strategy = FixedEpocher::new(NZU64!(epoch_length));
+                let current_height = Height::new(latest_block_number);
+                let current_epoch_info = epoch_strategy.containing(current_height).ok_or_else(
+                    || eyre!("failed to determine epoch for height {latest_block_number}"),
+                )?;
+
+                let current_epoch = current_epoch_info.epoch();
+                let boundary_height = current_epoch
+                    .previous()
+                    .map(|epoch| epoch_strategy.last(epoch).expect("valid epoch"))
+                    .unwrap_or_default();
+
+                let boundary_block = provider
+                    .get_block_by_number(boundary_height.get().into())
+                    .hashes()
+                    .await
+                    .wrap_err_with(|| {
+                        format!(
+                            "failed to get block header at height {}",
+                            boundary_height.get()
+                        )
+                    })?
+                    .ok_or_eyre("boundary block not found")?;
+
+                let extra_data = boundary_block.header.extra_data();
+                if extra_data.is_empty() {
+                    return Err(eyre!(
+                        "boundary block at height {} has no DKG outcome in extra_data",
+                        boundary_height.get()
+                    ));
+                }
+
+                let dkg_outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref())
+                    .wrap_err("failed to decode DKG outcome from extra_data")?;
+
+                let key = PublicKey::decode(&mut &pubkey_bytes[..])
+                    .wrap_err("failed decoding on-chain ed25519 key")?;
+
+                let in_committee = dkg_outcome.players().position(&key).is_some();
+
+                (
+                    Some(current_epoch.get()),
+                    Some(current_height.get()),
+                    Some(in_committee),
+                    Some(dkg_outcome.next_players().position(&key).is_some()),
+                    Some(in_committee),
+                )
             };
 
-            println!("{}", serde_json::to_string_pretty(&output)?);
-            return Ok(());
-        }
-
-        let latest_block_number = provider
-            .get_block_number()
-            .await
-            .wrap_err("failed to get latest block number")?;
-
-        let epoch_strategy = FixedEpocher::new(NZU64!(epoch_length));
-        let current_height = Height::new(latest_block_number);
-        let current_epoch_info = epoch_strategy
-            .containing(current_height)
-            .ok_or_else(|| eyre!("failed to determine epoch for height {latest_block_number}"))?;
-
-        let current_epoch = current_epoch_info.epoch();
-        let boundary_height = current_epoch
-            .previous()
-            .map(|epoch| epoch_strategy.last(epoch).expect("valid epoch"))
-            .unwrap_or_default();
-
-        let boundary_block = provider
-            .get_block_by_number(boundary_height.get().into())
-            .hashes()
-            .await
-            .wrap_err_with(|| {
-                format!(
-                    "failed to get block header at height {}",
-                    boundary_height.get()
-                )
-            })?
-            .ok_or_eyre("boundary block not found")?;
-
-        let extra_data = boundary_block.header.extra_data();
-        if extra_data.is_empty() {
-            return Err(eyre!(
-                "boundary block at height {} has no DKG outcome in extra_data",
-                boundary_height.get()
-            ));
-        }
-
-        let dkg_outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref())
-            .wrap_err("failed to decode DKG outcome from extra_data")?;
-
-        let pubkey_bytes = validator.publicKey.0;
-        let key = PublicKey::decode(&mut &pubkey_bytes[..])
-            .wrap_err("failed decoding on-chain ed25519 key")?;
-
-        let in_committee = dkg_outcome.players().position(&key).is_some();
-
         let output = SingleValidatorOutput {
-            current_epoch: Some(current_epoch.get()),
-            current_height: Some(current_height.get()),
+            current_epoch,
+            current_height,
             validator: ValidatorEntry {
                 onchain_address: validator.validatorAddress,
                 public_key: alloy_primitives::hex::encode(pubkey_bytes),
@@ -1056,9 +1046,9 @@ impl ValidatorInfo {
                 fee_recipient: Some(validator.feeRecipient),
                 index: Some(validator.index),
                 active: validator.deactivatedAtHeight == 0,
-                is_dkg_dealer: Some(in_committee),
-                is_dkg_player: Some(dkg_outcome.next_players().position(&key).is_some()),
-                in_committee: Some(in_committee),
+                is_dkg_dealer,
+                is_dkg_player,
+                in_committee,
             },
         };
 
