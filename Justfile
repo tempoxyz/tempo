@@ -9,3 +9,7 @@ mod scripts
 [group('dev')]
 tempo-dev-up: scripts::tempo-dev-up
 tempo-dev-down: scripts::tempo-dev-down
+
+# Start a local dev node (Nushell). Extra flags are forwarded to `tempo.nu` (e.g. `just localnet -- --accounts 50000`).
+localnet *ARGS:
+    nu ./tempo.nu localnet {{ ARGS }}
