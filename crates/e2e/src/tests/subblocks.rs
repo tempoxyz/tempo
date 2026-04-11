@@ -51,10 +51,14 @@ fn subblocks_are_included_1_node() {
         // Setup and start all nodes.
         let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup.clone()).await;
 
+        let mut fee_recipients = Vec::new();
+
         for node in &mut nodes {
+            let fee_recipient = Address::random();
             node.consensus_config_mut()
                 .fee_recipient
-                .replace(Address::random());
+                .replace(fee_recipient);
+            fee_recipients.push(fee_recipient);
         }
 
         join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
@@ -65,8 +69,7 @@ fn subblocks_are_included_1_node() {
             .engine_events
             .new_listener();
 
-        let mut pending_transactions: Vec<TxHash> = Vec::new();
-        let mut included_any = false;
+        let mut expected_transactions: Vec<TxHash> = Vec::new();
         while let Some(update) = stream.next().await {
             let block = match update {
                 ConsensusEngineEvent::BlockReceived(_)
@@ -79,34 +82,49 @@ fn subblocks_are_included_1_node() {
             };
 
             let receipts = &block.execution_outcome().receipts;
-            let block_txs = &block.sealed_block().body().transactions;
 
-            // All non-system transactions in the block must be from our pending set.
-            let non_system_count = block_txs.len() - SYSTEM_TX_COUNT;
-            let mut found_in_block = Vec::new();
-            for tx_hash in pending_transactions.iter() {
-                if block_txs.iter().any(|t| t.tx_hash() == **tx_hash) {
-                    found_in_block.push(*tx_hash);
-                }
-            }
+            // Assert that block only contains our subblock transactions and the system transactions
             assert_eq!(
-                found_in_block.len(),
-                non_system_count,
-                "block contains unexpected transactions"
+                block.sealed_block().body().transactions.len(),
+                SYSTEM_TX_COUNT + expected_transactions.len()
             );
 
-            // Remove found transactions from pending set.
-            for tx_hash in &found_in_block {
-                pending_transactions.retain(|t| t != tx_hash);
-            }
-
-            if !found_in_block.is_empty() {
-                included_any = true;
+            // Assert that all expected transactions are included in the block.
+            for tx in expected_transactions.drain(..) {
+                if !block
+                    .sealed_block()
+                    .body()
+                    .transactions
+                    .iter()
+                    .any(|t| t.tx_hash() == *tx)
+                {
+                    panic!("transaction {tx} was not included");
+                }
             }
 
             // Assert that all transactions were successful
             for receipt in receipts {
                 assert!(receipt.status());
+            }
+
+            if !expected_transactions.is_empty() {
+                let fee_token_storage = &block
+                    .execution_outcome()
+                    .state
+                    .account(&DEFAULT_FEE_TOKEN)
+                    .unwrap()
+                    .storage;
+
+                // Assert that all validators were paid for their subblock transactions
+                for fee_recipient in &fee_recipients {
+                    let balance_slot = TIP20Token::from_address(DEFAULT_FEE_TOKEN)
+                        .unwrap()
+                        .balances[*fee_recipient]
+                        .slot();
+                    let slot = fee_token_storage.get(&balance_slot).unwrap();
+
+                    assert!(slot.present_value > slot.original_value());
+                }
             }
 
             // Exit once we reach height 20.
@@ -117,13 +135,10 @@ fn subblocks_are_included_1_node() {
             // Send subblock transactions to all nodes.
             for node in nodes.iter() {
                 for _ in 0..5 {
-                    pending_transactions.push(submit_subblock_tx(node).await);
+                    expected_transactions.push(submit_subblock_tx(node).await);
                 }
             }
         }
-
-        // By height 20, at least some subblock transactions must have been included.
-        assert!(included_any, "no subblock transactions were included by height 20");
     });
 }
 
@@ -145,10 +160,14 @@ fn subblocks_are_included_4_nodes() {
         // Setup and start all nodes.
         let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup.clone()).await;
 
+        let mut fee_recipients = Vec::new();
+
         for node in &mut nodes {
+            let fee_recipient = Address::random();
             node.consensus_config_mut()
                 .fee_recipient
-                .replace(Address::random());
+                .replace(fee_recipient);
+            fee_recipients.push(fee_recipient);
         }
 
         join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
@@ -159,8 +178,7 @@ fn subblocks_are_included_4_nodes() {
             .engine_events
             .new_listener();
 
-        let mut pending_transactions: Vec<TxHash> = Vec::new();
-        let mut included_any = false;
+        let mut expected_transactions: Vec<TxHash> = Vec::new();
         while let Some(update) = stream.next().await {
             let block = match update {
                 ConsensusEngineEvent::BlockReceived(_)
@@ -173,34 +191,49 @@ fn subblocks_are_included_4_nodes() {
             };
 
             let receipts = &block.execution_outcome().receipts;
-            let block_txs = &block.sealed_block().body().transactions;
 
-            // All non-system transactions in the block must be from our pending set.
-            let non_system_count = block_txs.len() - SYSTEM_TX_COUNT;
-            let mut found_in_block = Vec::new();
-            for tx_hash in pending_transactions.iter() {
-                if block_txs.iter().any(|t| t.tx_hash() == **tx_hash) {
-                    found_in_block.push(*tx_hash);
-                }
-            }
+            // Assert that block only contains our subblock transactions and the system transactions
             assert_eq!(
-                found_in_block.len(),
-                non_system_count,
-                "block contains unexpected transactions"
+                block.sealed_block().body().transactions.len(),
+                SYSTEM_TX_COUNT + expected_transactions.len()
             );
 
-            // Remove found transactions from pending set.
-            for tx_hash in &found_in_block {
-                pending_transactions.retain(|t| t != tx_hash);
-            }
-
-            if !found_in_block.is_empty() {
-                included_any = true;
+            // Assert that all expected transactions are included in the block.
+            for tx in expected_transactions.drain(..) {
+                if !block
+                    .sealed_block()
+                    .body()
+                    .transactions
+                    .iter()
+                    .any(|t| t.tx_hash() == *tx)
+                {
+                    panic!("transaction {tx} was not included");
+                }
             }
 
             // Assert that all transactions were successful
             for receipt in receipts {
                 assert!(receipt.status());
+            }
+
+            if !expected_transactions.is_empty() {
+                let fee_token_storage = &block
+                    .execution_outcome()
+                    .state
+                    .account(&DEFAULT_FEE_TOKEN)
+                    .unwrap()
+                    .storage;
+
+                // Assert that all validators were paid for their subblock transactions
+                for fee_recipient in &fee_recipients {
+                    let balance_slot = TIP20Token::from_address(DEFAULT_FEE_TOKEN)
+                        .unwrap()
+                        .balances[*fee_recipient]
+                        .slot();
+                    let slot = fee_token_storage.get(&balance_slot).unwrap();
+
+                    assert!(slot.present_value > slot.original_value());
+                }
             }
 
             // Exit once we reach height 20.
@@ -211,13 +244,10 @@ fn subblocks_are_included_4_nodes() {
             // Send subblock transactions to all nodes.
             for node in nodes.iter() {
                 for _ in 0..5 {
-                    pending_transactions.push(submit_subblock_tx(node).await);
+                    expected_transactions.push(submit_subblock_tx(node).await);
                 }
             }
         }
-
-        // By height 20, at least some subblock transactions must have been included.
-        assert!(included_any, "no subblock transactions were included by height 20");
     });
 }
 
