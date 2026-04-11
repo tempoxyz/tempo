@@ -942,9 +942,6 @@ impl ValidatorsInfo {
         let dkg_outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref())
             .wrap_err("failed to decode DKG outcome from extra_data")?;
 
-        let next_full_dkg_epoch: u64;
-        let mut validator_entries = Vec::new();
-
         let tx = TransactionRequest::default()
             .to(VALIDATOR_CONFIG_V2_ADDRESS)
             .input(
@@ -975,12 +972,13 @@ impl ValidatorsInfo {
             .await
             .wrap_err("failed to call getNextNetworkIdentityRotationEpoch")?;
 
-        next_full_dkg_epoch =
+        let next_full_dkg_epoch =
             IValidatorConfigV2::getNextNetworkIdentityRotationEpochCall::abi_decode_returns(
                 &next_dkg_result,
             )
             .wrap_err("failed to decode getNextNetworkIdentityRotationEpoch response")?;
 
+        let mut validator_entries = Vec::new();
         for validator in validators {
             let pubkey_bytes = validator.publicKey.0;
             let key = PublicKey::decode(&mut &pubkey_bytes[..])
