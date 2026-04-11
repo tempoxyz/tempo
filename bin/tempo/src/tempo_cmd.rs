@@ -978,25 +978,25 @@ impl ValidatorsInfo {
             )
             .wrap_err("failed to decode getNextNetworkIdentityRotationEpoch response")?;
 
-        let mut validator_entries = Vec::new();
-        for validator in validators {
-            let pubkey_bytes = validator.publicKey.0;
-            let key = PublicKey::decode(&mut &pubkey_bytes[..])
-                .wrap_err("failed decoding on-chain ed25519 key")?;
+        let validator_entries = validators
+            .into_iter()
+            .map(|validator| {
+                let pubkey_bytes = validator.publicKey.0;
+                let key = PublicKey::decode(&mut &pubkey_bytes[..])
+                    .wrap_err("failed decoding on-chain ed25519 key")?;
 
-            let in_committee = dkg_outcome.players().position(&key).is_some();
-
-            validator_entries.push(ValidatorEntry {
-                onchain_address: validator.validatorAddress,
-                public_key: alloy_primitives::hex::encode(pubkey_bytes),
-                inbound_address: validator.ingress,
-                outbound_address: validator.egress,
-                active: true,
-                is_dkg_dealer: dkg_outcome.players().position(&key).is_some(),
-                is_dkg_player: dkg_outcome.next_players().position(&key).is_some(),
-                in_committee,
-            });
-        }
+                Ok(ValidatorEntry {
+                    onchain_address: validator.validatorAddress,
+                    public_key: alloy_primitives::hex::encode(pubkey_bytes),
+                    inbound_address: validator.ingress,
+                    outbound_address: validator.egress,
+                    active: true,
+                    is_dkg_dealer: dkg_outcome.players().position(&key).is_some(),
+                    is_dkg_player: dkg_outcome.next_players().position(&key).is_some(),
+                    in_committee: dkg_outcome.players().position(&key).is_some(),
+                })
+            })
+            .collect::<eyre::Result<Vec<_>>>()?;
 
         let output = ValidatorInfoOutput {
             current_epoch: current_epoch.get(),
