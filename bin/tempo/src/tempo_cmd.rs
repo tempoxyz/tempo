@@ -30,9 +30,8 @@ use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_commonware_node_config::SigningKey;
 use tempo_contracts::precompiles::{
-    IValidatorConfig::{self},
     IValidatorConfigV2::{self, Validator},
-    VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    VALIDATOR_CONFIG_V2_ADDRESS,
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_precompiles::validator_config_v2::{VALIDATOR_NS_ADD, VALIDATOR_NS_ROTATE};
@@ -189,53 +188,6 @@ impl FromStr for ValidatorId {
             ))
         }
     }
-}
-
-async fn is_validator_config_v2_activated(
-    provider: &impl Provider<TempoNetwork>,
-) -> eyre::Result<bool> {
-    let call = IValidatorConfigV2::getInitializedAtHeightCall {};
-    let tx = TransactionRequest::default()
-        .to(VALIDATOR_CONFIG_V2_ADDRESS)
-        .input(call.abi_encode().into());
-
-    let resp = provider
-        .call(tx.into())
-        .await
-        .wrap_err("failed to check v2 contract")?;
-
-    // The contract is not deployed if empty
-    if resp.is_empty() {
-        return Ok(false);
-    }
-
-    let initialized_height =
-        IValidatorConfigV2::getInitializedAtHeightCall::abi_decode_returns(&resp)
-            .wrap_err("failed to decode v2 getInitializedAtHeight call")?;
-
-    let latest_block_number = provider
-        .get_block_number()
-        .await
-        .wrap_err("failed to fetch block number")?;
-
-    if latest_block_number < initialized_height {
-        return Ok(false);
-    }
-
-    let call = IValidatorConfigV2::isInitializedCall {};
-    let tx = TransactionRequest::default()
-        .to(VALIDATOR_CONFIG_V2_ADDRESS)
-        .input(call.abi_encode().into());
-
-    let resp = provider
-        .call(tx.into())
-        .await
-        .wrap_err("failed to check v2 contract")?;
-
-    let initialized = IValidatorConfigV2::isInitializedCall::abi_decode_returns(&resp)
-        .wrap_err("failed to decode v2 initialized call")?;
-
-    Ok(initialized)
 }
 
 async fn read_validator_from_contract(
@@ -920,76 +872,6 @@ impl ValidatorInfo {
             .epoch_length()
             .ok_or_eyre("epochLength not found in chainspec")?;
 
-        let is_v2_initialized = is_validator_config_v2_activated(&provider).await?;
-
-        // Once migrated, this block will be removed
-        if !is_v2_initialized {
-            if let ValidatorId::PublicKey(pubkey) = &self.id {
-                let call = IValidatorConfig::getValidatorsCall {};
-                let resp = provider
-                    .call(
-                        TransactionRequest::default()
-                            .to(VALIDATOR_CONFIG_ADDRESS)
-                            .input(call.abi_encode().into())
-                            .into(),
-                    )
-                    .await
-                    .wrap_err("failed to call getValidators")?;
-
-                let validators = IValidatorConfig::getValidatorsCall::abi_decode_returns(&resp)
-                    .wrap_err("failed to decode getValidators response")?;
-
-                let validator = validators
-                    .iter()
-                    .find(|v| v.publicKey == *pubkey)
-                    .ok_or_else(|| eyre!("no validator found with public key {pubkey}"))?;
-
-                println!("{}", serde_json::to_string_pretty(&validator)?);
-                return Ok(());
-            }
-
-            let address = match &self.id {
-                ValidatorId::PublicKey(_) => unreachable!(), // already handled
-                ValidatorId::Address(addr) => *addr,
-                ValidatorId::Index(idx) => {
-                    let call = IValidatorConfig::validatorsArrayCall {
-                        index: alloy_primitives::U256::from(*idx),
-                    };
-
-                    let resp = provider
-                        .call(
-                            TransactionRequest::default()
-                                .to(VALIDATOR_CONFIG_ADDRESS)
-                                .input(call.abi_encode().into())
-                                .into(),
-                        )
-                        .await
-                        .wrap_err("failed to call validatorsArray")?;
-
-                    IValidatorConfig::validatorsArrayCall::abi_decode_returns(&resp)
-                        .wrap_err("failed to decode validatorsArray response")?
-                }
-            };
-
-            let call = IValidatorConfig::validatorsCall { validator: address };
-            let resp = provider
-                .call(
-                    TransactionRequest::default()
-                        .to(VALIDATOR_CONFIG_ADDRESS)
-                        .input(call.abi_encode().into())
-                        .into(),
-                )
-                .await
-                .wrap_err("failed to call validators")?;
-
-            let validator = IValidatorConfig::validatorsCall::abi_decode_returns(&resp)
-                .wrap_err("failed to decode validators response")?;
-
-            println!("{}", serde_json::to_string_pretty(&validator)?);
-
-            return Ok(());
-        }
-
         let validator = read_validator_from_contract(&provider, self.id).await?;
         let pubkey_bytes = validator.publicKey.0;
 
@@ -1067,7 +949,6 @@ impl ValidatorInfo {
         };
 
         println!("{}", serde_json::to_string_pretty(&output)?);
-
         Ok(())
     }
 }
@@ -1131,10 +1012,6 @@ pub(crate) struct ValidatorsInfo {
     /// chainspec file). Resolved automatically from the RPC chain id when omitted.
     #[arg(long, short, value_parser = tempo_chainspec::spec::chain_value_parser)]
     chain: Option<Arc<TempoChainSpec>>,
-
-    /// Whether to include historic validators (deactivated and not in the current committee).
-    #[arg(long)]
-    with_historic: bool,
 }
 
 impl ValidatorsInfo {
@@ -1211,117 +1088,50 @@ impl ValidatorsInfo {
         let dkg_outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref())
             .wrap_err("failed to decode DKG outcome from extra_data")?;
 
-        let is_v2_initialized = is_validator_config_v2_activated(&provider).await?;
-        if self.with_historic {
-            return Err(eyre!(
-                "--with-historic unsupported for the validator v2 configuration"
-            ));
-        }
+        let tx = TransactionRequest::default()
+            .to(VALIDATOR_CONFIG_V2_ADDRESS)
+            .input(
+                IValidatorConfigV2::getActiveValidatorsCall {}
+                    .abi_encode()
+                    .into(),
+            );
 
-        let next_full_dkg_epoch: u64;
-        let mut validator_entries = Vec::new();
+        let resp = provider
+            .call(tx.into())
+            .await
+            .wrap_err("failed to call getActiveValidators")?;
 
-        // Once migrated, this block will be removed
-        if !is_v2_initialized {
-            let validators_result = provider
-                .call(
-                    TransactionRequest::default()
-                        .to(VALIDATOR_CONFIG_ADDRESS)
-                        .input(IValidatorConfig::getValidatorsCall {}.abi_encode().into())
-                        .into(),
-                )
-                .await
-                .wrap_err("failed to call getValidators")?;
+        let validators = IValidatorConfigV2::getActiveValidatorsCall::abi_decode_returns(&resp)
+            .wrap_err("failed to decode getActiveValidators response")?;
 
-            let decoded_validators =
-                IValidatorConfig::getValidatorsCall::abi_decode_returns(&validators_result)
-                    .wrap_err("failed to decode getValidators response")?;
+        let next_dkg_result = provider
+            .call(
+                TransactionRequest::default()
+                    .to(VALIDATOR_CONFIG_V2_ADDRESS)
+                    .input(
+                        IValidatorConfigV2::getNextNetworkIdentityRotationEpochCall {}
+                            .abi_encode()
+                            .into(),
+                    )
+                    .into(),
+            )
+            .await
+            .wrap_err("failed to call getNextNetworkIdentityRotationEpoch")?;
 
-            let next_dkg_result = provider
-                .call(
-                    TransactionRequest::default()
-                        .to(VALIDATOR_CONFIG_ADDRESS)
-                        .input(
-                            IValidatorConfig::getNextFullDkgCeremonyCall {}
-                                .abi_encode()
-                                .into(),
-                        )
-                        .into(),
-                )
-                .await
-                .wrap_err("failed to call getNextFullDkgCeremony")?;
+        let next_full_dkg_epoch =
+            IValidatorConfigV2::getNextNetworkIdentityRotationEpochCall::abi_decode_returns(
+                &next_dkg_result,
+            )
+            .wrap_err("failed to decode getNextNetworkIdentityRotationEpoch response")?;
 
-            next_full_dkg_epoch =
-                IValidatorConfig::getNextFullDkgCeremonyCall::abi_decode_returns(&next_dkg_result)
-                    .wrap_err("failed to decode getNextFullDkgCeremony response")?;
-
-            for validator in decoded_validators.into_iter() {
-                let pubkey_bytes = validator.publicKey.0;
-                let key = PublicKey::decode(&mut &validator.publicKey.0[..])
-                    .wrap_err("failed decoding on-chain ed25519 key")?;
-
-                let in_committee = dkg_outcome.players().position(&key).is_some();
-
-                if self.with_historic || (validator.active || in_committee) {
-                    validator_entries.push(ValidatorEntry {
-                        onchain_address: validator.validatorAddress,
-                        public_key: alloy_primitives::hex::encode(pubkey_bytes),
-                        inbound_address: validator.inboundAddress,
-                        outbound_address: validator.outboundAddress,
-                        fee_recipient: None,
-                        index: None,
-                        active: validator.active,
-                        is_dkg_dealer: Some(dkg_outcome.players().position(&key).is_some()),
-                        is_dkg_player: Some(dkg_outcome.next_players().position(&key).is_some()),
-                        in_committee: Some(in_committee),
-                    });
-                }
-            }
-        } else {
-            let tx = TransactionRequest::default()
-                .to(VALIDATOR_CONFIG_V2_ADDRESS)
-                .input(
-                    IValidatorConfigV2::getActiveValidatorsCall {}
-                        .abi_encode()
-                        .into(),
-                );
-
-            let resp = provider
-                .call(tx.into())
-                .await
-                .wrap_err("failed to call getActiveValidators")?;
-
-            let validators = IValidatorConfigV2::getActiveValidatorsCall::abi_decode_returns(&resp)
-                .wrap_err("failed to decode getActiveValidators response")?;
-
-            let next_dkg_result = provider
-                .call(
-                    TransactionRequest::default()
-                        .to(VALIDATOR_CONFIG_V2_ADDRESS)
-                        .input(
-                            IValidatorConfigV2::getNextNetworkIdentityRotationEpochCall {}
-                                .abi_encode()
-                                .into(),
-                        )
-                        .into(),
-                )
-                .await
-                .wrap_err("failed to call getNextNetworkIdentityRotationEpoch")?;
-
-            next_full_dkg_epoch =
-                IValidatorConfigV2::getNextNetworkIdentityRotationEpochCall::abi_decode_returns(
-                    &next_dkg_result,
-                )
-                .wrap_err("failed to decode getNextNetworkIdentityRotationEpoch response")?;
-
-            for validator in validators {
+        let validator_entries = validators
+            .into_iter()
+            .map(|validator| {
                 let pubkey_bytes = validator.publicKey.0;
                 let key = PublicKey::decode(&mut &pubkey_bytes[..])
                     .wrap_err("failed decoding on-chain ed25519 key")?;
 
-                let in_committee = dkg_outcome.players().position(&key).is_some();
-
-                validator_entries.push(ValidatorEntry {
+                Ok(ValidatorEntry {
                     onchain_address: validator.validatorAddress,
                     public_key: alloy_primitives::hex::encode(pubkey_bytes),
                     inbound_address: validator.ingress,
@@ -1331,10 +1141,10 @@ impl ValidatorsInfo {
                     active: true,
                     is_dkg_dealer: Some(dkg_outcome.players().position(&key).is_some()),
                     is_dkg_player: Some(dkg_outcome.next_players().position(&key).is_some()),
-                    in_committee: Some(in_committee),
-                });
-            }
-        }
+                    in_committee: Some(dkg_outcome.players().position(&key).is_some()),
+                })
+            })
+            .collect::<eyre::Result<Vec<_>>>()?;
 
         let output = ValidatorInfoOutput {
             current_epoch: current_epoch.get(),
