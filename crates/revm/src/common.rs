@@ -410,8 +410,8 @@ where
         unreachable!("'sstore' not supported in read-only context")
     }
 
-    fn set_code(&mut self, _: Address, _: Bytecode) -> TempoResult<()> {
-        unreachable!("'set_code' not supported in read-only context")
+    fn create_account(&mut self, _: Address, _: Bytecode) -> TempoResult<()> {
+        unreachable!("'create_account' not supported in read-only context")
     }
 
     fn emit_event(&mut self, _: Address, _: LogData) -> TempoResult<()> {

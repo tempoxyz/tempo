@@ -133,9 +133,9 @@ impl StorageCtx {
         Self::with_storage(|s| s.block_number())
     }
 
-    /// Sets the bytecode at the given address.
-    pub fn set_code(&mut self, address: Address, code: Bytecode) -> Result<()> {
-        Self::try_with_storage(|s| s.set_code(address, code))
+    /// Creates a new account at the given address with the given code.
+    pub fn create_account(&mut self, address: Address, code: Bytecode) -> Result<()> {
+        Self::try_with_storage(|s| s.create_account(address, code))
     }
 
     /// Performs an SLOAD operation (persistent storage read).
