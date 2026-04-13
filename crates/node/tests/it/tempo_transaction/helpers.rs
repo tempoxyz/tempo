@@ -1192,6 +1192,8 @@ pub(crate) fn build_fill_request_context(
         NonceMode::ExpiringInPast => Some(current_timestamp.saturating_sub(1)),
         _ => None,
     });
+    let request_valid_before = valid_before.map(nonzero_timestamp);
+    let request_valid_after = valid_after_offset.map(nonzero_timestamp);
 
     let nonce_key_value = match test_case.nonce_mode {
         NonceMode::Protocol => U256::ZERO,
@@ -1233,8 +1235,8 @@ pub(crate) fn build_fill_request_context(
         key_authorization: test_case.key_authorization.clone(),
         fee_token: test_case.fee_token,
         fee_payer_signature,
-        valid_before,
-        valid_after: valid_after_offset,
+        valid_before: request_valid_before,
+        valid_after: request_valid_after,
         nonce_key,
         ..Default::default()
     };
