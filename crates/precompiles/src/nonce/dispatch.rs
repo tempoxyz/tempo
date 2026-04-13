@@ -11,7 +11,7 @@ impl Precompile for NonceManager {
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
 
-        dispatch_call(calldata, INonceCalls::abi_decode, |call| match call {
+        dispatch_call(calldata, &[], INonceCalls::abi_decode, |call| match call {
             INonceCalls::getNonce(call) => view(call, |c| self.get_nonce(c)),
         })
     }
