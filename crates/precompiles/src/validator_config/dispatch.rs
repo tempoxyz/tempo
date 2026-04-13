@@ -11,11 +11,9 @@ use alloy::{
 };
 use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::IValidatorConfig::{
-    IValidatorConfigCalls, changeValidatorStatusByIndexCall,
-};
+use tempo_contracts::precompiles::IValidatorConfig::{self, IValidatorConfigCalls};
 
-const T1_ADDED_SELECTORS: &[[u8; 4]] = &[changeValidatorStatusByIndexCall::SELECTOR];
+const T1_ADDED: &[[u8; 4]] = &[IValidatorConfig::changeValidatorStatusByIndexCall::SELECTOR];
 
 impl Precompile for ValidatorConfig {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -25,7 +23,7 @@ impl Precompile for ValidatorConfig {
 
         dispatch_call(
             calldata,
-            &[SelectorSchedule::new(TempoHardfork::T1).add(T1_ADDED_SELECTORS)],
+            &[SelectorSchedule::new(TempoHardfork::T1).add(T1_ADDED)],
             IValidatorConfigCalls::abi_decode,
             |call| match call {
                 // View functions

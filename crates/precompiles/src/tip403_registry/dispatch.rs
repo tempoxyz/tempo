@@ -11,17 +11,14 @@ use alloy::{
 };
 use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::ITIP403Registry::{
-    ITIP403RegistryCalls, compoundPolicyDataCall, createCompoundPolicyCall,
-    isAuthorizedMintRecipientCall, isAuthorizedRecipientCall, isAuthorizedSenderCall,
-};
+use tempo_contracts::precompiles::ITIP403Registry::{self, ITIP403RegistryCalls};
 
-const T2_ADDED_SELECTORS: &[[u8; 4]] = &[
-    isAuthorizedSenderCall::SELECTOR,
-    isAuthorizedRecipientCall::SELECTOR,
-    isAuthorizedMintRecipientCall::SELECTOR,
-    compoundPolicyDataCall::SELECTOR,
-    createCompoundPolicyCall::SELECTOR,
+const T2_ADDED: &[[u8; 4]] = &[
+    ITIP403Registry::isAuthorizedSenderCall::SELECTOR,
+    ITIP403Registry::isAuthorizedRecipientCall::SELECTOR,
+    ITIP403Registry::isAuthorizedMintRecipientCall::SELECTOR,
+    ITIP403Registry::compoundPolicyDataCall::SELECTOR,
+    ITIP403Registry::createCompoundPolicyCall::SELECTOR,
 ];
 
 impl Precompile for TIP403Registry {
@@ -32,7 +29,7 @@ impl Precompile for TIP403Registry {
 
         dispatch_call(
             calldata,
-            &[SelectorSchedule::new(TempoHardfork::T2).add(T2_ADDED_SELECTORS)],
+            &[SelectorSchedule::new(TempoHardfork::T2).add(T2_ADDED)],
             ITIP403RegistryCalls::abi_decode,
             |call| match call {
                 ITIP403RegistryCalls::policyIdCounter(call) => {

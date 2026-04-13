@@ -16,7 +16,7 @@ use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls, TIP20Error};
 
-const T2_ADDED_SELECTORS: &[[u8; 4]] = &[
+const T2_ADDED: &[[u8; 4]] = &[
     ITIP20::permitCall::SELECTOR,
     ITIP20::noncesCall::SELECTOR,
     ITIP20::DOMAIN_SEPARATORCall::SELECTOR,
@@ -56,7 +56,7 @@ impl Precompile for TIP20Token {
 
         dispatch_call(
             calldata,
-            &[SelectorSchedule::new(TempoHardfork::T2).add(T2_ADDED_SELECTORS)],
+            &[SelectorSchedule::new(TempoHardfork::T2).add(T2_ADDED)],
             TIP20Call::decode,
             |call| match call {
                 // Metadata functions (no calldata decoding needed)

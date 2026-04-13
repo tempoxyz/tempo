@@ -13,19 +13,17 @@ use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     AccountKeychainError,
-    IAccountKeychain::{IAccountKeychainCalls, removeAllowedCallsCall, setAllowedCallsCall},
+    IAccountKeychain::{self, IAccountKeychainCalls},
 };
 
-const T3_ADDED_SELECTORS: &[[u8; 4]] = &[
+const T3_ADDED: &[[u8; 4]] = &[
     authorizeKeyCall::SELECTOR,
-    setAllowedCallsCall::SELECTOR,
-    removeAllowedCallsCall::SELECTOR,
-    tempo_contracts::precompiles::getRemainingLimitWithPeriodCall::SELECTOR,
-    tempo_contracts::precompiles::IAccountKeychain::getAllowedCallsCall::SELECTOR,
+    IAccountKeychain::setAllowedCallsCall::SELECTOR,
+    IAccountKeychain::removeAllowedCallsCall::SELECTOR,
+    IAccountKeychain::getRemainingLimitWithPeriodCall::SELECTOR,
+    IAccountKeychain::getAllowedCallsCall::SELECTOR,
 ];
-
-const T3_REMOVED_SELECTORS: &[[u8; 4]] =
-    &[tempo_contracts::precompiles::IAccountKeychain::getRemainingLimitCall::SELECTOR];
+const T3_DROPPED: &[[u8; 4]] = &[IAccountKeychain::getRemainingLimitCall::SELECTOR];
 
 impl Precompile for AccountKeychain {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -36,8 +34,8 @@ impl Precompile for AccountKeychain {
         dispatch_call(
             calldata,
             &[SelectorSchedule::new(TempoHardfork::T3)
-                .add(T3_ADDED_SELECTORS)
-                .drop(T3_REMOVED_SELECTORS)],
+                .add(T3_ADDED)
+                .drop(T3_DROPPED)],
             IAccountKeychainCalls::abi_decode,
             |call| match call {
                 IAccountKeychainCalls::authorizeKey_0(call) => {
@@ -201,8 +199,7 @@ mod tests {
 
             let calldata = authorizeKeyCall {
                 keyId: Address::random(),
-                signatureType:
-                    tempo_contracts::precompiles::IAccountKeychain::SignatureType::Secp256k1,
+                signatureType: IAccountKeychain::SignatureType::Secp256k1,
                 config: KeyRestrictions {
                     expiry: u64::MAX,
                     enforceLimits: true,
@@ -235,8 +232,7 @@ mod tests {
 
             let calldata = legacyAuthorizeKeyCall {
                 keyId: Address::random(),
-                signatureType:
-                    tempo_contracts::precompiles::IAccountKeychain::SignatureType::Secp256k1,
+                signatureType: IAccountKeychain::SignatureType::Secp256k1,
                 expiry: u64::MAX,
                 enforceLimits: false,
                 limits: vec![],
@@ -245,7 +241,8 @@ mod tests {
 
             let result = keychain.call(&calldata, account)?;
             assert!(result.reverted);
-            let decoded = tempo_contracts::precompiles::IAccountKeychain::LegacyAuthorizeKeySelectorChanged::abi_decode(&result.bytes)?;
+            let decoded =
+                IAccountKeychain::LegacyAuthorizeKeySelectorChanged::abi_decode(&result.bytes)?;
             assert_eq!(decoded.newSelector, authorizeKeyCall::SELECTOR);
 
             Ok(())
@@ -265,16 +262,13 @@ mod tests {
 
             let authorize_calldata = legacyAuthorizeKeyCall {
                 keyId: key_id,
-                signatureType:
-                    tempo_contracts::precompiles::IAccountKeychain::SignatureType::Secp256k1,
+                signatureType: IAccountKeychain::SignatureType::Secp256k1,
                 expiry: u64::MAX,
                 enforceLimits: true,
-                limits: vec![
-                    tempo_contracts::precompiles::IAccountKeychain::LegacyTokenLimit {
-                        token,
-                        amount: U256::from(123),
-                    },
-                ],
+                limits: vec![IAccountKeychain::LegacyTokenLimit {
+                    token,
+                    amount: U256::from(123),
+                }],
             }
             .abi_encode();
             let _ = keychain.call(&authorize_calldata, account)?;
