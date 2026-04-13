@@ -244,6 +244,10 @@ function buildFailureBlocks({ prNumber, actor, actorSlackId, jobUrl, repo, faile
       text: { type: 'mrkdwn', text: parts.join(' | ') },
     },
     {
+      type: 'section',
+      text: { type: 'mrkdwn', text: '<@U0AAA8F0JEM> investigate' },
+    },
+    {
       type: 'actions',
       elements: [{
         type: 'button',
