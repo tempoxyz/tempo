@@ -998,7 +998,8 @@ mod tests {
         let attrs = TempoPayloadAttributes::new(
             Address::default(),
             None,
-            1000,
+            1,
+            0,
             extra_data.clone(),
             None,
             Vec::new,

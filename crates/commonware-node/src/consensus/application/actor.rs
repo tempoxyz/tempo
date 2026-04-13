@@ -566,18 +566,18 @@ impl Inner<Init> {
         //
         // We don't expect this being hit in practice because we validate the
         // timestamp is not in the future during EL validation.
-        let current_timestamp = context.current().epoch_millis();
-        let timestamp_millis = if current_timestamp <= parent.timestamp_millis() {
+        let mut epoch_millis = context.current().epoch_millis();
+        if epoch_millis <= parent.timestamp_millis() {
             self.metrics.parent_ahead_of_local_time.inc();
-            parent.timestamp_millis() + 1
-        } else {
-            current_timestamp
+            epoch_millis = parent.timestamp_millis() + 1
         };
+
+        let (timestamp, timestamp_millis_part) = (epoch_millis / 1000, epoch_millis % 1000);
 
         let consensus_context = if self
             .execution_node
             .chain_spec()
-            .is_t4_active_at_timestamp(timestamp_millis / 1000)
+            .is_t4_active_at_timestamp(timestamp)
         {
             Some(tempo_primitives::TempoConsensusContext {
                 epoch: round.epoch().get(),
@@ -594,7 +594,8 @@ impl Inner<Init> {
         let attrs = TempoPayloadAttributes::new(
             self.fee_recipient.unwrap_or_default(),
             Some(proposer_public_key),
-            timestamp_millis,
+            timestamp,
+            timestamp_millis_part,
             extra_data,
             consensus_context,
             move || {
