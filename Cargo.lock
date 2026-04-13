@@ -11683,6 +11683,7 @@ dependencies = [
 name = "tempo"
 version = "1.5.3"
 dependencies = [
+ "alloy",
  "alloy-consensus",
  "alloy-primitives",
  "alloy-provider",
@@ -11710,6 +11711,7 @@ dependencies = [
  "reth-cli-runner",
  "reth-cli-util",
  "reth-db-api",
+ "reth-eth-wire-types",
  "reth-ethereum",
  "reth-ethereum-cli",
  "reth-etl",
@@ -11738,6 +11740,7 @@ dependencies = [
  "tempo-faucet",
  "tempo-node",
  "tempo-precompiles",
+ "tempo-primitives",
  "tempo-validator-config",
  "tokio",
  "tokio-util",
