@@ -584,11 +584,7 @@ mod tests {
             let resolved = super::chainspec_from_chain_id(spec.chain().id())
                 .unwrap_or_else(|| panic!("chainspec_from_chain_id failed for {name}"));
 
-            assert_eq!(
-                spec.chain(),
-                resolved.chain(),
-                "chain mismatch for {name}"
-            );
+            assert_eq!(spec.chain(), resolved.chain(), "chain mismatch for {name}");
         }
     }
 }
