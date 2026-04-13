@@ -22,6 +22,7 @@ use commonware_cryptography::{
 use commonware_math::algebra::Random as _;
 use commonware_utils::NZU64;
 use eyre::{OptionExt as _, Report, WrapErr as _, eyre};
+use reth_chainspec::EthChainSpec;
 use reth_cli_runner::CliRunner;
 use reth_ethereum_cli::ExtendedCommand;
 use serde::Serialize;
@@ -901,7 +902,15 @@ impl ValidatorInfo {
             .wrap_err("failed to get chain id")?;
 
         let chain = match self.chain {
-            Some(chain) => chain,
+            Some(chain) => {
+                let spec_chain_id = chain.chain().id();
+                if spec_chain_id != chain_id {
+                    eprintln!(
+                        "warning: --chain spec has chain id {spec_chain_id} but RPC returned {chain_id}"
+                    );
+                }
+                chain
+            }
             None => tempo_chainspec::spec::chainspec_from_chain_id(chain_id)
                 .ok_or_else(|| eyre!("unknown chain id {chain_id}, pass --chain explicitly"))?,
         };
@@ -1144,7 +1153,15 @@ impl ValidatorsInfo {
             .wrap_err("failed to get chain id")?;
 
         let chain = match self.chain {
-            Some(chain) => chain,
+            Some(chain) => {
+                let spec_chain_id = chain.chain().id();
+                if spec_chain_id != chain_id {
+                    eprintln!(
+                        "warning: --chain spec has chain id {spec_chain_id} but RPC returned {chain_id}"
+                    );
+                }
+                chain
+            }
             None => tempo_chainspec::spec::chainspec_from_chain_id(chain_id)
                 .ok_or_else(|| eyre!("unknown chain id {chain_id}, pass --chain explicitly"))?,
         };
