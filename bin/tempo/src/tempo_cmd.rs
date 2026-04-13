@@ -1244,8 +1244,10 @@ mod tests {
             "50",
             "--max-concurrent-inbound",
             "10",
-            "--backfill-blocks",
+            "--cache-blocks",
             "1000",
+            "--p2p-secret-key",
+            "/tmp/test-enode.key",
         ])
         .unwrap();
 

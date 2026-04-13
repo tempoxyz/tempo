@@ -9,6 +9,7 @@ use clap::Parser;
 use eyre::{Context, Result};
 use futures::StreamExt;
 use reth_chainspec::Head;
+use reth_cli_util::get_secret_key;
 use reth_eth_wire_types::{
     HeadersDirection, PooledTransactions, primitives::BasicNetworkPrimitives,
 };
@@ -21,6 +22,7 @@ use reth_ethereum::{
 };
 use std::{
     collections::{BTreeMap, HashMap},
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -71,6 +73,11 @@ pub(crate) struct P2pProxyArgs {
     /// Number of blocks to cache.
     #[arg(long)]
     cache_blocks: Option<u64>,
+
+    /// Path to the P2P secret key file. If the file doesn't exist, a new key is generated
+    /// and saved. If omitted, an ephemeral key is generated on each start.
+    #[arg(long)]
+    p2p_secret_key: Option<PathBuf>,
 }
 
 impl P2pProxyArgs {
@@ -108,6 +115,12 @@ impl P2pProxyArgs {
             }
         });
 
+        // Resolve the P2P secret key: load from file (creating if needed), or ephemeral
+        let secret_key = match &self.p2p_secret_key {
+            Some(path) => get_secret_key(path).context("failed to load P2P secret key")?,
+            None => reth_cli_util::load_secret_key::rng_secret_key(),
+        };
+
         // Launch the P2P network
         let net_cfg = NetConfig {
             port: self.port,
@@ -116,7 +129,7 @@ impl P2pProxyArgs {
             max_concurrent_inbound: self.max_concurrent_inbound,
             head,
         };
-        run_p2p_network(chain_spec, net_cfg, fetch_tx).await
+        run_p2p_network(chain_spec, net_cfg, fetch_tx, secret_key).await
     }
 }
 
@@ -241,18 +254,18 @@ async fn run_p2p_network(
     chain_spec: Arc<TempoChainSpec>,
     cfg: NetConfig,
     fetch_tx: mpsc::Sender<FetchRequest>,
+    secret_key: secp256k1::SecretKey,
 ) -> Result<()> {
     let peers_config = PeersConfig::default()
         .with_max_inbound(cfg.max_inbound)
         .with_max_outbound(0);
 
-    let mut builder =
-        NetworkConfig::<_, TempoNetPrimitives>::builder_with_rng_secret_key(Runtime::test())
-            .listener_port(cfg.port)
-            .disable_dns_discovery()
-            .disable_tx_gossip(true)
-            .peer_config(peers_config)
-            .set_head(cfg.head);
+    let mut builder = NetworkConfig::<_, TempoNetPrimitives>::builder(secret_key, Runtime::test())
+        .listener_port(cfg.port)
+        .disable_dns_discovery()
+        .disable_tx_gossip(true)
+        .peer_config(peers_config)
+        .set_head(cfg.head);
 
     if let Some(dp) = cfg.discovery_port {
         builder = builder.discovery_port(dp);
