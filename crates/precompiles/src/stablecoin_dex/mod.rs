@@ -194,7 +194,7 @@ impl StablecoinDEX {
     /// Applies transfer authorization and, when requested, verifies the token's pause state.
     ///
     /// Returns `None` when the full amount was debited, or `Some(remaining)` when the caller must
-    /// source the remaining amount via `transfer_from`.
+    /// source the remaining amount via `transfer_from` without mutating user internal balance.
     fn try_debit_internal_balance(
         &mut self,
         user: Address,
@@ -202,12 +202,13 @@ impl StablecoinDEX {
         amount: u128,
         enforce_pause_on_internal_balance: bool,
     ) -> Result<Option<u128>> {
-        TIP20Token::from_address(token)?.ensure_transfer_authorized(user, self.address)?;
+        let tip20 = TIP20Token::from_address(token)?;
+        tip20.ensure_transfer_authorized(user, self.address)?;
 
         let user_balance = self.balance_of(user, token)?;
         if user_balance >= amount {
             if enforce_pause_on_internal_balance && self.storage.spec().is_t3() {
-                TIP20Token::from_address(token)?.check_not_paused()?;
+                tip20.check_not_paused()?;
             }
             self.sub_balance(user, token, amount)?;
             Ok(None)
@@ -255,6 +256,7 @@ impl StablecoinDEX {
     /// - `IdenticalTokens` — `token_in` and `token_out` are the same address
     /// - `InvalidToken` — a token address does not have a valid TIP-20 prefix
     /// - `PairDoesNotExist` — no orderbook exists for one of the hops in the route
+    /// - `Paused` — a token required to execute the route is paused
     /// - `InsufficientLiquidity` — not enough resting orders to fill `amount_out`
     pub fn quote_swap_exact_amount_out(
         &self,
@@ -281,6 +283,7 @@ impl StablecoinDEX {
     /// - `IdenticalTokens` — `token_in` and `token_out` are the same address
     /// - `InvalidToken` — a token address does not have a valid TIP-20 prefix
     /// - `PairDoesNotExist` — no orderbook exists for one of the hops in the route
+    /// - `Paused` — a token required to execute the route is paused
     /// - `InsufficientLiquidity` — not enough resting orders to fill `amount_in`
     pub fn quote_swap_exact_amount_in(
         &self,
@@ -307,6 +310,7 @@ impl StablecoinDEX {
     /// # Errors
     /// - `InvalidBaseToken` — token address does not have a valid TIP-20 prefix
     /// - `PairNotFound` — no orderbook exists for the token pair
+    /// - `Paused` — a token required to execute the route is paused
     /// - `InsufficientOutput` — final output amount falls below `min_amount_out`
     /// - `InsufficientBalance` — sender balance lower than required input
     pub fn swap_exact_amount_in(
@@ -347,6 +351,7 @@ impl StablecoinDEX {
     /// # Errors
     /// - `InvalidBaseToken` — token address does not have a valid TIP-20 prefix
     /// - `PairNotFound` — no orderbook exists for the token pair
+    /// - `Paused` — a token required to execute the route is paused
     /// - `MaxInputExceeded` — required input exceeds `max_amount_in`
     /// - `InsufficientBalance` — sender balance lower than required input
     pub fn swap_exact_amount_out(
@@ -481,6 +486,7 @@ impl StablecoinDEX {
     /// - `InvalidTick` — tick is not aligned to `TICK_SPACING`
     /// - `BelowMinimumOrderSize` — order amount is below `MIN_ORDER_AMOUNT`
     /// - `InsufficientBalance` — sender balance lower than required escrow
+    /// - `Paused` — the escrow token is paused while debiting internal DEX balance
     /// - `PolicyForbids` — TIP-403 policy rejects the token transfer
     ///
     /// # Returns
@@ -623,6 +629,7 @@ impl StablecoinDEX {
     /// - `InvalidFlipTick` — flip_tick on wrong side of tick for order direction
     /// - `BelowMinimumOrderSize` — order amount is below `MIN_ORDER_AMOUNT`
     /// - `InsufficientBalance` — sender balance lower than required escrow
+    /// - `Paused` — the escrow token is paused while debiting internal DEX balance
     /// - `PolicyForbids` — TIP-403 policy rejects the token transfer
     #[allow(clippy::too_many_arguments)]
     pub fn place_flip(
@@ -5191,7 +5198,14 @@ mod tests {
 
     #[test]
     fn test_place_orders_with_internal_balance() -> eyre::Result<()> {
-        fn assert_paused_token_with_internal_balance_order_path<F>(
+        enum EscrowToken {
+            Base,
+            Quote,
+        }
+
+        fn assert_paused_token_order_path<F>(
+            escrow_token_for_order: EscrowToken,
+            internal_balance_amount: u128,
             mut place_order: F,
         ) -> eyre::Result<()>
         where
@@ -5206,21 +5220,38 @@ mod tests {
                     let (alice, admin) = (Address::random(), Address::random());
                     let amount = MIN_ORDER_AMOUNT;
 
-                    let (base_token, _quote_token) =
+                    let (base_token, quote_token) =
                         setup_test_tokens(admin, alice, exchange.address, 500_000_000u128)?;
                     exchange.create_pair(base_token)?;
-                    exchange.set_balance(alice, base_token, amount)?;
+                    let escrow_token = match escrow_token_for_order {
+                        EscrowToken::Base => base_token,
+                        EscrowToken::Quote => quote_token,
+                    };
+                    exchange.set_balance(alice, escrow_token, internal_balance_amount)?;
 
-                    let mut base_tip20 = TIP20Token::from_address(base_token)?;
-                    base_tip20.grant_role_internal(admin, *PAUSE_ROLE)?;
-                    base_tip20.pause(admin, ITIP20::pauseCall {})?;
+                    let mut escrow_tip20 = TIP20Token::from_address(escrow_token)?;
+                    escrow_tip20.grant_role_internal(admin, *PAUSE_ROLE)?;
+                    escrow_tip20.pause(admin, ITIP20::pauseCall {})?;
+
+                    let next_order_id_before = exchange.next_order_id()?;
 
                     let res = place_order(&mut exchange, alice, base_token, amount);
 
-                    if spec.is_t3() {
-                        assert_eq!(res.unwrap_err(), TIP20Error::contract_paused().into());
+                    if internal_balance_amount >= amount && !spec.is_t3() {
+                        let order_id = res?;
+                        assert_eq!(order_id, next_order_id_before);
+                        assert_eq!(exchange.next_order_id()?, next_order_id_before + 1);
+                        assert_eq!(
+                            exchange.balance_of(alice, escrow_token)?,
+                            internal_balance_amount - amount
+                        );
                     } else {
-                        assert!(res.is_ok());
+                        assert_eq!(res.unwrap_err(), TIP20Error::contract_paused().into());
+                        assert_eq!(exchange.next_order_id()?, next_order_id_before);
+                        assert_eq!(
+                            exchange.balance_of(alice, escrow_token)?,
+                            internal_balance_amount
+                        );
                     }
 
                     Ok::<_, eyre::Report>(())
@@ -5229,18 +5260,124 @@ mod tests {
             Ok(())
         }
 
-        // regular order
-        assert_paused_token_with_internal_balance_order_path(
+        // Regular ask order: base token is escrowed from internal DEX balance.
+        assert_paused_token_order_path(
+            EscrowToken::Base,
+            MIN_ORDER_AMOUNT,
             |exchange, alice, base_token, amount| {
                 exchange.place(alice, base_token, amount, false, 0)
             },
         )?;
-        // flip order order
-        assert_paused_token_with_internal_balance_order_path(
+
+        // Regular bid order: quote token is escrowed from internal DEX balance.
+        assert_paused_token_order_path(
+            EscrowToken::Quote,
+            MIN_ORDER_AMOUNT,
+            |exchange, alice, base_token, amount| {
+                exchange.place(alice, base_token, amount, true, 0)
+            },
+        )?;
+
+        // Flip ask order: the internal-balance-only branch debits base token directly.
+        assert_paused_token_order_path(
+            EscrowToken::Base,
+            MIN_ORDER_AMOUNT,
             |exchange, alice, base_token, amount| {
                 exchange.place_flip(alice, base_token, amount, false, 100, 0, true)
             },
+        )?;
+
+        // Flip bid order: the internal-balance-only branch debits quote token directly.
+        assert_paused_token_order_path(
+            EscrowToken::Quote,
+            MIN_ORDER_AMOUNT,
+            |exchange, alice, base_token, amount| {
+                exchange.place_flip(alice, base_token, amount, true, 0, 100, true)
+            },
         )
+    }
+
+    #[test]
+    fn test_place_orders_with_partial_internal_balance_on_paused_token() -> eyre::Result<()> {
+        enum EscrowToken {
+            Base,
+            Quote,
+        }
+
+        fn assert_paused_token_order_path<F>(
+            escrow_token_for_order: EscrowToken,
+            mut place_order: F,
+        ) -> eyre::Result<()>
+        where
+            F: FnMut(&mut StablecoinDEX, Address, Address, u128) -> Result<u128>,
+        {
+            for spec in [TempoHardfork::T2, TempoHardfork::T3] {
+                let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+                StorageCtx::enter(&mut storage, || {
+                    let mut exchange = StablecoinDEX::new();
+                    exchange.initialize()?;
+
+                    let (alice, admin) = (Address::random(), Address::random());
+                    let amount = MIN_ORDER_AMOUNT;
+                    let partial_internal_balance = amount - 1;
+
+                    let (base_token, quote_token) =
+                        setup_test_tokens(admin, alice, exchange.address, 500_000_000u128)?;
+                    exchange.create_pair(base_token)?;
+                    let escrow_token = match escrow_token_for_order {
+                        EscrowToken::Base => base_token,
+                        EscrowToken::Quote => quote_token,
+                    };
+                    exchange.set_balance(alice, escrow_token, partial_internal_balance)?;
+
+                    let mut escrow_tip20 = TIP20Token::from_address(escrow_token)?;
+                    escrow_tip20.grant_role_internal(admin, *PAUSE_ROLE)?;
+                    escrow_tip20.pause(admin, ITIP20::pauseCall {})?;
+
+                    let next_order_id_before = exchange.next_order_id()?;
+                    let res = place_order(&mut exchange, alice, base_token, amount);
+
+                    assert_eq!(res.unwrap_err(), TIP20Error::contract_paused().into());
+                    assert_eq!(exchange.next_order_id()?, next_order_id_before);
+                    assert_eq!(
+                        exchange.balance_of(alice, escrow_token)?,
+                        partial_internal_balance
+                    );
+
+                    Ok::<_, eyre::Report>(())
+                })?;
+            }
+            Ok(())
+        }
+
+        // Regular ask order: fallback transferFrom should fail without consuming partial base balance.
+        assert_paused_token_order_path(
+            EscrowToken::Base,
+            |exchange, alice, base_token, amount| {
+                exchange.place(alice, base_token, amount, false, 0)
+            },
+        )?;
+
+        // Regular bid order: fallback transferFrom should fail without consuming partial quote balance.
+        assert_paused_token_order_path(
+            EscrowToken::Quote,
+            |exchange, alice, base_token, amount| {
+                exchange.place(alice, base_token, amount, true, 0)
+            },
+        )?;
+
+        // Flip ask order on the shared debit-or-transfer path.
+        assert_paused_token_order_path(
+            EscrowToken::Base,
+            |exchange, alice, base_token, amount| {
+                exchange.place_flip(alice, base_token, amount, false, 100, 0, false)
+            },
+        )?;
+
+        // Flip bid order on the shared debit-or-transfer path.
+        assert_paused_token_order_path(EscrowToken::Quote, |exchange, alice, base_token, amount| {
+            exchange.place_flip(alice, base_token, amount, true, 0, 100, false)
+        })
     }
 
     #[test]
