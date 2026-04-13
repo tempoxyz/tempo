@@ -8,8 +8,8 @@ use reth_storage_api::{
     StateProvider, StateRootProvider, StorageRootProvider,
 };
 use reth_trie_common::{
-    AccountProof, HashedPostState, HashedStorage, MultiProof, MultiProofTargets, StorageMultiProof,
-    StorageProof, TrieInput, updates::TrieUpdates,
+    AccountProof, ExecutionWitnessMode, HashedPostState, HashedStorage, MultiProof,
+    MultiProofTargets, StorageMultiProof, StorageProof, TrieInput, updates::TrieUpdates,
 };
 use std::time::Instant;
 use tracing::debug_span;
@@ -150,7 +150,7 @@ reth_storage_api::delegate_impls_to_as_ref!(
     StateProofProvider {
         fn proof(&self, input: TrieInput, address: Address, slots: &[B256]) -> ProviderResult<AccountProof>;
         fn multiproof(&self, input: TrieInput, targets: MultiProofTargets) -> ProviderResult<MultiProof>;
-        fn witness(&self, input: TrieInput, target: HashedPostState) -> ProviderResult<Vec<Bytes>>;
+        fn witness(&self, input: TrieInput, target: HashedPostState, mode: ExecutionWitnessMode) -> ProviderResult<Vec<Bytes>>;
     }
 );
 

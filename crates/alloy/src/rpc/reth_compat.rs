@@ -1,6 +1,6 @@
 use crate::rpc::{TempoHeaderResponse, TempoTransactionRequest};
 use alloy_consensus::{EthereumTxEnvelope, TxEip4844, error::ValueError};
-use alloy_network::{TransactionBuilder, TxSigner};
+use alloy_network::{NetworkTransactionBuilder, TxSigner};
 use alloy_primitives::{Address, B256, Bytes, Signature};
 use core::num::NonZeroU64;
 use reth_evm::EvmEnv;

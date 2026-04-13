@@ -83,6 +83,7 @@ impl TempoPayloadAttributes {
                 prev_randao: B256::ZERO,
                 withdrawals: Some(Default::default()),
                 parent_beacon_block_root: Some(B256::ZERO),
+                slot_number: None,
             },
             interrupt: InterruptHandle::default(),
             timestamp_millis_part: millis,
@@ -362,6 +363,7 @@ mod tests {
             prev_randao: B256::random(),
             withdrawals: Some(Default::default()),
             parent_beacon_block_root: Some(B256::random()),
+            slot_number: None,
         };
 
         let tempo_attrs: TempoPayloadAttributes = eth_attrs.clone().into();
@@ -402,6 +404,7 @@ mod tests {
                 suggested_fee_recipient: Address::random(),
                 withdrawals: Some(vec![]),
                 parent_beacon_block_root: Some(B256::random()),
+                slot_number: None,
             },
             timestamp_millis_part,
             ..Default::default()
@@ -441,6 +444,7 @@ mod tests {
                     amount: 500,
                 }]),
                 parent_beacon_block_root: Some(beacon_root),
+                slot_number: None,
             },
             timestamp_millis_part: 123,
             ..Default::default()
@@ -460,6 +464,7 @@ mod tests {
                 suggested_fee_recipient: Address::random(),
                 withdrawals: None,
                 parent_beacon_block_root: None,
+                slot_number: None,
             },
             timestamp_millis_part: 0,
             ..Default::default()

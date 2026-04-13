@@ -3,7 +3,7 @@ use alloy_contract::{CallBuilder, CallDecoder};
 use alloy_eips::Typed2718;
 use alloy_primitives::{Address, Bytes, U256};
 use alloy_provider::Provider;
-use alloy_rpc_types_eth::{TransactionRequest, TransactionTrait};
+use alloy_rpc_types_eth::{Transaction, TransactionRequest, TransactionTrait};
 use core::num::NonZeroU64;
 use serde::{Deserialize, Serialize};
 use tempo_primitives::{
@@ -315,6 +315,12 @@ impl From<TransactionRequest> for TempoTransactionRequest {
 impl From<TempoTransactionRequest> for TransactionRequest {
     fn from(value: TempoTransactionRequest) -> Self {
         value.inner
+    }
+}
+
+impl From<Transaction<TempoTxEnvelope>> for TempoTransactionRequest {
+    fn from(tx: Transaction<TempoTxEnvelope>) -> Self {
+        tx.inner.into_inner().into()
     }
 }
 
