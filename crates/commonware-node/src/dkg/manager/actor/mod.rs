@@ -733,9 +733,9 @@ where
                 logs.record(k.clone(), v.clone());
             }
 
-            let player_outcome = player_state.take().and_then(|player| {
+            let player_outcome = if let Some(player) = player_state.take() {
                 info!("we were a player in the ceremony; finalizing share");
-                match player.finalize(&mut rand_core::OsRng, logs.clone(), &Sequential) {
+                match player.finalize(&mut self.context, logs.clone(), &Sequential) {
                     Ok((new_output, new_share)) => {
                         info!("local DKG ceremony was a success");
                         Some((new_output, state::ShareState::Plaintext(Some(new_share))))
@@ -761,10 +761,14 @@ where
                         Some((state.output.clone(), state.share.clone()))
                     }
                 }
-            });
+            } else {
+                None
+            };
 
-            player_outcome.unwrap_or_else(move || {
-                match observe::<_, _, N3f1, ed25519::Batch>(&mut rand_core::OsRng, logs, &Sequential) {
+            if let Some(outcome) = player_outcome {
+                outcome
+            } else {
+                match observe::<_, _, N3f1, ed25519::Batch>(&mut self.context, logs, &Sequential) {
                     Ok(output) => {
                         info!("local DKG ceremony was a success");
                         (output, state::ShareState::Plaintext(None))
@@ -777,7 +781,7 @@ where
                         (state.output.clone(), state.share.clone())
                     }
                 }
-            })
+            }
         };
 
         if local_output != onchain_outcome.output {
@@ -1156,9 +1160,9 @@ where
             );
 
             let (output, share) = {
-                let player_outcome = player_state.and_then(|player| {
+                let player_outcome = if let Some(player) = player_state {
                     info!("we were a player in the ceremony; finalizing share");
-                    match player.finalize(&mut rand_core::OsRng, logs.clone(), &Sequential) {
+                    match player.finalize(&mut self.context, logs.clone(), &Sequential) {
                         Ok((new_output, new_share)) => {
                             info!("local DKG ceremony was a success");
                             Some((new_output, state::ShareState::Plaintext(Some(new_share))))
@@ -1184,10 +1188,14 @@ where
                             Some((state.output.clone(), state.share.clone()))
                         }
                     }
-                });
+                } else {
+                    None
+                };
 
-                player_outcome.unwrap_or_else(move || {
-                    match observe::<_, _, N3f1, ed25519::Batch>(&mut rand_core::OsRng, logs, &Sequential) {
+                if let Some(outcome) = player_outcome {
+                    outcome
+                } else {
+                    match observe::<_, _, N3f1, ed25519::Batch>(&mut self.context, logs, &Sequential) {
                         Ok(output) => {
                             info!("local DKG ceremony was a success");
                             (output, state::ShareState::Plaintext(None))
@@ -1200,7 +1208,7 @@ where
                             (state.output.clone(), state.share.clone())
                         }
                     }
-                })
+                }
             };
 
             storage.cache_dkg_outcome(state.epoch, request.digest, output.clone(), share);
