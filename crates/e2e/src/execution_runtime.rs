@@ -76,7 +76,6 @@ pub const TEST_MNEMONIC: &str = "test test test test test test test test test te
 pub struct Builder {
     epoch_length: Option<u64>,
     initial_dkg_outcome: Option<OnchainDkgOutcome>,
-    t2_time: Option<u64>,
     validators: Option<ordered::Map<PublicKey, ConsensusNodeConfig>>,
 }
 
@@ -85,7 +84,6 @@ impl Builder {
         Self {
             epoch_length: None,
             initial_dkg_outcome: None,
-            t2_time: None,
             validators: None,
         }
     }
@@ -111,25 +109,16 @@ impl Builder {
         }
     }
 
-    pub fn with_t2_time(self, t2_time: u64) -> Self {
-        Self {
-            t2_time: Some(t2_time),
-            ..self
-        }
-    }
-
     pub fn launch(self) -> eyre::Result<ExecutionRuntime> {
         let Self {
             epoch_length,
             initial_dkg_outcome,
-            t2_time,
             validators,
         } = self;
 
         let epoch_length = epoch_length.ok_or_eyre("must specify epoch length")?;
         let initial_dkg_outcome =
             initial_dkg_outcome.ok_or_eyre("must specify initial DKG outcome")?;
-        let t2_time = t2_time.ok_or_eyre("must specify t2 time")?;
         let validators = validators.ok_or_eyre("must specify validators")?;
 
         assert_eq!(
@@ -147,12 +136,6 @@ impl Builder {
             .extra_fields
             .insert_value("epochLength".to_string(), epoch_length)
             .unwrap();
-        genesis
-            .config
-            .extra_fields
-            .insert_value("t2Time".to_string(), t2_time)
-            .unwrap();
-
         genesis.extra_data = initial_dkg_outcome.encode().to_vec().into();
 
         // Just remove whatever is already written into chainspec.
@@ -171,12 +154,10 @@ impl Builder {
                     .unwrap();
 
                 let mut validator_config_v2 = ValidatorConfigV2::new();
-                if t2_time == 0 {
-                    validator_config_v2
-                        .initialize(admin())
-                        .wrap_err("failed to initialize validator config v2")
-                        .unwrap();
-                }
+                validator_config_v2
+                    .initialize(admin())
+                    .wrap_err("failed to initialize validator config v2")
+                    .unwrap();
 
                 for (public_key, validator) in validators {
                     if let ConsensusNodeConfig {
@@ -201,31 +182,29 @@ impl Builder {
                             )
                             .unwrap();
 
-                        if t2_time == 0 {
-                            validator_config_v2
-                                .add_validator(
-                                    admin(),
-                                    IValidatorConfigV2::addValidatorCall {
-                                        validatorAddress: address,
-                                        publicKey: public_key.encode().as_ref().try_into().unwrap(),
-                                        ingress: ingress.to_string(),
-                                        egress: egress.ip().to_string(),
-                                        feeRecipient: fee_recipient,
-                                        signature: sign_add_validator_args(
-                                            genesis.config.chain_id,
-                                            &private_key,
-                                            address,
-                                            ingress,
-                                            egress.ip(),
-                                            fee_recipient,
-                                        )
-                                        .encode()
-                                        .to_vec()
-                                        .into(),
-                                    },
-                                )
-                                .unwrap();
-                        }
+                        validator_config_v2
+                            .add_validator(
+                                admin(),
+                                IValidatorConfigV2::addValidatorCall {
+                                    validatorAddress: address,
+                                    publicKey: public_key.encode().as_ref().try_into().unwrap(),
+                                    ingress: ingress.to_string(),
+                                    egress: egress.ip().to_string(),
+                                    feeRecipient: fee_recipient,
+                                    signature: sign_add_validator_args(
+                                        genesis.config.chain_id,
+                                        &private_key,
+                                        address,
+                                        ingress,
+                                        egress.ip(),
+                                        fee_recipient,
+                                    )
+                                    .encode()
+                                    .to_vec()
+                                    .into(),
+                                },
+                            )
+                            .unwrap();
                     }
                 }
             })

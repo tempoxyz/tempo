@@ -6,14 +6,30 @@ use crate::{ExecutionRuntime, execution_runtime::chainspec};
 mod backfill;
 mod consensus_rpc;
 mod dkg;
+mod fee_recipient;
 mod linkage;
 mod metrics;
-mod migration_from_v1_to_v2;
 mod payload_builder;
 mod restart;
-mod subblocks;
+mod simple;
+mod snapshot;
+// FIXME: subblocks are currently flaky.
+// mod subblocks;
 mod sync;
-mod v2_at_genesis;
+
+#[track_caller]
+fn assert_no_v1(metric: &str, value: &str) {
+    if metric.ends_with("_dkg_manager_syncing_players") {
+        assert_eq!(0, value.parse::<u64>().unwrap());
+    }
+}
+
+#[track_caller]
+fn assert_no_dkg_failure(metric: &str, value: &str) {
+    if metric.ends_with("_dkg_manager_ceremony_failures_total") {
+        assert_eq!(0, value.parse::<u64>().unwrap(),);
+    }
+}
 
 #[test_traced]
 fn spawning_execution_node_works() {

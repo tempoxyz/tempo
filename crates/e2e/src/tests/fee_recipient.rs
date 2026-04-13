@@ -22,7 +22,6 @@ fn block_beneficiary_follows_v2_fee_recipient() {
     let setup = Setup::new()
         .how_many_signers(1)
         .epoch_length(100)
-        .t2_time(0)
         .fee_recipient(ORIGINAL_FEE_RECIPIENT)
         .seed(0);
 
@@ -88,7 +87,6 @@ fn falls_back_to_cli_fee_recipient_when_onchain_is_zero() {
     let setup = Setup::new()
         .how_many_signers(1)
         .epoch_length(100)
-        .t2_time(0)
         .fee_recipient(ORIGINAL_FEE_RECIPIENT)
         .seed(0);
 

@@ -20,7 +20,7 @@ use tracing::info;
 
 use crate::{
     CONSENSUS_NODE_PREFIX, Setup, connect_execution_peers, connect_execution_to_peers,
-    setup_validators, tests::v2_at_genesis::dkg::common::wait_for_outcome,
+    setup_validators, tests::dkg::common::wait_for_outcome,
 };
 
 /// This is a lengthy test. First, a validator needs to be run for a sufficiently
@@ -37,7 +37,6 @@ fn joins_from_snapshot() {
     let setup = Setup::new()
         .how_many_signers(4)
         .how_many_verifiers(1)
-        .t2_time(0)
         .epoch_length(epoch_length);
 
     let cfg = deterministic::Config::default().with_seed(setup.seed);
@@ -249,7 +248,6 @@ fn can_restart_after_joining_from_snapshot() {
     let setup = Setup::new()
         .how_many_signers(4)
         .how_many_verifiers(1)
-        .t2_time(0)
         .epoch_length(epoch_length);
 
     let cfg = deterministic::Config::default().with_seed(setup.seed);
