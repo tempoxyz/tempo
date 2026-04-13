@@ -1,7 +1,10 @@
 //! Tempo predeployed contracts and bindings.
 
+#![no_std]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+
+extern crate alloc;
 
 use alloy_primitives::{Address, B256, address, b256};
 
@@ -15,15 +18,26 @@ pub const PERMIT2_SALT: B256 =
 pub const ARACHNID_CREATE2_FACTORY_ADDRESS: Address =
     address!("0x4e59b44847b379578588920cA78FbF26c0B4956C");
 
-/// Helper macro to allow feature-gating rpc implementations behind the `rpc` feature.
+/// Helper macro to allow feature-gating rpc and serde implementations.
 macro_rules! sol {
     ($($input:tt)*) => {
-        #[cfg(feature = "rpc")]
+        #[cfg(all(feature = "rpc", feature = "serde"))]
+        alloy_sol_types::sol! {
+            #[sol(rpc)]
+            #[derive(serde::Serialize, serde::Deserialize)]
+            $($input)*
+        }
+        #[cfg(all(feature = "rpc", not(feature = "serde")))]
         alloy_sol_types::sol! {
             #[sol(rpc)]
             $($input)*
         }
-        #[cfg(not(feature = "rpc"))]
+        #[cfg(all(not(feature = "rpc"), feature = "serde"))]
+        alloy_sol_types::sol! {
+            #[derive(serde::Serialize, serde::Deserialize)]
+            $($input)*
+        }
+        #[cfg(all(not(feature = "rpc"), not(feature = "serde")))]
         alloy_sol_types::sol! {
             $($input)*
         }
@@ -91,7 +105,10 @@ mod tests {
     //!
     //! Optionally set `ETH_RPC_URL` to use a custom RPC endpoint.
 
+    extern crate std;
+
     use super::*;
+    use alloc::string::{String, ToString};
     use alloy_primitives::{B256, keccak256};
     use alloy_provider::{Provider, ProviderBuilder};
 

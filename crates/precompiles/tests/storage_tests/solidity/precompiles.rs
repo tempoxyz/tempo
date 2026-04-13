@@ -164,8 +164,8 @@ fn test_tip20_layout() {
         total_supply,
         balances,
         allowances,
-        // Unused slot, kept for storage layout compatibility
-        _nonces,
+        // EIP-2612 permit nonces (TIP-1004)
+        permit_nonces,
         paused,
         supply_cap,
         // Unused slot, kept for storage layout compatibility
@@ -351,8 +351,8 @@ fn export_all_storage_constants() {
             total_supply,
             balances,
             allowances,
-            // Unused slot, kept for storage layout compatibility
-            _nonces,
+            // EIP-2612 permit nonces (TIP-1004)
+            permit_nonces,
             paused,
             supply_cap,
             // Unused slot, kept for storage layout compatibility

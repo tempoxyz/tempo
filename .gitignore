@@ -3,6 +3,9 @@ target
 scripts/logs
 scripts/data
 
+# Coverage
+coverage/
+
 # Benchmarking artifacts
 contrib/bench/logs/
 report.json
@@ -19,6 +22,8 @@ localnet/**
 .claude/
 !docs/.claude/
 CLAUDE.local.md
+research.md
+plan.md
 
 # Docs
 tips/ref-impls/cache/
@@ -30,3 +35,7 @@ _
 .vercel
 .env*.local
 .worktrees/
+
+# LLVM coverage profraw files
+*.profraw
+__pycache__/

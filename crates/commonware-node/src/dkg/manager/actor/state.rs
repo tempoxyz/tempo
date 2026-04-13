@@ -8,21 +8,25 @@ use alloy_consensus::BlockHeader as _;
 use commonware_codec::{EncodeSize, RangeCfg, Read, ReadExt, Write};
 use commonware_consensus::{
     Block as _, Heightable as _,
-    types::{Epoch, Epocher as _, Height},
+    types::{Epoch, Height},
 };
 use commonware_cryptography::{
     Signer as _,
     bls12381::{
         dkg::{self, DealerPrivMsg, DealerPubMsg, Info, Output, PlayerAck, SignedDealerLog},
-        primitives::{group::Share, sharing::Mode, variant::MinSig},
+        primitives::{
+            group::Share,
+            sharing::{Mode, ModeVersion},
+            variant::MinSig,
+        },
     },
     ed25519::{PrivateKey, PublicKey},
     transcript::{Summary, Transcript},
 };
 use commonware_parallel::Strategy;
-use commonware_runtime::{Clock, Metrics, buffer::paged::CacheRef};
+use commonware_runtime::{BufferPooler, Clock, Metrics, buffer::paged::CacheRef};
 use commonware_storage::{
-    journal::{contiguous, segmented},
+    journal::{contiguous, contiguous::Reader as _, segmented},
     metadata,
 };
 use commonware_utils::{N3f1, NZU16, NZU32, NZU64, NZUsize, ordered};
@@ -33,7 +37,7 @@ use tracing::{debug, info, instrument, warn};
 use crate::consensus::{Digest, block::Block};
 
 const PAGE_SIZE: NonZeroU16 = NZU16!(1 << 12);
-const POOL_CAPACITY: NonZeroUsize = NZUsize!(1 << 20);
+const POOL_CAPACITY: NonZeroUsize = NZUsize!(1 << 13);
 const WRITE_BUFFER: NonZeroUsize = NZUsize!(1 << 12);
 const READ_BUFFER: NonZeroUsize = NZUsize!(1 << 20);
 
@@ -139,7 +143,7 @@ where
         self.events
             .append(
                 section,
-                Event::Ack {
+                &Event::Ack {
                     player: player.clone(),
                     ack: ack.clone(),
                 },
@@ -190,7 +194,7 @@ where
         self.events
             .append(
                 section,
-                Event::Dealing {
+                &Event::Dealing {
                     dealer: dealer.clone(),
                     public_msg: pub_msg.clone(),
                     private_msg: priv_msg.clone(),
@@ -237,7 +241,7 @@ where
         self.events
             .append(
                 section,
-                Event::Log {
+                &Event::Log {
                     dealer: dealer.clone(),
                     log: log.clone(),
                 },
@@ -281,7 +285,7 @@ where
         self.events
             .append(
                 section,
-                Event::Finalized {
+                &Event::Finalized {
                     digest,
                     parent,
                     height,
@@ -495,7 +499,7 @@ impl Builder {
     #[instrument(skip_all, err)]
     pub(super) async fn init<TContext>(self, context: TContext) -> eyre::Result<Storage<TContext>>
     where
-        TContext: commonware_runtime::Storage + Clock + Metrics,
+        TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
     {
         let Self {
             initial_state,
@@ -504,7 +508,7 @@ impl Builder {
         let partition_prefix =
             partition_prefix.ok_or_eyre("DKG actors state must have its partition prefix set")?;
 
-        let page_cache = CacheRef::new(PAGE_SIZE, POOL_CAPACITY);
+        let page_cache = CacheRef::from_pooler(&context, PAGE_SIZE, POOL_CAPACITY);
 
         let states_partition = format!("{partition_prefix}_states");
         let states_metadata_partition = format!("{partition_prefix}_states_metadata");
@@ -604,7 +608,7 @@ async fn migrate_journal_to_metadata_if_necessary<TContext>(
     page_cache: &CacheRef,
 ) -> eyre::Result<()>
 where
-    TContext: commonware_runtime::Storage + Clock + Metrics,
+    TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
 {
     if states.keys().next().is_some() {
         debug!("states already exists in new format; not migrating");
@@ -625,14 +629,15 @@ where
     .await
     .wrap_err("unable to initialize legacy DKG states journal for migration")?;
 
-    if let Some(latest_segment) = legacy_journal.size().checked_sub(1) {
+    if let Some(latest_segment) = legacy_journal.size().await.checked_sub(1) {
         info!(
             latest_segment,
             "legacy journal contains states; migrating last 2 segments",
         );
 
+        let reader = legacy_journal.reader().await;
         for segment in latest_segment.saturating_sub(1)..=latest_segment {
-            let legacy_state = legacy_journal
+            let legacy_state = reader
                 .read(segment)
                 .await
                 .wrap_err("unable to read state from legacy journal")?;
@@ -733,18 +738,6 @@ impl State {
     pub(super) fn players(&self) -> &ordered::Set<PublicKey> {
         &self.players
     }
-
-    /// Returns the last block height of the epoch preceding this state's epoch.
-    pub(super) fn boundary_of_parent_epoch(
-        &self,
-        epoch_strategy: &commonware_consensus::types::FixedEpocher,
-    ) -> Height {
-        self.epoch.previous().map_or_else(Height::zero, |prev| {
-            epoch_strategy
-                .last(prev)
-                .expect("epoch strategy is valid for all epochs")
-        })
-    }
 }
 
 impl EncodeSize for State {
@@ -778,14 +771,15 @@ impl Read for State {
         buf: &mut impl bytes::Buf,
         cfg: &Self::Cfg,
     ) -> Result<Self, commonware_codec::Error> {
-        let range_cfg = RangeCfg::from(1..=(u16::MAX as usize));
         Ok(Self {
             epoch: ReadExt::read(buf)?,
             seed: ReadExt::read(buf)?,
-            output: Read::read_cfg(buf, cfg)?,
+            output: Read::read_cfg(buf, &(*cfg, ModeVersion::v0()))?,
             share: ReadExt::read(buf)?,
-            players: Read::read_cfg(buf, &(range_cfg, ()))?,
-            syncers: Read::read_cfg(buf, &(range_cfg, ()))?,
+            players: Read::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), ()))?,
+            // Range from 0 to u16::MAX because after T2/V2 syncers are no longer
+            // stored in state.
+            syncers: Read::read_cfg(buf, &(RangeCfg::from(0..=(u16::MAX as usize)), ()))?,
             is_full_dkg: ReadExt::read(buf)?,
         })
     }
@@ -844,7 +838,7 @@ impl Read for LegacyState {
         Ok(Self {
             epoch: ReadExt::read(buf)?,
             seed: ReadExt::read(buf)?,
-            output: Read::read_cfg(buf, cfg)?,
+            output: Read::read_cfg(buf, &(*cfg, ModeVersion::v0()))?,
             share: ReadExt::read(buf)?,
             dealers: Read::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), (), ()))?,
             players: Read::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), (), ()))?,
@@ -1350,6 +1344,7 @@ impl ReducedBlock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use commonware_codec::Encode as _;
     use commonware_cryptography::{
         bls12381::{dkg, primitives::sharing::Mode},
         ed25519::PrivateKey,
@@ -1407,13 +1402,37 @@ mod tests {
     }
 
     #[test]
+    fn state_round_trip_with() {
+        let executor = deterministic::Runner::default();
+        executor.start(|mut context| async move {
+            let state = make_test_state(&mut context, 0);
+            let mut bytes = state.encode();
+            assert_eq!(
+                state,
+                State::read_cfg(&mut bytes, &NZU32!(u32::MAX)).unwrap(),
+            );
+
+            let state_without_syncers = {
+                let mut s = make_test_state(&mut context, 0);
+                s.syncers = Default::default();
+                s
+            };
+            let mut bytes = state_without_syncers.encode();
+            assert_eq!(
+                state_without_syncers,
+                State::read_cfg(&mut bytes, &NZU32!(u32::MAX)).unwrap(),
+            );
+        });
+    }
+
+    #[test]
     fn states_migration_migrates_last_two() {
         let executor = deterministic::Runner::default();
         executor.start(|mut context| async move {
             let partition_prefix = "test_dkg";
             let states_partition = format!("{partition_prefix}_states");
             let states_metadata_partition = format!("{partition_prefix}_states_metadata");
-            let page_cache = CacheRef::new(PAGE_SIZE, POOL_CAPACITY);
+            let page_cache = CacheRef::from_pooler(&context, PAGE_SIZE, POOL_CAPACITY);
 
             let ancient_legacy = make_legacy_state(&mut context, 1);
             let previous_legacy = make_legacy_state(&mut context, 2);
@@ -1423,7 +1442,7 @@ mod tests {
 
             // Populate the legacy journal with three entries.
             {
-                let mut journal = contiguous::variable::Journal::<_, LegacyState>::init(
+                let journal = contiguous::variable::Journal::<_, LegacyState>::init(
                     context.with_label("journal_setup"),
                     contiguous::variable::Config {
                         partition: states_partition.clone(),
@@ -1437,9 +1456,9 @@ mod tests {
                 .await
                 .unwrap();
 
-                journal.append(ancient_legacy).await.unwrap();
-                journal.append(previous_legacy).await.unwrap();
-                journal.append(latest_legacy).await.unwrap();
+                journal.append(&ancient_legacy).await.unwrap();
+                journal.append(&previous_legacy).await.unwrap();
+                journal.append(&latest_legacy).await.unwrap();
                 journal.sync().await.unwrap();
             }
 
@@ -1490,7 +1509,8 @@ mod tests {
             )
             .await
             .unwrap();
-            assert_eq!(reopened.size(), 0);
+
+            assert_eq!(reopened.size().await, 0);
 
             // Metadata persists across reopens.
             drop(states);
@@ -1521,14 +1541,14 @@ mod tests {
             let partition_prefix = "test_dkg_single";
             let states_partition = format!("{partition_prefix}_states");
             let states_metadata_partition = format!("{partition_prefix}_states_metadata");
-            let page_cache = CacheRef::new(PAGE_SIZE, POOL_CAPACITY);
+            let page_cache = CacheRef::from_pooler(&context, PAGE_SIZE, POOL_CAPACITY);
 
             let only_legacy = make_legacy_state(&mut context, 5);
             let only_expected: State = only_legacy.clone().into();
 
             // Populate the legacy journal with a single entry.
             {
-                let mut journal = contiguous::variable::Journal::<_, LegacyState>::init(
+                let journal = contiguous::variable::Journal::<_, LegacyState>::init(
                     context.with_label("journal_setup"),
                     contiguous::variable::Config {
                         partition: states_partition.clone(),
@@ -1542,7 +1562,7 @@ mod tests {
                 .await
                 .unwrap();
 
-                journal.append(only_legacy).await.unwrap();
+                journal.append(&only_legacy).await.unwrap();
                 journal.sync().await.unwrap();
             }
 
@@ -1581,7 +1601,7 @@ mod tests {
             let partition_prefix = "test_dkg_noop";
             let states_partition = format!("{partition_prefix}_states");
             let states_metadata_partition = format!("{partition_prefix}_states_metadata");
-            let page_cache = CacheRef::new(PAGE_SIZE, POOL_CAPACITY);
+            let page_cache = CacheRef::from_pooler(&context, PAGE_SIZE, POOL_CAPACITY);
 
             let existing_state = make_test_state(&mut context, 10);
             let journal_legacy = make_legacy_state(&mut context, 20);
@@ -1602,7 +1622,7 @@ mod tests {
 
             // Populate a legacy journal with different data.
             {
-                let mut journal = contiguous::variable::Journal::<_, LegacyState>::init(
+                let journal = contiguous::variable::Journal::<_, LegacyState>::init(
                     context.with_label("journal_setup"),
                     contiguous::variable::Config {
                         partition: states_partition.clone(),
@@ -1615,7 +1635,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-                journal.append(journal_legacy).await.unwrap();
+                journal.append(&journal_legacy).await.unwrap();
                 journal.sync().await.unwrap();
             }
 

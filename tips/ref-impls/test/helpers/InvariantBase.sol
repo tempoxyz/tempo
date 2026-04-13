@@ -171,6 +171,28 @@ abstract contract InvariantBase is BaseTest, ActorManager, GhostState {
         vm.store(_ACCOUNT_KEYCHAIN, slot, bytes32(uint256(uint160(keyId))));
     }
 
+    // ============ Revert Reason Helpers ============
+
+    /// @notice Decode an Error(string) revert reason into its message
+    /// @param reason The raw revert bytes
+    /// @return isErrorString Whether the reason is a valid Error(string)
+    /// @return errorMessage The decoded error message (empty if not Error(string))
+    function _tryDecodeErrorMessage(bytes memory reason)
+        internal
+        pure
+        returns (bool isErrorString, string memory errorMessage)
+    {
+        if (reason.length < 4) return (false, "");
+        if (bytes4(reason) != bytes4(keccak256("Error(string)"))) return (false, "");
+
+        bytes memory payload = new bytes(reason.length - 4);
+        for (uint256 i = 0; i < payload.length; i++) {
+            payload[i] = reason[i + 4];
+        }
+        errorMessage = abi.decode(payload, (string));
+        return (true, errorMessage);
+    }
+
     // ============ Balance Helpers ============
 
     /// @notice Get fee token balance for an account

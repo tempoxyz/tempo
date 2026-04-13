@@ -4,9 +4,9 @@
 //! execution layer and tracks the digest of the latest finalized block.
 //! It also advances the canonical chain by sending forkchoice-updates.
 
-use std::{pin::Pin, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, pin::Pin, sync::Arc, time::Duration};
 
-use alloy_rpc_types_engine::ForkchoiceState;
+use alloy_rpc_types_engine::{ForkchoiceState, PayloadId};
 use commonware_consensus::{Heightable as _, marshal::Update, types::Height};
 
 use commonware_runtime::{
@@ -24,16 +24,18 @@ use futures::{
 };
 use reth_provider::{BlockHashReader, BlockNumReader as _};
 use tempo_node::{TempoExecutionData, TempoFullNode};
+use tempo_payload_types::TempoPayloadAttributes;
 use tracing::{
     Level, Span, debug, error, error_span, info, info_span, instrument, warn, warn_span,
 };
 
+use super::{
+    Config,
+    ingress::{CanonicalizeHead, Command, Message, SubscribeFinalized},
+};
 use crate::{
     consensus::{Digest, block::Block},
-    executor::{
-        Config,
-        ingress::{CanonicalizeHead, Command, Message},
-    },
+    executor::ingress::CanonicalizeAndBuild,
 };
 
 /// Tracks the last forkchoice state that the executor sent to the execution layer.
@@ -75,15 +77,15 @@ impl LastCanonicalized {
 
     /// Updates the head height and head block hash to `height` and `digest`.
     ///
-    /// If `height > self.finalized_height`, this method will return a new
-    /// canonical state with `self.head_height = height` and
+    /// If `height > self.finalized_height` or `digest` is the same as the finalized block hash,
+    /// this method will return a new canonical state with `self.head_height = height` and
     /// `self.forkchoice.head = hash`.
     ///
     /// If `height <= self.finalized_height`, then this method will return
     /// `self` unchanged.
     fn update_head(self, height: Height, digest: Digest) -> Self {
         let mut this = self;
-        if height > this.finalized_height {
+        if height > this.finalized_height || digest.0 == this.forkchoice.finalized_block_hash {
             this.head_height = height;
             this.forkchoice.head_block_hash = digest.0;
         }
@@ -116,6 +118,10 @@ pub(crate) struct Actor<TContext> {
 
     /// The timer for the next FCU heartbeat. Reset whenever an FCU is sent.
     fcu_heartbeat_timer: Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
+
+    /// A list of subscriptions waiting for the executor to finalize a block
+    /// at a given height.
+    pending_finalized_subscriptions: BTreeMap<Height, Vec<oneshot::Sender<()>>>,
 }
 
 impl<TContext> Actor<TContext>
@@ -164,6 +170,7 @@ where
             },
             fcu_heartbeat_interval,
             fcu_heartbeat_timer,
+            pending_finalized_subscriptions: BTreeMap::new(),
         })
     }
 
@@ -189,7 +196,7 @@ where
                         ..=self.last_consensus_finalized_height.get(),
                 )
                 .then(move |height| {
-                    let mut marshal = marshal.clone();
+                    let marshal = marshal.clone();
                     async move { (height, marshal.get_block(Height::new(height)).await) }
                 })
                 .fuse()
@@ -270,11 +277,7 @@ where
             .execution_node
             .add_ons_handle
             .beacon_engine_handle
-            .fork_choice_updated(
-                self.last_canonicalized.forkchoice,
-                None,
-                reth_node_builder::EngineApiMessageVersion::V3,
-            )
+            .fork_choice_updated(self.last_canonicalized.forkchoice, None)
             .pace(&self.context, Duration::from_millis(20))
             .await;
 
@@ -306,18 +309,49 @@ where
             Command::CanonicalizeHead(CanonicalizeHead {
                 height,
                 digest,
-                ack,
+                response,
             }) => {
-                // Errors are logged inside canonicalize; head canonicalization failures
-                // are non-fatal and will be retried on the next block.
-                let _ = self
-                    .canonicalize(cause, HeadOrFinalized::Head, height, digest, ack)
-                    .await;
+                self.canonicalize(
+                    cause,
+                    HeadOrFinalized::Head,
+                    height,
+                    digest,
+                    JustCanonicalizeOrAlsoBuild::JustCanonicalize { response },
+                )
+                .await;
+            }
+            Command::CanonicalizeAndBuild(CanonicalizeAndBuild {
+                height,
+                digest,
+                attributes,
+                response,
+            }) => {
+                self.canonicalize(
+                    cause,
+                    HeadOrFinalized::Head,
+                    height,
+                    digest,
+                    JustCanonicalizeOrAlsoBuild::AlsoBuild {
+                        response,
+                        attributes: Box::new(*attributes),
+                    },
+                )
+                .await;
             }
             Command::Finalize(finalized) => {
                 self.finalize(cause, *finalized)
                     .await
                     .wrap_err("failed handling finalization")?;
+            }
+            Command::SubscribeFinalized(SubscribeFinalized { height, response }) => {
+                if self.last_canonicalized.finalized_height >= height {
+                    let _ = response.send(());
+                } else {
+                    self.pending_finalized_subscriptions
+                        .entry(height)
+                        .or_default()
+                        .push(response);
+                }
             }
         }
         Ok(())
@@ -332,7 +366,6 @@ where
             head.digest = %digest,
             %head_or_finalized,
         ),
-        err,
     )]
     async fn canonicalize(
         &mut self,
@@ -340,17 +373,19 @@ where
         head_or_finalized: HeadOrFinalized,
         height: Height,
         digest: Digest,
-        ack: oneshot::Sender<()>,
-    ) -> eyre::Result<()> {
+        maybe_build: JustCanonicalizeOrAlsoBuild,
+    ) {
         let new_canonicalized = match head_or_finalized {
             HeadOrFinalized::Head => self.last_canonicalized.update_head(height, digest),
             HeadOrFinalized::Finalized => self.last_canonicalized.update_finalized(height, digest),
         };
 
-        if new_canonicalized == self.last_canonicalized {
+        if new_canonicalized == self.last_canonicalized
+            && let JustCanonicalizeOrAlsoBuild::JustCanonicalize { response } = maybe_build
+        {
             info!("would not change forkchoice state; not sending it to the execution layer");
-            let _ = ack.send(());
-            return Ok(());
+            let _ = response.send(Ok(()));
+            return;
         }
 
         info!(
@@ -360,18 +395,24 @@ where
             finalized_block_height = %new_canonicalized.finalized_height,
             "sending forkchoice-update",
         );
-        let fcu_response = self
+        let fcu_response = match self
             .execution_node
             .add_ons_handle
             .beacon_engine_handle
             .fork_choice_updated(
                 new_canonicalized.forkchoice,
-                None,
-                reth_node_builder::EngineApiMessageVersion::V3,
+                maybe_build.attributes().cloned(),
             )
             .pace(&self.context, Duration::from_millis(20))
             .await
-            .wrap_err("failed requesting execution layer to update forkchoice state")?;
+            .wrap_err("failed requesting execution layer to update forkchoice state")
+        {
+            Err(error) => {
+                maybe_build.send_error(error);
+                return;
+            }
+            Ok(response) => response,
+        };
 
         debug!(
             payload_status = %fcu_response.payload_status,
@@ -379,15 +420,25 @@ where
         );
 
         if fcu_response.is_invalid() {
-            return Err(Report::msg(fcu_response.payload_status)
-                .wrap_err("execution layer responded with error for forkchoice-update"));
+            maybe_build.send_error(
+                Report::msg(fcu_response.payload_status)
+                    .wrap_err("execution layer responded with error for forkchoice-update"),
+            );
+            return;
         }
 
-        let _ = ack.send(());
+        match maybe_build {
+            JustCanonicalizeOrAlsoBuild::JustCanonicalize { response } => {
+                let _ = response.send(Ok(()));
+            }
+            JustCanonicalizeOrAlsoBuild::AlsoBuild { response, .. } => {
+                if let Some(payload_id) = fcu_response.payload_id {
+                    let _ = response.send(Ok(payload_id));
+                }
+            }
+        }
         self.last_canonicalized = new_canonicalized;
         self.reset_fcu_heartbeat_timer();
-
-        Ok(())
     }
 
     #[instrument(parent = &cause, skip_all)]
@@ -395,15 +446,18 @@ where
     async fn finalize(&mut self, cause: Span, finalized: Update<Block>) -> eyre::Result<()> {
         match finalized {
             Update::Tip(_, height, digest) => {
+                let (response, rx) = oneshot::channel();
                 self.canonicalize(
                     Span::current(),
                     HeadOrFinalized::Finalized,
                     height,
                     digest,
-                    oneshot::channel().0,
+                    JustCanonicalizeOrAlsoBuild::JustCanonicalize { response },
                 )
-                .await
-                .wrap_err("failed canonicalizing finalization tip")?;
+                .await;
+                rx.await
+                    .wrap_err("executor dropped channel")
+                    .and_then(|res| res)?;
             }
             Update::Block(block, acknowledgment) => {
                 self.forward_finalized(Span::current(), block, acknowledgment)
@@ -449,15 +503,19 @@ where
         block: Block,
         acknowledgment: Exact,
     ) -> eyre::Result<()> {
+        let height = block.height();
+        let (response, rx) = oneshot::channel();
         self.canonicalize(
             Span::current(),
             HeadOrFinalized::Finalized,
             block.height(),
             block.digest(),
-            oneshot::channel().0,
+            JustCanonicalizeOrAlsoBuild::JustCanonicalize { response },
         )
-        .await
-        .wrap_err("failed canonicalizing finalized block")?;
+        .await;
+        rx.await
+            .wrap_err("executor dropped channel")
+            .and_then(|res| res)?;
 
         let block = block.into_inner();
         let payload_status = self
@@ -484,7 +542,47 @@ where
 
         acknowledgment.acknowledge();
 
+        self.pending_finalized_subscriptions.retain(|&key, value| {
+            let retain = key > height;
+            if !retain {
+                value.drain(..).for_each(|tx| {
+                    let _ = tx.send(());
+                });
+            }
+            retain
+        });
+
         Ok(())
+    }
+}
+
+/// Controls canonicalization: if attributes are sent, the FCU also builds a payload.
+enum JustCanonicalizeOrAlsoBuild {
+    JustCanonicalize {
+        response: oneshot::Sender<eyre::Result<()>>,
+    },
+    AlsoBuild {
+        response: oneshot::Sender<eyre::Result<PayloadId>>,
+        attributes: Box<TempoPayloadAttributes>,
+    },
+}
+
+impl JustCanonicalizeOrAlsoBuild {
+    fn attributes(&self) -> Option<&TempoPayloadAttributes> {
+        match self {
+            Self::JustCanonicalize { .. } => None,
+            Self::AlsoBuild { attributes, .. } => Some(attributes),
+        }
+    }
+    fn send_error(self, error: eyre::Report) {
+        match self {
+            Self::JustCanonicalize { response } => {
+                let _ = response.send(Err(error));
+            }
+            Self::AlsoBuild { response, .. } => {
+                let _ = response.send(Err(error));
+            }
+        }
     }
 }
 

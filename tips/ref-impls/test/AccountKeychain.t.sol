@@ -10,6 +10,7 @@ import { BaseTest } from "./BaseTest.t.sol";
  * @dev These tests run against both the Solidity implementation (when !isTempo)
  *      and the Rust precompile (when isTempo).
  */
+/// forge-config: default.isolate = true
 contract AccountKeychainTest is BaseTest {
 
     // Using addresses for keyIds (derived from public keys)
@@ -30,20 +31,25 @@ contract AccountKeychainTest is BaseTest {
     //////////////////////////////////////////////////////////////*/
 
     function test_AuthorizeKey() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](1);
         limits[0] = IAccountKeychain.TokenLimit({
             token: USDC,
-            amount: 1000e6 // 1000 USDC
+            amount: 1000e6, // 1000 USDC
+            period: 0
         });
 
         keychain.authorizeKey(
             aliceAccessKey,
             IAccountKeychain.SignatureType.P256,
-            uint64(block.timestamp + 1 days),
-            true, // Enforce spending limits
-            limits
+            IAccountKeychain.KeyRestrictions({
+                expiry: uint64(block.timestamp + 1 days),
+                enforceLimits: true,
+                limits: limits,
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         );
 
         IAccountKeychain.KeyInfo memory info = keychain.getKey(alice, aliceAccessKey);
@@ -54,30 +60,37 @@ contract AccountKeychainTest is BaseTest {
         assertFalse(info.isRevoked);
 
         // Verify spending limit was set
-        assertEq(keychain.getRemainingLimit(alice, aliceAccessKey, USDC), 1000e6);
+        (uint256 remaining,) = keychain.getRemainingLimitWithPeriod(alice, aliceAccessKey, USDC);
+        assertEq(remaining, 1000e6);
 
         vm.stopPrank();
     }
 
     function test_AuthorizeKeyWithMultipleLimits() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](2);
         limits[0] = IAccountKeychain.TokenLimit({
             token: USDC,
-            amount: 1000e6 // 1000 USDC
+            amount: 1000e6, // 1000 USDC
+            period: 0
         });
         limits[1] = IAccountKeychain.TokenLimit({
             token: USDT,
-            amount: 500e6 // 500 USDT
+            amount: 500e6, // 500 USDT
+            period: 0
         });
 
         keychain.authorizeKey(
             aliceAccessKey,
             IAccountKeychain.SignatureType.Secp256k1,
-            uint64(block.timestamp + 1 days),
-            true, // Enforce spending limits
-            limits
+            IAccountKeychain.KeyRestrictions({
+                expiry: uint64(block.timestamp + 1 days),
+                enforceLimits: true,
+                limits: limits,
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         );
 
         IAccountKeychain.KeyInfo memory info = keychain.getKey(alice, aliceAccessKey);
@@ -89,23 +102,27 @@ contract AccountKeychainTest is BaseTest {
         assertFalse(info.isRevoked);
 
         // Verify both limits were set
-        assertEq(keychain.getRemainingLimit(alice, aliceAccessKey, USDC), 1000e6);
-        assertEq(keychain.getRemainingLimit(alice, aliceAccessKey, USDT), 500e6);
+        (uint256 remainingUsdc,) = keychain.getRemainingLimitWithPeriod(alice, aliceAccessKey, USDC);
+        (uint256 remainingUsdt,) = keychain.getRemainingLimitWithPeriod(alice, aliceAccessKey, USDT);
+        assertEq(remainingUsdc, 1000e6);
+        assertEq(remainingUsdt, 500e6);
 
         vm.stopPrank();
     }
 
     function test_AuthorizeKeyNoLimits() public {
-        vm.startPrank(alice);
-
-        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
+        vm.startPrank(alice, alice);
 
         keychain.authorizeKey(
             aliceAccessKey,
             IAccountKeychain.SignatureType.WebAuthn,
-            uint64(block.timestamp + 1 days),
-            false, // No spending limits enforced
-            limits
+            IAccountKeychain.KeyRestrictions({
+                expiry: uint64(block.timestamp + 1 days),
+                enforceLimits: false,
+                limits: new IAccountKeychain.TokenLimit[](0),
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         );
 
         IAccountKeychain.KeyInfo memory info = keychain.getKey(alice, aliceAccessKey);
@@ -116,16 +133,19 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_RevokeKey() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         // First authorize a key
-        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
         keychain.authorizeKey(
             aliceAccessKey,
             IAccountKeychain.SignatureType.P256,
-            uint64(block.timestamp + 1 days),
-            false,
-            limits
+            IAccountKeychain.KeyRestrictions({
+                expiry: uint64(block.timestamp + 1 days),
+                enforceLimits: false,
+                limits: new IAccountKeychain.TokenLimit[](0),
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         );
 
         // Verify key exists
@@ -146,43 +166,52 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_UpdateSpendingLimit() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         // First authorize a key with initial limits
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](1);
-        limits[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 1000e6 });
+        limits[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 1000e6, period: 0 });
 
         keychain.authorizeKey(
             aliceAccessKey,
             IAccountKeychain.SignatureType.Secp256k1,
-            uint64(block.timestamp + 1 days),
-            true,
-            limits
+            IAccountKeychain.KeyRestrictions({
+                expiry: uint64(block.timestamp + 1 days),
+                enforceLimits: true,
+                limits: limits,
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         );
 
         // Verify initial limit
-        assertEq(keychain.getRemainingLimit(alice, aliceAccessKey, USDC), 1000e6);
+        (uint256 remaining,) = keychain.getRemainingLimitWithPeriod(alice, aliceAccessKey, USDC);
+        assertEq(remaining, 1000e6);
 
         // Update the spending limit
         keychain.updateSpendingLimit(aliceAccessKey, USDC, 2000e6);
 
         // Verify new limit
-        assertEq(keychain.getRemainingLimit(alice, aliceAccessKey, USDC), 2000e6);
+        (remaining,) = keychain.getRemainingLimitWithPeriod(alice, aliceAccessKey, USDC);
+        assertEq(remaining, 2000e6);
 
         vm.stopPrank();
     }
 
     function test_UpdateSpendingLimit_EnablesLimitsOnUnlimitedKey() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         // Authorize a key with no limits enforced
-        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
         keychain.authorizeKey(
             aliceAccessKey,
             IAccountKeychain.SignatureType.P256,
-            uint64(block.timestamp + 1 days),
-            false, // No limits initially
-            limits
+            IAccountKeychain.KeyRestrictions({
+                expiry: uint64(block.timestamp + 1 days),
+                enforceLimits: false,
+                limits: new IAccountKeychain.TokenLimit[](0),
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         );
 
         // Verify key has no limits
@@ -195,7 +224,8 @@ contract AccountKeychainTest is BaseTest {
         // Verify limits are now enforced
         IAccountKeychain.KeyInfo memory infoAfter = keychain.getKey(alice, aliceAccessKey);
         assertTrue(infoAfter.enforceLimits);
-        assertEq(keychain.getRemainingLimit(alice, aliceAccessKey, USDC), 500e6);
+        (uint256 remaining,) = keychain.getRemainingLimitWithPeriod(alice, aliceAccessKey, USDC);
+        assertEq(remaining, 500e6);
 
         vm.stopPrank();
     }
@@ -212,8 +242,8 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_GetRemainingLimit_NonExistent() public view {
-        uint256 limit = keychain.getRemainingLimit(alice, aliceAccessKey, USDC);
-        assertEq(limit, 0);
+        (uint256 remaining,) = keychain.getRemainingLimitWithPeriod(alice, aliceAccessKey, USDC);
+        assertEq(remaining, 0);
     }
 
     function test_GetTransactionKey() public view {
@@ -227,16 +257,19 @@ contract AccountKeychainTest is BaseTest {
     //////////////////////////////////////////////////////////////*/
 
     function test_RevokeKey_AlreadyRevokedReturnsKeyNotFound() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         // Authorize and revoke a key
-        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
         keychain.authorizeKey(
             aliceAccessKey,
             IAccountKeychain.SignatureType.P256,
-            uint64(block.timestamp + 1 days),
-            false,
-            limits
+            IAccountKeychain.KeyRestrictions({
+                expiry: uint64(block.timestamp + 1 days),
+                enforceLimits: false,
+                limits: new IAccountKeychain.TokenLimit[](0),
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         );
         keychain.revokeKey(aliceAccessKey);
 
@@ -252,37 +285,45 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_GetRemainingLimit_ReturnsZeroForRevokedKey() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](1);
-        limits[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 1000e6 });
+        limits[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 1000e6, period: 0 });
 
         keychain.authorizeKey(
             aliceAccessKey,
             IAccountKeychain.SignatureType.P256,
-            uint64(block.timestamp + 1 days),
-            true,
-            limits
+            IAccountKeychain.KeyRestrictions({
+                expiry: uint64(block.timestamp + 1 days),
+                enforceLimits: true,
+                limits: limits,
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         );
-        assertEq(keychain.getRemainingLimit(alice, aliceAccessKey, USDC), 1000e6);
+        (uint256 remaining,) = keychain.getRemainingLimitWithPeriod(alice, aliceAccessKey, USDC);
+        assertEq(remaining, 1000e6);
 
         keychain.revokeKey(aliceAccessKey);
-        assertEq(keychain.getRemainingLimit(alice, aliceAccessKey, USDC), 0);
+        (remaining,) = keychain.getRemainingLimitWithPeriod(alice, aliceAccessKey, USDC);
+        assertEq(remaining, 0);
 
         vm.stopPrank();
     }
 
     function test_AuthorizeKey_RevertZeroKeyId() public {
-        vm.startPrank(alice);
-
-        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
+        vm.startPrank(alice, alice);
 
         try keychain.authorizeKey(
             address(0), // Zero key ID
             IAccountKeychain.SignatureType.P256,
-            uint64(block.timestamp + 1 days),
-            false,
-            limits
+            IAccountKeychain.KeyRestrictions({
+                expiry: uint64(block.timestamp + 1 days),
+                enforceLimits: false,
+                limits: new IAccountKeychain.TokenLimit[](0),
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
@@ -293,17 +334,19 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_AuthorizeKey_RevertExpiryInPast() public {
-        vm.startPrank(alice);
-
-        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
+        vm.startPrank(alice, alice);
 
         // Test with expiry = 0 (in the past)
         try keychain.authorizeKey(
             aliceAccessKey,
             IAccountKeychain.SignatureType.P256,
-            0, // Zero expiry is in the past
-            false,
-            limits
+            IAccountKeychain.KeyRestrictions({
+                expiry: 0,
+                enforceLimits: false,
+                limits: new IAccountKeychain.TokenLimit[](0),
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
@@ -314,9 +357,13 @@ contract AccountKeychainTest is BaseTest {
         try keychain.authorizeKey(
             aliceAccessKey,
             IAccountKeychain.SignatureType.P256,
-            1, // Very old timestamp - also in the past
-            false,
-            limits
+            IAccountKeychain.KeyRestrictions({
+                expiry: 1,
+                enforceLimits: false,
+                limits: new IAccountKeychain.TokenLimit[](0),
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
@@ -327,26 +374,32 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_AuthorizeKey_RevertKeyAlreadyExists() public {
-        vm.startPrank(alice);
-
-        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
+        vm.startPrank(alice, alice);
 
         // Authorize key first time
         keychain.authorizeKey(
             aliceAccessKey,
             IAccountKeychain.SignatureType.P256,
-            uint64(block.timestamp + 1 days),
-            false,
-            limits
+            IAccountKeychain.KeyRestrictions({
+                expiry: uint64(block.timestamp + 1 days),
+                enforceLimits: false,
+                limits: new IAccountKeychain.TokenLimit[](0),
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         );
 
         // Try to authorize same key again
         try keychain.authorizeKey(
             aliceAccessKey,
             IAccountKeychain.SignatureType.Secp256k1,
-            uint64(block.timestamp + 2 days),
-            true,
-            limits
+            IAccountKeychain.KeyRestrictions({
+                expiry: uint64(block.timestamp + 2 days),
+                enforceLimits: true,
+                limits: new IAccountKeychain.TokenLimit[](0),
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
@@ -357,17 +410,19 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_AuthorizeKey_RevertKeyAlreadyRevoked() public {
-        vm.startPrank(alice);
-
-        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
+        vm.startPrank(alice, alice);
 
         // Authorize and then revoke the key
         keychain.authorizeKey(
             aliceAccessKey,
             IAccountKeychain.SignatureType.P256,
-            uint64(block.timestamp + 1 days),
-            false,
-            limits
+            IAccountKeychain.KeyRestrictions({
+                expiry: uint64(block.timestamp + 1 days),
+                enforceLimits: false,
+                limits: new IAccountKeychain.TokenLimit[](0),
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         );
         keychain.revokeKey(aliceAccessKey);
 
@@ -375,9 +430,13 @@ contract AccountKeychainTest is BaseTest {
         try keychain.authorizeKey(
             aliceAccessKey,
             IAccountKeychain.SignatureType.P256,
-            uint64(block.timestamp + 1 days),
-            false,
-            limits
+            IAccountKeychain.KeyRestrictions({
+                expiry: uint64(block.timestamp + 1 days),
+                enforceLimits: false,
+                limits: new IAccountKeychain.TokenLimit[](0),
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
@@ -388,7 +447,7 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_RevokeKey_RevertKeyNotFound() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         // Try to revoke a key that doesn't exist
         try keychain.revokeKey(aliceAccessKey) {
@@ -401,7 +460,7 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_UpdateSpendingLimit_RevertKeyNotFound() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         // Try to update limit for non-existent key
         try keychain.updateSpendingLimit(aliceAccessKey, USDC, 1000e6) {
@@ -414,17 +473,19 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_UpdateSpendingLimit_RevertKeyAlreadyRevoked() public {
-        vm.startPrank(alice);
-
-        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
+        vm.startPrank(alice, alice);
 
         // Authorize and revoke key
         keychain.authorizeKey(
             aliceAccessKey,
             IAccountKeychain.SignatureType.P256,
-            uint64(block.timestamp + 1 days),
-            false,
-            limits
+            IAccountKeychain.KeyRestrictions({
+                expiry: uint64(block.timestamp + 1 days),
+                enforceLimits: false,
+                limits: new IAccountKeychain.TokenLimit[](0),
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         );
         keychain.revokeKey(aliceAccessKey);
 
@@ -439,13 +500,19 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_UpdateSpendingLimit_RevertKeyExpired() public {
-        vm.startPrank(alice);
-
-        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
+        vm.startPrank(alice, alice);
 
         uint64 expiry = uint64(block.timestamp + 1 hours);
         keychain.authorizeKey(
-            aliceAccessKey, IAccountKeychain.SignatureType.P256, expiry, false, limits
+            aliceAccessKey,
+            IAccountKeychain.SignatureType.P256,
+            IAccountKeychain.KeyRestrictions({
+                expiry: expiry,
+                enforceLimits: false,
+                limits: new IAccountKeychain.TokenLimit[](0),
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         );
 
         // Warp time past expiry
@@ -462,53 +529,66 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_UpdateSpendingLimit_AddNewTokenLimit() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         // Authorize a key with only USDC limit
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](1);
-        limits[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 1000e6 });
+        limits[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 1000e6, period: 0 });
 
         keychain.authorizeKey(
             aliceAccessKey,
             IAccountKeychain.SignatureType.P256,
-            uint64(block.timestamp + 1 days),
-            true,
-            limits
+            IAccountKeychain.KeyRestrictions({
+                expiry: uint64(block.timestamp + 1 days),
+                enforceLimits: true,
+                limits: limits,
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         );
 
         // Verify USDT limit is 0 initially
-        assertEq(keychain.getRemainingLimit(alice, aliceAccessKey, USDT), 0);
+        (uint256 remaining,) = keychain.getRemainingLimitWithPeriod(alice, aliceAccessKey, USDT);
+        assertEq(remaining, 0);
 
         // Add a NEW token limit for USDT
         keychain.updateSpendingLimit(aliceAccessKey, USDT, 500e6);
 
         // Verify new USDT limit was added
-        assertEq(keychain.getRemainingLimit(alice, aliceAccessKey, USDT), 500e6);
+        (remaining,) = keychain.getRemainingLimitWithPeriod(alice, aliceAccessKey, USDT);
+        assertEq(remaining, 500e6);
         // Verify USDC limit unchanged
-        assertEq(keychain.getRemainingLimit(alice, aliceAccessKey, USDC), 1000e6);
+        (remaining,) = keychain.getRemainingLimitWithPeriod(alice, aliceAccessKey, USDC);
+        assertEq(remaining, 1000e6);
 
         vm.stopPrank();
     }
 
     function test_AuthorizeKey_LimitsIgnoredWhenEnforceLimitsFalse() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         // Authorize key with enforceLimits=false but pass limits anyway
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](2);
-        limits[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 1000e6 });
-        limits[1] = IAccountKeychain.TokenLimit({ token: USDT, amount: 500e6 });
+        limits[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 1000e6, period: 0 });
+        limits[1] = IAccountKeychain.TokenLimit({ token: USDT, amount: 500e6, period: 0 });
 
         keychain.authorizeKey(
             aliceAccessKey,
             IAccountKeychain.SignatureType.P256,
-            uint64(block.timestamp + 1 days),
-            false, // enforceLimits = false
-            limits
+            IAccountKeychain.KeyRestrictions({
+                expiry: uint64(block.timestamp + 1 days),
+                enforceLimits: false,
+                limits: limits,
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         );
 
         // Verify limits were NOT stored (should be 0)
-        assertEq(keychain.getRemainingLimit(alice, aliceAccessKey, USDC), 0);
-        assertEq(keychain.getRemainingLimit(alice, aliceAccessKey, USDT), 0);
+        (uint256 remainingUsdc,) = keychain.getRemainingLimitWithPeriod(alice, aliceAccessKey, USDC);
+        (uint256 remainingUsdt,) = keychain.getRemainingLimitWithPeriod(alice, aliceAccessKey, USDT);
+        assertEq(remainingUsdc, 0);
+        assertEq(remainingUsdt, 0);
 
         // Verify enforceLimits is false
         IAccountKeychain.KeyInfo memory info = keychain.getKey(alice, aliceAccessKey);
@@ -518,17 +598,19 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_DifferentKeyCanBeAuthorizedAfterRevocation() public {
-        vm.startPrank(alice);
-
-        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
+        vm.startPrank(alice, alice);
 
         // Authorize and revoke first key
         keychain.authorizeKey(
             aliceAccessKey,
             IAccountKeychain.SignatureType.P256,
-            uint64(block.timestamp + 1 days),
-            false,
-            limits
+            IAccountKeychain.KeyRestrictions({
+                expiry: uint64(block.timestamp + 1 days),
+                enforceLimits: false,
+                limits: new IAccountKeychain.TokenLimit[](0),
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         );
         keychain.revokeKey(aliceAccessKey);
 
@@ -536,9 +618,13 @@ contract AccountKeychainTest is BaseTest {
         keychain.authorizeKey(
             bobAccessKey, // Different key
             IAccountKeychain.SignatureType.Secp256k1,
-            uint64(block.timestamp + 1 days),
-            true,
-            limits
+            IAccountKeychain.KeyRestrictions({
+                expiry: uint64(block.timestamp + 1 days),
+                enforceLimits: true,
+                limits: new IAccountKeychain.TokenLimit[](0),
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         );
 
         // Verify new key is authorized
@@ -565,45 +651,33 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_AuthorizeKey_AllSignatureTypes() public {
-        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
+        IAccountKeychain.KeyRestrictions memory config = IAccountKeychain.KeyRestrictions({
+            expiry: uint64(block.timestamp + 1 days),
+            enforceLimits: false,
+            limits: new IAccountKeychain.TokenLimit[](0),
+            allowAnyCalls: true,
+            allowedCalls: new IAccountKeychain.CallScope[](0)
+        });
 
         // Secp256k1
-        vm.prank(alice);
-        keychain.authorizeKey(
-            aliceAccessKey,
-            IAccountKeychain.SignatureType.Secp256k1,
-            uint64(block.timestamp + 1 days),
-            false,
-            limits
-        );
+        vm.prank(alice, alice);
+        keychain.authorizeKey(aliceAccessKey, IAccountKeychain.SignatureType.Secp256k1, config);
         assertEq(
             uint8(keychain.getKey(alice, aliceAccessKey).signatureType),
             uint8(IAccountKeychain.SignatureType.Secp256k1)
         );
 
         // P256
-        vm.prank(bob);
-        keychain.authorizeKey(
-            bobAccessKey,
-            IAccountKeychain.SignatureType.P256,
-            uint64(block.timestamp + 1 days),
-            false,
-            limits
-        );
+        vm.prank(bob, bob);
+        keychain.authorizeKey(bobAccessKey, IAccountKeychain.SignatureType.P256, config);
         assertEq(
             uint8(keychain.getKey(bob, bobAccessKey).signatureType),
             uint8(IAccountKeychain.SignatureType.P256)
         );
 
         // WebAuthn
-        vm.prank(charlie);
-        keychain.authorizeKey(
-            charlieAccessKey,
-            IAccountKeychain.SignatureType.WebAuthn,
-            uint64(block.timestamp + 1 days),
-            false,
-            limits
-        );
+        vm.prank(charlie, charlie);
+        keychain.authorizeKey(charlieAccessKey, IAccountKeychain.SignatureType.WebAuthn, config);
         assertEq(
             uint8(keychain.getKey(charlie, charlieAccessKey).signatureType),
             uint8(IAccountKeychain.SignatureType.WebAuthn)
@@ -616,24 +690,40 @@ contract AccountKeychainTest is BaseTest {
 
     function test_KeyIsolationBetweenAccounts() public {
         IAccountKeychain.TokenLimit[] memory limits1 = new IAccountKeychain.TokenLimit[](1);
-        limits1[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 1000e6 });
+        limits1[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 1000e6, period: 0 });
 
         IAccountKeychain.TokenLimit[] memory limits2 = new IAccountKeychain.TokenLimit[](1);
-        limits2[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 2000e6 });
+        limits2[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 2000e6, period: 0 });
 
         // Same keyId for two different accounts
         address sharedKeyId = address(0x9999);
         uint64 expiry1 = uint64(block.timestamp + 100);
         uint64 expiry2 = uint64(block.timestamp + 200);
 
-        vm.prank(alice);
+        vm.prank(alice, alice);
         keychain.authorizeKey(
-            sharedKeyId, IAccountKeychain.SignatureType.P256, expiry1, true, limits1
+            sharedKeyId,
+            IAccountKeychain.SignatureType.P256,
+            IAccountKeychain.KeyRestrictions({
+                expiry: expiry1,
+                enforceLimits: true,
+                limits: limits1,
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         );
 
-        vm.prank(bob);
+        vm.prank(bob, bob);
         keychain.authorizeKey(
-            sharedKeyId, IAccountKeychain.SignatureType.Secp256k1, expiry2, true, limits2
+            sharedKeyId,
+            IAccountKeychain.SignatureType.Secp256k1,
+            IAccountKeychain.KeyRestrictions({
+                expiry: expiry2,
+                enforceLimits: true,
+                limits: limits2,
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         );
 
         // Verify keys are isolated per account
@@ -646,35 +736,37 @@ contract AccountKeychainTest is BaseTest {
         assertEq(info2.expiry, expiry2);
 
         // Verify spending limits are isolated
-        assertEq(keychain.getRemainingLimit(alice, sharedKeyId, USDC), 1000e6);
-        assertEq(keychain.getRemainingLimit(bob, sharedKeyId, USDC), 2000e6);
+        (uint256 limit1,) = keychain.getRemainingLimitWithPeriod(alice, sharedKeyId, USDC);
+        (uint256 limit2,) = keychain.getRemainingLimitWithPeriod(bob, sharedKeyId, USDC);
+        assertEq(limit1, 1000e6);
+        assertEq(limit2, 2000e6);
     }
 
     function test_MultipleKeysPerAccount() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
-        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
+        IAccountKeychain.KeyRestrictions memory noLimitsConfig = IAccountKeychain.KeyRestrictions({
+            expiry: uint64(block.timestamp + 1 days),
+            enforceLimits: false,
+            limits: new IAccountKeychain.TokenLimit[](0),
+            allowAnyCalls: true,
+            allowedCalls: new IAccountKeychain.CallScope[](0)
+        });
+
+        IAccountKeychain.KeyRestrictions memory withLimitsConfig = IAccountKeychain.KeyRestrictions({
+            expiry: uint64(block.timestamp + 1 days),
+            enforceLimits: true,
+            limits: new IAccountKeychain.TokenLimit[](0),
+            allowAnyCalls: true,
+            allowedCalls: new IAccountKeychain.CallScope[](0)
+        });
 
         keychain.authorizeKey(
-            aliceAccessKey,
-            IAccountKeychain.SignatureType.Secp256k1,
-            uint64(block.timestamp + 1 days),
-            false,
-            limits
+            aliceAccessKey, IAccountKeychain.SignatureType.Secp256k1, noLimitsConfig
         );
+        keychain.authorizeKey(bobAccessKey, IAccountKeychain.SignatureType.P256, withLimitsConfig);
         keychain.authorizeKey(
-            bobAccessKey,
-            IAccountKeychain.SignatureType.P256,
-            uint64(block.timestamp + 1 days),
-            true,
-            limits
-        );
-        keychain.authorizeKey(
-            charlieAccessKey,
-            IAccountKeychain.SignatureType.WebAuthn,
-            uint64(block.timestamp + 1 days),
-            false,
-            limits
+            charlieAccessKey, IAccountKeychain.SignatureType.WebAuthn, noLimitsConfig
         );
 
         // Verify all keys exist with correct types
@@ -695,7 +787,7 @@ contract AccountKeychainTest is BaseTest {
     //////////////////////////////////////////////////////////////*/
 
     function test_Event_KeyAuthorized() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         if (!isTempo) {
             vm.expectEmit(true, true, false, true);
@@ -707,29 +799,35 @@ contract AccountKeychainTest is BaseTest {
             );
         }
 
-        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
         keychain.authorizeKey(
             aliceAccessKey,
             IAccountKeychain.SignatureType.P256,
-            uint64(block.timestamp + 1 days),
-            true,
-            limits
+            IAccountKeychain.KeyRestrictions({
+                expiry: uint64(block.timestamp + 1 days),
+                enforceLimits: true,
+                limits: new IAccountKeychain.TokenLimit[](0),
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         );
 
         vm.stopPrank();
     }
 
     function test_Event_KeyRevoked() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         // First authorize
-        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
         keychain.authorizeKey(
             aliceAccessKey,
             IAccountKeychain.SignatureType.P256,
-            uint64(block.timestamp + 1 days),
-            false,
-            limits
+            IAccountKeychain.KeyRestrictions({
+                expiry: uint64(block.timestamp + 1 days),
+                enforceLimits: false,
+                limits: new IAccountKeychain.TokenLimit[](0),
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         );
 
         if (!isTempo) {
@@ -743,17 +841,21 @@ contract AccountKeychainTest is BaseTest {
     }
 
     function test_Event_SpendingLimitUpdated() public {
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         // First authorize
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](1);
-        limits[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 1000e6 });
+        limits[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 1000e6, period: 0 });
         keychain.authorizeKey(
             aliceAccessKey,
             IAccountKeychain.SignatureType.P256,
-            uint64(block.timestamp + 1 days),
-            true,
-            limits
+            IAccountKeychain.KeyRestrictions({
+                expiry: uint64(block.timestamp + 1 days),
+                enforceLimits: true,
+                limits: limits,
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         );
 
         if (!isTempo) {
@@ -782,12 +884,18 @@ contract AccountKeychainTest is BaseTest {
         vm.assume(sigType <= 2);
         vm.assume(expiry > block.timestamp); // Ensure expiry is in future for valid key
 
-        vm.startPrank(alice);
-
-        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
+        vm.startPrank(alice, alice);
 
         keychain.authorizeKey(
-            keyId, IAccountKeychain.SignatureType(sigType), expiry, enforceLimits, limits
+            keyId,
+            IAccountKeychain.SignatureType(sigType),
+            IAccountKeychain.KeyRestrictions({
+                expiry: expiry,
+                enforceLimits: enforceLimits,
+                limits: new IAccountKeychain.TokenLimit[](0),
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         );
 
         IAccountKeychain.KeyInfo memory info = keychain.getKey(alice, keyId);
@@ -811,24 +919,33 @@ contract AccountKeychainTest is BaseTest {
     {
         vm.assume(keyId != address(0));
         vm.assume(token1 != token2);
+        // T3 caps spending limits to u128
+        amount1 = bound(amount1, 0, type(uint128).max);
+        amount2 = bound(amount2, 0, type(uint128).max);
 
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](2);
-        limits[0] = IAccountKeychain.TokenLimit({ token: token1, amount: amount1 });
-        limits[1] = IAccountKeychain.TokenLimit({ token: token2, amount: amount2 });
+        limits[0] = IAccountKeychain.TokenLimit({ token: token1, amount: amount1, period: 0 });
+        limits[1] = IAccountKeychain.TokenLimit({ token: token2, amount: amount2, period: 0 });
 
         keychain.authorizeKey(
             keyId,
             IAccountKeychain.SignatureType.P256,
-            uint64(block.timestamp + 1 days),
-            true,
-            limits
+            IAccountKeychain.KeyRestrictions({
+                expiry: uint64(block.timestamp + 1 days),
+                enforceLimits: true,
+                limits: limits,
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         );
 
         // Verify limits are stored
-        assertEq(keychain.getRemainingLimit(alice, keyId, token1), amount1);
-        assertEq(keychain.getRemainingLimit(alice, keyId, token2), amount2);
+        (uint256 remaining1,) = keychain.getRemainingLimitWithPeriod(alice, keyId, token1);
+        (uint256 remaining2,) = keychain.getRemainingLimitWithPeriod(alice, keyId, token2);
+        assertEq(remaining1, amount1);
+        assertEq(remaining2, amount2);
 
         vm.stopPrank();
     }
@@ -842,26 +959,34 @@ contract AccountKeychainTest is BaseTest {
         public
     {
         vm.assume(keyId != address(0));
+        // T3 caps spending limits to u128
+        initialLimit = bound(initialLimit, 0, type(uint128).max);
+        newLimit = bound(newLimit, 0, type(uint128).max);
 
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
         // First authorize the key
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](1);
-        limits[0] = IAccountKeychain.TokenLimit({ token: token, amount: initialLimit });
+        limits[0] = IAccountKeychain.TokenLimit({ token: token, amount: initialLimit, period: 0 });
 
         keychain.authorizeKey(
             keyId,
             IAccountKeychain.SignatureType.Secp256k1,
-            uint64(block.timestamp + 1 days),
-            true,
-            limits
+            IAccountKeychain.KeyRestrictions({
+                expiry: uint64(block.timestamp + 1 days),
+                enforceLimits: true,
+                limits: limits,
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         );
 
         // Update the spending limit
         keychain.updateSpendingLimit(keyId, token, newLimit);
 
         // Verify new limit
-        assertEq(keychain.getRemainingLimit(alice, keyId, token), newLimit);
+        (uint256 remaining,) = keychain.getRemainingLimitWithPeriod(alice, keyId, token);
+        assertEq(remaining, newLimit);
 
         vm.stopPrank();
     }
@@ -870,11 +995,19 @@ contract AccountKeychainTest is BaseTest {
         vm.assume(keyId != address(0));
         vm.assume(expiry > block.timestamp);
 
-        vm.startPrank(alice);
+        vm.startPrank(alice, alice);
 
-        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
-
-        keychain.authorizeKey(keyId, IAccountKeychain.SignatureType.P256, expiry, false, limits);
+        keychain.authorizeKey(
+            keyId,
+            IAccountKeychain.SignatureType.P256,
+            IAccountKeychain.KeyRestrictions({
+                expiry: expiry,
+                enforceLimits: false,
+                limits: new IAccountKeychain.TokenLimit[](0),
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
+        );
 
         // Verify key exists
         IAccountKeychain.KeyInfo memory infoBefore = keychain.getKey(alice, keyId);
@@ -912,8 +1045,8 @@ contract AccountKeychainTest is BaseTest {
         view
     {
         // Getting limit for non-existent key should return 0
-        uint256 limit = keychain.getRemainingLimit(account, keyId, token);
-        assertEq(limit, 0);
+        (uint256 remaining,) = keychain.getRemainingLimitWithPeriod(account, keyId, token);
+        assertEq(remaining, 0);
     }
 
     function testFuzz_KeyIsolationBetweenAccounts(
@@ -927,23 +1060,43 @@ contract AccountKeychainTest is BaseTest {
         vm.assume(account2 != address(0));
         vm.assume(account1 != account2);
         vm.assume(keyId != address(0));
+        vm.assume(account1.code.length == 0);
+        vm.assume(account2.code.length == 0);
 
         IAccountKeychain.TokenLimit[] memory limits1 = new IAccountKeychain.TokenLimit[](1);
-        limits1[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 1000e6 });
+        limits1[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 1000e6, period: 0 });
 
         IAccountKeychain.TokenLimit[] memory limits2 = new IAccountKeychain.TokenLimit[](1);
-        limits2[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 2000e6 });
+        limits2[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 2000e6, period: 0 });
 
         uint64 expiry1 = uint64(block.timestamp + 100);
         uint64 expiry2 = uint64(block.timestamp + 200);
 
         // Authorize same keyId for two different accounts
-        vm.prank(account1);
-        keychain.authorizeKey(keyId, IAccountKeychain.SignatureType.P256, expiry1, true, limits1);
-
-        vm.prank(account2);
+        vm.prank(account1, account1);
         keychain.authorizeKey(
-            keyId, IAccountKeychain.SignatureType.Secp256k1, expiry2, true, limits2
+            keyId,
+            IAccountKeychain.SignatureType.P256,
+            IAccountKeychain.KeyRestrictions({
+                expiry: expiry1,
+                enforceLimits: true,
+                limits: limits1,
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
+        );
+
+        vm.prank(account2, account2);
+        keychain.authorizeKey(
+            keyId,
+            IAccountKeychain.SignatureType.Secp256k1,
+            IAccountKeychain.KeyRestrictions({
+                expiry: expiry2,
+                enforceLimits: true,
+                limits: limits2,
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         );
 
         // Verify keys are isolated per account
@@ -956,8 +1109,10 @@ contract AccountKeychainTest is BaseTest {
         assertEq(info2.expiry, expiry2);
 
         // Verify spending limits are isolated
-        assertEq(keychain.getRemainingLimit(account1, keyId, USDC), 1000e6);
-        assertEq(keychain.getRemainingLimit(account2, keyId, USDC), 2000e6);
+        (uint256 limit1,) = keychain.getRemainingLimitWithPeriod(account1, keyId, USDC);
+        (uint256 limit2,) = keychain.getRemainingLimitWithPeriod(account2, keyId, USDC);
+        assertEq(limit1, 1000e6);
+        assertEq(limit2, 2000e6);
     }
 
 }

@@ -15,8 +15,12 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
     /// @dev Mapping of actor address to their placed order IDs
     mapping(address => uint128[]) private _placedOrders;
 
-    /// @dev Fixed set of valid ticks used for order placement
-    int16[10] private _ticks = [int16(10), 20, 30, 40, 50, 60, 70, 80, 90, 100];
+    /// @dev Canonical set of valid ticks used for order placement, flip tick selection,
+    /// and tick consistency checks. Kept small to concentrate liquidity so orders interact
+    /// during swaps. Dense cluster [-30..30] enables multi-tick swap traversal through both
+    /// bitmap words (symmetric across the word boundary at 0). Also covers: boundaries
+    /// (±2000) and int8 bitmap boundary (±1280 → compressed ±128).
+    int16[11] private _ticks = [int16(-2000), -1280, -30, -20, -10, 0, 10, 20, 30, 1280, 2000];
 
     /// @dev Expected next order ID, used to verify TEMPO-DEX1
     uint128 private _nextOrderId;
@@ -153,16 +157,19 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         address actor = _actors[actorRnd % _actors.length];
         address token = address(_tokens[tokenRnd % _tokens.length]);
         uint32 price = exchange.tickToPrice(tick);
+        uint256 scale = exchange.PRICE_SCALE();
 
-        // Calculate amount where (amount * price) % 100_000 == 0, above min order size
-        uint128 amount = uint128((100_000 / _gcd(uint256(price), 100_000)) * 10_000);
-        if (amount < 100_000_000) return;
+        // Calculate the smallest amount >= min order size where (amount * price) % PRICE_SCALE == 0
+        uint256 g = _gcd(uint256(price), scale);
+        uint256 step = scale / g;
+        uint256 minOrder = 100_000_000;
+        uint128 amount = uint128(step * ((minOrder + step - 1) / step));
 
         uint256 product = uint256(amount) * uint256(price);
-        if (product % 100_000 != 0) return;
+        assertEq(product % scale, 0, "TEMPO-DEX19: divisible amount construction failed");
 
         _ghostDivisibleEscrowCount++;
-        uint256 expectedEscrow = product / 100_000;
+        uint256 expectedEscrow = product / scale;
         _ensureFunds(actor, pathUSD, expectedEscrow + 1000);
 
         // Capture both external and internal balance before placing order
@@ -172,7 +179,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
 
         vm.prank(actor);
         uint128 orderId = exchange.place(token, amount, true, tick);
-        _nextOrderId++;
+        _assertNextOrderId(orderId);
 
         // Calculate total escrow from both external and internal balance changes
         uint256 externalAfter = pathUSD.balanceOf(actor);
@@ -198,6 +205,35 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
             a = t;
         }
         return a;
+    }
+
+    /// @dev Picks a flip tick from _ticks on the correct side of tick (strict inequality).
+    /// Returns (false, 0) if no valid flip tick exists (tick is at a boundary).
+    function _pickFlipTick(
+        int16 tick,
+        bool isBid,
+        uint256 rnd
+    )
+        internal
+        view
+        returns (bool ok, int16 flipTick)
+    {
+        uint256 count = 0;
+        for (uint256 i = 0; i < _ticks.length; i++) {
+            int16 t = _ticks[i];
+            if (isBid ? (t > tick) : (t < tick)) count++;
+        }
+        if (count == 0) return (false, int16(0));
+
+        uint256 k = rnd % count;
+        for (uint256 i = 0; i < _ticks.length; i++) {
+            int16 t = _ticks[i];
+            if (isBid ? (t > tick) : (t < tick)) {
+                if (k == 0) return (true, t);
+                k--;
+            }
+        }
+        revert("_pickFlipTick: unreachable");
     }
 
     /// @dev Helper to verify order was created correctly (TEMPO-DEX2)
@@ -381,12 +417,14 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
     /// @param tickRnd Random seed for selecting tick
     /// @param tokenRnd Random seed for selecting token
     /// @param isBid True for bid flip order, false for ask flip order
+    /// @param flipTickRnd Random seed for selecting flip tick from _ticks
     function placeFlipOrder(
         uint256 actorRnd,
         uint128 amount,
         uint256 tickRnd,
         uint256 tokenRnd,
-        bool isBid
+        bool isBid,
+        uint256 flipTickRnd
     )
         external
     {
@@ -394,6 +432,10 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         address actor = _actors[actorRnd % _actors.length];
         TIP20 token = _tokens[tokenRnd % _tokens.length];
         amount = uint128(bound(amount, 100_000_000, 10_000_000_000));
+
+        // DEX-09: Select flip tick from _ticks on the correct side of tick
+        (bool ok, int16 flipTick) = _pickFlipTick(tick, isBid, flipTickRnd);
+        if (!ok) return;
 
         // Ensure funds for the token being escrowed (pathUSD for bids, base token for asks)
         // For bids, escrow = baseToQuoteCeil(amount, tick), so we need to ensure enough funds
@@ -407,15 +449,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         }
 
         vm.startPrank(actor);
-        uint128 orderId;
-        int16 flipTick;
-        if (isBid) {
-            flipTick = 200;
-            orderId = exchange.placeFlip(address(token), amount, true, tick, flipTick);
-        } else {
-            flipTick = -200;
-            orderId = exchange.placeFlip(address(token), amount, false, tick, flipTick);
-        }
+        uint128 orderId = exchange.placeFlip(address(token), amount, isBid, tick, flipTick);
         _assertNextOrderId(orderId);
 
         // TEMPO-DEX17: Flip order constraints
@@ -478,7 +512,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
 
         // Check if swapper has active orders - if so, skip TEMPO-DEX6 balance checks
         // because self-trade makes the accounting complex (maker proceeds returned to swapper)
-        bool swapperHasOrders = _placedOrders[swapper].length > 0;
+        bool swapperHasOrders = _hasActiveOrders(swapper);
 
         // Capture total balances (external + internal) before swap for TEMPO-DEX6
         SwapBalanceSnapshot memory before = SwapBalanceSnapshot({
@@ -791,6 +825,18 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         }
     }
 
+    /// @notice Checks whether an actor has any currently active (not filled/cancelled) orders
+    /// @dev Scans tracked order IDs (including flip-generated IDs captured from swap logs)
+    function _hasActiveOrders(address actor) internal view returns (bool) {
+        uint128[] storage ids = _placedOrders[actor];
+        for (uint256 i = ids.length; i > 0; i--) {
+            try exchange.getOrder(ids[i - 1]) returns (IStablecoinDEX.Order memory) {
+                return true;
+            } catch { }
+        }
+        return false;
+    }
+
     /// @notice Computes expected escrowed amounts by iterating through all orders
     /// @dev Iterates all order IDs to catch flip-created orders not in _placedOrders
     /// @return pathUsdEscrowed Total pathUSD escrowed in active bid orders
@@ -861,7 +907,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         ) returns (
             uint128 amountOut
         ) {
-            uint64 ordersFilled = _countOrderFilledEvents();
+            uint64 ordersFilled = _processSwapLogs();
             // For multi-hop swaps, each hop can add dust from rounding (not just per order)
             uint64 hops = uint64(_findRoute(before.tokenIn, before.tokenOut));
             _maxDust += ordersFilled + hops;
@@ -922,7 +968,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         ) returns (
             uint128 amountIn
         ) {
-            uint64 ordersFilled = _countOrderFilledEvents();
+            uint64 ordersFilled = _processSwapLogs();
             // For multi-hop swaps, each hop can add dust from rounding (not just per order)
             uint64 hops = uint64(_findRoute(before.tokenIn, before.tokenOut));
             _maxDust += ordersFilled + hops;
@@ -1020,50 +1066,52 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
     /// @dev Tests TEMPO-DEX11 (liquidity matches orders), TEMPO-DEX14 (head/tail consistency), TEMPO-DEX15 (bitmap)
     /// @param baseToken The base token address for the trading pair
     function _assertTickLevelConsistency(address baseToken) internal view {
-        // Check a sample of ticks for consistency
         for (uint256 i = 0; i < _ticks.length; i++) {
-            int16 tick = _ticks[i];
+            _assertTickConsistency(baseToken, _ticks[i]);
+        }
+    }
 
-            // Check bid tick level
-            (uint128 bidHead, uint128 bidTail, uint128 bidLiquidity) =
-                exchange.getTickLevel(baseToken, tick, true);
-            if (bidLiquidity > 0) {
-                // TEMPO-DEX11: If liquidity > 0, head should be non-zero
-                assertTrue(bidHead != 0, "TEMPO-DEX11: bid tick has liquidity but no head");
-                assertTrue(bidTail != 0, "TEMPO-DEX11: bid tick has liquidity but no tail");
-                // TEMPO-DEX15: Bitmap correctness verified indirectly via bestBidTick/bestAskTick in _assertBestTickConsistency
-            }
-            if (bidHead == 0) {
-                // If head is 0, tail should also be 0 and liquidity should be 0
-                assertEq(bidTail, 0, "TEMPO-DEX14: bid tail non-zero but head is zero");
-                assertEq(bidLiquidity, 0, "TEMPO-DEX11: bid liquidity non-zero but head is zero");
-            } else {
-                // TEMPO-DEX16: head.prev should be 0
-                IStablecoinDEX.Order memory headOrder = exchange.getOrder(bidHead);
-                assertEq(headOrder.prev, 0, "TEMPO-DEX16: bid head.prev is not None");
-                // TEMPO-DEX16: tail.next should be 0
-                IStablecoinDEX.Order memory tailOrder = exchange.getOrder(bidTail);
-                assertEq(tailOrder.next, 0, "TEMPO-DEX16: bid tail.next is not None");
-            }
+    /// @dev Checks bid and ask consistency for a single tick
+    function _assertTickConsistency(address baseToken, int16 tick) internal view {
+        // Check bid tick level
+        (uint128 bidHead, uint128 bidTail, uint128 bidLiquidity) =
+            exchange.getTickLevel(baseToken, tick, true);
+        if (bidLiquidity > 0) {
+            // TEMPO-DEX11: If liquidity > 0, head should be non-zero
+            assertTrue(bidHead != 0, "TEMPO-DEX11: bid tick has liquidity but no head");
+            assertTrue(bidTail != 0, "TEMPO-DEX11: bid tick has liquidity but no tail");
+            // TEMPO-DEX15: Bitmap correctness verified indirectly via bestBidTick/bestAskTick in _assertBestTickConsistency
+        }
+        if (bidHead == 0) {
+            // If head is 0, tail should also be 0 and liquidity should be 0
+            assertEq(bidTail, 0, "TEMPO-DEX14: bid tail non-zero but head is zero");
+            assertEq(bidLiquidity, 0, "TEMPO-DEX11: bid liquidity non-zero but head is zero");
+        } else {
+            // TEMPO-DEX16: head.prev should be 0
+            IStablecoinDEX.Order memory headOrder = exchange.getOrder(bidHead);
+            assertEq(headOrder.prev, 0, "TEMPO-DEX16: bid head.prev is not None");
+            // TEMPO-DEX16: tail.next should be 0
+            IStablecoinDEX.Order memory tailOrder = exchange.getOrder(bidTail);
+            assertEq(tailOrder.next, 0, "TEMPO-DEX16: bid tail.next is not None");
+        }
 
-            // Check ask tick level
-            (uint128 askHead, uint128 askTail, uint128 askLiquidity) =
-                exchange.getTickLevel(baseToken, tick, false);
-            if (askLiquidity > 0) {
-                assertTrue(askHead != 0, "TEMPO-DEX11: ask tick has liquidity but no head");
-                assertTrue(askTail != 0, "TEMPO-DEX11: ask tick has liquidity but no tail");
-            }
-            if (askHead == 0) {
-                assertEq(askTail, 0, "TEMPO-DEX14: ask tail non-zero but head is zero");
-                assertEq(askLiquidity, 0, "TEMPO-DEX11: ask liquidity non-zero but head is zero");
-            } else {
-                // TEMPO-DEX16: head.prev should be 0
-                IStablecoinDEX.Order memory headOrder = exchange.getOrder(askHead);
-                assertEq(headOrder.prev, 0, "TEMPO-DEX16: ask head.prev is not None");
-                // TEMPO-DEX16: tail.next should be 0
-                IStablecoinDEX.Order memory tailOrder = exchange.getOrder(askTail);
-                assertEq(tailOrder.next, 0, "TEMPO-DEX16: ask tail.next is not None");
-            }
+        // Check ask tick level
+        (uint128 askHead, uint128 askTail, uint128 askLiquidity) =
+            exchange.getTickLevel(baseToken, tick, false);
+        if (askLiquidity > 0) {
+            assertTrue(askHead != 0, "TEMPO-DEX11: ask tick has liquidity but no head");
+            assertTrue(askTail != 0, "TEMPO-DEX11: ask tick has liquidity but no tail");
+        }
+        if (askHead == 0) {
+            assertEq(askTail, 0, "TEMPO-DEX14: ask tail non-zero but head is zero");
+            assertEq(askLiquidity, 0, "TEMPO-DEX11: ask liquidity non-zero but head is zero");
+        } else {
+            // TEMPO-DEX16: head.prev should be 0
+            IStablecoinDEX.Order memory headOrder = exchange.getOrder(askHead);
+            assertEq(headOrder.prev, 0, "TEMPO-DEX16: ask head.prev is not None");
+            // TEMPO-DEX16: tail.next should be 0
+            IStablecoinDEX.Order memory tailOrder = exchange.getOrder(askTail);
+            assertEq(tailOrder.next, 0, "TEMPO-DEX16: ask tail.next is not None");
         }
     }
 
@@ -1104,15 +1152,21 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         _nextOrderId += 1;
     }
 
-    /// @notice Counts the number of OrderFilled events in the recorded logs
+    /// @notice Processes swap logs: counts fills and tracks any newly created orders
     /// @dev Must be called after vm.recordLogs() and swap execution
-    /// @return count The number of OrderFilled events emitted
-    function _countOrderFilledEvents() internal returns (uint64 count) {
+    /// @return count The number of OrderFilled events emitted by the exchange
+    function _processSwapLogs() internal returns (uint64 count) {
         Vm.Log[] memory logs = vm.getRecordedLogs();
         bytes32 orderFilledSelector = IStablecoinDEX.OrderFilled.selector;
+        bytes32 orderPlacedSelector = IStablecoinDEX.OrderPlaced.selector;
         for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].emitter != address(exchange) || logs[i].topics.length == 0) continue;
             if (logs[i].topics[0] == orderFilledSelector) {
                 count++;
+            } else if (logs[i].topics[0] == orderPlacedSelector && logs[i].topics.length >= 3) {
+                uint128 orderId = uint128(uint256(logs[i].topics[1]));
+                address maker = address(uint160(uint256(logs[i].topics[2])));
+                _placedOrders[maker].push(orderId);
             }
         }
     }

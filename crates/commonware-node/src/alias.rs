@@ -2,7 +2,7 @@
 
 pub(crate) mod marshal {
     use commonware_consensus::{
-        marshal,
+        marshal::{core, standard::Standard},
         simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization},
         types::FixedEpocher,
     };
@@ -13,9 +13,9 @@ pub(crate) mod marshal {
 
     use crate::consensus::{Digest, block::Block};
 
-    pub(crate) type Actor<TContext> = marshal::Actor<
+    pub(crate) type Actor<TContext> = core::Actor<
         TContext,
-        Block,
+        Standard<Block>,
         crate::epoch::SchemeProvider,
         immutable::Archive<TContext, Digest, Finalization<Scheme<PublicKey, MinSig>, Digest>>,
         immutable::Archive<TContext, Digest, Block>,
@@ -24,5 +24,5 @@ pub(crate) mod marshal {
         Exact,
     >;
 
-    pub(crate) type Mailbox = marshal::Mailbox<Scheme<PublicKey, MinSig>, Block>;
+    pub(crate) type Mailbox = core::Mailbox<Scheme<PublicKey, MinSig>, Standard<Block>>;
 }

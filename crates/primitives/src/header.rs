@@ -49,9 +49,6 @@ impl AsRef<Self> for TempoHeader {
     }
 }
 
-#[cfg(feature = "serde-bincode-compat")]
-impl reth_primitives_traits::serde_bincode_compat::RlpBincode for TempoHeader {}
-
 impl BlockHeader for TempoHeader {
     fn parent_hash(&self) -> B256 {
         self.inner.parent_hash()
@@ -138,67 +135,96 @@ impl BlockHeader for TempoHeader {
     }
 }
 
-#[cfg(feature = "reth")]
-impl reth_primitives_traits::InMemorySize for TempoHeader {
-    fn size(&self) -> usize {
-        let Self {
-            inner,
-            general_gas_limit,
-            timestamp_millis_part,
-            shared_gas_limit,
-        } = self;
-        inner.size()
-            + general_gas_limit.size()
-            + timestamp_millis_part.size()
-            + shared_gas_limit.size()
-    }
-}
-
 impl Sealable for TempoHeader {
     fn hash_slow(&self) -> B256 {
         keccak256(alloy_rlp::encode(self))
     }
 }
 
-#[cfg(feature = "reth")]
-impl reth_primitives_traits::BlockHeader for TempoHeader {}
+#[cfg(all(test, feature = "reth-codec"))]
+mod tests {
+    use super::*;
+    use alloy_primitives::{address, b256, bytes, hex};
+    use reth_codecs::Compact;
 
-#[cfg(feature = "reth")]
-impl reth_primitives_traits::header::HeaderMut for TempoHeader {
-    fn set_parent_hash(&mut self, hash: B256) {
-        self.inner.set_parent_hash(hash);
+    /// Ensures backwards compatibility of the compact bitflag.
+    ///
+    /// If this fails because unused bits dropped to zero, new fields should be added via an
+    /// extension type (e.g. `Option<TempoHeaderExt>`) rather than directly to [`TempoHeader`].
+    ///
+    /// See reth's `HeaderExt` pattern:
+    /// <https://github.com/paradigmxyz/reth-core/blob/0476d1bc4b71f3c3b080622be297edd91ee4e70c/crates/codecs/src/alloy/header.rs>
+    #[test]
+    fn tempo_header_has_unused_compact_bits() {
+        assert_ne!(
+            TempoHeader::bitflag_unused_bits(),
+            0,
+            "TempoHeader compact bitflag has no unused bits left — use an extension type"
+        );
     }
 
-    fn set_block_number(&mut self, number: BlockNumber) {
-        self.inner.set_block_number(number);
-    }
+    #[test]
+    fn tempo_header_compact_roundtrip() {
+        let header = TempoHeader {
+            general_gas_limit: 30_000_000,
+            shared_gas_limit: 10_000_000,
+            timestamp_millis_part: 500,
+            inner: Header {
+                parent_hash: b256!(
+                    "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                ),
+                ommers_hash: b256!(
+                    "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347"
+                ),
+                beneficiary: address!("0x000000000000000000000000000000000000beef"),
+                state_root: b256!(
+                    "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                ),
+                transactions_root: b256!(
+                    "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                ),
+                receipts_root: b256!(
+                    "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                ),
+                logs_bloom: Bloom::with_last_byte(0xff),
+                difficulty: U256::from(1u64),
+                number: 1000,
+                gas_limit: 30_000_000,
+                gas_used: 15_000_000,
+                timestamp: 1_700_000_000,
+                extra_data: bytes!("deadbeef"),
+                mix_hash: b256!(
+                    "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                ),
+                nonce: B64::from(42u64),
+                base_fee_per_gas: Some(7),
+                withdrawals_root: Some(b256!(
+                    "0x1111111111111111111111111111111111111111111111111111111111111111"
+                )),
+                blob_gas_used: Some(131072),
+                excess_blob_gas: Some(65536),
+                parent_beacon_block_root: Some(b256!(
+                    "0x2222222222222222222222222222222222222222222222222222222222222222"
+                )),
+                requests_hash: Some(b256!(
+                    "0x3333333333333333333333333333333333333333333333333333333333333333"
+                )),
+            },
+        };
 
-    fn set_timestamp(&mut self, timestamp: u64) {
-        self.inner.set_timestamp(timestamp);
-    }
+        let expected = hex!(
+            "340201c9c38098968001f403a1a1f8aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347000000000000000000000000000000000000beefbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd1111111111111111111111111111111111111111111111111111111111111111000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ff0103e801c9c380e4e1c06553f100eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee2a01070302000003010000222222222222222222222222222222222222222222222222222222222222222221013333333333333333333333333333333333333333333333333333333333333333deadbeef"
+        );
 
-    fn set_state_root(&mut self, state_root: B256) {
-        self.inner.set_state_root(state_root);
-    }
+        let mut buf = vec![];
+        let len = header.to_compact(&mut buf);
+        assert_eq!(
+            buf, expected,
+            "compact encoding changed — this breaks backwards compatibility"
+        );
+        assert_eq!(len, expected.len());
 
-    fn set_difficulty(&mut self, difficulty: U256) {
-        self.inner.set_difficulty(difficulty);
-    }
-}
-
-#[cfg(feature = "reth-codec")]
-impl reth_db_api::table::Compress for TempoHeader {
-    type Compressed = Vec<u8>;
-
-    fn compress_to_buf<B: alloy_primitives::bytes::BufMut + AsMut<[u8]>>(&self, buf: &mut B) {
-        let _ = reth_codecs::Compact::to_compact(self, buf);
-    }
-}
-
-#[cfg(feature = "reth-codec")]
-impl reth_db_api::table::Decompress for TempoHeader {
-    fn decompress(value: &[u8]) -> Result<Self, reth_db_api::DatabaseError> {
-        let (obj, _) = reth_codecs::Compact::from_compact(value, value.len());
-        Ok(obj)
+        let (decoded, _) = TempoHeader::from_compact(&expected, expected.len());
+        assert_eq!(decoded, header);
     }
 }

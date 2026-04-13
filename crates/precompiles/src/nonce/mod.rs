@@ -1,3 +1,8 @@
+//! 2D nonce management precompile and expiring nonce replay protection,
+//! enabling concurrent transaction execution as part of [Tempo Transactions].
+//!
+//! [Tempo Transactions]: <https://docs.tempo.xyz/protocol/transactions>
+
 pub mod dispatch;
 
 pub use tempo_contracts::precompiles::INonce;
@@ -24,7 +29,7 @@ pub const EXPIRING_NONCE_MAX_EXPIRY_SECS: u64 = 30;
 /// ```solidity
 /// contract Nonce {
 ///     mapping(address => mapping(uint256 => uint64)) public nonces;      // slot 0
-///     
+///
 ///     // Expiring nonce storage (for hash-based replay protection)
 ///     mapping(bytes32 => uint64) public expiringNonceSeen;               // slot 1: txHash => expiry
 ///     mapping(uint32 => bytes32) public expiringNonceRing;               // slot 2: circular buffer of tx hashes
@@ -39,6 +44,9 @@ pub const EXPIRING_NONCE_MAX_EXPIRY_SECS: u64 = 30;
 ///
 /// Note: Protocol nonce (key 0) is stored directly in account state, not here.
 /// Only user nonce keys (1-N) are managed by this precompile.
+///
+/// The struct fields define the on-chain storage layout; the `#[contract]` macro generates the
+/// storage handlers which provide an ergonomic way to interact with the EVM state.
 #[contract(addr = NONCE_PRECOMPILE_ADDRESS)]
 pub struct NonceManager {
     nonces: Mapping<Address, Mapping<U256, u64>>,
@@ -48,12 +56,15 @@ pub struct NonceManager {
 }
 
 impl NonceManager {
-    /// Initializes the nonce manager contract.
+    /// Initializes the nonce manager precompile storage layout.
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
     }
 
-    /// Get the nonce for a specific account and nonce key
+    /// Returns the current nonce for `account` at the given `nonceKey`.
+    ///
+    /// # Errors
+    /// - `ProtocolNonceNotSupported` — nonce key 0 is the protocol nonce and cannot be read here
     pub fn get_nonce(&self, call: INonce::getNonceCall) -> Result<u64> {
         // Protocol nonce (key 0) is stored in account state, not in this precompile
         // Users should query account nonce directly, not through this precompile
@@ -65,7 +76,12 @@ impl NonceManager {
         self.nonces[call.account][call.nonceKey].read()
     }
 
-    /// Internal: Increment nonce for a specific account and nonce key
+    /// Increments the 2D nonce for `account` at `nonce_key` and returns the new value, enabling
+    /// concurrent transaction execution. Key `0` is reserved for the protocol nonce.
+    ///
+    /// # Errors
+    /// - `InvalidNonceKey` — `nonce_key` is 0, which is reserved for the protocol nonce
+    /// - `NonceOverflow` — the current nonce value is `u64::MAX` and cannot be incremented
     pub fn increment_nonce(&mut self, account: Address, nonce_key: U256) -> Result<u64> {
         if nonce_key == 0 {
             return Err(NonceError::invalid_nonce_key().into());
@@ -88,47 +104,48 @@ impl NonceManager {
         Ok(new_nonce)
     }
 
-    /// Returns the storage slot for a given tx hash in the expiring nonce seen set.
-    /// This can be used by the transaction pool to check if a tx hash has been seen.
-    pub fn expiring_seen_slot(&self, tx_hash: B256) -> U256 {
-        self.expiring_nonce_seen[tx_hash].slot()
-    }
-
-    /// Checks if a tx hash has been seen and is still valid (not expired).
-    pub fn is_expiring_nonce_seen(&self, tx_hash: B256, now: u64) -> Result<bool> {
-        let expiry = self.expiring_nonce_seen[tx_hash].read()?;
+    /// Checks if a hash has been seen and is still valid (not expired).
+    /// NOTE: internally used by the transaction pool.
+    pub fn is_expiring_nonce_seen(&self, hash: B256, now: u64) -> Result<bool> {
+        let expiry = self.expiring_nonce_seen[hash].read()?;
         Ok(expiry != 0 && expiry > now)
     }
 
-    /// Checks and marks an expiring nonce transaction.
+    /// Validates and records an expiring nonce transaction. Uses a
+    /// circular buffer that overwrites expired entries as the pointer
+    /// advances. The hash is `keccak256(encode_for_signing || sender)`,
+    /// invariant to fee payer changes.
     ///
     /// Uses a circular buffer that overwrites expired entries as the pointer advances.
     ///
+    /// The `expiring_nonce_hash` parameter is
+    /// (`keccak256(encode_for_signing || sender)`), which is invariant to fee payer changes.
+    ///
     /// This is called during transaction execution to:
     /// 1. Validate the expiry is within the allowed window
-    /// 2. Check for replay (tx hash already seen and not expired)
+    /// 2. Check for replay (hash already seen and not expired)
     /// 3. Check if we can evict the entry at current pointer (must be expired or empty)
-    /// 4. Mark the tx hash as seen
+    /// 4. Mark the hash as seen
     ///
-    /// Returns an error if:
-    /// - The expiry is not within (now, now + EXPIRING_NONCE_MAX_EXPIRY_SECS]
-    /// - The tx hash has already been seen and not expired
-    /// - The entry at current pointer is not expired (buffer full of valid entries)
+    /// # Errors
+    /// - `InvalidExpiringNonceExpiry` — `valid_before` not in (now, now + EXPIRING_NONCE_MAX_EXPIRY_SECS]
+    /// - `ExpiringNonceReplay` — transaction hash is already recorded and has not yet expired
+    /// - `ExpiringNonceSetFull` — the circular buffer slot holds an unexpired entry that can't be evicted
     pub fn check_and_mark_expiring_nonce(
         &mut self,
-        tx_hash: B256,
+        expiring_nonce_hash: B256,
         valid_before: u64,
     ) -> Result<()> {
         let now: u64 = self.storage.timestamp().saturating_to();
 
-        // 1. Validate expiry window: must be in (now, now + max_skew]
+        // 1. Validate expiry window: must be in (now, now + EXPIRING_NONCE_MAX_EXPIRY_SECS]
         if valid_before <= now || valid_before > now.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS)
         {
             return Err(NonceError::invalid_expiring_nonce_expiry().into());
         }
 
-        // 2. Replay check: reject if tx hash is already seen and not expired
-        let seen_expiry = self.expiring_nonce_seen[tx_hash].read()?;
+        // 2. Replay check: reject if hash is already seen and not expired
+        let seen_expiry = self.expiring_nonce_seen[expiring_nonce_hash].read()?;
         if seen_expiry != 0 && seen_expiry > now {
             return Err(NonceError::expiring_nonce_replay().into());
         }
@@ -152,8 +169,8 @@ impl NonceManager {
         }
 
         // 5. Insert new entry
-        self.expiring_nonce_ring[idx].write(tx_hash)?;
-        self.expiring_nonce_seen[tx_hash].write(valid_before)?;
+        self.expiring_nonce_ring[idx].write(expiring_nonce_hash)?;
+        self.expiring_nonce_seen[expiring_nonce_hash].write(valid_before)?;
 
         // 6. Advance pointer (wraps at CAPACITY, not u32::MAX)
         let next = if ptr + 1 >= EXPIRING_NONCE_SET_CAPACITY {
@@ -336,7 +353,7 @@ mod tests {
                 TempoPrecompileError::NonceError(NonceError::invalid_expiring_nonce_expiry())
             );
 
-            // valid_before at exactly max_skew should succeed
+            // valid_before at exactly EXPIRING_NONCE_MAX_EXPIRY_SECS should succeed
             mgr.check_and_mark_expiring_nonce(tx_hash, now + 30)?;
 
             Ok(())
@@ -379,26 +396,6 @@ mod tests {
             // tx_hash1 should now be fully evicted (since it was at ring position 0)
             // and tx_hash2 replaces it
             assert!(mgr.is_expiring_nonce_seen(tx_hash2, new_now)?);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_expiring_seen_slot() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        StorageCtx::enter(&mut storage, || {
-            let mgr = NonceManager::new();
-
-            let tx_hash = B256::repeat_byte(0x55);
-            let slot = mgr.expiring_seen_slot(tx_hash);
-
-            // Slot should be deterministic
-            assert_eq!(slot, mgr.expiring_seen_slot(tx_hash));
-
-            // Different hashes should have different slots
-            let other_hash = B256::repeat_byte(0x66);
-            assert_ne!(slot, mgr.expiring_seen_slot(other_hash));
 
             Ok(())
         })

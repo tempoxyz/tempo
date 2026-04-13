@@ -15,10 +15,13 @@ workspace = true
 [dependencies]
 base64.workspace = true
 url.workspace = true
+tempo-ext.workspace = true
 tempo-eyre.workspace = true
 tempo-node = { workspace = true, features = ["default"] }
 tempo-commonware-node.workspace = true
 tempo-commonware-node-config.workspace = true
+tempo-precompiles.workspace = true
+tempo-validator-config.workspace = true
 tempo-chainspec = { workspace = true, features = ["default"] }
 tempo-consensus.workspace = true
 tempo-evm.workspace = true
@@ -41,6 +44,7 @@ alloy-provider = { workspace = true, features = [
 	"reqwest-rustls-tls",
 ] }
 alloy-rpc-types-eth.workspace = true
+alloy-signer-local.workspace = true
 alloy-sol-types.workspace = true
 commonware-codec.workspace = true
 commonware-consensus.workspace = true
@@ -50,30 +54,42 @@ commonware-runtime = { workspace = true, features = ["external"] }
 commonware-utils.workspace = true
 futures = { workspace = true, features = ["executor"] }
 rand_08.workspace = true
+reth-chainspec.workspace = true
+reth-cli.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tempo-alloy.workspace = true
+tempo-alloy = { workspace = true, features = ["reth"] }
 tempo-contracts.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
 tempo-dkg-onchain-artifacts.workspace = true
-reth-chainspec.workspace = true
 reth-cli-commands.workspace = true
 reth-cli-runner.workspace = true
 reth-cli-util.workspace = true
 reth-eth-wire-types.workspace = true
 rustls.workspace = true
+reth-db-api.workspace = true
+reth-etl.workspace = true
 reth-ethereum = { workspace = true, features = ["full", "cli", "network"] }
 reth-ethereum-cli.workspace = true
+reth-network-peers.workspace = true
 reth-node-builder.workspace = true
+reth-primitives-traits.workspace = true
+reth-provider.workspace = true
 reth-rpc-server-types.workspace = true
+secp256k1.workspace = true
+reth-storage-api.workspace = true
+reth-trie.workspace = true
+reth-trie-db.workspace = true
 clap.workspace = true
 eyre.workspace = true
 jiff.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
+opentelemetry-otlp = { version = "0.31", default-features = false, optional = true }
 pyroscope = { workspace = true, optional = true }
 pyroscope_pprofrs = { workspace = true, optional = true }
+tracy-client = { workspace = true, optional = true }
 
 [[bin]]
 name = "tempo"
@@ -95,6 +111,8 @@ otlp = [
 	"reth-ethereum-cli/otlp-logs",
 	"reth-ethereum/otlp",
 	"tempo-node/otlp",
+	"dep:opentelemetry-otlp",
+	"opentelemetry-otlp/reqwest-rustls",
 ]
 
 pyroscope = ["dep:pyroscope", "dep:pyroscope_pprofrs"]
@@ -108,6 +126,7 @@ jemalloc = [
 	"reth-cli-util/jemalloc",
 	"reth-ethereum-cli/jemalloc",
 	"reth-ethereum/jemalloc",
+	"reth-provider/jemalloc",
 	"tempo-node/jemalloc",
 ]
 jemalloc-prof = [
@@ -117,10 +136,18 @@ jemalloc-prof = [
 	"tempo-node/jemalloc-prof",
 	"reth-ethereum/jemalloc-prof",
 ]
+jemalloc-symbols = [
+	"jemalloc-prof",
+	"reth-ethereum-cli/jemalloc-symbols",
+	"tempo-node/jemalloc-symbols",
+	"reth-ethereum/jemalloc-symbols",
+]
 
 tracy = [
 	"reth-ethereum-cli/tracy",
 	"tempo-node/tracy",
+	"dep:tracy-client",
+	"tracy-client/ondemand",
 ]
 tracy-allocator = [
 	"reth-cli-util/tracy-allocator",
@@ -152,3 +179,4 @@ min-trace-logs = [
 	"reth-ethereum-cli/min-trace-logs",
 	"tempo-node/min-trace-logs",
 ]
+trie-debug = ["tempo-node/trie-debug"]

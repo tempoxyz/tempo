@@ -1,7 +1,7 @@
 use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::{EvmInternals, EvmInternalsError};
 use revm::{
-    context::{Block, CfgEnv},
+    context::{Block, CfgEnv, journaled_state::JournalCheckpoint},
     context_interface::cfg::{GasParams, gas},
     state::{AccountInfo, Bytecode},
 };
@@ -9,6 +9,9 @@ use tempo_chainspec::hardfork::TempoHardfork;
 
 use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
 
+/// Production [`PrecompileStorageProvider`] backed by the live EVM journal.
+///
+/// Wraps `EvmInternals` and tracks gas consumption for storage operations.
 pub struct EvmPrecompileStorageProvider<'a> {
     internals: EvmInternals<'a>,
     gas_remaining: u64,
@@ -17,10 +20,13 @@ pub struct EvmPrecompileStorageProvider<'a> {
     spec: TempoHardfork,
     is_static: bool,
     gas_params: GasParams,
+    /// Debug-only LIFO checkpoint validator. See [`Self::assert_lifo`].
+    #[cfg(debug_assertions)]
+    checkpoint_stack: Vec<(usize, usize)>,
 }
 
 impl<'a> EvmPrecompileStorageProvider<'a> {
-    /// Create a new storage provider with a specific gas limit.
+    /// Creates a new storage provider with the given gas limit, hardfork, and static flag.
     pub fn new(
         internals: EvmInternals<'a>,
         gas_limit: u64,
@@ -36,15 +42,17 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             spec,
             is_static,
             gas_params,
+            #[cfg(debug_assertions)]
+            checkpoint_stack: Vec::new(),
         }
     }
 
-    /// Create a new storage provider with maximum gas limit and non static context
+    /// Creates a new storage provider with maximum gas limit and non-static context.
     pub fn new_max_gas(internals: EvmInternals<'a>, cfg: &CfgEnv<TempoHardfork>) -> Self {
         Self::new(internals, u64::MAX, cfg.spec, false, cfg.gas_params.clone())
     }
 
-    /// Create a new storage provider with a specific gas limit.
+    /// Creates a new storage provider with the given gas limit, deriving spec from `cfg`.
     pub fn new_with_gas_limit(
         internals: EvmInternals<'a>,
         cfg: &CfgEnv<TempoHardfork>,
@@ -237,6 +245,55 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     fn is_static(&self) -> bool {
         self.is_static
     }
+
+    #[inline]
+    fn checkpoint(&mut self) -> JournalCheckpoint {
+        let cp = self.internals.checkpoint();
+        #[cfg(debug_assertions)]
+        self.track_checkpoint(&cp);
+        cp
+    }
+
+    #[inline]
+    fn checkpoint_commit(&mut self, _checkpoint: JournalCheckpoint) {
+        #[cfg(debug_assertions)]
+        self.assert_lifo(&_checkpoint, "commit");
+        self.internals.checkpoint_commit()
+    }
+
+    #[inline]
+    fn checkpoint_revert(&mut self, checkpoint: JournalCheckpoint) {
+        #[cfg(debug_assertions)]
+        self.assert_lifo(&checkpoint, "revert");
+        self.internals.checkpoint_revert(checkpoint)
+    }
+}
+
+/// LIFO checkpoint validation (debug builds only).
+///
+/// Since `EvmInternals` doesn't expose revm's journal depth, we mirror it by
+/// recording each checkpoint's (`journal_i`, `log_i`) on creation and asserting
+/// that commits/reverts always resolve the most recent checkpoint first.
+#[cfg(debug_assertions)]
+impl EvmPrecompileStorageProvider<'_> {
+    /// Records a newly created checkpoint for later LIFO validation.
+    fn track_checkpoint(&mut self, cp: &JournalCheckpoint) {
+        self.checkpoint_stack.push((cp.journal_i, cp.log_i));
+    }
+
+    /// Panics if `cp` is not the most recently created checkpoint.
+    fn assert_lifo(&mut self, cp: &JournalCheckpoint, op: &str) {
+        let top = self
+            .checkpoint_stack
+            .pop()
+            .unwrap_or_else(|| panic!("checkpoint_{op}: no active checkpoint"));
+
+        assert_eq!(
+            (cp.journal_i, cp.log_i),
+            top,
+            "out-of-order checkpoint {op} (expected top of stack)"
+        );
+    }
 }
 
 impl From<EvmInternalsError> for TempoPrecompileError {
@@ -253,11 +310,14 @@ pub fn deduct_gas(gas: &mut u64, additional_cost: u64) -> Result<(), TempoPrecom
         .ok_or(TempoPrecompileError::OutOfGas)?;
     Ok(())
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::{address, b256, bytes};
+    use alloy::primitives::{B256, address, b256, bytes, keccak256};
     use alloy_evm::{EvmEnv, EvmFactory, EvmInternals, revm::context::Host};
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
     use revm::{
         database::{CacheDB, EmptyDB},
         interpreter::StateLoad,
@@ -540,6 +600,82 @@ mod tests {
         // Verify they are independent
         assert_eq!(provider.sload(address, key)?, persistent_value);
         assert_eq!(provider.tload(address, key)?, transient_value);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_keccak256_gas() -> eyre::Result<()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
+        let ctx = evm.ctx_mut();
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
+
+        // 1 word: KECCAK256(30) + KECCAK256WORD(6) * ceil(11/32) = 36
+        let data = b"hello world";
+        assert_eq!(provider.keccak256(data)?, keccak256(data));
+        assert_eq!(provider.gas_used(), 36);
+
+        // 2 words: 30 + 6*2 = 42, cumulative = 78
+        provider.keccak256(&[0u8; 64])?;
+        assert_eq!(provider.gas_used(), 78);
+        std::mem::drop(provider);
+
+        // OOG: 30 gas is not enough (needs 36 for 1 word)
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+        let mut provider =
+            EvmPrecompileStorageProvider::new_with_gas_limit(evm_internals, &ctx.cfg, 30);
+        assert!(matches!(
+            provider.keccak256(b"hello"),
+            Err(TempoPrecompileError::OutOfGas)
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_recover_signer_gas() -> eyre::Result<()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
+        let ctx = evm.ctx_mut();
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
+
+        // Invalid v → None, gas still charged
+        assert!(
+            provider
+                .recover_signer(B256::ZERO, 0, B256::ZERO, B256::ZERO)?
+                .is_none()
+        );
+        assert_eq!(provider.gas_used(), crate::ECRECOVER_GAS);
+
+        // Valid signature → correct recovery
+        let signer = PrivateKeySigner::random();
+        let digest = keccak256(b"test message");
+        let sig = signer.sign_hash_sync(&digest).unwrap();
+        let v = sig.v() as u8 + 27;
+        let r: B256 = sig.r().into();
+        let s: B256 = sig.s().into();
+        assert_eq!(
+            provider.recover_signer(digest, v, r, s)?,
+            Some(signer.address())
+        );
+        assert_eq!(provider.gas_used(), crate::ECRECOVER_GAS * 2);
+        std::mem::drop(provider);
+
+        // OOG: 100 gas is not enough (needs 3000)
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+        let mut provider =
+            EvmPrecompileStorageProvider::new_with_gas_limit(evm_internals, &ctx.cfg, 100);
+        assert!(matches!(
+            provider.recover_signer(digest, v, r, s),
+            Err(TempoPrecompileError::OutOfGas)
+        ));
 
         Ok(())
     }
