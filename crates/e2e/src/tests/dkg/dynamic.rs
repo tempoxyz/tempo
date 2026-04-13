@@ -10,10 +10,7 @@ use futures::future::join_all;
 
 use crate::{
     CONSENSUS_NODE_PREFIX, Setup, setup_validators,
-    tests::{
-        assert_no_dkg_failure,
-        dkg::common::target_epoch,
-    },
+    tests::{assert_no_dkg_failure, dkg::common::target_epoch},
 };
 
 #[test_traced]

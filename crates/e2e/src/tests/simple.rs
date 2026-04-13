@@ -9,10 +9,7 @@ use commonware_p2p::simulated::Link;
 fn single_node() {
     let _ = tempo_eyre::install();
 
-    let setup = Setup::new()
-        .how_many_signers(1)
-        .epoch_length(100)
-        .seed(0);
+    let setup = Setup::new().how_many_signers(1).epoch_length(100).seed(0);
     let _first = run(setup, |metric, value| {
         if metric.ends_with("_marshal_processed_height") {
             let value = value.parse::<u64>().unwrap();
@@ -48,10 +45,7 @@ fn many_bad_links() {
         success_rate: 0.75,
     };
 
-    let setup = Setup::new()
-        .seed(42)
-        .epoch_length(100)
-        .linkage(link);
+    let setup = Setup::new().seed(42).epoch_length(100).linkage(link);
 
     let _first = run(setup, |metric, value| {
         if metric.ends_with("_marshal_processed_height") {

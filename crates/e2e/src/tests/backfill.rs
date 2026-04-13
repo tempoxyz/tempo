@@ -10,8 +10,7 @@ use reth_ethereum::storage::BlockNumReader;
 use reth_node_metrics::recorder::install_prometheus_recorder;
 
 use crate::{
-    Setup, connect_execution_peers, connect_execution_to_peers,
-    get_pipeline_runs, setup_validators,
+    Setup, connect_execution_peers, connect_execution_to_peers, get_pipeline_runs, setup_validators,
 };
 
 #[test_traced]

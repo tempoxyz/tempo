@@ -36,9 +36,7 @@ fn validator_lost_share_but_gets_share_in_next_epoch() {
 
     executor.start(|mut context| async move {
         let epoch_length = 20;
-        let setup = Setup::new()
-            .seed(seed)
-            .epoch_length(epoch_length);
+        let setup = Setup::new().seed(seed).epoch_length(epoch_length);
 
         let (mut validators, _execution_runtime) =
             setup_validators(&mut context, setup.clone()).await;
@@ -103,9 +101,7 @@ fn validator_loses_consensus_state_becomes_observer() {
 
     executor.start(|mut context| async move {
         let epoch_length = 20;
-        let setup = Setup::new()
-            .seed(seed)
-            .epoch_length(epoch_length);
+        let setup = Setup::new().seed(seed).epoch_length(epoch_length);
 
         let (mut validators, _execution_runtime) =
             setup_validators(&mut context, setup.clone()).await;
