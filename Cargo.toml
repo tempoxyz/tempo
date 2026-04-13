@@ -126,7 +126,7 @@ reth-cli = { git = "https://github.com/paradigmxyz/reth", rev = "1911e57" }
 reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", rev = "1911e57" }
 reth-cli-runner = { git = "https://github.com/paradigmxyz/reth", rev = "1911e57" }
 reth-cli-util = { git = "https://github.com/paradigmxyz/reth", rev = "1911e57" }
-reth-codecs = { version = "0.1.0", default-features = false }
+reth-codecs = { version = "0.1.1", default-features = false }
 reth-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "1911e57" }
 reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", rev = "1911e57" }
 reth-db = { git = "https://github.com/paradigmxyz/reth", rev = "1911e57" }
@@ -154,7 +154,7 @@ reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "1911e
 reth-node-metrics = { git = "https://github.com/paradigmxyz/reth", rev = "1911e57" }
 reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "1911e57" }
 reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "1911e57" }
-reth-primitives-traits = { version = "0.1.0", default-features = false }
+reth-primitives-traits = { version = "0.1.1", default-features = false }
 reth-provider = { git = "https://github.com/paradigmxyz/reth", rev = "1911e57" }
 reth-rpc = { git = "https://github.com/paradigmxyz/reth", rev = "1911e57" }
 reth-rpc-builder = { git = "https://github.com/paradigmxyz/reth", rev = "1911e57" }
