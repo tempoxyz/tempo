@@ -31,6 +31,7 @@ async fn main() -> eyre::Result<()> {
 
     match args.cmd {
         TempoSidecarSubcommand::FeeAMMMonitor(cmd) => cmd.run().await,
+        TempoSidecarSubcommand::PaymentLaneBench(cmd) => cmd.run().await,
         TempoSidecarSubcommand::SimpleArb(cmd) => cmd.run().await,
         TempoSidecarSubcommand::SyntheticLoad(cmd) => cmd.run().await,
         TempoSidecarSubcommand::TxLatencyMonitor(cmd) => cmd.run().await,
