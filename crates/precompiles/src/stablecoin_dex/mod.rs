@@ -1202,38 +1202,19 @@ impl StablecoinDEX {
     /// T4+: also checks recipient authorization on the payout token (bid=base, ask=quote).
     fn is_maker_authorized(&self, order: &Order) -> Result<bool> {
         let book = self.books[order.book_key()].read()?;
-        let registry = TIP403Registry::new();
 
-        let escrow_token = if order.is_bid() {
-            book.quote
+        let (token_in, token_out) = if order.is_bid() {
+            (book.quote, book.base)
         } else {
-            book.base
+            (book.base, book.quote)
         };
-        let escrow_policy_id = TIP20Token::from_address(escrow_token)?.transfer_policy_id()?;
-        let sender_authorized =
-            match registry.is_authorized_as(escrow_policy_id, order.maker(), AuthRole::sender()) {
-                Ok(authorized) => authorized,
-                Err(e) if is_policy_lookup_error(&e) => false,
-                Err(e) => return Err(e),
-            };
 
-        if !sender_authorized {
+        if !is_authorized_for_token(token_in, order.maker(), AuthRole::sender())? {
             return Ok(false);
         }
 
         if self.storage.spec().is_t4() {
-            let payout_token = if order.is_bid() {
-                book.base
-            } else {
-                book.quote
-            };
-            let payout_policy_id = TIP20Token::from_address(payout_token)?.transfer_policy_id()?;
-            match registry.is_authorized_as(payout_policy_id, order.maker(), AuthRole::recipient())
-            {
-                Ok(authorized) => Ok(authorized),
-                Err(e) if is_policy_lookup_error(&e) => Ok(false),
-                Err(e) => Err(e),
-            }
+            is_authorized_for_token(token_out, order.maker(), AuthRole::recipient())
         } else {
             Ok(true)
         }
@@ -1548,6 +1529,18 @@ impl StablecoinDEX {
         }
 
         Ok(amount_out)
+    }
+}
+
+/// Checks whether `address` is authorized under the transfer policy of `token` for the given
+/// `role`. Returns `false` instead of erroring when the policy lookup fails.
+fn is_authorized_for_token(token: Address, address: Address, role: AuthRole) -> Result<bool> {
+    let policy_id = TIP20Token::from_address(token)?.transfer_policy_id()?;
+    let registry = TIP403Registry::new();
+    match registry.is_authorized_as(policy_id, address, role) {
+        Ok(authorized) => Ok(authorized),
+        Err(e) if is_policy_lookup_error(&e) => Ok(false),
+        Err(e) => Err(e),
     }
 }
 
