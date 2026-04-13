@@ -572,4 +572,23 @@ mod tests {
             assert_eq!(cs.inner.chain(), moderato.inner.chain());
         }
     }
+
+    #[test]
+    fn chainspec_from_chain_id_roundtrips_supported_chains() {
+        use reth_chainspec::EthChainSpec;
+
+        for &name in super::SUPPORTED_CHAINS {
+            let spec = super::chain_value_parser(name)
+                .unwrap_or_else(|e| panic!("chain_value_parser({name}) failed: {e}"));
+
+            let resolved = super::chainspec_from_chain_id(spec.chain().id())
+                .unwrap_or_else(|| panic!("chainspec_from_chain_id failed for {name}"));
+
+            assert_eq!(
+                spec.chain(),
+                resolved.chain(),
+                "chain mismatch for {name}"
+            );
+        }
+    }
 }
