@@ -11977,6 +11977,7 @@ dependencies = [
  "tempo-eyre",
  "tempo-node",
  "tempo-precompiles",
+ "tempo-primitives",
  "tokio",
  "tracing",
  "tracing-subscriber 0.3.23",

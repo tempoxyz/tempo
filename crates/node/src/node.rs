@@ -316,6 +316,7 @@ impl PayloadAttributesBuilder<TempoPayloadAttributes, TempoHeader>
             None,
             timestamp_millis,
             Default::default(),
+            None,
             Vec::new,
         )
     }

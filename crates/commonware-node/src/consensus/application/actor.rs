@@ -38,12 +38,14 @@ use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_node_builder::{
     Block as _, BuiltPayload, ConsensusEngineHandle, PayloadAttributes, PayloadKind,
 };
+use tempo_chainspec::hardfork::TempoHardforks as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 use tempo_telemetry_util::display_duration;
 
 use reth_provider::{BlockHashReader as _, BlockReader as _};
 use tempo_payload_types::TempoPayloadAttributes;
+use tempo_primitives::TempoConsensusContext;
 use tokio::sync::RwLock;
 use tracing::{Level, debug, error, error_span, info, info_span, instrument, warn};
 
@@ -187,7 +189,7 @@ where
             Message::Propose(propose) => {
                 self.context.with_label("propose").spawn({
                     let inner = self.inner.clone();
-                    move |context| inner.handle_propose(propose, context)
+                    move |context| inner.handle_propose(*propose, context)
                 });
             }
             Message::Verify(verify) => {
@@ -323,6 +325,7 @@ impl Inner<Init> {
             parent: (parent_view, parent_digest),
             mut response,
             round,
+            leader,
         } = request;
 
         let (payload_id_tx, mut payload_id_rx) = oneshot::channel();
@@ -353,6 +356,7 @@ impl Inner<Init> {
                 parent_digest,
                 round,
                 payload_id_tx,
+                leader,
             ) => {
                 res.wrap_err("failed creating a proposal")
             }
@@ -461,6 +465,7 @@ impl Inner<Init> {
         parent_digest: Digest,
         round: Round,
         payload_id_tx: oneshot::Sender<PayloadId>,
+        leader: PublicKey,
     ) -> eyre::Result<Block> {
         let propose_start = Instant::now();
 
@@ -579,6 +584,21 @@ impl Inner<Init> {
             current_timestamp
         };
 
+        let consensus_context = if self
+            .execution_node
+            .chain_spec()
+            .is_t4_active_at_timestamp(timestamp_millis / 1000)
+        {
+            Some(tempo_primitives::TempoConsensusContext {
+                epoch: round.epoch().get(),
+                view: round.view().get(),
+                proposer: alloy_primitives::B256::from_slice(leader.as_ref()),
+                parent_view: parent_view.get(),
+            })
+        } else {
+            None
+        };
+
         let parent_hash = parent.block_hash();
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
         let attrs = TempoPayloadAttributes::new(
@@ -586,6 +606,7 @@ impl Inner<Init> {
             Some(proposer_public_key),
             timestamp_millis,
             extra_data,
+            consensus_context,
             move || {
                 self.subblocks
                     .as_ref()
@@ -694,6 +715,32 @@ impl Inner<Init> {
             } else {
                 return Ok((block, false));
             }
+        }
+
+        if self
+            .execution_node
+            .chain_spec()
+            .is_t4_active_at_timestamp(block.timestamp())
+        {
+            if let Some(ctx) = &block.header().consensus_context {
+                let expected_context = TempoConsensusContext {
+                    epoch: round.epoch().get(),
+                    view: round.view().get(),
+                    proposer: alloy_primitives::B256::from_slice(proposer.as_ref()),
+                    parent_view: parent_view.get(),
+                };
+
+                if *ctx != expected_context {
+                    warn!("mismatch block consensus context");
+                    return Ok((block, false));
+                }
+            } else {
+                warn!("block consensus context required post activation");
+                return Ok((block, false));
+            }
+        } else if block.header().consensus_context.is_some() {
+            warn!("block consensus context set prior to activation");
+            return Ok((block, false));
         }
 
         if let Err(reason) = verify_header_extra_data(

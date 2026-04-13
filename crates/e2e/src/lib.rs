@@ -145,6 +145,16 @@ pub struct Setup {
     /// Default: 1.
     pub t2_time: u64,
 
+    /// The t3 hardfork time.
+    ///
+    /// Default: `None` (not activated).
+    pub t3_time: Option<u64>,
+
+    /// The t4 hardfork time.
+    ///
+    /// Default: `None` (not activated).
+    pub t4_time: Option<u64>,
+
     /// Whether to activate subblocks building.
     pub with_subblocks: bool,
 
@@ -166,6 +176,8 @@ impl Setup {
             epoch_length: 20,
             new_payload_wait_time: Duration::from_millis(300),
             t2_time: 1,
+            t3_time: None,
+            t4_time: None,
             with_subblocks: false,
             fee_recipient: Address::ZERO,
         }
@@ -224,6 +236,20 @@ impl Setup {
             ..self
         }
     }
+
+    pub fn t3_time(self, t3_time: u64) -> Self {
+        Self {
+            t3_time: Some(t3_time),
+            ..self
+        }
+    }
+
+    pub fn t4_time(self, t4_time: u64) -> Self {
+        Self {
+            t4_time: Some(t4_time),
+            ..self
+        }
+    }
 }
 
 impl Default for Setup {
@@ -247,6 +273,8 @@ pub async fn setup_validators(
         linkage,
         new_payload_wait_time,
         t2_time,
+        t3_time,
+        t4_time,
         with_subblocks,
         fee_recipient,
         ..
@@ -273,6 +301,8 @@ pub async fn setup_validators(
         .with_epoch_length(epoch_length)
         .with_initial_dkg_outcome(onchain_dkg_outcome)
         .with_t2_time(t2_time)
+        .with_t3_time(t3_time)
+        .with_t4_time(t4_time)
         .with_validators(validators.clone())
         .launch()
         .unwrap();
