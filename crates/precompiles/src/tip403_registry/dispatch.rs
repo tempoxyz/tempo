@@ -1,7 +1,7 @@
 //! ABI dispatch for the [`TIP403Registry`] precompile.
 
 use crate::{
-    Precompile, SelectorHardforkDiff, dispatch_call, input_cost, mutate, mutate_void,
+    Precompile, SelectorSchedule, dispatch_call, input_cost, mutate, mutate_void,
     tip403_registry::{AuthRole, TIP403Registry},
     view,
 };
@@ -32,10 +32,7 @@ impl Precompile for TIP403Registry {
 
         dispatch_call(
             calldata,
-            &[(
-                TempoHardfork::T2,
-                SelectorHardforkDiff::new().added(T2_ADDED_SELECTORS),
-            )],
+            &[SelectorSchedule::new(TempoHardfork::T2).add(T2_ADDED_SELECTORS)],
             ITIP403RegistryCalls::abi_decode,
             |call| match call {
                 ITIP403RegistryCalls::policyIdCounter(call) => {

@@ -1,7 +1,7 @@
 //! ABI dispatch for the [`TIP20Token`] precompile.
 
 use crate::{
-    Precompile, SelectorHardforkDiff, dispatch_call,
+    Precompile, SelectorSchedule, dispatch_call,
     error::TempoPrecompileError,
     input_cost, metadata, mutate, mutate_void,
     storage::ContractStorage,
@@ -56,10 +56,7 @@ impl Precompile for TIP20Token {
 
         dispatch_call(
             calldata,
-            &[(
-                TempoHardfork::T2,
-                SelectorHardforkDiff::new().added(T2_ADDED_SELECTORS),
-            )],
+            &[SelectorSchedule::new(TempoHardfork::T2).add(T2_ADDED_SELECTORS)],
             TIP20Call::decode,
             |call| match call {
                 // Metadata functions (no calldata decoding needed)

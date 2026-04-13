@@ -2,7 +2,7 @@
 
 use super::{AccountKeychain, KeyRestrictions, TokenLimit, authorizeKeyCall};
 use crate::{
-    Precompile, SelectorHardforkDiff, dispatch_call, error::TempoPrecompileError, input_cost,
+    Precompile, SelectorSchedule, dispatch_call, error::TempoPrecompileError, input_cost,
     mutate_void, view,
 };
 use alloy::{
@@ -35,12 +35,9 @@ impl Precompile for AccountKeychain {
 
         dispatch_call(
             calldata,
-            &[(
-                TempoHardfork::T3,
-                SelectorHardforkDiff::new()
-                    .added(T3_ADDED_SELECTORS)
-                    .removed(T3_REMOVED_SELECTORS),
-            )],
+            &[SelectorSchedule::new(TempoHardfork::T3)
+                .add(T3_ADDED_SELECTORS)
+                .drop(T3_REMOVED_SELECTORS)],
             IAccountKeychainCalls::abi_decode,
             |call| match call {
                 IAccountKeychainCalls::authorizeKey_0(call) => {

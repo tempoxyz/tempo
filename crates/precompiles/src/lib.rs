@@ -324,45 +324,56 @@ pub fn unknown_selector(selector: [u8; 4], gas: u64) -> PrecompileResult {
     error::TempoPrecompileError::UnknownFunctionSelector(selector).into_precompile_result(gas)
 }
 
-/// A selector diff at a single hardfork boundary.
+/// A selector schedule at a given hardfork boundary.
 ///
 /// Before the hardfork activates, selectors in `added` are treated as unknown.
-/// After it activates, selectors in `removed` are treated as unknown.
+/// After it activates, selectors in `dropped` are treated as unknown.
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct SelectorHardforkDiff<'a> {
-    pub added: &'a [[u8; 4]],
-    pub removed: &'a [[u8; 4]],
+pub(crate) struct SelectorSchedule<'a> {
+    hardfork: TempoHardfork,
+    added: &'a [[u8; 4]],
+    dropped: &'a [[u8; 4]],
 }
 
-/// One hardfork boundary rule for selector gating.
-pub(crate) type SelectorHardforkRule<'a> = (TempoHardfork, SelectorHardforkDiff<'a>);
-
-impl<'a> SelectorHardforkDiff<'a> {
-    pub(crate) const fn new() -> Self {
+impl<'a> SelectorSchedule<'a> {
+    /// Creates a new schedule anchored at `hardfork` with no selectors registered yet.
+    pub(crate) const fn new(hardfork: TempoHardfork) -> Self {
         Self {
+            hardfork,
             added: &[],
-            removed: &[],
+            dropped: &[],
         }
     }
 
-    pub(crate) const fn added(mut self, selectors: &'a [[u8; 4]]) -> Self {
+    /// Registers selectors that are introduced at this hardfork boundary.
+    ///
+    /// These selectors are treated as unknown BEFORE `hardfork` activates.
+    pub(crate) const fn add(mut self, selectors: &'a [[u8; 4]]) -> Self {
         self.added = selectors;
         self
     }
 
-    pub(crate) const fn removed(mut self, selectors: &'a [[u8; 4]]) -> Self {
-        self.removed = selectors;
+    /// Registers selectors that are removed at this hardfork boundary.
+    ///
+    /// These selectors are treated as unknown ONCE `hardfork` activates.
+    pub(crate) const fn drop(mut self, selectors: &'a [[u8; 4]]) -> Self {
+        self.dropped = selectors;
         self
     }
 
+    /// Returns `true` if this schedule gates out `selector` under the `active` hardfork.
     #[inline]
-    fn rejects(self, selector: [u8; 4], active: bool) -> bool {
-        let gated = if active { self.removed } else { self.added };
-        gated.contains(&selector)
+    fn rejects(self, selector: [u8; 4], active: TempoHardfork) -> bool {
+        if self.hardfork <= active {
+            self.dropped
+        } else {
+            self.added
+        }
+        .contains(&selector)
     }
 }
 
-/// Applies hardfork selector gates, decodes calldata via `decode`, then dispatches to `f`.
+/// Applies hardfork selector schedules, decodes calldata via `decode`, then dispatches to `f`.
 ///
 /// Handles missing selectors (revert on T1+, error on earlier forks), hardfork-gated selectors,
 /// unknown selectors (ABI-encoded `UnknownFunctionSelector`), and malformed ABI data (empty
@@ -372,7 +383,7 @@ impl<'a> SelectorHardforkDiff<'a> {
 #[inline]
 pub(crate) fn dispatch_call<T>(
     calldata: &[u8],
-    hardforks: &[SelectorHardforkRule<'_>],
+    hardforks: &[SelectorSchedule<'_>],
     decode: impl FnOnce(&[u8]) -> core::result::Result<T, alloy::sol_types::Error>,
     f: impl FnOnce(T) -> PrecompileResult,
 ) -> PrecompileResult {
@@ -394,7 +405,7 @@ pub(crate) fn dispatch_call<T>(
     let selector: [u8; 4] = calldata[..4].try_into().expect("calldata len >= 4");
     if hardforks
         .iter()
-        .any(|(hardfork, diff)| diff.rejects(selector, *hardfork <= storage.spec()))
+        .any(|schedule| schedule.rejects(selector, storage.spec()))
     {
         return unknown_selector(selector, storage.gas_used())
             .map(|res| fill_precompile_output(res, &storage));
@@ -645,15 +656,11 @@ mod tests {
             }
         }
 
-        const SELECTOR_GATED_TEST_RULES: &[SelectorHardforkRule<'static>] = &[
-            (
-                TempoHardfork::T2,
-                SelectorHardforkDiff::new().added(&[ISelectorGatedTest::t2AddedCall::SELECTOR]),
-            ),
-            (
-                TempoHardfork::T3,
-                SelectorHardforkDiff::new().removed(&[ISelectorGatedTest::t3RemovedCall::SELECTOR]),
-            ),
+        const SELECTOR_SCHEDULE: &[SelectorSchedule<'static>] = &[
+            SelectorSchedule::new(TempoHardfork::T2)
+                .add(&[ISelectorGatedTest::t2AddedCall::SELECTOR]),
+            SelectorSchedule::new(TempoHardfork::T3)
+                .drop(&[ISelectorGatedTest::t3RemovedCall::SELECTOR]),
         ];
 
         let call_with_spec = |spec: TempoHardfork, calldata: &[u8]| {
@@ -661,7 +668,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 dispatch_call(
                     calldata,
-                    SELECTOR_GATED_TEST_RULES,
+                    SELECTOR_SCHEDULE,
                     ISelectorGatedTest::ISelectorGatedTestCalls::abi_decode,
                     |call| match call {
                         ISelectorGatedTest::ISelectorGatedTestCalls::stable(_) => {

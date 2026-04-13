@@ -2,7 +2,7 @@
 
 use super::ValidatorConfig;
 use crate::{
-    Precompile, SelectorHardforkDiff, dispatch_call, error::TempoPrecompileError, input_cost,
+    Precompile, SelectorSchedule, dispatch_call, error::TempoPrecompileError, input_cost,
     mutate_void, view,
 };
 use alloy::{
@@ -25,10 +25,7 @@ impl Precompile for ValidatorConfig {
 
         dispatch_call(
             calldata,
-            &[(
-                TempoHardfork::T1,
-                SelectorHardforkDiff::new().added(T1_ADDED_SELECTORS),
-            )],
+            &[SelectorSchedule::new(TempoHardfork::T1).add(T1_ADDED_SELECTORS)],
             IValidatorConfigCalls::abi_decode,
             |call| match call {
                 // View functions
