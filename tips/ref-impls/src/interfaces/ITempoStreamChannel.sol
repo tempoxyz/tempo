@@ -2,9 +2,7 @@
 pragma solidity >=0.8.20 <0.9.0;
 
 /// @title ITempoStreamChannel
-/// @notice Interface for the TempoStreamChannel escrow contract.
-/// @dev Unidirectional payment channel for streaming payments using EIP-712 signed vouchers.
-///      Spec: https://paymentauth.tempo.xyz/draft-tempo-stream-00
+/// @notice Reference interface for the TIP-1034 channel model.
 interface ITempoStreamChannel {
 
     struct Channel {
@@ -12,6 +10,7 @@ interface ITempoStreamChannel {
         uint64 closeRequestedAt;
         address payer;
         address payee;
+        uint64 expiresAt;
         address token;
         address authorizedSigner;
         uint128 deposit;
@@ -26,16 +25,23 @@ interface ITempoStreamChannel {
         address token,
         uint128 deposit,
         bytes32 salt,
-        address authorizedSigner
+        address authorizedSigner,
+        uint64 expiresAt
     )
         external
         returns (bytes32 channelId);
 
     function settle(bytes32 channelId, uint128 cumulativeAmount, bytes calldata signature) external;
 
-    function topUp(bytes32 channelId, uint256 additionalDeposit) external;
+    function topUp(bytes32 channelId, uint256 additionalDeposit, uint64 newExpiresAt) external;
 
-    function close(bytes32 channelId, uint128 cumulativeAmount, bytes calldata signature) external;
+    function close(
+        bytes32 channelId,
+        uint128 cumulativeAmount,
+        uint128 captureAmount,
+        bytes calldata signature
+    )
+        external;
 
     function requestClose(bytes32 channelId) external;
 
@@ -76,16 +82,26 @@ interface ITempoStreamChannel {
         address token,
         address authorizedSigner,
         bytes32 salt,
-        uint256 deposit
+        uint128 deposit,
+        uint64 expiresAt
     );
 
     event Settled(
         bytes32 indexed channelId,
         address indexed payer,
         address indexed payee,
-        uint256 cumulativeAmount,
-        uint256 deltaPaid,
-        uint256 newSettled
+        uint128 cumulativeAmount,
+        uint128 deltaPaid,
+        uint128 newSettled
+    );
+
+    event TopUp(
+        bytes32 indexed channelId,
+        address indexed payer,
+        address indexed payee,
+        uint128 additionalDeposit,
+        uint128 newDeposit,
+        uint64 newExpiresAt
     );
 
     event CloseRequested(
@@ -95,20 +111,12 @@ interface ITempoStreamChannel {
         uint256 closeGraceEnd
     );
 
-    event TopUp(
-        bytes32 indexed channelId,
-        address indexed payer,
-        address indexed payee,
-        uint256 additionalDeposit,
-        uint256 newDeposit
-    );
-
     event ChannelClosed(
         bytes32 indexed channelId,
         address indexed payer,
         address indexed payee,
-        uint256 settledToPayee,
-        uint256 refundedToPayer
+        uint128 settledToPayee,
+        uint128 refundedToPayer
     );
 
     event CloseRequestCancelled(
@@ -120,16 +128,19 @@ interface ITempoStreamChannel {
     error ChannelAlreadyExists();
     error ChannelNotFound();
     error ChannelFinalized();
-    error InvalidSignature();
-    error AmountExceedsDeposit();
-    error AmountNotIncreasing();
     error NotPayer();
     error NotPayee();
-    error TransferFailed();
-    error CloseNotReady();
     error InvalidPayee();
     error InvalidToken();
     error ZeroDeposit();
+    error InvalidExpiry();
+    error ChannelExpiredError();
+    error InvalidSignature();
+    error AmountExceedsDeposit();
+    error AmountNotIncreasing();
+    error CaptureAmountInvalid();
+    error CloseNotReady();
     error DepositOverflow();
+    error TransferFailed();
 
 }

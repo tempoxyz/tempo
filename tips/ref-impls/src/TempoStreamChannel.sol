@@ -1,189 +1,122 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import { TempoUtilities } from "./TempoUtilities.sol";
+import { ISignatureVerifier } from "./interfaces/ISignatureVerifier.sol";
 import { ITIP20 } from "./interfaces/ITIP20.sol";
 import { ITempoStreamChannel } from "./interfaces/ITempoStreamChannel.sol";
-import { ECDSA } from "solady/utils/ECDSA.sol";
-import { EIP712 } from "solady/utils/EIP712.sol";
 
-/**
- * @title TempoStreamChannel
- * @notice Unidirectional payment channel escrow for streaming payments.
- * @dev Users deposit TIP-20 tokens, sign cumulative vouchers, and servers
- *      can settle or close at any time. Channels have no expiry - they are
- *      closed either cooperatively by the server or after a grace period
- *      following a user's close request.
- */
-contract TempoStreamChannel is ITempoStreamChannel, EIP712 {
+/// @title TempoStreamChannel
+/// @notice Reference contract for the TIP-1034 channel model.
+contract TempoStreamChannel is ITempoStreamChannel {
 
-    // --- Constants ---
+    address public constant MPP_CHANNEL_PRECOMPILE = 0x4d50500000000000000000000000000000000000;
+    address public constant SIGNATURE_VERIFIER_PRECOMPILE =
+        0x5165300000000000000000000000000000000000;
 
     bytes32 public constant VOUCHER_TYPEHASH =
         keccak256("Voucher(bytes32 channelId,uint128 cumulativeAmount)");
 
     uint64 public constant CLOSE_GRACE_PERIOD = 15 minutes;
 
-    // --- State ---
+    bytes32 internal constant _EIP712_DOMAIN_TYPEHASH = keccak256(
+        "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+    );
+    bytes32 internal constant _NAME_HASH = keccak256("Tempo Stream Channel");
+    bytes32 internal constant _VERSION_HASH = keccak256("1");
 
     mapping(bytes32 => Channel) public channels;
 
-    // --- EIP-712 Domain ---
-
-    function _domainNameAndVersion()
-        internal
-        pure
-        override
-        returns (string memory name, string memory version)
-    {
-        name = "Tempo Stream Channel";
-        version = "1";
-    }
-
-    // --- External Functions ---
-
-    /**
-     * @notice Open a new payment channel with escrowed funds.
-     * @param payee Address authorized to withdraw (server)
-     * @param token TIP-20 token address
-     * @param deposit Amount to deposit
-     * @param salt Random salt for channel ID generation
-     * @param authorizedSigner Address authorized to sign vouchers (0 = use msg.sender)
-     * @return channelId The unique channel identifier
-     */
     function open(
         address payee,
         address token,
         uint128 deposit,
         bytes32 salt,
-        address authorizedSigner
+        address authorizedSigner,
+        uint64 expiresAt
     )
         external
-        override
         returns (bytes32 channelId)
     {
-        if (payee == address(0)) {
-            revert InvalidPayee();
-        }
-        if (!TempoUtilities.isTIP20(token)) {
-            revert InvalidToken();
-        }
-        if (deposit == 0) {
-            revert ZeroDeposit();
-        }
+        if (payee == address(0)) revert InvalidPayee();
+        if (token == address(0)) revert InvalidToken();
+        if (deposit == 0) revert ZeroDeposit();
+        if (expiresAt <= block.timestamp) revert InvalidExpiry();
 
         channelId = computeChannelId(msg.sender, payee, token, salt, authorizedSigner);
-
-        if (channels[channelId].payer != address(0) || channels[channelId].finalized) {
-            revert ChannelAlreadyExists();
-        }
+        if (channels[channelId].payer != address(0)) revert ChannelAlreadyExists();
 
         channels[channelId] = Channel({
+            finalized: false,
+            closeRequestedAt: 0,
             payer: msg.sender,
             payee: payee,
+            expiresAt: expiresAt,
             token: token,
             authorizedSigner: authorizedSigner,
             deposit: deposit,
-            settled: 0,
-            closeRequestedAt: 0,
-            finalized: false
+            settled: 0
         });
 
         bool success = ITIP20(token).transferFrom(msg.sender, address(this), deposit);
-        if (!success) {
-            revert TransferFailed();
-        }
+        if (!success) revert TransferFailed();
 
-        emit ChannelOpened(channelId, msg.sender, payee, token, authorizedSigner, salt, deposit);
+        emit ChannelOpened(
+            channelId, msg.sender, payee, token, authorizedSigner, salt, deposit, expiresAt
+        );
     }
 
-    /**
-     * @notice Settle funds using a signed voucher.
-     * @param channelId The channel to settle
-     * @param cumulativeAmount Total amount authorized by the voucher
-     * @param signature EIP-712 signature from the payer/authorizedSigner
-     */
     function settle(
         bytes32 channelId,
         uint128 cumulativeAmount,
         bytes calldata signature
     )
         external
-        override
     {
         Channel storage channel = channels[channelId];
 
-        if (channel.finalized) {
-            revert ChannelFinalized();
-        }
-        if (channel.payer == address(0)) {
-            revert ChannelNotFound();
-        }
-        if (msg.sender != channel.payee) {
-            revert NotPayee();
-        }
-        if (cumulativeAmount > channel.deposit) {
-            revert AmountExceedsDeposit();
-        }
-        if (cumulativeAmount <= channel.settled) {
-            revert AmountNotIncreasing();
-        }
+        if (channel.payer == address(0)) revert ChannelNotFound();
+        if (msg.sender != channel.payee) revert NotPayee();
+        if (channel.finalized) revert ChannelFinalized();
+        if (_isExpired(channel)) revert ChannelExpiredError();
+        if (cumulativeAmount > channel.deposit) revert AmountExceedsDeposit();
+        if (cumulativeAmount <= channel.settled) revert AmountNotIncreasing();
 
-        bytes32 structHash = keccak256(abi.encode(VOUCHER_TYPEHASH, channelId, cumulativeAmount));
-        bytes32 digest = _hashTypedData(structHash);
-        address signer = ECDSA.recoverCalldata(digest, signature);
-
-        address expectedSigner =
-            channel.authorizedSigner != address(0) ? channel.authorizedSigner : channel.payer;
-
-        if (signer != expectedSigner) {
-            revert InvalidSignature();
-        }
+        _validateVoucher(channel, channelId, cumulativeAmount, signature);
 
         uint128 delta = cumulativeAmount - channel.settled;
         channel.settled = cumulativeAmount;
 
         bool success = ITIP20(channel.token).transfer(channel.payee, delta);
-        if (!success) {
-            revert TransferFailed();
-        }
+        if (!success) revert TransferFailed();
 
         emit Settled(
             channelId, channel.payer, channel.payee, cumulativeAmount, delta, channel.settled
         );
     }
 
-    /**
-     * @notice Add more funds to a channel.
-     * @param channelId The channel to top up
-     * @param additionalDeposit Amount to add
-     */
-    function topUp(bytes32 channelId, uint256 additionalDeposit) external override {
+    function topUp(bytes32 channelId, uint256 additionalDeposit, uint64 newExpiresAt) external {
         Channel storage channel = channels[channelId];
 
-        if (channel.finalized) {
-            revert ChannelFinalized();
-        }
-        if (channel.payer == address(0)) {
-            revert ChannelNotFound();
-        }
-        if (msg.sender != channel.payer) {
-            revert NotPayer();
+        if (channel.payer == address(0)) revert ChannelNotFound();
+        if (msg.sender != channel.payer) revert NotPayer();
+        if (channel.finalized) revert ChannelFinalized();
+
+        if (additionalDeposit > type(uint128).max - channel.deposit) revert DepositOverflow();
+        if (newExpiresAt != 0) {
+            if (newExpiresAt <= block.timestamp) revert InvalidExpiry();
+            if (newExpiresAt <= channel.expiresAt) revert InvalidExpiry();
         }
 
-        if (additionalDeposit == 0) {
-            revert ZeroDeposit();
+        if (additionalDeposit > 0) {
+            channel.deposit += uint128(additionalDeposit);
+
+            bool success =
+                ITIP20(channel.token).transferFrom(msg.sender, address(this), additionalDeposit);
+            if (!success) revert TransferFailed();
         }
 
-        if (additionalDeposit > type(uint128).max - channel.deposit) {
-            revert DepositOverflow();
-        }
-        channel.deposit += uint128(additionalDeposit);
-
-        bool success =
-            ITIP20(channel.token).transferFrom(msg.sender, address(this), additionalDeposit);
-        if (!success) {
-            revert TransferFailed();
+        if (newExpiresAt != 0) {
+            channel.expiresAt = newExpiresAt;
         }
 
         if (channel.closeRequestedAt != 0) {
@@ -191,226 +124,109 @@ contract TempoStreamChannel is ITempoStreamChannel, EIP712 {
             emit CloseRequestCancelled(channelId, channel.payer, channel.payee);
         }
 
-        emit TopUp(channelId, channel.payer, channel.payee, additionalDeposit, channel.deposit);
+        emit TopUp(
+            channelId,
+            channel.payer,
+            channel.payee,
+            uint128(additionalDeposit),
+            channel.deposit,
+            channel.expiresAt
+        );
     }
 
-    /**
-     * @notice Request early channel closure.
-     * @dev Starts a grace period after which the payer can withdraw.
-     * @param channelId The channel to close
-     */
-    function requestClose(bytes32 channelId) external override {
+    function requestClose(bytes32 channelId) external {
         Channel storage channel = channels[channelId];
 
-        if (channel.finalized) {
-            revert ChannelFinalized();
-        }
-        if (channel.payer == address(0)) {
-            revert ChannelNotFound();
-        }
-        if (msg.sender != channel.payer) {
-            revert NotPayer();
-        }
+        if (channel.payer == address(0)) revert ChannelNotFound();
+        if (msg.sender != channel.payer) revert NotPayer();
+        if (channel.finalized) revert ChannelFinalized();
 
-        // Only set if not already requested
         if (channel.closeRequestedAt == 0) {
             channel.closeRequestedAt = uint64(block.timestamp);
             emit CloseRequested(
-                channelId, channel.payer, channel.payee, block.timestamp + CLOSE_GRACE_PERIOD
+                channelId,
+                channel.payer,
+                channel.payee,
+                uint256(block.timestamp) + CLOSE_GRACE_PERIOD
             );
         }
     }
 
-    /**
-     * @notice Close a channel immediately (server only).
-     * @dev Settles any outstanding voucher and refunds remainder to payer.
-     * @param channelId The channel to close
-     * @param cumulativeAmount Final cumulative amount (0 if no payments)
-     * @param signature EIP-712 signature (empty if cumulativeAmount == 0 or same as settled)
-     */
     function close(
         bytes32 channelId,
         uint128 cumulativeAmount,
+        uint128 captureAmount,
         bytes calldata signature
     )
         external
-        override
     {
         Channel storage channel = channels[channelId];
 
-        if (channel.finalized) {
-            revert ChannelFinalized();
+        if (channel.payer == address(0)) revert ChannelNotFound();
+        if (msg.sender != channel.payee) revert NotPayee();
+        if (channel.finalized) revert ChannelFinalized();
+
+        uint128 previousSettled = channel.settled;
+        if (captureAmount < previousSettled || captureAmount > cumulativeAmount) {
+            revert CaptureAmountInvalid();
         }
-        if (channel.payer == address(0)) {
-            revert ChannelNotFound();
-        }
-        if (msg.sender != channel.payee) {
-            revert NotPayee();
-        }
+        if (captureAmount > channel.deposit) revert AmountExceedsDeposit();
 
-        address token = channel.token;
-        address payer = channel.payer;
-        address payee = channel.payee;
-        uint128 deposit = channel.deposit;
-
-        uint128 settledAmount = channel.settled;
-        uint128 delta = 0;
-
-        // If cumulativeAmount > settled, validate the voucher
-        if (cumulativeAmount > settledAmount) {
-            if (cumulativeAmount > channel.deposit) {
-                revert AmountExceedsDeposit();
-            }
-
-            bytes32 structHash =
-                keccak256(abi.encode(VOUCHER_TYPEHASH, channelId, cumulativeAmount));
-            bytes32 digest = _hashTypedData(structHash);
-            address signer = ECDSA.recoverCalldata(digest, signature);
-
-            address expectedSigner =
-                channel.authorizedSigner != address(0) ? channel.authorizedSigner : channel.payer;
-
-            if (signer != expectedSigner) {
-                revert InvalidSignature();
-            }
-
-            delta = cumulativeAmount - settledAmount;
-            settledAmount = cumulativeAmount;
+        if (captureAmount > previousSettled) {
+            if (_isExpired(channel)) revert ChannelExpiredError();
+            _validateVoucher(channel, channelId, cumulativeAmount, signature);
         }
 
-        // Effects before interactions
-        uint128 refund = deposit - settledAmount;
-        _clearAndFinalize(channelId);
+        uint128 delta = captureAmount - previousSettled;
+        uint128 refund = channel.deposit - captureAmount;
 
-        // Interactions
+        channel.settled = captureAmount;
+        channel.finalized = true;
+
         if (delta > 0) {
-            bool success = ITIP20(token).transfer(payee, delta);
-            if (!success) {
-                revert TransferFailed();
-            }
+            bool payeeTransferSucceeded = ITIP20(channel.token).transfer(channel.payee, delta);
+            if (!payeeTransferSucceeded) revert TransferFailed();
         }
 
         if (refund > 0) {
-            bool success = ITIP20(token).transfer(payer, refund);
-            if (!success) {
-                revert TransferFailed();
-            }
+            bool payerTransferSucceeded = ITIP20(channel.token).transfer(channel.payer, refund);
+            if (!payerTransferSucceeded) revert TransferFailed();
         }
 
-        emit ChannelClosed(channelId, payer, payee, settledAmount, refund);
+        emit ChannelClosed(channelId, channel.payer, channel.payee, captureAmount, refund);
     }
 
-    /**
-     * @notice Withdraw remaining funds after close grace period.
-     * @param channelId The channel to withdraw from
-     */
-    function withdraw(bytes32 channelId) external override {
+    function withdraw(bytes32 channelId) external {
         Channel storage channel = channels[channelId];
 
-        if (channel.finalized) {
-            revert ChannelFinalized();
-        }
-        if (channel.payer == address(0)) {
-            revert ChannelNotFound();
-        }
-        if (msg.sender != channel.payer) {
-            revert NotPayer();
-        }
+        if (channel.payer == address(0)) revert ChannelNotFound();
+        if (msg.sender != channel.payer) revert NotPayer();
+        if (channel.finalized) revert ChannelFinalized();
 
-        address token = channel.token;
-        address payer = channel.payer;
-        address payee = channel.payee;
-        uint128 deposit = channel.deposit;
-        uint128 settledAmount = channel.settled;
-
-        // Check if eligible to withdraw
         bool closeGracePassed = channel.closeRequestedAt != 0
-            && block.timestamp >= channel.closeRequestedAt + CLOSE_GRACE_PERIOD;
+            && block.timestamp >= uint256(channel.closeRequestedAt) + CLOSE_GRACE_PERIOD;
 
-        if (!closeGracePassed) {
-            revert CloseNotReady();
-        }
+        if (!closeGracePassed && !_isExpired(channel)) revert CloseNotReady();
 
-        uint128 refund = deposit - settledAmount;
-        _clearAndFinalize(channelId);
+        uint128 refund = channel.deposit - channel.settled;
+        channel.finalized = true;
 
         if (refund > 0) {
-            bool success = ITIP20(token).transfer(payer, refund);
-            if (!success) {
-                revert TransferFailed();
-            }
+            bool success = ITIP20(channel.token).transfer(channel.payer, refund);
+            if (!success) revert TransferFailed();
         }
 
-        emit ChannelExpired(channelId, payer, payee);
-        emit ChannelClosed(channelId, payer, payee, settledAmount, refund);
+        emit ChannelExpired(channelId, channel.payer, channel.payee);
+        emit ChannelClosed(channelId, channel.payer, channel.payee, channel.settled, refund);
     }
 
-    // --- View Functions ---
-
-    /**
-     * @notice Get channel state.
-     */
-    function getChannel(bytes32 channelId) external view override returns (Channel memory) {
+    function getChannel(bytes32 channelId) external view returns (Channel memory) {
         return channels[channelId];
     }
 
-    /**
-     * @notice Compute the channel ID for given parameters.
-     * @param payer Address that deposited funds
-     * @param payee Address authorized to withdraw
-     * @param token TIP-20 token address
-     * @param salt Random salt
-     * @param authorizedSigner Address authorized to sign vouchers
-     */
-    function computeChannelId(
-        address payer,
-        address payee,
-        address token,
-        bytes32 salt,
-        address authorizedSigner
-    )
-        public
-        view
-        override
-        returns (bytes32)
-    {
-        return keccak256(
-            abi.encode(payer, payee, token, salt, authorizedSigner, address(this), block.chainid)
-        );
-    }
-
-    /**
-     * @notice Get the EIP-712 domain separator.
-     */
-    function domainSeparator() external view override returns (bytes32) {
-        return _domainSeparator();
-    }
-
-    /**
-     * @notice Compute the digest for a voucher (for off-chain signing).
-     */
-    function getVoucherDigest(
-        bytes32 channelId,
-        uint128 cumulativeAmount
-    )
-        external
-        view
-        override
-        returns (bytes32)
-    {
-        bytes32 structHash = keccak256(abi.encode(VOUCHER_TYPEHASH, channelId, cumulativeAmount));
-        return _hashTypedData(structHash);
-    }
-
-    /**
-     * @notice Read multiple channel states in a single call.
-     * @param channelIds Array of channel IDs to query
-     * @return channelStates Array of Channel structs
-     */
     function getChannelsBatch(bytes32[] calldata channelIds)
         external
         view
-        override
         returns (Channel[] memory channelStates)
     {
         uint256 length = channelIds.length;
@@ -421,11 +237,85 @@ contract TempoStreamChannel is ITempoStreamChannel, EIP712 {
         }
     }
 
-    // --- Internal Functions ---
+    function computeChannelId(
+        address payer,
+        address payee,
+        address token,
+        bytes32 salt,
+        address authorizedSigner
+    )
+        public
+        view
+        returns (bytes32)
+    {
+        return keccak256(
+            abi.encode(
+                payer, payee, token, salt, authorizedSigner, MPP_CHANNEL_PRECOMPILE, block.chainid
+            )
+        );
+    }
 
-    function _clearAndFinalize(bytes32 channelId) internal {
-        delete channels[channelId];
-        channels[channelId].finalized = true;
+    function getVoucherDigest(
+        bytes32 channelId,
+        uint128 cumulativeAmount
+    )
+        external
+        view
+        returns (bytes32)
+    {
+        bytes32 structHash = keccak256(abi.encode(VOUCHER_TYPEHASH, channelId, cumulativeAmount));
+        return _hashTypedData(structHash);
+    }
+
+    function domainSeparator() external view returns (bytes32) {
+        return _domainSeparator();
+    }
+
+    function _isExpired(Channel storage channel) internal view returns (bool) {
+        return block.timestamp >= channel.expiresAt;
+    }
+
+    function _validateVoucher(
+        Channel storage channel,
+        bytes32 channelId,
+        uint128 cumulativeAmount,
+        bytes calldata signature
+    )
+        internal
+        view
+    {
+        bytes32 structHash = keccak256(abi.encode(VOUCHER_TYPEHASH, channelId, cumulativeAmount));
+        bytes32 digest = _hashTypedData(structHash);
+        address expectedSigner =
+            channel.authorizedSigner != address(0) ? channel.authorizedSigner : channel.payer;
+
+        bool isValid;
+        try ISignatureVerifier(SIGNATURE_VERIFIER_PRECOMPILE)
+            .verify(expectedSigner, digest, signature) returns (
+            bool valid
+        ) {
+            isValid = valid;
+        } catch {
+            revert InvalidSignature();
+        }
+
+        if (!isValid) revert InvalidSignature();
+    }
+
+    function _domainSeparator() internal view returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                _EIP712_DOMAIN_TYPEHASH,
+                _NAME_HASH,
+                _VERSION_HASH,
+                block.chainid,
+                MPP_CHANNEL_PRECOMPILE
+            )
+        );
+    }
+
+    function _hashTypedData(bytes32 structHash) internal view returns (bytes32) {
+        return keccak256(abi.encodePacked("\x19\x01", _domainSeparator(), structHash));
     }
 
 }
