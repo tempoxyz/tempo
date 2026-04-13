@@ -641,8 +641,8 @@ mod tests {
                 nonce_key: self.nonce_key,
                 nonce: self.nonce,
                 fee_payer_signature: None,
-                valid_before: self.valid_before,
-                valid_after: self.valid_after,
+                valid_before: self.valid_before.and_then(core::num::NonZeroU64::new),
+                valid_after: self.valid_after.and_then(core::num::NonZeroU64::new),
                 key_authorization: self.key_authorization,
                 tempo_authorization_list: self.authorization_list,
             }

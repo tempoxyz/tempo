@@ -144,6 +144,7 @@ where
         // The EVM checks `valid_before > block_timestamp` but the pool needs an extra
         // propagation buffer to prevent txs from expiring at peers with slightly newer tips.
         if let Some(valid_before) = tx.valid_before {
+            let valid_before = valid_before.get();
             let min_allowed = tip_timestamp.saturating_add(AA_VALID_BEFORE_MIN_SECS);
             if valid_before <= min_allowed {
                 return Err(TempoPoolTransactionError::InvalidValidBefore {
@@ -156,6 +157,7 @@ where
         // Reject AA txs where `valid_after` is too far in the future.
         // Uses wall-clock time to avoid rejecting valid txs when node is lagging.
         if let Some(valid_after) = tx.valid_after {
+            let valid_after = valid_after.get();
             let current_time = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
@@ -191,7 +193,6 @@ where
 
         Ok(())
     }
-
     /// Validates AA transaction field limits (calls, access list, token limits).
     ///
     /// These limits are enforced at the pool level rather than RLP decoding to:
@@ -1246,7 +1247,7 @@ mod tests {
             };
 
             let valid_before = if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
-                Some(current_time + TEST_VALIDITY_WINDOW)
+                Some(core::num::NonZeroU64::new(current_time + TEST_VALIDITY_WINDOW).unwrap())
             } else {
                 None
             };
@@ -1398,7 +1399,7 @@ mod tests {
                 calls,
                 nonce_key: TEMPO_EXPIRING_NONCE_KEY, // Expiring nonce
                 nonce: 0,
-                valid_before: Some(current_time + 25), // Valid for 25 seconds
+                valid_before: Some(core::num::NonZeroU64::new(current_time + 25).unwrap()), // Valid for 25 seconds
                 fee_token: Some(address!("0000000000000000000000000000000000000002")),
                 ..Default::default()
             };

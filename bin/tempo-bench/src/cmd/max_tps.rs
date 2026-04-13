@@ -938,7 +938,10 @@ fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_secs())
                     .unwrap_or(0);
-                req.set_valid_before(now + expiry_secs);
+                req.set_valid_before(
+                    NonZeroU64::new(now + expiry_secs)
+                        .expect("current time plus expiry should be non-zero"),
+                );
             }
 
             // Sign and encode
