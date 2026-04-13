@@ -4,6 +4,7 @@ use std::{
     net::{IpAddr, SocketAddr},
     path::PathBuf,
     str::FromStr,
+    sync::Arc,
 };
 
 use alloy_primitives::{Address, B256, Bytes};
@@ -25,7 +26,7 @@ use reth_cli_runner::CliRunner;
 use reth_ethereum_cli::ExtendedCommand;
 use serde::Serialize;
 use tempo_alloy::TempoNetwork;
-use tempo_chainspec::spec::TempoChainSpecParser;
+use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_commonware_node_config::SigningKey;
 use tempo_contracts::precompiles::{
     IValidatorConfig::{self},
@@ -868,6 +869,11 @@ pub(crate) struct ValidatorInfo {
     #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
     rpc_url: String,
 
+    /// Chain spec override for local/unknown chains (mainnet, testnet, moderato, or path to
+    /// chainspec file). Resolved automatically from the RPC chain id when omitted.
+    #[arg(long, short, value_parser = tempo_chainspec::spec::chain_value_parser)]
+    chain: Option<Arc<TempoChainSpec>>,
+
     /// Skip crosschecking the validator with the last DKG round.
     #[arg(long)]
     no_dkg_information: bool,
@@ -894,8 +900,11 @@ impl ValidatorInfo {
             .await
             .wrap_err("failed to get chain id")?;
 
-        let chain = tempo_chainspec::spec::chainspec_from_chain_id(chain_id)
-            .ok_or_else(|| eyre!("unknown chain id {chain_id}"))?;
+        let chain = match self.chain {
+            Some(chain) => chain,
+            None => tempo_chainspec::spec::chainspec_from_chain_id(chain_id)
+                .ok_or_else(|| eyre!("unknown chain id {chain_id}, pass --chain explicitly"))?,
+        };
 
         let epoch_length = chain
             .info
@@ -1109,6 +1118,11 @@ pub(crate) struct ValidatorsInfo {
     #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
     rpc_url: String,
 
+    /// Chain spec override for local/unknown chains (mainnet, testnet, moderato, or path to
+    /// chainspec file). Resolved automatically from the RPC chain id when omitted.
+    #[arg(long, short, value_parser = tempo_chainspec::spec::chain_value_parser)]
+    chain: Option<Arc<TempoChainSpec>>,
+
     /// Whether to include historic validators (deactivated and not in the current committee).
     #[arg(long)]
     with_historic: bool,
@@ -1129,8 +1143,11 @@ impl ValidatorsInfo {
             .await
             .wrap_err("failed to get chain id")?;
 
-        let chain = tempo_chainspec::spec::chainspec_from_chain_id(chain_id)
-            .ok_or_else(|| eyre!("unknown chain id {chain_id}"))?;
+        let chain = match self.chain {
+            Some(chain) => chain,
+            None => tempo_chainspec::spec::chainspec_from_chain_id(chain_id)
+                .ok_or_else(|| eyre!("unknown chain id {chain_id}, pass --chain explicitly"))?,
+        };
 
         let epoch_length = chain
             .info
