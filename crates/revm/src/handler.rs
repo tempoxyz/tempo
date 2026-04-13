@@ -372,25 +372,19 @@ where
             .expect("AA transactions must contain at least one call")
             .to;
 
-        let ctx = evm.ctx_mut();
-        let internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
-        let mut provider =
-            EvmPrecompileStorageProvider::new_with_gas_limit(internals, &ctx.cfg, *remaining_gas);
-
-        let validation = StorageCtx::enter(&mut provider, || {
-            let keychain = AccountKeychain::default();
-            for call in calls {
-                keychain.validate_call_scope_for_transaction(
-                    user_address,
-                    access_key_addr,
-                    &call.to,
-                    call.input.as_ref(),
-                )?;
-            }
-            Ok::<(), TempoPrecompileError>(())
-        });
-
-        let gas_used = provider.gas_used();
+        let (validation, gas_used) =
+            StorageCtx::enter_ctx_with_gas_limit(evm.ctx_mut(), *remaining_gas, || {
+                let keychain = AccountKeychain::default();
+                for call in calls {
+                    keychain.validate_call_scope_for_transaction(
+                        user_address,
+                        access_key_addr,
+                        &call.to,
+                        call.input.as_ref(),
+                    )?;
+                }
+                Ok::<(), TempoPrecompileError>(())
+            });
 
         match validation {
             Ok(()) => {

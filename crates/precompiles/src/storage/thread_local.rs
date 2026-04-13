@@ -290,6 +290,27 @@ impl<'evm> StorageCtx {
         Self::enter(&mut provider, f)
     }
 
+    /// Like [`enter_evm`](Self::enter_evm), but meters storage access under `gas_limit`
+    /// and returns both the closure result and gas consumed.
+    pub fn enter_evm_with_gas_limit<J, R>(
+        journal: &'evm mut J,
+        block_env: &'evm dyn Block,
+        cfg: &CfgEnv<TempoHardfork>,
+        tx_env: &'evm impl Transaction,
+        gas_limit: u64,
+        f: impl FnOnce() -> R,
+    ) -> (R, u64)
+    where
+        J: JournalTr<Database: Database> + Debug,
+    {
+        let internals = EvmInternals::new(journal, block_env, cfg, tx_env);
+        let mut provider =
+            EvmPrecompileStorageProvider::new_with_gas_limit(internals, cfg, gas_limit);
+        let result = Self::enter(&mut provider, f);
+        let gas_used = provider.gas_used();
+        (result, gas_used)
+    }
+
     /// Like [`enter_evm`](Self::enter_evm), but takes a `&mut impl ContextTr`
     /// directly instead of requiring the caller to destructure the context.
     pub fn enter_ctx<C, R>(ctx: &mut C, f: impl FnOnce() -> R) -> R
@@ -298,6 +319,20 @@ impl<'evm> StorageCtx {
     {
         let (tx, block, cfg, journal) = ctx.tx_block_cfg_journal_mut();
         Self::enter_evm(journal, block, cfg, tx, f)
+    }
+
+    /// Like [`enter_ctx`](Self::enter_ctx), but meters storage access under `gas_limit`
+    /// and returns both the closure result and gas consumed.
+    pub fn enter_ctx_with_gas_limit<C, R>(
+        ctx: &mut C,
+        gas_limit: u64,
+        f: impl FnOnce() -> R,
+    ) -> (R, u64)
+    where
+        C: ContextTr<Cfg = CfgEnv<TempoHardfork>, Journal: Debug, Db: Database>,
+    {
+        let (tx, block, cfg, journal) = ctx.tx_block_cfg_journal_mut();
+        Self::enter_evm_with_gas_limit(journal, block, cfg, tx, gas_limit, f)
     }
 
     /// Entry point for a "canonical" precompile (with unique known address).
