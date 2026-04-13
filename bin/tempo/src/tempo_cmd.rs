@@ -4,7 +4,6 @@ use std::{
     net::{IpAddr, SocketAddr},
     path::PathBuf,
     str::FromStr,
-    sync::Arc,
 };
 
 use alloy_primitives::{Address, B256, Bytes};
@@ -26,7 +25,7 @@ use reth_cli_runner::CliRunner;
 use reth_ethereum_cli::ExtendedCommand;
 use serde::Serialize;
 use tempo_alloy::TempoNetwork;
-use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
+use tempo_chainspec::spec::TempoChainSpecParser;
 use tempo_commonware_node_config::SigningKey;
 use tempo_contracts::precompiles::{
     IValidatorConfig::{self},
@@ -865,10 +864,6 @@ pub(crate) struct ValidatorInfo {
     #[arg()]
     id: ValidatorId,
 
-    /// Chain to query (mainnet, testnet, moderato, or path to chainspec file)
-    #[arg(long, short, default_value = "mainnet", value_parser = tempo_chainspec::spec::chain_value_parser)]
-    chain: Arc<TempoChainSpec>,
-
     /// RPC URL to query.
     #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
     rpc_url: String,
@@ -889,16 +884,23 @@ struct SingleValidatorOutput {
 
 impl ValidatorInfo {
     async fn run(self) -> eyre::Result<()> {
-        let epoch_length = self
-            .chain
-            .info
-            .epoch_length()
-            .ok_or_eyre("epochLength not found in chainspec")?;
-
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect(&self.rpc_url)
             .await
             .wrap_err("failed to connect to RPC")?;
+
+        let chain_id = provider
+            .get_chain_id()
+            .await
+            .wrap_err("failed to get chain id")?;
+
+        let chain = tempo_chainspec::spec::chainspec_from_chain_id(chain_id)
+            .ok_or_else(|| eyre!("unknown chain id {chain_id}"))?;
+
+        let epoch_length = chain
+            .info
+            .epoch_length()
+            .ok_or_eyre("epochLength not found in chainspec")?;
 
         let is_v2_initialized = is_validator_config_v2_activated(&provider).await?;
 
@@ -1103,10 +1105,6 @@ struct ValidatorEntry {
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct ValidatorsInfo {
-    /// Chain to query (mainnet, testnet, moderato, or path to chainspec file)
-    #[arg(long, short, default_value = "mainnet", value_parser = tempo_chainspec::spec::chain_value_parser)]
-    chain: Arc<TempoChainSpec>,
-
     /// RPC URL to query. Defaults to <https://rpc.presto.tempo.xyz>
     #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
     rpc_url: String,
@@ -1121,16 +1119,23 @@ impl ValidatorsInfo {
         use alloy_consensus::BlockHeader;
         use alloy_provider::ProviderBuilder;
 
-        let epoch_length = self
-            .chain
-            .info
-            .epoch_length()
-            .ok_or_eyre("epochLength not found in chainspec")?;
-
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect(&self.rpc_url)
             .await
             .wrap_err("failed to connect to RPC")?;
+
+        let chain_id = provider
+            .get_chain_id()
+            .await
+            .wrap_err("failed to get chain id")?;
+
+        let chain = tempo_chainspec::spec::chainspec_from_chain_id(chain_id)
+            .ok_or_else(|| eyre!("unknown chain id {chain_id}"))?;
+
+        let epoch_length = chain
+            .info
+            .epoch_length()
+            .ok_or_eyre("epochLength not found in chainspec")?;
 
         let latest_block_number = provider
             .get_block_number()

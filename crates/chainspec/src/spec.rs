@@ -164,6 +164,17 @@ impl reth_cli::chainspec::ChainSpecParser for TempoChainSpecParser {
     }
 }
 
+/// Resolve a [`TempoChainSpec`] from a chain id.
+///
+/// Returns `None` for unknown chain ids.
+pub fn chainspec_from_chain_id(chain_id: u64) -> Option<Arc<TempoChainSpec>> {
+    match chain_id {
+        4217 => Some(PRESTO.clone()),
+        42431 => Some(MODERATO.clone()),
+        _ => None,
+    }
+}
+
 pub static MODERATO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
     let genesis: Genesis = serde_json::from_str(include_str!("./genesis/moderato.json"))
         .expect("`./genesis/moderato.json` must be present and deserializable");
