@@ -257,7 +257,7 @@ pub async fn setup_validators(
         simulated::Config {
             max_size: 1024 * 1024,
             disconnect_on_block: true,
-            tracked_peer_sets: std::num::NonZeroUsize::new(3).unwrap(),
+            tracked_peer_sets: commonware_utils::NZUsize!(3),
         },
     );
     network.start();

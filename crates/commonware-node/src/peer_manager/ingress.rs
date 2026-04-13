@@ -82,7 +82,7 @@ impl Provider for Mailbox {
     async fn subscribe(&mut self) -> PeerSetSubscription<Self::PublicKey> {
         let (tx, rx) = oneshot::channel();
 
-        let (_, fallback_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_, fallback_rx) = commonware_utils::channel::mpsc::unbounded_channel();
 
         if let Err(error) =
             self.inner

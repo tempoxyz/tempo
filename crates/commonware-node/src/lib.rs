@@ -164,7 +164,7 @@ async fn instantiate_network(
         listen: config.listen_address,
         max_message_size: config.max_message_size_bytes,
         mailbox_size: config.mailbox_size,
-        send_batch_size: std::num::NonZeroUsize::new(8).unwrap(),
+        send_batch_size: commonware_utils::NZUsize!(8),
         bypass_ip_check: config.bypass_ip_check,
         allow_private_ips: config.allow_private_ips,
         allow_dns: config.allow_dns,
