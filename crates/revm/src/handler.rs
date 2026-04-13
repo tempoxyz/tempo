@@ -24,13 +24,14 @@ use revm::{
     },
     inspector::{Inspector, InspectorHandler},
     interpreter::{
-        Gas, InitialAndFloorGas,
+        CallOutcome, CreateOutcome, Gas, InitialAndFloorGas, InstructionResult, InterpreterResult,
         gas::{
             COLD_SLOAD_COST, STANDARD_TOKEN_COST, WARM_SSTORE_RESET,
             get_tokens_in_calldata_istanbul,
         },
         interpreter::EthInterpreter,
     },
+    precompile::PrecompileError,
 };
 use tempo_contracts::precompiles::{
     IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
@@ -161,6 +162,32 @@ fn call_scope_storage_slots(auth: &tempo_primitives::transaction::KeyAuthorizati
             1 + scopes.len() as u64 * 3 + selectors * 3 + constrained_selectors + recipients * 2
         }
     }
+}
+
+/// Rewrites a failed batch step's gas accounting to match whole-transaction semantics.
+///
+/// `frame_result` initially only reflects the final failed step. For atomic AA batches we surface
+/// one top-level transaction result instead, so the gas field must be normalized to the full tx
+/// budget. Reverts preserve the exact gas spent across prior successful steps plus the failed step,
+/// while halts such as OOG consume the entire remaining transaction budget.
+fn normalize_failed_batch_result_gas(
+    frame_result: &mut FrameResult,
+    gas_limit: u64,
+    remaining_gas: u64,
+) {
+    let gas_spent_by_failed_step = frame_result.gas().spent();
+    let total_gas_spent = (gas_limit - remaining_gas) + gas_spent_by_failed_step;
+
+    // Create new Gas with correct limit, because Gas does not have a set_limit method
+    // (the frame_result limit only covers the failed step).
+    let mut corrected_gas = Gas::new(gas_limit);
+    if frame_result.instruction_result().is_revert() {
+        corrected_gas.set_spent(total_gas_spent);
+    } else {
+        corrected_gas.spend_all();
+    }
+    corrected_gas.set_refund(0); // No refunds when batch fails and all state is reverted.
+    *frame_result.gas_mut() = corrected_gas;
 }
 
 fn translate_allowed_calls_for_precompile(
@@ -311,6 +338,103 @@ impl<DB, I> TempoEvmHandler<DB, I>
 where
     DB: alloy_evm::Database,
 {
+    fn prevalidate_keychain_call_scopes(
+        &self,
+        evm: &mut TempoEvm<DB, I>,
+        calls: &[tempo_primitives::transaction::Call],
+        remaining_gas: &mut u64,
+    ) -> Result<Option<FrameResult>, EVMError<DB::Error, TempoInvalidTransaction>> {
+        let spec = *evm.ctx().cfg().spec();
+        if !spec.is_t3() {
+            return Ok(None);
+        }
+
+        // Call-scope matching scales with batch size, so it runs under a metered storage provider.
+        // This keeps unpaid transaction validation bounded while still failing before the first
+        // user call executes.
+
+        let (access_key_addr, user_address) = {
+            let ctx = evm.ctx();
+            let tx = ctx.tx();
+            let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref() else {
+                return Ok(None);
+            };
+            let Some(keychain_sig) = tempo_tx_env.signature.as_keychain() else {
+                return Ok(None);
+            };
+
+            let access_key_addr = if let Some(override_key_id) = tempo_tx_env.override_key_id {
+                override_key_id
+            } else {
+                keychain_sig
+                    .key_id(&tempo_tx_env.signature_hash)
+                    .map_err(|_| {
+                        EVMError::Custom(
+                            "keychain access key recovery failed after validation".into(),
+                        )
+                    })?
+            };
+
+            (access_key_addr, keychain_sig.user_address)
+        };
+        let kind = calls
+            .first()
+            .expect("AA transactions must contain at least one call")
+            .to;
+
+        let (validation, gas_used) =
+            StorageCtx::enter_ctx_with_gas_limit(evm.ctx_mut(), *remaining_gas, || {
+                let keychain = AccountKeychain::default();
+                for call in calls {
+                    keychain.validate_call_scope_for_transaction(
+                        user_address,
+                        access_key_addr,
+                        &call.to,
+                        call.input.as_ref(),
+                    )?;
+                }
+                Ok::<(), TempoPrecompileError>(())
+            });
+
+        match validation {
+            Ok(()) => {
+                *remaining_gas = remaining_gas.saturating_sub(gas_used);
+                Ok(None)
+            }
+            Err(err) => match err.into_precompile_result(gas_used) {
+                Ok(revert_output) => {
+                    let mut gas = Gas::new(gas_used);
+                    gas.set_spent(gas_used);
+
+                    let frame_result = if kind.is_call() {
+                        FrameResult::Call(CallOutcome::new(
+                            InterpreterResult::new(
+                                InstructionResult::Revert,
+                                revert_output.bytes,
+                                gas,
+                            ),
+                            0..0,
+                        ))
+                    } else {
+                        FrameResult::Create(CreateOutcome::new(
+                            InterpreterResult::new(
+                                InstructionResult::Revert,
+                                revert_output.bytes,
+                                gas,
+                            ),
+                            None,
+                        ))
+                    };
+
+                    Ok(Some(frame_result))
+                }
+                Err(PrecompileError::OutOfGas) => Ok(Some(oog_frame_result(kind, *remaining_gas))),
+                Err(PrecompileError::Fatal(err)) => Err(EVMError::Custom(err)),
+                Err(err) => Err(EVMError::Custom(err.to_string())),
+            },
+        }
+    }
+
     /// Generic single-call execution that works with both standard and inspector exec loops.
     ///
     /// This is the core implementation that both `execute_single_call` and inspector-aware
@@ -396,6 +520,15 @@ where
 
         let mut final_result = None;
 
+        if let Some(mut frame_result) =
+            self.prevalidate_keychain_call_scopes(evm, &calls, &mut remaining_gas)?
+        {
+            // This path only runs for keychain batches that already passed the structural CREATE
+            // rejection in validation, so there is no first-call CREATE nonce to preserve here.
+            normalize_failed_batch_result_gas(&mut frame_result, gas_limit, remaining_gas);
+            return Ok(frame_result);
+        }
+
         for call in calls.iter() {
             // Update TxEnv to point to this specific call
             {
@@ -422,9 +555,8 @@ where
             let mut frame_result = frame_result?;
 
             // Check if call succeeded
-            let instruction_result = frame_result.instruction_result();
-            if !instruction_result.is_ok() {
-                // Revert checkpoint - rolls back ALL state changes from ALL calls
+            if !frame_result.instruction_result().is_ok() {
+                // Revert checkpoint - rolls back ALL state changes from all executed calls.
                 evm.ctx().journal_mut().checkpoint_revert(checkpoint);
 
                 // For AA transactions with CREATE as the first call, the nonce was bumped by
@@ -453,21 +585,7 @@ where
                     }
                 }
 
-                // Include gas from all previous successful calls + failed call
-                let gas_spent_by_failed_call = frame_result.gas().spent();
-                let total_gas_spent = (gas_limit - remaining_gas) + gas_spent_by_failed_call;
-
-                // Create new Gas with correct limit, because Gas does not have a set_limit method
-                // (the frame_result has the limit from just the last call)
-                let mut corrected_gas = Gas::new(gas_limit);
-                if instruction_result.is_revert() {
-                    corrected_gas.set_spent(total_gas_spent);
-                } else {
-                    corrected_gas.spend_all();
-                }
-                corrected_gas.set_refund(0); // No refunds when batch fails and all state is reverted
-                *frame_result.gas_mut() = corrected_gas;
-
+                normalize_failed_batch_result_gas(&mut frame_result, gas_limit, remaining_gas);
                 return Ok(frame_result);
             }
 
@@ -1146,7 +1264,7 @@ where
                 .unwrap_or(false);
 
             // Always need to set the transaction key for Keychain signatures
-            let (scope_validation_gas, stored_key_expiry) = StorageCtx::enter_precompile(
+            let stored_key_expiry = StorageCtx::enter_precompile(
                 journal,
                 block,
                 cfg,
@@ -1207,45 +1325,11 @@ where
                         .set_transaction_key(access_key_addr)
                         .map_err(|e| EVMError::Custom(e.to_string()))?;
 
-                    let scope_validation_gas = if spec.is_t3() {
-                        let gas_before = StorageCtx.gas_used();
-
-                        let user_address = keychain_sig.user_address;
-                        for (to, input) in tx.calls() {
-                            keychain
-                                .validate_call_scope_for_transaction(
-                                    user_address,
-                                    access_key_addr,
-                                    to,
-                                    input,
-                                )
-                                .map_err(|e| TempoInvalidTransaction::KeychainValidationFailed {
-                                    reason: format!("{e:?}"),
-                                })?;
-                        }
-
-                        StorageCtx.gas_used().saturating_sub(gas_before)
-                    } else {
-                        0
-                    };
-
-                    Ok::<_, EVMError<_, TempoInvalidTransaction>>((
-                        scope_validation_gas,
-                        key_expiry,
-                    ))
+                    Ok::<_, EVMError<_, TempoInvalidTransaction>>(key_expiry)
                 },
             )?;
 
             evm.key_expiry = stored_key_expiry;
-            evm.initial_gas += scope_validation_gas;
-
-            if spec.is_t3() && tx.gas_limit() < evm.initial_gas {
-                return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
-                    gas_limit: tx.gas_limit(),
-                    initial_gas: evm.initial_gas,
-                }
-                .into());
-            }
         }
 
         // Short-circuit if there is no spending for this transaction and `collectFeePreTx`
@@ -1410,6 +1494,23 @@ where
                 !aa_env.tempo_authorization_list.is_empty(),
             )
             .map_err(TempoInvalidTransaction::from)?;
+
+            // Access-key CREATE is a cheap structural rejection that does not depend on any
+            // per-call scope walk or state mutation. Rejecting it here keeps validation work
+            // constant and avoids entering CREATE execution paths that require special protocol-
+            // nonce preservation on failure.
+            if cfg.spec().is_t3()
+                && aa_env.signature.is_keychain()
+                && aa_env
+                    .aa_calls
+                    .first()
+                    .is_some_and(|call| call.to.is_create())
+            {
+                return Err(TempoInvalidTransaction::CallsValidation(
+                    "access-key transactions cannot use CREATE as the first call",
+                )
+                .into());
+            }
 
             // Validate keychain signature version (outer + authorization list).
             aa_env
@@ -3021,7 +3122,7 @@ mod tests {
     }
 
     #[test]
-    fn test_t3_scope_validation_gas_rechecked_against_gas_limit() {
+    fn test_t3_scope_validation_moves_to_execution() {
         const CALL_SCOPE_SELECTOR: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
 
         let caller = Address::repeat_byte(0x11);
@@ -3069,7 +3170,7 @@ mod tests {
             .with_new_journal(create_test_journal());
 
         let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
-        let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+        let mut handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
 
         StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
             let mut keychain = AccountKeychain::new();
@@ -3115,19 +3216,140 @@ mod tests {
 
         evm.inner.ctx.tx.inner.gas_limit = init_gas.initial_gas;
 
-        let err = handler
+        handler
             .validate_against_state_and_deduct_caller(&mut evm)
-            .expect_err("scope validation gas should force a gas-limit recheck");
+            .expect("scope validation no longer runs during state validation");
+
+        let result = handler
+            .execution(&mut evm, &init_gas)
+            .expect("execution should return a frame result");
 
         assert!(
             matches!(
-                err.as_invalid_tx_err(),
-                Some(TempoInvalidTransaction::EthInvalidTransaction(
-                    InvalidTransaction::CallGasCostMoreThanGasLimit { .. }
-                ))
+                result.instruction_result(),
+                revm::interpreter::InstructionResult::OutOfGas
             ),
-            "expected CallGasCostMoreThanGasLimit, got: {err:?}"
+            "expected scope validation to fail during execution with OOG, got: {:?}",
+            result.instruction_result()
         );
+        assert_eq!(
+            result.gas().limit(),
+            init_gas.initial_gas,
+            "batch OOG should report the full tx gas budget"
+        );
+        assert_eq!(
+            result.gas().spent(),
+            init_gas.initial_gas,
+            "batch OOG should consume the full tx gas budget"
+        );
+        assert_eq!(result.gas().refunded(), 0);
+    }
+
+    #[test]
+    fn test_t3_scope_validation_returns_call_not_allowed_revert_data() {
+        use alloy_sol_types::SolInterface;
+        use tempo_contracts::precompiles::AccountKeychainError;
+
+        const ALLOWED_SELECTOR: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
+        const DENIED_SELECTOR: [u8; 4] = [0xca, 0xfe, 0xba, 0xbe];
+
+        let caller = Address::repeat_byte(0x11);
+        let access_key = Address::repeat_byte(0x22);
+        let target = DEFAULT_FEE_TOKEN;
+
+        let signature =
+            TempoSignature::Keychain(tempo_primitives::transaction::KeychainSignature::new(
+                caller,
+                tempo_primitives::transaction::PrimitiveSignature::Secp256k1(
+                    alloy_primitives::Signature::test_signature(),
+                ),
+            ));
+
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T3;
+
+        let tx_env = TempoTxEnv {
+            inner: revm::context::TxEnv {
+                caller,
+                gas_limit: 1_000_000,
+                kind: TxKind::Call(target),
+                ..Default::default()
+            },
+            fee_token: Some(DEFAULT_FEE_TOKEN),
+            tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                signature,
+                aa_calls: vec![Call {
+                    to: TxKind::Call(target),
+                    value: U256::ZERO,
+                    input: Bytes::from_static(&DENIED_SELECTOR),
+                }],
+                signature_hash: B256::ZERO,
+                override_key_id: Some(access_key),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+
+        let ctx = Context::mainnet()
+            .with_db(CacheDB::new(EmptyDB::default()))
+            .with_block(TempoBlockEnv::default())
+            .with_cfg(cfg)
+            .with_tx(tx_env)
+            .with_new_journal(create_test_journal());
+
+        let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
+        let mut handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+
+        StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+            let mut keychain = AccountKeychain::new();
+
+            keychain.initialize().expect("keychain initialized");
+            keychain
+                .set_transaction_key(Address::ZERO)
+                .expect("root key setup succeeds");
+            keychain
+                .set_tx_origin(caller)
+                .expect("tx.origin setup succeeds");
+            keychain
+                .authorize_key(
+                    caller,
+                    authorizeKeyCall {
+                        keyId: access_key,
+                        signatureType: PrecompileSignatureType::Secp256k1,
+                        config: KeyRestrictions {
+                            expiry: u64::MAX,
+                            enforceLimits: false,
+                            limits: vec![],
+                            allowAnyCalls: false,
+                            allowedCalls: vec![PrecompileCallScope {
+                                target,
+                                selectorRules: vec![PrecompileSelectorRule {
+                                    selector: ALLOWED_SELECTOR.into(),
+                                    recipients: vec![],
+                                }],
+                            }],
+                        },
+                    },
+                )
+                .expect("access key authorization succeeds");
+        });
+
+        let init_gas = handler
+            .validate_initial_tx_gas(&mut evm)
+            .expect("initial gas validation should succeed");
+
+        handler
+            .validate_against_state_and_deduct_caller(&mut evm)
+            .expect("scope validation no longer runs during state validation");
+
+        let result = handler
+            .execution(&mut evm, &init_gas)
+            .expect("execution should return a frame result");
+
+        let expected_revert: Bytes = AccountKeychainError::call_not_allowed().abi_encode().into();
+
+        assert_eq!(result.instruction_result(), InstructionResult::Revert);
+        assert_eq!(result.output().data(), &expected_revert);
     }
 
     #[test]
