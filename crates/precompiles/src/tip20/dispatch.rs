@@ -41,8 +41,12 @@ impl Precompile for TIP20Token {
             .map_err(|_| PrecompileError::OutOfGas)?;
 
         // Ensure that the token is initialized (has bytecode)
-        // Note that if the initialization check fails, this is treated as uninitialized
-        if !self.is_initialized().unwrap_or(false) {
+        let initialized = match self.is_initialized() {
+            Ok(v) => v,
+            Err(_) if !self.storage.spec().is_t4() => false,
+            Err(e) => return e.into_precompile_result(self.storage.gas_used()),
+        };
+        if !initialized {
             return TempoPrecompileError::TIP20(TIP20Error::uninitialized())
                 .into_precompile_result(self.storage.gas_used());
         }
