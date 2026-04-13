@@ -582,7 +582,7 @@ impl Inner<Init> {
             Some(tempo_primitives::TempoConsensusContext {
                 epoch: round.epoch().get(),
                 view: round.view().get(),
-                proposer: alloy_primitives::B256::from_slice(leader.as_ref()),
+                proposer: crate::utils::public_key_to_b256(&leader),
                 parent_view: parent_view.get(),
             })
         } else {
