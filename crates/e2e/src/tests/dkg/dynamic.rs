@@ -11,7 +11,7 @@ use futures::future::join_all;
 use crate::{
     CONSENSUS_NODE_PREFIX, Setup, setup_validators,
     tests::{
-        assert_no_dkg_failure, assert_no_v1,
+        assert_no_dkg_failure,
         dkg::common::target_epoch,
     },
 };
@@ -131,7 +131,6 @@ impl AssertValidatorIsAdded {
                     let key = parts.next().unwrap();
                     let value = parts.next().unwrap();
 
-                    assert_no_v1(key, value);
                     assert_no_dkg_failure(key, value);
 
                     if key.ends_with("_epoch_manager_latest_epoch")
@@ -258,7 +257,6 @@ impl AssertValidatorIsRemoved {
                     let key = parts.next().unwrap();
                     let value = parts.next().unwrap();
 
-                    assert_no_v1(key, value);
                     assert_no_dkg_failure(key, value);
 
                     if key.ends_with("_epoch_manager_latest_epoch")

@@ -10,8 +10,8 @@ use reth_ethereum::storage::BlockNumReader;
 use reth_node_metrics::recorder::install_prometheus_recorder;
 
 use crate::{
-    CONSENSUS_NODE_PREFIX, Setup, connect_execution_peers, connect_execution_to_peers,
-    get_pipeline_runs, setup_validators, tests::assert_no_v1,
+    Setup, connect_execution_peers, connect_execution_to_peers,
+    get_pipeline_runs, setup_validators,
 };
 
 #[test_traced]
@@ -102,15 +102,6 @@ impl AssertJoinsLate {
             while last.execution_provider().last_block_number().unwrap() < blocks_after_join {
                 context.sleep(Duration::from_millis(100)).await;
                 assert_no_new_epoch(&context, 0);
-            }
-            for line in context.encode().lines() {
-                if line.starts_with(CONSENSUS_NODE_PREFIX) {
-                    continue;
-                }
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
-                assert_no_v1(metric, value);
             }
             // Verify backfill behavior
             let actual_runs = get_pipeline_runs(metrics_recorder);

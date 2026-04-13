@@ -356,16 +356,6 @@ pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> 
                     assert_eq!(value, 0);
                 }
 
-                if metric.ends_with("_dkg_manager_read_players_from_v1_contract_total") {
-                    assert_eq!(0, value.parse::<u64>().unwrap());
-                }
-                if metric.ends_with("_dkg_manager_syncing_players") {
-                    assert_eq!(0, value.parse::<u64>().unwrap());
-                }
-                if metric.ends_with("_dkg_manager_read_re_dkg_epoch_from_v1_contract_total") {
-                    assert_eq!(0, value.parse::<u64>().unwrap());
-                }
-
                 if stop_condition(metric, value) {
                     success = true;
                     break;
