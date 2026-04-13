@@ -56,7 +56,7 @@ impl Precompile for TIP20Token {
 
         dispatch_call(
             calldata,
-            &[SelectorSchedule::new(TempoHardfork::T2).add(T2_ADDED)],
+            &[SelectorSchedule::new(TempoHardfork::T2).with_added(T2_ADDED)],
             TIP20Call::decode,
             |call| match call {
                 // Metadata functions (no calldata decoding needed)

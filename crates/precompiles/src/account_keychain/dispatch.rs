@@ -34,8 +34,8 @@ impl Precompile for AccountKeychain {
         dispatch_call(
             calldata,
             &[SelectorSchedule::new(TempoHardfork::T3)
-                .add(T3_ADDED)
-                .drop(T3_DROPPED)],
+                .with_added(T3_ADDED)
+                .with_dropped(T3_DROPPED)],
             IAccountKeychainCalls::abi_decode,
             |call| match call {
                 IAccountKeychainCalls::authorizeKey_0(call) => {
@@ -313,6 +313,37 @@ mod tests {
 
             let result = keychain.call(&calldata, account)?;
             assert!(result.reverted);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_get_remaining_limit_returns_unknown_selector_post_t3() -> eyre::Result<()> {
+        let account = Address::random();
+        let key_id = Address::random();
+        let token = Address::random();
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            let calldata = getRemainingLimitCall {
+                account,
+                keyId: key_id,
+                token,
+            }
+            .abi_encode();
+
+            let result = keychain.call(&calldata, account)?;
+            assert!(result.reverted, "expected revert for dropped selector post-T3");
+
+            let decoded = UnknownFunctionSelector::abi_decode(&result.bytes)?;
+            assert_eq!(
+                decoded.selector.as_slice(),
+                &getRemainingLimitCall::SELECTOR,
+            );
 
             Ok(())
         })

@@ -29,7 +29,7 @@ impl Precompile for TIP403Registry {
 
         dispatch_call(
             calldata,
-            &[SelectorSchedule::new(TempoHardfork::T2).add(T2_ADDED)],
+            &[SelectorSchedule::new(TempoHardfork::T2).with_added(T2_ADDED)],
             ITIP403RegistryCalls::abi_decode,
             |call| match call {
                 ITIP403RegistryCalls::policyIdCounter(call) => {

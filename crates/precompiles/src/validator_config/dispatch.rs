@@ -23,7 +23,7 @@ impl Precompile for ValidatorConfig {
 
         dispatch_call(
             calldata,
-            &[SelectorSchedule::new(TempoHardfork::T1).add(T1_ADDED)],
+            &[SelectorSchedule::new(TempoHardfork::T1).with_added(T1_ADDED)],
             IValidatorConfigCalls::abi_decode,
             |call| match call {
                 // View functions

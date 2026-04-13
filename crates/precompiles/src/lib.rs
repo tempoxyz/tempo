@@ -348,7 +348,7 @@ impl<'a> SelectorSchedule<'a> {
     /// Registers selectors that are introduced at this hardfork boundary.
     ///
     /// These selectors are treated as unknown BEFORE `hardfork` activates.
-    pub(crate) const fn add(mut self, selectors: &'a [[u8; 4]]) -> Self {
+    pub(crate) const fn with_added(mut self, selectors: &'a [[u8; 4]]) -> Self {
         self.added = selectors;
         self
     }
@@ -356,7 +356,7 @@ impl<'a> SelectorSchedule<'a> {
     /// Registers selectors that are removed at this hardfork boundary.
     ///
     /// These selectors are treated as unknown ONCE `hardfork` activates.
-    pub(crate) const fn drop(mut self, selectors: &'a [[u8; 4]]) -> Self {
+    pub(crate) const fn with_dropped(mut self, selectors: &'a [[u8; 4]]) -> Self {
         self.dropped = selectors;
         self
     }
@@ -658,9 +658,9 @@ mod tests {
 
         const SELECTOR_SCHEDULE: &[SelectorSchedule<'static>] = &[
             SelectorSchedule::new(TempoHardfork::T2)
-                .add(&[ISelectorGatedTest::t2AddedCall::SELECTOR]),
+                .with_added(&[ISelectorGatedTest::t2AddedCall::SELECTOR]),
             SelectorSchedule::new(TempoHardfork::T3)
-                .drop(&[ISelectorGatedTest::t3RemovedCall::SELECTOR]),
+                .with_dropped(&[ISelectorGatedTest::t3RemovedCall::SELECTOR]),
         ];
 
         let call_with_spec = |spec: TempoHardfork, calldata: &[u8]| {
