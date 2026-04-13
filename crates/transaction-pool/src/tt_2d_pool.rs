@@ -28,6 +28,7 @@ use std::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
+use tokio::sync::broadcast;
 
 type TxOrdering = CoinbaseTipOrdering<TempoPooledTransaction>;
 /// A sub-pool that keeps track of 2D nonce transactions.
@@ -83,6 +84,8 @@ pub struct AA2dPool {
     /// Bounded by pool size (max unique senders = pending_limit + queued_limit).
     /// Entries are removed when count reaches 0 via `decrement_sender_count`.
     txs_by_sender: AddressMap<usize>,
+    /// Used to broadcast new pending transactions to active [`BestAA2dTransactions`] iterators.
+    new_transaction_notifier: broadcast::Sender<PendingTransaction<TxOrdering>>,
 }
 
 impl Default for AA2dPool {
@@ -103,6 +106,7 @@ impl AA2dPool {
 
     /// Creates a new instance with the givenconfig and nonce keys
     pub fn new(config: AA2dPoolConfig) -> Self {
+        let (new_transaction_notifier, _) = broadcast::channel(200);
         Self {
             submission_id: 0,
             independent_transactions: Default::default(),
@@ -115,6 +119,14 @@ impl AA2dPool {
             metrics: AA2dPoolMetrics::default(),
             by_eviction_order: Default::default(),
             txs_by_sender: Default::default(),
+            new_transaction_notifier,
+        }
+    }
+
+    /// Broadcasts a new pending transaction to all active [`BestAA2dTransactions`] iterators.
+    fn notify_new_pending(&self, tx: &PendingTransaction<TxOrdering>) {
+        if self.new_transaction_notifier.receiver_count() > 0 {
+            let _ = self.new_transaction_notifier.send(tx.clone());
         }
     }
 
@@ -269,7 +281,7 @@ impl AA2dPool {
                         // if this was previously not pending we need to promote the transaction
                         let was_pending = existing_tx.set_pending(true);
                         if !was_pending {
-                            promoted.push(existing_tx.inner.transaction.clone());
+                            promoted.push(existing_tx.inner.clone());
                         }
                     }
                 }
@@ -298,10 +310,16 @@ impl AA2dPool {
                     .insert(tx_id.seq_id, tx.inner.clone());
             }
 
+            // Notify active BestAA2dTransactions iterators about new pending transactions.
+            self.notify_new_pending(&tx.inner);
+            for promoted_tx in &promoted {
+                self.notify_new_pending(promoted_tx);
+            }
+
             return Ok(AddedTransaction::Pending(AddedPendingTransaction {
                 transaction,
                 replaced: replaced.map(|tx| tx.inner.transaction.clone()),
-                promoted,
+                promoted: promoted.into_iter().map(|tx| tx.transaction).collect(),
                 discarded: self.discard(),
             }));
         }
@@ -352,6 +370,9 @@ impl AA2dPool {
                 .priority(&transaction.transaction, hardfork.base_fee()),
             transaction: transaction.clone(),
         };
+
+        // Notify active BestAA2dTransactions iterators about the new pending transaction
+        self.notify_new_pending(&pending_tx);
 
         // Insert into expiring nonce map and by_hash
         self.expiring_nonce_txs
@@ -498,6 +519,8 @@ impl AA2dPool {
                 .map(|(id, tx)| (*id, tx.inner.clone()))
                 .collect(),
             invalid: Default::default(),
+            new_transaction_receiver: Some(self.new_transaction_notifier.subscribe()),
+            last_priority: None,
         }
     }
 
@@ -1466,6 +1489,18 @@ impl PartialOrd for EvictionKey {
     }
 }
 
+/// Maximum number of new transactions to drain from the channel per `next()` call.
+const MAX_NEW_TRANSACTIONS_PER_BATCH: usize = 16;
+
+/// Determines how a newly received transaction should be handled based on its priority
+/// relative to transactions already yielded by the iterator.
+enum IncomingAA2dTransaction {
+    /// Priority ≤ last yielded — safe to add to both `by_id` and `independent`.
+    Process(PendingTransaction<TxOrdering>),
+    /// Priority > last yielded — add only to `by_id` for nonce chain lookups, not `independent`.
+    Stash(PendingTransaction<TxOrdering>),
+}
+
 /// A snapshot of the sub-pool containing all executable transactions.
 #[derive(Debug)]
 pub(crate) struct BestAA2dTransactions {
@@ -1476,6 +1511,10 @@ pub(crate) struct BestAA2dTransactions {
 
     /// There might be the case where a yielded transactions is invalid, this will track it.
     invalid: HashSet<AASequenceId>,
+    /// Live feed of new pending transactions arriving after this iterator was created.
+    new_transaction_receiver: Option<broadcast::Receiver<PendingTransaction<TxOrdering>>>,
+    /// Priority of the most recently yielded transaction, used to maintain ordering invariant.
+    last_priority: Option<Priority<u128>>,
 }
 
 impl BestAA2dTransactions {
@@ -1491,6 +1530,60 @@ impl BestAA2dTransactions {
         Some((id, tx))
     }
 
+    /// Non-blocking read on the new pending transactions subscription channel.
+    fn try_recv(&mut self) -> Option<IncomingAA2dTransaction> {
+        loop {
+            match self.new_transaction_receiver.as_mut()?.try_recv() {
+                Ok(tx) => {
+                    if let Some(last_priority) = &self.last_priority
+                        && &tx.priority > last_priority
+                    {
+                        // Higher priority than what we already yielded — stash in `by_id`
+                        // only (not `independent`) to preserve nonce chain lookups.
+                        return Some(IncomingAA2dTransaction::Stash(tx));
+                    }
+                    return Some(IncomingAA2dTransaction::Process(tx));
+                }
+                Err(broadcast::error::TryRecvError::Lagged(_)) => {
+                    // Buffer overflowed; self-corrects on next call.
+                }
+                Err(_) => return None,
+            }
+        }
+    }
+
+    /// Drains new pending transactions from the broadcast channel and inserts them.
+    fn add_new_transactions(&mut self) {
+        for _ in 0..MAX_NEW_TRANSACTIONS_PER_BATCH {
+            if let Some(incoming) = self.try_recv() {
+                let (tx, process) = match incoming {
+                    IncomingAA2dTransaction::Process(tx) => (tx, true),
+                    IncomingAA2dTransaction::Stash(tx) => (tx, false),
+                };
+                if tx.transaction.transaction.is_expiring_nonce() {
+                    if process {
+                        // Expiring nonce transactions are always independent
+                        self.independent.insert(tx);
+                    }
+                } else if let Some(id) = tx.transaction.transaction.aa_transaction_id() {
+                    if process {
+                        // Only mark as independent if no ancestor is already tracked
+                        if !self.by_id.contains_key(&AA2dTransactionId::new(
+                            id.seq_id,
+                            id.nonce.saturating_sub(1),
+                        )) || id.nonce == 0
+                        {
+                            self.independent.insert(tx.clone());
+                        }
+                    }
+                    self.by_id.insert(id, tx);
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
     /// Returns the next best transaction with its priority.
     pub(crate) fn next_tx_and_priority(
         &mut self,
@@ -1499,6 +1592,7 @@ impl BestAA2dTransactions {
         Priority<u128>,
     )> {
         loop {
+            self.add_new_transactions();
             let (id, best) = self.pop_best()?;
             if self.invalid.contains(&id.seq_id) {
                 continue;
@@ -1509,6 +1603,9 @@ impl BestAA2dTransactions {
                 && let Some(unlocked) = self.by_id.get(&id.unlocks())
             {
                 self.independent.insert(unlocked.clone());
+            }
+            if self.new_transaction_receiver.is_some() {
+                self.last_priority = Some(best.priority.clone());
             }
             return Some((best.transaction, best.priority));
         }
@@ -1536,7 +1633,10 @@ impl BestTransactions for BestAA2dTransactions {
         }
     }
 
-    fn no_updates(&mut self) {}
+    fn no_updates(&mut self) {
+        self.new_transaction_receiver.take();
+        self.last_priority.take();
+    }
 
     fn set_skip_blobs(&mut self, _skip_blobs: bool) {}
 }
@@ -5744,5 +5844,187 @@ mod tests {
             "rejected txs with new nonce keys should not grow slot_to_seq_id"
         );
         pool.assert_invariants();
+    }
+
+    #[test_case::test_case(false ; "live updates")]
+    #[test_case::test_case(true  ; "no updates")]
+    fn best_transactions_live_new_tx(no_updates: bool) {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+
+        // Add one tx before creating the iterator
+        let tx0 = TxBuilder::aa(sender).nonce_key(U256::ZERO).build();
+        let tx0_hash = *tx0.hash();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        let mut best = pool.best_transactions();
+        if no_updates {
+            best.no_updates();
+        }
+
+        // Add a new tx from a different sender while iterator is active
+        let sender2 = Address::random();
+        let tx1 = TxBuilder::aa(sender2).nonce_key(U256::ZERO).build();
+        let tx1_hash = *tx1.hash();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        let mut yielded = HashSet::new();
+        for tx in best {
+            yielded.insert(*tx.hash());
+        }
+
+        assert!(
+            yielded.contains(&tx0_hash),
+            "should always yield pre-existing tx"
+        );
+        assert_eq!(
+            yielded.contains(&tx1_hash),
+            !no_updates,
+            "new tx should only be yielded when live updates are enabled"
+        );
+    }
+
+    #[test]
+    fn best_transactions_live_promoted() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+
+        // Insert tx with nonce=1 (queued due to gap)
+        let tx1 = TxBuilder::aa(sender).nonce_key(U256::ZERO).nonce(1).build();
+        let tx1_hash = *tx1.hash();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        // Create iterator — snapshot is empty (tx1 is queued)
+        let mut best = pool.best_transactions();
+        assert!(best.next().is_none(), "no pending txs yet");
+
+        // Fill the gap with nonce=0, promoting tx1
+        let tx0 = TxBuilder::aa(sender).nonce_key(U256::ZERO).nonce(0).build();
+        let tx0_hash = *tx0.hash();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        let mut yielded = HashSet::new();
+        for tx in best {
+            yielded.insert(*tx.hash());
+        }
+
+        assert_eq!(yielded.len(), 2, "should yield both tx0 and promoted tx1");
+        assert!(yielded.contains(&tx0_hash));
+        assert!(yielded.contains(&tx1_hash));
+    }
+
+    #[test]
+    fn best_transactions_live_gapped_unblock_higher_fee_not_promoted() {
+        // Scenario: tx at nonce=1 is queued (gap). A new tx arrives at nonce=0 that fills the
+        // gap but has higher priority than the last yielded tx. The gap-filler should be stashed
+        // (not added to `independent`) so neither nonce=0 nor nonce=1 gets yielded.
+        let mut pool = AA2dPool::default();
+
+        let sender_low = Address::random();
+        let sender_gapped = Address::random();
+
+        // Add a low-priority tx from sender_low so the iterator has something to yield first.
+        // max_fee must exceed the T1 base fee (20 gwei) so that effective_tip > 0.
+        let tx_low = TxBuilder::aa(sender_low)
+            .nonce_key(U256::ZERO)
+            .max_priority_fee(1_000_000_000)
+            .max_fee(30_000_000_000)
+            .build();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx_low, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        // Add a gapped tx (nonce=1) for sender_gapped — this will be queued.
+        let tx_n1 = TxBuilder::aa(sender_gapped)
+            .nonce_key(U256::ZERO)
+            .nonce(1)
+            .max_priority_fee(2_000_000_000)
+            .max_fee(30_000_000_000)
+            .build();
+        let tx_n1_hash = *tx_n1.hash();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx_n1, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        // Create iterator and yield the low-priority tx to set `last_priority`.
+        let mut best = pool.best_transactions();
+        let first = best.next();
+        assert!(first.is_some(), "should yield the low-priority tx");
+
+        // Now fill the gap with nonce=0 that has HIGHER priority than the already-yielded tx.
+        let tx_n0 = TxBuilder::aa(sender_gapped)
+            .nonce_key(U256::ZERO)
+            .nonce(0)
+            .max_priority_fee(2_000_000_000)
+            .max_fee(30_000_000_000)
+            .build();
+        let tx_n0_hash = *tx_n0.hash();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx_n0, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        // Neither nonce=0 nor nonce=1 should be yielded because nonce=0's priority is higher
+        // than what was already yielded, so it gets stashed rather than added to `independent`.
+        let remaining: Vec<_> = best.map(|tx| *tx.hash()).collect();
+        assert!(
+            !remaining.contains(&tx_n0_hash),
+            "gap-filler with higher fee must not be yielded"
+        );
+        assert!(
+            !remaining.contains(&tx_n1_hash),
+            "gapped tx must not be promoted when gap-filler is stashed"
+        );
+    }
+
+    #[test]
+    fn best_transactions_live_expiring_nonce() {
+        let mut pool = AA2dPool::default();
+
+        let mut best = pool.best_transactions();
+
+        // Add expiring nonce tx while iterator is active
+        let sender = Address::random();
+        let tx = TxBuilder::aa(sender).nonce_key(U256::MAX).nonce(0).build();
+        let tx_hash = *tx.hash();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        let first = best.next();
+        assert!(first.is_some(), "should yield the expiring nonce tx");
+        assert_eq!(*first.unwrap().hash(), tx_hash);
+        assert!(best.next().is_none());
     }
 }
