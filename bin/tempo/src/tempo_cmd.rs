@@ -7,7 +7,6 @@ use std::{
     sync::Arc,
 };
 
-use crate::p2p_proxy::P2pProxyArgs;
 use alloy_primitives::{Address, B256, Bytes};
 use alloy_provider::{Provider, ProviderBuilder};
 use alloy_rpc_types_eth::TransactionRequest;
@@ -38,7 +37,7 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_precompiles::validator_config_v2::{VALIDATOR_NS_ADD, VALIDATOR_NS_ROTATE};
 use tempo_validator_config::ValidatorConfig;
 
-use crate::init_state;
+use crate::{init_state, p2p_proxy::P2pProxyArgs};
 
 /// Passthrough args for extension management commands.
 ///
@@ -61,6 +60,7 @@ pub(crate) enum TempoSubcommand {
     /// Consensus-related commands.
     #[command(subcommand)]
     Consensus(ConsensusSubcommand),
+
     /// Run a proxy P2P node that serves cached block data fetched from an RPC endpoint.
     P2pProxy(P2pProxyArgs),
 

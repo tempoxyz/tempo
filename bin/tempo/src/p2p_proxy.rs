@@ -262,13 +262,13 @@ async fn run_p2p_network(
         .with_max_inbound(cfg.max_inbound)
         .with_max_outbound(0);
 
-    let runtime = Runtime::test();
-    let mut builder = NetworkConfig::<_, TempoNetPrimitives>::builder_with_rng_secret_key(runtime)
-        .listener_port(cfg.port)
-        .disable_dns_discovery()
-        .disable_tx_gossip(true)
-        .peer_config(peers_config)
-        .set_head(cfg.head);
+    let mut builder =
+        NetworkConfig::<_, TempoNetPrimitives>::builder_with_rng_secret_key(Runtime::test())
+            .listener_port(cfg.port)
+            .disable_dns_discovery()
+            .disable_tx_gossip(true)
+            .peer_config(peers_config)
+            .set_head(cfg.head);
 
     if let Some(dp) = cfg.discovery_port {
         builder = builder.discovery_port(dp);
