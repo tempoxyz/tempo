@@ -864,13 +864,37 @@ pub(crate) struct ValidatorInfo {
     /// Validator ethereum address, ed25519 public key, or index
     #[arg()]
     id: ValidatorId,
+
+    /// Chain to query (mainnet, testnet, moderato, or path to chainspec file)
+    #[arg(long, short, default_value = "mainnet", value_parser = tempo_chainspec::spec::chain_value_parser)]
+    chain: Arc<TempoChainSpec>,
+
     /// RPC URL to query.
     #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
     rpc_url: String,
+
+    /// Skip crosschecking the validator with the last DKG round.
+    #[arg(long)]
+    no_dkg_information: bool,
+}
+
+/// Output for the single-validator lookup enriched with DKG role and epoch context.
+#[derive(Debug, Serialize)]
+struct SingleValidatorOutput {
+    current_epoch: u64,
+    current_height: u64,
+    #[serde(flatten)]
+    validator: ValidatorEntry,
 }
 
 impl ValidatorInfo {
     async fn run(self) -> eyre::Result<()> {
+        let epoch_length = self
+            .chain
+            .info
+            .epoch_length()
+            .ok_or_eyre("epochLength not found in chainspec")?;
+
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect(&self.rpc_url)
             .await
@@ -947,7 +971,82 @@ impl ValidatorInfo {
         }
 
         let validator = read_validator_from_contract(&provider, self.id).await?;
-        println!("{}", serde_json::to_string_pretty(&validator)?);
+        let pubkey_bytes = validator.publicKey.0;
+
+        let latest_block_number = provider
+            .get_block_number()
+            .await
+            .wrap_err("failed to get latest block number")?;
+
+        let epoch_strategy = FixedEpocher::new(NZU64!(epoch_length));
+        let current_height = Height::new(latest_block_number);
+        let current_epoch_info = epoch_strategy
+            .containing(current_height)
+            .ok_or_else(|| eyre!("failed to determine epoch for height {latest_block_number}"))?;
+        let current_epoch = current_epoch_info.epoch();
+
+        let mut is_dkg_dealer = None;
+        let mut is_dkg_player = None;
+        let mut in_committee = None;
+
+        if !self.no_dkg_information {
+            use alloy_consensus::BlockHeader;
+
+            let boundary_height = current_epoch
+                .previous()
+                .map(|epoch| epoch_strategy.last(epoch).expect("valid epoch"))
+                .unwrap_or_default();
+
+            let boundary_block = provider
+                .get_block_by_number(boundary_height.get().into())
+                .hashes()
+                .await
+                .wrap_err_with(|| {
+                    format!(
+                        "failed to get block header at height {}",
+                        boundary_height.get()
+                    )
+                })?
+                .ok_or_eyre("boundary block not found")?;
+
+            let extra_data = boundary_block.header.extra_data();
+            if extra_data.is_empty() {
+                return Err(eyre!(
+                    "boundary block at height {} has no DKG outcome in extra_data",
+                    boundary_height.get()
+                ));
+            }
+
+            let dkg_outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref())
+                .wrap_err("failed to decode DKG outcome from extra_data")?;
+
+            let key = PublicKey::decode(&mut &pubkey_bytes[..])
+                .wrap_err("failed decoding on-chain ed25519 key")?;
+
+            let committee = dkg_outcome.players().position(&key).is_some();
+            is_dkg_dealer = Some(committee);
+            is_dkg_player = Some(dkg_outcome.next_players().position(&key).is_some());
+            in_committee = Some(committee);
+        }
+
+        let output = SingleValidatorOutput {
+            current_epoch: current_epoch.get(),
+            current_height: current_height.get(),
+            validator: ValidatorEntry {
+                onchain_address: validator.validatorAddress,
+                public_key: alloy_primitives::hex::encode(pubkey_bytes),
+                inbound_address: validator.ingress,
+                outbound_address: validator.egress,
+                fee_recipient: Some(validator.feeRecipient),
+                index: Some(validator.index),
+                active: validator.deactivatedAtHeight == 0,
+                is_dkg_dealer,
+                is_dkg_player,
+                in_committee,
+            },
+        };
+
+        println!("{}", serde_json::to_string_pretty(&output)?);
 
         Ok(())
     }
@@ -983,19 +1082,28 @@ struct ValidatorEntry {
     inbound_address: String,
     /// Outbound IP address
     outbound_address: String,
+    /// Fee recipient address
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fee_recipient: Option<Address>,
+    /// Validator index
+    #[serde(skip_serializing_if = "Option::is_none")]
+    index: Option<u64>,
     /// Whether the validator is active in the current contract state
     active: bool,
-    // Whether the validator is a dealer in th ecurrent epoch.
-    is_dkg_dealer: bool,
+    // Whether the validator is a dealer in the current epoch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_dkg_dealer: Option<bool>,
     /// Whether the validator is a player in the current epoch.
-    is_dkg_player: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_dkg_player: Option<bool>,
     /// Whether the validator is in the committee for the given epoch.
-    in_committee: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    in_committee: Option<bool>,
 }
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct ValidatorsInfo {
-    /// Chain to query (presto, testnet, moderato, or path to chainspec file)
+    /// Chain to query (mainnet, testnet, moderato, or path to chainspec file)
     #[arg(long, short, default_value = "mainnet", value_parser = tempo_chainspec::spec::chain_value_parser)]
     chain: Arc<TempoChainSpec>,
 
@@ -1121,10 +1229,12 @@ impl ValidatorsInfo {
                         public_key: alloy_primitives::hex::encode(pubkey_bytes),
                         inbound_address: validator.inboundAddress,
                         outbound_address: validator.outboundAddress,
+                        fee_recipient: None,
+                        index: None,
                         active: validator.active,
-                        is_dkg_dealer: dkg_outcome.players().position(&key).is_some(),
-                        is_dkg_player: dkg_outcome.next_players().position(&key).is_some(),
-                        in_committee,
+                        is_dkg_dealer: Some(dkg_outcome.players().position(&key).is_some()),
+                        is_dkg_player: Some(dkg_outcome.next_players().position(&key).is_some()),
+                        in_committee: Some(in_committee),
                     });
                 }
             }
@@ -1177,10 +1287,12 @@ impl ValidatorsInfo {
                     public_key: alloy_primitives::hex::encode(pubkey_bytes),
                     inbound_address: validator.ingress,
                     outbound_address: validator.egress,
+                    fee_recipient: None,
+                    index: None,
                     active: true,
-                    is_dkg_dealer: dkg_outcome.players().position(&key).is_some(),
-                    is_dkg_player: dkg_outcome.next_players().position(&key).is_some(),
-                    in_committee,
+                    is_dkg_dealer: Some(dkg_outcome.players().position(&key).is_some()),
+                    is_dkg_player: Some(dkg_outcome.next_players().position(&key).is_some()),
+                    in_committee: Some(in_committee),
                 });
             }
         }
