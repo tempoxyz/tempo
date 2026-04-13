@@ -31,13 +31,13 @@ use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::{TempoChainSpec, chain_value_parser};
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope};
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 /// Tempo-specific network primitives for the proxy node.
 type TempoNetPrimitives = BasicNetworkPrimitives<TempoPrimitives, TempoTxEnvelope>;
 
-/// 1 day of blocks at 500ms block time.
-const CACHE_CAPACITY: u64 = 2 * 60 * 60 * 24; // 172_800
+/// 12 hrs of blocks at 500ms block time.
+const CACHE_CAPACITY: u64 = 60 * 60 * 24; // 86400
 
 #[derive(Parser, Debug)]
 #[command(
@@ -68,10 +68,9 @@ pub(crate) struct P2pProxyArgs {
     #[arg(long, default_value_t = 30)]
     max_concurrent_inbound: usize,
 
-    /// Number of recent blocks to backfill into the cache on startup.
-    /// Defaults to the full cache capacity (172,800 blocks ≈ 1 day at 500ms block time).
+    /// Number of blocks to cache.
     #[arg(long)]
-    backfill_blocks: Option<u64>,
+    cache_blocks: Option<u64>,
 }
 
 impl P2pProxyArgs {
@@ -102,9 +101,9 @@ impl P2pProxyArgs {
 
         // Spawn the block fetcher service
         let rpc_url = self.rpc_url.clone();
-        let backfill_blocks = self.backfill_blocks.unwrap_or(CACHE_CAPACITY);
+        let cache_blocks = self.cache_blocks.unwrap_or(CACHE_CAPACITY);
         tokio::spawn(async move {
-            if let Err(err) = run_fetcher_service(rpc_url, fetch_rx, backfill_blocks).await {
+            if let Err(err) = run_fetcher_service(rpc_url, fetch_rx, cache_blocks).await {
                 error!(%err, "block fetcher service exited with error");
             }
         });
@@ -211,29 +210,14 @@ struct CachedBlock {
 async fn run_fetcher_service(
     rpc_url: String,
     mut fetch_rx: mpsc::Receiver<FetchRequest>,
-    backfill_blocks: u64,
+    cache_blocks: u64,
 ) -> Result<()> {
     let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
         .connect(&rpc_url)
         .await
         .context("failed to connect to RPC")?;
 
-    let mut cache = BlockCache::new(CACHE_CAPACITY);
-
-    // Backfill: fetch latest block number and work backwards to fill the cache
-    let latest = provider
-        .get_block_number()
-        .await
-        .context("failed to get latest block number")?;
-    let start = latest.saturating_sub(backfill_blocks.saturating_sub(1));
-    info!(latest, start, "backfilling block cache");
-
-    for num in start..=latest {
-        if let Err(err) = fetch_and_cache_block(&provider, &mut cache, num).await {
-            warn!(num, %err, "failed to backfill block");
-        }
-    }
-    info!(cached = cache.by_number.len(), "backfill complete");
+    let mut cache = BlockCache::new(cache_blocks);
 
     // Process incoming requests
     while let Some(req) = fetch_rx.recv().await {
