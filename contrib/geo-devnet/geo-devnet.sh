@@ -112,11 +112,11 @@ docker build \
     --target tempo-xtask \
     "$REPO_ROOT"
 
-# Build the runtime image with iproute2 for tc/netem
+# Build the runtime image with iproute2 bash for tc/netem
 cat > "$WORK_DIR/Dockerfile.runtime" <<'DOCKERFILE'
 ARG BASE_IMAGE=tempo-node:geodevnet
 FROM ${BASE_IMAGE}
-RUN apt-get update && apt-get install -y --no-install-recommends iproute2 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends iproute2 bash && rm -rf /var/lib/apt/lists/*
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
@@ -133,20 +133,22 @@ docker run --rm \
     tempo-xtask:geodevnet \
     generate-localnet \
     --output /output \
-    --force \
+     \
     --validators "$VALIDATOR_ADDRS" \
     --seed "$SEED" \
     --chain-id "$CHAIN_ID" \
     --gas-limit "$GAS_LIMIT"
 
 echo "==> Generated configs:"
+# Rename colon-containing dirs (Docker volume mount incompatible)
+for d in "$CONFIGS_DIR"/*:*; do [ -d "$d" ] && mv "$d" "${d//:/_}"; done
 find "$CONFIGS_DIR" -type f | sort | head -30
 
 # ── Read enode identities to build trusted-peers ────────────────────────────
 declare -a ENODE_IDS=()
 for i in $(seq 0 $((NUM_VALS - 1))); do
     IP="${VAL_IPS[$i]}"
-    IDENTITY_FILE="$CONFIGS_DIR/${IP}:9000/enode.identity"
+    IDENTITY_FILE="$CONFIGS_DIR/${IP}_9000/enode.identity"
     ENODE_ID=$(cat "$IDENTITY_FILE")
     ENODE_IDS+=("$ENODE_ID")
 done
@@ -160,19 +162,22 @@ done
 
 # ── Create entrypoint script ───────────────────────────────────────────────
 cat > "$WORK_DIR/entrypoint.sh" <<'ENTRYPOINT'
-#!/bin/sh
+#!/bin/bash
 set -e
 
 # Apply network shaping if NETEM_TARGETS is set (comma-separated CIDRs to delay)
 if [ -n "${NETEM_TARGETS:-}" ]; then
-    echo "[netem] Applying network shaping: delay=${NETEM_DELAY}ms jitter=${NETEM_JITTER}ms loss=${NETEM_LOSS}% rate=${NETEM_RATE}"
+    NETEM_LIMIT_PKTS="${NETEM_LIMIT_PKTS:-20000}"
+    echo "[netem] Applying network shaping: delay=${NETEM_DELAY}ms jitter=${NETEM_JITTER}ms loss=${NETEM_LOSS}% rate=${NETEM_RATE} limit=${NETEM_LIMIT_PKTS}pkts"
 
-    # Create a prio qdisc with 3 bands
+    # Default all traffic to the unshaped band. We add explicit filters below
+    # for cross-region destinations that should pass through netem.
     tc qdisc add dev eth0 root handle 1: prio bands 3 \
-        priomap 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+        priomap 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
 
     # Band 1:1 = shaped (cross-region traffic)
     tc qdisc add dev eth0 parent 1:1 handle 10: netem \
+        limit "${NETEM_LIMIT_PKTS}" \
         delay "${NETEM_DELAY}ms" "${NETEM_JITTER}ms" distribution normal \
         loss "${NETEM_LOSS}%" \
         rate "${NETEM_RATE}"
@@ -188,12 +193,26 @@ if [ -n "${NETEM_TARGETS:-}" ]; then
             match ip dst "$target" flowid 1:1
     done
 
+    # Keep all other traffic, including same-region validator traffic, on the
+    # unshaped band.
+    tc filter add dev eth0 parent 1:0 protocol ip prio 100 u32 \
+        match u32 0 0 flowid 1:2
+
     echo "[netem] Network shaping active:"
     tc qdisc show dev eth0
     echo ""
 fi
 
 echo "[tempo] Starting validator..."
+# Set a larger initial congestion window on every existing route. This must be
+# done line-by-line so the validator subnet route (172.20.0.0/24), not just the
+# default route, picks up the override for new peer connections.
+ip -4 route show | while IFS= read -r route; do
+  [ -n "$route" ] || continue
+  ip route replace $route initcwnd 363 initrwnd 363 2>/dev/null && \
+    echo "[tcp] Set initcwnd=363 initrwnd=363 on: $route"
+done
+
 exec /usr/local/bin/tempo "$@"
 ENTRYPOINT
 
@@ -229,7 +248,7 @@ HEADER
 for i in $(seq 0 $((NUM_VALS - 1))); do
     IP="${VAL_IPS[$i]}"
     REGION="${VAL_REGIONS[$i]}"
-    VAL_DIR="${IP}:9000"
+    VAL_DIR="${IP}_9000"
 
     CONSENSUS_P2P_PORT=9000
     EXEC_P2P_PORT=9001
