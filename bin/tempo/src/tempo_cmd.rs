@@ -22,6 +22,7 @@ use commonware_cryptography::{
 use commonware_math::algebra::Random as _;
 use commonware_utils::NZU64;
 use eyre::{OptionExt as _, Report, WrapErr as _, eyre};
+use reth_chainspec::EthChainSpec;
 use reth_cli_runner::CliRunner;
 use reth_ethereum_cli::ExtendedCommand;
 use serde::Serialize;
@@ -37,7 +38,7 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_precompiles::validator_config_v2::{VALIDATOR_NS_ADD, VALIDATOR_NS_ROTATE};
 use tempo_validator_config::ValidatorConfig;
 
-use crate::init_state;
+use crate::{init_state, p2p_proxy::P2pProxyArgs};
 
 /// Passthrough args for extension management commands.
 ///
@@ -52,14 +53,13 @@ pub(crate) struct ExtArgs {
 
 /// Tempo-specific subcommands that extend the reth CLI.
 #[derive(Debug, Subcommand)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "one-off commands; size doesn't matter"
-)]
 pub(crate) enum TempoSubcommand {
     /// Consensus-related commands.
     #[command(subcommand)]
     Consensus(ConsensusSubcommand),
+
+    /// Run a proxy P2P node that serves cached block data fetched from an RPC endpoint.
+    P2pProxy(P2pProxyArgs),
 
     /// Initialize state from a binary dump file.
     ///
@@ -100,6 +100,7 @@ impl ExtendedCommand for TempoSubcommand {
                 runner.run_blocking_until_ctrl_c(cmd.run())?;
                 Ok(())
             }
+            Self::P2pProxy(cmd) => runner.run_command_until_exit(|_| cmd.run()),
             Self::InitFromBinaryDump(cmd) => {
                 let runtime = runner.runtime();
                 runner.run_blocking_until_ctrl_c(
@@ -864,9 +865,28 @@ pub(crate) struct ValidatorInfo {
     /// Validator ethereum address, ed25519 public key, or index
     #[arg()]
     id: ValidatorId,
+
     /// RPC URL to query.
     #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
     rpc_url: String,
+
+    /// Chain spec override for local/unknown chains (mainnet, testnet, moderato, or path to
+    /// chainspec file). Resolved automatically from the RPC chain id when omitted.
+    #[arg(long, short, value_parser = tempo_chainspec::spec::chain_value_parser)]
+    chain: Option<Arc<TempoChainSpec>>,
+
+    /// Skip crosschecking the validator with the last DKG round.
+    #[arg(long)]
+    no_dkg_information: bool,
+}
+
+/// Output for the single-validator lookup enriched with DKG role and epoch context.
+#[derive(Debug, Serialize)]
+struct SingleValidatorOutput {
+    current_epoch: u64,
+    current_height: u64,
+    #[serde(flatten)]
+    validator: ValidatorEntry,
 }
 
 impl ValidatorInfo {
@@ -875,6 +895,30 @@ impl ValidatorInfo {
             .connect(&self.rpc_url)
             .await
             .wrap_err("failed to connect to RPC")?;
+
+        let chain_id = provider
+            .get_chain_id()
+            .await
+            .wrap_err("failed to get chain id")?;
+
+        let chain = match self.chain {
+            Some(chain) => {
+                let spec_chain_id = chain.chain().id();
+                if spec_chain_id != chain_id {
+                    eprintln!(
+                        "warning: --chain spec has chain id {spec_chain_id} but RPC returned {chain_id}"
+                    );
+                }
+                chain
+            }
+            None => tempo_chainspec::spec::chainspec_from_chain_id(chain_id)
+                .ok_or_else(|| eyre!("unknown chain id {chain_id}, pass --chain explicitly"))?,
+        };
+
+        let epoch_length = chain
+            .info
+            .epoch_length()
+            .ok_or_eyre("epochLength not found in chainspec")?;
 
         let is_v2_initialized = is_validator_config_v2_activated(&provider).await?;
 
@@ -947,7 +991,82 @@ impl ValidatorInfo {
         }
 
         let validator = read_validator_from_contract(&provider, self.id).await?;
-        println!("{}", serde_json::to_string_pretty(&validator)?);
+        let pubkey_bytes = validator.publicKey.0;
+
+        let latest_block_number = provider
+            .get_block_number()
+            .await
+            .wrap_err("failed to get latest block number")?;
+
+        let epoch_strategy = FixedEpocher::new(NZU64!(epoch_length));
+        let current_height = Height::new(latest_block_number);
+        let current_epoch_info = epoch_strategy
+            .containing(current_height)
+            .ok_or_else(|| eyre!("failed to determine epoch for height {latest_block_number}"))?;
+        let current_epoch = current_epoch_info.epoch();
+
+        let mut is_dkg_dealer = None;
+        let mut is_dkg_player = None;
+        let mut in_committee = None;
+
+        if !self.no_dkg_information {
+            use alloy_consensus::BlockHeader;
+
+            let boundary_height = current_epoch
+                .previous()
+                .map(|epoch| epoch_strategy.last(epoch).expect("valid epoch"))
+                .unwrap_or_default();
+
+            let boundary_block = provider
+                .get_block_by_number(boundary_height.get().into())
+                .hashes()
+                .await
+                .wrap_err_with(|| {
+                    format!(
+                        "failed to get block header at height {}",
+                        boundary_height.get()
+                    )
+                })?
+                .ok_or_eyre("boundary block not found")?;
+
+            let extra_data = boundary_block.header.extra_data();
+            if extra_data.is_empty() {
+                return Err(eyre!(
+                    "boundary block at height {} has no DKG outcome in extra_data",
+                    boundary_height.get()
+                ));
+            }
+
+            let dkg_outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref())
+                .wrap_err("failed to decode DKG outcome from extra_data")?;
+
+            let key = PublicKey::decode(&mut &pubkey_bytes[..])
+                .wrap_err("failed decoding on-chain ed25519 key")?;
+
+            let committee = dkg_outcome.players().position(&key).is_some();
+            is_dkg_dealer = Some(committee);
+            is_dkg_player = Some(dkg_outcome.next_players().position(&key).is_some());
+            in_committee = Some(committee);
+        }
+
+        let output = SingleValidatorOutput {
+            current_epoch: current_epoch.get(),
+            current_height: current_height.get(),
+            validator: ValidatorEntry {
+                onchain_address: validator.validatorAddress,
+                public_key: alloy_primitives::hex::encode(pubkey_bytes),
+                inbound_address: validator.ingress,
+                outbound_address: validator.egress,
+                fee_recipient: Some(validator.feeRecipient),
+                index: Some(validator.index),
+                active: validator.deactivatedAtHeight == 0,
+                is_dkg_dealer,
+                is_dkg_player,
+                in_committee,
+            },
+        };
+
+        println!("{}", serde_json::to_string_pretty(&output)?);
 
         Ok(())
     }
@@ -983,25 +1102,35 @@ struct ValidatorEntry {
     inbound_address: String,
     /// Outbound IP address
     outbound_address: String,
+    /// Fee recipient address
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fee_recipient: Option<Address>,
+    /// Validator index
+    #[serde(skip_serializing_if = "Option::is_none")]
+    index: Option<u64>,
     /// Whether the validator is active in the current contract state
     active: bool,
-    // Whether the validator is a dealer in th ecurrent epoch.
-    is_dkg_dealer: bool,
+    // Whether the validator is a dealer in the current epoch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_dkg_dealer: Option<bool>,
     /// Whether the validator is a player in the current epoch.
-    is_dkg_player: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_dkg_player: Option<bool>,
     /// Whether the validator is in the committee for the given epoch.
-    in_committee: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    in_committee: Option<bool>,
 }
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct ValidatorsInfo {
-    /// Chain to query (presto, testnet, moderato, or path to chainspec file)
-    #[arg(long, short, default_value = "mainnet", value_parser = tempo_chainspec::spec::chain_value_parser)]
-    chain: Arc<TempoChainSpec>,
-
     /// RPC URL to query. Defaults to <https://rpc.presto.tempo.xyz>
     #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
     rpc_url: String,
+
+    /// Chain spec override for local/unknown chains (mainnet, testnet, moderato, or path to
+    /// chainspec file). Resolved automatically from the RPC chain id when omitted.
+    #[arg(long, short, value_parser = tempo_chainspec::spec::chain_value_parser)]
+    chain: Option<Arc<TempoChainSpec>>,
 
     /// Whether to include historic validators (deactivated and not in the current committee).
     #[arg(long)]
@@ -1013,16 +1142,34 @@ impl ValidatorsInfo {
         use alloy_consensus::BlockHeader;
         use alloy_provider::ProviderBuilder;
 
-        let epoch_length = self
-            .chain
-            .info
-            .epoch_length()
-            .ok_or_eyre("epochLength not found in chainspec")?;
-
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect(&self.rpc_url)
             .await
             .wrap_err("failed to connect to RPC")?;
+
+        let chain_id = provider
+            .get_chain_id()
+            .await
+            .wrap_err("failed to get chain id")?;
+
+        let chain = match self.chain {
+            Some(chain) => {
+                let spec_chain_id = chain.chain().id();
+                if spec_chain_id != chain_id {
+                    eprintln!(
+                        "warning: --chain spec has chain id {spec_chain_id} but RPC returned {chain_id}"
+                    );
+                }
+                chain
+            }
+            None => tempo_chainspec::spec::chainspec_from_chain_id(chain_id)
+                .ok_or_else(|| eyre!("unknown chain id {chain_id}, pass --chain explicitly"))?,
+        };
+
+        let epoch_length = chain
+            .info
+            .epoch_length()
+            .ok_or_eyre("epochLength not found in chainspec")?;
 
         let latest_block_number = provider
             .get_block_number()
@@ -1121,10 +1268,12 @@ impl ValidatorsInfo {
                         public_key: alloy_primitives::hex::encode(pubkey_bytes),
                         inbound_address: validator.inboundAddress,
                         outbound_address: validator.outboundAddress,
+                        fee_recipient: None,
+                        index: None,
                         active: validator.active,
-                        is_dkg_dealer: dkg_outcome.players().position(&key).is_some(),
-                        is_dkg_player: dkg_outcome.next_players().position(&key).is_some(),
-                        in_committee,
+                        is_dkg_dealer: Some(dkg_outcome.players().position(&key).is_some()),
+                        is_dkg_player: Some(dkg_outcome.next_players().position(&key).is_some()),
+                        in_committee: Some(in_committee),
                     });
                 }
             }
@@ -1177,10 +1326,12 @@ impl ValidatorsInfo {
                     public_key: alloy_primitives::hex::encode(pubkey_bytes),
                     inbound_address: validator.ingress,
                     outbound_address: validator.egress,
+                    fee_recipient: None,
+                    index: None,
                     active: true,
-                    is_dkg_dealer: dkg_outcome.players().position(&key).is_some(),
-                    is_dkg_player: dkg_outcome.next_players().position(&key).is_some(),
-                    in_committee,
+                    is_dkg_dealer: Some(dkg_outcome.players().position(&key).is_some()),
+                    is_dkg_player: Some(dkg_outcome.next_players().position(&key).is_some()),
+                    in_committee: Some(in_committee),
                 });
             }
         }
@@ -1197,5 +1348,69 @@ impl ValidatorsInfo {
 
         println!("{}", serde_json::to_string_pretty(&output)?);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+    use reth_ethereum_cli::Cli;
+    use reth_rpc_server_types::DefaultRpcModuleValidator;
+    use tempo_chainspec::spec::TempoChainSpecParser;
+
+    type TempoCli =
+        Cli<TempoChainSpecParser, crate::TempoArgs, DefaultRpcModuleValidator, TempoSubcommand>;
+
+    #[test]
+    fn parse_p2p_proxy_defaults() {
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "p2p-proxy",
+            "--rpc-url",
+            "https://rpc.moderato.tempo.xyz",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            reth_ethereum::cli::Commands::Ext(TempoSubcommand::P2pProxy(_))
+        ));
+    }
+
+    #[test]
+    fn parse_p2p_proxy_all_args() {
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "p2p-proxy",
+            "--rpc-url",
+            "ws://localhost:8546",
+            "--chain",
+            "moderato",
+            "--port",
+            "9999",
+            "--discovery-port",
+            "9998",
+            "--max-inbound",
+            "50",
+            "--max-concurrent-inbound",
+            "10",
+            "--cache-blocks",
+            "1000",
+            "--p2p-secret-key",
+            "/tmp/test-enode.key",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            reth_ethereum::cli::Commands::Ext(TempoSubcommand::P2pProxy(_))
+        ));
+    }
+
+    #[test]
+    fn parse_p2p_proxy_missing_rpc_url_fails() {
+        let result = TempoCli::try_parse_from(["tempo", "p2p-proxy"]);
+        assert!(result.is_err());
     }
 }

@@ -24,7 +24,7 @@ use reth_transaction_pool::{
     error::{InvalidPoolTransactionError, PoolError, PoolErrorKind},
     pool::AddedTransactionState,
 };
-use std::sync::Arc;
+use std::{num::NonZeroU64, sync::Arc};
 use tempo_chainspec::spec::{TEMPO_T1_BASE_FEE, TempoChainSpec};
 use tempo_node::node::TempoNode;
 use tempo_precompiles::{DEFAULT_FEE_TOKEN, tip_fee_manager::TipFeeManager};
@@ -172,7 +172,9 @@ async fn test_evict_expired_aa_tx() -> eyre::Result<()> {
             input: alloy_primitives::Bytes::new(),
         }],
         fee_token: Some(DEFAULT_FEE_TOKEN),
-        valid_before: Some(tip_timestamp + 5),
+        valid_before: Some(
+            NonZeroU64::new(tip_timestamp + 5).expect("tip timestamp + 5 must be non-zero"),
+        ),
         ..Default::default()
     };
 

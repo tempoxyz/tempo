@@ -641,8 +641,8 @@ mod tests {
                 nonce_key: self.nonce_key,
                 nonce: self.nonce,
                 fee_payer_signature: None,
-                valid_before: self.valid_before,
-                valid_after: self.valid_after,
+                valid_before: self.valid_before.and_then(core::num::NonZeroU64::new),
+                valid_after: self.valid_after.and_then(core::num::NonZeroU64::new),
                 key_authorization: self.key_authorization,
                 tempo_authorization_list: self.authorization_list,
             }
@@ -1156,18 +1156,14 @@ mod tests {
         let signed_tx = key_pair.sign_tx_keychain(tx)?;
         let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
 
-        let err = evm
-            .transact_commit(tx_env)
-            .expect_err("deny-all scope should reject the call");
-
+        let result = evm.transact_commit(tx_env)?;
         assert!(
-            matches!(
-                err,
-                revm::context::result::EVMError::Transaction(
-                    TempoInvalidTransaction::KeychainValidationFailed { .. }
-                )
-            ),
-            "expected KeychainValidationFailed, got: {err:?}"
+            !result.is_success(),
+            "deny-all scope should now fail during paid execution"
+        );
+        assert!(
+            result.gas_used() > 0,
+            "failed execution should still consume gas"
         );
 
         Ok(())

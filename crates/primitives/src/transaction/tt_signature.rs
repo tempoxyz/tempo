@@ -1791,10 +1791,7 @@ mod tests {
 
         // Sign for user_a with V2
         let sig_hash = B256::from([0x22; 32]);
-        let mut buf = [0u8; 52];
-        buf[..32].copy_from_slice(sig_hash.as_slice());
-        buf[32..].copy_from_slice(user_a.as_slice());
-        let effective_hash = keccak256(buf);
+        let effective_hash = KeychainSignature::signing_hash(sig_hash, user_a);
         let inner_sig = sign_hash(&signing_key, &effective_hash);
 
         let inner_primitive = match inner_sig {
