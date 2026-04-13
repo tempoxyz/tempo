@@ -31,6 +31,7 @@ use revm::{
         },
         interpreter::EthInterpreter,
     },
+    precompile::PrecompileError,
 };
 use tempo_contracts::precompiles::{
     IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
@@ -163,11 +164,7 @@ fn call_scope_storage_slots(auth: &tempo_primitives::transaction::KeyAuthorizati
     }
 }
 
-fn correct_failed_batch_gas(
-    mut frame_result: FrameResult,
-    gas_limit: u64,
-    remaining_gas: u64,
-) -> FrameResult {
+fn correct_failed_batch_gas(frame_result: &mut FrameResult, gas_limit: u64, remaining_gas: u64) {
     let gas_spent_by_failed_step = frame_result.gas().spent();
     let total_gas_spent = (gas_limit - remaining_gas) + gas_spent_by_failed_step;
 
@@ -181,7 +178,6 @@ fn correct_failed_batch_gas(
     }
     corrected_gas.set_refund(0); // No refunds when batch fails and all state is reverted.
     *frame_result.gas_mut() = corrected_gas;
-    frame_result
 }
 
 fn translate_allowed_calls_for_precompile(
@@ -362,7 +358,11 @@ where
             } else {
                 keychain_sig
                     .key_id(&tempo_tx_env.signature_hash)
-                    .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
+                    .map_err(|_| {
+                        EVMError::Custom(
+                            "keychain access key recovery failed after validation".into(),
+                        )
+                    })?
             };
 
             (access_key_addr, keychain_sig.user_address)
@@ -397,29 +397,37 @@ where
                 *remaining_gas = remaining_gas.saturating_sub(gas_used);
                 Ok(None)
             }
-            Err(TempoPrecompileError::OutOfGas) => Ok(Some(oog_frame_result(kind, *remaining_gas))),
-            Err(TempoPrecompileError::Fatal(err)) => Err(EVMError::Custom(err)),
-            Err(err) => {
-                let revert_output = err
-                    .into_precompile_result(gas_used)
-                    .expect("non-fatal prevalidation errors must encode as a revert");
-                let mut gas = Gas::new(gas_used);
-                gas.set_spent(gas_used);
+            Err(err) => match err.into_precompile_result(gas_used) {
+                Ok(revert_output) => {
+                    let mut gas = Gas::new(gas_used);
+                    gas.set_spent(gas_used);
 
-                let frame_result = if kind.is_call() {
-                    FrameResult::Call(CallOutcome::new(
-                        InterpreterResult::new(InstructionResult::Revert, revert_output.bytes, gas),
-                        0..0,
-                    ))
-                } else {
-                    FrameResult::Create(CreateOutcome::new(
-                        InterpreterResult::new(InstructionResult::Revert, revert_output.bytes, gas),
-                        None,
-                    ))
-                };
+                    let frame_result = if kind.is_call() {
+                        FrameResult::Call(CallOutcome::new(
+                            InterpreterResult::new(
+                                InstructionResult::Revert,
+                                revert_output.bytes,
+                                gas,
+                            ),
+                            0..0,
+                        ))
+                    } else {
+                        FrameResult::Create(CreateOutcome::new(
+                            InterpreterResult::new(
+                                InstructionResult::Revert,
+                                revert_output.bytes,
+                                gas,
+                            ),
+                            None,
+                        ))
+                    };
 
-                Ok(Some(frame_result))
-            }
+                    Ok(Some(frame_result))
+                }
+                Err(PrecompileError::OutOfGas) => Ok(Some(oog_frame_result(kind, *remaining_gas))),
+                Err(PrecompileError::Fatal(err)) => Err(EVMError::Custom(err)),
+                Err(err) => Err(EVMError::Custom(err.to_string())),
+            },
         }
     }
 
@@ -513,7 +521,7 @@ where
         {
             // This path only runs for keychain batches that already passed the structural CREATE
             // rejection in validation, so there is no first-call CREATE nonce to preserve here.
-            frame_result = correct_failed_batch_gas(frame_result, gas_limit, remaining_gas);
+            correct_failed_batch_gas(&mut frame_result, gas_limit, remaining_gas);
             return Ok(frame_result);
         }
 
@@ -573,7 +581,7 @@ where
                     }
                 }
 
-                frame_result = correct_failed_batch_gas(frame_result, gas_limit, remaining_gas);
+                correct_failed_batch_gas(&mut frame_result, gas_limit, remaining_gas);
                 return Ok(frame_result);
             }
 
