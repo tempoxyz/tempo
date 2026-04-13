@@ -15,6 +15,8 @@ pub struct HashMapStorageProvider {
     internals: HashMap<(Address, U256), U256>,
     transient: HashMap<(Address, U256), U256>,
     accounts: HashMap<Address, AccountInfo>,
+    #[cfg(any(test, feature = "test-utils"))]
+    fail_on_sload: Option<(Address, U256)>,
     chain_id: u64,
     timestamp: U256,
     beneficiary: Address,
@@ -48,6 +50,8 @@ impl HashMapStorageProvider {
             internals: HashMap::new(),
             transient: HashMap::new(),
             accounts: HashMap::new(),
+            #[cfg(any(test, feature = "test-utils"))]
+            fail_on_sload: None,
             events: HashMap::new(),
             snapshots: Vec::new(),
             chain_id,
@@ -133,6 +137,11 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
     }
 
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
+        #[cfg(any(test, feature = "test-utils"))]
+        if self.fail_on_sload == Some((address, key)) {
+            return Err(TempoPrecompileError::Fatal("injected sload failure".into()));
+        }
+
         self.counter_sload += 1;
         Ok(self
             .internals
@@ -210,6 +219,10 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
 
 #[cfg(any(test, feature = "test-utils"))]
 impl HashMapStorageProvider {
+    pub fn fail_next_sload_at(&mut self, address: Address, slot: U256) {
+        self.fail_on_sload = Some((address, slot));
+    }
+
     /// Returns the account info for the given address, if it exists.
     pub fn get_account_info(&self, address: Address) -> Option<&AccountInfo> {
         self.accounts.get(&address)

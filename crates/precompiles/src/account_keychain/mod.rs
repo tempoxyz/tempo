@@ -1300,14 +1300,11 @@ mod tests {
     use super::*;
     use crate::{
         error::TempoPrecompileError,
-        storage::{PrecompileStorageProvider, StorageCtx, hashmap::HashMapStorageProvider},
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
     };
-    use alloy::primitives::{Address, B256, LogData, TxKind, U256};
-    use revm::{
-        context::journaled_state::JournalCheckpoint,
-        state::{AccountInfo, Bytecode},
-    };
+    use alloy::primitives::{Address, B256, TxKind, U256};
+    use revm::state::Bytecode;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, IAccountKeychain::SignatureType};
 
@@ -1333,117 +1330,6 @@ mod tests {
                 );
             }
             _ => panic!("Expected AccountKeychainError, got: {error:?}"),
-        }
-    }
-
-    struct FailingSloadStorageProvider {
-        inner: HashMapStorageProvider,
-        fail_on_sload: Option<(Address, U256)>,
-    }
-
-    impl FailingSloadStorageProvider {
-        fn new(chain_id: u64) -> Self {
-            Self {
-                inner: HashMapStorageProvider::new(chain_id),
-                fail_on_sload: None,
-            }
-        }
-
-        fn fail_next_sload_at(&mut self, address: Address, slot: U256) {
-            self.fail_on_sload = Some((address, slot));
-        }
-    }
-
-    impl PrecompileStorageProvider for FailingSloadStorageProvider {
-        fn chain_id(&self) -> u64 {
-            self.inner.chain_id()
-        }
-
-        fn timestamp(&self) -> U256 {
-            self.inner.timestamp()
-        }
-
-        fn beneficiary(&self) -> Address {
-            self.inner.beneficiary()
-        }
-
-        fn block_number(&self) -> u64 {
-            self.inner.block_number()
-        }
-
-        fn set_code(&mut self, address: Address, code: Bytecode) -> Result<()> {
-            self.inner.set_code(address, code)
-        }
-
-        fn with_account_info(
-            &mut self,
-            address: Address,
-            f: &mut dyn FnMut(&AccountInfo),
-        ) -> Result<()> {
-            self.inner.with_account_info(address, f)
-        }
-
-        fn sload(&mut self, address: Address, key: U256) -> Result<U256> {
-            if self.fail_on_sload == Some((address, key)) {
-                return Err(TempoPrecompileError::Fatal("injected sload failure".into()));
-            }
-            self.inner.sload(address, key)
-        }
-
-        fn tload(&mut self, address: Address, key: U256) -> Result<U256> {
-            self.inner.tload(address, key)
-        }
-
-        fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<()> {
-            self.inner.sstore(address, key, value)
-        }
-
-        fn tstore(&mut self, address: Address, key: U256, value: U256) -> Result<()> {
-            self.inner.tstore(address, key, value)
-        }
-
-        fn emit_event(&mut self, address: Address, event: LogData) -> Result<()> {
-            self.inner.emit_event(address, event)
-        }
-
-        fn deduct_gas(&mut self, gas: u64) -> Result<()> {
-            self.inner.deduct_gas(gas)
-        }
-
-        fn refund_gas(&mut self, gas: i64) {
-            self.inner.refund_gas(gas)
-        }
-
-        fn gas_used(&self) -> u64 {
-            self.inner.gas_used()
-        }
-
-        fn gas_refunded(&self) -> i64 {
-            self.inner.gas_refunded()
-        }
-
-        fn spec(&self) -> TempoHardfork {
-            self.inner.spec()
-        }
-
-        fn is_static(&self) -> bool {
-            self.inner.is_static()
-        }
-
-        fn checkpoint(&mut self) -> JournalCheckpoint {
-            self.inner.checkpoint()
-        }
-
-        fn checkpoint_commit(&mut self, checkpoint: JournalCheckpoint) {
-            self.inner.checkpoint_commit(checkpoint)
-        }
-
-        fn checkpoint_revert(&mut self, checkpoint: JournalCheckpoint) {
-            self.inner.checkpoint_revert(checkpoint)
-        }
-
-        fn keccak256(&mut self, data: &[u8]) -> Result<B256> {
-            self.inner.keccak256(data)
         }
     }
 
@@ -3189,7 +3075,7 @@ mod tests {
 
     #[test]
     fn test_refund_spending_limit_propagates_system_errors() -> eyre::Result<()> {
-        let mut storage = FailingSloadStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new(1);
         let eoa = Address::random();
         let access_key = Address::random();
         let token = Address::random();
