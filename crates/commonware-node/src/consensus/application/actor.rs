@@ -38,7 +38,7 @@ use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_node_builder::{
     Block as _, BuiltPayload, ConsensusEngineHandle, PayloadAttributes, PayloadKind,
 };
-use tempo_chainspec::hardfork::TempoHardforks as _;
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks as _};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 use tempo_telemetry_util::display_duration;
@@ -509,7 +509,7 @@ impl Inner<Init> {
         .await
         .wrap_err("failed verifying block against execution layer")?
         {
-            eyre::bail!("the proposal parent block is not valid");
+            bail!("the proposal parent block is not valid");
         }
 
         // Query DKG manager for ceremony data before building payload
@@ -707,46 +707,18 @@ impl Inner<Init> {
             }
         }
 
-        if self
-            .execution_node
-            .chain_spec()
-            .is_t4_active_at_timestamp(block.timestamp())
-        {
-            if let Some(ctx) = &block.header().consensus_context {
-                let expected_context = TempoConsensusContext {
-                    epoch: round.epoch().get(),
-                    view: round.view().get(),
-                    proposer: alloy_primitives::B256::from_slice(proposer.as_ref()),
-                    parent_view: parent_view.get(),
-                };
-
-                if *ctx != expected_context {
-                    warn!("mismatch block consensus context");
-                    return Ok((block, false));
-                }
-            } else {
-                warn!("block consensus context required post activation");
-                return Ok((block, false));
-            }
-        } else if block.header().consensus_context.is_some() {
-            warn!("block consensus context set prior to activation");
-            return Ok((block, false));
-        }
-
-        if let Err(reason) = verify_header_extra_data(
+        if let Err(reason) = verify_header(
             &block,
             (parent_view, parent_digest),
             round,
+            self.execution_node.chain_spec().as_ref(),
             &self.state.dkg_manager,
             &self.epoch_strategy,
             &proposer,
         )
         .await
         {
-            warn!(
-                %reason,
-                "header extra data could not be verified; failing block",
-            );
+            warn!(%reason, "header could not be verified; failing block");
             return Ok((block, false));
         }
 
@@ -932,10 +904,11 @@ async fn verify_block<TContext: Pacer>(
 }
 
 #[instrument(skip_all, err(Display))]
-async fn verify_header_extra_data(
+async fn verify_header(
     block: &Block,
     parent: (View, Digest),
     round: Round,
+    chainspec: &TempoChainSpec,
     dkg_manager: &crate::dkg::manager::Mailbox,
     epoch_strategy: &FixedEpocher,
     proposer: &PublicKey,
@@ -943,6 +916,27 @@ async fn verify_header_extra_data(
     let epoch_info = epoch_strategy
         .containing(block.height())
         .expect("epoch strategy is for all heights");
+
+    if chainspec.is_t4_active_at_timestamp(block.timestamp()) {
+        let ctx = block
+            .header()
+            .consensus_context
+            .ok_or_eyre("missing consensus context")?;
+
+        let expected_ctx = TempoConsensusContext {
+            epoch: round.epoch().get(),
+            view: round.view().get(),
+            proposer: crate::utils::public_key_to_b256(proposer),
+            parent_view: parent.0.get(),
+        };
+
+        if ctx != expected_ctx {
+            bail!("mismatching block consensus context");
+        }
+    } else if block.header().consensus_context.is_some() {
+        bail!("block consensus context set prior to activation");
+    }
+
     if epoch_info.last() == block.height() {
         info!(
             "on last block of epoch; verifying that the boundary block \
