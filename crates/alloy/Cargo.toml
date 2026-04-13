@@ -46,6 +46,7 @@ tracing.workspace = true
 alloy = { workspace = true, features = ["providers", "rpc-types-eth", "sol-types"] }
 alloy-signer.workspace = true
 eyre.workspace = true
+serde_json.workspace = true
 test-case.workspace = true
 tokio.workspace = true
 

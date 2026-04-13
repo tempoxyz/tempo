@@ -1184,6 +1184,7 @@ impl AccountKeychain {
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
         let key = match self.load_active_key(account, transaction_key, current_timestamp) {
             Ok(key) => key,
+            Err(err) if err.is_system_error() => return Err(err),
             Err(_) => return Ok(()),
         };
 
@@ -1302,7 +1303,7 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
     };
-    use alloy::primitives::{Address, TxKind, U256};
+    use alloy::primitives::{Address, B256, TxKind, U256};
     use revm::state::Bytecode;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, IAccountKeychain::SignatureType};
@@ -3067,6 +3068,60 @@ mod tests {
                 U256::from(40),
                 "limit should be unchanged after expired key refund"
             );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_refund_spending_limit_propagates_system_errors() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let eoa = Address::random();
+        let access_key = Address::random();
+        let token = Address::random();
+
+        let key_slot = StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            keychain.set_transaction_key(Address::ZERO)?;
+
+            let auth_call = authorizeKeyCall {
+                keyId: access_key,
+                signatureType: SignatureType::Secp256k1,
+                config: KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![TokenLimit {
+                        token,
+                        amount: U256::from(100),
+                        period: 0,
+                    }],
+                    allowAnyCalls: true,
+                    allowedCalls: vec![],
+                },
+            };
+            keychain.authorize_key(eoa, auth_call)?;
+
+            keychain.set_transaction_key(access_key)?;
+            keychain.set_tx_origin(eoa)?;
+            keychain.authorize_transfer(eoa, token, U256::from(60))?;
+
+            Ok::<_, TempoPrecompileError>(keychain.keys[eoa][access_key].as_slot().slot())
+        })?;
+
+        storage.fail_next_sload_at(ACCOUNT_KEYCHAIN_ADDRESS, key_slot);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.set_transaction_key(access_key)?;
+            keychain.set_tx_origin(eoa)?;
+
+            let err = keychain
+                .refund_spending_limit(eoa, token, U256::from(25))
+                .unwrap_err();
+
+            assert!(matches!(err, TempoPrecompileError::Fatal(_)));
 
             Ok(())
         })

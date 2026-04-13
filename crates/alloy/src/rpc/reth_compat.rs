@@ -2,6 +2,7 @@ use crate::rpc::{TempoHeaderResponse, TempoTransactionRequest};
 use alloy_consensus::{EthereumTxEnvelope, TxEip4844, error::ValueError};
 use alloy_network::{TransactionBuilder, TxSigner};
 use alloy_primitives::{Address, B256, Bytes, Signature};
+use core::num::NonZeroU64;
 use reth_evm::EvmEnv;
 use reth_primitives_traits::SealedHeader;
 use reth_rpc_convert::{
@@ -183,8 +184,8 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
                     // that is discarded). Gas accuracy is unaffected — the 13k
                     // EXPIRING_NONCE_GAS is charged based on nonce_key, not the hash value.
                     expiring_nonce_hash: Some(B256::ZERO),
-                    valid_before,
-                    valid_after,
+                    valid_before: valid_before.map(NonZeroU64::get),
+                    valid_after: valid_after.map(NonZeroU64::get),
                     subblock_transaction: false,
                     override_key_id: key_id,
                 }))

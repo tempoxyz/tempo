@@ -68,8 +68,11 @@ use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 /// Returns true if a subblock has any expired transactions for the given timestamp.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
     subblock.transactions.iter().any(|tx| {
-        tx.as_aa()
-            .is_some_and(|tx| tx.tx().valid_before.is_some_and(|valid| valid <= timestamp))
+        tx.as_aa().is_some_and(|tx| {
+            tx.tx()
+                .valid_before
+                .is_some_and(|valid| valid.get() <= timestamp)
+        })
     })
 }
 
@@ -900,15 +903,20 @@ mod tests {
     use super::*;
     use alloy_consensus::BlockBody;
     use alloy_primitives::{Address, B256, Bytes, Signature};
+    use core::num::NonZeroU64;
     use reth_primitives_traits::SealedBlock;
     use tempo_primitives::{
         AASigned, Block, SignedSubBlock, SubBlock, SubBlockVersion, TempoSignature,
         TempoTransaction,
     };
 
+    fn nz(value: u64) -> NonZeroU64 {
+        NonZeroU64::new(value).expect("test valid_before must be non-zero")
+    }
+
     trait TestExt {
         fn random() -> Self;
-        fn with_valid_before(_: Option<u64>) -> Self
+        fn with_valid_before(_: Option<NonZeroU64>) -> Self
         where
             Self: Sized,
         {
@@ -932,7 +940,7 @@ mod tests {
             Self::with_valid_before(None)
         }
 
-        fn with_valid_before(valid_before: Option<u64>) -> Self {
+        fn with_valid_before(valid_before: Option<NonZeroU64>) -> Self {
             let tx = TempoTxEnvelope::AA(AASigned::new_unhashed(
                 TempoTransaction {
                     valid_before,
@@ -1037,7 +1045,7 @@ mod tests {
     #[test]
     fn test_has_expired_transactions_boundary() {
         // valid_before == timestamp → expired
-        let subblock = RecoveredSubBlock::with_valid_before(Some(1000));
+        let subblock = RecoveredSubBlock::with_valid_before(Some(nz(1000)));
         assert!(has_expired_transactions(&subblock, 1000));
 
         // valid_before < timestamp → expired

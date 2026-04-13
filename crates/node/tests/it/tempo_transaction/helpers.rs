@@ -16,6 +16,7 @@ use alloy::{
 };
 use alloy_eips::Encodable2718;
 use alloy_primitives::TxKind;
+use core::num::NonZeroU64;
 use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
 use reth_transaction_pool::TransactionPool;
@@ -37,6 +38,19 @@ use tempo_primitives::{
 };
 
 use super::types::*;
+
+pub(crate) fn nonzero_timestamp(timestamp: u64) -> NonZeroU64 {
+    NonZeroU64::new(timestamp).expect("test timestamp must be non-zero")
+}
+
+fn try_nonzero_timestamp(timestamp: Option<u64>, field: &str) -> eyre::Result<Option<NonZeroU64>> {
+    timestamp
+        .map(|timestamp| {
+            NonZeroU64::new(timestamp)
+                .ok_or_else(|| eyre::eyre!("filled tx returned zero for {field}"))
+        })
+        .transpose()
+}
 
 fn decoded_tempo_rpc_error_message(err: &RpcError<TransportErrorKind>) -> Option<String> {
     tempo_precompiles::error::decode_error(&err.as_error_resp()?.as_revert_data()?.0)
@@ -769,7 +783,7 @@ pub(super) fn create_expiring_nonce_tx(
         2_000_000,
     );
     tx.nonce_key = TEMPO_EXPIRING_NONCE_KEY;
-    tx.valid_before = Some(valid_before);
+    tx.valid_before = Some(nonzero_timestamp(valid_before));
     tx
 }
 
@@ -1075,8 +1089,8 @@ pub(crate) fn parse_filled_tx(filled: &serde_json::Value) -> eyre::Result<TempoT
     let max_fee_per_gas = require_hex_u128(tx, "maxFeePerGas")?;
     let max_priority_fee_per_gas = require_hex_u128(tx, "maxPriorityFeePerGas")?;
     let nonce_key = parse_hex_u256(tx, "nonceKey")?.unwrap_or(U256::ZERO);
-    let valid_before = parse_hex_u64(tx, "validBefore")?;
-    let valid_after = parse_hex_u64(tx, "validAfter")?;
+    let valid_before = try_nonzero_timestamp(parse_hex_u64(tx, "validBefore")?, "validBefore")?;
+    let valid_after = try_nonzero_timestamp(parse_hex_u64(tx, "validAfter")?, "validAfter")?;
     let key_authorization = tx
         .get("keyAuthorization")
         .filter(|value| !value.is_null())
@@ -1178,6 +1192,8 @@ pub(crate) fn build_fill_request_context(
         NonceMode::ExpiringInPast => Some(current_timestamp.saturating_sub(1)),
         _ => None,
     });
+    let request_valid_before = valid_before.map(nonzero_timestamp);
+    let request_valid_after = valid_after_offset.map(nonzero_timestamp);
 
     let nonce_key_value = match test_case.nonce_mode {
         NonceMode::Protocol => U256::ZERO,
@@ -1219,8 +1235,8 @@ pub(crate) fn build_fill_request_context(
         key_authorization: test_case.key_authorization.clone(),
         fee_token: test_case.fee_token,
         fee_payer_signature,
-        valid_before,
-        valid_after: valid_after_offset,
+        valid_before: request_valid_before,
+        valid_after: request_valid_after,
         nonce_key,
         ..Default::default()
     };
@@ -1265,11 +1281,13 @@ pub(crate) fn assert_fill_request_expectations(
         "nonceKey should match"
     );
     assert_eq!(
-        tx.valid_before, request_context.expected_valid_before,
+        tx.valid_before.map(NonZeroU64::get),
+        request_context.expected_valid_before,
         "validBefore should match"
     );
     assert_eq!(
-        tx.valid_after, request_context.expected_valid_after,
+        tx.valid_after.map(NonZeroU64::get),
+        request_context.expected_valid_after,
         "validAfter should match"
     );
     assert_eq!(

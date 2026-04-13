@@ -2,6 +2,7 @@ use crate::TempoInvalidTransaction;
 use alloy_consensus::{EthereumTxEnvelope, TxEip4844, Typed2718, crypto::secp256k1};
 use alloy_evm::{FromRecoveredTx, FromTxWithEncoded, IntoTxEnv, TransactionEnvMut};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
+use core::num::NonZeroU64;
 use revm::context::{
     Transaction, TxEnv,
     either::Either,
@@ -337,8 +338,8 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             // Bundle AA-specific fields into TempoBatchCallEnv
             tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
                 signature: signature.clone(),
-                valid_before: *valid_before,
-                valid_after: *valid_after,
+                valid_before: valid_before.map(NonZeroU64::get),
+                valid_after: valid_after.map(NonZeroU64::get),
                 aa_calls: calls.clone(),
                 // Recover authorizations upfront to avoid recovery during execution
                 tempo_authorization_list: tempo_authorization_list
@@ -405,6 +406,7 @@ impl FromTxWithEncoded<TempoTxEnvelope> for TempoTxEnv {
 mod tests {
     use alloy_evm::FromRecoveredTx;
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
+    use core::num::NonZeroU64;
     use proptest::prelude::*;
     use revm::context::{Transaction, TxEnv, result::InvalidTransaction};
     use tempo_primitives::transaction::{
@@ -505,7 +507,7 @@ mod tests {
                 gas_limit: 1_000_000,
                 nonce_key,
                 nonce: 0,
-                valid_before: Some(100),
+                valid_before: Some(NonZeroU64::new(100).unwrap()),
                 calls: vec![Call {
                     to: TxKind::Call(Address::repeat_byte(0x42)),
                     value: U256::ZERO,
