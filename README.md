@@ -3,10 +3,7 @@
 
 <p align="center">
   <a href="https://tempo.xyz">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/tempoxyz/.github/refs/heads/main/assets/combomark-dark.svg">
-      <img alt="tempo combomark" src="https://raw.githubusercontent.com/tempoxyz/.github/refs/heads/main/assets/combomark-bright.svg" width="auto" height="120">
-    </picture>
+    <img alt="Tempo" src=".github/assets/tempo-wordmark.png" width="auto" height="120">
   </a>
 </p>
 
