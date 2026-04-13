@@ -155,8 +155,10 @@ impl CertifiableAutomaton for Mailbox {
 
 impl Relay for Mailbox {
     type Digest = Digest;
+    type PublicKey = PublicKey;
+    type Plan = commonware_consensus::simplex::Plan<PublicKey>;
 
-    async fn broadcast(&mut self, digest: Self::Digest) {
+    async fn broadcast(&mut self, digest: Self::Digest, _plan: Self::Plan) {
         // TODO: panicking here is really not necessary. Just log at the ERROR or WARN levels instead?
         self.inner
             .send(Broadcast { payload: digest }.into())

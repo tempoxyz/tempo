@@ -164,6 +164,7 @@ async fn instantiate_network(
         listen: config.listen_address,
         max_message_size: config.max_message_size_bytes,
         mailbox_size: config.mailbox_size,
+        send_batch_size: std::num::NonZeroUsize::new(8).unwrap(),
         bypass_ip_check: config.bypass_ip_check,
         allow_private_ips: config.allow_private_ips,
         allow_dns: config.allow_dns,
@@ -174,12 +175,8 @@ async fn instantiate_network(
         max_concurrent_handshakes: config.max_concurrent_handshakes,
         block_duration: config.time_to_unblock_byzantine_peer.into_duration(),
         dial_frequency: config.wait_before_peers_redial.into_duration(),
-        query_frequency: config.wait_before_peers_discovery.into_duration(),
         ping_frequency: config.wait_before_peers_reping.into_duration(),
-        allowed_connection_rate_per_peer: commonware_runtime::Quota::with_period(
-            config.connection_per_peer_min_period.into_duration(),
-        )
-        .ok_or_eyre("connection min period must be non-zero")?,
+        peer_connection_cooldown: config.connection_per_peer_min_period.into_duration(),
         allowed_handshake_rate_per_ip: commonware_runtime::Quota::with_period(
             config.handshake_per_ip_min_period.into_duration(),
         )

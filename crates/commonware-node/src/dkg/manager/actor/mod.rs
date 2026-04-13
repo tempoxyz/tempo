@@ -12,10 +12,10 @@ use commonware_consensus::{
 use commonware_cryptography::{
     Signer as _,
     bls12381::{
-        dkg::{self, DealerLog, DealerPrivMsg, DealerPubMsg, PlayerAck, SignedDealerLog, observe},
+        dkg::{self, DealerLog, DealerPrivMsg, DealerPubMsg, Logs, PlayerAck, SignedDealerLog, observe},
         primitives::{group::Share, variant::MinSig},
     },
-    ed25519::{PrivateKey, PublicKey},
+    ed25519::{self, PrivateKey, PublicKey},
     transcript::Summary,
 };
 use commonware_math::algebra::Random as _;
@@ -728,14 +728,14 @@ where
             debug!("using cached DKG outcome");
             (outcome.clone(), share.clone())
         } else {
-            let logs = storage
-                .logs_for_epoch(round.epoch())
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect::<BTreeMap<_, _>>();
+            let mut logs = Logs::<MinSig, PublicKey, N3f1>::new(round.info().clone());
+            for (k, v) in storage.logs_for_epoch(round.epoch()) {
+                logs.record(k.clone(), v.clone());
+            }
 
             let player_outcome = player_state.take().and_then(|player| {
                 info!("we were a player in the ceremony; finalizing share");
-                match player.finalize(logs.clone(), &Sequential) {
+                match player.finalize(&mut rand_core::OsRng, logs.clone(), &Sequential) {
                     Ok((new_output, new_share)) => {
                         info!("local DKG ceremony was a success");
                         Some((new_output, state::ShareState::Plaintext(Some(new_share))))
@@ -764,7 +764,7 @@ where
             });
 
             player_outcome.unwrap_or_else(move || {
-                match observe::<_, _, N3f1>(round.info().clone(), logs, &Sequential) {
+                match observe::<_, _, N3f1, ed25519::Batch>(&mut rand_core::OsRng, logs, &Sequential) {
                     Ok(output) => {
                         info!("local DKG ceremony was a success");
                         (output, state::ShareState::Plaintext(None))
@@ -1103,13 +1103,13 @@ where
         {
             output
         } else {
-            let mut logs = storage
+            let mut raw_logs = storage
                 .logs_for_epoch(round.epoch())
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect::<BTreeMap<_, _>>();
 
             'ensure_enough_logs: {
-                if logs.len() == round.dealers().len() {
+                if raw_logs.len() == round.dealers().len() {
                     info!("collected as many logs as there are dealers; concluding DKG");
                     break 'ensure_enough_logs;
                 }
@@ -1128,7 +1128,7 @@ where
                     if let Some(block) =
                         storage.get_notarized_reduced_block(&round.epoch(), &digest)
                     {
-                        logs.extend(block.log.clone());
+                        raw_logs.extend(block.log.clone());
                         height = if let Some(height) = block.height.previous() {
                             height
                         } else {
@@ -1139,6 +1139,11 @@ where
                         return Ok(Some((digest, request)));
                     }
                 }
+            }
+
+            let mut logs = Logs::<MinSig, PublicKey, N3f1>::new(round.info().clone());
+            for (k, v) in raw_logs {
+                logs.record(k, v);
             }
 
             // Create a player-state ad hoc: the DKG player object is not
@@ -1153,7 +1158,7 @@ where
             let (output, share) = {
                 let player_outcome = player_state.and_then(|player| {
                     info!("we were a player in the ceremony; finalizing share");
-                    match player.finalize(logs.clone(), &Sequential) {
+                    match player.finalize(&mut rand_core::OsRng, logs.clone(), &Sequential) {
                         Ok((new_output, new_share)) => {
                             info!("local DKG ceremony was a success");
                             Some((new_output, state::ShareState::Plaintext(Some(new_share))))
@@ -1182,7 +1187,7 @@ where
                 });
 
                 player_outcome.unwrap_or_else(move || {
-                    match observe::<_, _, N3f1>(round.info().clone(), logs, &Sequential) {
+                    match observe::<_, _, N3f1, ed25519::Batch>(&mut rand_core::OsRng, logs, &Sequential) {
                         Ok(output) => {
                             info!("local DKG ceremony was a success");
                             (output, state::ShareState::Plaintext(None))
