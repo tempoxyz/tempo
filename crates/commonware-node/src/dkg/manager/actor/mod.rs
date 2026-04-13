@@ -12,7 +12,9 @@ use commonware_consensus::{
 use commonware_cryptography::{
     Signer as _,
     bls12381::{
-        dkg::{self, DealerLog, DealerPrivMsg, DealerPubMsg, Logs, PlayerAck, SignedDealerLog, observe},
+        dkg::{
+            self, DealerLog, DealerPrivMsg, DealerPubMsg, Logs, PlayerAck, SignedDealerLog, observe,
+        },
         primitives::{group::Share, variant::MinSig},
     },
     ed25519::{self, PrivateKey, PublicKey},
@@ -1195,7 +1197,11 @@ where
                 if let Some(outcome) = player_outcome {
                     outcome
                 } else {
-                    match observe::<_, _, N3f1, ed25519::Batch>(&mut self.context, logs, &Sequential) {
+                    match observe::<_, _, N3f1, ed25519::Batch>(
+                        &mut self.context,
+                        logs,
+                        &Sequential,
+                    ) {
                         Ok(output) => {
                             info!("local DKG ceremony was a success");
                             (output, state::ShareState::Plaintext(None))
