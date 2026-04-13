@@ -75,7 +75,7 @@ mod codec {
         pub shared_gas_limit: u64,
         /// Sub-second (milliseconds) portion of the timestamp.
         pub timestamp_millis_part: u64,
-        /// Consensus metadata for the block. `None` for pre-fork blocks.
+        /// Added trailing options
         pub trailing: Option<TempoHeaderTrailingCompact>,
         /// Inner Ethereum [`Header`].
         pub inner: Header,
@@ -160,7 +160,7 @@ mod codec {
             assert_ne!(
                 TempoHeaderTrailingCompact::bitflag_unused_bits(),
                 0,
-                "TempoHeaderTrailingCompact bitflag has no unused bits left — use an extension type"
+                "TempoHeaderTrailingCompact bitflag has no unused bits left — use another extension type"
             );
         }
 
@@ -319,6 +319,9 @@ mod codec {
 
             assert_eq!(header_len, pre_t4_len);
             assert_eq!(header_buf, pre_t4_header_buf);
+
+            let (legacy_header, _) = TempoHeader::from_compact(&pre_t4_header_buf, pre_t4_len);
+            assert_eq!(legacy_header, header);
         }
     }
 }

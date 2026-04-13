@@ -20,9 +20,6 @@ pub struct TempoConsensusContext {
 ///
 /// RLP-encoded as `[general_gas_limit, shared_gas_limit, timestamp_millis_part, inner,
 /// consensus_context?]`. The `consensus_context` is trailing and omitted for pre-fork blocks.
-///
-/// RLP is implemented manually because `consensus_context` must be trailing (optional) while
-/// `inner: Header` must be the last field for compact encoding.
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq, RlpEncodable, RlpDecodable)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
