@@ -102,7 +102,7 @@
           {
             "astId": 62,
             "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
-            "label": "nonces",
+            "label": "permitNonces",
             "offset": 0,
             "slot": "11",
             "type": "t_mapping(t_address,t_uint256)"

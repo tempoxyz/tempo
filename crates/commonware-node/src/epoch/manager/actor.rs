@@ -49,7 +49,7 @@ use commonware_consensus::{
     Reporters,
     marshal::Update,
     simplex::{self, elector, scheme::bls12381_threshold::vrf::Scheme},
-    types::{Epoch, Epocher as _, Height},
+    types::{Epoch, EpochDelta, Epocher as _, Height},
 };
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_macros::select;
@@ -59,7 +59,7 @@ use commonware_p2p::{
 };
 use commonware_parallel::Sequential;
 use commonware_runtime::{
-    Clock, ContextCell, Handle, Metrics as _, Network, Spawner, Storage, spawn_cell,
+    BufferPooler, Clock, ContextCell, Handle, Metrics as _, Network, Spawner, Storage, spawn_cell,
     telemetry::metrics::status::GaugeExt as _,
 };
 use commonware_utils::{Acknowledgement as _, vec::NonEmptyVec};
@@ -80,7 +80,7 @@ const REPLAY_BUFFER: NonZeroUsize = NonZeroUsize::new(8 * 1024 * 1024).expect("v
 const WRITE_BUFFER: NonZeroUsize = NonZeroUsize::new(1024 * 1024).expect("value is not zero"); // 1MB
 
 pub(crate) struct Actor<TContext, TBlocker> {
-    active_epochs: BTreeMap<Epoch, Handle<()>>,
+    active_epochs: BTreeMap<Epoch, (Handle<()>, ContextCell<TContext>)>,
     config: super::Config<TBlocker>,
     context: ContextCell<TContext>,
     confirmed_latest_network_epoch: Option<Epoch>,
@@ -92,7 +92,8 @@ impl<TContext, TBlocker> Actor<TContext, TBlocker>
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
     // TODO(janis): are all of these bounds necessary?
-    TContext: Spawner
+    TContext: BufferPooler
+        + Spawner
         + commonware_runtime::Metrics
         + Rng
         + CryptoRng
@@ -271,7 +272,7 @@ where
         skip_all,
         fields(
             %epoch,
-            ?public,
+            network_identity = %public.public(),
             ?participants,
         ),
         err(level = Level::WARN)
@@ -319,17 +320,23 @@ where
         };
         self.config.scheme_provider.register(epoch, scheme.clone());
 
+        // Manage the context so we can explicitly drop during cleanup, releasing
+        // all metrics associated with this context.
+        let engine_ctx = self
+            .context
+            .with_label("simplex")
+            .with_attribute("epoch", epoch)
+            .with_scope();
+
         let engine = simplex::Engine::new(
-            self.context
-                .with_label("simplex")
-                .with_attribute("epoch", epoch),
+            engine_ctx.clone(),
             simplex::Config {
                 scheme,
                 elector: elector::Random,
                 blocker: self.config.blocker.clone(),
                 automaton: self.config.application.clone(),
                 relay: self.config.application.clone(),
-                reporter: Reporters::from((
+                reporter: Reporters::<_, crate::subblocks::Mailbox, _>::from((
                     self.config.subblocks.clone(),
                     Reporters::from((self.config.marshal.clone(), self.config.feed.clone())),
                 )),
@@ -345,8 +352,8 @@ where
                 page_cache: self.config.page_cache.clone(),
 
                 leader_timeout: self.config.time_to_propose,
-                notarization_timeout: self.config.time_to_collect_notarizations,
-                nullify_retry: self.config.time_to_retry_nullify_broadcast,
+                certification_timeout: self.config.time_to_collect_notarizations,
+                timeout_retry: self.config.time_to_retry_nullify_broadcast,
                 fetch_timeout: self.config.time_for_peer_response,
                 activity_timeout: self.config.views_to_track,
                 skip_timeout: self.config.views_until_leader_skip,
@@ -363,7 +370,10 @@ where
 
         assert!(
             self.active_epochs
-                .insert(epoch, engine.start(vote, certificate, resolver))
+                .insert(
+                    epoch,
+                    (engine.start(vote, certificate, resolver), engine_ctx)
+                )
                 .is_none(),
             "there must be no other active engine running: this was ensured at \
             the beginning of this method",
@@ -385,7 +395,8 @@ where
 
     #[instrument(parent = &cause, skip_all, fields(epoch))]
     fn exit(&mut self, cause: Span, Exit { epoch }: Exit) {
-        if let Some(engine) = self.active_epochs.remove(&epoch) {
+        if let Some((engine, engine_ctx)) = self.active_epochs.remove(&epoch) {
+            drop(engine_ctx);
             engine.abort();
             info!("stopped engine backing epoch");
         } else {
@@ -395,8 +406,21 @@ where
             );
         }
 
-        if !self.config.scheme_provider.delete(&epoch) {
-            warn!(
+        // XXX: Keep the last 2 epochs around: the marshal actor might get
+        // finalization certificates from straggling nodes that have not yet
+        // transitioned and are still (re-)propsing the boundary block of the
+        // outgoing epoch with new certificate.
+        //
+        // If we delete the scheme too eagerly here, then i) we won't be able
+        // to verify the certificate, ii) consider their message invalid, and
+        // finally iii) block them because this is treated as Byzantine
+        // behavior.
+        if let Some(to_delete) = epoch.checked_sub(EpochDelta::new(2))
+            && !self.config.scheme_provider.delete(&to_delete)
+        {
+            debug!(
+                to_exit = %epoch,
+                %to_delete,
                 "attempted to delete scheme for epoch, but epoch had no scheme \
                 registered"
             );
@@ -442,7 +466,7 @@ where
             let block = self
                 .config
                 .marshal
-                .subscribe(None, digest)
+                .subscribe_by_digest(None, digest)
                 .await
                 .await
                 .map_err(|_| eyre!("marshal never returned the block"))?;

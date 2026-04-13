@@ -84,7 +84,7 @@ contract NonceInvariantTest is InvariantBaseTest {
         targetSelector(FuzzSelector({ addr: address(this), selectors: selectors }));
 
         _setupInvariantBase();
-        _actors = _buildActors(10);
+        (_actors,) = _buildActors(10);
     }
 
     /// @dev Gets a valid nonce key (1 to MAX_NORMAL_NONCE_KEY)

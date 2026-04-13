@@ -3,7 +3,7 @@ use alloy::{
     primitives::{Address, U256, address},
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
 };
-use alloy_primitives::{B256, Bytes, Keccak256};
+use alloy_primitives::{B256, Bytes};
 use commonware_codec::Encode as _;
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
@@ -43,16 +43,16 @@ use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
     PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
     contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
-    precompiles::{
-        ITIP20Factory, IValidatorConfig, IValidatorConfigV2, VALIDATOR_CONFIG_V2_ADDRESS,
-    },
+    precompiles::{ITIP20Factory, IValidatorConfig, IValidatorConfigV2},
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
     PATH_USD_ADDRESS,
     account_keychain::AccountKeychain,
+    address_registry::AddressRegistry,
     nonce::NonceManager,
+    signature_verifier::SignatureVerifier,
     stablecoin_dex::StablecoinDEX,
     storage::{ContractStorage, StorageCtx},
     tip_fee_manager::{IFeeManager, TipFeeManager},
@@ -60,7 +60,7 @@ use tempo_precompiles::{
     tip20_factory::TIP20Factory,
     tip403_registry::TIP403Registry,
     validator_config::ValidatorConfig,
-    validator_config_v2::{VALIDATOR_NS_ADD, ValidatorConfigV2},
+    validator_config_v2::ValidatorConfigV2,
 };
 
 /// Generate genesis allocation file for testing
@@ -163,9 +163,21 @@ pub(crate) struct GenesisArgs {
     #[arg(long, default_value = "0")]
     t1b_time: u64,
 
+    /// T1.C hardfork activation time.
+    #[arg(long, default_value = "0")]
+    t1c_time: u64,
+
     /// T2 hardfork activation time.
     #[arg(long, default_value = "0")]
     t2_time: u64,
+
+    /// T3 hardfork activation time.
+    #[arg(long, default_value = "0")]
+    t3_time: u64,
+
+    /// T4 hardfork activation time.
+    #[arg(long, default_value = "0")]
+    t4_time: u64,
 
     /// Whether to skip initializing validator config v1
     #[arg(long)]
@@ -410,6 +422,14 @@ impl GenesisArgs {
         println!("Initializing account keychain");
         initialize_account_keychain(&mut evm)?;
 
+        println!("Initializing TIP20 registry");
+        initialize_address_registry(&mut evm)?;
+
+        if self.t3_time == 0 {
+            println!("Initializing signature verifier (T3 active at genesis)");
+            initialize_signature_verifier(&mut evm)?;
+        }
+
         if !self.no_pairwise_liquidity {
             if let (Some(alpha), Some(beta), Some(theta)) =
                 (alpha_token_address, beta_token_address, theta_token_address)
@@ -531,7 +551,16 @@ impl GenesisArgs {
             .insert_value("t1bTime".to_string(), self.t1b_time)?;
         chain_config
             .extra_fields
+            .insert_value("t1cTime".to_string(), self.t1c_time)?;
+        chain_config
+            .extra_fields
             .insert_value("t2Time".to_string(), self.t2_time)?;
+        chain_config
+            .extra_fields
+            .insert_value("t3Time".to_string(), self.t3_time)?;
+        chain_config
+            .extra_fields
+            .insert_value("t4Time".to_string(), self.t4_time)?;
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
@@ -794,8 +823,11 @@ fn initialize_fee_manager(
             fee_manager
                 .initialize()
                 .expect("Could not init fee manager");
+            println!(
+                "Setting user fee token {user_fee_token_address} for {} accounts",
+                initial_accounts.len()
+            );
             for address in initial_accounts.iter().progress() {
-                println!("Setting user token for {user_fee_token_address}");
                 fee_manager
                     .set_user_token(
                         *address,
@@ -873,6 +905,32 @@ fn initialize_account_keychain(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Re
         &ctx.cfg,
         &ctx.tx,
         || AccountKeychain::new().initialize(),
+    )?;
+
+    Ok(())
+}
+
+fn initialize_address_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
+    let ctx = evm.ctx_mut();
+    StorageCtx::enter_evm(
+        &mut ctx.journaled_state,
+        &ctx.block,
+        &ctx.cfg,
+        &ctx.tx,
+        || AddressRegistry::new().initialize(),
+    )?;
+
+    Ok(())
+}
+
+fn initialize_signature_verifier(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
+    let ctx = evm.ctx_mut();
+    StorageCtx::enter_evm(
+        &mut ctx.journaled_state,
+        &ctx.block,
+        &ctx.cfg,
+        &ctx.tx,
+        || SignatureVerifier::new().initialize(),
     )?;
 
     Ok(())
@@ -1001,28 +1059,30 @@ fn initialize_validator_config_v2(
                 let public_key = validator.public_key();
                 let pubkey: B256 = public_key.encode().as_ref().try_into().unwrap();
                 let addr = validator.addr;
-                let ingress = addr.to_string();
-                let egress = addr.ip().to_string();
 
-                // message: keccak256(chainId || contractAddr || validatorAddr || ingress || egress)
-                let mut hasher = Keccak256::new();
-                hasher.update(chain_id.to_be_bytes());
-                hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
-                hasher.update(validator_address.as_slice());
-                hasher.update(ingress.as_bytes());
-                hasher.update(egress.as_bytes());
-                let message = hasher.finalize();
+                let config = tempo_validator_config::ValidatorConfig {
+                    chain_id,
+                    validator_address,
+                    public_key: pubkey,
+                    ingress: addr,
+                    egress: addr.ip(),
+                };
 
+                let message = config.add_validator_message_hash(validator_address);
                 let private_key = validator.signing_key.clone().into_inner();
-                let signature = private_key.sign(VALIDATOR_NS_ADD, message.as_slice());
+                let signature = private_key.sign(
+                    tempo_precompiles::validator_config_v2::VALIDATOR_NS_ADD,
+                    message.as_slice(),
+                );
 
                 v2.add_validator(
                     admin,
                     IValidatorConfigV2::addValidatorCall {
                         validatorAddress: validator_address,
                         publicKey: pubkey,
-                        ingress: ingress.clone(),
-                        egress: egress.clone(),
+                        ingress: config.ingress.to_string(),
+                        egress: config.egress.to_string(),
+                        feeRecipient: validator_address,
                         signature: signature.encode().to_vec().into(),
                     },
                 )

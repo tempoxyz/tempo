@@ -1,7 +1,6 @@
 use crate::TempoEvmConfig;
 use alloy_consensus::crypto::RecoveryError;
 use alloy_primitives::Address;
-use rayon::prelude::*;
 use reth_evm::{
     ConfigureEngineEvm, ConfigureEvm, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor,
     FromRecoveredTx, RecoveredTx, ToTxEnv, block::ExecutableTxParts,
@@ -40,10 +39,9 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         payload: &TempoExecutionData,
     ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
         let block = payload.block.clone();
-        let transactions = (0..payload.block.body().transactions.len())
-            .into_par_iter()
+        let transactions: Vec<_> = (0..payload.block.body().transactions.len())
             .map(move |i| (block.clone(), i))
-            .collect::<Vec<_>>();
+            .collect();
 
         Ok((transactions, RecoveredInBlock::new))
     }
@@ -100,9 +98,10 @@ mod tests {
     use alloy_consensus::{BlockHeader, Signed, TxLegacy};
     use alloy_primitives::{B256, Bytes, Signature, TxKind, U256};
     use alloy_rlp::{Encodable, bytes::BytesMut};
+    use rayon::iter::{IntoParallelIterator, ParallelIterator};
     use reth_chainspec::EthChainSpec;
     use reth_evm::{ConfigureEngineEvm, ConvertTx, ExecutableTxTuple};
-    use tempo_chainspec::{TempoChainSpec, spec::ANDANTINO};
+    use tempo_chainspec::{TempoChainSpec, spec::MODERATO};
     use tempo_primitives::{
         BlockBody, SubBlockMetadata, TempoHeader, transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
     };
@@ -166,7 +165,7 @@ mod tests {
 
     #[test]
     fn test_tx_iterator_for_payload() {
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(ANDANTINO.genesis().clone()));
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()));
         let evm_config = TempoEvmConfig::new(chainspec.clone());
 
         let tx1 = create_legacy_tx();
@@ -184,7 +183,7 @@ mod tests {
         assert!(result.is_ok());
 
         let tuple = result.unwrap();
-        let (iter, recover_fn): (_, _) = tuple.into_parts();
+        let (iter, recover_fn) = tuple.into_parts();
         let items: Vec<_> = iter.into_par_iter().collect();
 
         // Should have 3 transactions
@@ -199,7 +198,7 @@ mod tests {
 
     #[test]
     fn test_context_for_payload() {
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(ANDANTINO.genesis().clone()));
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()));
         let evm_config = TempoEvmConfig::new(chainspec.clone());
 
         let system_tx = create_subblock_metadata_tx(chainspec.chain().id(), 1);
@@ -225,7 +224,7 @@ mod tests {
 
     #[test]
     fn test_evm_env_for_payload() {
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(ANDANTINO.genesis().clone()));
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()));
         let evm_config = TempoEvmConfig::new(chainspec.clone());
 
         let system_tx = create_subblock_metadata_tx(chainspec.chain().id(), 1);

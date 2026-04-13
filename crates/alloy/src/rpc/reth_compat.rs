@@ -2,13 +2,14 @@ use crate::rpc::{TempoHeaderResponse, TempoTransactionRequest};
 use alloy_consensus::{EthereumTxEnvelope, TxEip4844, error::ValueError};
 use alloy_network::{TransactionBuilder, TxSigner};
 use alloy_primitives::{Address, B256, Bytes, Signature};
+use core::num::NonZeroU64;
 use reth_evm::EvmEnv;
 use reth_primitives_traits::SealedHeader;
 use reth_rpc_convert::{
-    SignTxRequestError, SignableTxRequest, TryIntoSimTx, TryIntoTxEnv,
-    transaction::FromConsensusHeader,
+    FromConsensusHeader, SignTxRequestError, SignableTxRequest, TryIntoSimTx, TryIntoTxEnv,
 };
 use reth_rpc_eth_types::EthApiError;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::TempoBlockEnv;
 use tempo_primitives::{
     SignatureType, TempoHeader, TempoSignature, TempoTxEnvelope, TempoTxType,
@@ -90,21 +91,25 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
     }
 }
 
-impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
+impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransactionRequest {
     type Err = EthApiError;
 
-    fn try_into_tx_env<Spec>(
+    fn try_into_tx_env(
         self,
-        evm_env: &EvmEnv<Spec, TempoBlockEnv>,
+        evm_env: &EvmEnv<TempoHardfork, TempoBlockEnv>,
     ) -> Result<TempoTxEnv, Self::Err> {
         let caller_addr = self.inner.from.unwrap_or_default();
 
         let fee_payer = if self.fee_payer_signature.is_some() {
-            self.clone()
+            // Try to recover the fee payer address from the signature.
+            // If recovery fails (e.g. dummy signature during gas estimation / fill),
+            // keep it unresolved so estimation/fill can continue with sender-paid semantics.
+            let recovered = self
+                .clone()
                 .build_aa()
                 .ok()
-                .and_then(|tx| tx.recover_fee_payer(caller_addr).ok())
-                .map(Some)
+                .and_then(|tx| tx.recover_fee_payer(caller_addr).ok());
+            Some(recovered)
         } else {
             None
         };
@@ -133,13 +138,21 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
                 || nonce_key.is_some()
                 || key_authorization.is_some()
                 || key_id.is_some()
+                || fee_payer.is_some()
+                || valid_before.is_some()
+                || valid_after.is_some()
             {
                 // Create mock signature for gas estimation
                 // If key_type is not provided, default to secp256k1
                 // For Keychain signatures, use the caller's address as the root key address
                 let key_type = key_type.unwrap_or(SignatureType::Secp256k1);
-                let mock_signature =
-                    create_mock_tempo_signature(&key_type, key_data.as_ref(), key_id, caller_addr);
+                let mock_signature = create_mock_tempo_sig(
+                    &key_type,
+                    key_data.as_ref(),
+                    key_id,
+                    caller_addr,
+                    evm_env.spec_id().is_t1c(),
+                );
 
                 let mut calls = calls;
                 if let Some(to) = &inner.to {
@@ -164,8 +177,15 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
                     key_authorization,
                     signature_hash: B256::ZERO,
                     tx_hash: B256::ZERO,
-                    valid_before,
-                    valid_after,
+                    // Use a zero sentinel for expiring nonce hash during simulation.
+                    // The real hash is keccak256(encode_for_signing || sender), but we
+                    // don't have a signed transaction here. B256::ZERO lets the handler's
+                    // replay check proceed (it runs against ephemeral simulation state
+                    // that is discarded). Gas accuracy is unaffected — the 13k
+                    // EXPIRING_NONCE_GAS is charged based on nonce_key, not the hash value.
+                    expiring_nonce_hash: Some(B256::ZERO),
+                    valid_before: valid_before.map(NonZeroU64::get),
+                    valid_after: valid_after.map(NonZeroU64::get),
                     subblock_transaction: false,
                     override_key_id: key_id,
                 }))
@@ -183,19 +203,26 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
 /// - `key_data`: Type-specific data (e.g., WebAuthn size)
 /// - `key_id`: If Some, wraps the signature in a Keychain wrapper (+3,000 gas for key validation)
 /// - `caller_addr`: The transaction caller address (used as root key address for Keychain)
-fn create_mock_tempo_signature(
+/// - `is_t1c`: Whether T1C is active — determines keychain signature version (V1 pre-T1C, V2 post-T1C)
+fn create_mock_tempo_sig(
     key_type: &SignatureType,
     key_data: Option<&Bytes>,
     key_id: Option<Address>,
     caller_addr: alloy_primitives::Address,
+    is_t1c: bool,
 ) -> TempoSignature {
     use tempo_primitives::transaction::tt_signature::{KeychainSignature, TempoSignature};
 
     let inner_sig = create_mock_primitive_signature(key_type, key_data.cloned());
 
     if key_id.is_some() {
-        // For Keychain signatures, the root_key_address is the caller (account owner)
-        TempoSignature::Keychain(KeychainSignature::new(caller_addr, inner_sig))
+        // For Keychain signatures, the root_key_address is the caller (account owner).
+        let keychain_sig = if is_t1c {
+            KeychainSignature::new(caller_addr, inner_sig)
+        } else {
+            KeychainSignature::new_v1(caller_addr, inner_sig)
+        };
+        TempoSignature::Keychain(keychain_sig)
     } else {
         TempoSignature::Primitive(inner_sig)
     }
@@ -316,10 +343,15 @@ impl FromConsensusHeader<TempoHeader> for TempoHeaderResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{TxKind, address};
+    use alloy_primitives::{TxKind, U256, address};
     use alloy_rpc_types_eth::TransactionRequest;
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
     use reth_rpc_convert::TryIntoTxEnv;
-    use tempo_primitives::transaction::tt_signature::PrimitiveSignature;
+    use tempo_primitives::{
+        TempoTransaction,
+        transaction::{Call, tt_signature::PrimitiveSignature},
+    };
 
     #[test]
     fn test_estimate_gas_when_calls_set() {
@@ -349,8 +381,7 @@ mod tests {
 
         let built_calls = req.clone().build_aa().expect("build_aa").calls;
 
-        let evm_env =
-            EvmEnv::<reth_evm::revm::primitives::hardfork::SpecId, TempoBlockEnv>::default();
+        let evm_env = EvmEnv::default();
         let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
         let estimated_calls = tx_env.tempo_tx_env.expect("tempo_tx_env").aa_calls;
 
@@ -408,11 +439,141 @@ mod tests {
         assert_eq!(webauthn_sig.webauthn_data.len(), 800);
     }
 
+    #[test]
+    fn test_estimate_gas_fee_payer_signature_only_produces_aa_env() {
+        let sponsor = PrivateKeySigner::random();
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let target = address!("0x2222222222222222222222222222222222222222");
+
+        // Build a TempoTransaction so we can compute fee_payer_signature_hash
+        let tx = TempoTransaction {
+            chain_id: 4217,
+            nonce: 0,
+            fee_payer_signature: None,
+            valid_before: None,
+            valid_after: None,
+            gas_limit: 100_000,
+            max_fee_per_gas: 1_000_000_000,
+            max_priority_fee_per_gas: 1_000_000,
+            fee_token: None,
+            access_list: Default::default(),
+            calls: vec![Call {
+                to: target.into(),
+                value: Default::default(),
+                input: Default::default(),
+            }],
+            tempo_authorization_list: vec![],
+            nonce_key: Default::default(),
+            key_authorization: None,
+        };
+        let hash = tx.fee_payer_signature_hash(sender);
+        let fee_payer_sig = sponsor.sign_hash_sync(&hash).expect("sign");
+
+        // Request with ONLY fee_payer_signature as the Tempo-specific field
+        let req = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(sender),
+                to: Some(TxKind::Call(target)),
+                nonce: Some(0),
+                gas: Some(100_000),
+                max_fee_per_gas: Some(1_000_000_000),
+                max_priority_fee_per_gas: Some(1_000_000),
+                chain_id: Some(4217),
+                ..Default::default()
+            },
+            fee_payer_signature: Some(fee_payer_sig),
+            ..Default::default()
+        };
+
+        let evm_env = EvmEnv::default();
+        let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
+
+        assert!(
+            tx_env.tempo_tx_env.is_some(),
+            "fee_payer_signature alone must produce an AA tx env"
+        );
+        assert_eq!(
+            tx_env.fee_payer,
+            Some(Some(sponsor.address())),
+            "fee_payer should recover sponsor address"
+        );
+    }
+
+    #[test]
+    fn test_aa_roundtrip_via_tx_env() {
+        use alloy_primitives::U256;
+
+        let calls = vec![
+            Call {
+                to: address!("0x1111111111111111111111111111111111111111").into(),
+                value: U256::ZERO,
+                input: Bytes::from(vec![0xaa]),
+            },
+            Call {
+                to: address!("0x2222222222222222222222222222222222222222").into(),
+                value: U256::ZERO,
+                input: Bytes::from(vec![0xbb]),
+            },
+        ];
+
+        let tx = TempoTransaction {
+            chain_id: 4217,
+            nonce: 1,
+            gas_limit: 100_000,
+            max_fee_per_gas: 1_000_000_000,
+            max_priority_fee_per_gas: 1_000_000,
+            calls: calls.clone(),
+            ..Default::default()
+        };
+
+        let req: TempoTransactionRequest = tx.into();
+
+        let evm_env = EvmEnv::default();
+        let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
+        let aa_calls = tx_env.tempo_tx_env.expect("tempo_tx_env").aa_calls;
+
+        assert_eq!(
+            aa_calls, calls,
+            "roundtrip via try_into_tx_env must preserve exact call list"
+        );
+    }
+
+    #[test]
+    fn test_estimate_gas_invalid_fee_payer_signature_keeps_unresolved_fee_payer() {
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let target = address!("0x2222222222222222222222222222222222222222");
+
+        let req = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(sender),
+                to: Some(TxKind::Call(target)),
+                nonce: Some(0),
+                gas: Some(100_000),
+                max_fee_per_gas: Some(1_000_000_000),
+                max_priority_fee_per_gas: Some(1_000_000),
+                chain_id: Some(4217),
+                ..Default::default()
+            },
+            fee_payer_signature: Some(Signature::new(U256::ZERO, U256::ZERO, false)),
+            ..Default::default()
+        };
+
+        let evm_env = EvmEnv::default();
+        let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
+
+        assert!(
+            tx_env.tempo_tx_env.is_some(),
+            "fee_payer_signature alone must produce an AA tx env"
+        );
+        assert_eq!(
+            tx_env.fee_payer,
+            Some(None),
+            "invalid fee_payer_signature should remain unresolved"
+        );
+    }
+
     #[tokio::test]
     async fn test_signable_tx_request_preserves_tempo_fields() {
-        use alloy_signer_local::PrivateKeySigner;
-        use tempo_primitives::transaction::Call;
-
         let signer = PrivateKeySigner::random();
 
         let call = Call {

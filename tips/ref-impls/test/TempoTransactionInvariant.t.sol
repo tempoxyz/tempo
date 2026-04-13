@@ -58,7 +58,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         targetContract(address(this));
 
         // Define which handlers the fuzzer should call
-        bytes4[] memory selectors = new bytes4[](70);
+        bytes4[] memory selectors = new bytes4[](74);
         // Legacy transaction handlers (core)
         selectors[0] = this.handler_transfer.selector;
         selectors[1] = this.handler_sequentialTransfers.selector;
@@ -118,11 +118,12 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         selectors[44] = this.handler_insufficientLiquidity.selector;
         // 2D nonce gas tracking (N10/N11)
         selectors[45] = this.handler_2dNonceGasCost.selector;
-        // Time window handlers (T1-T4)
+        // Time window handlers (T1-T5)
         selectors[46] = this.handler_timeBoundValidAfter.selector;
         selectors[47] = this.handler_timeBoundValidBefore.selector;
         selectors[48] = this.handler_timeBoundValid.selector;
         selectors[49] = this.handler_timeBoundOpen.selector;
+        selectors[70] = this.handler_timeBoundZeroWidth.selector;
         // Transaction type handlers (TX4-TX7, TX10)
         selectors[50] = this.handler_eip1559Transfer.selector;
         selectors[51] = this.handler_eip1559BaseFeeRejection.selector;
@@ -147,6 +148,12 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         // Spending limit refund handlers (K-REFUND)
         selectors[68] = this.handler_keySpendingRefund.selector;
         selectors[69] = this.handler_keySpendingRefundRevokedKey.selector;
+        // Cross-account key auth replay handler
+        selectors[71] = this.handler_keyAuthCrossAccountReplay.selector;
+        // Cross-chain replay handler
+        selectors[72] = this.handler_crossChainReplay.selector;
+        // Fee-payer substitution replay handler
+        selectors[73] = this.handler_feePayerSubstitutionReplay.selector;
         targetSelector(FuzzSelector({ addr: address(this), selectors: selectors }));
 
         // Initialize previous nonce tracking for secp256k1 actors
@@ -196,9 +203,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         assertEq(ghost_createWithValueAllowed, 0, "C4: CREATE with value unexpectedly allowed");
         assertEq(ghost_createOversizedAllowed, 0, "C8: Oversized initcode unexpectedly allowed");
 
-        // Key authorization rules (K1, K3)
+        // Key authorization rules (K1, K3, K7, K8)
         assertEq(ghost_keyWrongSignerAllowed, 0, "K1: Wrong signer key auth unexpectedly allowed");
         assertEq(ghost_keyWrongChainAllowed, 0, "K3: Wrong chain key auth unexpectedly allowed");
+        assertEq(ghost_keyRevokedAllowed, 0, "K7: Revoked key unexpectedly allowed");
+        assertEq(ghost_keyExpiredAllowed, 0, "K8: Expired key unexpectedly allowed");
 
         // Transaction type rules (TX7)
         assertEq(
@@ -217,6 +226,28 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_timeBoundValidBeforeAllowed,
             0,
             "T2: Tx with past validBefore unexpectedly allowed"
+        );
+        assertEq(
+            ghost_timeBoundZeroWidthAllowed,
+            0,
+            "T5: Tx with validBefore == validAfter unexpectedly allowed"
+        );
+
+        // Cross-account key auth replay
+        assertEq(
+            ghost_keyAuthCrossAccountAllowed,
+            0,
+            "Cross-account key auth replay unexpectedly allowed"
+        );
+
+        // Cross-chain replay
+        assertEq(ghost_crossChainAllowed, 0, "Cross-chain replay unexpectedly allowed");
+
+        // Fee-payer substitution replay
+        assertEq(
+            ghost_feePayerSubstitutionAllowed,
+            0,
+            "Fee-payer substitution replay unexpectedly allowed"
         );
     }
 
@@ -481,6 +512,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             bytes32 key = keccak256(abi.encodePacked(actualSender, uint256(currentNonce)));
             ghost_createAddresses[key] = expectedAddress;
             ghost_createCount[actualSender]++;
+            ghost_createNonces[actualSender].push(uint256(currentNonce));
         } catch {
             _handleRevertProtocol(actualSender);
         }
@@ -864,10 +896,21 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             : IAccountKeychain.SignatureType.Secp256k1;
 
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](1);
-        limits[0] = IAccountKeychain.TokenLimit({ token: address(feeToken), amount: limit });
+        limits[0] =
+            IAccountKeychain.TokenLimit({ token: address(feeToken), amount: limit, period: 0 });
 
         vm.prank(ctx.owner);
-        try keychain.authorizeKey(ctx.keyId, keyType, expiry, true, limits) {
+        try keychain.authorizeKey(
+            ctx.keyId,
+            keyType,
+            IAccountKeychain.KeyRestrictions({
+                expiry: expiry,
+                enforceLimits: true,
+                limits: limits,
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
+        ) {
             address[] memory tokens = new address[](1);
             tokens[0] = address(feeToken);
             uint256[] memory amounts = new uint256[](1);
@@ -937,8 +980,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            // Revoked key was allowed - this is a K7/K8 violation!
-            ghost_keyWrongSignerAllowed++;
+            // Revoked key was allowed - this is a K7 violation!
+            ghost_keyRevokedAllowed++;
             ghost_protocolNonce[ctx.owner]++;
             ghost_totalTxExecuted++;
             ghost_totalCallsExecuted++;
@@ -950,7 +993,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
     }
 
     /// @notice Handler: Attempt to use an expired key - should be rejected
-    /// @dev Tests K7 - expired keys must not be usable
+    /// @dev Tests K8 - expired keys must not be usable
     function handler_useExpiredKey(
         uint256 actorSeed,
         uint256 keySeed,
@@ -1001,8 +1044,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            // Expired key was allowed - this is a K7 violation!
-            ghost_keyWrongSignerAllowed++;
+            // Expired key was allowed - this is a K8 violation!
+            ghost_keyExpiredAllowed++;
             ghost_protocolNonce[ctx.owner]++;
             ghost_totalTxExecuted++;
             ghost_totalCallsExecuted++;
@@ -1664,20 +1707,21 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
     /// @dev Helper to verify CREATE addresses for a given account
     function _verifyCreateAddresses(address account) internal view {
-        uint256 createCount = ghost_createCount[account];
+        uint256[] storage nonces = ghost_createNonces[account];
 
-        for (uint256 n = 0; n < createCount; n++) {
+        assertEq(nonces.length, ghost_createCount[account], "C5: create nonce list/count mismatch");
+
+        for (uint256 i = 0; i < nonces.length; i++) {
+            uint256 n = nonces[i];
             bytes32 key = keccak256(abi.encodePacked(account, n));
             address recorded = ghost_createAddresses[key];
 
-            if (recorded != address(0)) {
-                // Verify the recorded address matches the computed address
-                address computed = TxBuilder.computeCreateAddress(account, n);
-                assertEq(recorded, computed, "C5: Recorded address doesn't match computed");
+            assertTrue(recorded != address(0), "C5: missing recorded CREATE address");
 
-                // Verify code exists at the address (CREATE succeeded)
-                assertTrue(recorded.code.length > 0, "C5: No code at CREATE address");
-            }
+            address computed = TxBuilder.computeCreateAddress(account, n);
+            assertEq(recorded, computed, "C5: Recorded address doesn't match computed");
+
+            assertTrue(recorded.code.length > 0, "C5: No code at CREATE address");
         }
     }
 
@@ -1764,10 +1808,17 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         if (!ghost_keyAuthorized[owner][keyIdA]) {
             uint64 expiryA = uint64(block.timestamp + 1 days);
-            IAccountKeychain.TokenLimit[] memory limitsA = new IAccountKeychain.TokenLimit[](0);
             vm.prank(owner);
             try keychain.authorizeKey(
-                keyIdA, IAccountKeychain.SignatureType.Secp256k1, expiryA, false, limitsA
+                keyIdA,
+                IAccountKeychain.SignatureType.Secp256k1,
+                IAccountKeychain.KeyRestrictions({
+                    expiry: expiryA,
+                    enforceLimits: false,
+                    limits: new IAccountKeychain.TokenLimit[](0),
+                    allowAnyCalls: true,
+                    allowedCalls: new IAccountKeychain.CallScope[](0)
+                })
             ) {
                 address[] memory tokens = new address[](0);
                 uint256[] memory amounts = new uint256[](0);
@@ -1783,16 +1834,24 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         uint64 expiryB = uint64(block.timestamp + 1 days);
         IAccountKeychain.TokenLimit[] memory limitsB = new IAccountKeychain.TokenLimit[](1);
-        limitsB[0] = IAccountKeychain.TokenLimit({ token: address(feeToken), amount: 100e6 });
+        limitsB[0] =
+            IAccountKeychain.TokenLimit({ token: address(feeToken), amount: 100e6, period: 0 });
 
         uint64 currentNonce = uint64(ghost_protocolNonce[owner]);
         bytes memory signedTx = TxBuilder.buildTempoCallKeychain(
             vmRlp,
             vm,
             address(keychain),
-            abi.encodeCall(
-                IAccountKeychain.authorizeKey,
-                (keyIdB, IAccountKeychain.SignatureType.Secp256k1, expiryB, true, limitsB)
+            _encodeAuthorizeKey(
+                keyIdB,
+                IAccountKeychain.SignatureType.Secp256k1,
+                IAccountKeychain.KeyRestrictions({
+                    expiry: expiryB,
+                    enforceLimits: true,
+                    limits: limitsB,
+                    allowAnyCalls: true,
+                    allowedCalls: new IAccountKeychain.CallScope[](0)
+                })
             ),
             0, // nonceKey=0 uses protocol nonce
             currentNonce,
@@ -1906,7 +1965,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         uint64 expiry = uint64(block.timestamp + 1 days);
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](1);
-        limits[0] = IAccountKeychain.TokenLimit({ token: address(feeToken), amount: 100e6 });
+        limits[0] =
+            IAccountKeychain.TokenLimit({ token: address(feeToken), amount: 100e6, period: 0 });
 
         uint64 nonceKey = 5;
         uint64 currentNonce = uint64(ghost_2dNonce[owner][nonceKey]);
@@ -1915,9 +1975,16 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         calls[0] = TempoCall({
             to: address(keychain),
             value: 0,
-            data: abi.encodeCall(
-                IAccountKeychain.authorizeKey,
-                (keyId, IAccountKeychain.SignatureType.Secp256k1, expiry, true, limits)
+            data: _encodeAuthorizeKey(
+                keyId,
+                IAccountKeychain.SignatureType.Secp256k1,
+                IAccountKeychain.KeyRestrictions({
+                    expiry: expiry,
+                    enforceLimits: true,
+                    limits: limits,
+                    allowAnyCalls: true,
+                    allowedCalls: new IAccountKeychain.CallScope[](0)
+                })
             )
         });
         calls[1] = TempoCall({
@@ -2063,10 +2130,17 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         if (!ghost_keyAuthorized[owner][keyId]) {
             uint64 expiry = uint64(block.timestamp + 1 days);
-            IAccountKeychain.TokenLimit[] memory emptyLimits = new IAccountKeychain.TokenLimit[](0);
             vm.prank(owner);
             try keychain.authorizeKey(
-                keyId, IAccountKeychain.SignatureType.Secp256k1, expiry, false, emptyLimits
+                keyId,
+                IAccountKeychain.SignatureType.Secp256k1,
+                IAccountKeychain.KeyRestrictions({
+                    expiry: expiry,
+                    enforceLimits: false,
+                    limits: new IAccountKeychain.TokenLimit[](0),
+                    allowAnyCalls: true,
+                    allowedCalls: new IAccountKeychain.CallScope[](0)
+                })
             ) {
                 address[] memory tokens = new address[](0);
                 uint256[] memory amounts = new uint256[](0);
@@ -2128,10 +2202,17 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         if (!ghost_keyAuthorized[owner][keyId]) {
             uint64 expiry = uint64(block.timestamp + 1 days);
-            IAccountKeychain.TokenLimit[] memory emptyLimits = new IAccountKeychain.TokenLimit[](0);
             vm.prank(owner);
             try keychain.authorizeKey(
-                keyId, IAccountKeychain.SignatureType.Secp256k1, expiry, true, emptyLimits
+                keyId,
+                IAccountKeychain.SignatureType.Secp256k1,
+                IAccountKeychain.KeyRestrictions({
+                    expiry: expiry,
+                    enforceLimits: true,
+                    limits: new IAccountKeychain.TokenLimit[](0),
+                    allowAnyCalls: true,
+                    allowedCalls: new IAccountKeychain.CallScope[](0)
+                })
             ) {
                 address[] memory tokens = new address[](0);
                 uint256[] memory amounts = new uint256[](0);
@@ -2203,10 +2284,17 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         if (!ghost_keyAuthorized[owner][keyId]) {
             uint64 expiry = uint64(block.timestamp + 1 days);
-            IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
             vm.prank(owner);
             try keychain.authorizeKey(
-                keyId, IAccountKeychain.SignatureType.Secp256k1, expiry, false, limits
+                keyId,
+                IAccountKeychain.SignatureType.Secp256k1,
+                IAccountKeychain.KeyRestrictions({
+                    expiry: expiry,
+                    enforceLimits: false,
+                    limits: new IAccountKeychain.TokenLimit[](0),
+                    allowAnyCalls: true,
+                    allowedCalls: new IAccountKeychain.CallScope[](0)
+                })
             ) {
                 address[] memory tokens = new address[](0);
                 uint256[] memory amounts = new uint256[](0);
@@ -3152,6 +3240,38 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         }
     }
 
+    /// @notice Handler T5: Tx rejected if validBefore == validAfter (zero-width window)
+    /// @dev Creates a Tempo tx with validAfter == validBefore, expects rejection
+    function handler_timeBoundZeroWidth(
+        uint256 actorSeed,
+        uint256 recipientSeed,
+        uint256 amount
+    )
+        external
+    {
+        TxContext memory ctx =
+            _setup2dNonceTransferContext(actorSeed, recipientSeed, amount, 5, 0, 1e6, 100e6);
+        ctx.nonceKey = 5;
+        ctx.currentNonce = uint64(ghost_2dNonce[ctx.sender][ctx.nonceKey]);
+
+        // Must be non-zero or _buildTempoWithTimeBounds will omit the field
+        uint64 t = uint64(block.timestamp);
+        if (t == 0) t = 1;
+
+        (bytes memory signedTx,) = _buildTempoWithTimeBounds(
+            ctx.senderIdx, ctx.recipient, ctx.amount, ctx.nonceKey, ctx.currentNonce, t, t
+        );
+        vm.coinbase(validator);
+
+        try vmExec.executeTransaction(signedTx) {
+            // T5 VIOLATION: Tx with validBefore == validAfter should have been rejected!
+            ghost_timeBoundZeroWidthAllowed++;
+            _record2dNonceTxSuccess(ctx.sender, ctx.nonceKey, ctx.currentNonce);
+        } catch {
+            _handleExpectedReject(_noop);
+        }
+    }
+
     /*//////////////////////////////////////////////////////////////
                     TRANSACTION TYPE INVARIANTS (TX4-TX12)
     //////////////////////////////////////////////////////////////*/
@@ -3699,6 +3819,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             address expectedAddress = TxBuilder.computeCreateAddress(sender, currentNonce);
             ghost_createAddresses[key] = expectedAddress;
             ghost_createCount[sender]++;
+            ghost_createNonces[sender].push(uint256(currentNonce));
             _recordGasTrackingCreate();
         } catch {
             _handleRevertProtocol(sender);
@@ -3789,8 +3910,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256[] memory amounts = new uint256[](numLimits);
 
         for (uint256 i = 0; i < numLimits; i++) {
-            limits[i] =
-                IAccountKeychain.TokenLimit({ token: address(feeToken), amount: (i + 1) * 100e6 });
+            limits[i] = IAccountKeychain.TokenLimit({
+                token: address(feeToken), amount: (i + 1) * 100e6, period: 0
+            });
             tokens[i] = address(feeToken);
             amounts[i] = (i + 1) * 100e6;
         }
@@ -3800,7 +3922,15 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 gasBefore = gasleft();
         vm.prank(owner);
         try keychain.authorizeKey(
-            keyId, IAccountKeychain.SignatureType.Secp256k1, expiry, numLimits > 0, limits
+            keyId,
+            IAccountKeychain.SignatureType.Secp256k1,
+            IAccountKeychain.KeyRestrictions({
+                expiry: expiry,
+                enforceLimits: numLimits > 0,
+                limits: limits,
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         ) {
             uint256 gasUsed = gasBefore - gasleft();
             ghost_keyAuthGasUsed[owner] = gasUsed;
@@ -4380,8 +4510,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             })
         );
 
-        uint256 remainingBefore =
-            keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(feeToken));
+        (uint256 remainingBefore,) =
+            keychain.getRemainingLimitWithPeriod(ctx.owner, ctx.keyId, address(feeToken));
 
         ghost_previousProtocolNonce[ctx.owner] = ghost_protocolNonce[ctx.owner];
         vm.coinbase(validator);
@@ -4390,8 +4520,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             _recordProtocolNonceTxSuccess(ctx.owner);
             _recordKeySpending(ctx.owner, ctx.keyId, address(feeToken), amount);
 
-            uint256 remainingAfter =
-                keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(feeToken));
+            (uint256 remainingAfter,) =
+                keychain.getRemainingLimitWithPeriod(ctx.owner, ctx.keyId, address(feeToken));
 
             // K-REFUND1: After tx, the remaining limit should be greater than
             // (remainingBefore - amount - maxFee) because unused gas was refunded.
@@ -4482,8 +4612,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         }
 
         // Step 3: Snapshot remaining limit (should be unchanged after revocation)
-        uint256 remainingAfterRevoke =
-            keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(feeToken));
+        (uint256 remainingAfterRevoke,) =
+            keychain.getRemainingLimitWithPeriod(ctx.owner, ctx.keyId, address(feeToken));
 
         // Step 4: Execute another tx (with main key) that would have refunded the revoked key
         // The refund_spending_limit uses load_active_key which fails for revoked keys -> no-op
@@ -4499,8 +4629,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         try vmExec.executeTransaction(mainKeyTx) {
             _recordProtocolNonceTxSuccess(ctx.owner);
 
-            uint256 remainingAfterMainTx =
-                keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(feeToken));
+            (uint256 remainingAfterMainTx,) =
+                keychain.getRemainingLimitWithPeriod(ctx.owner, ctx.keyId, address(feeToken));
 
             // K-REFUND2: Remaining limit should not change since the key was revoked
             // (the refund should be a no-op for revoked keys)
@@ -4514,6 +4644,332 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         } catch {
             _handleRevertProtocol(ctx.owner);
         }
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                    CROSS-ACCOUNT KEY AUTH REPLAY HANDLER
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Handler: Account A authorizes key K, then account B tries to use
+    ///         key K (authorized for A) to sign a tx on behalf of B — should be
+    ///         rejected.
+    /// @dev Tests that access key authorization is bound to the authorizing account,
+    ///      preventing cross-account key reuse. The keychain must reject transactions
+    ///      signed with a key that was only authorized for a different account.
+    function handler_keyAuthCrossAccountReplay(
+        uint256 actorSeedA,
+        uint256 actorSeedB,
+        uint256 keySeed,
+        uint256 recipientSeed,
+        uint256 amount
+    )
+        external
+    {
+        // Pick two distinct actors
+        uint256 actorIdxA = actorSeedA % actors.length;
+        uint256 actorIdxB = actorSeedB % actors.length;
+        if (actorIdxA == actorIdxB) actorIdxB = (actorIdxB + 1) % actors.length;
+
+        address ownerA = actors[actorIdxA];
+        address ownerB = actors[actorIdxB];
+
+        // Get a key from actor A's key pool
+        (address keyId, uint256 keyPk) = _getActorAccessKey(actorIdxA, keySeed);
+
+        // Step 1: Ensure key K is authorized for actor A
+        if (!ghost_keyAuthorized[ownerA][keyId]) {
+            uint64 expiry = uint64(block.timestamp + 1 days);
+            IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](1);
+            limits[0] = IAccountKeychain.TokenLimit({
+                token: address(feeToken), amount: 1000e6, period: 0
+            });
+
+            vm.prank(ownerA);
+            try keychain.authorizeKey(
+                keyId,
+                IAccountKeychain.SignatureType.Secp256k1,
+                IAccountKeychain.KeyRestrictions({
+                    expiry: expiry,
+                    enforceLimits: true,
+                    limits: limits,
+                    allowAnyCalls: true,
+                    allowedCalls: new IAccountKeychain.CallScope[](0)
+                })
+            ) {
+                address[] memory tokens = new address[](1);
+                tokens[0] = address(feeToken);
+                uint256[] memory amounts = new uint256[](1);
+                amounts[0] = 1000e6;
+                _authorizeKey(ownerA, keyId, expiry, true, tokens, amounts);
+            } catch {
+                return;
+            }
+        }
+
+        // Skip if key is also authorized for B — not a meaningful replay test
+        if (ghost_keyAuthorized[ownerB][keyId]) return;
+
+        // Step 2: Account B tries to use key K (authorized for A) to sign a tx
+        amount = bound(amount, 1e6, 10e6);
+        if (!_checkBalance(ownerB, amount)) return;
+
+        uint256 recipientIdx = recipientSeed % actors.length;
+        if (actorIdxB == recipientIdx) {
+            recipientIdx = (recipientIdx + 1) % actors.length;
+        }
+        address recipient = actors[recipientIdx];
+
+        uint64 currentNonce = uint64(ghost_protocolNonce[ownerB]);
+
+        // Build a tx signed with key K's private key, setting userAddress = B.
+        // The keychain should reject this because key K is only authorized for A.
+        bytes memory signedTx = TxBuilder.buildTempoCallKeychain(
+            vmRlp,
+            vm,
+            address(feeToken),
+            abi.encodeCall(ITIP20.transfer, (recipient, amount)),
+            0, // nonceKey=0 uses protocol nonce
+            currentNonce,
+            keyPk,
+            ownerB
+        );
+
+        vm.coinbase(validator);
+
+        ghost_keyAuthCrossAccountAttempted++;
+        try vmExec.executeTransaction(signedTx) {
+            // VIOLATION: Key authorized for A was accepted for B!
+            ghost_keyAuthCrossAccountAllowed++;
+        } catch {
+            _handleExpectedReject(_noop);
+        }
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                    CROSS-CHAIN REPLAY HANDLER
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Handler: Sign a Tempo tx with wrong chain_id and verify rejection
+    /// @dev Tests that validate_tempo_tx() enforces chain_id == block.chainid.
+    ///      A tx signed for a different chain must never execute on this chain.
+    function handler_crossChainReplay(
+        uint256 actorSeed,
+        uint256 recipientSeed,
+        uint256 amount,
+        uint256 nonceKeySeed,
+        uint256 wrongChainSeed
+    )
+        external
+    {
+        uint256 actorIdx = actorSeed % actors.length;
+        address actor = actors[actorIdx];
+
+        uint256 recipientIdx = recipientSeed % actors.length;
+        if (actorIdx == recipientIdx) recipientIdx = (recipientIdx + 1) % actors.length;
+        address recipient = actors[recipientIdx];
+
+        amount = bound(amount, 1e6, 10e6);
+        if (!_checkBalance(actor, amount)) return;
+
+        uint64 nonceKey = uint64(bound(nonceKeySeed, 1, 100));
+        uint64 currentNonce = uint64(ghost_2dNonce[actor][nonceKey]);
+
+        // Pick a chain_id that differs from block.chainid
+        uint64 currentChainId = uint64(block.chainid);
+        uint64 wrongChainId = uint64(bound(wrongChainSeed, 1, type(uint64).max - 1));
+        if (wrongChainId >= currentChainId) wrongChainId++;
+
+        TempoCall[] memory calls = new TempoCall[](1);
+        calls[0] = TempoCall({
+            to: address(feeToken),
+            value: 0,
+            data: abi.encodeCall(ITIP20.transfer, (recipient, amount))
+        });
+
+        uint64 gasLimit =
+            TxBuilder.callGas(calls[0].data, currentNonce) + TxBuilder.GAS_LIMIT_BUFFER;
+
+        // Build tx with wrong chain_id
+        TempoTransaction memory tx_ = TempoTransactionLib.create().withChainId(wrongChainId)
+            .withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE).withGasLimit(gasLimit).withCalls(calls)
+            .withNonceKey(nonceKey).withNonce(currentNonce);
+
+        bytes memory signedTx = TxBuilder.signTempo(
+            vmRlp,
+            vm,
+            tx_,
+            TxBuilder.SigningParams({
+                strategy: TxBuilder.SigningStrategy.Secp256k1,
+                privateKey: actorKeys[actorIdx],
+                pubKeyX: bytes32(0),
+                pubKeyY: bytes32(0),
+                userAddress: address(0)
+            })
+        );
+
+        vm.coinbase(validator);
+
+        ghost_crossChainAttempted++;
+        try vmExec.executeTransaction(signedTx) {
+            // VIOLATION: Tx with wrong chain_id was accepted!
+            ghost_crossChainAllowed++;
+        } catch {
+            _handleExpectedReject(_noop);
+        }
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                FEE-PAYER SUBSTITUTION REPLAY HANDLER
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Handler: Test fee-payer substitution replay with expiring nonces
+    /// @dev Signs the same sender payload (expiring nonce: nonceKey=max, nonce=0,
+    ///      validBefore set), then sponsors with two different fee payers. The first
+    ///      submission succeeds; the second should be rejected despite having a
+    ///      unique tx_hash — because expiring_nonce_hash (which excludes the
+    ///      fee_payer_signature) correctly deduplicates.
+    function handler_feePayerSubstitutionReplay(
+        uint256 actorSeed,
+        uint256 feePayerSeed1,
+        uint256 feePayerSeed2,
+        uint256 recipientSeed,
+        uint256 amount
+    )
+        external
+    {
+        // Pick 4 distinct actors: sender, feePayer1, feePayer2, recipient
+        uint256 senderIdx = actorSeed % actors.length;
+        uint256 fpIdx1 = feePayerSeed1 % actors.length;
+        uint256 fpIdx2 = feePayerSeed2 % actors.length;
+        uint256 recipientIdx = recipientSeed % actors.length;
+
+        // Ensure sender != feePayer1
+        if (senderIdx == fpIdx1) fpIdx1 = (fpIdx1 + 1) % actors.length;
+        // Ensure sender != feePayer2 and feePayer1 != feePayer2
+        if (senderIdx == fpIdx2) fpIdx2 = (fpIdx2 + 1) % actors.length;
+        if (fpIdx1 == fpIdx2) fpIdx2 = (fpIdx2 + 1) % actors.length;
+        if (senderIdx == fpIdx2) fpIdx2 = (fpIdx2 + 1) % actors.length;
+        // Ensure recipient != sender
+        if (senderIdx == recipientIdx) {
+            recipientIdx = (recipientIdx + 1) % actors.length;
+        }
+
+        address sender = actors[senderIdx];
+        address feePayer1 = actors[fpIdx1];
+        address feePayer2 = actors[fpIdx2];
+        address recipient = actors[recipientIdx];
+
+        amount = bound(amount, 1e6, 10e6);
+
+        // Check balances: sender needs transfer amount, fee payers need gas fees
+        if (
+            feeToken.balanceOf(sender) < amount || feeToken.balanceOf(feePayer1) < 1e6
+                || feeToken.balanceOf(feePayer2) < 1e6
+        ) {
+            return;
+        }
+
+        uint64 validBefore = uint64(block.timestamp + MAX_EXPIRY_SECS);
+
+        // Build expiring nonce TempoTransaction
+        TempoCall[] memory calls = new TempoCall[](1);
+        calls[0] = TempoCall({
+            to: address(feeToken),
+            value: 0,
+            data: abi.encodeCall(ITIP20.transfer, (recipient, amount))
+        });
+
+        uint64 gasLimit = TxBuilder.callGas(calls[0].data, 0) + TxBuilder.GAS_LIMIT_BUFFER;
+
+        TempoTransaction memory tx_ = TempoTransactionLib.create()
+            .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+            .withGasLimit(gasLimit).withCalls(calls).withNonceKey(EXPIRING_NONCE_KEY).withNonce(0)
+            .withValidBefore(validBefore);
+
+        // Encode the base tx (before fee payer sig) — this is what fee payers sign
+        bytes memory encodedTx = tx_.encode(vmRlp);
+        bytes32 feePayerHash = keccak256(encodedTx);
+
+        // Fee payer 1 signs the encoded tx hash
+        (uint8 fp1V, bytes32 fp1R, bytes32 fp1S) = vm.sign(actorKeys[fpIdx1], feePayerHash);
+        bytes memory feePayer1Sig = abi.encodePacked(fp1R, fp1S, fp1V);
+
+        // Attach fee payer 1's signature and sign with sender
+        tx_ = tx_.withFeePayerSignature(feePayer1Sig);
+
+        bytes memory signedTx1 = TxBuilder.signTempo(
+            vmRlp,
+            vm,
+            tx_,
+            TxBuilder.SigningParams({
+                strategy: TxBuilder.SigningStrategy.Secp256k1,
+                privateKey: actorKeys[senderIdx],
+                pubKeyX: bytes32(0),
+                pubKeyY: bytes32(0),
+                userAddress: address(0)
+            })
+        );
+
+        vm.coinbase(validator);
+
+        // First execution should succeed
+        try vmExec.executeTransaction(signedTx1) {
+            ghost_expiringNonceTxsExecuted++;
+            ghost_totalTxExecuted++;
+            ghost_totalCallsExecuted++;
+        } catch {
+            ghost_totalTxReverted++;
+            return;
+        }
+
+        // Fee payer 2 signs the SAME base tx hash
+        (uint8 fp2V, bytes32 fp2R, bytes32 fp2S) = vm.sign(actorKeys[fpIdx2], feePayerHash);
+        bytes memory feePayer2Sig = abi.encodePacked(fp2R, fp2S, fp2V);
+
+        // Replace fee payer signature and re-sign with sender
+        tx_ = tx_.withFeePayerSignature(feePayer2Sig);
+
+        bytes memory signedTx2 = TxBuilder.signTempo(
+            vmRlp,
+            vm,
+            tx_,
+            TxBuilder.SigningParams({
+                strategy: TxBuilder.SigningStrategy.Secp256k1,
+                privateKey: actorKeys[senderIdx],
+                pubKeyX: bytes32(0),
+                pubKeyY: bytes32(0),
+                userAddress: address(0)
+            })
+        );
+
+        // Second execution should fail — expiring_nonce_hash dedup catches
+        // fee-payer substitution because it excludes fee_payer_signature
+        ghost_feePayerSubstitutionAttempted++;
+        try vmExec.executeTransaction(signedTx2) {
+            // VIOLATION: Fee-payer substitution replay succeeded!
+            ghost_feePayerSubstitutionAllowed++;
+        } catch {
+            _handleExpectedReject(_noop);
+        }
+    }
+
+    /// @dev Helper to encode the T3 authorizeKey(address,SignatureType,KeyRestrictions) call
+    ///      without ambiguity from the legacy 5-arg overload.
+    function _encodeAuthorizeKey(
+        address keyId,
+        IAccountKeychain.SignatureType sigType,
+        IAccountKeychain.KeyRestrictions memory config
+    )
+        internal
+        pure
+        returns (bytes memory)
+    {
+        return abi.encodeWithSignature(
+            "authorizeKey(address,uint8,(uint64,bool,(address,uint256,uint64)[],bool,(address,(bytes4,address[])[])[]))))",
+            keyId,
+            sigType,
+            config
+        );
     }
 
 }

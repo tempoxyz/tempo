@@ -5,8 +5,16 @@ use std::{
     task::Poll,
 };
 
+use alloy_primitives::B256;
+use commonware_cryptography::ed25519::PublicKey;
 use futures::future::FusedFuture;
 use pin_project::pin_project;
+
+pub(crate) fn public_key_to_b256(key: &PublicKey) -> B256 {
+    key.as_ref()
+        .try_into()
+        .expect("ed25519 pub keys always map to B256")
+}
 
 /// A vendored version of [`commonware_utils::futures::OptionFuture`] to implement
 /// [`futures::future::FusedFuture`].

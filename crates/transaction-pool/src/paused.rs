@@ -7,7 +7,7 @@
 
 use crate::{RevokedKeys, SpendingLimitUpdates, transaction::TempoPooledTransaction};
 use alloy_primitives::{Address, TxHash, map::HashMap};
-use reth_transaction_pool::ValidPoolTransaction;
+use reth_transaction_pool::{PoolTransaction, ValidPoolTransaction};
 use std::{sync::Arc, time::Instant};
 
 /// Duration after which paused transactions are expired and removed.
@@ -193,15 +193,22 @@ impl PausedFeeTokenPool {
 
     /// Removes transactions matching invalidation criteria from the paused pool.
     ///
-    /// This handles both revoked keys and spending limit updates in a single pass.
+    /// This handles revoked keys, spending limit updates, and spending limit spends
+    /// in a single pass. The `spending_limit_spends` parameter captures (account, key_id,
+    /// fee_token) combos from keychain txs that were included in the block and decremented
+    /// limits via `verify_and_update_spending()`.
     /// Uses account-keyed indexes for O(1) account lookup per transaction.
     /// Returns the number of transactions removed.
     pub fn evict_invalidated(
         &mut self,
         revoked_keys: &RevokedKeys,
         spending_limit_updates: &SpendingLimitUpdates,
+        spending_limit_spends: &SpendingLimitUpdates,
     ) -> usize {
-        if revoked_keys.is_empty() && spending_limit_updates.is_empty() {
+        if revoked_keys.is_empty()
+            && spending_limit_updates.is_empty()
+            && spending_limit_spends.is_empty()
+        {
             return 0;
         }
 
@@ -212,8 +219,26 @@ impl PausedFeeTokenPool {
                 let Some(subject) = entry.tx.transaction.keychain_subject() else {
                     return true;
                 };
-                !subject.matches_revoked(revoked_keys)
-                    && !subject.matches_spending_limit_update(spending_limit_updates)
+                let matches_limit_update =
+                    subject.matches_spending_limit_update(spending_limit_updates);
+                let matches_limit_spend =
+                    subject.matches_spending_limit_update(spending_limit_spends);
+                let sender_paid = if matches_limit_update || matches_limit_spend {
+                    let sender = *entry.tx.transaction.sender_ref();
+                    entry
+                        .tx
+                        .transaction
+                        .inner()
+                        .fee_payer(sender)
+                        .map_or(true, |fee_payer| fee_payer == sender)
+                } else {
+                    false
+                };
+
+                let invalidated = subject.matches_revoked(revoked_keys)
+                    || (sender_paid && (matches_limit_update || matches_limit_spend));
+
+                !invalidated
             });
             count += before - meta.entries.len();
         }
@@ -232,10 +257,53 @@ impl PausedFeeTokenPool {
 mod tests {
     use super::*;
     use crate::test_utils::{TxBuilder, wrap_valid_tx};
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
+    use reth_primitives_traits::Recovered;
+    use reth_transaction_pool::TransactionOrigin;
+    use tempo_primitives::{TempoTxEnvelope, transaction::tt_signed::AASigned};
 
     fn create_valid_tx(sender: Address) -> Arc<ValidPoolTransaction<TempoPooledTransaction>> {
-        use reth_transaction_pool::TransactionOrigin;
         let pooled = TxBuilder::aa(sender).build();
+        Arc::new(wrap_valid_tx(pooled, TransactionOrigin::External))
+    }
+
+    fn create_valid_keychain_tx(
+        sender: Address,
+        fee_token: Address,
+        sponsored: bool,
+    ) -> Arc<ValidPoolTransaction<TempoPooledTransaction>> {
+        let access_key_signer = PrivateKeySigner::random();
+        let pooled = TxBuilder::aa(sender)
+            .fee_token(fee_token)
+            .build_keychain(sender, &access_key_signer);
+
+        let pooled = if sponsored {
+            let sponsor = PrivateKeySigner::random();
+            let aa = pooled
+                .inner()
+                .as_aa()
+                .expect("builder should produce AA tx");
+            let mut tx = aa.tx().clone();
+            tx.fee_payer_signature = Some(alloy_primitives::Signature::new(
+                alloy_primitives::U256::ZERO,
+                alloy_primitives::U256::ZERO,
+                false,
+            ));
+            let fee_payer_hash = tx.fee_payer_signature_hash(sender);
+            tx.fee_payer_signature = Some(
+                sponsor
+                    .sign_hash_sync(&fee_payer_hash)
+                    .expect("sponsor signing should succeed"),
+            );
+
+            let aa_signed = AASigned::new_unhashed(tx, aa.signature().clone());
+            let envelope: TempoTxEnvelope = aa_signed.into();
+            TempoPooledTransaction::new(Recovered::new_unchecked(envelope, sender))
+        } else {
+            pooled
+        };
+
         Arc::new(wrap_valid_tx(pooled, TransactionOrigin::External))
     }
 
@@ -333,6 +401,119 @@ mod tests {
         let evicted = pool.insert_batch(token, entries);
         assert_eq!(evicted, 0);
         assert_eq!(pool.len(), PAUSED_POOL_GLOBAL_CAP);
+    }
+
+    #[test]
+    fn test_evict_invalidated_with_spending_limit_spends() {
+        let mut pool = PausedFeeTokenPool::new();
+        let user_address = Address::random();
+        let fee_token = Address::random();
+
+        // Create a keychain-signed tx using the builder
+        let access_key_signer = alloy_signer_local::PrivateKeySigner::random();
+        let key_id = alloy_signer::Signer::address(&access_key_signer);
+        let tx = TxBuilder::aa(user_address)
+            .fee_token(fee_token)
+            .build_keychain(user_address, &access_key_signer);
+        let tx = Arc::new(wrap_valid_tx(
+            tx,
+            reth_transaction_pool::TransactionOrigin::External,
+        ));
+
+        // Also add a non-keychain tx that should NOT be evicted
+        let other_tx = create_valid_tx(Address::random());
+
+        pool.insert_batch(
+            fee_token,
+            vec![
+                PausedEntry {
+                    tx,
+                    valid_before: None,
+                },
+                PausedEntry {
+                    tx: other_tx,
+                    valid_before: None,
+                },
+            ],
+        );
+        assert_eq!(pool.len(), 2);
+
+        // Build spending_limit_spends matching the keychain tx
+        let mut spends = SpendingLimitUpdates::new();
+        spends.insert(user_address, key_id, Some(fee_token));
+
+        let evicted =
+            pool.evict_invalidated(&RevokedKeys::new(), &SpendingLimitUpdates::new(), &spends);
+
+        assert_eq!(
+            evicted, 1,
+            "Should evict the keychain tx matching the spend"
+        );
+        assert_eq!(pool.len(), 1, "Non-keychain tx should remain");
+    }
+
+    #[test]
+    fn test_evict_invalidated_keeps_sponsored_keychain_for_spending_limit_spends() {
+        let mut pool = PausedFeeTokenPool::new();
+        let user_address = Address::random();
+        let fee_token = Address::random();
+
+        let sponsored_keychain_tx = create_valid_keychain_tx(user_address, fee_token, true);
+        pool.insert_batch(
+            fee_token,
+            vec![PausedEntry {
+                tx: sponsored_keychain_tx,
+                valid_before: None,
+            }],
+        );
+
+        let key_id = pool
+            .all_entries()
+            .next()
+            .and_then(|entry| entry.tx.transaction.keychain_subject())
+            .map(|subject| subject.key_id)
+            .expect("sponsored keychain tx should have keychain subject");
+
+        let mut spends = SpendingLimitUpdates::new();
+        spends.insert(user_address, key_id, Some(fee_token));
+
+        let evicted =
+            pool.evict_invalidated(&RevokedKeys::new(), &SpendingLimitUpdates::new(), &spends);
+
+        assert_eq!(evicted, 0, "Sponsored keychain tx should not be evicted");
+        assert_eq!(pool.len(), 1);
+    }
+
+    #[test]
+    fn test_evict_invalidated_keeps_sponsored_keychain_for_spending_limit_updates() {
+        let mut pool = PausedFeeTokenPool::new();
+        let user_address = Address::random();
+        let fee_token = Address::random();
+
+        let sponsored_keychain_tx = create_valid_keychain_tx(user_address, fee_token, true);
+        pool.insert_batch(
+            fee_token,
+            vec![PausedEntry {
+                tx: sponsored_keychain_tx,
+                valid_before: None,
+            }],
+        );
+
+        let key_id = pool
+            .all_entries()
+            .next()
+            .and_then(|entry| entry.tx.transaction.keychain_subject())
+            .map(|subject| subject.key_id)
+            .expect("sponsored keychain tx should have keychain subject");
+
+        let mut updates = SpendingLimitUpdates::new();
+        updates.insert(user_address, key_id, Some(fee_token));
+
+        let evicted =
+            pool.evict_invalidated(&RevokedKeys::new(), &updates, &SpendingLimitUpdates::new());
+
+        assert_eq!(evicted, 0, "Sponsored keychain tx should not be evicted");
+        assert_eq!(pool.len(), 1);
     }
 
     #[test]
