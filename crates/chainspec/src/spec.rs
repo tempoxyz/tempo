@@ -579,8 +579,8 @@ mod tests {
         use reth_chainspec::EthChainSpec;
 
         for &name in super::SUPPORTED_CHAINS {
-            let spec = super::chain_value_parser(name)
-                .expect(&format!("failed to parse chain `{name}`"));
+            let spec =
+                super::chain_value_parser(name).expect(&format!("failed to parse chain `{name}`"));
 
             let resolved = super::chainspec_from_chain_id(spec.chain().id())
                 .expect(&format!("failed to parse chain `{name}`"));
