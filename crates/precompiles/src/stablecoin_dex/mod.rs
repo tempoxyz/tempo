@@ -92,7 +92,7 @@ impl StablecoinDEX {
 
     /// Validates that a trading pair exists or creates the pair
     fn validate_or_create_pair(&mut self, book: &Orderbook, token: Address) -> Result<()> {
-        if book.base.is_zero() {
+        if !book.is_initialized() {
             self.create_pair(token)?;
         }
         Ok(())
@@ -766,6 +766,10 @@ impl StablecoinDEX {
     }
 
     /// Fill an order and delete from storage. Returns the next best order and price level.
+    ///
+    /// NOTE: Maker transfer policy is not enforced here to not block swaps on the pair.
+    /// Note that TIP403 checks on order placement and withdraws are enforced.
+    /// [`cancel_stale_order`](Self::cancel_stale_order) can be used to remove orders.
     fn fill_order(
         &mut self,
         book_key: B256,

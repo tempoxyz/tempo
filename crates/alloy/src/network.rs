@@ -4,7 +4,7 @@ use crate::rpc::{TempoHeaderResponse, TempoTransactionReceipt, TempoTransactionR
 use alloy_consensus::{ReceiptWithBloom, TxType, error::UnsupportedTransactionType};
 
 use alloy_network::{
-    BuildResult, Ethereum, EthereumWallet, IntoWallet, Network, NetworkWallet, TransactionBuilder,
+    BuildResult, EthereumWallet, IntoWallet, Network, NetworkWallet, TransactionBuilder,
     TransactionBuilderError, UnbuiltTransactionError,
 };
 use alloy_primitives::{Address, Bytes, ChainId, TxKind, U256};
@@ -165,6 +165,8 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
             || !self.tempo_authorization_list.is_empty()
             || self.key_authorization.is_some()
             || self.key_id.is_some()
+            || self.key_type.is_some()
+            || self.key_data.is_some()
             || self.valid_before.is_some()
             || self.valid_after.is_some()
             || self.fee_payer_signature.is_some()
@@ -292,33 +294,6 @@ impl RecommendedFillers for TempoNetwork {
     }
 }
 
-impl NetworkWallet<TempoNetwork> for EthereumWallet {
-    fn default_signer_address(&self) -> Address {
-        NetworkWallet::<Ethereum>::default_signer_address(self)
-    }
-
-    fn has_signer_for(&self, address: &Address) -> bool {
-        NetworkWallet::<Ethereum>::has_signer_for(self, address)
-    }
-
-    fn signer_addresses(&self) -> impl Iterator<Item = Address> {
-        NetworkWallet::<Ethereum>::signer_addresses(self)
-    }
-
-    #[doc(alias = "sign_tx_from")]
-    async fn sign_transaction_from(
-        &self,
-        sender: Address,
-        mut tx: TempoTypedTransaction,
-    ) -> alloy_signer::Result<TempoTxEnvelope> {
-        let signer = self.signer_by_address(sender).ok_or_else(|| {
-            alloy_signer::Error::other(format!("Missing signing credential for {sender}"))
-        })?;
-        let sig = signer.sign_transaction(tx.as_dyn_signable_mut()).await?;
-        Ok(tx.into_envelope(sig))
-    }
-}
-
 impl IntoWallet<TempoNetwork> for PrivateKeySigner {
     type NetworkWallet = EthereumWallet;
 
@@ -336,9 +311,7 @@ mod tests {
     use alloy_rpc_types_eth::{AccessListItem, Authorization, TransactionRequest};
     use tempo_primitives::{
         SignatureType, TempoSignature,
-        transaction::{
-            KeyAuthorization, PrimitiveSignature, SignedKeyAuthorization, TempoSignedAuthorization,
-        },
+        transaction::{KeyAuthorization, PrimitiveSignature, TempoSignedAuthorization},
     };
 
     #[test_case::test_case(
@@ -519,20 +492,14 @@ mod tests {
     #[test]
     fn output_tx_type_key_authorization_is_aa() {
         let req = TempoTransactionRequest {
-            key_authorization: Some(SignedKeyAuthorization {
-                authorization: KeyAuthorization {
-                    chain_id: 0,
-                    key_type: SignatureType::Secp256k1,
-                    key_id: Address::ZERO,
-                    expiry: None,
-                    limits: None,
-                },
-                signature: PrimitiveSignature::Secp256k1(Signature::new(
-                    U256::ZERO,
-                    U256::ZERO,
-                    false,
-                )),
-            }),
+            key_authorization: Some(
+                KeyAuthorization::unrestricted(0, SignatureType::Secp256k1, Address::ZERO)
+                    .into_signed(PrimitiveSignature::Secp256k1(Signature::new(
+                        U256::ZERO,
+                        U256::ZERO,
+                        false,
+                    ))),
+            ),
             ..Default::default()
         };
         assert_eq!(req.output_tx_type(), TempoTxType::AA);

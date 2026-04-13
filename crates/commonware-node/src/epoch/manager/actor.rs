@@ -49,7 +49,7 @@ use commonware_consensus::{
     Reporters,
     marshal::Update,
     simplex::{self, elector, scheme::bls12381_threshold::vrf::Scheme},
-    types::{Epoch, Epocher as _, Height},
+    types::{Epoch, EpochDelta, Epocher as _, Height},
 };
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_macros::select;
@@ -406,8 +406,21 @@ where
             );
         }
 
-        if !self.config.scheme_provider.delete(&epoch) {
-            warn!(
+        // XXX: Keep the last 2 epochs around: the marshal actor might get
+        // finalization certificates from straggling nodes that have not yet
+        // transitioned and are still (re-)propsing the boundary block of the
+        // outgoing epoch with new certificate.
+        //
+        // If we delete the scheme too eagerly here, then i) we won't be able
+        // to verify the certificate, ii) consider their message invalid, and
+        // finally iii) block them because this is treated as Byzantine
+        // behavior.
+        if let Some(to_delete) = epoch.checked_sub(EpochDelta::new(2))
+            && !self.config.scheme_provider.delete(&to_delete)
+        {
+            debug!(
+                to_exit = %epoch,
+                %to_delete,
                 "attempted to delete scheme for epoch, but epoch had no scheme \
                 registered"
             );

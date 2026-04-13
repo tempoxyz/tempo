@@ -12,6 +12,8 @@ ignore = [
   "RUSTSEC-2026-0044",
   # https://rustsec.org/advisories/RUSTSEC-2026-0048 aws-lc-sys upgrade requires a commonware bump
   "RUSTSEC-2026-0048",
+  # https://rustsec.org/advisories/RUSTSEC-2026-0097 rand is unsound with a custom logger
+  "RUSTSEC-2026-0097",
 ]
 
 # This section is considered when running `cargo deny check bans`.

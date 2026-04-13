@@ -20,7 +20,7 @@ use alloy_eips::Encodable2718;
 use reth_primitives_traits::transaction::TxHashRef;
 use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
-    spec::{ANDANTINO, DEV, MODERATO, PRESTO},
+    spec::{DEV, MODERATO, PRESTO},
 };
 use tempo_primitives::{TempoTxEnvelope, transaction::tempo_transaction::Call};
 
@@ -87,8 +87,7 @@ impl RpcEnv {
 
         // Chain IDs from genesis/*.json (mirrors bootnodes() in spec.rs)
         let chain_spec = match chain_id {
-            4217 => PRESTO.clone(),     // mainnet
-            42429 => ANDANTINO.clone(), // testnet
+            4217 => PRESTO.clone(), // mainnet
             42431 => MODERATO.clone(),
             _ => DEV.clone(),
         };
@@ -133,6 +132,10 @@ impl super::types::TestEnv for RpcEnv {
 
     fn hardfork(&self) -> TempoHardfork {
         self.hardfork
+    }
+
+    fn supports_scoped_key_auth_rpc(&self) -> bool {
+        self.hardfork.is_t3()
     }
 
     async fn fund_account(&mut self, addr: Address) -> eyre::Result<U256> {
@@ -240,9 +243,8 @@ impl super::types::TestEnv for RpcEnv {
             Err(e) => {
                 // Non-retryable error = real RPC validation rejection.
                 if let Some(reason) = expected_reason {
-                    let err_str = e.to_string().to_lowercase();
                     assert!(
-                        err_str.contains(&reason.to_lowercase()),
+                        rpc_error_contains_reason(&e, reason),
                         "Rejection error should contain '{reason}', got: {e}"
                     );
                 }

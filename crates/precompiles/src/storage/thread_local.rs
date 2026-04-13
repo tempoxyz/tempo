@@ -1,7 +1,9 @@
 use alloy::primitives::{Address, B256, LogData, U256};
 use alloy_evm::{Database, EvmInternals};
 use revm::{
-    context::{Block, CfgEnv, JournalTr, Transaction, journaled_state::JournalCheckpoint},
+    context::{
+        Block, CfgEnv, ContextTr, JournalTr, Transaction, journaled_state::JournalCheckpoint,
+    },
     state::{AccountInfo, Bytecode},
 };
 use scoped_tls::scoped_thread_local;
@@ -288,6 +290,16 @@ impl<'evm> StorageCtx {
         Self::enter(&mut provider, f)
     }
 
+    /// Like [`enter_evm`](Self::enter_evm), but takes a `&mut impl ContextTr`
+    /// directly instead of requiring the caller to destructure the context.
+    pub fn enter_ctx<C, R>(ctx: &mut C, f: impl FnOnce() -> R) -> R
+    where
+        C: ContextTr<Cfg = CfgEnv<TempoHardfork>, Journal: Debug, Db: Database>,
+    {
+        let (tx, block, cfg, journal) = ctx.tx_block_cfg_journal_mut();
+        Self::enter_evm(journal, block, cfg, tx, f)
+    }
+
     /// Entry point for a "canonical" precompile (with unique known address).
     pub fn enter_precompile<J, P, R>(
         journal: &'evm mut J,
@@ -370,10 +382,15 @@ impl StorageCtx {
 
     /// NOTE: assumes storage tests always use the `HashMapStorageProvider`
     ///
-    /// USAGE: `TIP20Setup` automatically clears events of the configured
-    /// contract when `apply()` is called, unless explicitly asked no to.
+    /// USAGE: `TIP20Setup` clears events of the configured contract when
+    /// `apply()` is called only if `clear_events()` was explicitly set.
     pub fn clear_events(&mut self, address: Address) {
         self.as_hashmap().clear_events(address);
+    }
+
+    /// NOTE: assumes storage tests always use the `HashMapStorageProvider`
+    pub fn counter_sload(&self) -> u64 {
+        self.as_hashmap().counter_sload()
     }
 
     /// Checks if a contract at the given address has bytecode deployed.

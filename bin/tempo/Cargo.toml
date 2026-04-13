@@ -28,7 +28,6 @@ tempo-evm.workspace = true
 tempo-faucet.workspace = true
 
 alloy-consensus.workspace = true
-alloy-network.workspace = true
 alloy-primitives.workspace = true
 alloy-provider = { workspace = true, features = [
 	"reqwest",
@@ -49,7 +48,7 @@ reth-chainspec.workspace = true
 reth-cli.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tempo-alloy.workspace = true
+tempo-alloy = { workspace = true, features = ["reth"] }
 tempo-contracts.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true
 reth-cli-commands.workspace = true
@@ -57,19 +56,25 @@ reth-cli-runner.workspace = true
 reth-cli-util.workspace = true
 rustls.workspace = true
 reth-db-api.workspace = true
+reth-etl.workspace = true
 reth-ethereum = { workspace = true, features = ["full", "cli"] }
 reth-ethereum-cli.workspace = true
+reth-network-peers.workspace = true
 reth-node-builder.workspace = true
 reth-primitives-traits.workspace = true
 reth-provider.workspace = true
 reth-rpc-server-types.workspace = true
+secp256k1.workspace = true
 reth-storage-api.workspace = true
+reth-trie.workspace = true
+reth-trie-db.workspace = true
 clap.workspace = true
 eyre.workspace = true
 jiff.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
+opentelemetry-otlp = { version = "0.31", default-features = false, optional = true }
 pyroscope = { workspace = true, optional = true }
 pyroscope_pprofrs = { workspace = true, optional = true }
 tracy-client = { workspace = true, optional = true }
@@ -93,6 +98,8 @@ otlp = [
 	"reth-ethereum-cli/otlp-logs",
 	"reth-ethereum/otlp",
 	"tempo-node/otlp",
+	"dep:opentelemetry-otlp",
+	"opentelemetry-otlp/reqwest-rustls",
 ]
 
 pyroscope = ["dep:pyroscope", "dep:pyroscope_pprofrs"]
@@ -159,3 +166,4 @@ min-trace-logs = [
 	"reth-ethereum-cli/min-trace-logs",
 	"tempo-node/min-trace-logs",
 ]
+trie-debug = ["tempo-node/trie-debug"]
