@@ -36,8 +36,8 @@ use tracing::{debug, error, info};
 /// Tempo-specific network primitives for the proxy node.
 type TempoNetPrimitives = BasicNetworkPrimitives<TempoPrimitives, TempoTxEnvelope>;
 
-/// 12 hrs of blocks at 500ms block time.
-const CACHE_CAPACITY: u64 = 60 * 60 * 24; // 86400
+/// 3 hrs of blocks at 500ms block time.
+const CACHE_CAPACITY: u64 = 60 * 60 * 6; // 21600
 
 #[derive(Parser, Debug)]
 #[command(
