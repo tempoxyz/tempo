@@ -337,7 +337,10 @@ mod tests {
             .abi_encode();
 
             let result = keychain.call(&calldata, account)?;
-            assert!(result.reverted, "expected revert for dropped selector post-T3");
+            assert!(
+                result.reverted,
+                "expected revert for dropped selector post-T3"
+            );
 
             let decoded = UnknownFunctionSelector::abi_decode(&result.bytes)?;
             assert_eq!(
