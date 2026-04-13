@@ -164,7 +164,17 @@ fn call_scope_storage_slots(auth: &tempo_primitives::transaction::KeyAuthorizati
     }
 }
 
-fn correct_failed_batch_gas(frame_result: &mut FrameResult, gas_limit: u64, remaining_gas: u64) {
+/// Rewrites a failed batch step's gas accounting to match whole-transaction semantics.
+///
+/// `frame_result` initially only reflects the final failed step. For atomic AA batches we surface
+/// one top-level transaction result instead, so the gas field must be normalized to the full tx
+/// budget. Reverts preserve the exact gas spent across prior successful steps plus the failed step,
+/// while halts such as OOG consume the entire remaining transaction budget.
+fn normalize_failed_batch_result_gas(
+    frame_result: &mut FrameResult,
+    gas_limit: u64,
+    remaining_gas: u64,
+) {
     let gas_spent_by_failed_step = frame_result.gas().spent();
     let total_gas_spent = (gas_limit - remaining_gas) + gas_spent_by_failed_step;
 
@@ -515,7 +525,7 @@ where
         {
             // This path only runs for keychain batches that already passed the structural CREATE
             // rejection in validation, so there is no first-call CREATE nonce to preserve here.
-            correct_failed_batch_gas(&mut frame_result, gas_limit, remaining_gas);
+            normalize_failed_batch_result_gas(&mut frame_result, gas_limit, remaining_gas);
             return Ok(frame_result);
         }
 
@@ -575,7 +585,7 @@ where
                     }
                 }
 
-                correct_failed_batch_gas(&mut frame_result, gas_limit, remaining_gas);
+                normalize_failed_batch_result_gas(&mut frame_result, gas_limit, remaining_gas);
                 return Ok(frame_result);
             }
 
@@ -3222,6 +3232,17 @@ mod tests {
             "expected scope validation to fail during execution with OOG, got: {:?}",
             result.instruction_result()
         );
+        assert_eq!(
+            result.gas().limit(),
+            init_gas.initial_gas,
+            "batch OOG should report the full tx gas budget"
+        );
+        assert_eq!(
+            result.gas().spent(),
+            init_gas.initial_gas,
+            "batch OOG should consume the full tx gas budget"
+        );
+        assert_eq!(result.gas().refunded(), 0);
     }
 
     #[test]
