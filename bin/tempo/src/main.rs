@@ -214,7 +214,15 @@ fn main() -> eyre::Result<()> {
         .try_get_matches_from(std::env::args_os())
         .and_then(|matches| TempoCli::from_arg_matches(&matches))
     {
-        Ok(cli) => cli,
+        Ok(cli) => {
+            // Fast path: extension management commands don't need reth's tracing or runtime.
+            if let Commands::Ext(subcmd) = &cli.command
+                && let Some(ext) = subcmd.as_ext()
+            {
+                return ext.run();
+            }
+            cli
+        }
         Err(err) => {
             if err.kind() == clap::error::ErrorKind::InvalidSubcommand {
                 // Unknown subcommand — try the extension launcher.
