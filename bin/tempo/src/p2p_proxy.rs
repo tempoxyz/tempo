@@ -1,9 +1,10 @@
 use alloy::{
     consensus::BlockHeader,
-    eips::BlockHashOrNumber,
-    network::primitives::HeaderResponse,
+    eips::{BlockHashOrNumber, BlockNumberOrTag},
+    network::{Network, primitives::HeaderResponse},
     primitives::B256,
     providers::{Provider, ProviderBuilder},
+    rpc::client::BatchRequest,
 };
 use clap::Parser;
 use eyre::{Context, Result};
@@ -37,9 +38,11 @@ use tracing::{debug, error, info};
 
 /// Tempo-specific network primitives for the proxy node.
 type TempoNetPrimitives = BasicNetworkPrimitives<TempoPrimitives, TempoTxEnvelope>;
+type TempoRpcBlock = <TempoNetwork as Network>::BlockResponse;
 
 /// 3 hrs of blocks at 500ms block time.
 const CACHE_CAPACITY: u64 = 60 * 60 * 6; // 21600
+const HEADER_BATCH_SIZE: usize = 512;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -178,13 +181,38 @@ impl BlockCache {
         }
     }
 
-    fn insert(
+    fn insert_header(&mut self, number: u64, hash: B256, header: TempoHeader) {
+        self.upsert(number, hash, header, None);
+    }
+
+    fn insert_block(
         &mut self,
         number: u64,
         hash: B256,
         header: TempoHeader,
         body: tempo_primitives::BlockBody,
     ) {
+        self.upsert(number, hash, header, Some(body));
+    }
+
+    fn upsert(
+        &mut self,
+        number: u64,
+        hash: B256,
+        header: TempoHeader,
+        body: Option<tempo_primitives::BlockBody>,
+    ) {
+        if let Some(old_hash) = self.by_number.get(&number).map(|block| block.hash)
+            && old_hash != hash
+        {
+            self.by_hash.remove(&old_hash);
+        }
+
+        let body = match self.by_number.remove(&number) {
+            Some(existing) => body.or(existing.body),
+            None => body,
+        };
+
         self.by_number
             .insert(number, CachedBlock { header, body, hash });
         self.by_hash.insert(hash, number);
@@ -215,7 +243,7 @@ impl BlockCache {
 #[derive(Clone)]
 struct CachedBlock {
     header: TempoHeader,
-    body: tempo_primitives::BlockBody,
+    body: Option<tempo_primitives::BlockBody>,
     hash: B256,
 }
 
@@ -412,6 +440,7 @@ async fn run_p2p_network(
 }
 
 /// Fetch a single block by number and insert it into the cache.
+#[cfg(test)]
 async fn fetch_and_cache_block(
     provider: &impl Provider<TempoNetwork>,
     cache: &mut BlockCache,
@@ -436,8 +465,145 @@ async fn fetch_and_cache_block(
         withdrawals: block.withdrawals,
     };
 
-    cache.insert(number, hash, header, body);
+    cache.insert_block(number, hash, header, body);
     Ok(())
+}
+
+async fn fetch_and_cache_header_by_hash(
+    provider: &impl Provider<TempoNetwork>,
+    cache: &mut BlockCache,
+    hash: B256,
+) -> Result<u64> {
+    let block = provider
+        .get_block_by_hash(hash)
+        .await
+        .context("rpc request failed")?
+        .ok_or_else(|| eyre::eyre!("block {hash} not found"))?;
+
+    let number = block.header.number();
+    let header: TempoHeader = block.header.inner.inner.clone();
+    cache.insert_header(number, block.header.hash(), header);
+    Ok(number)
+}
+
+async fn fetch_and_cache_header_by_number(
+    provider: &impl Provider<TempoNetwork>,
+    cache: &mut BlockCache,
+    number: u64,
+) -> Result<()> {
+    let block = provider
+        .get_block_by_number(number.into())
+        .await
+        .context("rpc request failed")?
+        .ok_or_else(|| eyre::eyre!("block {number} not found"))?;
+
+    let header: TempoHeader = block.header.inner.inner.clone();
+    cache.insert_header(block.header.number(), block.header.hash(), header);
+    Ok(())
+}
+
+async fn fetch_and_cache_header_batch(
+    provider: &impl Provider<TempoNetwork>,
+    cache: &mut BlockCache,
+    numbers: &[u64],
+) -> Result<()> {
+    let mut batch = BatchRequest::new(provider.client());
+    let mut waiters = Vec::with_capacity(numbers.len());
+
+    for &number in numbers {
+        let waiter = batch.add_call::<_, Option<TempoRpcBlock>>(
+            "eth_getBlockByNumber",
+            &(BlockNumberOrTag::Number(number), false),
+        )?;
+        waiters.push((number, waiter));
+    }
+
+    batch.send().await.context("failed to fetch header batch")?;
+
+    for (number, waiter) in waiters {
+        match waiter.await {
+            Ok(Some(block)) => {
+                let header: TempoHeader = block.header.inner.inner.clone();
+                cache.insert_header(block.header.number(), block.header.hash(), header);
+            }
+            Ok(None) => {
+                debug!(number, "header batch returned no block");
+            }
+            Err(err) => {
+                debug!(number, %err, "header batch waiter failed; falling back to single request");
+                let _ = fetch_and_cache_header_by_number(provider, cache, number).await;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn fetch_and_cache_headers(
+    provider: &impl Provider<TempoNetwork>,
+    cache: &mut BlockCache,
+    numbers: &[u64],
+) {
+    let missing_numbers: Vec<u64> = numbers
+        .iter()
+        .copied()
+        .filter(|number| cache.get_by_number(*number).is_none())
+        .collect();
+
+    for chunk in missing_numbers.chunks(HEADER_BATCH_SIZE) {
+        if fetch_and_cache_header_batch(provider, cache, chunk)
+            .await
+            .is_err()
+        {
+            for &number in chunk {
+                let _ = fetch_and_cache_header_by_number(provider, cache, number).await;
+            }
+        }
+    }
+}
+
+async fn resolve_start_block_number(
+    provider: &impl Provider<TempoNetwork>,
+    cache: &mut BlockCache,
+    start_block: BlockHashOrNumber,
+) -> Option<u64> {
+    match start_block {
+        BlockHashOrNumber::Number(number) => Some(number),
+        BlockHashOrNumber::Hash(hash) => {
+            if let Some(block) = cache.get_by_hash(&hash) {
+                return Some(block.header.number());
+            }
+
+            fetch_and_cache_header_by_hash(provider, cache, hash)
+                .await
+                .ok()
+        }
+    }
+}
+
+fn requested_header_numbers(
+    mut current: u64,
+    request: &reth_eth_wire_types::GetBlockHeaders,
+) -> Vec<u64> {
+    let mut numbers = Vec::with_capacity(request.limit.min(HEADER_BATCH_SIZE as u64) as usize);
+    let step = u64::from(request.skip) + 1;
+
+    for _ in 0..request.limit {
+        numbers.push(current);
+
+        match request.direction {
+            HeadersDirection::Rising => match current.checked_add(step) {
+                Some(next) => current = next,
+                None => break,
+            },
+            HeadersDirection::Falling => match current.checked_sub(step) {
+                Some(next) => current = next,
+                None => break,
+            },
+        }
+    }
+
+    numbers
 }
 
 /// Resolve a GetBlockHeaders request from cache, fetching missing blocks from RPC as needed.
@@ -446,50 +612,50 @@ async fn resolve_headers(
     cache: &mut BlockCache,
     request: &reth_eth_wire_types::GetBlockHeaders,
 ) -> Vec<TempoHeader> {
-    let mut headers = Vec::new();
-
-    // Resolve start block number
-    let start_num = match request.start_block {
-        BlockHashOrNumber::Number(n) => Some(n),
-        BlockHashOrNumber::Hash(h) => cache.get_by_hash(&h).map(|block| block.header.number()),
+    let Some(start_num) = resolve_start_block_number(provider, cache, request.start_block).await
+    else {
+        return Vec::new();
     };
 
-    let Some(mut current) = start_num else {
-        return headers;
-    };
+    let requested_numbers = requested_header_numbers(start_num, request);
+    fetch_and_cache_headers(provider, cache, &requested_numbers).await;
 
-    for _ in 0..request.limit {
-        let block = if let Some(b) = cache.get_by_number(current) {
-            Some(b.clone())
-        } else {
-            if fetch_and_cache_block(provider, cache, current)
-                .await
-                .is_ok()
-            {
-                cache.get_by_number(current).cloned()
-            } else {
-                None
-            }
-        };
-
-        if let Some(block) = block {
-            headers.push(block.header);
-        } else {
+    let mut headers = Vec::with_capacity(requested_numbers.len());
+    for number in requested_numbers {
+        let Some(block) = cache.get_by_number(number) else {
             break;
-        }
-
-        match request.direction {
-            HeadersDirection::Rising => {
-                current = current.saturating_add(1 + request.skip as u64);
-            }
-            HeadersDirection::Falling => match current.checked_sub(1 + request.skip as u64) {
-                Some(n) => current = n,
-                None => break,
-            },
-        }
+        };
+        headers.push(block.header.clone());
     }
 
     headers
+}
+
+async fn fetch_body_by_hash(
+    provider: &impl Provider<TempoNetwork>,
+    cache: &mut BlockCache,
+    hash: B256,
+) -> Option<tempo_primitives::BlockBody> {
+    let block = provider
+        .get_block_by_hash(hash)
+        .full()
+        .await
+        .ok()
+        .flatten()?;
+    let number = block.header.number();
+    let header: TempoHeader = block.header.inner.inner.clone();
+    let body = tempo_primitives::BlockBody {
+        transactions: block
+            .transactions
+            .into_transactions()
+            .map(|tx| tx.into_inner())
+            .collect(),
+        ommers: vec![],
+        withdrawals: block.withdrawals,
+    };
+
+    cache.insert_block(number, hash, header, body.clone());
+    Some(body)
 }
 
 /// Resolve a GetBlockBodies request from cache, fetching missing blocks from RPC as needed.
@@ -500,31 +666,17 @@ async fn resolve_bodies(
 ) -> Vec<tempo_primitives::BlockBody> {
     let mut bodies = Vec::new();
 
-    for hash in hashes {
-        let block = if let Some(b) = cache.get_by_hash(hash) {
-            Some(b.clone())
-        } else {
-            if let Ok(Some(block)) = provider.get_block_by_hash(*hash).full().await {
-                let number = block.header.number();
-                let header: TempoHeader = block.header.inner.inner.clone();
-                let body = tempo_primitives::BlockBody {
-                    transactions: block
-                        .transactions
-                        .into_transactions()
-                        .map(|tx| tx.into_inner())
-                        .collect(),
-                    ommers: vec![],
-                    withdrawals: block.withdrawals,
-                };
-                cache.insert(number, *hash, header, body);
-                cache.get_by_hash(hash).cloned()
-            } else {
-                None
-            }
-        };
+    for &hash in hashes {
+        if let Some(body) = cache
+            .get_by_hash(&hash)
+            .and_then(|block| block.body.clone())
+        {
+            bodies.push(body);
+            continue;
+        }
 
-        if let Some(block) = block {
-            bodies.push(block.body);
+        if let Some(body) = fetch_body_by_hash(provider, cache, hash).await {
+            bodies.push(body);
         }
     }
 
@@ -596,5 +748,33 @@ mod tests {
             cache.get_by_hash(&hash).is_some(),
             "should be cached after fetch"
         );
+    }
+
+    #[tokio::test]
+    async fn fetch_headers_by_hash_from_rpc_when_not_cached() {
+        let provider = moderato_provider();
+        let mut cache = BlockCache::new(100);
+
+        let latest = provider.get_block_number().await.unwrap();
+        let start = latest.saturating_sub(2);
+        let start_block = provider
+            .get_block_by_number(start.into())
+            .await
+            .unwrap()
+            .unwrap();
+        let start_hash = start_block.header.hash();
+
+        let request = GetBlockHeaders {
+            start_block: BlockHashOrNumber::Hash(start_hash),
+            limit: 3,
+            skip: 0,
+            direction: HeadersDirection::Rising,
+        };
+        let headers = resolve_headers(&provider, &mut cache, &request).await;
+
+        assert_eq!(headers.len(), 3);
+        assert_eq!(headers[0].number(), start);
+        assert_eq!(headers[0].hash_slow(), start_hash);
+        assert!(cache.get_by_hash(&start_hash).is_some());
     }
 }
