@@ -17,7 +17,7 @@ use tempo_chainspec::hardfork::TempoHardfork;
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;
 
 /// Wrapper around [`PrecompilesMap`] that extracts gas refunds encoded in the reservoir
-/// field by [`fill_precompile_output`] for T4+ hardforks.
+/// field by `fill_precompile_output` for T4+ hardforks.
 ///
 /// For T4+, Tempo precompiles encode the SSTORE gas refund in the `reservoir` field of
 /// `PrecompileOutput`. This wrapper extracts it after `PrecompilesMap::run()`, applies it
