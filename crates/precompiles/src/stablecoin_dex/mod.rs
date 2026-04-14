@@ -190,12 +190,18 @@ impl StablecoinDEX {
         Ok(())
     }
 
-    /// Decrement user's internal balance or transfer from external wallet
+    /// Decrement user's internal balance or transfer from external wallet.
+    ///
+    /// When `check_pause` is true and the full amount is covered by internal balance,
+    /// verifies the token is not paused (T3+). Callers that already check pause state
+    /// (e.g. swaps via `validate_and_build_route`) should pass `false` to avoid a
+    /// redundant SLOAD.
     fn decrement_balance_or_transfer_from(
         &mut self,
         user: Address,
         token: Address,
         amount: u128,
+        check_pause: bool,
     ) -> Result<()> {
         // Ensure that the token can be transferred
         let tip20 = TIP20Token::from_address(token)?;
@@ -205,7 +211,7 @@ impl StablecoinDEX {
         if user_balance >= amount {
             // When fully covered by internal balance, TIP-20 transferFrom won't run,
             // so we must check the pause state ourselves (spec: T3+).
-            if self.storage.spec().is_t3() {
+            if check_pause && self.storage.spec().is_t3() {
                 tip20.check_not_paused()?;
             }
             self.sub_balance(user, token, amount)
@@ -292,7 +298,8 @@ impl StablecoinDEX {
         let route = self.find_trade_path(token_in, token_out)?;
 
         // Deduct input tokens from sender (only once, at the start)
-        self.decrement_balance_or_transfer_from(sender, token_in, amount_in)?;
+        // Pause already checked in validate_and_build_route
+        self.decrement_balance_or_transfer_from(sender, token_in, amount_in, false)?;
 
         // Execute swaps for each hop - intermediate balances are transitory
         let mut amount = amount_in;
@@ -342,7 +349,8 @@ impl StablecoinDEX {
         }
 
         // Deduct input tokens ONCE at end
-        self.decrement_balance_or_transfer_from(sender, token_in, amount)?;
+        // Pause already checked in validate_and_build_route
+        self.decrement_balance_or_transfer_from(sender, token_in, amount, false)?;
 
         // Transfer only final output ONCE at end
         self.transfer(token_out, sender, amount_out)?;
@@ -504,7 +512,7 @@ impl StablecoinDEX {
             .ensure_transfer_authorized(self.address, sender)?;
 
         // Debit from user's balance or transfer from wallet
-        self.decrement_balance_or_transfer_from(sender, escrow_token, escrow_amount)?;
+        self.decrement_balance_or_transfer_from(sender, escrow_token, escrow_amount, true)?;
 
         // Create the order
         let order_id = self.next_order_id()?;
@@ -680,7 +688,7 @@ impl StablecoinDEX {
             }
             self.sub_balance(sender, escrow_token, escrow_amount)?;
         } else {
-            self.decrement_balance_or_transfer_from(sender, escrow_token, escrow_amount)?;
+            self.decrement_balance_or_transfer_from(sender, escrow_token, escrow_amount, true)?;
         }
 
         // Create the flip order
