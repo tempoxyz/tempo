@@ -81,7 +81,6 @@ unknown-registry = "warn"
 # in the allow list is encountered
 unknown-git = "deny"
 allow-git = [
-  "https://github.com/commonwarexyz/monorepo",
   "https://github.com/foundry-rs/foundry",
   "https://github.com/paradigmxyz/reth",
   "https://github.com/DaniPopes/slotmap.git",

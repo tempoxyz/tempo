@@ -1703,7 +1703,7 @@ dependencies = [
  "bitflags 2.11.0",
  "cexpr",
  "clang-sys",
- "itertools 0.13.0",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "regex",
@@ -3305,7 +3305,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ab67060fc6b8ef687992d439ca0fa36e7ed17e9a0b16b25b601e8757df720de"
 dependencies = [
  "data-encoding",
- "syn 2.0.117",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -3780,7 +3780,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6160,7 +6160,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7084,7 +7084,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27c6023962132f4b30eb4c172c91ce92d933da334c59c23cddee82358ddafb0b"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -7202,7 +7202,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -10777,7 +10777,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -10857,7 +10857,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs 1.0.6",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -11689,7 +11689,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -13634,7 +13634,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -14447,58 +14447,3 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
-
-[[patch.unused]]
-name = "commonware-broadcast"
-version = "2026.3.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=f4e49d2d8ce81b1ff594adb436e7f7560b23703c#f4e49d2d8ce81b1ff594adb436e7f7560b23703c"
-
-[[patch.unused]]
-name = "commonware-codec"
-version = "2026.3.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=f4e49d2d8ce81b1ff594adb436e7f7560b23703c#f4e49d2d8ce81b1ff594adb436e7f7560b23703c"
-
-[[patch.unused]]
-name = "commonware-consensus"
-version = "2026.3.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=f4e49d2d8ce81b1ff594adb436e7f7560b23703c#f4e49d2d8ce81b1ff594adb436e7f7560b23703c"
-
-[[patch.unused]]
-name = "commonware-cryptography"
-version = "2026.3.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=f4e49d2d8ce81b1ff594adb436e7f7560b23703c#f4e49d2d8ce81b1ff594adb436e7f7560b23703c"
-
-[[patch.unused]]
-name = "commonware-macros"
-version = "2026.3.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=f4e49d2d8ce81b1ff594adb436e7f7560b23703c#f4e49d2d8ce81b1ff594adb436e7f7560b23703c"
-
-[[patch.unused]]
-name = "commonware-math"
-version = "2026.3.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=f4e49d2d8ce81b1ff594adb436e7f7560b23703c#f4e49d2d8ce81b1ff594adb436e7f7560b23703c"
-
-[[patch.unused]]
-name = "commonware-p2p"
-version = "2026.3.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=f4e49d2d8ce81b1ff594adb436e7f7560b23703c#f4e49d2d8ce81b1ff594adb436e7f7560b23703c"
-
-[[patch.unused]]
-name = "commonware-parallel"
-version = "2026.3.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=f4e49d2d8ce81b1ff594adb436e7f7560b23703c#f4e49d2d8ce81b1ff594adb436e7f7560b23703c"
-
-[[patch.unused]]
-name = "commonware-runtime"
-version = "2026.3.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=f4e49d2d8ce81b1ff594adb436e7f7560b23703c#f4e49d2d8ce81b1ff594adb436e7f7560b23703c"
-
-[[patch.unused]]
-name = "commonware-storage"
-version = "2026.3.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=f4e49d2d8ce81b1ff594adb436e7f7560b23703c#f4e49d2d8ce81b1ff594adb436e7f7560b23703c"
-
-[[patch.unused]]
-name = "commonware-utils"
-version = "2026.3.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=f4e49d2d8ce81b1ff594adb436e7f7560b23703c#f4e49d2d8ce81b1ff594adb436e7f7560b23703c"
