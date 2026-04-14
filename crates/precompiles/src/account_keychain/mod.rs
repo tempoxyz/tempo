@@ -862,11 +862,7 @@ impl AccountKeychain {
                 .selectors
                 .insert(selector)?;
 
-            if rule.recipients.is_empty() {
-                self.key_scopes[account_key].target_scopes[target].selector_scopes[selector]
-                    .recipients
-                    .delete()?;
-            } else {
+            if !rule.recipients.is_empty() {
                 // `validate_selector_rules` already rejected duplicates.
                 self.key_scopes[account_key].target_scopes[target].selector_scopes[selector]
                     .recipients
