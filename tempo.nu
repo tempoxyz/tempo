@@ -421,6 +421,39 @@ def worktree-bin [worktree_dir: string, profile: string, bin_name: string] {
     }
 }
 
+# Dedup CLI args: if extra_args provides a flag already present in base_args,
+# the default (in base_args) is dropped so clap doesn't see it twice.
+# Handles both `--flag value` and `--flag=value` forms.
+def dedup-args [base_args: list<string>, extra_args: list<string>] {
+    if ($extra_args | is-empty) { return $base_args }
+
+    # Collect flag keys the user wants to override
+    let override_keys = ($extra_args | where { |a| $a starts-with "--" }
+        | each { |a| $a | split row "=" | first })
+
+    # Walk base_args, skip any flag (and its value) whose key is overridden
+    mut result = []
+    mut skip_next = false
+    for arg in $base_args {
+        if $skip_next {
+            $skip_next = false
+            continue
+        }
+        if ($arg starts-with "--") {
+            let key = ($arg | split row "=" | first)
+            if ($key in $override_keys) {
+                # Skip this flag; if it's `--flag value` form (no =), skip next token too
+                if not ($arg | str contains "=") {
+                    $skip_next = true
+                }
+                continue
+            }
+        }
+        $result = ($result | append $arg)
+    }
+    $result | append $extra_args
+}
+
 # Run a single benchmark run (start node, run bench, stop node, collect report)
 def run-bench-single [
     --tempo-bin: string
@@ -483,13 +516,13 @@ def run-bench-single [
     # Parse extra node args
     let extra_args = if $node_args == "" { [] } else { $node_args | split row " " }
 
-    # Build node arguments
-    let args = (build-base-args $genesis_path $datadir $log_dir "0.0.0.0" 8545 9001)
+    # Build node arguments, then dedup so user-provided args override defaults
+    let base_args = (build-base-args $genesis_path $datadir $log_dir "0.0.0.0" 8545 9001)
         | append (build-dev-args)
         | append (log-filter-args $loud)
-        | append $extra_args
         | append (if $tracy != "off" { ["--log.tracy" "--log.tracy.filter" $tracy_filter] } else { [] })
         | append (if $tracing_otlp != "" { [$"--tracing-otlp=($tracing_otlp)"] } else { [] })
+    let args = (dedup-args $base_args $extra_args)
 
     # Tracy environment variables
     let tracy_env_prefix = if $tracy == "on" {
@@ -1536,7 +1569,9 @@ def "main bench" [
     --loud                                          # Show node logs (silent by default)
     --profile: string = $DEFAULT_PROFILE            # Cargo build profile
     --features: string = $DEFAULT_FEATURES          # Cargo features
-    --node-args: string = ""                        # Additional node arguments (space-separated)
+    --node-args: string = ""                        # Additional node arguments (space-separated, applied to all runs)
+    --baseline-node-args: string = ""               # Additional node arguments for baseline runs only (space-separated)
+    --feature-node-args: string = ""                # Additional node arguments for feature runs only (space-separated)
     --bench-args: string = ""                       # Additional tempo-bench arguments (space-separated)
     --bloat: int = 0                                # Generate state bloat (size in MiB) for TIP20 tokens
     --no-infra                                      # Skip starting observability stack (Grafana + Prometheus)
@@ -1974,6 +2009,12 @@ def "main bench" [
             # virgin state. In dual-hardfork mode this resets both baseline-db
             # and feature-db subdirs at once.
             bench-recover $datadir
+
+            # Merge common node-args with per-side args (baseline-node-args / feature-node-args)
+            let run_type = if ($run.label | str starts-with "baseline") { "baseline" } else { "feature" }
+            let side_args = if $run_type == "baseline" { $baseline_node_args } else { $feature_node_args }
+            let effective_node_args = ([$node_args $side_args] | where { |a| $a != "" } | str join " ")
+
             (run-bench-single
                 --tempo-bin $run.tempo --bench-bin $baseline_bench_bin
                 --genesis-path $run.genesis --datadir $run.datadir
@@ -1981,7 +2022,7 @@ def "main bench" [
                 --tps $tps --duration $duration --accounts $accounts
                 --max-concurrent-requests $max_concurrent_requests
                 --weights $weights --preset $preset --bench-args $bench_args
-                --loud=$loud --node-args $node_args --bloat $bloat
+                --loud=$loud --node-args $effective_node_args --bloat $bloat
                 --git-ref $run.git_ref --build-profile $profile --benchmark-mode $mode
                 --benchmark-id $benchmark_id --reference-epoch $reference_epoch
                 --samply=$samply --samply-args $samply_args_list
@@ -2618,7 +2659,9 @@ def main [] {
     print "  --loud                   Show all node logs (WARN/ERROR shown by default)"
     print $"  --profile <P>            Cargo profile \(default: ($DEFAULT_PROFILE)\)"
     print $"  --features <F>           Cargo features \(default: ($DEFAULT_FEATURES)\)"
-    print "  --node-args <ARGS>       Additional node arguments (space-separated)"
+    print "  --node-args <ARGS>       Additional node arguments (space-separated, all runs)"
+    print "  --baseline-node-args <ARGS>  Additional node arguments for baseline runs only"
+    print "  --feature-node-args <ARGS>   Additional node arguments for feature runs only"
     print "  --bench-args <ARGS>      Additional tempo-bench arguments (space-separated)"
     print "  --bloat <N>              Generate TIP20 state bloat (size in MiB)"
     print ""

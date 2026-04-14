@@ -130,6 +130,14 @@ impl BlockHeader for TempoHeader {
         self.inner.requests_hash()
     }
 
+    fn block_access_list_hash(&self) -> Option<B256> {
+        self.inner.block_access_list_hash()
+    }
+
+    fn slot_number(&self) -> Option<u64> {
+        self.inner.slot_number()
+    }
+
     fn extra_data(&self) -> &Bytes {
         self.inner.extra_data()
     }
@@ -209,6 +217,8 @@ mod tests {
                 requests_hash: Some(b256!(
                     "0x3333333333333333333333333333333333333333333333333333333333333333"
                 )),
+                block_access_list_hash: None,
+                slot_number: None,
             },
         };
 

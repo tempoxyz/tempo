@@ -74,6 +74,16 @@ on:
         required: false
         default: "120"
         type: string
+      baseline-node-args:
+        description: "Additional node arguments for baseline runs only (space-separated)"
+        required: false
+        default: ""
+        type: string
+      feature-node-args:
+        description: "Additional node arguments for feature runs only (space-separated)"
+        required: false
+        default: ""
+        type: string
       baseline-hardfork:
         description: "Latest active hardfork for baseline (e.g. T1, T1C, T2). Empty = all forks active"
         required: false
@@ -130,6 +140,8 @@ jobs:
       tracy: ${{ steps.args.outputs.tracy }}
       tracy-seconds: ${{ steps.args.outputs.tracy-seconds }}
       tracy-offset: ${{ steps.args.outputs.tracy-offset }}
+      baseline-node-args: ${{ steps.args.outputs.baseline-node-args }}
+      feature-node-args: ${{ steps.args.outputs.feature-node-args }}
       baseline-hardfork: ${{ steps.args.outputs.baseline-hardfork }}
       feature-hardfork: ${{ steps.args.outputs.feature-hardfork }}
       run-type: ${{ steps.args.outputs.run-type }}
@@ -162,7 +174,7 @@ jobs:
         with:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |
-            let pr, actor, preset, duration, bloat, tps, baseline, feature, samply, tracy, tracySeconds, tracyOffset, baselineHardfork, featureHardfork, runType, forceBloat, noSlack;
+            let pr, actor, preset, duration, bloat, tps, baseline, feature, samply, tracy, tracySeconds, tracyOffset, baselineNodeArgs, featureNodeArgs, baselineHardfork, featureHardfork, runType, forceBloat, noSlack;
 
             if (context.eventName === 'workflow_dispatch') {
               actor = '${{ github.actor }}';
@@ -176,6 +188,8 @@ jobs:
               tracy = '${{ github.event.inputs.tracy }}' || 'off';
               tracySeconds = '${{ github.event.inputs.tracy-seconds }}' || '30';
               tracyOffset = '${{ github.event.inputs.tracy-offset }}' || '120';
+              baselineNodeArgs = '${{ github.event.inputs.baseline-node-args }}' || '';
+              featureNodeArgs = '${{ github.event.inputs.feature-node-args }}' || '';
               baselineHardfork = '${{ github.event.inputs.baseline-hardfork }}' || '';
               featureHardfork = '${{ github.event.inputs.feature-hardfork }}' || '';
               runType = '${{ github.event.inputs.run-type }}' || 'manual';
@@ -202,13 +216,18 @@ jobs:
               const body = context.payload.comment.body.trim();
               const intArgs = new Set(['duration', 'bloat', 'tps', 'tracy-seconds', 'tracy-offset']);
               const refArgs = new Set(['baseline', 'feature']);
-              const stringArgs = new Set(['preset', 'tracy', 'baseline-hardfork', 'feature-hardfork']);
+              const stringArgs = new Set(['preset', 'tracy', 'baseline-hardfork', 'feature-hardfork', 'baseline-node-args', 'feature-node-args']);
               const boolArgs = new Set(['samply', 'force-bloat', 'no-slack']);
-              const defaults = { preset: 'tip20', duration: '300', bloat: '1024', tps: '10000', baseline: '', feature: '', samply: 'false', tracy: 'off', 'tracy-seconds': '30', 'tracy-offset': '120', 'baseline-hardfork': '', 'feature-hardfork': '', 'force-bloat': 'false', 'no-slack': 'false' };
+              const defaults = { preset: 'tip20', duration: '300', bloat: '1024', tps: '10000', baseline: '', feature: '', samply: 'false', tracy: 'off', 'tracy-seconds': '30', 'tracy-offset': '120', 'baseline-node-args': '', 'feature-node-args': '', 'baseline-hardfork': '', 'feature-hardfork': '', 'force-bloat': 'false', 'no-slack': 'false' };
               const unknown = [];
               const invalid = [];
               const args = body.replace(/^(?:@decofe|derek) bench\s*/, '');
-              for (const part of args.split(/\s+/).filter(Boolean)) {
+              // Parse args, handling quoted values like key="value with spaces"
+              const parts = [];
+              const argRegex = /(\S+?="[^"]*"|\S+?='[^']*'|\S+)/g;
+              let m;
+              while ((m = argRegex.exec(args)) !== null) parts.push(m[1]);
+              for (const part of parts) {
                 const eq = part.indexOf('=');
                 if (eq === -1) {
                   if (boolArgs.has(part)) {
@@ -219,7 +238,11 @@ jobs:
                   continue;
                 }
                 const key = part.slice(0, eq);
-                const value = part.slice(eq + 1);
+                let value = part.slice(eq + 1);
+                // Strip surrounding quotes
+                if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+                  value = value.slice(1, -1);
+                }
                 if (intArgs.has(key)) {
                   if (!/^\d+$/.test(value)) {
                     invalid.push(`\`${key}=${value}\` (must be a positive integer)`);
@@ -246,7 +269,7 @@ jobs:
               if (unknown.length) errors.push(`Unknown argument(s): \`${unknown.join('`, `')}\``);
               if (invalid.length) errors.push(`Invalid value(s): ${invalid.join(', ')}`);
               if (errors.length) {
-                const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [force-bloat] [no-slack] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-hardfork=FORK] [feature-hardfork=FORK]\``;
+                const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [force-bloat] [no-slack] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-node-args=ARGS] [feature-node-args=ARGS] [baseline-hardfork=FORK] [feature-hardfork=FORK]\``;
                 await github.rest.issues.createComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
@@ -266,6 +289,8 @@ jobs:
               tracy = defaults.tracy;
               tracySeconds = defaults['tracy-seconds'];
               tracyOffset = defaults['tracy-offset'];
+              baselineNodeArgs = defaults['baseline-node-args'];
+              featureNodeArgs = defaults['feature-node-args'];
               baselineHardfork = defaults['baseline-hardfork'];
               featureHardfork = defaults['feature-hardfork'];
               runType = 'manual';
@@ -273,7 +298,7 @@ jobs:
               noSlack = defaults['no-slack'];
             }
 
-            const usageStr = '**Usage:** `@decofe bench [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [force-bloat] [no-slack] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-hardfork=FORK] [feature-hardfork=FORK]`';
+            const usageStr = '**Usage:** `@decofe bench [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [force-bloat] [no-slack] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-node-args=ARGS] [feature-node-args=ARGS] [baseline-hardfork=FORK] [feature-hardfork=FORK]`';
 
             // Validate tracy value
             if (!['off', 'on', 'full'].includes(tracy)) {
@@ -362,6 +387,8 @@ jobs:
             core.setOutput('tracy', tracy);
             core.setOutput('tracy-seconds', tracySeconds);
             core.setOutput('tracy-offset', tracyOffset);
+            core.setOutput('baseline-node-args', baselineNodeArgs || '');
+            core.setOutput('feature-node-args', featureNodeArgs || '');
             core.setOutput('baseline-hardfork', baselineHardfork || '');
             core.setOutput('feature-hardfork', featureHardfork || '');
             core.setOutput('run-type', runType);
@@ -399,10 +426,13 @@ jobs:
             const samplyNote = samply ? ', samply: `enabled`' : '';
             const tracy = '${{ steps.args.outputs.tracy }}';
             const tracyNote = tracy !== 'off' ? `, tracy: \`${tracy}\`` : '';
+            const bNa = '${{ steps.args.outputs.baseline-node-args }}';
+            const fNa = '${{ steps.args.outputs.feature-node-args }}';
+            const naNote = (bNa || fNa) ? `${bNa ? `, baseline-node-args: \`${bNa}\`` : ''}${fNa ? `, feature-node-args: \`${fNa}\`` : ''}` : '';
             const bHf = '${{ steps.args.outputs.baseline-hardfork }}';
             const fHf = '${{ steps.args.outputs.feature-hardfork }}';
             const hfNote = bHf ? `, baseline-hardfork: \`${bHf}\`, feature-hardfork: \`${fHf}\`` : '';
-            const config = `**Config:** preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} MiB\`, tps: \`${tps}\`, baseline: \`${baseline}\`, feature: \`${feature}\`${samplyNote}${tracyNote}${hfNote}`;
+            const config = `**Config:** preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} MiB\`, tps: \`${tps}\`, baseline: \`${baseline}\`, feature: \`${feature}\`${samplyNote}${tracyNote}${naNote}${hfNote}`;
 
             const { data: comment } = await github.rest.issues.createComment({
               owner: context.repo.owner,
@@ -428,6 +458,8 @@ jobs:
       BENCH_TRACY: ${{ needs.tempo-bench-ack.outputs.tracy }}
       BENCH_TRACY_SECONDS: ${{ needs.tempo-bench-ack.outputs.tracy-seconds }}
       BENCH_TRACY_OFFSET: ${{ needs.tempo-bench-ack.outputs.tracy-offset }}
+      BENCH_BASELINE_NODE_ARGS: ${{ needs.tempo-bench-ack.outputs.baseline-node-args }}
+      BENCH_FEATURE_NODE_ARGS: ${{ needs.tempo-bench-ack.outputs.feature-node-args }}
       BENCH_BASELINE_HARDFORK: ${{ needs.tempo-bench-ack.outputs.baseline-hardfork }}
       BENCH_FEATURE_HARDFORK: ${{ needs.tempo-bench-ack.outputs.feature-hardfork }}
       BENCH_RUN_TYPE: ${{ needs.tempo-bench-ack.outputs.run-type }}
@@ -638,21 +670,26 @@ jobs:
           BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
           FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
         run: |
-          nu tempo.nu bench \
-            --preset "$BENCH_PRESET" \
-            --mode dev \
-            --bloat "$BENCH_BLOAT" \
-            --duration "$BENCH_DURATION" \
-            --tps "$BENCH_TPS" \
-            --no-infra \
-            --baseline "$BASELINE_REF" \
-            --feature "$FEATURE_REF" \
-            --bench-datadir "/reth-bench/tempo_${BENCH_BLOAT}mb" \
-            --tune \
-            $([ "$BENCH_SAMPLY" = "true" ] && echo "--samply" || true) \
-            $([ "$BENCH_TRACY" != "off" ] && echo "--tracy $BENCH_TRACY --tracy-seconds $BENCH_TRACY_SECONDS --tracy-offset $BENCH_TRACY_OFFSET" || true) \
-            $([ -n "$BENCH_BASELINE_HARDFORK" ] && echo "--baseline-hardfork $BENCH_BASELINE_HARDFORK --feature-hardfork $BENCH_FEATURE_HARDFORK" || true) \
-            $([ "$BENCH_FORCE_BLOAT" = "true" ] && echo "--force" || true)
+          cmd=(
+            nu tempo.nu bench
+            --preset "$BENCH_PRESET"
+            --mode dev
+            --bloat "$BENCH_BLOAT"
+            --duration "$BENCH_DURATION"
+            --tps "$BENCH_TPS"
+            --no-infra
+            --baseline "$BASELINE_REF"
+            --feature "$FEATURE_REF"
+            --bench-datadir "/reth-bench/tempo_${BENCH_BLOAT}mb"
+            --tune
+          )
+          [ "$BENCH_SAMPLY" = "true" ] && cmd+=(--samply)
+          [ "$BENCH_TRACY" != "off" ] && cmd+=(--tracy "$BENCH_TRACY" --tracy-seconds "$BENCH_TRACY_SECONDS" --tracy-offset "$BENCH_TRACY_OFFSET")
+          [ -n "$BENCH_BASELINE_NODE_ARGS" ] && cmd+=(--baseline-node-args="$BENCH_BASELINE_NODE_ARGS")
+          [ -n "$BENCH_FEATURE_NODE_ARGS" ] && cmd+=(--feature-node-args="$BENCH_FEATURE_NODE_ARGS")
+          [ -n "$BENCH_BASELINE_HARDFORK" ] && cmd+=(--baseline-hardfork "$BENCH_BASELINE_HARDFORK" --feature-hardfork "$BENCH_FEATURE_HARDFORK")
+          [ "$BENCH_FORCE_BLOAT" = "true" ] && cmd+=(--force)
+          "${cmd[@]}"
 
       - name: Find results directory
         id: results-dir
