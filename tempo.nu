@@ -424,7 +424,7 @@ def worktree-bin [worktree_dir: string, profile: string, bin_name: string] {
 # Dedup CLI args: if extra_args provides a flag already present in base_args,
 # the default (in base_args) is dropped so clap doesn't see it twice.
 # Handles both `--flag value` and `--flag=value` forms.
-def dedup-args [base_args: list<string>, extra_args: list<string>] -> list<string> {
+def dedup-args [base_args: list<string>, extra_args: list<string>] {
     if ($extra_args | is-empty) { return $base_args }
 
     # Collect flag keys the user wants to override
