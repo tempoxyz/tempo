@@ -103,7 +103,8 @@ serde = [
 	"rand/serde",
 	"tracing-subscriber/serde",
 	"revm/serde",
-	"tempo-contracts/serde"
+	"tempo-contracts/serde",
+	"ed25519-consensus/serde",
 ]
 reth-codec = [
 	"reth",
