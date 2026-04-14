@@ -130,36 +130,69 @@ fn tempo_signature_verification_gas(signature: &TempoSignature) -> u64 {
     }
 }
 
-/// Counts the storage rows written by T3 call-scope configuration.
+/// Calculates the storage gas used by T3 call-scope configuration on a fresh key.
 ///
-/// This lets intrinsic gas account for the scoped-call writes that `authorize_key`
-/// persists into keychain storage.
-fn call_scope_storage_slots(auth: &tempo_primitives::transaction::KeyAuthorization) -> u64 {
-    match auth.allowed_calls.as_ref() {
-        None => 0,
-        Some(scopes) if scopes.is_empty() => 1,
-        Some(scopes) => {
-            let mut selectors = 0u64;
-            let mut constrained_selectors = 0u64;
-            let mut recipients = 0u64;
+/// `authorize_key` always starts from an empty scope tree because new keys cannot
+/// reuse an existing or revoked key ID. That lets us model the exact housekeeping
+/// done by `replace_allowed_calls`, including empty-set deletes and length updates.
+fn t3_call_scope_gas(
+    auth: &tempo_primitives::transaction::KeyAuthorization,
+    gas_params: &GasParams,
+) -> u64 {
+    let warm_sload = gas_params.warm_storage_read_cost();
+    let cold_sload = warm_sload + gas_params.cold_storage_additional_cost();
+    let warm_sstore_set =
+        gas_params.sstore_static_gas() + gas_params.get(GasId::sstore_set_without_load_cost());
+    let cold_sstore_set = warm_sstore_set + gas_params.cold_storage_additional_cost();
+    let warm_sstore_reset =
+        gas_params.sstore_static_gas() + gas_params.sstore_reset_without_cold_load_cost();
+    let warm_noop_sstore = gas_params.sstore_static_gas();
+    let cold_noop_sstore = gas_params.sstore_static_gas() + cold_sload;
 
-            for scope in scopes {
-                selectors += scope.selector_rules.len() as u64;
-                for rule in &scope.selector_rules {
-                    if !rule.recipients.is_empty() {
-                        constrained_selectors += 1;
-                        recipients += rule.recipients.len() as u64;
-                    }
+    // `clear_all_target_scopes` first reads the empty target set and then deletes it,
+    // which still touches the length slot three times and issues one no-op SSTORE.
+    let empty_set_read_then_delete = cold_sload + 2 * warm_sload + warm_noop_sstore;
+    // `recipients.delete()` on a fresh selector scope skips the initial `read()` but still
+    // loads the length slot and writes zero back to it.
+    let empty_set_delete = cold_sload + warm_sload + warm_noop_sstore;
+
+    let set_insert = |is_first_insert: bool| {
+        cold_sload
+            + 2 * warm_sload
+            + 2 * cold_sstore_set
+            + if is_first_insert {
+                warm_sstore_set
+            } else {
+                warm_sstore_reset
+            }
+    };
+
+    let recipient_set_write = |recipient_count: usize| {
+        cold_sload + (recipient_count as u64).saturating_mul(2 * cold_sstore_set) + warm_sstore_set
+    };
+
+    let mut total = empty_set_read_then_delete;
+
+    match auth.allowed_calls.as_ref() {
+        None => total + cold_noop_sstore,
+        Some(scopes) => {
+            total += cold_sstore_set;
+
+            for (scope_index, scope) in scopes.iter().enumerate() {
+                total += set_insert(scope_index == 0);
+                total += empty_set_read_then_delete;
+
+                for (selector_index, rule) in scope.selector_rules.iter().enumerate() {
+                    total += set_insert(selector_index == 0);
+                    total += if rule.recipients.is_empty() {
+                        empty_set_delete
+                    } else {
+                        recipient_set_write(rule.recipients.len())
+                    };
                 }
             }
 
-            // Storage write accounting:
-            // - account mode write: 1
-            // - each target insertion: 3
-            // - each selector insertion: 3
-            // - recipient-constrained selectors also write recipient set length: +1 per selector
-            // - recipient set values+positions: +2 per recipient
-            1 + scopes.len() as u64 * 3 + selectors * 3 + constrained_selectors + recipients * 2
+            total
         }
     }
 }
@@ -260,11 +293,10 @@ fn calculate_key_authorization_gas(
 
         let mut total = sig_gas + sload_cost + sstore_cost * (1 + limit_slots) + BUFFER;
 
-        // T3+: include scoped-call storage rows in intrinsic gas.
+        // T3+: include the extra set housekeeping and scope writes performed by
+        // `replace_allowed_calls`, even when the key remains unrestricted.
         if spec.is_t3() {
-            total = total.saturating_add(
-                sstore_cost.saturating_mul(call_scope_storage_slots(&key_auth.authorization)),
-            );
+            total = total.saturating_add(t3_call_scope_gas(&key_auth.authorization, gas_params));
         }
 
         total
@@ -2758,12 +2790,14 @@ mod tests {
         }
 
         for num_limits in 0..=3 {
-            let gas = calculate_key_authorization_gas(
-                &create_key_auth(num_limits),
-                &t1b_gas_params,
-                TempoHardfork::T3,
-            );
-            let expected = ECRECOVER_GAS + sload + sstore * (1 + 2 * num_limits as u64) + BUFFER;
+            let key_auth = create_key_auth(num_limits);
+            let gas =
+                calculate_key_authorization_gas(&key_auth, &t1b_gas_params, TempoHardfork::T3);
+            let expected = ECRECOVER_GAS
+                + sload
+                + sstore * (1 + 2 * num_limits as u64)
+                + BUFFER
+                + t3_call_scope_gas(&key_auth.authorization, &t1b_gas_params);
             assert_eq!(gas, expected, "T3 with {num_limits} limits");
         }
 
@@ -2784,11 +2818,34 @@ mod tests {
         };
 
         let gas = calculate_key_authorization_gas(&scoped, &t1b_gas_params, TempoHardfork::T3);
-        // 1 key write + 12 scope slots:
-        // account mode(1) + target insertion rows(3) + selector insertion rows(3)
-        // + constrained selector recipient-length(1) + recipients values+positions(2*2).
-        let expected = ECRECOVER_GAS + sload + sstore * (1 + 12) + BUFFER;
+        let expected = ECRECOVER_GAS
+            + sload
+            + sstore
+            + BUFFER
+            + t3_call_scope_gas(&scoped.authorization, &t1b_gas_params);
         assert_eq!(gas, expected, "T3 scope writes should be fully charged");
+
+        let deny_all = SignedKeyAuthorization {
+            authorization: KeyAuthorization::unrestricted(
+                1,
+                SignatureType::Secp256k1,
+                Address::random(),
+            )
+            .with_allowed_calls(vec![]),
+            signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+        };
+
+        let deny_all_gas =
+            calculate_key_authorization_gas(&deny_all, &t1b_gas_params, TempoHardfork::T3);
+        let deny_all_expected = ECRECOVER_GAS
+            + sload
+            + sstore
+            + BUFFER
+            + t3_call_scope_gas(&deny_all.authorization, &t1b_gas_params);
+        assert_eq!(
+            deny_all_gas, deny_all_expected,
+            "T3 deny-all scopes should charge housekeeping gas"
+        );
     }
 
     #[test]
