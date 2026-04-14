@@ -2,17 +2,18 @@
 
 use super::ValidatorConfig;
 use crate::{
-    Precompile, dispatch_call, error::TempoPrecompileError, input_cost, mutate_void,
-    unknown_selector, view,
+    Precompile, SelectorSchedule, dispatch_call, error::TempoPrecompileError, input_cost,
+    mutate_void, view,
 };
 use alloy::{
     primitives::Address,
     sol_types::{SolCall, SolInterface},
 };
 use revm::precompile::{PrecompileError, PrecompileResult};
-use tempo_contracts::precompiles::IValidatorConfig::{
-    IValidatorConfigCalls, changeValidatorStatusByIndexCall,
-};
+use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_contracts::precompiles::IValidatorConfig::{self, IValidatorConfigCalls};
+
+const T1_ADDED: &[[u8; 4]] = &[IValidatorConfig::changeValidatorStatusByIndexCall::SELECTOR];
 
 impl Precompile for ValidatorConfig {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -22,6 +23,7 @@ impl Precompile for ValidatorConfig {
 
         dispatch_call(
             calldata,
+            &[SelectorSchedule::new(TempoHardfork::T1).with_added(T1_ADDED)],
             IValidatorConfigCalls::abi_decode,
             |call| match call {
                 // View functions
@@ -53,13 +55,6 @@ impl Precompile for ValidatorConfig {
                     mutate_void(call, msg_sender, |s, c| self.change_validator_status(s, c))
                 }
                 IValidatorConfigCalls::changeValidatorStatusByIndex(call) => {
-                    // T1+: changeValidatorStatusByIndex is only available in T1+
-                    if !self.storage.spec().is_t1() {
-                        return unknown_selector(
-                            changeValidatorStatusByIndexCall::SELECTOR,
-                            self.storage.gas_used(),
-                        );
-                    }
                     mutate_void(call, msg_sender, |s, c| {
                         self.change_validator_status_by_index(s, c)
                     })
@@ -227,7 +222,7 @@ mod tests {
 
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
         StorageCtx::enter(&mut storage, || {
             let mut validator_config = ValidatorConfig::new();
 

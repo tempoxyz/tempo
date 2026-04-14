@@ -22,6 +22,7 @@ impl Precompile for ValidatorConfigV2 {
 
         dispatch_call(
             calldata,
+            &[],
             IValidatorConfigV2Calls::abi_decode,
             |call| match call {
                 IValidatorConfigV2Calls::owner(call) => view(call, |_| self.owner()),

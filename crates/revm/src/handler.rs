@@ -377,10 +377,11 @@ where
 
             (access_key_addr, keychain_sig.user_address)
         };
-        let kind = calls
-            .first()
-            .expect("AA transactions must contain at least one call")
-            .to;
+        let Some(kind) = calls.first().map(|call| call.to) else {
+            return Err(EVMError::Custom(
+                "AA transactions must contain at least one call".into(),
+            ));
+        };
 
         let (validation, gas_used) =
             StorageCtx::enter_ctx_with_gas_limit(evm.ctx_mut(), *remaining_gas, || {
@@ -3350,6 +3351,61 @@ mod tests {
 
         assert_eq!(result.instruction_result(), InstructionResult::Revert);
         assert_eq!(result.output().data(), &expected_revert);
+    }
+
+    #[test]
+    fn test_t3_scope_validation_empty_calls_returns_custom_error() {
+        let caller = Address::repeat_byte(0x11);
+        let access_key = Address::repeat_byte(0x22);
+
+        let signature =
+            TempoSignature::Keychain(tempo_primitives::transaction::KeychainSignature::new(
+                caller,
+                tempo_primitives::transaction::PrimitiveSignature::Secp256k1(
+                    alloy_primitives::Signature::test_signature(),
+                ),
+            ));
+
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T3;
+
+        let tx_env = TempoTxEnv {
+            inner: revm::context::TxEnv {
+                caller,
+                gas_limit: 1_000_000,
+                ..Default::default()
+            },
+            tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                signature,
+                aa_calls: vec![],
+                signature_hash: B256::ZERO,
+                override_key_id: Some(access_key),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+
+        let ctx = Context::mainnet()
+            .with_db(CacheDB::new(EmptyDB::default()))
+            .with_block(TempoBlockEnv::default())
+            .with_cfg(cfg)
+            .with_tx(tx_env)
+            .with_new_journal(create_test_journal());
+
+        let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
+        let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+        let mut remaining_gas = 100_000;
+
+        let err = handler
+            .prevalidate_keychain_call_scopes(&mut evm, &[], &mut remaining_gas)
+            .expect_err("empty calls should return an error instead of panicking");
+
+        match err {
+            EVMError::Custom(msg) => {
+                assert_eq!(msg, "AA transactions must contain at least one call");
+            }
+            other => panic!("expected custom error, got: {other:?}"),
+        }
     }
 
     #[test]

@@ -27,6 +27,16 @@ tempo-consensus.workspace = true
 tempo-evm.workspace = true
 tempo-faucet.workspace = true
 
+alloy = { workspace = true, default-features = false, features = [
+	"network",
+	"rpc",
+	"rpc-types",
+	"transports",
+	"providers",
+	"provider-http",
+	"provider-ws",
+	"reqwest-rustls-tls",
+] }
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-provider = { workspace = true, features = [
@@ -50,14 +60,16 @@ serde.workspace = true
 serde_json.workspace = true
 tempo-alloy = { workspace = true, features = ["reth"] }
 tempo-contracts.workspace = true
+tempo-primitives = { workspace = true, features = ["reth"] }
 tempo-dkg-onchain-artifacts.workspace = true
 reth-cli-commands.workspace = true
 reth-cli-runner.workspace = true
 reth-cli-util.workspace = true
+reth-eth-wire-types.workspace = true
 rustls.workspace = true
 reth-db-api.workspace = true
 reth-etl.workspace = true
-reth-ethereum = { workspace = true, features = ["full", "cli"] }
+reth-ethereum = { workspace = true, features = ["full", "cli", "network"] }
 reth-ethereum-cli.workspace = true
 reth-network-peers.workspace = true
 reth-node-builder.workspace = true
@@ -87,6 +99,7 @@ path = "src/main.rs"
 default = ["asm-keccak", "jemalloc", "otlp"]
 
 asm-keccak = [
+	"alloy/asm-keccak",
 	"alloy-primitives/asm-keccak",
 	"tempo-alloy/asm-keccak",
 	"tempo-node/asm-keccak",
