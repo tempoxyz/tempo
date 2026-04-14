@@ -600,10 +600,10 @@ def run-bench-single [
     | append (if $build_profile != "" { ["--build-profile" $build_profile] } else { [] })
     | append (if $benchmark_mode != "" { ["--benchmark-mode" $benchmark_mode] } else { [] })
 
-    let bench_env_prefix = if $bench_env != "" { $"($bench_env) " } else { "" }
+    let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
     print $"  Running benchmark..."
     try {
-        bash -c $"($bench_env_prefix)ulimit -Sn unlimited && ($bench_cmd | str join ' ')"
+        bash -c $"($bench_env_export)ulimit -Sn unlimited && ($bench_cmd | str join ' ')"
     } catch { |e|
         print $"  Benchmark run ($run_label) failed: ($e.msg)"
     }
