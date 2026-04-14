@@ -360,6 +360,8 @@ where
 
                 fetch_concurrent: crate::config::NUMBER_CONCURRENT_FETCHES,
 
+                forwarding: commonware_consensus::simplex::config::ForwardingPolicy::Disabled,
+
                 strategy: Sequential,
             },
         );

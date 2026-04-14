@@ -484,6 +484,7 @@ fn default_attributes_generator(timestamp: u64) -> TempoPayloadAttributes {
         suggested_fee_recipient: alloy::primitives::Address::ZERO,
         withdrawals: Some(vec![]),
         parent_beacon_block_root: Some(alloy::primitives::B256::ZERO),
+        slot_number: None,
     }
     .into()
 }

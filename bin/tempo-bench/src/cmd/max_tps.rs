@@ -16,7 +16,10 @@ use tempo_alloy::{
 use alloy::{
     consensus::BlockHeader,
     eips::Encodable2718,
-    network::{EthereumWallet, ReceiptResponse, TransactionBuilder, TxSignerSync},
+    network::{
+        EthereumWallet, NetworkTransactionBuilder, ReceiptResponse, TransactionBuilder,
+        TxSignerSync,
+    },
     primitives::{Address, B256, BlockNumber, U256},
     providers::{
         DynProvider, PendingTransactionBuilder, PendingTransactionError, Provider, ProviderBuilder,
