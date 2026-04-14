@@ -1,19 +1,48 @@
 use alloy_consensus::{BlockHeader, Header, Sealable};
 use alloy_primitives::{Address, B64, B256, BlockNumber, Bloom, Bytes, U256, keccak256};
 use alloy_rlp::{RlpDecodable, RlpEncodable};
+use commonware_codec::ReadExt as _;
 
 /// Consensus context metadata for a Tempo block.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Default, RlpEncodable, RlpDecodable)]
+///
+/// The `proposer` is validated as a valid Ed25519 public key during RLP
+/// decoding to reject malformed blocks at the network boundary.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, RlpEncodable)]
 #[cfg_attr(feature = "reth-codec", derive(reth_codecs::Compact))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
-#[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact, rlp))]
+#[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact))]
 pub struct TempoConsensusContext {
     pub epoch: u64,
     pub view: u64,
     pub proposer: B256,
     pub parent_view: u64,
+}
+
+/// Mirror used to derive RLP decoding; the public [`TempoConsensusContext`]
+/// adds Ed25519 key validation on top.
+#[derive(RlpDecodable)]
+struct TempoConsensusContextRlpDecodable {
+    epoch: u64,
+    view: u64,
+    proposer: B256,
+    parent_view: u64,
+}
+
+impl alloy_rlp::Decodable for TempoConsensusContext {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let raw = TempoConsensusContextRlpDecodable::decode(buf)?;
+        commonware_cryptography::ed25519::PublicKey::read(&mut raw.proposer.as_slice())
+            .map_err(|_| alloy_rlp::Error::Custom("invalid ed25519 proposer key"))?;
+
+        Ok(Self {
+            epoch: raw.epoch,
+            view: raw.view,
+            proposer: raw.proposer,
+            parent_view: raw.parent_view,
+        })
+    }
 }
 
 /// Tempo block header.
@@ -158,5 +187,41 @@ impl BlockHeader for TempoHeader {
 impl Sealable for TempoHeader {
     fn hash_slow(&self) -> B256 {
         keccak256(alloy_rlp::encode(self))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_rlp::Decodable as _;
+
+    #[test]
+    fn consensus_context_rlp_roundtrip() {
+        use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
+        let proposer = B256::from_slice(PrivateKey::from_seed(1).public_key().as_ref());
+
+        let ctx = TempoConsensusContext {
+            epoch: 1,
+            view: 5,
+            proposer,
+            parent_view: 4,
+        };
+
+        let encoded = alloy_rlp::encode(&ctx);
+        let decoded = TempoConsensusContext::decode(&mut encoded.as_slice()).unwrap();
+        assert_eq!(ctx, decoded);
+    }
+
+    #[test]
+    fn consensus_context_rlp_rejects_invalid_proposer() {
+        let ctx = TempoConsensusContext {
+            epoch: 1,
+            view: 5,
+            proposer: B256::repeat_byte(0xab), // invalid
+            parent_view: 4,
+        };
+
+        let encoded = alloy_rlp::encode(&ctx);
+        assert!(TempoConsensusContext::decode(&mut encoded.as_slice()).is_err());
     }
 }

@@ -54,12 +54,12 @@ fn blocks_have_consensus_context() {
             context.sleep(Duration::from_secs(1)).await;
         }
 
-        // Genesis block should have the default consensus context when T4 is active at genesis.
+        // Genesis block should not have a consensus context.
         let genesis = provider.block_by_number(0).ok().flatten().unwrap();
         assert_eq!(
             genesis.header.consensus_context,
-            Some(tempo_primitives::TempoConsensusContext::default()),
-            "genesis block must have the default consensus context"
+            None,
+            "genesis block must not have a consensus context"
         );
 
         for height in 1..=5 {

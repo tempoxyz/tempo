@@ -41,7 +41,9 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 once_cell = { version = "1.21", default-features = false }
 
-# Cryptography for P256 and WebAuthn signature verification
+# Cryptography
+commonware-codec.workspace = true
+commonware-cryptography.workspace = true
 sha2.workspace = true
 base64.workspace = true
 aws-lc-rs = { version = "1.16.2", optional = true, default-features = false, features = ["alloc", "non-fips", "ring-sig-verify"] }

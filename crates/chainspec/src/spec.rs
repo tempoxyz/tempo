@@ -24,7 +24,7 @@ use reth_chainspec::{
 use reth_network_peers::NodeRecord;
 #[cfg(feature = "std")]
 use std::sync::LazyLock;
-use tempo_primitives::{TempoConsensusContext, TempoHeader};
+use tempo_primitives::TempoHeader;
 
 /// T0 base fee: 10 billion attodollars (1×10^10)
 ///
@@ -219,18 +219,12 @@ impl TempoChainSpec {
         });
         base_spec.hardforks.extend(tempo_forks);
 
-        let consensus_context = if info.fork_time(TempoHardfork::T4) == Some(0) {
-            Some(TempoConsensusContext::default())
-        } else {
-            None
-        };
-
         Self {
             inner: base_spec.map_header(|inner| TempoHeader {
                 general_gas_limit: 0,
                 timestamp_millis_part: inner.timestamp % 1000,
                 shared_gas_limit: 0,
-                consensus_context,
+                consensus_context: None,
                 inner,
             }),
             info,

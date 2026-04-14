@@ -12212,6 +12212,8 @@ dependencies = [
  "arbitrary",
  "aws-lc-rs",
  "base64 0.22.1",
+ "commonware-codec",
+ "commonware-cryptography",
  "derive_more",
  "modular-bitfield",
  "once_cell",

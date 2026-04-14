@@ -12,7 +12,10 @@ use commonware_consensus::{
     simplex::types::Context,
     types::{Epoch, Height, Round, View},
 };
-use commonware_cryptography::{Committable, Digestible, ed25519::PublicKey};
+use commonware_cryptography::{
+    Committable, Digestible, Signer as _,
+    ed25519::{PrivateKey, PublicKey},
+};
 use reth_node_core::primitives::SealedBlock;
 
 use crate::consensus::Digest;
@@ -141,21 +144,27 @@ impl commonware_consensus::CertifiableBlock for Block {
     type Context = Context<Digest, PublicKey>;
 
     fn context(&self) -> Self::Context {
-        let context = self.consensus_context.unwrap_or_default();
-        let leader = PublicKey::read(&mut context.proposer.as_ref())
-            .expect("valid ed25519 public key in consensus context");
+        match self.consensus_context {
+            Some(ctx) => {
+                // RLP decoding ensures a valid key encoding
+                let leader = PublicKey::read(&mut ctx.proposer.as_slice())
+                    .expect("invalid proposer key encoding");
 
-        // Default context is a zero'd out sentinel. Also ensure the parent digest is empty
-        let parent_digest = if self.consensus_context.is_some() {
-            self.parent_digest()
-        } else {
-            Digest(B256::ZERO)
-        };
-
-        Context {
-            leader,
-            round: Round::new(Epoch::new(context.epoch), View::new(context.view)),
-            parent: (View::new(context.parent_view), parent_digest),
+                Context {
+                    leader,
+                    round: Round::new(Epoch::new(ctx.epoch), View::new(ctx.view)),
+                    parent: (View::new(ctx.parent_view), self.parent_digest()),
+                }
+            }
+            None => {
+                // Pre-T4 or Genesis: Deterministic sentinel that is unused
+                let leader = PublicKey::from(PrivateKey::from_seed(0));
+                Context {
+                    leader,
+                    round: Round::new(Epoch::new(0), View::new(0)),
+                    parent: (View::new(0), Digest(B256::ZERO)),
+                }
+            }
         }
     }
 }
