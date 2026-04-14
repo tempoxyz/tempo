@@ -92,6 +92,8 @@ pub struct TempoPayloadBuilder<Provider> {
     /// last height at which we've seen an invalid subblock, and not including any subblocks
     /// at this height for any payloads.
     highest_invalid_subblock: Arc<AtomicU64>,
+    /// Whether the node is configured in `--dev` miner mode.
+    is_dev: bool,
     /// Whether to enable state provider metrics.
     state_provider_metrics: bool,
     /// Whether to disable state cache.
@@ -103,6 +105,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
         pool: TempoTransactionPool<Provider>,
         provider: Provider,
         evm_config: TempoEvmConfig,
+        is_dev: bool,
         state_provider_metrics: bool,
         disable_state_cache: bool,
     ) -> Self {
@@ -112,6 +115,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             evm_config,
             metrics: TempoPayloadBuilderMetrics::default(),
             highest_invalid_subblock: Default::default(),
+            is_dev,
             state_provider_metrics,
             disable_state_cache,
         }
@@ -182,13 +186,8 @@ where
 
     fn on_missing_payload(
         &self,
-        args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
+        _args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
     ) -> MissingPayloadBehaviour<Self::BuiltPayload> {
-        // Interrupt the builder so it stops building and finalizes the block.
-        //
-        // This is needed only for dev mode where no consensus actor fires the interrupt.
-        // With actual CW consensus, the interrupt is already fired by the time `on_missing_payload` is called.
-        args.config.attributes.interrupt_handle().interrupt();
         MissingPayloadBehaviour::AwaitInProgress
     }
 
@@ -248,7 +247,11 @@ where
             attributes,
             payload_id,
         } = config;
-        let build_until_interrupt = trie_handle.is_some();
+        let build_until_interrupt =
+            // When trie handle is provided, we only build the payload once, until the interrupt is triggered
+            trie_handle.is_some()
+            // `--dev` mode doesn't have payload building interrupts
+            && !self.is_dev;
 
         macro_rules! check_cancel {
             () => {

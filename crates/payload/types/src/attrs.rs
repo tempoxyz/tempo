@@ -43,6 +43,9 @@ pub struct TempoPayloadAttributes {
     /// Interrupt handle.
     #[serde(skip)]
     interrupt: InterruptHandle,
+    /// Whether to interrupt the payload building process when no transactions left.
+    #[serde(skip)]
+    interrupt_on_exhaustion: bool,
     /// Milliseconds portion of the timestamp.
     timestamp_millis_part: u64,
     /// DKG ceremony data to include in the block's extra_data header field.
@@ -85,11 +88,19 @@ impl TempoPayloadAttributes {
                 parent_beacon_block_root: Some(B256::ZERO),
             },
             interrupt: InterruptHandle::default(),
+            interrupt_on_exhaustion: false,
             timestamp_millis_part: millis,
             extra_data,
             proposer_public_key,
             subblocks: Arc::new(subblocks),
         }
+    }
+
+    /// Sets the `interrupt_on_exhaustion` flag. If true, it marks that the payload building process
+    /// should be interrupted when no transactions are left.
+    pub fn with_interrupt_on_exhaustion(mut self, interrupt_on_exhaustion: bool) -> Self {
+        self.interrupt_on_exhaustion = interrupt_on_exhaustion;
+        self
     }
 
     /// Returns the extra data to be included in the block header.
@@ -140,6 +151,7 @@ impl From<EthPayloadAttributes> for TempoPayloadAttributes {
         Self {
             inner,
             interrupt: InterruptHandle::default(),
+            interrupt_on_exhaustion: false,
             timestamp_millis_part: 0,
             extra_data: Bytes::default(),
             proposer_public_key: None,

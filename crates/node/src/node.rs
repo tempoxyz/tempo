@@ -502,6 +502,7 @@ where
             pool,
             ctx.provider().clone(),
             evm_config,
+            ctx.is_dev(),
             self.state_provider_metrics,
             self.disable_state_cache,
         ))
