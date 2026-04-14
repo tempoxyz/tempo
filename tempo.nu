@@ -1536,7 +1536,9 @@ def "main bench" [
     --loud                                          # Show node logs (silent by default)
     --profile: string = $DEFAULT_PROFILE            # Cargo build profile
     --features: string = $DEFAULT_FEATURES          # Cargo features
-    --node-args: string = ""                        # Additional node arguments (space-separated)
+    --node-args: string = ""                        # Additional node arguments (space-separated, applied to all runs)
+    --baseline-node-args: string = ""               # Additional node arguments for baseline runs only (space-separated)
+    --feature-node-args: string = ""                # Additional node arguments for feature runs only (space-separated)
     --bench-args: string = ""                       # Additional tempo-bench arguments (space-separated)
     --bloat: int = 0                                # Generate state bloat (size in MiB) for TIP20 tokens
     --no-infra                                      # Skip starting observability stack (Grafana + Prometheus)
@@ -1974,6 +1976,12 @@ def "main bench" [
             # virgin state. In dual-hardfork mode this resets both baseline-db
             # and feature-db subdirs at once.
             bench-recover $datadir
+
+            # Merge common node-args with per-side args (baseline-node-args / feature-node-args)
+            let run_type = if ($run.label | str starts-with "baseline") { "baseline" } else { "feature" }
+            let side_args = if $run_type == "baseline" { $baseline_node_args } else { $feature_node_args }
+            let effective_node_args = ([$node_args $side_args] | where { |a| $a != "" } | str join " ")
+
             (run-bench-single
                 --tempo-bin $run.tempo --bench-bin $baseline_bench_bin
                 --genesis-path $run.genesis --datadir $run.datadir
@@ -1981,7 +1989,7 @@ def "main bench" [
                 --tps $tps --duration $duration --accounts $accounts
                 --max-concurrent-requests $max_concurrent_requests
                 --weights $weights --preset $preset --bench-args $bench_args
-                --loud=$loud --node-args $node_args --bloat $bloat
+                --loud=$loud --node-args $effective_node_args --bloat $bloat
                 --git-ref $run.git_ref --build-profile $profile --benchmark-mode $mode
                 --benchmark-id $benchmark_id --reference-epoch $reference_epoch
                 --samply=$samply --samply-args $samply_args_list
@@ -2618,7 +2626,9 @@ def main [] {
     print "  --loud                   Show all node logs (WARN/ERROR shown by default)"
     print $"  --profile <P>            Cargo profile \(default: ($DEFAULT_PROFILE)\)"
     print $"  --features <F>           Cargo features \(default: ($DEFAULT_FEATURES)\)"
-    print "  --node-args <ARGS>       Additional node arguments (space-separated)"
+    print "  --node-args <ARGS>       Additional node arguments (space-separated, all runs)"
+    print "  --baseline-node-args <ARGS>  Additional node arguments for baseline runs only"
+    print "  --feature-node-args <ARGS>   Additional node arguments for feature runs only"
     print "  --bench-args <ARGS>      Additional tempo-bench arguments (space-separated)"
     print "  --bloat <N>              Generate TIP20 state bloat (size in MiB)"
     print ""
