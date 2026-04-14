@@ -134,6 +134,10 @@ impl super::types::TestEnv for RpcEnv {
         self.hardfork
     }
 
+    fn supports_scoped_key_auth_rpc(&self) -> bool {
+        self.hardfork.is_t3()
+    }
+
     async fn fund_account(&mut self, addr: Address) -> eyre::Result<U256> {
         let tx_hashes: Vec<B256> = self
             .provider
@@ -239,9 +243,8 @@ impl super::types::TestEnv for RpcEnv {
             Err(e) => {
                 // Non-retryable error = real RPC validation rejection.
                 if let Some(reason) = expected_reason {
-                    let err_str = e.to_string().to_lowercase();
                     assert!(
-                        err_str.contains(&reason.to_lowercase()),
+                        rpc_error_contains_reason(&e, reason),
                         "Rejection error should contain '{reason}', got: {e}"
                     );
                 }

@@ -13,6 +13,7 @@ impl Precompile for TIP20Factory {
 
         dispatch_call(
             calldata,
+            &[],
             ITIP20FactoryCalls::abi_decode,
             |call| match call {
                 ITIP20FactoryCalls::createToken(call) => {

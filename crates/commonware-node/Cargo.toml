@@ -61,7 +61,6 @@ reth-node-core.workspace = true
 reth-revm.workspace = true
 reth-primitives-traits.workspace = true
 reth-provider.workspace = true
-reth-rpc-convert.workspace = true
 
 tokio = { workspace = true, features = ["macros", "sync"] }
 tracing.workspace = true

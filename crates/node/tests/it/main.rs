@@ -10,6 +10,7 @@ mod liquidity;
 mod max_gas_limit;
 mod payment_lane;
 mod pool;
+mod simulate;
 mod stablecoin_dex;
 mod tempo_transaction;
 mod tip20;

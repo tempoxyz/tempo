@@ -1696,7 +1696,22 @@ pub(crate) fn read_syncers_if_v2_not_initialized(
     parent_hash: B256,
     block_hash: B256,
 ) -> eyre::Result<ordered::Set<PublicKey>> {
-    if can_use_v2_at_block_hash(node, parent_hash, Some(block_hash))
+    // Use the finalized block hash for the v2 initialization check if available
+    // and at least as recent as the boundary block. The `is_initialized` and
+    // `initialization_height` contract values are immutable once set, so
+    // reading them from any later state is valid. This avoids failures when
+    // the boundary block's state has been pruned during sync catch-up.
+    let latest = node
+        .provider
+        .finalized_block_num_hash()
+        .ok()
+        .flatten()
+        .and_then(|finalized| {
+            let header = node.provider.header(block_hash).ok().flatten()?;
+            (finalized.number >= header.number()).then_some(finalized.hash)
+        })
+        .unwrap_or(block_hash);
+    if can_use_v2_at_block_hash(node, parent_hash, Some(latest))
         .wrap_err("unable to determine if the validator config v2 can be used or not")?
     {
         return Ok(ordered::Set::default());

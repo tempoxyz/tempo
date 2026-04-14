@@ -16,6 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          token: ${{ secrets.TEMPO_GITHUB_PAT }}
           persist-credentials: true
 
       - name: Keep only SDK changelog entries
@@ -56,8 +57,8 @@ jobs:
               path.write_text("---\n" + "".join(kept) + "---\n" + body, encoding="utf-8")
           PY
 
-      - uses: wevm/changelogs@master
+      - uses: tempoxyz/changelogs@master
         with:
           conventional-commit: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          post-version-command: cargo update -w
+          github-token: ${{ secrets.TEMPO_GITHUB_PAT }}

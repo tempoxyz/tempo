@@ -526,13 +526,13 @@ mod tests {
     #[test]
     fn output_tx_type_validity_window_is_aa() {
         let req = TempoTransactionRequest {
-            valid_before: Some(1000),
+            valid_before: Some(core::num::NonZeroU64::new(1000).unwrap()),
             ..Default::default()
         };
         assert_eq!(req.output_tx_type(), TempoTxType::AA);
 
         let req = TempoTransactionRequest {
-            valid_after: Some(500),
+            valid_after: Some(core::num::NonZeroU64::new(500).unwrap()),
             ..Default::default()
         };
         assert_eq!(req.output_tx_type(), TempoTxType::AA);

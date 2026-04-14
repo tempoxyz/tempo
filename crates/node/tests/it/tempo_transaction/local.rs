@@ -125,9 +125,8 @@ impl super::types::TestEnv for Localnet {
         assert!(rpc_result.is_err(), "RPC should reject the transaction");
 
         if let (Some(reason), Err(err)) = (expected_reason, &rpc_result) {
-            let err_str = err.to_string().to_lowercase();
             assert!(
-                err_str.contains(&reason.to_lowercase()),
+                rpc_error_contains_reason(err, reason),
                 "Rejection error should contain '{reason}', got: {err}"
             );
         }
@@ -1436,7 +1435,7 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
         2_000_000,
     );
     delayed_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
-    delayed_tx.valid_after = Some(valid_after_time);
+    delayed_tx.valid_after = Some(nonzero_timestamp(valid_after_time));
 
     // Sign with the access key (wrapped in Keychain signature)
     let access_key_sig = sign_aa_tx_with_p256_access_key(
@@ -1737,7 +1736,7 @@ async fn test_aa_keychain_spending_limit_toctou_dos() -> eyre::Result<()> {
         2_000_000,
     );
     delayed_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
-    delayed_tx.valid_after = Some(valid_after_time);
+    delayed_tx.valid_after = Some(nonzero_timestamp(valid_after_time));
 
     // Sign with the access key (wrapped in Keychain signature)
     let access_key_sig = sign_aa_tx_with_p256_access_key(

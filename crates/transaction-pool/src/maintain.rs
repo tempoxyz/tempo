@@ -22,7 +22,7 @@ use std::{
     collections::{BTreeMap, btree_map::Entry},
     time::Instant,
 };
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks, spec::TEMPO_T1_BASE_FEE};
+use tempo_chainspec::TempoChainSpec;
 use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
@@ -68,6 +68,15 @@ pub struct TempoPoolUpdates {
     pub whitelist_removals: Vec<(u64, Address)>,
     /// Fee token pause state changes: (token, is_paused).
     pub pause_events: Vec<(Address, bool)>,
+    /// Tokens whose transfer policy was changed via `changeTransferPolicyId()`.
+    /// Pending transactions using these tokens as fee tokens need to be re-validated
+    /// because the new policy may forbid the fee payer or fee manager.
+    pub transfer_policy_updates: HashSet<Address>,
+    /// Fee token balance changes keyed by token.
+    ///
+    /// We only track the debited `from` account from TIP20 `Transfer` logs because credits to the
+    /// `to` account cannot make an already-admitted transaction newly invalid.
+    pub fee_balance_changes: AddressMap<HashSet<Address>>,
     /// Keychain transactions that were included in the block, decrementing spending limits.
     ///
     /// We record which (account, key_id, fee_token) combos had their limits decremented by
@@ -94,6 +103,8 @@ impl TempoPoolUpdates {
             && self.blacklist_additions.is_empty()
             && self.whitelist_removals.is_empty()
             && self.pause_events.is_empty()
+            && self.transfer_policy_updates.is_empty()
+            && self.fee_balance_changes.is_empty()
             && self.spending_limit_spends.is_empty()
     }
 
@@ -150,11 +161,19 @@ impl TempoPoolUpdates {
                         .push((event.policyId, event.account));
                 }
             }
-            // Fee token pause events
-            else if is_tip20_prefix(log.address)
-                && let Ok(event) = ITIP20::PauseStateUpdate::decode_log(log)
-            {
-                updates.pause_events.push((log.address, event.isPaused));
+            // Fee token pause events and balance changes
+            else if is_tip20_prefix(log.address) {
+                if let Ok(event) = ITIP20::PauseStateUpdate::decode_log(log) {
+                    updates.pause_events.push((log.address, event.isPaused));
+                } else if ITIP20::TransferPolicyUpdate::decode_log(log).is_ok() {
+                    updates.transfer_policy_updates.insert(log.address);
+                } else if let Ok(event) = ITIP20::Transfer::decode_log(log) {
+                    updates
+                        .fee_balance_changes
+                        .entry(log.address)
+                        .or_default()
+                        .insert(event.from);
+                }
             }
         }
 
@@ -202,6 +221,7 @@ impl TempoPoolUpdates {
             || !self.user_token_changes.is_empty()
             || !self.blacklist_additions.is_empty()
             || !self.whitelist_removals.is_empty()
+            || !self.fee_balance_changes.is_empty()
     }
 }
 
@@ -222,16 +242,15 @@ struct TempoPoolState {
     paused_pool: PausedFeeTokenPool,
     /// Tracks pending transaction staleness for DoS mitigation.
     pending_staleness: PendingStalenessTracker,
-    /// Tracks whether the T1 transition cleanup has been performed.
-    /// This is a one-time operation that removes transactions with max_fee_per_gas < T1 base fee.
-    /// Will be removed after T1 is activated on mainnet.
-    t1_transition_cleanup_done: bool,
 }
 
 impl TempoPoolState {
     /// Tracks an AA transaction with a `valid_before` timestamp.
     fn track(&mut self, tx: &TempoPooledTransaction) {
-        let valid_before = tx.inner().as_aa().and_then(|tx| tx.tx().valid_before);
+        let valid_before = tx
+            .inner()
+            .as_aa()
+            .and_then(|tx| tx.tx().valid_before.map(|value| value.get()));
         let key_expiry = tx.key_expiry();
 
         let expiry = [valid_before, key_expiry].into_iter().flatten().min();
@@ -405,26 +424,6 @@ where
                 let bundle_state = tip.execution_outcome().state().state();
                 let tip_timestamp = tip.tip().header().timestamp();
 
-                // T1 transition: one-time cleanup of underpriced transactions.
-                // When T1 activates, transactions with max_fee_per_gas < 20 billion attodollars become
-                // never-includable and should be evicted. This check runs once per node lifetime.
-                // TODO: Remove this after T1 is activated on mainnet.
-                if !state.t1_transition_cleanup_done {
-                    let chain_spec = pool.client().chain_spec();
-                    if chain_spec.is_t1_active_at_timestamp(tip_timestamp) {
-                        let evicted = evict_underpriced_transactions_for_t1(&pool);
-                        if evicted > 0 {
-                            debug!(
-                                target: "txpool",
-                                count = evicted,
-                                tip_timestamp,
-                                "T1 transition: evicted underpriced transactions (max_fee_per_gas < 20 billion attodollars)"
-                            );
-                        }
-                        state.t1_transition_cleanup_done = true;
-                    }
-                }
-
                 // 1. Collect all block-level invalidation events
                 let mut updates = TempoPoolUpdates::from_chain(tip);
 
@@ -507,7 +506,7 @@ where
                                         .transaction
                                         .inner()
                                         .as_aa()
-                                        .and_then(|aa| aa.tx().valid_before);
+                                        .and_then(|aa| aa.tx().valid_before.map(|value| value.get()));
                                     PausedEntry { tx, valid_before }
                                 })
                                 .collect();
@@ -593,21 +592,65 @@ where
                 }
                 metrics.pause_events_duration_seconds.record(pause_start.elapsed());
 
-                // 6. Update 2D nonce pool
+                // 5b. Handle transfer policy updates
+                // When a token's transfer policy changes, pending transactions using that
+                // token may become invalid under the new policy. We remove them and re-add
+                // so they go through full validation against the updated policy.
+                if !updates.transfer_policy_updates.is_empty() {
+                    let all_txs = pool.all_transactions();
+                    let hashes: Vec<TxHash> = all_txs
+                        .pending
+                        .iter()
+                        .chain(all_txs.queued.iter())
+                        .filter(|tx| {
+                            tx.transaction
+                                .resolved_fee_token()
+                                .is_some_and(|t| updates.transfer_policy_updates.contains(&t))
+                        })
+                        .map(|tx| *tx.hash())
+                        .collect();
+
+                    if !hashes.is_empty() {
+                        let removed_txs = pool.remove_transactions(hashes);
+                        let count = removed_txs.len();
+
+                        for tx in &removed_txs {
+                            state.untrack(tx.hash());
+                        }
+
+                        metrics
+                            .transfer_policy_revalidated
+                            .increment(count as u64);
+
+                        let pool_clone = pool.clone();
+                        tokio::spawn(async move {
+                            let txs: Vec<_> = removed_txs
+                                .into_iter()
+                                .map(|tx| (tx.origin, tx.transaction.clone()))
+                                .collect();
+
+                            let results =
+                                pool_clone.add_transactions_with_origins(txs).await;
+
+                            let success =
+                                results.iter().filter(|r| r.is_ok()).count();
+                            debug!(
+                                target: "txpool",
+                                total = count,
+                                success,
+                                "Re-validated transactions after transfer policy update"
+                            );
+                        });
+                    }
+                }
+
+                // 6. Update 2D nonce pool (also removes included expiring nonce txs
+                // via slot changes on the nonce precompile)
                 let nonce_pool_start = Instant::now();
                 pool.notify_aa_pool_on_state_updates(bundle_state);
-
-                // 7. Remove included expiring nonce transactions
-                // Expiring nonce txs don't have sequential nonces, so we need to remove them
-                // on inclusion rather than relying on nonce changes.
-                pool.remove_included_expiring_nonce_txs(
-                    tip.blocks_iter()
-                        .flat_map(|block| block.body().transactions())
-                        .map(|tx| tx.tx_hash()),
-                );
                 metrics.nonce_pool_update_duration_seconds.record(nonce_pool_start.elapsed());
 
-                // 8. Update AMM liquidity cache (must happen before validator token eviction)
+                // 7. Update AMM liquidity cache (must happen before validator token eviction)
                 let amm_start = Instant::now();
                 amm_cache.on_new_state(tip.execution_outcome());
                 if let Err(err) = amm_cache.on_new_blocks(tip.blocks_iter().map(|block| block.sealed_header()), pool.client()) {
@@ -615,7 +658,7 @@ where
                 }
                 metrics.amm_cache_update_duration_seconds.record(amm_start.elapsed());
 
-                // 9. Evict invalidated transactions in a single pool scan
+                // 8. Evict invalidated transactions in a single pool scan
                 // This checks revoked keys, spending limit changes, validator token changes,
                 // blacklist additions, and whitelist removals together to avoid scanning
                 // all transactions multiple times per block.
@@ -642,7 +685,7 @@ where
                         .record(invalidation_start.elapsed());
                 }
 
-                // 10. Evict stale pending transactions (must happen after AA pool promotions in step 6)
+                // 9. Evict stale pending transactions (must happen after AA pool promotions in step 6)
                 // Only runs once per interval (~30 min) to avoid overhead on every block.
                 // Transactions pending across two consecutive snapshots are considered stale.
                 if state.pending_staleness.should_check(tip_timestamp) {
@@ -671,37 +714,6 @@ where
             }
         }
     }
-}
-
-/// Removes transactions with max_fee_per_gas below the T1 base fee from the pool.
-///
-/// This is a one-time cleanup performed when the T0 → T1 hardfork transition is detected.
-/// After T1 activation, transactions with max_fee_per_gas < 20 billion attodollars are never includable
-/// and should be evicted from the pool.
-///
-/// # Note
-/// This function is temporary and will be removed after T1 is activated on mainnet.
-fn evict_underpriced_transactions_for_t1<Pool>(pool: &Pool) -> usize
-where
-    Pool: TransactionPool,
-{
-    let all_txs = pool.all_transactions();
-    let t1_base_fee = TEMPO_T1_BASE_FEE as u128;
-
-    let underpriced_hashes: Vec<TxHash> = all_txs
-        .pending
-        .iter()
-        .chain(all_txs.queued.iter())
-        .filter(|tx| tx.max_fee_per_gas() < t1_base_fee)
-        .map(|tx| *tx.hash())
-        .collect();
-
-    let count = underpriced_hashes.len();
-    if count > 0 {
-        pool.remove_transactions(underpriced_hashes);
-    }
-
-    count
 }
 
 #[cfg(test)]
@@ -826,6 +838,22 @@ mod tests {
         ))
     }
 
+    fn create_test_chain_with_receipts(
+        blocks: Vec<reth_primitives_traits::RecoveredBlock<Block>>,
+        receipts: Vec<Vec<tempo_primitives::TempoReceipt>>,
+    ) -> Arc<Chain<TempoPrimitives>> {
+        use reth_provider::{Chain, ExecutionOutcome};
+
+        Arc::new(Chain::new(
+            blocks,
+            ExecutionOutcome {
+                receipts,
+                ..Default::default()
+            },
+            Default::default(),
+        ))
+    }
+
     /// Helper to create a recovered block containing the given transactions.
     fn create_block_with_txs(
         block_number: u64,
@@ -854,7 +882,9 @@ mod tests {
 
     mod from_chain_spending_limit_spends {
         use super::*;
+        use alloy_primitives::{IntoLogData, Log, U256};
         use alloy_signer_local::PrivateKeySigner;
+        use tempo_primitives::{TempoReceipt, TempoTxType};
 
         /// Verify from_chain extracts (account, key_id) with wildcard token from included
         /// keychain txs, so all pending txs for that key are rechecked regardless of fee token.
@@ -994,6 +1024,109 @@ mod tests {
                 Some(Address::random()),
             );
             assert!(updates.has_invalidation_events());
+        }
+
+        #[test]
+        fn extracts_fee_balance_changes_from_tip20_transfer_logs() {
+            let fee_token = tempo_precompiles::PATH_USD_ADDRESS;
+            let from = Address::random();
+            let to = Address::random();
+            let amount = U256::from(42_u64);
+            let log_data = ITIP20::Transfer { from, to, amount }.into_log_data();
+            let log =
+                Log::new_unchecked(fee_token, log_data.topics().to_vec(), log_data.data.clone());
+            let receipt = TempoReceipt {
+                tx_type: TempoTxType::Legacy,
+                success: true,
+                cumulative_gas_used: 21_000,
+                logs: vec![log],
+            };
+
+            let block = create_block_with_txs(1, vec![], vec![]);
+            let chain = create_test_chain_with_receipts(vec![block], vec![vec![receipt]]);
+            let updates = TempoPoolUpdates::from_chain(&chain);
+
+            assert!(
+                updates
+                    .fee_balance_changes
+                    .get(&fee_token)
+                    .is_some_and(|accounts| accounts.len() == 1 && accounts.contains(&from)),
+                "TIP20 transfer logs should only mark the debited sender as balance-changed"
+            );
+            assert!(updates.has_invalidation_events());
+        }
+
+        /// TransferPolicyUpdate events are parsed from TIP20 token logs.
+        #[test]
+        fn extracts_transfer_policy_updates() {
+            let fee_token = tempo_precompiles::PATH_USD_ADDRESS;
+            let updater = Address::random();
+            let new_policy_id = 42u64;
+            let log_data = ITIP20::TransferPolicyUpdate {
+                updater,
+                newPolicyId: new_policy_id,
+            }
+            .into_log_data();
+            let log =
+                Log::new_unchecked(fee_token, log_data.topics().to_vec(), log_data.data.clone());
+            let receipt = TempoReceipt {
+                tx_type: TempoTxType::Legacy,
+                success: true,
+                cumulative_gas_used: 21_000,
+                logs: vec![log],
+            };
+
+            let block = create_block_with_txs(1, vec![], vec![]);
+            let chain = create_test_chain_with_receipts(vec![block], vec![vec![receipt]]);
+            let updates = TempoPoolUpdates::from_chain(&chain);
+
+            assert!(
+                updates.transfer_policy_updates.contains(&fee_token),
+                "TransferPolicyUpdate should be tracked by token address"
+            );
+        }
+
+        /// Duplicate TransferPolicyUpdate events for the same token are deduplicated.
+        #[test]
+        fn transfer_policy_updates_deduplicates_by_token() {
+            let fee_token = tempo_precompiles::PATH_USD_ADDRESS;
+
+            let log_data_1 = ITIP20::TransferPolicyUpdate {
+                updater: Address::random(),
+                newPolicyId: 1,
+            }
+            .into_log_data();
+            let log_data_2 = ITIP20::TransferPolicyUpdate {
+                updater: Address::random(),
+                newPolicyId: 2,
+            }
+            .into_log_data();
+            let log1 = Log::new_unchecked(
+                fee_token,
+                log_data_1.topics().to_vec(),
+                log_data_1.data.clone(),
+            );
+            let log2 = Log::new_unchecked(
+                fee_token,
+                log_data_2.topics().to_vec(),
+                log_data_2.data.clone(),
+            );
+            let receipt = TempoReceipt {
+                tx_type: TempoTxType::Legacy,
+                success: true,
+                cumulative_gas_used: 21_000,
+                logs: vec![log1, log2],
+            };
+
+            let block = create_block_with_txs(1, vec![], vec![]);
+            let chain = create_test_chain_with_receipts(vec![block], vec![vec![receipt]]);
+            let updates = TempoPoolUpdates::from_chain(&chain);
+
+            assert_eq!(
+                updates.transfer_policy_updates.len(),
+                1,
+                "duplicate policy updates for the same token should be deduplicated"
+            );
         }
 
         /// Duplicate validator token changes must be deduplicated (last-write-wins).
