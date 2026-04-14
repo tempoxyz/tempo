@@ -222,7 +222,12 @@ jobs:
               const unknown = [];
               const invalid = [];
               const args = body.replace(/^(?:@decofe|derek) bench\s*/, '');
-              for (const part of args.split(/\s+/).filter(Boolean)) {
+              // Parse args, handling quoted values like key="value with spaces"
+              const parts = [];
+              const argRegex = /(\S+?="[^"]*"|\S+?='[^']*'|\S+)/g;
+              let m;
+              while ((m = argRegex.exec(args)) !== null) parts.push(m[1]);
+              for (const part of parts) {
                 const eq = part.indexOf('=');
                 if (eq === -1) {
                   if (boolArgs.has(part)) {
@@ -233,7 +238,11 @@ jobs:
                   continue;
                 }
                 const key = part.slice(0, eq);
-                const value = part.slice(eq + 1);
+                let value = part.slice(eq + 1);
+                // Strip surrounding quotes
+                if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+                  value = value.slice(1, -1);
+                }
                 if (intArgs.has(key)) {
                   if (!/^\d+$/.test(value)) {
                     invalid.push(`\`${key}=${value}\` (must be a positive integer)`);
