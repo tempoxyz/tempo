@@ -15,7 +15,7 @@ use alloy_rpc_types_eth::{
     state::{AccountOverride, StateOverride},
 };
 use reth_evm::revm::interpreter::instructions::utility::IntoU256;
-use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
+use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{
     IFeeManager,
     ITIP20::{self, transferCall},
@@ -37,7 +37,7 @@ fn extract_revert_data(
 /// Expected revert bytes for `Panic(UnderOverflow)`.
 fn under_overflow_revert() -> Bytes {
     TempoPrecompileError::under_overflow()
-        .into_precompile_result(0)
+        .into_precompile_result(0, 0)
         .unwrap()
         .bytes
 }
@@ -293,10 +293,10 @@ async fn test_eth_estimate_gas(schedule: ForkSchedule) -> eyre::Result<()> {
     let gas = provider.estimate_gas(tx.clone()).await?;
     // gas estimation is calldata dependent, but should be consistent with same calldata
     // TIP-1000 (T1): gas includes 250k new account cost when nonce=0
-    let expected_gas = if schedule.is_active(TempoHardfork::T3) {
-        551540
-    } else {
-        549423
+    // T4 (devnet): state gas split changes the estimate
+    let expected_gas = match schedule {
+        ForkSchedule::Devnet => 86763,
+        _ => 549423,
     };
     assert_eq!(gas, expected_gas);
 

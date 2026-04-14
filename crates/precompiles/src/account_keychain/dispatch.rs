@@ -45,7 +45,7 @@ impl Precompile for AccountKeychain {
                                 authorizeKeyCall::SELECTOR,
                             ),
                         )
-                        .into_precompile_result(self.storage.gas_used());
+                        .into_precompile_result(self.storage.gas_limit(), self.storage.gas_used());
                     }
 
                     let call = authorizeKeyCall {

@@ -93,7 +93,8 @@ pub trait Precompile {
     /// `dispatch_call` combined with the `view`, `mutate`, or `mutate_void` helpers.
     ///
     /// Business-logic errors are returned as reverted [`PrecompileOutput`]s with ABI-encoded
-    /// error data, while fatal failures (e.g. out-of-gas) are returned as [`PrecompileError`].
+    /// error data, while fatal failures (e.g. out-of-gas) are returned as
+    /// [`PrecompileError`].
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult;
 }
 
@@ -262,13 +263,13 @@ impl SignatureVerifier {
 /// Dispatches a parameterless view call, encoding the return via `T`.
 #[inline]
 fn metadata<T: SolCall>(f: impl FnOnce() -> Result<T::Return>) -> PrecompileResult {
-    f().into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
+    f().into_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
 }
 
 /// Dispatches a read-only call with decoded arguments, encoding the return via `T`.
 #[inline]
 fn view<T: SolCall>(call: T, f: impl FnOnce(T) -> Result<T::Return>) -> PrecompileResult {
-    f(call).into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
+    f(call).into_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
 }
 
 /// Dispatches a state-mutating call that returns ABI-encoded data.
@@ -287,7 +288,7 @@ fn mutate<T: SolCall>(
             0,
         ));
     }
-    f(sender, call).into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
+    f(sender, call).into_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
 }
 
 /// Dispatches a state-mutating call that returns no data (e.g. `approve`, `transfer`).
@@ -306,20 +307,28 @@ fn mutate_void<T: SolCall>(
             0,
         ));
     }
-    f(sender, call).into_precompile_result(0, |()| Bytes::new())
+    f(sender, call).into_precompile_result(0, 0, |()| Bytes::new())
 }
 
 /// Fills gas accounting fields on a [`PrecompileOutput`] from the storage context.
+///
+/// State gas is only set for T4+ where the state gas / reservoir model is active.
+/// Pre-T4, `state_gas_used` must remain 0 to avoid leaking into revm's reservoir
+/// accounting and corrupting `tx_gas_used()` via `handle_reservoir_remaining_gas`.
 #[inline]
 fn fill_precompile_output(mut output: PrecompileOutput, storage: &StorageCtx) -> PrecompileOutput {
     output.gas_used = storage.gas_used();
+    if storage.spec().is_t4() {
+        output.state_gas_used = storage.gas_used();
+    }
     output
 }
 
 /// Returns an ABI-encoded `UnknownFunctionSelector` revert for the given 4-byte selector.
 #[inline]
-pub fn unknown_selector(selector: [u8; 4], gas: u64) -> PrecompileResult {
-    error::TempoPrecompileError::UnknownFunctionSelector(selector).into_precompile_result(gas)
+pub fn unknown_selector(selector: [u8; 4], gas_limit: u64, gas_used: u64) -> PrecompileResult {
+    error::TempoPrecompileError::UnknownFunctionSelector(selector)
+        .into_precompile_result(gas_limit, gas_used)
 }
 
 /// A selector schedule at a given hardfork boundary.
@@ -405,7 +414,7 @@ pub(crate) fn dispatch_call<T>(
         .iter()
         .any(|schedule| schedule.rejects(selector, storage.spec()))
     {
-        return unknown_selector(selector, storage.gas_used())
+        return unknown_selector(selector, storage.gas_limit(), storage.gas_used())
             .map(|res| fill_precompile_output(res, &storage));
     }
 
@@ -414,7 +423,7 @@ pub(crate) fn dispatch_call<T>(
     match result {
         Ok(call) => f(call).map(|res| fill_precompile_output(res, &storage)),
         Err(alloy::sol_types::Error::UnknownSelector { selector, .. }) => {
-            unknown_selector(*selector, storage.gas_used())
+            unknown_selector(*selector, storage.gas_limit(), storage.gas_used())
                 .map(|res| fill_precompile_output(res, &storage))
         }
         Err(_) => Ok(fill_precompile_output(
@@ -642,6 +651,71 @@ mod tests {
                 Err(PrecompileError::Fatal(msg)) if msg.contains("missing function selector")
             ),
             "T0: expected PrecompileError for invalid calldata, got {result:?}"
+        );
+    }
+
+    /// Pre-T4 precompile calls must not report state_gas_used, because the new revm's
+    /// reservoir model propagates it via `handle_reservoir_remaining_gas` on revert/halt,
+    /// corrupting `tx_gas_used()`.
+    #[test]
+    fn test_precompile_state_gas_zero_pre_t4() {
+        let call_with_spec = |calldata: Bytes, spec: TempoHardfork| {
+            let mut cfg = CfgEnv::<TempoHardfork>::default();
+            cfg.set_spec_and_mainnet_gas_params(spec);
+            let tx = TxEnv::default();
+            let precompile = tempo_precompile!("TIP20Token", &cfg, |input| {
+                TIP20Token::from_address(PATH_USD_ADDRESS).expect("PATH_USD_ADDRESS is valid")
+            });
+
+            let mut db = CacheDB::new(EmptyDB::new());
+            db.insert_account_info(
+                PATH_USD_ADDRESS,
+                AccountInfo {
+                    code: Some(Bytecode::new_raw(bytes!("0xEF"))),
+                    ..Default::default()
+                },
+            );
+            let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
+            let block = evm.block.clone();
+            let evm_internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
+
+            let input = PrecompileInput {
+                data: &calldata,
+                caller: Address::ZERO,
+                internals: evm_internals,
+                gas: 1_000_000,
+                is_static: false,
+                value: U256::ZERO,
+                target_address: PATH_USD_ADDRESS,
+                bytecode_address: PATH_USD_ADDRESS,
+                reservoir: 0,
+            };
+
+            AlloyEvmPrecompile::call(&precompile, input)
+        };
+
+        // Pre-T4 (T2): state_gas_used must be 0
+        let result = call_with_spec(
+            ITIP20::balanceOfCall::new((Address::ZERO,))
+                .abi_encode()
+                .into(),
+            TempoHardfork::T2,
+        )
+        .expect("T2 balanceOf should succeed");
+        assert!(result.gas_used > 0, "precompile should consume gas");
+        assert_eq!(
+            result.state_gas_used, 0,
+            "pre-T4 precompile must not report state_gas_used, got {}",
+            result.state_gas_used
+        );
+
+        // Pre-T4 (T1): reverted call should also have state_gas_used == 0
+        let reverted =
+            call_with_spec(Bytes::new(), TempoHardfork::T1).expect("T1 empty should revert");
+        assert!(reverted.status.is_revert());
+        assert_eq!(
+            reverted.state_gas_used, 0,
+            "pre-T4 reverted precompile must not report state_gas_used"
         );
     }
 

@@ -428,7 +428,7 @@ where
         if self.inner.spec.is_t2_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(VALIDATOR_CONFIG_V2_ADDRESS)?;
         }
-        if self.inner.spec.is_t3_active_at_timestamp(timestamp) {
+        if self.inner.spec.is_t4_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(SIGNATURE_VERIFIER_ADDRESS)?;
             self.deploy_precompile_at_boundary(ADDRESS_REGISTRY_ADDRESS)?;
         }
@@ -538,7 +538,16 @@ where
     fn finish(
         self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
-        self.inner.finish()
+        // TIP-1016: block header `gas_used` = cumulative_tx_gas_used - block_state_gas_used.
+        // State gas (storage creation, account creation, code deposit) is charged
+        // to users via receipts but exempted from block capacity accounting.
+        let header_gas_used = self
+            .inner
+            .cumulative_tx_gas_used
+            .saturating_sub(self.inner.block_state_gas_used);
+        let (evm, mut result) = self.inner.finish()?;
+        result.gas_used = header_gas_used;
+        Ok((evm, result))
     }
 
     fn set_state_hook(&mut self, hook: Option<Box<dyn OnStateHook>>) {
@@ -634,7 +643,7 @@ mod tests {
         )];
         let result: ExecutionResult<TempoHaltReason> = ExecutionResult::Success {
             reason: revm::context::result::SuccessReason::Return,
-            gas: ResultGas::default().with_total_gas_spent(21000),
+            gas: ResultGas::new_with_state_gas(21000, 0, 0, 0),
             logs,
             output: revm::context::result::Output::Call(Bytes::new()),
         };
@@ -1143,7 +1152,7 @@ mod tests {
                 result: ResultAndState {
                     result: revm::context::result::ExecutionResult::Success {
                         reason: revm::context::result::SuccessReason::Return,
-                        gas: ResultGas::default().with_total_gas_spent(21000),
+                        gas: ResultGas::new_with_state_gas(21000, 0, 0, 0),
                         logs: vec![],
                         output: revm::context::result::Output::Call(Bytes::new()),
                     },
@@ -1157,9 +1166,9 @@ mod tests {
             tx: None,
         };
 
-        let gas_used = executor.commit_transaction(output).unwrap();
+        let gas_output = executor.commit_transaction(output).unwrap();
 
-        assert_eq!(gas_used.tx_gas_used(), 21000);
+        assert_eq!(gas_output.tx_gas_used(), 21000);
         assert_eq!(executor.section(), BlockSection::NonShared);
     }
 
@@ -1171,6 +1180,161 @@ mod tests {
 
         let result = executor.finish();
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_commit_transaction_tracks_total_cumulative_gas() {
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_general_gas_limit(30_000_000)
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+
+        let tx = create_legacy_tx();
+        let output = TempoTxResult {
+            inner: EthTxResult {
+                result: ResultAndState {
+                    result: revm::context::result::ExecutionResult::Success {
+                        reason: revm::context::result::SuccessReason::Return,
+                        gas: ResultGas::new_with_state_gas(21000, 0, 0, 0),
+                        logs: vec![],
+                        output: revm::context::result::Output::Call(Bytes::new()),
+                    },
+                    state: Default::default(),
+                },
+                blob_gas_used: 0,
+                tx_type: tx.tx_type(),
+            },
+            next_section: BlockSection::NonShared,
+            is_payment: false,
+            tx: None,
+        };
+
+        let gas_output = executor.commit_transaction(output).unwrap();
+
+        // With zero storage creation gas, execution gas equals total gas
+        assert_eq!(gas_output.tx_gas_used(), 21000);
+    }
+
+    #[test]
+    fn test_cumulative_gas_accumulates_across_transactions() {
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_general_gas_limit(30_000_000)
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+
+        // Commit first transaction (21000 gas)
+        let tx1 = create_legacy_tx();
+        let output1 = TempoTxResult {
+            inner: EthTxResult {
+                result: ResultAndState {
+                    result: revm::context::result::ExecutionResult::Success {
+                        reason: revm::context::result::SuccessReason::Return,
+                        gas: ResultGas::new_with_state_gas(21000, 0, 0, 0),
+                        logs: vec![],
+                        output: revm::context::result::Output::Call(Bytes::new()),
+                    },
+                    state: Default::default(),
+                },
+                blob_gas_used: 0,
+                tx_type: tx1.tx_type(),
+            },
+            next_section: BlockSection::NonShared,
+            is_payment: false,
+            tx: None,
+        };
+        executor.commit_transaction(output1).unwrap();
+
+        // Commit second transaction (50000 gas)
+        let tx2 = create_legacy_tx();
+        let output2 = TempoTxResult {
+            inner: EthTxResult {
+                result: ResultAndState {
+                    result: revm::context::result::ExecutionResult::Success {
+                        reason: revm::context::result::SuccessReason::Return,
+                        gas: ResultGas::new_with_state_gas(50000, 0, 0, 0),
+                        logs: vec![],
+                        output: revm::context::result::Output::Call(Bytes::new()),
+                    },
+                    state: Default::default(),
+                },
+                blob_gas_used: 0,
+                tx_type: tx2.tx_type(),
+            },
+            next_section: BlockSection::NonShared,
+            is_payment: false,
+            tx: None,
+        };
+        executor.commit_transaction(output2).unwrap();
+
+        // Receipts should have cumulative total gas (tracked by inner executor)
+        let receipts = executor.receipts();
+        assert_eq!(receipts[0].cumulative_gas_used, 21000);
+        assert_eq!(receipts[1].cumulative_gas_used, 71000);
+    }
+
+    #[test]
+    fn test_finish_returns_execution_gas_for_block_header() {
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_general_gas_limit(30_000_000)
+            .with_parent_beacon_block_root(B256::ZERO)
+            .with_section(BlockSection::NonShared)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+
+        // Manually set state to simulate a committed transaction
+        executor.inner.cumulative_tx_gas_used += 21000;
+
+        let (_, result) = executor.finish().unwrap();
+        // Block header gas_used = cumulative_tx_gas_used - block_state_gas_used
+        assert_eq!(result.gas_used, 21000);
+    }
+
+    #[test]
+    fn test_non_shared_gas_uses_execution_gas_only() {
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_general_gas_limit(30_000_000)
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+
+        let initial_non_shared = executor.non_shared_gas_left;
+
+        let tx = create_legacy_tx();
+        let output = TempoTxResult {
+            inner: EthTxResult {
+                result: ResultAndState {
+                    result: revm::context::result::ExecutionResult::Success {
+                        reason: revm::context::result::SuccessReason::Return,
+                        gas: ResultGas::new_with_state_gas(50_000, 0, 0, 0),
+                        logs: vec![],
+                        output: revm::context::result::Output::Call(Bytes::new()),
+                    },
+                    state: Default::default(),
+                },
+                blob_gas_used: 0,
+                tx_type: tx.tx_type(),
+            },
+            next_section: BlockSection::NonShared,
+            is_payment: false,
+            tx: None,
+        };
+        executor.commit_transaction(output).unwrap();
+
+        assert_eq!(executor.non_shared_gas_left, initial_non_shared - 50_000);
     }
 
     #[test]
@@ -1197,7 +1361,7 @@ mod tests {
         use std::sync::Arc;
         use tempo_chainspec::spec::DEV;
 
-        // Dev chainspec has t3Time: 0, so T3 is active at any timestamp.
+        // Dev chainspec has t3Time: 0, so T4 is active at any timestamp.
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()
@@ -1212,8 +1376,8 @@ mod tests {
     }
 
     #[test]
-    fn test_pre_t3_does_not_deploy_signature_verifier_code() {
-        // Moderato does not have T3 active (no t3Time set), so the code should NOT be deployed.
+    fn test_pre_t4_does_not_deploy_signature_verifier_code() {
+        // Moderato does not have T4 active (no t3Time set), so the code should NOT be deployed.
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()
@@ -1226,7 +1390,7 @@ mod tests {
         let info = acc.account_info();
         assert!(
             info.is_none() || info.unwrap().is_empty_code_hash(),
-            "SignatureVerifier code should not be deployed before T3"
+            "SignatureVerifier code should not be deployed before T4"
         );
     }
 
@@ -1267,5 +1431,55 @@ mod tests {
             calls[0].1.contains_key(&addr),
             "state hook should contain the deployed address"
         );
+    }
+
+    /// Regression test: when a transaction earns a gas refund (e.g. clearing
+    /// storage), `finish()` must return a `gas_used` that matches the last
+    /// receipt's `cumulative_gas_used` (the post-refund / tx_gas_used value).
+    ///
+    /// TIP-1016: `finish()` returns `cumulative_tx_gas_used - block_state_gas_used`
+    /// for the block header. Receipts track `tx_gas_used` (what the user pays).
+    /// The difference `receipts_total - header_gas_used` is the state gas exempted
+    /// from block capacity.
+    #[test]
+    fn test_finish_exempts_state_gas_from_header() {
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+
+        // Simulate: tx_gas_used=50000, state_gas=10000
+        let tx_gas = 50_000u64;
+        let state_gas = 10_000u64;
+        executor.inner.cumulative_tx_gas_used = tx_gas;
+        executor.inner.block_state_gas_used = state_gas;
+
+        executor.inner.receipts.push(TempoReceipt {
+            tx_type: TempoTxType::Legacy,
+            success: true,
+            cumulative_gas_used: tx_gas,
+            logs: vec![],
+        });
+
+        let (_evm, result) = executor.finish().expect("finish should succeed");
+
+        // Block header gas_used = cumulative_tx_gas_used - block_state_gas_used
+        assert_eq!(
+            result.gas_used,
+            tx_gas - state_gas,
+            "header gas_used ({}) must equal cumulative_tx_gas_used - block_state_gas_used ({})",
+            result.gas_used,
+            tx_gas - state_gas
+        );
+
+        // Receipt tracks total gas including state gas
+        let last_cumulative = result.receipts.last().unwrap().cumulative_gas_used;
+        assert_eq!(last_cumulative, tx_gas);
+
+        // Difference is the exempted state gas
+        assert_eq!(last_cumulative - result.gas_used, state_gas);
     }
 }
