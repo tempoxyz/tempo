@@ -4219,17 +4219,12 @@ mod tests {
                     &signer,
                     KeyAuthorization::unrestricted(0, SignatureType::Secp256k1, key),
                 );
-                let (mut evm, h) = make_evm(user, key, Some(signed), spec, None, true);
+                let (mut evm, h) = make_evm(user, key, Some(signed), spec, None, false);
 
                 let result = h.validate_against_state_and_deduct_caller(&mut evm);
                 if !spec.is_t1c() {
                     assert!(
-                        !matches!(
-                            result,
-                            Err(EVMError::Transaction(
-                                TempoInvalidTransaction::KeychainValidationFailed { .. }
-                            ))
-                        ),
+                        result.is_ok(),
                         "{spec:?}: chain_id=0 wildcard should be accepted pre-T1C, got: {result:?}"
                     );
                 } else {
