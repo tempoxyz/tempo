@@ -139,6 +139,8 @@ arbitrary = [
 	"reth-db-api?/arbitrary",
 	"revm/arbitrary",
 	"alloy-sol-types/arbitrary",
+	"commonware-codec?/arbitrary",
+	"commonware-cryptography?/arbitrary",
 ]
 rpc = [
 	"reth",

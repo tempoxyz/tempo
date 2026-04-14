@@ -2414,8 +2414,10 @@ version = "2026.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af69c7b97ba7225a934e29fad444f35b5d365322efaaf724e1af66c99c8c6c3"
 dependencies = [
+ "arbitrary",
  "bytes",
  "cfg-if",
+ "commonware-conformance",
  "commonware-macros",
  "paste",
  "rand 0.8.5",
@@ -2443,6 +2445,31 @@ dependencies = [
  "rayon",
  "reed-solomon-simd",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "commonware-conformance"
+version = "2026.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee09ef1b4e87a1dc01f45d317c02a79f4c9f90b845be0db41fb9699fc7107f6f"
+dependencies = [
+ "commonware-conformance-macros",
+ "commonware-macros",
+ "futures",
+ "serde",
+ "sha2 0.10.9",
+ "toml",
+]
+
+[[package]]
+name = "commonware-conformance-macros"
+version = "2026.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9619a7f9c70979c8167671bee7e44092f8379bb4c7405b4acb9b69ca1c459636"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -2483,6 +2510,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccf9bba8bf1ad51f54c57bee0824987bb397bedb60a09917d6a93509828a2dff"
 dependencies = [
  "anyhow",
+ "arbitrary",
  "aws-lc-rs",
  "blake3",
  "blst",
@@ -2509,6 +2537,20 @@ dependencies = [
  "thiserror 2.0.18",
  "x25519-dalek",
  "zeroize",
+]
+
+[[package]]
+name = "commonware-invariants"
+version = "2026.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d66f2f83bfed189b317682e344814c70a4fa6a5f68342391f601b5b975a432c"
+dependencies = [
+ "arbitrary",
+ "commonware-macros",
+ "commonware-utils",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "rand_core 0.6.4",
 ]
 
 [[package]]
@@ -2540,8 +2582,10 @@ version = "2026.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "21a44f73b02286843967888c7aa750a7a91a5cd3ac8b9bc48cd1d81331836bbb"
 dependencies = [
+ "arbitrary",
  "bytes",
  "commonware-codec",
+ "commonware-invariants",
  "commonware-macros",
  "commonware-parallel",
  "commonware-utils",
@@ -2695,6 +2739,7 @@ version = "2026.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "192eb390e3e0277770982e5e63de72f3c116c810873f3250318cae9ff0206560"
 dependencies = [
+ "arbitrary",
  "bytes",
  "cfg-if",
  "commonware-codec",
@@ -6155,6 +6200,7 @@ version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a5e44f723f1133c9deac646763579fdb3ac745e418f2a7af9cd0c431da1f20b9"
 dependencies = [
+ "arbitrary",
  "num-integer",
  "num-traits",
  "serde",
