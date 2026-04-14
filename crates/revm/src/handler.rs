@@ -4222,12 +4222,7 @@ mod tests {
                 let (mut evm, h) = make_evm(user, key, Some(signed), spec, None, true);
 
                 let result = h.validate_against_state_and_deduct_caller(&mut evm);
-                if spec.is_t1c() {
-                    assert!(
-                        result.is_err(),
-                        "{spec:?}: chain_id=0 wildcard should be rejected, got: {result:?}"
-                    );
-                } else {
+                if !spec.is_t1c() {
                     assert!(
                         !matches!(
                             result,
@@ -4235,7 +4230,12 @@ mod tests {
                                 TempoInvalidTransaction::KeychainValidationFailed { .. }
                             ))
                         ),
-                        "{spec:?}: chain_id=0 wildcard should be accepted, got: {result:?}"
+                        "{spec:?}: chain_id=0 wildcard should be accepted pre-T1C, got: {result:?}"
+                    );
+                } else {
+                    assert!(
+                        result.is_err(),
+                        "{spec:?}: chain_id=0 wildcard should be rejected post-T1C, got: {result:?}"
                     );
                 }
             }
