@@ -12260,6 +12260,8 @@ dependencies = [
  "alloy-evm",
  "alloy-primitives",
  "alloy-rlp",
+ "alloy-signer",
+ "alloy-signer-local",
  "alloy-sol-types",
  "auto_impl",
  "base64 0.22.1",
