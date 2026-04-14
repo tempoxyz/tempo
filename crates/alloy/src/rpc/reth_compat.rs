@@ -193,6 +193,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
                 None
             },
             inner: inner.try_into_tx_env(evm_env)?,
+            expiring_nonce_idx: None,
         })
     }
 }

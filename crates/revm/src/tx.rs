@@ -88,6 +88,11 @@ pub struct TempoTxEnv {
 
     /// AA-specific transaction environment (boxed to keep TempoTxEnv lean for non-AA tx)
     pub tempo_tx_env: Option<Box<TempoBatchCallEnv>>,
+
+    /// Perf optimization for expiring nonce transactions.
+    ///
+    /// Stores how many other expiring nonce transactions are there in the block before this one.
+    pub expiring_nonce_idx: Option<usize>,
 }
 
 impl TempoTxEnv {
@@ -358,6 +363,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 // override_key_id is only used for gas estimation, not actual execution
                 override_key_id: None,
             })),
+            expiring_nonce_idx: None,
         }
     }
 }
@@ -371,6 +377,7 @@ impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
                 is_system_tx: tx.is_system_tx(),
                 fee_payer: None,
                 tempo_tx_env: None, // Non-AA transaction
+                expiring_nonce_idx: None,
             },
             TempoTxEnvelope::Eip2930(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
             TempoTxEnvelope::Eip1559(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),

@@ -443,7 +443,9 @@ where
         &mut self,
         tx: impl ExecutableTx<Self>,
     ) -> Result<Self::Result, BlockExecutionError> {
-        let (tx_env, recovered) = tx.into_parts();
+        let (mut tx_env, recovered) = tx.into_parts();
+        // Remove any prewarming-specific context that was added to the tx env.
+        tx_env.expiring_nonce_idx.take();
 
         let next_section = self.validate_tx_pre_execution(recovered.tx())?;
 
