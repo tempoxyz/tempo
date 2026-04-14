@@ -670,23 +670,26 @@ jobs:
           BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
           FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
         run: |
-          nu tempo.nu bench \
-            --preset "$BENCH_PRESET" \
-            --mode dev \
-            --bloat "$BENCH_BLOAT" \
-            --duration "$BENCH_DURATION" \
-            --tps "$BENCH_TPS" \
-            --no-infra \
-            --baseline "$BASELINE_REF" \
-            --feature "$FEATURE_REF" \
-            --bench-datadir "/reth-bench/tempo_${BENCH_BLOAT}mb" \
-            --tune \
-            $([ "$BENCH_SAMPLY" = "true" ] && echo "--samply" || true) \
-            $([ "$BENCH_TRACY" != "off" ] && echo "--tracy $BENCH_TRACY --tracy-seconds $BENCH_TRACY_SECONDS --tracy-offset $BENCH_TRACY_OFFSET" || true) \
-            $([ -n "$BENCH_BASELINE_NODE_ARGS" ] && echo "--baseline-node-args \"$BENCH_BASELINE_NODE_ARGS\"" || true) \
-            $([ -n "$BENCH_FEATURE_NODE_ARGS" ] && echo "--feature-node-args \"$BENCH_FEATURE_NODE_ARGS\"" || true) \
-            $([ -n "$BENCH_BASELINE_HARDFORK" ] && echo "--baseline-hardfork $BENCH_BASELINE_HARDFORK --feature-hardfork $BENCH_FEATURE_HARDFORK" || true) \
-            $([ "$BENCH_FORCE_BLOAT" = "true" ] && echo "--force" || true)
+          cmd=(
+            nu tempo.nu bench
+            --preset "$BENCH_PRESET"
+            --mode dev
+            --bloat "$BENCH_BLOAT"
+            --duration "$BENCH_DURATION"
+            --tps "$BENCH_TPS"
+            --no-infra
+            --baseline "$BASELINE_REF"
+            --feature "$FEATURE_REF"
+            --bench-datadir "/reth-bench/tempo_${BENCH_BLOAT}mb"
+            --tune
+          )
+          [ "$BENCH_SAMPLY" = "true" ] && cmd+=(--samply)
+          [ "$BENCH_TRACY" != "off" ] && cmd+=(--tracy "$BENCH_TRACY" --tracy-seconds "$BENCH_TRACY_SECONDS" --tracy-offset "$BENCH_TRACY_OFFSET")
+          [ -n "$BENCH_BASELINE_NODE_ARGS" ] && cmd+=(--baseline-node-args="$BENCH_BASELINE_NODE_ARGS")
+          [ -n "$BENCH_FEATURE_NODE_ARGS" ] && cmd+=(--feature-node-args="$BENCH_FEATURE_NODE_ARGS")
+          [ -n "$BENCH_BASELINE_HARDFORK" ] && cmd+=(--baseline-hardfork "$BENCH_BASELINE_HARDFORK" --feature-hardfork "$BENCH_FEATURE_HARDFORK")
+          [ "$BENCH_FORCE_BLOAT" = "true" ] && cmd+=(--force)
+          "${cmd[@]}"
 
       - name: Find results directory
         id: results-dir
