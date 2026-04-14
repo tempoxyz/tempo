@@ -64,3 +64,6 @@ reth-provider.workspace = true
 
 tokio = { workspace = true, features = ["macros", "sync"] }
 tracing.workspace = true
+
+[dev-dependencies]
+tempo-primitives = { workspace = true, features = ["arbitrary"] }
