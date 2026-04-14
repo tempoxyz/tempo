@@ -274,36 +274,17 @@ fn calculate_key_authorization_gas(
     }
 }
 
-/// Computes the adjusted initial gas for AA transaction execution.
+/// Returns the adjusted initial gas for transaction execution.
 ///
-/// For T1+: Uses `evm_initial_gas` which includes key_authorization gas tracking.
-/// For pre-T1: Uses `init_and_floor_gas` directly to maintain backward compatibility,
-/// since pre-T1 doesn't have key_authorization gas tracking and Genesis has special
-/// handling where nonce_2d_gas is added to init_and_floor_gas but not to evm.initial_gas.
-///
-/// `evm_initial_state_gas` captures additional state gas from runtime checks in
-/// `validate_against_state_and_deduct_caller` (e.g., 2D nonce + CREATE + caller nonce == 0).
+/// All state-dependent gas adjustments (2D nonce account creation, key authorization,
+/// scope validation) are now propagated into `init_and_floor_gas` during `pre_execution`,
+/// so this function simply passes through the struct.
 #[inline]
 fn adjusted_initial_gas(
-    spec: tempo_chainspec::hardfork::TempoHardfork,
-    evm_initial_gas: u64,
-    evm_initial_state_gas: u64,
+    _spec: tempo_chainspec::hardfork::TempoHardfork,
     init_and_floor_gas: &InitialAndFloorGas,
 ) -> InitialAndFloorGas {
-    if spec.is_t1() && init_and_floor_gas.initial_total_gas > 0 {
-        let state_gas = init_and_floor_gas.initial_state_gas + evm_initial_state_gas;
-        let total_gas = evm_initial_gas + evm_initial_state_gas;
-        // evm_initial_gas = init_and_floor_gas.initial_total_gas (possibly + key_auth delta).
-        // In the new revm, initial_total_gas already includes initial_state_gas, so
-        // evm_initial_gas already has init_and_floor_gas.initial_state_gas baked in.
-        //
-        // We only add evm_initial_state_gas (Tempo-specific state gas from
-        // validate_against_state_and_deduct_caller, e.g. 2D nonce account creation).
-        InitialAndFloorGas::new_with_state_gas(total_gas, state_gas, init_and_floor_gas.floor_gas)
-    } else {
-        // Pre-T1 or system calls (initial_total_gas == 0): pass through unchanged.
-        *init_and_floor_gas
-    }
+    *init_and_floor_gas
 }
 
 /// Tempo EVM [`Handler`] implementation with Tempo specific modifications:
@@ -626,6 +607,18 @@ where
                 // state gas is not charged.
                 let total_state_gas = accumulated_state_gas_spent;
 
+                // TIP-1016: Include initial_state_gas in total_gas_spent to match
+                // the reservoir model formula: tx_gas_used = tx.gas - gas_left - reservoir.
+                // In single-call, the reservoir mechanism handles this automatically.
+                // In multi-call, we bypass the reservoir, so we add initial_state_gas
+                // directly to ensure ResultGas.total_gas_spent includes state gas.
+                // This ensures tx_gas_used() returns the full gas the user pays for,
+                // which is critical for correct gas estimation and receipt accounting.
+                // Note: state_gas_spent on Gas is NOT adjusted here because
+                // build_result_gas already adds init_and_floor_gas.initial_state_gas.
+                let initial_state_gas = init_and_floor_gas.initial_state_gas;
+                let total_gas_spent = total_gas_spent.saturating_add(initial_state_gas);
+
                 // Use flattened gas reconstruction (Gas::new_spent + erase_cost) for robustness
                 // under the EIP-8037 reservoir model. This avoids ambiguity from Gas::new's
                 // reservoir initialization.
@@ -662,8 +655,16 @@ where
 
         let total_gas_spent = gas_limit - remaining_gas;
 
+        // TIP-1016: Include initial_state_gas in total_gas_spent to match
+        // the reservoir model formula: tx_gas_used = tx.gas - gas_left - reservoir.
+        // See the equivalent addition in the failure path above for full rationale.
+        let initial_state_gas = init_and_floor_gas.initial_state_gas;
+        let total_gas_spent = total_gas_spent.saturating_add(initial_state_gas);
+
         // Use flattened gas reconstruction (Gas::new_spent + erase_cost) for robustness
         // under the EIP-8037 reservoir model, and preserve accumulated state_gas_spent.
+        // Note: state_gas_spent on Gas is NOT adjusted because build_result_gas
+        // already adds init_and_floor_gas.initial_state_gas.
         let mut corrected_gas = Gas::new_spent(gas_limit);
         corrected_gas.erase_cost(gas_limit - total_gas_spent);
         corrected_gas.set_refund(accumulated_gas_refund);
@@ -746,12 +747,7 @@ where
         I: Inspector<TempoContext<DB>, EthInterpreter>,
     {
         let spec = *evm.ctx_ref().cfg().spec();
-        let adjusted_gas = adjusted_initial_gas(
-            spec,
-            evm.initial_gas,
-            evm.initial_state_gas,
-            init_and_floor_gas,
-        );
+        let adjusted_gas = adjusted_initial_gas(spec, init_and_floor_gas);
 
         let tx = evm.tx();
 
@@ -794,12 +790,7 @@ where
         init_and_floor_gas: &InitialAndFloorGas,
     ) -> Result<FrameResult, Self::Error> {
         let spec = evm.ctx_ref().cfg().spec();
-        let adjusted_gas = adjusted_initial_gas(
-            *spec,
-            evm.initial_gas,
-            evm.initial_state_gas,
-            init_and_floor_gas,
-        );
+        let adjusted_gas = adjusted_initial_gas(*spec, init_and_floor_gas);
         let tx = evm.tx();
 
         if let Some(oog) = check_gas_limit(*spec, tx, &adjusted_gas) {
@@ -827,6 +818,43 @@ where
         MainnetHandler::default()
             .execution_result(evm, result, result_gas)
             .map(|result| result.map_haltreason(Into::into))
+    }
+
+    /// Overridden pre_execution to synchronize `init_and_floor_gas` with state-dependent
+    /// gas adjustments made during `validate_against_state_and_deduct_caller`.
+    ///
+    /// After the parent's pre_execution runs, `evm.initial_gas` and `evm.initial_state_gas`
+    /// may have been updated (e.g., 2D nonce account creation, key authorization, scope
+    /// validation). We propagate these into `init_and_floor_gas` so that `post_execution`'s
+    /// `build_result_gas` uses the same gas values as `execution`, ensuring deterministic
+    /// state gas accounting between payload building and validation.
+    #[inline]
+    fn pre_execution(
+        &self,
+        evm: &mut Self::Evm,
+        init_and_floor_gas: &mut InitialAndFloorGas,
+    ) -> Result<u64, Self::Error> {
+        // Run the standard pre_execution pipeline (validate_against_state, load_accounts,
+        // apply_eip7702_auth_list).
+        self.validate_against_state_and_deduct_caller(evm)?;
+        self.load_accounts(evm)?;
+        let gas = self.apply_eip7702_auth_list(evm, init_and_floor_gas)?;
+
+        // TIP-1016: Synchronize init_and_floor_gas with state-dependent gas adjustments.
+        // evm.initial_gas includes regular gas additions (key_auth delta, scope validation).
+        // evm.initial_state_gas includes state gas additions (account creation state gas).
+        // Both must be reflected in init_and_floor_gas so that post_execution's
+        // build_result_gas produces the same ResultGas as the execution path used.
+        let spec = evm.ctx_ref().cfg().spec();
+        if spec.is_t1() && init_and_floor_gas.initial_total_gas > 0 {
+            // Propagate evm.initial_state_gas into init_and_floor_gas.
+            // evm.initial_gas already contains init_and_floor_gas.initial_total_gas as base,
+            // plus regular gas additions. Adding evm.initial_state_gas gives the full total.
+            init_and_floor_gas.initial_state_gas += evm.initial_state_gas;
+            init_and_floor_gas.initial_total_gas = evm.initial_gas + evm.initial_state_gas;
+        }
+
+        Ok(gas)
     }
 
     /// Override apply_eip7702_auth_list to support AA transactions with authorization lists.
@@ -1336,7 +1364,7 @@ where
                 .unwrap_or(false);
 
             // Always need to set the transaction key for Keychain signatures
-            let stored_key_expiry = StorageCtx::enter_precompile(
+            let (scope_validation_gas, stored_key_expiry) = StorageCtx::enter_precompile(
                 journal,
                 block,
                 cfg,
@@ -1397,11 +1425,45 @@ where
                         .set_transaction_key(access_key_addr)
                         .map_err(|e| EVMError::Custom(e.to_string()))?;
 
-                    Ok::<_, EVMError<_, TempoInvalidTransaction>>(key_expiry)
+                    let scope_validation_gas = if spec.is_t4() {
+                        let gas_before = StorageCtx.gas_used();
+
+                        let user_address = keychain_sig.user_address;
+                        for (to, input) in tx.calls() {
+                            keychain
+                                .validate_call_scope_for_transaction(
+                                    user_address,
+                                    access_key_addr,
+                                    to,
+                                    input,
+                                )
+                                .map_err(|e| TempoInvalidTransaction::KeychainValidationFailed {
+                                    reason: format!("{e:?}"),
+                                })?;
+                        }
+
+                        StorageCtx.gas_used().saturating_sub(gas_before)
+                    } else {
+                        0
+                    };
+
+                    Ok::<_, EVMError<_, TempoInvalidTransaction>>((
+                        scope_validation_gas,
+                        key_expiry,
+                    ))
                 },
             )?;
 
             evm.key_expiry = stored_key_expiry;
+            evm.initial_gas += scope_validation_gas;
+
+            if spec.is_t3() && tx.gas_limit() < evm.initial_gas {
+                return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
+                    gas_limit: tx.gas_limit(),
+                    initial_gas: evm.initial_gas,
+                }
+                .into());
+            }
         }
 
         // Short-circuit if there is no spending for this transaction and `collectFeePreTx`
@@ -2000,19 +2062,13 @@ where
         batch_gas.initial_total_gas += nonce_2d_gas;
     }
 
-    // Validate gas limit is sufficient for initial gas
-    // State gas is only included in the intrinsic check for T4+, since pre-T4
-    // transactions were never validated against state gas.
-    let total_intrinsic = batch_gas.initial_total_gas
-        + if spec.is_t4() {
-            batch_gas.initial_state_gas
-        } else {
-            0
-        };
-    if gas_limit < total_intrinsic {
+    // Validate gas limit is sufficient for initial gas.
+    // initial_total_gas already includes initial_state_gas as a subset,
+    // so no need to add state gas separately.
+    if gas_limit < batch_gas.initial_total_gas {
         return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
             gas_limit,
-            initial_gas: total_intrinsic,
+            initial_gas: batch_gas.initial_total_gas,
         }
         .into());
     }
@@ -2073,12 +2129,7 @@ where
         init_and_floor_gas: &InitialAndFloorGas,
     ) -> Result<FrameResult, Self::Error> {
         let spec = evm.ctx_ref().cfg().spec();
-        let adjusted_gas = adjusted_initial_gas(
-            *spec,
-            evm.initial_gas,
-            evm.initial_state_gas,
-            init_and_floor_gas,
-        );
+        let adjusted_gas = adjusted_initial_gas(*spec, init_and_floor_gas);
 
         let tx = evm.tx();
 
@@ -3263,7 +3314,7 @@ mod tests {
     }
 
     #[test]
-    fn test_t3_scope_validation_moves_to_execution() {
+    fn test_t4_scope_validation_gas_rechecked_against_gas_limit() {
         const CALL_SCOPE_SELECTOR: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
 
         let caller = Address::repeat_byte(0x11);
@@ -3279,7 +3330,7 @@ mod tests {
             ));
 
         let mut cfg = CfgEnv::<TempoHardfork>::default();
-        cfg.spec = TempoHardfork::T3;
+        cfg.spec = TempoHardfork::T4;
 
         let tx_env = TempoTxEnv {
             inner: revm::context::TxEnv {
@@ -3311,7 +3362,7 @@ mod tests {
             .with_new_journal(create_test_journal());
 
         let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
-        let mut handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+        let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
 
         StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
             let mut keychain = AccountKeychain::new();
@@ -3357,33 +3408,19 @@ mod tests {
 
         evm.inner.ctx.tx.inner.gas_limit = init_gas.initial_total_gas;
 
-        handler
+        let err = handler
             .validate_against_state_and_deduct_caller(&mut evm)
-            .expect("scope validation no longer runs during state validation");
-
-        let result = handler
-            .execution(&mut evm, &init_gas)
-            .expect("execution should return a frame result");
+            .expect_err("scope validation gas should force a gas-limit recheck");
 
         assert!(
             matches!(
-                result.instruction_result(),
-                revm::interpreter::InstructionResult::OutOfGas
+                err.as_invalid_tx_err(),
+                Some(TempoInvalidTransaction::EthInvalidTransaction(
+                    InvalidTransaction::CallGasCostMoreThanGasLimit { .. }
+                ))
             ),
-            "expected scope validation to fail during execution with OOG, got: {:?}",
-            result.instruction_result()
+            "expected CallGasCostMoreThanGasLimit, got: {err:?}"
         );
-        assert_eq!(
-            result.gas().limit(),
-            init_gas.initial_total_gas,
-            "batch OOG should report the full tx gas budget"
-        );
-        assert_eq!(
-            result.gas().total_gas_spent(),
-            init_gas.initial_total_gas,
-            "batch OOG should consume the full tx gas budget"
-        );
-        assert_eq!(result.gas().refunded(), 0);
     }
 
     #[test]
@@ -4904,51 +4941,49 @@ mod tests {
         );
     }
 
-    /// TIP-1016: adjusted_initial_gas must fold state gas into initial_total_gas.
+    /// TIP-1016: adjusted_initial_gas passes through init_and_floor_gas on T1+.
     ///
-    /// Tempo uses an additive convention (initial_total_gas does not include Tempo's
-    /// state gas), but revm expects initial_total_gas >= initial_state_gas. This function
-    /// bridges the two by adding init_and_floor_gas.initial_state_gas to initial_total_gas.
+    /// State gas from runtime checks is now propagated into init_and_floor_gas during
+    /// pre_execution, so adjusted_initial_gas simply passes through the struct.
     #[test]
     fn test_state_gas_adjusted_initial_gas_preserves_state_gas() {
-        // init simulates revm output: total=100k (already includes state=57k), state=57k
+        // init simulates pre_execution output with all gas synchronized
         let init = InitialAndFloorGas::new_with_state_gas(100_000, 57_000, 21_000);
 
-        // T4: no runtime state gas delta
-        // evm_initial_gas = 100k (already includes state gas from revm)
-        let adjusted = adjusted_initial_gas(TempoHardfork::T4, 100_000, 0, &init);
+        // T4: passes through unchanged
+        let adjusted = adjusted_initial_gas(TempoHardfork::T4, &init);
         assert_eq!(
             adjusted.initial_state_gas, 57_000,
             "adjusted_initial_gas must preserve initial_state_gas for T4"
         );
         assert_eq!(
             adjusted.initial_total_gas, 100_000,
-            "initial_total_gas should equal evm_initial_gas (state gas already included)"
+            "initial_total_gas should pass through unchanged"
         );
 
         // T1: same behavior
-        let adjusted_t1 = adjusted_initial_gas(TempoHardfork::T1, 100_000, 0, &init);
+        let adjusted_t1 = adjusted_initial_gas(TempoHardfork::T1, &init);
         assert_eq!(
             adjusted_t1.initial_state_gas, 57_000,
             "adjusted_initial_gas must preserve initial_state_gas for T1"
         );
         assert_eq!(
             adjusted_t1.initial_total_gas, 100_000,
-            "initial_total_gas should equal evm_initial_gas (state gas already included)"
+            "initial_total_gas should pass through unchanged"
         );
 
-        // T4: with runtime state gas delta (evm_initial_state_gas from validate_against_state)
-        // evm_initial_gas already includes init.initial_state_gas, we only add evm_initial_state_gas
-        let adjusted_with_extra = adjusted_initial_gas(TempoHardfork::T4, 100_000, 245_000, &init);
+        // T4: with runtime state gas already propagated into init_and_floor_gas
+        let init_with_extra =
+            InitialAndFloorGas::new_with_state_gas(345_000, 57_000 + 245_000, 21_000);
+        let adjusted_with_extra = adjusted_initial_gas(TempoHardfork::T4, &init_with_extra);
         assert_eq!(
             adjusted_with_extra.initial_state_gas,
             57_000 + 245_000,
-            "adjusted_initial_gas must add evm_initial_state_gas for T4"
+            "adjusted_initial_gas must preserve propagated state gas for T4"
         );
         assert_eq!(
-            adjusted_with_extra.initial_total_gas,
-            100_000 + 245_000,
-            "initial_total_gas folds both runtime state gas and init state gas"
+            adjusted_with_extra.initial_total_gas, 345_000,
+            "initial_total_gas should pass through with propagated state gas"
         );
     }
 

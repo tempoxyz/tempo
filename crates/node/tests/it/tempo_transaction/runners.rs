@@ -32,9 +32,9 @@ fn pre_t3_tip1011_rejection_reason(
     let key_authorization = key_authorization?;
 
     if key_authorization.authorization.has_periodic_limits() {
-        Some("periodic token limits are not active before T3")
+        Some("periodic token limits are not active before T4")
     } else if key_authorization.authorization.has_call_scopes() {
-        Some("call scopes are not active before T3")
+        Some("call scopes are not active before T4")
     } else {
         None
     }
