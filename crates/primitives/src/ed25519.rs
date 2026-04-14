@@ -1,5 +1,3 @@
-//! Wrapper for [`ed25519`] to use in tempo headers.
-
 use alloy_primitives::B256;
 use alloy_rlp::{Decodable, Encodable};
 use ed25519_consensus::{VerificationKey, VerificationKeyBytes};
