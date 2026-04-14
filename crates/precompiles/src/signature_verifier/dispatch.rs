@@ -26,7 +26,7 @@ impl Precompile for SignatureVerifier {
             ));
         }
 
-        dispatch_call(calldata, ISVCalls::abi_decode, |call| match call {
+        dispatch_call(calldata, &[], ISVCalls::abi_decode, |call| match call {
             ISVCalls::recover(call) => view(call, |c| self.recover(c.hash, c.signature)),
             ISVCalls::verify(call) => view(call, |c| {
                 self.recover(c.hash, c.signature).map(|sig| sig == c.signer)

@@ -218,6 +218,11 @@ impl TempoPooledTransaction {
         let _ = self.resolved_fee_token.set(fee_token);
     }
 
+    /// Returns the resolved fee token cached during validation, if available.
+    pub fn resolved_fee_token(&self) -> Option<Address> {
+        self.resolved_fee_token.get().copied()
+    }
+
     /// Returns the expiring nonce hash for AA expiring nonce transactions.
     pub fn expiring_nonce_hash(&self) -> Option<B256> {
         let aa_tx = self.inner().as_aa()?;

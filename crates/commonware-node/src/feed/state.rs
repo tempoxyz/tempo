@@ -10,8 +10,8 @@ use commonware_consensus::{
 };
 use commonware_cryptography::bls12381::primitives::variant::{MinSig, Variant};
 use parking_lot::RwLock;
+use reth_node_core::rpc::compat::FromConsensusHeader;
 use reth_provider::HeaderProvider as _;
-use reth_rpc_convert::FromConsensusHeader;
 use std::sync::{Arc, OnceLock};
 use tempo_alloy::rpc::TempoHeaderResponse;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -39,14 +39,16 @@ pub(super) struct FeedState {
 ///
 /// Stores transitions from a starting epoch back towards genesis.
 /// Can be extended for newer epochs or subsectioned for older queries.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct IdentityTransitionCache {
     /// The epoch from which the chain was built (inclusive).
     from_epoch: u64,
+    /// Public key at `from_epoch`.
+    from_pubkey: <MinSig as Variant>::Public,
     /// The earliest epoch we walked to (0 if we reached genesis).
     to_epoch: u64,
-    /// Identity at `from_epoch`.
-    identity: String,
+    /// The public key at `to_epoch`.
+    to_pubkey: <MinSig as Variant>::Public,
     /// Cached transitions, ordered newest to oldest.
     transitions: Arc<Vec<IdentityTransition>>,
 }
@@ -146,9 +148,12 @@ impl FeedStateHandle {
         epocher: &FixedEpocher,
         start_epoch: u64,
     ) -> Result<(), IdentityProofError> {
-        // Check if the cache already covers this epoch
+        // Check if the cache already covers this epoch.
+        // If the cache is incomplete, skip the early return so we re-attempt
+        // the walk from where it previously stopped.
         let cached = self.identity_cache.read().clone();
         if let Some(cache) = &cached
+            && cache.to_epoch == 0
             && (cache.to_epoch..=cache.from_epoch).contains(&start_epoch)
         {
             return Ok(());
@@ -158,23 +163,17 @@ impl FeedStateHandle {
         let epoch_outcome = get_outcome(execution, epocher, start_epoch.saturating_sub(1))?;
         let epoch_pubkey = *epoch_outcome.sharing().public();
 
-        // Fast path: if the identity matches the cached one, no new transitions
+        // Fast path: if the identity matches the cached one and the cache is
+        // complete, just extend the upper bound — no new transitions needed.
         if let Some(cache) = &cached
             && start_epoch > cache.from_epoch
+            && cache.to_epoch == 0
+            && cache.from_pubkey == epoch_pubkey
         {
-            let cache_pubkey_bytes = hex::decode(&cache.identity)
-                .map_err(|_| IdentityProofError::MalformedData(cache.from_epoch))?;
-            let cache_pubkey =
-                <MinSig as Variant>::Public::read(&mut cache_pubkey_bytes.as_slice())
-                    .map_err(|_| IdentityProofError::MalformedData(cache.from_epoch))?;
-
-            if cache_pubkey == epoch_pubkey {
-                let mut updated = cache.clone();
-                updated.from_epoch = start_epoch;
-
-                *self.identity_cache.write() = Some(updated);
-                return Ok(());
-            }
+            let mut updated = cache.clone();
+            updated.from_epoch = start_epoch;
+            *self.identity_cache.write() = Some(updated);
+            return Ok(());
         }
 
         // Walk backwards to find all identity transitions
@@ -182,22 +181,37 @@ impl FeedStateHandle {
         let mut pubkey = epoch_pubkey;
         let mut search_epoch = start_epoch.saturating_sub(1);
         while search_epoch > 0 {
-            // Absorb cached transitions and stop.
+            // Absorb cached transitions. If the cache reached genesis we can
+            // stop; otherwise update pubkey and fall through to continue the
+            // walk from where the cache left off.
             if let Some(cache) = &cached
-                && search_epoch <= cache.from_epoch
+                && search_epoch < cache.from_epoch
+                && search_epoch > cache.to_epoch
             {
                 transitions.extend(cache.transitions.iter().cloned());
                 search_epoch = cache.to_epoch;
-                // We dont continue downwards past to_epoch since the walk only stops if
-                // DKG parsing fails (Internal Error state) or data is unavailable (Pruned).
-                // Both which are not recoverable in the current runtime.
-                break;
+                if cache.to_epoch == 0 {
+                    break;
+                }
+
+                pubkey = cache.to_pubkey;
             }
 
-            let prev_outcome = get_outcome(execution, epocher, search_epoch - 1)?;
-            let prev_pubkey = *prev_outcome.sharing().public();
+            let prev_outcome = match get_outcome(execution, epocher, search_epoch - 1) {
+                Ok(outcome) => outcome,
+                Err(IdentityProofError::PrunedData(height)) => {
+                    tracing::info!(
+                        %height,
+                        search_epoch = search_epoch - 1,
+                        "stopping identity transition walk early (header not available)"
+                    );
+                    break;
+                }
+                Err(e) => return Err(e),
+            };
 
             // If keys differ, there was a full DKG at search_epoch
+            let prev_pubkey = *prev_outcome.sharing().public();
             if pubkey != prev_pubkey {
                 let height = epocher
                     .last(Epoch::new(search_epoch))
@@ -225,6 +239,10 @@ impl FeedStateHandle {
                     );
                     break;
                 };
+
+                if finalization.proposal.payload.0 != header.hash() {
+                    return Err(IdentityProofError::MalformedData(height.get()));
+                }
 
                 transitions.push(IdentityTransition {
                     transition_epoch: search_epoch,
@@ -269,23 +287,28 @@ impl FeedStateHandle {
             }
         }
 
-        // Build updated cache. The walk absorbs cached transitions in the correct order
+        // Build updated cache. The walk absorbs cached transitions in the correct order.
+        // `pubkey` is the identity at the point where the walk stopped.
         let new_cache = if let Some(c) = &cached {
+            let (from, from_pk) = if start_epoch >= c.from_epoch {
+                (start_epoch, epoch_pubkey)
+            } else {
+                (c.from_epoch, c.from_pubkey)
+            };
+
             IdentityTransitionCache {
-                from_epoch: start_epoch.max(c.from_epoch),
-                to_epoch: search_epoch.min(c.to_epoch),
+                from_epoch: from,
+                from_pubkey: from_pk,
+                to_epoch: search_epoch,
+                to_pubkey: pubkey,
                 transitions: Arc::new(transitions),
-                identity: if start_epoch >= c.from_epoch {
-                    hex::encode(epoch_pubkey.encode())
-                } else {
-                    c.identity.clone()
-                },
             }
         } else {
             IdentityTransitionCache {
                 from_epoch: start_epoch,
+                from_pubkey: epoch_pubkey,
                 to_epoch: search_epoch,
-                identity: hex::encode(epoch_pubkey.encode()),
+                to_pubkey: pubkey,
                 transitions: Arc::new(transitions),
             }
         };
@@ -423,7 +446,7 @@ impl ConsensusFeed for FeedStateHandle {
             .filter(|t| t.transition_epoch > start_epoch)
             .last()
             .map(|t| t.old_identity.clone())
-            .unwrap_or_else(|| cache.identity.clone());
+            .unwrap_or_else(|| hex::encode(cache.from_pubkey.encode()));
 
         // If not full, only return the most recent real transition (exclude genesis marker)
         let transitions = if full {
@@ -452,12 +475,14 @@ fn get_outcome(
     let height = epocher
         .last(Epoch::new(epoch))
         .expect("fixed epocher is valid for all epochs");
+
     let header = execution
         .provider
         .header_by_number(height.get())
         .ok()
         .flatten()
         .ok_or(IdentityProofError::PrunedData(height.get()))?;
+
     OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
         .map_err(|_| IdentityProofError::MalformedData(height.get()))
 }

@@ -17,6 +17,7 @@ impl Precompile for AddressRegistry {
 
         dispatch_call(
             calldata,
+            &[],
             IAddressRegistryCalls::abi_decode,
             |call| match call {
                 // Registration

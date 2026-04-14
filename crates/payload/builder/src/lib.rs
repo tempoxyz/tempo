@@ -48,7 +48,9 @@ use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_consensus::TEMPO_SHARED_GAS_DIVISOR;
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, evm::TempoEvm};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
-use tempo_precompiles::{storage::StorageCtx, validator_config_v2::ValidatorConfigV2};
+use tempo_precompiles::{
+    storage::StorageCtx, tip_fee_manager::TipFeeManager, validator_config_v2::ValidatorConfigV2,
+};
 use tempo_primitives::{
     RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoTxEnvelope,
     subblock::PartialValidatorKey,
@@ -66,8 +68,11 @@ use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 /// Returns true if a subblock has any expired transactions for the given timestamp.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
     subblock.transactions.iter().any(|tx| {
-        tx.as_aa()
-            .is_some_and(|tx| tx.tx().valid_before.is_some_and(|valid| valid <= timestamp))
+        tx.as_aa().is_some_and(|tx| {
+            tx.tx()
+                .valid_before
+                .is_some_and(|valid| valid.get() <= timestamp)
+        })
     })
 }
 
@@ -406,6 +411,7 @@ where
             .record(prepare_system_txs_elapsed);
 
         let base_fee = builder.evm_mut().block().basefee;
+        let validator_fee_token = resolve_validator_fee_token(&mut builder)?;
         let pool_fetch_start = Instant::now();
         let mut best_txs = best_txs(BestTransactionsAttributes::new(
             base_fee,
@@ -537,8 +543,21 @@ where
                 .record(elapsed);
             trace!(?elapsed, "Transaction executed");
 
-            // update and add to total fees
-            total_fees += calc_gas_balance_spending(gas_used, effective_gas_price);
+            // Score payload value by actual validator payout, applying the AMM
+            // haircut when the transaction's fee token differs from the validator's.
+            let nominal_spending = calc_gas_balance_spending(gas_used, effective_gas_price);
+            if let Some(fee_token) = pool_tx.transaction.resolved_fee_token() {
+                if fee_token == validator_fee_token {
+                    total_fees += nominal_spending;
+                } else {
+                    total_fees += tempo_precompiles::tip_fee_manager::amm::compute_amount_out(
+                        nominal_spending,
+                    )
+                    .map_err(PayloadBuilderError::other)?;
+                }
+            } else {
+                warn!("no resolved fee token for a pool transaction")
+            }
             cumulative_gas_used += gas_used;
             if !is_payment {
                 non_payment_gas_used += gas_used;
@@ -824,8 +843,8 @@ pub fn is_more_subblocks(
 /// Overrides the block's fee recipient (beneficiary) with the value from the
 /// V2 validator config contract, if the contract is active and returns a
 /// non-zero address for the given `public_key`.
-fn maybe_override_fee_recipient<DB: Database, I>(
-    builder: &mut impl BlockBuilder<Executor: BlockExecutor<Evm = TempoEvm<DB, I>>>,
+fn maybe_override_fee_recipient<DB: Database>(
+    builder: &mut impl BlockBuilder<Executor: BlockExecutor<Evm = TempoEvm<DB>>>,
     attributes: &TempoPayloadAttributes,
 ) {
     let Some(public_key) = attributes.proposer_public_key() else {
@@ -867,20 +886,38 @@ fn maybe_override_fee_recipient<DB: Database, I>(
     }
 }
 
+/// Resolves the validator's preferred fee token.
+fn resolve_validator_fee_token(
+    builder: &mut impl BlockBuilder<Executor: BlockExecutor<Evm = TempoEvm<impl Database>>>,
+) -> Result<Address, PayloadBuilderError> {
+    let ctx = builder.evm_mut().ctx_mut();
+    let beneficiary = ctx.block.beneficiary;
+    StorageCtx::enter_ctx(ctx, || {
+        TipFeeManager::new()
+            .get_validator_token(beneficiary)
+            .map_err(PayloadBuilderError::other)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use alloy_consensus::BlockBody;
     use alloy_primitives::{Address, B256, Bytes, Signature};
+    use core::num::NonZeroU64;
     use reth_primitives_traits::SealedBlock;
     use tempo_primitives::{
         AASigned, Block, SignedSubBlock, SubBlock, SubBlockVersion, TempoSignature,
         TempoTransaction,
     };
 
+    fn nz(value: u64) -> NonZeroU64 {
+        NonZeroU64::new(value).expect("test valid_before must be non-zero")
+    }
+
     trait TestExt {
         fn random() -> Self;
-        fn with_valid_before(_: Option<u64>) -> Self
+        fn with_valid_before(_: Option<NonZeroU64>) -> Self
         where
             Self: Sized,
         {
@@ -904,7 +941,7 @@ mod tests {
             Self::with_valid_before(None)
         }
 
-        fn with_valid_before(valid_before: Option<u64>) -> Self {
+        fn with_valid_before(valid_before: Option<NonZeroU64>) -> Self {
             let tx = TempoTxEnvelope::AA(AASigned::new_unhashed(
                 TempoTransaction {
                     valid_before,
@@ -1016,7 +1053,7 @@ mod tests {
     #[test]
     fn test_has_expired_transactions_boundary() {
         // valid_before == timestamp → expired
-        let subblock = RecoveredSubBlock::with_valid_before(Some(1000));
+        let subblock = RecoveredSubBlock::with_valid_before(Some(nz(1000)));
         assert!(has_expired_transactions(&subblock, 1000));
 
         // valid_before < timestamp → expired

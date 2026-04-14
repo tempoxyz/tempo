@@ -4,8 +4,8 @@ use crate::rpc::{TempoHeaderResponse, TempoTransactionReceipt, TempoTransactionR
 use alloy_consensus::{ReceiptWithBloom, TxType, error::UnsupportedTransactionType};
 
 use alloy_network::{
-    BuildResult, EthereumWallet, IntoWallet, Network, NetworkWallet, TransactionBuilder,
-    TransactionBuilderError, UnbuiltTransactionError,
+    BuildResult, Ethereum, EthereumWallet, IntoWallet, Network, NetworkTransactionBuilder,
+    NetworkWallet, TransactionBuilder, TransactionBuilderError, UnbuiltTransactionError,
 };
 use alloy_primitives::{Address, Bytes, ChainId, TxKind, U256};
 use alloy_provider::fillers::{
@@ -40,7 +40,7 @@ impl Network for TempoNetwork {
     type BlockResponse = Block<Transaction<TempoTxEnvelope>, Self::HeaderResponse>;
 }
 
-impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
+impl TransactionBuilder for TempoTransactionRequest {
     fn chain_id(&self) -> Option<ChainId> {
         TransactionBuilder::chain_id(&self.inner)
     }
@@ -136,14 +136,16 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     fn set_access_list(&mut self, access_list: AccessList) {
         TransactionBuilder::set_access_list(&mut self.inner, access_list)
     }
+}
 
+impl NetworkTransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     fn complete_type(&self, ty: TempoTxType) -> Result<(), Vec<&'static str>> {
         match ty {
             TempoTxType::AA => self.complete_aa(),
             TempoTxType::Legacy
             | TempoTxType::Eip2930
             | TempoTxType::Eip1559
-            | TempoTxType::Eip7702 => TransactionBuilder::complete_type(
+            | TempoTxType::Eip7702 => NetworkTransactionBuilder::<Ethereum>::complete_type(
                 &self.inner,
                 ty.try_into().expect("tempo tx types checked"),
             ),
@@ -151,11 +153,11 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     }
 
     fn can_submit(&self) -> bool {
-        TransactionBuilder::can_submit(&self.inner)
+        NetworkTransactionBuilder::<Ethereum>::can_submit(&self.inner)
     }
 
     fn can_build(&self) -> bool {
-        TransactionBuilder::can_build(&self.inner) || self.can_build_aa()
+        NetworkTransactionBuilder::<Ethereum>::can_build(&self.inner) || self.can_build_aa()
     }
 
     fn output_tx_type(&self) -> TempoTxType {
@@ -173,7 +175,7 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
         {
             TempoTxType::AA
         } else {
-            match TransactionBuilder::output_tx_type(&self.inner) {
+            match NetworkTransactionBuilder::<Ethereum>::output_tx_type(&self.inner) {
                 TxType::Legacy => TempoTxType::Legacy,
                 TxType::Eip2930 => TempoTxType::Eip2930,
                 TxType::Eip1559 => TempoTxType::Eip1559,
@@ -190,9 +192,11 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
             TempoTxType::Legacy
             | TempoTxType::Eip2930
             | TempoTxType::Eip1559
-            | TempoTxType::Eip7702 => TransactionBuilder::output_tx_type_checked(&self.inner)?
-                .try_into()
-                .ok(),
+            | TempoTxType::Eip7702 => {
+                NetworkTransactionBuilder::<Ethereum>::output_tx_type_checked(&self.inner)?
+                    .try_into()
+                    .ok()
+            }
         }
     }
 
@@ -526,13 +530,13 @@ mod tests {
     #[test]
     fn output_tx_type_validity_window_is_aa() {
         let req = TempoTransactionRequest {
-            valid_before: Some(1000),
+            valid_before: Some(core::num::NonZeroU64::new(1000).unwrap()),
             ..Default::default()
         };
         assert_eq!(req.output_tx_type(), TempoTxType::AA);
 
         let req = TempoTransactionRequest {
-            valid_after: Some(500),
+            valid_after: Some(core::num::NonZeroU64::new(500).unwrap()),
             ..Default::default()
         };
         assert_eq!(req.output_tx_type(), TempoTxType::AA);

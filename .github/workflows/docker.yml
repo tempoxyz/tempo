@@ -211,7 +211,8 @@ jobs:
               "event": "registry_package",
               "data": {
                 "tag": "sha-${{ steps.shortsha.outputs.shortsha }}",
-                "sha": "${{ github.sha }}"
+                "sha": "${{ github.sha }}",
+                "branch": "${{ github.head_ref || github.ref_name }}"
               }
             }'
 
@@ -233,6 +234,7 @@ jobs:
               "event": "registry_package",
               "data": {
                 "tag": "nightly",
-                "sha": "${{ github.sha }}"
+                "sha": "${{ github.sha }}",
+                "branch": "${{ github.head_ref || github.ref_name }}"
               }
             }'

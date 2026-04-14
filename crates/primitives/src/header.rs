@@ -155,6 +155,14 @@ impl BlockHeader for TempoHeader {
         self.inner.requests_hash()
     }
 
+    fn block_access_list_hash(&self) -> Option<B256> {
+        self.inner.block_access_list_hash()
+    }
+
+    fn slot_number(&self) -> Option<u64> {
+        self.inner.slot_number()
+    }
+
     fn extra_data(&self) -> &Bytes {
         self.inner.extra_data()
     }
@@ -173,16 +181,10 @@ mod tests {
 
     #[test]
     fn consensus_context_rlp_roundtrip() {
-        use rand_08::{SeedableRng, rngs::StdRng};
-
-        let mut rand = StdRng::seed_from_u64(42);
-        let proposer =
-            PublicKey::from(ed25519_consensus::SigningKey::new(&mut rand).verification_key());
-
         let ctx = TempoConsensusContext {
             epoch: 1,
             view: 5,
-            proposer,
+            proposer: PublicKey::from_seed([0xab; 32]),
             parent_view: 4,
         };
 
