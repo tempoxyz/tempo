@@ -239,6 +239,11 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     }
 
     #[inline]
+    fn gas_limit(&self) -> u64 {
+        self.gas_limit
+    }
+
+    #[inline]
     fn gas_used(&self) -> u64 {
         self.gas_limit - self.gas_remaining
     }

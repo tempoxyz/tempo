@@ -591,8 +591,8 @@ contract SignatureVerifierInvariantTest is BaseTest {
                           INTERNAL HELPERS
     //////////////////////////////////////////////////////////////*/
 
-    bytes4 internal constant _INVALID_FORMAT_SEL = ISignatureVerifier.InvalidFormat.selector;
-    bytes4 internal constant _INVALID_SIG_SEL = ISignatureVerifier.InvalidSignature.selector;
+    bytes4 internal immutable _INVALID_FORMAT_SEL = ISignatureVerifier.InvalidFormat.selector;
+    bytes4 internal immutable _INVALID_SIG_SEL = ISignatureVerifier.InvalidSignature.selector;
 
     /// @dev Returns true if either recover() or verify() accepted (bug), false if both reverted.
     ///      Also checks that recover()'s revert error is one of the two known selectors

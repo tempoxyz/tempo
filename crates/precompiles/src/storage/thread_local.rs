@@ -172,6 +172,11 @@ impl StorageCtx {
         Self::with_storage(|s| s.refund_gas(gas))
     }
 
+    /// Returns the gas limit for this precompile call.
+    pub fn gas_limit(&self) -> u64 {
+        Self::with_storage(|s| s.gas_limit())
+    }
+
     /// Returns the gas used so far.
     pub fn gas_used(&self) -> u64 {
         Self::with_storage(|s| s.gas_used())

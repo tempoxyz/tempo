@@ -11,7 +11,6 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use url::Url;
 
 pub(crate) const DEFAULT_DOWNLOAD_URL: &str = "https://snapshots.tempoxyz.dev/4217";
-const SNAPSHOT_API_URL: &str = "https://snapshots.tempoxyz.dev/api/snapshots";
 
 /// Default OTLP logs filter level for telemetry.
 const DEFAULT_LOGS_OTLP_FILTER: &str = "debug";
@@ -157,7 +156,7 @@ fn init_download_urls() {
         ],
         default_base_url: Cow::Borrowed(DEFAULT_DOWNLOAD_URL),
         default_chain_aware_base_url: None,
-        snapshot_api_url: Cow::Borrowed(SNAPSHOT_API_URL),
+        snapshot_api_url: Cow::Borrowed("https://snapshots.reth.rs/api/snapshots"),
         long_help: None,
     };
 
@@ -246,7 +245,6 @@ fn init_network_defaults() {
 }
 
 pub(crate) fn init_defaults() {
-    init_storage_defaults();
     init_download_urls();
     init_payload_builder_defaults();
     init_txpool_defaults();

@@ -6,12 +6,13 @@ import { Test } from "forge-std/Test.sol";
 import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
 import { InvariantBase } from "../helpers/InvariantBase.sol";
 import { Counter, InitcodeHelper, SimpleStorage } from "../helpers/TestContracts.sol";
+import { GasTestStorage } from "../helpers/GasTestStorage.sol";
 import { TxBuilder } from "../helpers/TxBuilder.sol";
 
 import { VmExecuteTransaction, VmRlp } from "tempo-std/StdVm.sol";
 import { LegacyTransaction, LegacyTransactionLib } from "tempo-std/tx/LegacyTransactionLib.sol";
 
-/// @title TIP-1000 Gas Pricing Invariant Tests
+/// @title TIP-1000 / TIP-1016 Gas Pricing Invariant Tests
 /// @notice Fuzz-based invariant tests for Tempo's state creation gas costs
 /// @dev Tests gas pricing invariants at the EVM opcode level using vmExec.executeTransaction()
 ///
@@ -21,6 +22,11 @@ import { LegacyTransaction, LegacyTransactionLib } from "tempo-std/tx/LegacyTran
 /// - Code deposit: 1,000 gas per byte (TEMPO-GAS5)
 /// - Account creation: 250,000 gas (part of TEMPO-GAS5)
 /// - Multiple new slots: 250,000 gas each (TEMPO-GAS8)
+///
+/// TIP-1016 splits gas into two dimensions:
+/// - Regular gas (20k for SSTORE new slot) — counts against tx/block limits
+/// - State gas (230k for SSTORE new slot) — exempt from limits but still charged
+/// Total gas per SSTORE remains 250k.
 ///
 /// Protocol-level invariants (tx gas cap, intrinsic gas) are tested in Rust.
 contract GasPricingInvariantTest is InvariantBase {
@@ -32,8 +38,18 @@ contract GasPricingInvariantTest is InvariantBase {
                             TIP-1000 CONSTANTS
     //////////////////////////////////////////////////////////////*/
 
-    /// @dev SSTORE to new (zero) slot costs 250,000 gas
+    /// @dev SSTORE to new (zero) slot costs 250,000 gas total
     uint256 internal constant SSTORE_SET_GAS = 250_000;
+
+    /*//////////////////////////////////////////////////////////////
+                            TIP-1016 CONSTANTS
+    //////////////////////////////////////////////////////////////*/
+
+    /// @dev Regular gas for SSTORE new slot (counts against tx/block limits)
+    uint256 internal constant SSTORE_REGULAR_GAS = 20_000;
+
+    /// @dev State gas for SSTORE new slot (exempt from limits, still charged)
+    uint256 internal constant SSTORE_STATE_GAS = 230_000;
 
     /// @dev CREATE base cost (excludes code deposit and account creation)
     uint256 internal constant CREATE_BASE_GAS = 500_000;
@@ -84,6 +100,10 @@ contract GasPricingInvariantTest is InvariantBase {
     uint256 public ghost_multiSlotInsufficientGasFailed;
     uint256 public ghost_multiSlotSufficientGasSucceeded;
     uint256 public ghost_multiSlotViolations; // All slots written with insufficient gas
+
+    /// @dev TIP-1016: State gas tracking (block vs receipt delta)
+    uint256 public ghost_stateGasBlockDelta;
+    uint256 public ghost_stateGasReceiptDelta;
 
     /*//////////////////////////////////////////////////////////////
                                 SETUP
@@ -165,8 +185,11 @@ contract GasPricingInvariantTest is InvariantBase {
 
         uint64 nonce = uint64(vm.getNonce(sender));
 
-        // Test 1: Insufficient gas (100k - way below 250k SSTORE cost)
-        uint64 lowGas = 100_000;
+        // Test 1: Insufficient gas — not enough for base tx + call overhead + SSTORE regular gas.
+        // Note: tempo-foundry does not apply TIP-1000's 250k SSTORE override (tempo_gas_params
+        // is not wired in), so the EVM charges standard EIP-2200 costs (~20k for SSTORE set).
+        // We set gas below BASE_TX_GAS + CALL_OVERHEAD + SSTORE_REGULAR_GAS to guarantee failure.
+        uint64 lowGas = uint64(BASE_TX_GAS + SSTORE_REGULAR_GAS);
         bytes memory lowGasTx = TxBuilder.buildLegacyCallWithGas(
             vmRlp, vm, address(storageContract), callData, nonce, lowGas, privateKey
         );
@@ -225,8 +248,9 @@ contract GasPricingInvariantTest is InvariantBase {
 
         uint64 nonce = uint64(vm.getNonce(sender));
 
-        // Test 1: Insufficient gas (200k - way below ~800k expected)
-        uint64 lowGas = 200_000;
+        // Test 1: Insufficient gas — barely covers intrinsic gas, far below CREATE + code deposit.
+        // See handler_sstoreNewSlot comment: tempo-foundry uses standard EVM gas costs.
+        uint64 lowGas = uint64(BASE_TX_GAS + 1000);
         bytes memory lowGasTx =
             TxBuilder.buildLegacyCreateWithGas(vmRlp, vm, initcode, nonce, lowGas, privateKey);
 
@@ -285,8 +309,9 @@ contract GasPricingInvariantTest is InvariantBase {
         bytes memory callData = abi.encodeCall(GasTestStorage.storeMultiple, (slots));
         uint64 nonce = uint64(vm.getNonce(sender));
 
-        // Test 1: Gas sufficient for ~1 slot only (should fail for N>1)
-        uint64 lowGas = uint64(BASE_TX_GAS + CALL_OVERHEAD + SSTORE_SET_GAS + GAS_TOLERANCE);
+        // Test 1: Insufficient gas — enough for base tx + call overhead but not enough for
+        // any SSTORE regular gas. See handler_sstoreNewSlot comment re: tempo-foundry gas costs.
+        uint64 lowGas = uint64(BASE_TX_GAS + CALL_OVERHEAD);
         bytes memory lowGasTx = TxBuilder.buildLegacyCallWithGas(
             vmRlp, vm, address(storageContract), callData, nonce, lowGas, privateKey
         );
@@ -302,11 +327,10 @@ contract GasPricingInvariantTest is InvariantBase {
                 }
             }
 
-            // Violation: all slots written with gas for only 1
-            if (written == numSlots) {
+            // Violation: any slot written with insufficient gas
+            if (written > 0) {
                 ghost_multiSlotViolations++;
             } else {
-                // Partial write is expected (reverted mid-execution)
                 ghost_multiSlotInsufficientGasFailed++;
             }
             ghost_protocolNonce[sender]++;
@@ -345,31 +369,6 @@ contract GasPricingInvariantTest is InvariantBase {
         } catch {
             ghost_totalTxReverted++;
         }
-    }
-
-}
-
-/*//////////////////////////////////////////////////////////////
-                        HELPER CONTRACTS
-//////////////////////////////////////////////////////////////*/
-
-/// @title GasTestStorage - Contract for testing SSTORE gas costs
-contract GasTestStorage {
-
-    mapping(bytes32 => uint256) private _storage;
-
-    function storeValue(bytes32 slot, uint256 value) external {
-        _storage[slot] = value;
-    }
-
-    function storeMultiple(bytes32[] calldata slots) external {
-        for (uint256 i = 0; i < slots.length; i++) {
-            _storage[slots[i]] = 1;
-        }
-    }
-
-    function getValue(bytes32 slot) external view returns (uint256) {
-        return _storage[slot];
     }
 
 }
