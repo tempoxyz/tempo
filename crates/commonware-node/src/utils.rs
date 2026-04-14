@@ -82,9 +82,19 @@ impl<F: Future> FusedFuture for OptionFuture<F> {
 mod tests {
     use std::task::Poll;
 
+    use commonware_cryptography::ed25519::PublicKey as CommonwarePublicKey;
     use futures::{channel::oneshot, executor::block_on, pin_mut};
+    use tempo_primitives::ed25519::PublicKey as TempoPublicKey;
 
-    use crate::utils::OptionFuture;
+    use crate::utils::{OptionFuture, public_key_to_tempo_primitive};
+
+    #[test]
+    fn commonware_public_key_to_tempo_primitive_conversion() {
+        let tempo_key = TempoPublicKey::from_seed([42u8; 32]);
+        let cw_key = CommonwarePublicKey::from(tempo_key.get());
+        assert_eq!(public_key_to_tempo_primitive(&cw_key), tempo_key);
+        assert_eq!(tempo_key.get().to_bytes(), cw_key.as_ref());
+    }
 
     #[test]
     fn option_future() {
