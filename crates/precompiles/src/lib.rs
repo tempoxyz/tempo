@@ -51,7 +51,7 @@ use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
 use revm::{
     context::CfgEnv,
     handler::EthPrecompiles,
-    precompile::{PrecompileError, PrecompileId, PrecompileOutput, PrecompileResult},
+    precompile::{PrecompileHalt, PrecompileId, PrecompileOutput, PrecompileResult},
     primitives::hardfork::SpecId,
 };
 
@@ -320,6 +320,12 @@ fn fill_precompile_output(mut output: PrecompileOutput, storage: &StorageCtx) ->
     output.gas_used = storage.gas_used();
     if storage.spec().is_t4() {
         output.state_gas_used = storage.gas_used();
+        // T4+: propagate SSTORE refunds via reservoir so the TempoPrecompileProvider
+        // wrapper can apply them with record_refund. Pre-T4 blocks were executed
+        // without refund propagation, so we cannot change their gas accounting.
+        if output.is_success() && storage.gas_refunded() != 0 {
+            output.reservoir = storage.gas_refunded() as u64;
+        }
     }
     output
 }
@@ -403,8 +409,12 @@ pub(crate) fn dispatch_call<T>(
                 &storage,
             ));
         } else {
-            return Err(PrecompileError::Fatal(
-                "Invalid input: missing function selector".into(),
+            return Ok(fill_precompile_output(
+                PrecompileOutput::halt(
+                    PrecompileHalt::Other("Invalid input: missing function selector".into()),
+                    0,
+                ),
+                &storage,
             ));
         }
     }
@@ -585,6 +595,61 @@ mod tests {
         );
     }
 
+    /// Verifies that early-return revert paths in precompile `call()` methods correctly
+    /// report gas_used. When a TIP-20 precompile reverts before reaching `dispatch_call`
+    /// (e.g., uninitialized token), the gas consumed for input decoding and account info
+    /// checks must still be reported in the `PrecompileOutput.gas_used` field.
+    #[test]
+    fn test_early_return_revert_reports_gas_used() {
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.set_spec_and_mainnet_gas_params(TempoHardfork::T1);
+        let tx = TxEnv::default();
+        let precompile = tempo_precompile!("TIP20Token", &cfg, |input| {
+            TIP20Token::from_address(PATH_USD_ADDRESS).expect("PATH_USD_ADDRESS is valid")
+        });
+
+        let token_address = PATH_USD_ADDRESS;
+
+        // NO bytecode set -- token is uninitialized, early revert before dispatch_call
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
+        let block = evm.block.clone();
+        let evm_internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
+
+        let calldata = Bytes::from(
+            ITIP20::transferCall {
+                to: Address::random(),
+                amount: U256::from(100),
+            }
+            .abi_encode(),
+        );
+
+        let input = PrecompileInput {
+            data: &calldata,
+            caller: Address::ZERO,
+            internals: evm_internals,
+            gas: 1_000_000,
+            is_static: false,
+            value: U256::ZERO,
+            target_address: token_address,
+            bytecode_address: token_address,
+            reservoir: 0,
+        };
+
+        let result = AlloyEvmPrecompile::call(&precompile, input);
+        let output = result.expect("expected Ok");
+        assert!(
+            output.status.is_revert(),
+            "uninitialized token should revert"
+        );
+        // Gas used should include input_cost(68) = 18 + with_account_info cost
+        assert!(
+            output.gas_used > 0,
+            "early-return revert should report non-zero gas_used, got {}",
+            output.gas_used
+        );
+    }
+
     #[test]
     fn test_invalid_calldata_hardfork_behavior() {
         let call_with_spec = |calldata: Bytes, spec: TempoHardfork| {
@@ -627,7 +692,8 @@ mod tests {
             .expect("T1: expected Ok with reverted output");
         assert!(empty.is_revert(), "T1: expected reverted output");
         assert!(empty.bytes.is_empty());
-        assert!(empty.gas_used != 0);
+        // Gas was consumed
+        assert!(empty.gas_used > 0);
 
         // T1: unknown selector should return a reverted output with UnknownFunctionSelector error
         let unknown = call_with_spec(Bytes::from([0xAA; 4]), TempoHardfork::T1)
@@ -643,14 +709,12 @@ mod tests {
         // Verify gas is tracked for both cases (unknown selector may cost slightly more due `INPUT_PER_WORD_COST`)
         assert!(unknown.gas_used >= empty.gas_used);
 
-        // Pre-T1 (T0): invalid calldata should return PrecompileError
+        // Pre-T1 (T0): invalid calldata should return a halted output
         let result = call_with_spec(Bytes::new(), TempoHardfork::T0);
+        let output = result.expect("T0: expected Ok with halted output");
         assert!(
-            matches!(
-                &result,
-                Err(PrecompileError::Fatal(msg)) if msg.contains("missing function selector")
-            ),
-            "T0: expected PrecompileError for invalid calldata, got {result:?}"
+            output.status.is_halt(),
+            "T0: expected halted output for invalid calldata"
         );
     }
 
@@ -716,6 +780,77 @@ mod tests {
         assert_eq!(
             reverted.state_gas_used, 0,
             "pre-T4 reverted precompile must not report state_gas_used"
+        );
+    }
+
+    /// T4+ precompile calls that trigger SSTORE refunds must encode the refund
+    /// in the `reservoir` field of `PrecompileOutput`, so the wrapper
+    /// `PrecompileProvider` can extract and apply it via `record_refund`.
+    /// Pre-T4 blocks were executed without refund propagation, so they must NOT
+    /// encode refunds.
+    #[test]
+    fn test_precompile_gas_refund_in_reservoir_t4() {
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.set_spec_and_mainnet_gas_params(TempoHardfork::T4);
+
+        let sender = Address::repeat_byte(0x01);
+        let recipient = Address::repeat_byte(0x02);
+
+        let precompile = tempo_precompile!("TIP20Token", &cfg, |input| {
+            TIP20Token::from_address(PATH_USD_ADDRESS).expect("PATH_USD_ADDRESS is valid")
+        });
+
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
+
+        // Set up TIP20 token state: initialize pathUSD and mint tokens to sender
+        {
+            let block = evm.block.clone();
+            let tx = TxEnv::default();
+            let internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
+            let mut provider =
+                crate::storage::evm::EvmPrecompileStorageProvider::new_max_gas(internals, &cfg);
+            crate::storage::StorageCtx::enter(&mut provider, || {
+                crate::test_util::TIP20Setup::path_usd(sender)
+                    .with_issuer(sender)
+                    .with_mint(sender, U256::from(1000))
+                    .apply()
+            })
+            .expect("TIP20 setup should succeed");
+        }
+
+        // Transfer ALL tokens from sender to recipient (sender balance: 1000 → 0)
+        // This triggers SSTORE refund because the balance slot goes from nonzero to zero.
+        let calldata: Bytes = ITIP20::transferCall {
+            to: recipient,
+            amount: U256::from(1000),
+        }
+        .abi_encode()
+        .into();
+
+        let block = evm.block.clone();
+        let tx = TxEnv::default();
+        let evm_internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
+
+        let input = PrecompileInput {
+            data: &calldata,
+            caller: sender,
+            internals: evm_internals,
+            gas: 1_000_000,
+            is_static: false,
+            value: U256::ZERO,
+            target_address: PATH_USD_ADDRESS,
+            bytecode_address: PATH_USD_ADDRESS,
+            reservoir: 0,
+        };
+
+        let output = AlloyEvmPrecompile::call(&precompile, input).expect("transfer should succeed");
+        assert!(output.is_success(), "transfer should be successful");
+
+        // T4+: gas refund must be encoded in the reservoir field
+        assert!(
+            output.reservoir > 0,
+            "T4+ successful precompile with SSTORE refund must encode refund in reservoir, got 0"
         );
     }
 

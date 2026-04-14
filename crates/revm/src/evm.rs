@@ -5,15 +5,88 @@ use revm::{
     Context, Inspector,
     context::{CfgEnv, ContextError, Evm, FrameStack},
     handler::{
-        EthFrame, EvmTr, FrameInitOrResult, FrameTr, ItemOrResult, instructions::EthInstructions,
+        EthFrame, EvmTr, FrameInitOrResult, FrameTr, ItemOrResult, PrecompileProvider,
+        instructions::EthInstructions,
     },
     inspector::InspectorEvmTr,
-    interpreter::interpreter::EthInterpreter,
+    interpreter::{CallInputs, InterpreterResult, interpreter::EthInterpreter},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;
+
+/// Wrapper around [`PrecompilesMap`] that extracts gas refunds encoded in the reservoir
+/// field by [`fill_precompile_output`] for T4+ hardforks.
+///
+/// For T4+, Tempo precompiles encode the SSTORE gas refund in the `reservoir` field of
+/// `PrecompileOutput`. This wrapper extracts it after `PrecompilesMap::run()`, applies it
+/// via `record_refund`, and zeros the reservoir. Pre-T4 blocks were executed without
+/// refund propagation from precompiles, so we cannot change their gas accounting.
+#[derive(Debug)]
+pub struct TempoPrecompileProvider {
+    inner: PrecompilesMap,
+    spec: TempoHardfork,
+}
+
+impl TempoPrecompileProvider {
+    /// Returns a reference to the inner [`PrecompilesMap`].
+    pub fn inner(&self) -> &PrecompilesMap {
+        &self.inner
+    }
+
+    /// Returns a mutable reference to the inner [`PrecompilesMap`].
+    pub fn inner_mut(&mut self) -> &mut PrecompilesMap {
+        &mut self.inner
+    }
+}
+
+impl<DB: Database> PrecompileProvider<TempoContext<DB>> for TempoPrecompileProvider {
+    type Output = InterpreterResult;
+
+    fn set_spec(&mut self, spec: TempoHardfork) -> bool {
+        self.spec = spec;
+        // PrecompilesMap::set_spec always returns false (precompiles are set at construction)
+        false
+    }
+
+    fn run(
+        &mut self,
+        context: &mut TempoContext<DB>,
+        inputs: &CallInputs,
+    ) -> Result<Option<InterpreterResult>, String> {
+        let result = <PrecompilesMap as PrecompileProvider<TempoContext<DB>>>::run(
+            &mut self.inner,
+            context,
+            inputs,
+        )?;
+
+        // T4+: extract SSTORE gas refund encoded in the reservoir field by
+        // fill_precompile_output and apply it via record_refund. Pre-T4 blocks
+        // were executed without refund propagation from precompiles, so we must
+        // not change their gas accounting retroactively.
+        if self.spec.is_t4()
+            && let Some(mut result) = result
+        {
+            let reservoir = result.gas.reservoir();
+            if result.is_ok() && reservoir != 0 {
+                result.gas.record_refund(reservoir as i64);
+                result.gas.set_reservoir(0);
+            }
+            return Ok(Some(result));
+        }
+
+        Ok(result)
+    }
+
+    fn warm_addresses(&self) -> Box<impl Iterator<Item = Address>> {
+        Box::new(self.inner.addresses().copied())
+    }
+
+    fn contains(&self, address: &Address) -> bool {
+        self.inner.get(address).is_some()
+    }
+}
 
 /// TempoEvm extends the Evm with Tempo specific types and logic.
 #[derive(Debug, derive_more::Deref, derive_more::DerefMut)]
@@ -26,7 +99,7 @@ pub struct TempoEvm<DB: Database, I> {
         TempoContext<DB>,
         I,
         EthInstructions<EthInterpreter, TempoContext<DB>>,
-        PrecompilesMap,
+        TempoPrecompileProvider,
         EthFrame<EthInterpreter>,
     >,
     /// The fee collected in `collectFeePreTx` call.
@@ -58,7 +131,10 @@ pub struct TempoEvm<DB: Database, I> {
 impl<DB: Database, I> TempoEvm<DB, I> {
     /// Create a new Tempo EVM.
     pub fn new(ctx: TempoContext<DB>, inspector: I) -> Self {
-        let precompiles = tempo_precompiles::tempo_precompiles(&ctx.cfg);
+        let precompiles = TempoPrecompileProvider {
+            inner: tempo_precompiles::tempo_precompiles(&ctx.cfg),
+            spec: ctx.cfg.spec,
+        };
 
         Self::new_inner(Evm {
             instruction: instructions::tempo_instructions(ctx.cfg.spec),
@@ -77,7 +153,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             TempoContext<DB>,
             I,
             EthInstructions<EthInterpreter, TempoContext<DB>>,
-            PrecompilesMap,
+            TempoPrecompileProvider,
             EthFrame<EthInterpreter>,
         >,
     ) -> Self {
@@ -101,7 +177,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     }
 
     /// Consumes self and returns a new Evm type with given Precompiles.
-    pub fn with_precompiles(self, precompiles: PrecompilesMap) -> Self {
+    pub fn with_precompiles(self, precompiles: TempoPrecompileProvider) -> Self {
         Self::new_inner(self.inner.with_precompiles(precompiles))
     }
 
@@ -124,7 +200,7 @@ where
 {
     type Context = TempoContext<DB>;
     type Instructions = EthInstructions<EthInterpreter, TempoContext<DB>>;
-    type Precompiles = PrecompilesMap;
+    type Precompiles = TempoPrecompileProvider;
     type Frame = EthFrame<EthInterpreter>;
 
     fn all(
