@@ -42,12 +42,12 @@ serde_json.workspace = true
 once_cell = { version = "1.21", default-features = false }
 
 # Cryptography
-commonware-codec = { workspace = true, optional = true }
-commonware-cryptography = { workspace = true, optional = true }
-sha2.workspace = true
-base64.workspace = true
 aws-lc-rs = { version = "1.16.2", optional = true, default-features = false, features = ["alloc", "non-fips", "ring-sig-verify"] }
+base64.workspace = true
+ed25519-consensus.workspace = true
 p256 = { workspace = true, features = ["ecdsa"] }
+rand_08 = { workspace = true, optional = true }
+sha2.workspace = true
 
 [dev-dependencies]
 arbitrary.workspace = true
@@ -64,6 +64,7 @@ alloy-signer.workspace = true
 alloy-sol-types.workspace = true
 alloy-signer-local.workspace = true
 rand.workspace = true
+rand_08.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [features]
@@ -76,10 +77,9 @@ std = [
 	"alloy-rlp/std",
 	"alloy-serde?/std",
 	"dep:aws-lc-rs",
-	"dep:commonware-codec",
-	"dep:commonware-cryptography",
 	"base64/std",
 	"derive_more/std",
+	"ed25519-consensus/std",
 	"once_cell/std",
 	"p256/std",
 	"reth-ethereum-primitives?/std",
@@ -127,6 +127,7 @@ serde-bincode-compat = [
 arbitrary = [
 	"std",
 	"dep:arbitrary",
+	"rand_08",
 	"serde",
 	"alloy-consensus/arbitrary",
 	"alloy-primitives/arbitrary",
@@ -139,8 +140,6 @@ arbitrary = [
 	"reth-db-api?/arbitrary",
 	"revm/arbitrary",
 	"alloy-sol-types/arbitrary",
-	"commonware-codec?/arbitrary",
-	"commonware-cryptography?/arbitrary",
 ]
 rpc = [
 	"reth",

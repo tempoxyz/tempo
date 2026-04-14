@@ -6,6 +6,8 @@
 
 pub use alloy_consensus::Header;
 
+pub mod ed25519;
+
 pub mod transaction;
 pub use transaction::{
     AASigned, MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH,
