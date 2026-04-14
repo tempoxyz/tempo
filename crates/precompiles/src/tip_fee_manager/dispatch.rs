@@ -10,7 +10,7 @@ use crate::{
     view,
 };
 use alloy::{primitives::Address, sol_types::SolInterface};
-use revm::precompile::{PrecompileError, PrecompileResult};
+use revm::precompile::{PrecompileHalt, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::{IFeeManager::IFeeManagerCalls, ITIPFeeAMM::ITIPFeeAMMCalls};
 
 /// Unified calldata discriminant for both `IFeeManager` and `ITIPFeeAMM` selectors.
@@ -34,9 +34,9 @@ impl TipFeeManagerCall {
 
 impl Precompile for TipFeeManager {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
-        self.storage
-            .deduct_gas(input_cost(calldata.len()))
-            .map_err(|_| PrecompileError::OutOfGas)?;
+        if self.storage.deduct_gas(input_cost(calldata.len())).is_err() {
+            return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, 0));
+        }
 
         dispatch_call(
             calldata,
@@ -364,7 +364,7 @@ mod tests {
 
             let result =
                 fee_manager.call(&ITIPFeeAMM::MIN_LIQUIDITYCall {}.abi_encode(), sender)?;
-            assert!(!result.reverted);
+            assert!(!result.is_revert());
             assert_eq!(U256::abi_decode(&result.bytes)?, MIN_LIQUIDITY);
 
             let result = fee_manager.call(&ITIPFeeAMM::MCall {}.abi_encode(), sender)?;

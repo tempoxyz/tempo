@@ -14,9 +14,10 @@ use alloy::{
     primitives::{Selector, U256},
     sol_types::{Panic, PanicKind, SolError, SolInterface},
 };
+use alloy_evm::EvmInternalsError;
 use revm::{
-    context::journaled_state::JournalLoadErasedError,
-    precompile::{PrecompileError, PrecompileOutput, PrecompileResult},
+    context::journaled_state::JournalLoadError,
+    precompile::{PrecompileError, PrecompileHalt, PrecompileOutput, PrecompileResult},
 };
 use tempo_contracts::precompiles::{
     AccountKeychainError, AddrRegistryError, FeeManagerError, NonceError, RolesAuthError,
@@ -99,11 +100,28 @@ pub enum TempoPrecompileError {
     Fatal(String),
 }
 
-impl From<JournalLoadErasedError> for TempoPrecompileError {
-    fn from(value: JournalLoadErasedError) -> Self {
+impl From<EvmInternalsError> for TempoPrecompileError {
+    fn from(value: EvmInternalsError) -> Self {
         match value {
-            JournalLoadErasedError::DBError(e) => Self::Fatal(e.to_string()),
-            JournalLoadErasedError::ColdLoadSkipped => Self::OutOfGas,
+            EvmInternalsError::Database(e) => Self::Fatal(e.to_string()),
+        }
+    }
+}
+
+impl From<JournalLoadError<EvmInternalsError>> for TempoPrecompileError {
+    fn from(value: JournalLoadError<EvmInternalsError>) -> Self {
+        match value {
+            JournalLoadError::DBError(e) => Self::from(e),
+            JournalLoadError::ColdLoadSkipped => Self::OutOfGas,
+        }
+    }
+}
+
+impl From<JournalLoadError<revm::context::ErasedError>> for TempoPrecompileError {
+    fn from(value: JournalLoadError<revm::context::ErasedError>) -> Self {
+        match value {
+            JournalLoadError::DBError(e) => Self::Fatal(e.to_string()),
+            JournalLoadError::ColdLoadSkipped => Self::OutOfGas,
         }
     }
 }
@@ -152,7 +170,7 @@ impl TempoPrecompileError {
     /// ABI-encodes this error and wraps it as a reverted [`PrecompileResult`].
     ///
     /// # Errors
-    /// - `PrecompileError::OutOfGas` — if the variant is [`OutOfGas`](Self::OutOfGas)
+    /// - `PrecompileOutput::halt(PrecompileHalt::OutOfGas, ..)` — if the variant is [`OutOfGas`](Self::OutOfGas)
     /// - `PrecompileError::Fatal` — if the variant is [`Fatal`](Self::Fatal)
     pub fn into_precompile_result(self, gas: u64) -> PrecompileResult {
         let bytes = match self {
@@ -177,7 +195,7 @@ impl TempoPrecompileError {
             Self::AccountKeychainError(e) => e.abi_encode().into(),
             Self::SignatureVerifierError(e) => e.abi_encode().into(),
             Self::OutOfGas => {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, 0));
             }
             Self::UnknownFunctionSelector(selector) => UnknownFunctionSelector {
                 selector: selector.into(),
@@ -188,7 +206,7 @@ impl TempoPrecompileError {
                 return Err(PrecompileError::Fatal(msg));
             }
         };
-        Ok(PrecompileOutput::new_reverted(gas, bytes))
+        Ok(PrecompileOutput::revert(gas, bytes, 0))
     }
 }
 
@@ -282,7 +300,7 @@ impl<T> IntoPrecompileResult<T> for Result<T> {
         encode_ok: impl FnOnce(T) -> alloy::primitives::Bytes,
     ) -> PrecompileResult {
         match self {
-            Ok(res) => Ok(PrecompileOutput::new(gas, encode_ok(res))),
+            Ok(res) => Ok(PrecompileOutput::new(gas, encode_ok(res), 0)),
             Err(err) => err.into_precompile_result(gas),
         }
     }

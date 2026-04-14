@@ -1,5 +1,5 @@
 use alloy::primitives::{Address, Log, LogData, U256};
-use alloy_evm::{EvmInternals, EvmInternalsError};
+use alloy_evm::EvmInternals;
 use revm::{
     context::{Block, CfgEnv, journaled_state::JournalCheckpoint},
     context_interface::cfg::{GasParams, gas},
@@ -293,12 +293,6 @@ impl EvmPrecompileStorageProvider<'_> {
             top,
             "out-of-order checkpoint {op} (expected top of stack)"
         );
-    }
-}
-
-impl From<EvmInternalsError> for TempoPrecompileError {
-    fn from(value: EvmInternalsError) -> Self {
-        Self::Fatal(value.to_string())
     }
 }
 

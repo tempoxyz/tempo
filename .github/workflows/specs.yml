@@ -190,6 +190,24 @@ jobs:
           echo "Updated Cargo.toml:"
           grep "tempo-" Cargo.toml | head -20
 
+          # Forward [patch.crates-io] entries from the tempo workspace so that
+          # transitive dependencies (e.g. reth-primitives-traits) resolve to the
+          # same git revisions used by tempo itself.
+          TEMPO_CARGO="../tempo/Cargo.toml"
+          if grep -q '^\[patch\.crates-io\]' "$TEMPO_CARGO"; then
+            PATCHES=$(sed -n '/^\[patch\.crates-io\]/,/^\[/{/^\[/d;/^#/d;/^$/d;p;}' "$TEMPO_CARGO")
+            if [ -n "$PATCHES" ]; then
+              echo ""
+              echo "Forwarding [patch.crates-io] from tempo:"
+              echo "$PATCHES"
+              if grep -q '^\[patch\.crates-io\]' Cargo.toml; then
+                echo "$PATCHES" >> Cargo.toml
+              else
+                printf '\n[patch.crates-io]\n%s\n' "$PATCHES" >> Cargo.toml
+              fi
+            fi
+          fi
+
           # Update Cargo.lock to resolve version conflicts
           cargo update
 
