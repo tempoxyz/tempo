@@ -2,7 +2,18 @@ use alloy_primitives::B256;
 use alloy_rlp::{Decodable, Encodable};
 use ed25519_consensus::{VerificationKey, VerificationKeyBytes};
 
+#[derive(Debug)]
+pub struct InvalidPublicKey;
+
+impl core::fmt::Display for InvalidPublicKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("invalid ed25519 public key")
+    }
+}
+
 #[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(into = "B256", try_from = "B256"))]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact))]
 pub struct PublicKey(VerificationKey);
 
@@ -16,21 +27,6 @@ impl PublicKey {
         ed25519_consensus::SigningKey::from(seed)
             .verification_key()
             .into()
-    }
-}
-
-#[cfg(feature = "serde")]
-impl serde::Serialize for PublicKey {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        B256::from(self).serialize(serializer)
-    }
-}
-
-#[cfg(feature = "serde")]
-impl<'de> serde::Deserialize<'de> for PublicKey {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let bytes = B256::deserialize(deserializer)?;
-        Self::try_from(bytes).map_err(|_| serde::de::Error::custom("invalid ed25519 public key"))
     }
 }
 
@@ -72,10 +68,12 @@ impl<'a> From<&'a PublicKey> for B256 {
 }
 
 impl TryFrom<B256> for PublicKey {
-    type Error = ed25519_consensus::Error;
+    type Error = InvalidPublicKey;
 
     fn try_from(value: B256) -> Result<Self, Self::Error> {
-        let inner = VerificationKeyBytes::from(<[u8; 32]>::from(value)).try_into()?;
+        let inner = VerificationKeyBytes::from(<[u8; 32]>::from(value))
+            .try_into()
+            .map_err(|_| InvalidPublicKey)?;
         Ok(Self(inner))
     }
 }
