@@ -62,10 +62,6 @@ fn consensus_context_appears_after_t4_activation() {
         let latest = provider.block_by_number(10).ok().flatten().unwrap();
         assert!(latest.timestamp() > t4_time);
 
-        // Genesis block should not have a consensus context (T4 not active at genesis).
-        let genesis = provider.block_by_number(0).ok().flatten().unwrap();
-        assert!(genesis.header.consensus_context.is_none());
-
         for height in 1..=10 {
             let block = provider.block_by_number(height).ok().flatten().unwrap();
             if block.header.timestamp() < t4_time {

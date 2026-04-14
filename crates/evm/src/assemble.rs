@@ -238,7 +238,7 @@ mod tests {
         let ctx = tempo_primitives::TempoConsensusContext {
             epoch: 1,
             view: 5,
-            proposer: B256::repeat_byte(0xab),
+            proposer: tempo_primitives::ed25519::PublicKey::from_seed([0xab; 32]),
             parent_view: 4,
         };
 

@@ -16,6 +16,13 @@ impl PublicKey {
     pub fn get(&self) -> VerificationKey {
         self.0
     }
+
+    #[cfg(any(test, feature = "arbitrary"))]
+    pub fn from_seed(seed: [u8; 32]) -> Self {
+        ed25519_consensus::SigningKey::from(seed)
+            .verification_key()
+            .into()
+    }
 }
 
 impl Encodable for PublicKey {
