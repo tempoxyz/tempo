@@ -220,6 +220,7 @@ const-hex = { version = "1.17.0" }
 dashmap = "6"
 dirs-next = "2.0.0"
 derive_more = { version = "2.1.1", default-features = false }
+ed25519-consensus = "2.1"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 either = "1"
 eyre = "0.6.12"

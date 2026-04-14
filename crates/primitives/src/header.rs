@@ -1,7 +1,6 @@
 use alloy_consensus::{BlockHeader, Header, Sealable};
 use alloy_primitives::{Address, B64, B256, BlockNumber, Bloom, Bytes, U256, keccak256};
 use alloy_rlp::{RlpDecodable, RlpEncodable};
-use commonware_codec::ReadExt as _;
 
 /// Consensus context metadata for a Tempo block.
 ///
@@ -33,7 +32,7 @@ struct TempoConsensusContextRlpDecodable {
 impl alloy_rlp::Decodable for TempoConsensusContext {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let raw = TempoConsensusContextRlpDecodable::decode(buf)?;
-        commonware_cryptography::ed25519::PublicKey::read(&mut raw.proposer.as_slice())
+        ed25519_consensus::VerificationKey::try_from(<[u8; 32]>::from(raw.proposer))
             .map_err(|_| alloy_rlp::Error::Custom("invalid ed25519 proposer key"))?;
 
         Ok(Self {
@@ -197,8 +196,8 @@ mod tests {
 
     #[test]
     fn consensus_context_rlp_roundtrip() {
-        use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
-        let proposer = B256::from_slice(PrivateKey::from_seed(1).public_key().as_ref());
+        let sk = ed25519_consensus::SigningKey::from([1u8; 32]);
+        let proposer = B256::from_slice(sk.verification_key().as_ref());
 
         let ctx = TempoConsensusContext {
             epoch: 1,
