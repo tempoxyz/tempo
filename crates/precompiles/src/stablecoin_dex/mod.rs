@@ -199,10 +199,16 @@ impl StablecoinDEX {
         amount: u128,
     ) -> Result<()> {
         // Ensure that the token can be transferred
-        TIP20Token::from_address(token)?.ensure_transfer_authorized(user, self.address)?;
+        let tip20 = TIP20Token::from_address(token)?;
+        tip20.ensure_transfer_authorized(user, self.address)?;
 
         let user_balance = self.balance_of(user, token)?;
         if user_balance >= amount {
+            // When fully covered by internal balance, TIP-20 transferFrom won't run,
+            // so we must check the pause state ourselves (spec: T3+).
+            if self.storage.spec().is_t3() {
+                tip20.check_not_paused()?;
+            }
             self.sub_balance(user, token, amount)
         } else {
             let remaining = amount
@@ -670,8 +676,13 @@ impl StablecoinDEX {
         // Debit from user's balance only. This is set to true after a flip order is filled and the
         // subsequent flip order is being placed.
         if internal_balance_only {
-            TIP20Token::from_address(escrow_token)?
-                .ensure_transfer_authorized(sender, self.address)?;
+            let tip20 = TIP20Token::from_address(escrow_token)?;
+            tip20.ensure_transfer_authorized(sender, self.address)?;
+            // Internal-balance-only path bypasses TIP-20 transferFrom,
+            // so we must check the pause state ourselves (spec: T3+).
+            if self.storage.spec().is_t3() {
+                tip20.check_not_paused()?;
+            }
             let user_balance = self.balance_of(sender, escrow_token)?;
             if user_balance < escrow_amount {
                 return Err(StablecoinDEXError::insufficient_balance().into());
