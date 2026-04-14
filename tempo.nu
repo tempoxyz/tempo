@@ -421,6 +421,39 @@ def worktree-bin [worktree_dir: string, profile: string, bin_name: string] {
     }
 }
 
+# Dedup CLI args: if extra_args provides a flag already present in base_args,
+# the default (in base_args) is dropped so clap doesn't see it twice.
+# Handles both `--flag value` and `--flag=value` forms.
+def dedup-args [base_args: list<string>, extra_args: list<string>] -> list<string> {
+    if ($extra_args | is-empty) { return $base_args }
+
+    # Collect flag keys the user wants to override
+    let override_keys = ($extra_args | where { |a| $a starts-with "--" }
+        | each { |a| $a | split row "=" | first })
+
+    # Walk base_args, skip any flag (and its value) whose key is overridden
+    mut result = []
+    mut skip_next = false
+    for arg in $base_args {
+        if $skip_next {
+            $skip_next = false
+            continue
+        }
+        if ($arg starts-with "--") {
+            let key = ($arg | split row "=" | first)
+            if ($key in $override_keys) {
+                # Skip this flag; if it's `--flag value` form (no =), skip next token too
+                if not ($arg | str contains "=") {
+                    $skip_next = true
+                }
+                continue
+            }
+        }
+        $result = ($result | append $arg)
+    }
+    $result | append $extra_args
+}
+
 # Run a single benchmark run (start node, run bench, stop node, collect report)
 def run-bench-single [
     --tempo-bin: string
@@ -483,13 +516,13 @@ def run-bench-single [
     # Parse extra node args
     let extra_args = if $node_args == "" { [] } else { $node_args | split row " " }
 
-    # Build node arguments
-    let args = (build-base-args $genesis_path $datadir $log_dir "0.0.0.0" 8545 9001)
+    # Build node arguments, then dedup so user-provided args override defaults
+    let base_args = (build-base-args $genesis_path $datadir $log_dir "0.0.0.0" 8545 9001)
         | append (build-dev-args)
         | append (log-filter-args $loud)
-        | append $extra_args
         | append (if $tracy != "off" { ["--log.tracy" "--log.tracy.filter" $tracy_filter] } else { [] })
         | append (if $tracing_otlp != "" { [$"--tracing-otlp=($tracing_otlp)"] } else { [] })
+    let args = (dedup-args $base_args $extra_args)
 
     # Tracy environment variables
     let tracy_env_prefix = if $tracy == "on" {
