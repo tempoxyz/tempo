@@ -104,6 +104,14 @@ impl BlockHeader for TempoHeaderResponse {
     fn extra_data(&self) -> &Bytes {
         self.inner.extra_data()
     }
+
+    fn block_access_list_hash(&self) -> Option<B256> {
+        self.inner.block_access_list_hash()
+    }
+
+    fn slot_number(&self) -> Option<u64> {
+        self.inner.slot_number()
+    }
 }
 
 impl HeaderResponse for TempoHeaderResponse {

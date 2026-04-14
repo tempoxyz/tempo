@@ -126,7 +126,7 @@ reth-cli = { git = "https://github.com/paradigmxyz/reth", rev = "bce7368" }
 reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", rev = "bce7368" }
 reth-cli-runner = { git = "https://github.com/paradigmxyz/reth", rev = "bce7368" }
 reth-cli-util = { git = "https://github.com/paradigmxyz/reth", rev = "bce7368" }
-reth-codecs = { version = "0.1.0", default-features = false }
+reth-codecs = { version = "0.2.0", default-features = false }
 reth-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "bce7368" }
 reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", rev = "bce7368" }
 reth-db = { git = "https://github.com/paradigmxyz/reth", rev = "bce7368" }
@@ -154,7 +154,7 @@ reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "bce73
 reth-node-metrics = { git = "https://github.com/paradigmxyz/reth", rev = "bce7368" }
 reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "bce7368" }
 reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "bce7368" }
-reth-primitives-traits = { version = "0.1.0", default-features = false }
+reth-primitives-traits = { version = "0.2.0", default-features = false }
 reth-provider = { git = "https://github.com/paradigmxyz/reth", rev = "bce7368" }
 reth-rpc = { git = "https://github.com/paradigmxyz/reth", rev = "bce7368" }
 reth-rpc-builder = { git = "https://github.com/paradigmxyz/reth", rev = "bce7368" }
@@ -175,26 +175,26 @@ reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "bce7368", feat
 ] }
 revm = { version = "36.0.0", features = ["optional_fee_charge"], default-features = false }
 
-alloy = { version = "1.8.2", default-features = false }
-alloy-consensus = { version = "1.8.2", default-features = false }
-alloy-contract = { version = "1.8.2", default-features = false }
-alloy-eips = { version = "1.8.2", default-features = false }
-alloy-evm = { version = "0.30.0", default-features = false }
-revm-inspectors = "0.36.0"
-alloy-genesis = { version = "1.8.2", default-features = false }
+alloy = { version = "2.0.0", default-features = false }
+alloy-consensus = { version = "2.0.0", default-features = false }
+alloy-contract = { version = "2.0.0", default-features = false }
+alloy-eips = { version = "2.0.0", default-features = false }
+alloy-evm = { version = "0.31.0", default-features = false }
+revm-inspectors = "0.37.0"
+alloy-genesis = { version = "2.0.0", default-features = false }
 alloy-hardforks = "0.4.7"
-alloy-network = { version = "1.8.2", default-features = false }
+alloy-network = { version = "2.0.0", default-features = false }
 alloy-primitives = { version = "1.5.7", default-features = false }
-alloy-provider = { version = "1.8.2", default-features = false }
+alloy-provider = { version = "2.0.0", default-features = false }
 alloy-rlp = { version = "0.3.13", default-features = false }
-alloy-rpc-types-engine = "1.8.2"
-alloy-rpc-types-eth = { version = "1.8.2" }
-alloy-serde = { version = "1.8.2", default-features = false }
-alloy-signer = "1.8.2"
-alloy-signer-local = "1.8.2"
+alloy-rpc-types-engine = "2.0.0"
+alloy-rpc-types-eth = { version = "2.0.0" }
+alloy-serde = { version = "2.0.0", default-features = false }
+alloy-signer = "2.0.0"
+alloy-signer-local = "2.0.0"
 coins-bip32 = "0.12"
 alloy-sol-types = { version = "1.5.7", default-features = false }
-alloy-transport = "1.8.2"
+alloy-transport = "2.0.0"
 
 commonware-broadcast = "2026.3.0"
 commonware-codec = "2026.3.0"
