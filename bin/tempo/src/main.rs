@@ -207,7 +207,7 @@ fn print_extensions_footer() {
 async fn fetch_bootnodes(
     endpoint: &str,
     chain_id: u64,
-) -> eyre::Result<Vec<reth_network_peers::TrustedPeer>> {
+) -> eyre::Result<Vec<reth_network_peers::NodeRecord>> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
@@ -230,10 +230,7 @@ async fn fetch_bootnodes(
         None => return Ok(Vec::new()),
     };
 
-    Ok(reth_network_peers::parse_nodes(enodes)
-        .into_iter()
-        .map(Into::into)
-        .collect())
+    Ok(reth_network_peers::parse_nodes(enodes))
 }
 
 fn main() -> eyre::Result<()> {
@@ -518,30 +515,7 @@ fn main() -> eyre::Result<()> {
         } else {
             None
         };
-
-        // Fetch bootnodes from the endpoint before launching the node so they
-        // can be injected into the discovery config as boot nodes.
-        let endpoint_bootnodes = if let Some(endpoint) = &args.bootnodes_endpoint {
-            let chain_id = builder.config().chain.chain().id();
-            match fetch_bootnodes(endpoint, chain_id).await {
-                Ok(nodes) if nodes.is_empty() => Vec::new(),
-                Ok(nodes) => {
-                    info!(
-                        chain_id,
-                        count = nodes.len(),
-                        endpoint,
-                        "fetched bootnodes from endpoint"
-                    );
-                    nodes
-                }
-                Err(err) => {
-                    warn!(%err, endpoint, "failed to fetch bootnodes from endpoint");
-                    Vec::new()
-                }
-            }
-        } else {
-            Vec::new()
-        };
+        let chain_id = builder.config().chain.chain().id();
 
         let NodeHandle {
             node,
@@ -555,30 +529,6 @@ fn main() -> eyre::Result<()> {
                     .network
                     .discovery
                     .enable_discv5_discovery = true;
-
-                // Append bootnodes fetched from the endpoint to the discovery boot
-                // nodes. When `--bootnodes` was not explicitly provided we
-                // initialise from the chainspec defaults so we don't replace them.
-                if !endpoint_bootnodes.is_empty() {
-                    if builder.config().network.bootnodes.is_none() {
-                        let chainspec_bootnodes: Vec<reth_network_peers::TrustedPeer> = builder
-                            .config()
-                            .chain
-                            .bootnodes()
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(Into::into)
-                            .collect();
-                        builder.config_mut().network.bootnodes = Some(chainspec_bootnodes);
-                    }
-                    builder
-                        .config_mut()
-                        .network
-                        .bootnodes
-                        .as_mut()
-                        .expect("set above")
-                        .extend(endpoint_bootnodes);
-                }
 
                 // Resolve the follow URL:
                 // --follow or --follow=auto -> use chain-specific default
@@ -619,6 +569,39 @@ fn main() -> eyre::Result<()> {
             .launch_with_debug_capabilities()
             .await
             .wrap_err("failed launching execution node")?;
+
+        // Fetch bootnodes from the endpoint in a background task and inject
+        // them into the already-running discovery services.
+        if let Some(endpoint) = args.bootnodes_endpoint.clone() {
+            let network = node.network.clone();
+            node.tasks().spawn_task(async move {
+                match fetch_bootnodes(&endpoint, chain_id).await {
+                    Ok(nodes) if nodes.is_empty() => {}
+                    Ok(nodes) => {
+                        info!(
+                            chain_id,
+                            count = nodes.len(),
+                            endpoint,
+                            "fetched bootnodes from endpoint"
+                        );
+                        for node in &nodes {
+                            if let Some(discv4) = network.discv4() {
+                                discv4.add_node(*node);
+                            }
+                            if let Some(discv5) = network.discv5() {
+                                let enr = node.to_string();
+                                if let Err(err) = discv5.with_discv5(|d| d.request_enr(enr)).await {
+                                    warn!(%err, %node, "failed adding boot node to discv5");
+                                }
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        warn!(%err, endpoint, "failed to fetch bootnodes from endpoint");
+                    }
+                }
+            });
+        }
 
         let _ = args_and_node_handle_tx.send((node, args));
 
