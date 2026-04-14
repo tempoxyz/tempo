@@ -4212,9 +4212,7 @@ mod tests {
 
         #[test]
         fn test_key_authorization_chain_id_wildcard() {
-            // Pre-T1C: chain_id=0 wildcard accepted.
-            // Post-T1C (T2): chain_id=0 wildcard rejected.
-            for (spec, expect_ok) in [(TempoHardfork::T1B, true), (TempoHardfork::T2, false)] {
+            for spec in [TempoHardfork::T1B, TempoHardfork::T2] {
                 let (signer, user) = generate_keypair();
                 let key = Address::random();
                 let signed = sign_key_auth(
@@ -4224,7 +4222,12 @@ mod tests {
                 let (mut evm, h) = make_evm(user, key, Some(signed), spec, None, true);
 
                 let result = h.validate_against_state_and_deduct_caller(&mut evm);
-                if expect_ok {
+                if spec.is_t1c() {
+                    assert!(
+                        result.is_err(),
+                        "{spec:?}: chain_id=0 wildcard should be rejected, got: {result:?}"
+                    );
+                } else {
                     assert!(
                         !matches!(
                             result,
@@ -4233,11 +4236,6 @@ mod tests {
                             ))
                         ),
                         "{spec:?}: chain_id=0 wildcard should be accepted, got: {result:?}"
-                    );
-                } else {
-                    assert!(
-                        result.is_err(),
-                        "{spec:?}: chain_id=0 wildcard should be rejected, got: {result:?}"
                     );
                 }
             }
