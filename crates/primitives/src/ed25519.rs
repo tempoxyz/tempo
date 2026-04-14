@@ -74,11 +74,6 @@ impl TryFrom<B256> for PublicKey {
 #[cfg(any(test, feature = "arbitrary"))]
 impl<'a> arbitrary::Arbitrary<'a> for PublicKey {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        use rand_08::{SeedableRng, rngs::StdRng};
-
-        let mut rand = StdRng::from_seed(u.arbitrary::<[u8; 32]>()?);
-        Ok(ed25519_consensus::SigningKey::new(&mut rand)
-            .verification_key()
-            .into())
+        Ok(Self::from_seed(u.arbitrary()?))
     }
 }

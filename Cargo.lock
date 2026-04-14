@@ -12237,7 +12237,6 @@ dependencies = [
  "p256",
  "proptest",
  "proptest-arbitrary-interop",
- "rand 0.8.5",
  "rand 0.9.4",
  "reth-codecs",
  "reth-db-api",
