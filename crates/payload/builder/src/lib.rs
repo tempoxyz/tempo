@@ -182,8 +182,13 @@ where
 
     fn on_missing_payload(
         &self,
-        _args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
+        args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
     ) -> MissingPayloadBehaviour<Self::BuiltPayload> {
+        // Interrupt the builder so it stops building and finalizes the block.
+        //
+        // This is needed only for dev mode where no consensus actor fires the interrupt.
+        // With actual CW consensus, the interrupt is already fired by the time `on_missing_payload` is called.
+        args.config.attributes.interrupt_handle().interrupt();
         MissingPayloadBehaviour::AwaitInProgress
     }
 
