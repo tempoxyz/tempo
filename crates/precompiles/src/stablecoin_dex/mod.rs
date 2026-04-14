@@ -5511,6 +5511,133 @@ mod tests {
     }
 
     #[test]
+    fn test_place_orders_on_paused_token_respects_internal_balance_path() -> eyre::Result<()> {
+        fn assert_paused_token_order_path<F>(
+            internal_balance_amount: u128,
+            is_bid: bool,
+            mut place_order: F,
+        ) -> eyre::Result<()>
+        where
+            F: FnMut(&mut StablecoinDEX, Address, Address, u128) -> Result<u128>,
+        {
+            for spec in [TempoHardfork::T2, TempoHardfork::T3] {
+                let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+                StorageCtx::enter(&mut storage, || {
+                    let mut exchange = StablecoinDEX::new();
+                    exchange.initialize()?;
+
+                    let (alice, admin) = (Address::random(), Address::random());
+                    let amount = MIN_ORDER_AMOUNT;
+
+                    let (base_token, quote_token) =
+                        setup_test_tokens(admin, alice, exchange.address, 500_000_000u128)?;
+                    exchange.create_pair(base_token)?;
+                    let escrow_token = if is_bid { quote_token } else { base_token };
+                    exchange.set_balance(alice, escrow_token, internal_balance_amount)?;
+
+                    let mut escrow_tip20 = TIP20Token::from_address(escrow_token)?;
+                    escrow_tip20.grant_role_internal(admin, *PAUSE_ROLE)?;
+                    escrow_tip20.pause(admin, ITIP20::pauseCall {})?;
+
+                    let next_order_id_before = exchange.next_order_id()?;
+                    let res = place_order(&mut exchange, alice, base_token, amount);
+
+                    if internal_balance_amount >= amount && !spec.is_t3() {
+                        let order_id = res?;
+                        assert_eq!(order_id, next_order_id_before);
+                        assert_eq!(exchange.next_order_id()?, next_order_id_before + 1);
+                        assert_eq!(
+                            exchange.balance_of(alice, escrow_token)?,
+                            internal_balance_amount - amount
+                        );
+                    } else {
+                        assert_eq!(res.unwrap_err(), TIP20Error::contract_paused().into());
+                        assert_eq!(exchange.next_order_id()?, next_order_id_before);
+                        assert_eq!(
+                            exchange.balance_of(alice, escrow_token)?,
+                            internal_balance_amount
+                        );
+                    }
+
+                    Ok::<_, eyre::Report>(())
+                })?;
+            }
+            Ok(())
+        }
+
+        let partial_internal_balance = MIN_ORDER_AMOUNT - 1;
+
+        // Full internal balance uses the internal-only path pre-T3, but T3 still rejects
+        // paused-token orders.
+        assert_paused_token_order_path(
+            MIN_ORDER_AMOUNT,
+            false,
+            |exchange, alice, base_token, amount| {
+                exchange.place(alice, base_token, amount, false, 0)
+            },
+        )?;
+        assert_paused_token_order_path(
+            MIN_ORDER_AMOUNT,
+            true,
+            |exchange, alice, base_token, amount| {
+                exchange.place(alice, base_token, amount, true, 0)
+            },
+        )?;
+        assert_paused_token_order_path(
+            MIN_ORDER_AMOUNT,
+            false,
+            |exchange, alice, base_token, amount| {
+                exchange.place_flip(alice, base_token, amount, false, 100, 0, true)
+            },
+        )?;
+        assert_paused_token_order_path(
+            MIN_ORDER_AMOUNT,
+            true,
+            |exchange, alice, base_token, amount| {
+                exchange.place_flip(alice, base_token, amount, true, 0, 100, true)
+            },
+        )?;
+
+        // Regular ask order: fallback transferFrom should fail without consuming partial base
+        // balance.
+        assert_paused_token_order_path(
+            partial_internal_balance,
+            false,
+            |exchange, alice, base_token, amount| {
+                exchange.place(alice, base_token, amount, false, 0)
+            },
+        )?;
+
+        // Regular bid order: fallback transferFrom should fail without consuming partial quote
+        // balance.
+        assert_paused_token_order_path(
+            partial_internal_balance,
+            true,
+            |exchange, alice, base_token, amount| {
+                exchange.place(alice, base_token, amount, true, 0)
+            },
+        )?;
+
+        // Flip ask order on the shared debit-or-transfer path.
+        assert_paused_token_order_path(
+            partial_internal_balance,
+            false,
+            |exchange, alice, base_token, amount| {
+                exchange.place_flip(alice, base_token, amount, false, 100, 0, false)
+            },
+        )?;
+
+        // Flip bid order on the shared debit-or-transfer path.
+        assert_paused_token_order_path(
+            partial_internal_balance,
+            true,
+            |exchange, alice, base_token, amount| {
+                exchange.place_flip(alice, base_token, amount, true, 0, 100, false)
+            },
+        )
+    }
+
+    #[test]
     fn test_swap_paused_intermediate_token_allowed_pre_t3_blocked_on_t3() -> eyre::Result<()> {
         for spec in [TempoHardfork::T2, TempoHardfork::T3] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
