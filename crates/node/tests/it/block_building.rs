@@ -46,9 +46,11 @@ where
                 .max_priority_fee_per_gas
                 .or(Some(TEMPO_T1_BASE_FEE as u128));
 
-            let signed =
-                <TransactionRequest as NetworkTransactionBuilder<Ethereum>>::build(tx_req, &signer_clone)
-                    .await?;
+            let signed = <TransactionRequest as NetworkTransactionBuilder<Ethereum>>::build(
+                tx_req,
+                &signer_clone,
+            )
+            .await?;
             Ok::<Bytes, eyre::Error>(signed.encoded_2718().into())
         }
     };
@@ -189,9 +191,11 @@ async fn sign_and_inject(
         .max_priority_fee_per_gas
         .or(Some(TEMPO_T1_BASE_FEE as u128));
 
-    let signed_tx =
-        <TransactionRequest as NetworkTransactionBuilder<Ethereum>>::build(tx_request, &signer_wallet)
-            .await?;
+    let signed_tx = <TransactionRequest as NetworkTransactionBuilder<Ethereum>>::build(
+        tx_request,
+        &signer_wallet,
+    )
+    .await?;
     let tx_hash = *signed_tx.tx_hash();
     let tx_bytes: Bytes = signed_tx.encoded_2718().into();
     node.rpc.inject_tx(tx_bytes).await?;
