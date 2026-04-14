@@ -156,7 +156,9 @@ reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "bfb
 reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "bfb7ab7" }
 reth-primitives-traits = { version = "0.2.0", default-features = false }
 reth-provider = { git = "https://github.com/paradigmxyz/reth", rev = "bfb7ab7" }
+reth-network-api = { git = "https://github.com/paradigmxyz/reth", rev = "bfb7ab7" }
 reth-rpc = { git = "https://github.com/paradigmxyz/reth", rev = "bfb7ab7" }
+reth-rpc-api = { git = "https://github.com/paradigmxyz/reth", rev = "bfb7ab7" }
 reth-rpc-builder = { git = "https://github.com/paradigmxyz/reth", rev = "bfb7ab7" }
 reth-rpc-convert = { git = "https://github.com/paradigmxyz/reth", rev = "bfb7ab7" }
 reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", rev = "bfb7ab7" }
@@ -187,6 +189,7 @@ alloy-network = { version = "2.0.0", default-features = false }
 alloy-primitives = { version = "1.5.7", default-features = false }
 alloy-provider = { version = "2.0.0", default-features = false }
 alloy-rlp = { version = "0.3.15", default-features = false }
+alloy-rpc-types-admin = "2.0.0"
 alloy-rpc-types-engine = "2.0.0"
 alloy-rpc-types-eth = { version = "2.0.0" }
 alloy-serde = { version = "2.0.0", default-features = false }
