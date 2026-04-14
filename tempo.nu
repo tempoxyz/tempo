@@ -1577,9 +1577,9 @@ def "main bench" [
     --baseline-args: string = ""                    # Additional node arguments for baseline runs only (space-separated)
     --feature-args: string = ""                     # Additional node arguments for feature runs only (space-separated)
     --bench-args: string = ""                       # Additional tempo-bench arguments (space-separated)
-    --bench-env: string = ""                        # Environment variables for tempo-bench (KEY=VAL KEY2=VAL2)
     --baseline-env: string = ""                     # Environment variables for baseline node runs (KEY=VAL KEY2=VAL2)
     --feature-env: string = ""                      # Environment variables for feature node runs (KEY=VAL KEY2=VAL2)
+    --bench-env: string = ""                        # Environment variables for tempo-bench (KEY=VAL KEY2=VAL2)
     --bloat: int = 0                                # Generate state bloat (size in MiB) for TIP20 tokens
     --no-infra                                      # Skip starting observability stack (Grafana + Prometheus)
     --baseline: string = ""                         # Git ref for baseline (comparison mode)

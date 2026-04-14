@@ -74,16 +74,6 @@ on:
         required: false
         default: "120"
         type: string
-      baseline-args:
-        description: "Additional node arguments for baseline runs only (space-separated)"
-        required: false
-        default: ""
-        type: string
-      feature-args:
-        description: "Additional node arguments for feature runs only (space-separated)"
-        required: false
-        default: ""
-        type: string
       baseline-hardfork:
         description: "Latest active hardfork for baseline (e.g. T1, T1C, T2). Empty = all forks active"
         required: false
@@ -102,13 +92,18 @@ on:
         options:
           - "manual"
           - "nightly"
-      bench-args:
-        description: "Additional tempo-bench arguments (e.g. --some-flag)"
+      baseline-args:
+        description: "Additional node arguments for baseline runs only (space-separated)"
         required: false
         default: ""
         type: string
-      bench-env:
-        description: "Environment variables for tempo-bench (KEY=VAL KEY2=VAL2)"
+      feature-args:
+        description: "Additional node arguments for feature runs only (space-separated)"
+        required: false
+        default: ""
+        type: string
+      bench-args:
+        description: "Additional tempo-bench arguments (e.g. --some-flag)"
         required: false
         default: ""
         type: string
@@ -119,6 +114,11 @@ on:
         type: string
       feature-env:
         description: "Environment variables for feature node (KEY=VAL KEY2=VAL2)"
+        required: false
+        default: ""
+        type: string
+      bench-env:
+        description: "Environment variables for tempo-bench (KEY=VAL KEY2=VAL2)"
         required: false
         default: ""
         type: string
