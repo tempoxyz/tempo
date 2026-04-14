@@ -4074,7 +4074,6 @@ mod tests {
             (signer, addr)
         }
 
-        /// Sign a [`KeyAuthorization`] with `signer` and return the [`SignedKeyAuthorization`].
         fn sign_key_auth(
             signer: &PrivateKeySigner,
             key_auth: KeyAuthorization,
@@ -4085,25 +4084,30 @@ mod tests {
             key_auth.into_signed(PrimitiveSignature::Secp256k1(sig))
         }
 
-        /// Build EVM + handler with a keychain-signature tx.
+        fn test_sig() -> PrimitiveSignature {
+            PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature())
+        }
+
+        /// Build EVM + handler with a keychain-signature AA tx.
         ///
-        /// When `seed_key == true` the access key is pre-authorized in keychain
-        /// storage (existing-key path). When `false` only the keychain is
-        /// initialized (same-tx auth+use / fresh-key path).
+        /// - `signature`: outer keychain signature; when `None` a default V2
+        ///   keychain sig for `user` is used.
+        /// - `seed_key`: when `true` the access key is pre-authorized in
+        ///   keychain storage (existing-key path).
         fn make_evm(
             user: Address,
             access_key: Address,
             key_auth: Option<tempo_primitives::transaction::SignedKeyAuthorization>,
             spec: TempoHardfork,
+            signature: Option<TempoSignature>,
             seed_key: bool,
         ) -> (
             TempoEvm<CacheDB<EmptyDB>, ()>,
             TempoEvmHandler<CacheDB<EmptyDB>, ()>,
         ) {
-            let sig = TempoSignature::Keychain(KeychainSignature::new(
-                user,
-                PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
-            ));
+            let sig = signature.unwrap_or_else(|| {
+                TempoSignature::Keychain(KeychainSignature::new(user, test_sig()))
+            });
             let mut cfg = CfgEnv::<TempoHardfork>::default();
             cfg.spec = spec;
 
@@ -4166,51 +4170,6 @@ mod tests {
             (evm, TempoEvmHandler::new())
         }
 
-        /// Build EVM for `validate_env` tests (version rejection).
-        fn make_version_evm(
-            sig: TempoSignature,
-            spec: TempoHardfork,
-        ) -> (
-            TempoEvm<CacheDB<EmptyDB>, ()>,
-            TempoEvmHandler<CacheDB<EmptyDB>, ()>,
-        ) {
-            let caller = Address::random();
-            let mut cfg = CfgEnv::<TempoHardfork>::default();
-            cfg.spec = spec;
-
-            let tx = TempoTxEnv {
-                inner: revm::context::TxEnv {
-                    caller,
-                    gas_limit: 1_000_000,
-                    ..Default::default()
-                },
-                tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
-                    signature: sig,
-                    aa_calls: vec![Call {
-                        to: TxKind::Call(Address::ZERO),
-                        value: U256::ZERO,
-                        input: Bytes::new(),
-                    }],
-                    signature_hash: B256::ZERO,
-                    ..Default::default()
-                })),
-                ..Default::default()
-            };
-
-            let ctx = Context::mainnet()
-                .with_db(CacheDB::new(EmptyDB::default()))
-                .with_block(TempoBlockEnv::default())
-                .with_cfg(cfg)
-                .with_tx(tx)
-                .with_new_journal(create_test_journal());
-
-            (TempoEvm::new(ctx, ()), TempoEvmHandler::new())
-        }
-
-        fn test_sig() -> PrimitiveSignature {
-            PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature())
-        }
-
         #[test]
         fn test_key_authorization_invalid_signature_rejected() {
             let (_, user) = generate_keypair();
@@ -4221,7 +4180,7 @@ mod tests {
                 &bad_signer,
                 KeyAuthorization::unrestricted(1337, SignatureType::Secp256k1, key),
             );
-            let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T2, true);
+            let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T2, None, true);
 
             assert!(matches!(
                 h.validate_against_state_and_deduct_caller(&mut evm),
@@ -4241,7 +4200,7 @@ mod tests {
                 &signer,
                 KeyAuthorization::unrestricted(1337, SignatureType::Secp256k1, wrong_key),
             );
-            let (mut evm, h) = make_evm(user, tx_key, Some(signed), TempoHardfork::T2, true);
+            let (mut evm, h) = make_evm(user, tx_key, Some(signed), TempoHardfork::T2, None, true);
 
             assert!(matches!(
                 h.validate_against_state_and_deduct_caller(&mut evm),
@@ -4252,75 +4211,70 @@ mod tests {
         }
 
         #[test]
-        fn test_key_authorization_chain_id_pre_t1c_wildcard_accepted() {
-            let (signer, user) = generate_keypair();
-            let key = Address::random();
-            let signed = sign_key_auth(
-                &signer,
-                KeyAuthorization::unrestricted(0, SignatureType::Secp256k1, key),
-            );
-            let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T1B, true);
+        fn test_key_authorization_chain_id_wildcard() {
+            // Pre-T1C: chain_id=0 wildcard accepted.
+            // Post-T1C (T2): chain_id=0 wildcard rejected.
+            for (spec, expect_ok) in [(TempoHardfork::T1B, true), (TempoHardfork::T2, false)] {
+                let (signer, user) = generate_keypair();
+                let key = Address::random();
+                let signed = sign_key_auth(
+                    &signer,
+                    KeyAuthorization::unrestricted(0, SignatureType::Secp256k1, key),
+                );
+                let (mut evm, h) = make_evm(user, key, Some(signed), spec, None, true);
 
-            let result = h.validate_against_state_and_deduct_caller(&mut evm);
-            assert!(
-                !matches!(
-                    result,
-                    Err(EVMError::Transaction(
-                        TempoInvalidTransaction::KeychainValidationFailed { .. }
-                    ))
-                ),
-                "chain_id=0 wildcard should be accepted pre-T1C, got: {result:?}"
-            );
+                let result = h.validate_against_state_and_deduct_caller(&mut evm);
+                if expect_ok {
+                    assert!(
+                        !matches!(
+                            result,
+                            Err(EVMError::Transaction(
+                                TempoInvalidTransaction::KeychainValidationFailed { .. }
+                            ))
+                        ),
+                        "{spec:?}: chain_id=0 wildcard should be accepted, got: {result:?}"
+                    );
+                } else {
+                    assert!(
+                        result.is_err(),
+                        "{spec:?}: chain_id=0 wildcard should be rejected, got: {result:?}"
+                    );
+                }
+            }
         }
 
         #[test]
-        fn test_key_authorization_chain_id_pre_t1c_wrong_rejected() {
-            let (signer, user) = generate_keypair();
-            let key = Address::random();
-            let signed = sign_key_auth(
-                &signer,
-                KeyAuthorization::unrestricted(99999, SignatureType::Secp256k1, key),
-            );
-            let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T1B, true);
+        fn test_key_authorization_chain_id_wrong_and_matching() {
+            // Both pre-T1C and post-T1C: wrong chain_id rejected, matching accepted.
+            for spec in [TempoHardfork::T1B, TempoHardfork::T2] {
+                // Wrong chain_id → rejected
+                let (signer, user) = generate_keypair();
+                let key = Address::random();
+                let signed = sign_key_auth(
+                    &signer,
+                    KeyAuthorization::unrestricted(99999, SignatureType::Secp256k1, key),
+                );
+                let (mut evm, h) = make_evm(user, key, Some(signed), spec, None, true);
+                assert!(
+                    h.validate_against_state_and_deduct_caller(&mut evm)
+                        .is_err(),
+                    "{spec:?}: wrong chain_id should be rejected"
+                );
 
-            assert!(
-                h.validate_against_state_and_deduct_caller(&mut evm)
-                    .is_err()
-            );
-        }
-
-        #[test]
-        fn test_key_authorization_chain_id_post_t1c_wildcard_rejected() {
-            let (signer, user) = generate_keypair();
-            let key = Address::random();
-            let signed = sign_key_auth(
-                &signer,
-                KeyAuthorization::unrestricted(0, SignatureType::Secp256k1, key),
-            );
-            let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T2, true);
-
-            assert!(
-                h.validate_against_state_and_deduct_caller(&mut evm)
-                    .is_err()
-            );
-        }
-
-        #[test]
-        fn test_key_authorization_chain_id_post_t1c_matching_accepted() {
-            let (signer, user) = generate_keypair();
-            let key = Address::random();
-            // chain_id=1 matches default CfgEnv
-            let signed = sign_key_auth(
-                &signer,
-                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key),
-            );
-            let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T2, true);
-
-            let result = h.validate_against_state_and_deduct_caller(&mut evm);
-            assert!(
-                !matches!(&result, Err(EVMError::Transaction(TempoInvalidTransaction::KeychainValidationFailed { reason })) if reason.contains("chain_id")),
-                "matching chain_id should be accepted post-T1C, got: {result:?}"
-            );
+                // Matching chain_id (1 = default CfgEnv) → accepted
+                let (signer, user) = generate_keypair();
+                let key = Address::random();
+                let signed = sign_key_auth(
+                    &signer,
+                    KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key),
+                );
+                let (mut evm, h) = make_evm(user, key, Some(signed), spec, None, true);
+                let result = h.validate_against_state_and_deduct_caller(&mut evm);
+                assert!(
+                    !matches!(&result, Err(EVMError::Transaction(TempoInvalidTransaction::KeychainValidationFailed { reason })) if reason.contains("chain_id")),
+                    "{spec:?}: matching chain_id should be accepted, got: {result:?}"
+                );
+            }
         }
 
         #[test]
@@ -4334,8 +4288,7 @@ mod tests {
                 KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key)
                     .with_expiry(expiry),
             );
-            // seed_key=false so authorize_key succeeds (no KeyAlreadyExists)
-            let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T2, false);
+            let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T2, None, false);
 
             let _ = h.validate_against_state_and_deduct_caller(&mut evm);
             assert_eq!(evm.key_expiry, Some(expiry));
@@ -4348,6 +4301,7 @@ mod tests {
                 Address::repeat_byte(0x22),
                 None,
                 TempoHardfork::T2,
+                None,
                 true,
             );
 
@@ -4364,25 +4318,36 @@ mod tests {
         }
 
         #[test]
-        fn test_legacy_v1_keychain_rejected_post_t1c() {
-            let sig =
-                TempoSignature::Keychain(KeychainSignature::new_v1(Address::random(), test_sig()));
-            let (mut evm, h) = make_version_evm(sig, TempoHardfork::T2);
+        fn test_keychain_version_rejection() {
+            let caller = Address::random();
 
+            // V1 (legacy) rejected post-T1C
+            let v1 = TempoSignature::Keychain(KeychainSignature::new_v1(caller, test_sig()));
+            let (mut evm, h) = make_evm(
+                caller,
+                Address::ZERO,
+                None,
+                TempoHardfork::T2,
+                Some(v1),
+                false,
+            );
             assert!(matches!(
                 h.validate_env(&mut evm),
                 Err(EVMError::Transaction(
                     TempoInvalidTransaction::LegacyKeychainSignature
                 ))
             ));
-        }
 
-        #[test]
-        fn test_v2_keychain_rejected_pre_t1c() {
-            let sig =
-                TempoSignature::Keychain(KeychainSignature::new(Address::random(), test_sig()));
-            let (mut evm, h) = make_version_evm(sig, TempoHardfork::T1B);
-
+            // V2 rejected pre-T1C
+            let v2 = TempoSignature::Keychain(KeychainSignature::new(caller, test_sig()));
+            let (mut evm, h) = make_evm(
+                caller,
+                Address::ZERO,
+                None,
+                TempoHardfork::T1B,
+                Some(v2),
+                false,
+            );
             assert!(matches!(
                 h.validate_env(&mut evm),
                 Err(EVMError::Transaction(
@@ -4399,8 +4364,7 @@ mod tests {
                 &signer,
                 KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key),
             );
-            // seed_key=false: no pre-existing key
-            let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T2, false);
+            let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T2, None, false);
 
             let result = h.validate_against_state_and_deduct_caller(&mut evm);
             assert!(
