@@ -524,9 +524,7 @@ fn main() -> eyre::Result<()> {
         let endpoint_bootnodes = if let Some(endpoint) = &args.bootnodes_endpoint {
             let chain_id = builder.config().chain.chain().id();
             match fetch_bootnodes(endpoint, chain_id).await {
-                Ok(nodes) if nodes.is_empty() => {
-                    Vec::new()
-                }
+                Ok(nodes) if nodes.is_empty() => Vec::new(),
                 Ok(nodes) => {
                     info!(
                         chain_id,
