@@ -182,6 +182,11 @@ impl StorageCtx {
         Self::with_storage(|s| s.gas_used())
     }
 
+    /// Returns the state-creating gas used so far (cold SSTORE zero->non-zero, code deposit).
+    pub fn state_gas_used(&self) -> u64 {
+        Self::with_storage(|s| s.state_gas_used())
+    }
+
     /// Returns the gas refunded so far.
     pub fn gas_refunded(&self) -> i64 {
         Self::with_storage(|s| s.gas_refunded())

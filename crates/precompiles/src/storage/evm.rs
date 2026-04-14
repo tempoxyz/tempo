@@ -18,6 +18,7 @@ pub struct EvmPrecompileStorageProvider<'a> {
     gas_refunded: i64,
     gas_limit: u64,
     reservoir: u64,
+    state_gas_spent: u64,
     spec: TempoHardfork,
     is_static: bool,
     gas_params: GasParams,
@@ -42,6 +43,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             gas_refunded: 0,
             gas_limit,
             reservoir,
+            state_gas_spent: 0,
             spec,
             is_static,
             gas_params,
@@ -99,7 +101,11 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
-        self.deduct_gas(self.gas_params.code_deposit_cost(code.len()))?;
+        let code_len = code.len();
+        self.deduct_gas(self.gas_params.code_deposit_cost(code_len))?;
+
+        // Track state gas for code deposit
+        self.state_gas_spent += self.gas_params.code_deposit_state_gas(code_len);
 
         self.internals
             .load_account_mut(address)?
@@ -157,6 +163,9 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             self.gas_params
                 .sstore_dynamic_gas(true, &result.data, result.is_cold),
         )?;
+
+        // Track state gas (cold SSTORE zero->non-zero only)
+        self.state_gas_spent += self.gas_params.sstore_state_gas(&result.data);
 
         // refund gas.
         self.refund_gas(self.gas_params.sstore_refund(true, &result.data));
@@ -246,6 +255,11 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     #[inline]
     fn gas_used(&self) -> u64 {
         self.gas_limit - self.gas_remaining
+    }
+
+    #[inline]
+    fn state_gas_used(&self) -> u64 {
+        self.state_gas_spent
     }
 
     #[inline]
@@ -692,6 +706,75 @@ mod tests {
             provider.recover_signer(digest, v, r, s),
             Err(TempoPrecompileError::OutOfGas)
         ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_state_gas_used_only_counts_state_creating_ops() -> eyre::Result<()> {
+        use revm::context_interface::cfg::GasId;
+        use tempo_chainspec::hardfork::TempoHardfork;
+
+        let db = CacheDB::new(EmptyDB::new());
+        let mut cfg = revm::context::CfgEnv::<TempoHardfork>::default();
+        cfg.set_spec_and_mainnet_gas_params(TempoHardfork::T4);
+        // Apply TIP-1016 state gas overrides (normally done by tempo_gas_params)
+        cfg.gas_params.override_gas(vec![
+            (GasId::sstore_set_without_load_cost(), 19_900),
+            (GasId::sstore_set_state_gas(), 230_000),
+            (GasId::code_deposit_cost(), 200),
+            (GasId::code_deposit_state_gas(), 2_300),
+        ]);
+        let evm_env = EvmEnv {
+            cfg_env: cfg.clone(),
+            ..Default::default()
+        };
+        let mut evm = TempoEvmFactory::default().create_evm(db, evm_env);
+        let ctx = evm.ctx_mut();
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
+
+        let address = address!("5000000000000000000000000000000000000005");
+
+        // SLOADs should not add state gas
+        provider.sload(address, U256::from(1))?;
+        assert_eq!(
+            provider.state_gas_used(),
+            0,
+            "SLOAD should not add state gas"
+        );
+        assert!(provider.gas_used() > 0, "SLOAD should consume regular gas");
+
+        // SSTORE zero->non-zero should add state gas
+        let gas_before = provider.gas_used();
+        provider.sstore(address, U256::from(1), U256::from(42))?;
+        let state_gas_after_set = provider.state_gas_used();
+        assert_eq!(
+            state_gas_after_set, 230_000,
+            "SSTORE zero->non-zero should add 230k state gas"
+        );
+        assert!(
+            provider.gas_used() > gas_before,
+            "SSTORE should consume gas"
+        );
+
+        // SSTORE non-zero->non-zero should NOT add more state gas
+        provider.sstore(address, U256::from(1), U256::from(99))?;
+        assert_eq!(
+            provider.state_gas_used(),
+            state_gas_after_set,
+            "SSTORE non-zero->non-zero should not add state gas"
+        );
+
+        // Code deposit should add state gas (2,300 per byte)
+        let state_gas_before_code = provider.state_gas_used();
+        provider.set_code(address, revm::state::Bytecode::new_raw(vec![0xef].into()))?;
+        assert_eq!(
+            provider.state_gas_used(),
+            state_gas_before_code + 2_300,
+            "set_code(1 byte) should add 2,300 state gas"
+        );
 
         Ok(())
     }

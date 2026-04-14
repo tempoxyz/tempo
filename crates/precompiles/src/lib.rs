@@ -330,7 +330,7 @@ pub(crate) fn charge_input_cost(
 #[inline]
 fn fill_state_gas(mut output: PrecompileOutput, storage: &StorageCtx) -> PrecompileOutput {
     if storage.spec().is_t4() {
-        output.state_gas_used = storage.gas_used();
+        output.state_gas_used = storage.state_gas_used();
         // T4+: propagate SSTORE refunds via reservoir so the TempoPrecompileProvider
         // wrapper can apply them with record_refund. Pre-T4 blocks were executed
         // without refund propagation, so we cannot change their gas accounting.
@@ -778,6 +778,114 @@ mod tests {
         assert_eq!(
             reverted.state_gas_used, 0,
             "pre-T4 reverted precompile must not report state_gas_used"
+        );
+    }
+
+    /// T4+ precompile `state_gas_used` must only include state-creating gas (cold SSTORE
+    /// zero->non-zero), not all gas consumed. A read-only operation like `balanceOf` must
+    /// have `state_gas_used == 0` even though `gas_used > 0`.
+    #[test]
+    fn test_t4_state_gas_only_includes_state_creating_ops() {
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.set_spec_and_mainnet_gas_params(TempoHardfork::T4);
+
+        let sender = Address::repeat_byte(0x01);
+        let recipient = Address::repeat_byte(0x02);
+
+        let precompile = tempo_precompile!("TIP20Token", &cfg, |input| {
+            TIP20Token::from_address(PATH_USD_ADDRESS).expect("PATH_USD_ADDRESS is valid")
+        });
+
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
+
+        // Set up TIP20 token state: initialize pathUSD and mint tokens to sender
+        {
+            let block = evm.block.clone();
+            let tx = TxEnv::default();
+            let internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
+            let mut provider =
+                crate::storage::evm::EvmPrecompileStorageProvider::new_max_gas(internals, &cfg);
+            crate::storage::StorageCtx::enter(&mut provider, || {
+                crate::test_util::TIP20Setup::path_usd(sender)
+                    .with_issuer(sender)
+                    .with_mint(sender, U256::from(1000))
+                    .apply()
+            })
+            .expect("TIP20 setup should succeed");
+        }
+
+        // 1) Read-only: balanceOf must have state_gas_used == 0
+        let calldata: Bytes = ITIP20::balanceOfCall { account: sender }
+            .abi_encode()
+            .into();
+        let block = evm.block.clone();
+        let tx = TxEnv::default();
+        let evm_internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
+        let input = PrecompileInput {
+            data: &calldata,
+            caller: sender,
+            internals: evm_internals,
+            gas: 1_000_000,
+            is_static: false,
+            value: U256::ZERO,
+            target_address: PATH_USD_ADDRESS,
+            bytecode_address: PATH_USD_ADDRESS,
+            reservoir: 0,
+        };
+        let output =
+            AlloyEvmPrecompile::call(&precompile, input).expect("balanceOf should succeed");
+        assert!(output.is_success());
+        assert!(output.gas_used > 0, "balanceOf should consume gas");
+        assert_eq!(
+            output.state_gas_used, 0,
+            "read-only balanceOf must have state_gas_used == 0, got {}",
+            output.state_gas_used
+        );
+
+        // 2) Transfer to existing account (warm SSTORE, not zero->non-zero for recipient
+        //    since we pre-fund recipient): state_gas_used must be less than gas_used
+        {
+            // Pre-fund recipient so the transfer is warm SSTORE (nonzero->nonzero)
+            let block = evm.block.clone();
+            let tx = TxEnv::default();
+            let internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
+            let mut provider =
+                crate::storage::evm::EvmPrecompileStorageProvider::new_max_gas(internals, &cfg);
+            crate::storage::StorageCtx::enter(&mut provider, || {
+                crate::test_util::TIP20Setup::path_usd(sender)
+                    .with_mint(recipient, U256::from(1))
+                    .apply()
+            })
+            .expect("TIP20 setup should succeed");
+        }
+        let calldata: Bytes = ITIP20::transferCall {
+            to: recipient,
+            amount: U256::from(100),
+        }
+        .abi_encode()
+        .into();
+        let block = evm.block.clone();
+        let tx = TxEnv::default();
+        let evm_internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
+        let input = PrecompileInput {
+            data: &calldata,
+            caller: sender,
+            internals: evm_internals,
+            gas: 1_000_000,
+            is_static: false,
+            value: U256::ZERO,
+            target_address: PATH_USD_ADDRESS,
+            bytecode_address: PATH_USD_ADDRESS,
+            reservoir: 0,
+        };
+        let output = AlloyEvmPrecompile::call(&precompile, input).expect("transfer should succeed");
+        assert!(output.is_success());
+        assert!(output.gas_used > 0, "transfer should consume gas");
+        assert_eq!(
+            output.state_gas_used, 0,
+            "transfer to existing account (nonzero->nonzero SSTORE) must have state_gas_used == 0, got {}",
+            output.state_gas_used
         );
     }
 
