@@ -42,7 +42,8 @@ serde_json.workspace = true
 once_cell = { version = "1.21", default-features = false }
 
 # Cryptography
-ed25519-consensus.workspace = true
+commonware-codec = { workspace = true, optional = true }
+commonware-cryptography = { workspace = true, optional = true }
 sha2.workspace = true
 base64.workspace = true
 aws-lc-rs = { version = "1.16.2", optional = true, default-features = false, features = ["alloc", "non-fips", "ring-sig-verify"] }
@@ -75,6 +76,8 @@ std = [
 	"alloy-rlp/std",
 	"alloy-serde?/std",
 	"dep:aws-lc-rs",
+	"dep:commonware-codec",
+	"dep:commonware-cryptography",
 	"base64/std",
 	"derive_more/std",
 	"once_cell/std",

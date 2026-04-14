@@ -32,8 +32,13 @@ struct TempoConsensusContextRlpDecodable {
 impl alloy_rlp::Decodable for TempoConsensusContext {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let raw = TempoConsensusContextRlpDecodable::decode(buf)?;
-        ed25519_consensus::VerificationKey::try_from(<[u8; 32]>::from(raw.proposer))
-            .map_err(|_| alloy_rlp::Error::Custom("invalid ed25519 proposer key"))?;
+
+        #[cfg(feature = "std")]
+        {
+            use commonware_cryptography::ed25519::PublicKey;
+            <PublicKey as commonware_codec::Read>::read_cfg(&mut raw.proposer.as_slice(), &())
+                .map_err(|_| alloy_rlp::Error::Custom("invalid ed25519 proposer key"))?;
+        }
 
         Ok(Self {
             epoch: raw.epoch,
@@ -196,8 +201,8 @@ mod tests {
 
     #[test]
     fn consensus_context_rlp_roundtrip() {
-        let sk = ed25519_consensus::SigningKey::from([1u8; 32]);
-        let proposer = B256::from_slice(sk.verification_key().as_ref());
+        use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
+        let proposer = B256::from_slice(PrivateKey::from_seed(1).public_key().as_ref());
 
         let ctx = TempoConsensusContext {
             epoch: 1,
