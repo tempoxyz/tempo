@@ -1,5 +1,11 @@
 # Changelog
 
+## `tempo-primitives@1.6.0`
+
+### Minor Changes
+
+- Store `TempoTransaction.valid_before` and `valid_after` as `Option<NonZeroU64>` so omitted validity bounds remain distinct from zero in RLP and serde handling. Reject zero-valued validity bounds when building AA transactions from `TempoTransactionRequest`. (by @DerekCofausper, [#3554](https://github.com/tempoxyz/tempo/pull/3554))
+
 ## `tempo-primitives@1.5.1`
 
 ### Patch Changes
