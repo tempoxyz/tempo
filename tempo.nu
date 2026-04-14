@@ -484,7 +484,9 @@ def run-bench-single [
     --tracy-seconds: int = 0
     --tracy-offset: int = 0
     --tracing-otlp: string = ""
+    --with-follower
 ] {
+    let with_follower = ($with_follower | default false)
     print $"=== Starting run: ($run_label) ==="
 
     let log_dir = $"($LOCALNET_DIR)/logs-($run_label)"
@@ -516,12 +518,29 @@ def run-bench-single [
     # Parse extra node args
     let extra_args = if $node_args == "" { [] } else { $node_args | split row " " }
 
+    # Profile artifact suffix: when follower is enabled, tag profiles with role
+    let profile_suffix = if $with_follower { "-builder" } else { "" }
+
+    # Clone datadir for follower BEFORE builder starts (avoids copying a live DB)
+    let follower_datadir = $"($datadir)-follower"
+    if $with_follower {
+        print $"  Cloning datadir for follower: ($follower_datadir)"
+        rm -rf $follower_datadir
+        bash -c $"cp --reflink=auto -a '($datadir)' '($follower_datadir)'"
+        # Remove p2p identity from copied datadir so follower gets its own
+        for key_file in ["discovery-secret" "node.key"] {
+            let p = $"($follower_datadir)/($key_file)"
+            if ($p | path exists) { rm $p }
+        }
+    }
+
     # Build node arguments, then dedup so user-provided args override defaults
     let base_args = (build-base-args $genesis_path $datadir $log_dir "0.0.0.0" 8545 9001)
         | append (build-dev-args)
         | append (log-filter-args $loud)
         | append (if $tracy != "off" { ["--log.tracy" "--log.tracy.filter" $tracy_filter] } else { [] })
         | append (if $tracing_otlp != "" { [$"--tracing-otlp=($tracing_otlp)"] } else { [] })
+        | append (if $with_follower { ["--ws" "--ws.addr" "127.0.0.1" "--ws.port" "8546" "--ws.api" "all" "--port" "30303" "--discovery.port" "30303" "--authrpc.port" "8551" "--ipcpath" "/tmp/reth-builder.ipc"] } else { [] })
     let args = (dedup-args $base_args $extra_args)
 
     # Tracy environment variables
@@ -536,31 +555,109 @@ def run-bench-single [
 
     # Start tempo node in background (optionally wrapped with samply)
     let full_samply_args = if $samply {
-        $samply_args | append ["--save-only" "--presymbolicate" "--output" $"($results_dir)/profile-($run_label).json.gz"]
+        $samply_args | append ["--save-only" "--presymbolicate" "--output" $"($results_dir)/profile-($run_label)($profile_suffix).json.gz"]
     } else { [] }
     let node_cmd = wrap-samply [$tempo_bin ...$args] $samply $full_samply_args
     let node_cmd_str = ($node_cmd | str join " ")
     let profiling_label = if $samply { " (samply)" } else if $tracy != "off" { $" \(tracy=($tracy)\)" } else { "" }
-    print $"  Starting node: ($tempo_bin | path basename)($profiling_label)"
-    job spawn { sh -c $"($otel_attrs)($tracy_env_prefix)($node_cmd_str) 2>&1" | lines | each { |line| print $"[($run_label)] ($line)" } }
+    let builder_label = if $with_follower { " [builder]" } else { "" }
+    print $"  Starting node($builder_label): ($tempo_bin | path basename)($profiling_label)"
+    job spawn { sh -c $"($otel_attrs)($tracy_env_prefix)($node_cmd_str) 2>&1" | lines | each { |line| print $"[($run_label)($builder_label)] ($line)" } }
 
     # Wait for RPC
     sleep 2sec
     let rpc_timeout = if $bloat > 0 { 600 } else { 120 }
     wait-for-rpc "http://localhost:8545" $rpc_timeout
 
+    # Start follower node if requested
+    if $with_follower {
+        # Get builder enode for static peering (required for reliable sync)
+        let node_info = (do { curl -sf http://localhost:8545 -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"admin_nodeInfo","params":[],"id":1}' } | complete)
+        let builder_enode = if $node_info.exit_code == 0 {
+            try { $node_info.stdout | from json | get result.enode } catch { "" }
+        } else { "" }
+        if $builder_enode == "" {
+            print "  ERROR: failed to get builder enode via admin_nodeInfo — cannot start follower"
+            error make { msg: "Failed to get builder enode for follower static peering" }
+        }
+        print $"  Builder enode: ($builder_enode)"
+
+        let follower_log_dir = $"($LOCALNET_DIR)/logs-($run_label)-follower"
+        mkdir $follower_log_dir
+
+        # Build follower args: follow mode, no dev, no faucet, distinct ports
+        let follower_args = [
+            "node"
+            "--chain" $genesis_path
+            "--datadir" $follower_datadir
+            "--http"
+            "--http.addr" "0.0.0.0"
+            "--http.port" "8547"
+            "--http.api" "all"
+            "--metrics" "0.0.0.0:9002"
+            "--log.file.directory" $follower_log_dir
+            "--follow" "ws://127.0.0.1:8546"
+            "--port" "30304"
+            "--discovery.port" "30304"
+            "--authrpc.port" "8552"
+            "--ipcpath" "/tmp/reth-follower.ipc"
+            "--trusted-peers" $builder_enode
+        ]
+        | append (log-filter-args $loud)
+        | append (if $tracy != "off" { ["--log.tracy" "--log.tracy.filter" $tracy_filter] } else { [] })
+        | append (if $tracing_otlp != "" { [$"--tracing-otlp=($tracing_otlp)"] } else { [] })
+
+        let follower_samply_args = if $samply {
+            $samply_args | append ["--save-only" "--presymbolicate" "--output" $"($results_dir)/profile-($run_label)-follower.json.gz"]
+        } else { [] }
+        let follower_cmd = wrap-samply [$tempo_bin ...$follower_args] $samply $follower_samply_args
+        let follower_cmd_str = ($follower_cmd | str join " ")
+
+        # Follower tracy uses port 8087 to avoid conflict with builder on 8086
+        let follower_tracy_env = if $tracy == "on" {
+            "TRACY_NO_SYS_TRACE=1 TRACY_PORT=8087 "
+        } else if $tracy == "full" {
+            "TRACY_SAMPLING_HZ=1 TRACY_PORT=8087 "
+        } else { "TRACY_PORT=8087 " }
+
+        let follower_otel_attrs = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($benchmark_id),benchmark_run=($run_label),run_type=($run_type),git_ref=($git_ref),node_role=follower "
+
+        print $"  Starting node [follower]: ($tempo_bin | path basename)($profiling_label)"
+        job spawn { sh -c $"($follower_otel_attrs)($follower_tracy_env)($follower_cmd_str) 2>&1" | lines | each { |line| print $"[($run_label) follower] ($line)" } }
+
+        # Wait for follower RPC
+        sleep 2sec
+        wait-for-rpc "http://localhost:8547" $rpc_timeout
+    }
+
     # Start tracy-capture after RPC is ready (node must be running for connection)
     # If tracy-offset > 0, delay the capture start in a background job so tempo-bench isn't blocked
-    let tracy_output = $"($results_dir)/tracy-profile-($run_label).tracy"
+    let tracy_output = $"($results_dir)/tracy-profile-($run_label)($profile_suffix).tracy"
     let tracy_capture_started = if $tracy != "off" {
         let seconds_flag = if $tracy_seconds > 0 { $"-s ($tracy_seconds)" } else { "" }
         let limit_msg = if $tracy_seconds > 0 { $" \(($tracy_seconds)s limit\)" } else { "" }
         if $tracy_offset > 0 {
-            print $"  Tracy-capture will start in ($tracy_offset)s($limit_msg)..."
+            print $"  Tracy-capture [builder] will start in ($tracy_offset)s($limit_msg)..."
             job spawn { sleep ($"($tracy_offset)sec" | into duration); sh -c $"tracy-capture -f -o ($tracy_output) ($seconds_flag)" }
         } else {
-            print $"  Starting tracy-capture($limit_msg)..."
+            print $"  Starting tracy-capture [builder]($limit_msg)..."
             job spawn { sh -c $"tracy-capture -f -o ($tracy_output) ($seconds_flag)" }
+            sleep 500ms
+        }
+        true
+    } else { false }
+
+    # Start tracy-capture for follower on port 8087
+    let follower_tracy_output = $"($results_dir)/tracy-profile-($run_label)-follower.tracy"
+    let follower_tracy_started = if $with_follower and $tracy != "off" {
+        let seconds_flag = if $tracy_seconds > 0 { $"-s ($tracy_seconds)" } else { "" }
+        let limit_msg = if $tracy_seconds > 0 { $" \(($tracy_seconds)s limit\)" } else { "" }
+        if $tracy_offset > 0 {
+            print $"  Tracy-capture [follower] will start in ($tracy_offset)s($limit_msg)..."
+            job spawn { sleep ($"($tracy_offset)sec" | into duration); sh -c $"tracy-capture -f -o ($follower_tracy_output) -p 8087 ($seconds_flag)" }
+        } else {
+            print $"  Starting tracy-capture [follower]($limit_msg)..."
+            job spawn { sh -c $"tracy-capture -f -o ($follower_tracy_output) -p 8087 ($seconds_flag)" }
             sleep 500ms
         }
         true
@@ -678,9 +775,17 @@ def run-bench-single [
         }
     }
 
-    # Remove stale IPC socket
-    if ("/tmp/reth.ipc" | path exists) {
-        rm --force /tmp/reth.ipc
+    # Remove stale IPC sockets
+    for ipc in ["/tmp/reth.ipc" "/tmp/reth-builder.ipc" "/tmp/reth-follower.ipc"] {
+        if ($ipc | path exists) { rm --force $ipc }
+    }
+
+    # Clean up follower datadir
+    if $with_follower {
+        let follower_datadir = $"($datadir)-follower"
+        if ($follower_datadir | path exists) {
+            rm -rf $follower_datadir
+        }
     }
 
     print $"=== Run ($run_label) complete ==="
@@ -1588,6 +1693,7 @@ def "main bench" [
     --tracing-otlp: string = ""                     # OTLP endpoint for tracing (auto-derived from TEMPO_TELEMETRY_URL if not set)
     --baseline-hardfork: string = ""                # Latest active hardfork for baseline (e.g. T1, T1C, T2)
     --feature-hardfork: string = ""                 # Latest active hardfork for feature (e.g. T1, T1C, T2)
+    --bench-mode: string = "builder-only"            # Bench mode: "builder-only" or "builder-and-follower"
 ] {
     validate-mode $mode
 
@@ -1691,6 +1797,21 @@ def "main bench" [
         }
     }
     let dual_hardfork = $baseline_hardfork != "" and $feature_hardfork != ""
+
+    # Validate bench-mode
+    if $bench_mode not-in ["builder-only" "builder-and-follower"] {
+        print $"Error: --bench-mode must be 'builder-only' or 'builder-and-follower' \(got '($bench_mode)'\)"
+        exit 1
+    }
+    let with_follower = $bench_mode == "builder-and-follower"
+    if $with_follower and ($baseline == "" or $feature == "") {
+        print "Error: --bench-mode builder-and-follower requires comparison mode (--baseline + --feature)"
+        exit 1
+    }
+    if $with_follower and $mode != "dev" {
+        print "Error: --bench-mode builder-and-follower only supports --mode dev"
+        exit 1
+    }
 
     if $baseline != "" and $feature != "" {
         # ================================================================
@@ -2028,7 +2149,8 @@ def "main bench" [
                 --samply=$samply --samply-args $samply_args_list
                 --tracy $tracy --tracy-filter $tracy_filter
                 --tracy-seconds $tracy_seconds --tracy-offset $tracy_offset
-                --tracing-otlp $tracing_otlp)
+                --tracing-otlp $tracing_otlp
+                --with-follower=$with_follower)
         }
 
         # Generate summary report
@@ -2050,11 +2172,18 @@ def "main bench" [
         # Upload samply profiles to Firefox Profiler
         if $samply {
             print "\nUploading samply profiles to Firefox Profiler..."
+            let roles = if $with_follower { ["builder" "follower"] } else { [""] }
             for run in $runs {
-                let profile = $"($results_dir)/profile-($run.label).json.gz"
-                let url = (upload-samply-profile $profile)
-                if $url != null {
-                    $url | save -f $"($results_dir)/profile-($run.label)-url.txt"
+                for role in $roles {
+                    let suffix = if $role == "" { "" } else { $"-($role)" }
+                    let profile = $"($results_dir)/profile-($run.label)($suffix).json.gz"
+                    if ($profile | path exists) {
+                        let role_label = if $role == "" { $run.label } else { $"($run.label) ($role)" }
+                        let url = (upload-samply-profile $profile)
+                        if $url != null {
+                            $url | save -f $"($results_dir)/profile-($run.label)($suffix)-url.txt"
+                        }
+                    }
                 }
             }
         }
@@ -2062,11 +2191,18 @@ def "main bench" [
         # Upload tracy profiles to R2
         if $tracy != "off" {
             print "\nUploading tracy profiles to R2..."
+            let roles = if $with_follower { ["builder" "follower"] } else { [""] }
             for run in $runs {
-                let profile = $"($results_dir)/tracy-profile-($run.label).tracy"
-                let viewer_url = (upload-tracy-profile $profile $run.label $run.git_ref)
-                if $viewer_url != null {
-                    $viewer_url | save -f $"($results_dir)/tracy-($run.label)-url.txt"
+                for role in $roles {
+                    let suffix = if $role == "" { "" } else { $"-($role)" }
+                    let profile = $"($results_dir)/tracy-profile-($run.label)($suffix).tracy"
+                    if ($profile | path exists) {
+                        let role_label = if $role == "" { $run.label } else { $"($run.label) ($role)" }
+                        let viewer_url = (upload-tracy-profile $profile $role_label $run.git_ref)
+                        if $viewer_url != null {
+                            $viewer_url | save -f $"($results_dir)/tracy-($run.label)($suffix)-url.txt"
+                        }
+                    }
                 }
             }
         }
