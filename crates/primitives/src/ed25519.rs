@@ -12,6 +12,12 @@ use ed25519_consensus::{VerificationKey, VerificationKeyBytes};
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact))]
 pub struct PublicKey(VerificationKey);
 
+impl PublicKey {
+    pub fn get(&self) -> VerificationKey {
+        self.0
+    }
+}
+
 impl Encodable for PublicKey {
     fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
         self.0.as_bytes().encode(out)
@@ -58,24 +64,6 @@ impl TryFrom<B256> for PublicKey {
     }
 }
 
-#[cfg(feature = "reth-codec")]
-impl reth_codecs::Compact for PublicKey {
-    fn to_compact<B>(&self, buf: &mut B) -> usize
-    where
-        B: alloy_rlp::bytes::BufMut + AsMut<[u8]>,
-    {
-        B256::from(self).to_compact(buf)
-    }
-
-    fn from_compact(buf: &[u8], len: usize) -> (Self, &[u8]) {
-        let (bytes, buf) = B256::from_compact(buf, len);
-        (
-            bytes.try_into().expect("well formed ed25519 public key"),
-            buf,
-        )
-    }
-}
-
 #[cfg(any(test, feature = "arbitrary"))]
 impl<'a> arbitrary::Arbitrary<'a> for PublicKey {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
@@ -85,12 +73,5 @@ impl<'a> arbitrary::Arbitrary<'a> for PublicKey {
         Ok(ed25519_consensus::SigningKey::new(&mut rand)
             .verification_key()
             .into())
-    }
-}
-
-#[cfg(feature = "reth")]
-impl reth_primitives_traits::InMemorySize for PublicKey {
-    fn size(&self) -> usize {
-        core::mem::size_of::<Self>()
     }
 }

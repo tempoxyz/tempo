@@ -6,7 +6,7 @@
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::B256;
 use bytes::{Buf, BufMut};
-use commonware_codec::{EncodeSize, Read, ReadExt as _, Write};
+use commonware_codec::{EncodeSize, Read, Write};
 use commonware_consensus::{
     Heightable,
     simplex::types::Context,
@@ -145,19 +145,15 @@ impl commonware_consensus::CertifiableBlock for Block {
 
     fn context(&self) -> Self::Context {
         match self.consensus_context {
-            Some(ctx) => {
-                // RLP decoding ensures a valid key encoding
-                let leader = PublicKey::read(&mut ctx.proposer.as_slice())
-                    .expect("invalid proposer key encoding");
-
-                Context {
-                    leader,
-                    round: Round::new(Epoch::new(ctx.epoch), View::new(ctx.view)),
-                    parent: (View::new(ctx.parent_view), self.parent_digest()),
-                }
-            }
+            Some(ctx) => Context {
+                leader: ctx.proposer.get().into(),
+                round: Round::new(Epoch::new(ctx.epoch), View::new(ctx.view)),
+                parent: (View::new(ctx.parent_view), self.parent_digest()),
+            },
             None => {
-                // Pre-T4 or Genesis: Deterministic sentinel that is unused
+                // Pre-T4: Unused deterministic sentinel.
+                // Post-T4: Panic, all blocks where this is called must have a context.
+                //          Historical Pre-T4 blocks are never replayed in consensus
                 let leader = PublicKey::from(PrivateKey::from_seed(0));
                 Context {
                     leader,

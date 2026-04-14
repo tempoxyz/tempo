@@ -579,11 +579,11 @@ impl Inner<Init> {
             .chain_spec()
             .is_t4_active_at_timestamp(timestamp)
         {
-            Some(tempo_primitives::TempoConsensusContext {
+            Some(TempoConsensusContext {
                 epoch: round.epoch().get(),
                 view: round.view().get(),
-                proposer: crate::utils::public_key_to_b256(&leader),
                 parent_view: parent_view.get(),
+                proposer: crate::utils::public_key_to_tempo_primitive(&leader),
             })
         } else {
             None
@@ -927,8 +927,8 @@ async fn verify_header(
         let expected_ctx = TempoConsensusContext {
             epoch: round.epoch().get(),
             view: round.view().get(),
-            proposer: crate::utils::public_key_to_b256(proposer),
             parent_view: parent.0.get(),
+            proposer: crate::utils::public_key_to_tempo_primitive(proposer),
         };
 
         if ctx != expected_ctx {

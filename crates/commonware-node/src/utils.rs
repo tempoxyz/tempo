@@ -16,6 +16,13 @@ pub(crate) fn public_key_to_b256(key: &PublicKey) -> B256 {
         .expect("ed25519 pub keys always map to B256")
 }
 
+pub(crate) fn public_key_to_tempo_primitive(
+    key: &PublicKey,
+) -> tempo_primitives::ed25519::PublicKey {
+    tempo_primitives::ed25519::PublicKey::try_from(B256::from_slice(key.as_ref()))
+        .expect("shared implementation of ed25519 pub keys")
+}
+
 /// A vendored version of [`commonware_utils::futures::OptionFuture`] to implement
 /// [`futures::future::FusedFuture`].
 ///
