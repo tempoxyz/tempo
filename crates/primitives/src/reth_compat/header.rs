@@ -211,6 +211,8 @@ mod codec {
                     requests_hash: Some(b256!(
                         "0x3333333333333333333333333333333333333333333333333333333333333333"
                     )),
+                    block_access_list_hash: None,
+                    slot_number: None,
                 },
             };
 
