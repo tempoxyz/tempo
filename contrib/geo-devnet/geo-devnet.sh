@@ -118,7 +118,9 @@ ARG BASE_IMAGE=tempo-node:geodevnet
 FROM ${BASE_IMAGE}
 RUN apt-get update && apt-get install -y --no-install-recommends iproute2 bash && rm -rf /var/lib/apt/lists/*
 COPY entrypoint.sh /entrypoint.sh
+COPY geodevnet-network.sh /usr/local/bin/geodevnet-network
 RUN chmod +x /entrypoint.sh
+RUN chmod +x /usr/local/bin/geodevnet-network
 ENTRYPOINT ["/entrypoint.sh"]
 DOCKERFILE
 
@@ -161,14 +163,22 @@ for i in $(seq 0 $((NUM_VALS - 1))); do
 done
 
 # ── Create entrypoint script ───────────────────────────────────────────────
-cat > "$WORK_DIR/entrypoint.sh" <<'ENTRYPOINT'
+cat > "$WORK_DIR/geodevnet-network.sh" <<'NETWORK'
 #!/bin/bash
-set -e
+set -euo pipefail
 
-# Apply network shaping if NETEM_TARGETS is set (comma-separated CIDRs to delay)
-if [ -n "${NETEM_TARGETS:-}" ]; then
-    NETEM_LIMIT_PKTS="${NETEM_LIMIT_PKTS:-20000}"
-    echo "[netem] Applying network shaping: delay=${NETEM_DELAY}ms jitter=${NETEM_JITTER}ms loss=${NETEM_LOSS}% rate=${NETEM_RATE} limit=${NETEM_LIMIT_PKTS}pkts"
+apply_qdisc() {
+    local mode="${1:-legacy}"
+    local limit_pkts="${NETEM_LIMIT_PKTS:-20000}"
+
+    if [ -z "${NETEM_TARGETS:-}" ]; then
+        echo "[netem] NETEM_TARGETS is empty; skipping network shaping"
+        return 0
+    fi
+
+    tc qdisc del dev eth0 root 2>/dev/null || true
+
+    echo "[netem] Applying network shaping: mode=${mode} delay=${NETEM_DELAY}ms jitter=${NETEM_JITTER}ms loss=${NETEM_LOSS}% rate=${NETEM_RATE} limit=${limit_pkts}pkts"
 
     # Default all traffic to the unshaped band. We add explicit filters below
     # for cross-region destinations that should pass through netem.
@@ -177,15 +187,28 @@ if [ -n "${NETEM_TARGETS:-}" ]; then
 
     # Band 1:1 = shaped (cross-region traffic)
     tc qdisc add dev eth0 parent 1:1 handle 10: netem \
-        limit "${NETEM_LIMIT_PKTS}" \
+        limit "${limit_pkts}" \
         delay "${NETEM_DELAY}ms" "${NETEM_JITTER}ms" distribution normal \
         loss "${NETEM_LOSS}%" \
         rate "${NETEM_RATE}"
 
-    # Band 1:2 = unshaped (intra-region + everything else)
-    tc qdisc add dev eth0 parent 1:2 handle 20: pfifo_fast
+    case "$mode" in
+        legacy)
+            # Match the original setup for same-region/default traffic.
+            tc qdisc add dev eth0 parent 1:2 handle 20: pfifo_fast
+            ;;
+        fq)
+            # Keep fq as the active leaf qdisc for both shaped and unshaped
+            # validator traffic while preserving the cross-region netem layer.
+            tc qdisc add dev eth0 parent 10:1 handle 11: fq
+            tc qdisc add dev eth0 parent 1:2 handle 20: fq
+            ;;
+        *)
+            echo "[netem] Unknown qdisc mode: $mode" >&2
+            return 1
+            ;;
+    esac
 
-    # Route cross-region IPs to the shaped band
     IFS=',' read -ra TARGETS <<< "$NETEM_TARGETS"
     for target in "${TARGETS[@]}"; do
         echo "[netem] Shaping traffic to $target"
@@ -201,6 +224,27 @@ if [ -n "${NETEM_TARGETS:-}" ]; then
     echo "[netem] Network shaping active:"
     tc qdisc show dev eth0
     echo ""
+}
+
+case "${1:-}" in
+    apply-qdisc)
+        shift
+        apply_qdisc "${1:-legacy}"
+        ;;
+    *)
+        echo "usage: geodevnet-network apply-qdisc [legacy|fq]" >&2
+        exit 1
+        ;;
+esac
+NETWORK
+
+cat > "$WORK_DIR/entrypoint.sh" <<'ENTRYPOINT'
+#!/bin/bash
+set -euo pipefail
+
+# Apply network shaping if NETEM_TARGETS is set (comma-separated CIDRs to delay)
+if [ -n "${NETEM_TARGETS:-}" ]; then
+    /usr/local/bin/geodevnet-network apply-qdisc "${NETEM_QDISC_MODE:-legacy}"
 fi
 
 echo "[tempo] Starting validator..."

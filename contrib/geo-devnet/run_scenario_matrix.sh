@@ -31,7 +31,7 @@ ANALYSES=(
 if [ "$#" -gt 0 ]; then
   SCENARIOS=("$@")
 else
-  SCENARIOS=(default initcwnd363 bbr)
+  SCENARIOS=(default initcwnd363 bbr fq_bbr)
 fi
 
 require_cmd() {
@@ -176,16 +176,34 @@ stop_tcp_snapshots() {
   SNAPSHOT_PIDS=()
 }
 
+apply_qdisc_mode() {
+  local container="$1"
+  local qdisc_mode="$2"
+  docker exec "$container" /usr/local/bin/geodevnet-network apply-qdisc "$qdisc_mode"
+}
+
 configure_scenario() {
   local scenario="$1"
-  local cc
+  local cc qdisc_mode
   case "$scenario" in
     default|initcwnd363)
       cc="cubic"
+      qdisc_mode="legacy"
       ;;
     bbr)
       cc="bbr"
+      qdisc_mode="legacy"
       sudo modprobe tcp_bbr >/dev/null 2>&1 || true
+      if ! sysctl -n net.ipv4.tcp_available_congestion_control | grep -qw bbr; then
+        echo "bbr is not available on this host" >&2
+        exit 1
+      fi
+      ;;
+    fq_bbr)
+      cc="bbr"
+      qdisc_mode="fq"
+      sudo modprobe tcp_bbr >/dev/null 2>&1 || true
+      sudo modprobe sch_fq >/dev/null 2>&1 || true
       if ! sysctl -n net.ipv4.tcp_available_congestion_control | grep -qw bbr; then
         echo "bbr is not available on this host" >&2
         exit 1
@@ -197,17 +215,21 @@ configure_scenario() {
       ;;
   esac
 
+  CURRENT_CONGESTION_CONTROL="$cc"
+  CURRENT_QDISC_MODE="$qdisc_mode"
+
   for container in "${CONTAINERS[@]}"; do
     local pid ip
     pid="$(container_pid "$container")"
     ip="$(container_ip "$container")"
     sudo nsenter -t "$pid" -n sysctl -w "net.ipv4.tcp_congestion_control=$cc" >/dev/null
+    apply_qdisc_mode "$container" "$qdisc_mode"
     case "$scenario" in
       initcwnd363)
         docker exec "$container" sh -lc "ip route replace 172.20.0.0/24 dev eth0 proto kernel scope link src $ip initcwnd 363 initrwnd 363"
         docker exec "$container" sh -lc "ip route replace default via 172.20.0.1 dev eth0"
         ;;
-      default|bbr)
+      default|bbr|fq_bbr)
         docker exec "$container" sh -lc "ip route replace 172.20.0.0/24 dev eth0 proto kernel scope link src $ip"
         docker exec "$container" sh -lc "ip route replace default via 172.20.0.1 dev eth0"
         ;;
@@ -285,6 +307,8 @@ from_mnemonic_index=$mnemonic_index
 min_total_transactions=$MIN_TOTAL_TRANSACTIONS
 start_timestamp=$start_timestamp
 rpc_url=$RPC_URL
+tcp_congestion_control=$CURRENT_CONGESTION_CONTROL
+qdisc_mode=$CURRENT_QDISC_MODE
 timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
 }

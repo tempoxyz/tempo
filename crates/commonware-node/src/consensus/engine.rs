@@ -8,8 +8,10 @@ use std::{
 };
 
 use commonware_broadcast::buffered;
+use commonware_codec::Decode as _;
 use commonware_consensus::{
-    Reporters, marshal,
+    Heightable as _, Reporters, marshal,
+    marshal::standard::Standard,
     simplex::scheme::bls12381_threshold::vrf::Scheme,
     types::{FixedEpocher, ViewDelta},
 };
@@ -19,6 +21,7 @@ use commonware_cryptography::{
     certificate::Scheme as _,
     ed25519::{PrivateKey, PublicKey},
 };
+use commonware_p2p::Recipients;
 use commonware_p2p::{AddressableManager, Blocker, Receiver, Sender};
 use commonware_parallel::Sequential;
 use commonware_runtime::{
@@ -26,12 +29,16 @@ use commonware_runtime::{
     buffer::paged::CacheRef, spawn_cell,
 };
 use commonware_storage::archive::immutable;
-use commonware_utils::{NZU16, NZU64, NZUsize};
+use commonware_utils::{
+    NZU16, NZU64, NZUsize,
+    channel::{fallible::OneshotExt as _, oneshot},
+};
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::future::try_join_all;
 use rand_08::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
-use tracing::info;
+use tempo_telemetry_util::display_duration;
+use tracing::{info, warn};
 
 use crate::{
     config::BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
@@ -41,7 +48,7 @@ use crate::{
     peer_manager, subblocks,
 };
 
-use super::block::Block;
+use super::{Digest, block::Block};
 
 // A bunch of constants to configure commonwarexyz singletons and copied over form alto.
 
@@ -62,6 +69,152 @@ const MAX_REPAIR: NonZeroUsize = NZUsize!(20);
 
 // Ensure the marshal delivers blocks sequentially.
 const MAX_PENDING_ACKS: NonZeroUsize = NZUsize!(1);
+
+#[derive(Clone)]
+struct InstrumentedBroadcastBuffer<TContext> {
+    context: ContextCell<TContext>,
+    inner: buffered::Mailbox<PublicKey, Block>,
+}
+
+#[derive(Debug)]
+struct InstrumentedBroadcastReceiver<R> {
+    inner: R,
+}
+
+impl<TContext> InstrumentedBroadcastBuffer<TContext> {
+    fn new(context: TContext, inner: buffered::Mailbox<PublicKey, Block>) -> Self {
+        Self {
+            context: ContextCell::new(context),
+            inner,
+        }
+    }
+}
+
+impl<R> InstrumentedBroadcastReceiver<R> {
+    const fn new(inner: R) -> Self {
+        Self { inner }
+    }
+}
+
+impl<R> Receiver for InstrumentedBroadcastReceiver<R>
+where
+    R: Receiver<PublicKey = PublicKey>,
+{
+    type Error = R::Error;
+    type PublicKey = PublicKey;
+
+    async fn recv(&mut self) -> Result<commonware_p2p::Message<Self::PublicKey>, Self::Error> {
+        let (peer, bytes) = self.inner.recv().await?;
+        let encoded_size_bytes = bytes.len();
+        if let Ok(block) = Block::decode_cfg(bytes.as_ref(), &()) {
+            info!(
+                %peer,
+                block.height = %block.height(),
+                block.digest = %block.digest(),
+                encoded_size_bytes,
+                "received block body on broadcast channel",
+            );
+        }
+        Ok((peer, bytes))
+    }
+}
+
+impl<TContext> commonware_consensus::marshal::core::Buffer<Standard<Block>>
+    for InstrumentedBroadcastBuffer<TContext>
+where
+    TContext: Spawner + commonware_runtime::Metrics,
+{
+    type CachedBlock = Block;
+
+    async fn find_by_digest(&self, digest: Digest) -> Option<Self::CachedBlock> {
+        self.inner.get(digest).await
+    }
+
+    async fn find_by_commitment(&self, commitment: Digest) -> Option<Self::CachedBlock> {
+        self.find_by_digest(commitment).await
+    }
+
+    async fn subscribe_by_digest(&self, digest: Digest) -> oneshot::Receiver<Self::CachedBlock> {
+        let started_at = Instant::now();
+        info!(
+            block.digest = %digest,
+            "waiting for block digest from buffered broadcast cache",
+        );
+
+        let inner_rx = self.inner.subscribe(digest).await;
+        let (tx, rx) = oneshot::channel();
+        self.context.with_label("broadcast_buffer_waiter").spawn({
+            let digest = digest;
+            move |_| async move {
+                match inner_rx.await {
+                    Ok(block) => {
+                        info!(
+                            block.height = %block.height(),
+                            block.digest = %block.digest(),
+                            elapsed = %display_duration(started_at.elapsed()),
+                            "resolved block digest from buffered broadcast cache",
+                        );
+                        tx.send_lossy(block);
+                    }
+                    Err(error) => {
+                        warn!(
+                            block.digest = %digest,
+                            elapsed = %display_duration(started_at.elapsed()),
+                            %error,
+                            "buffered broadcast cache subscription dropped before block became available",
+                        );
+                    }
+                }
+            }
+        });
+        rx
+    }
+
+    async fn subscribe_by_commitment(
+        &self,
+        commitment: Digest,
+    ) -> oneshot::Receiver<Self::CachedBlock> {
+        self.subscribe_by_digest(commitment).await
+    }
+
+    async fn finalized(&self, _commitment: Digest) {}
+
+    async fn proposed(&self, round: commonware_consensus::types::Round, block: Block) {
+        let started_at = Instant::now();
+        let block_height = block.height();
+        let block_digest = block.digest();
+        info!(
+            view = %round.view(),
+            block.height = %block_height,
+            block.digest = %block_digest,
+            "handing proposed block body to buffered broadcast",
+        );
+        let peers =
+            commonware_broadcast::Broadcaster::broadcast(&self.inner, Recipients::All, block).await;
+        match peers.await {
+            Ok(peers) => {
+                info!(
+                    view = %round.view(),
+                    block.height = %block_height,
+                    block.digest = %block_digest,
+                    recipients = peers.len(),
+                    elapsed = %display_duration(started_at.elapsed()),
+                    "buffered broadcast handed proposed block body to network",
+                );
+            }
+            Err(error) => {
+                warn!(
+                    ?error,
+                    view = %round.view(),
+                    block.height = %block_height,
+                    block.digest = %block_digest,
+                    elapsed = %display_duration(started_at.elapsed()),
+                    "buffered broadcast dropped before network handoff completed",
+                );
+            }
+        }
+    }
+}
 
 /// Settings for [`Engine`].
 ///
@@ -308,6 +461,10 @@ where
                 codec_config: (),
             },
         );
+        let broadcast_mailbox = InstrumentedBroadcastBuffer::new(
+            context.with_label("broadcast_buffer"),
+            broadcast_mailbox,
+        );
 
         // XXX: All hard-coded values here are the same as prior to commonware
         // making the resolver configurable in
@@ -451,7 +608,7 @@ where
     /// broadcasts messages to and caches messages from untrusted peers.
     // XXX: alto calls this `buffered`. That's confusing. We call it `broadcast`.
     broadcast: buffered::Engine<TContext, PublicKey, Block, peer_manager::Mailbox>,
-    broadcast_mailbox: buffered::Mailbox<PublicKey, Block>,
+    broadcast_mailbox: InstrumentedBroadcastBuffer<TContext>,
 
     dkg_manager: dkg::manager::Actor<TContext>,
     dkg_manager_mailbox: dkg::manager::Mailbox,
@@ -586,7 +743,10 @@ where
     ) -> eyre::Result<()> {
         let peer_manager = self.peer_manager.start();
 
-        let broadcast = self.broadcast.start(broadcast_channel);
+        let broadcast = self.broadcast.start((
+            broadcast_channel.0,
+            InstrumentedBroadcastReceiver::new(broadcast_channel.1),
+        ));
         let resolver =
             marshal::resolver::p2p::init(&self.context, self.resolver_config, marshal_channel);
 

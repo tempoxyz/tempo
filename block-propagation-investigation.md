@@ -1,7 +1,7 @@
 # Block Propagation Investigation
 
 **Date:** 2026-04-13
-**Status:** In progress — on the fixed geo-devnet, a three-scenario `1800 TPS / 60s / 400 account` matrix now shows `default` at roughly `~492ms`, `initcwnd=363 initrwnd=363` at roughly `~62ms`, and container-local `bbr` at roughly `~407ms` for the cross-region body path; testnet still needs to be reconciled against that result
+**Status:** In progress — on fresh-stack geo-devnet reruns, `default` still leaves the cross-region body path in the `~0.5s` regime, while both `initcwnd=363 initrwnd=363` and true `fq+bbr` collapse it to roughly `~60ms` on clean links; under the lossiest tested profile (`125ms` RTT, `0.3%` loss), true `fq+bbr` is clearly stronger than `initcwnd363`
 
 ---
 
@@ -250,6 +250,48 @@ Representative large blocks from the matrix:
 
 **Current conclusion:** at this higher sustained load, `initcwnd=363 initrwnd=363` on the validator subnet route is still the only scenario that meaningfully collapses the cross-region body-path delay. Container-local `bbr` helps somewhat relative to raw default cubic, but it does not come close to the `initcwnd` result.
 
+### ✅ Fresh-stack isolated comparison (trusted baseline)
+
+The later `fq_bbr` work exposed an important trap: running several scenarios back-to-back on the same long-lived validator stack can produce misleading results, even when the saved route and qdisc state look correct afterward. To avoid that contamination, we reran `default`, `initcwnd363`, and `fq_bbr` with a full stack recreate between scenarios and treat those fresh-stack reruns as the trustworthy baseline.
+
+Trusted fresh-stack results at `90ms` RTT and `0%` loss:
+
+| Scenario | TCP / qdisc setup | Validator subnet route | Cross-region body-path median (`buffer_sent -> broadcast_received`) | Same-region body-path median | Cross-region digest-path median (`constructed_proposal -> marshal_wait`) |
+|----------|-------------------|------------------------|---------------------------------------------------------------------|------------------------------|----------------------------------------------------------------------------|
+| `default` | `cubic`, legacy `prio -> netem / pfifo_fast` | kernel default | `524.3ms` | `0.8ms` | `54.7ms` |
+| `initcwnd363` | `cubic`, legacy `prio -> netem / pfifo_fast` | `initcwnd=363 initrwnd=363` | `61.9ms` | `0.4ms` | `54.9ms` |
+| `fq_bbr` | `bbr`, true `prio -> netem -> fq` plus unshaped `fq` | kernel default | `61.8ms` | `0.4ms` | `54.2ms` |
+
+This is the main clean comparison to trust:
+
+- `default` is still bad and reproducibly bad on the body path
+- `initcwnd363` and true `fq_bbr` both collapse the body path to the `~60ms` regime on clean links
+- the digest/control path stays tied to the cross-region RTT in all three cases
+
+### ✅ Loss profile matrix on fresh stacks
+
+We then reran the same three scenarios with a full stack recreate for each scenario/profile pair across three representative cross-region network profiles:
+
+- `good_cloud`: `85ms` RTT, `0.005%` loss
+- `normal_peering`: `95ms` RTT, `0.05%` loss
+- `congested_peak`: `125ms` RTT, `0.3%` loss
+
+All body-path numbers in the table below are **cross-region medians**. The same-region body-path median is shown after the slash as a sanity check.
+
+| Network condition | RTT | Loss | `default` body-path median (cross / same) | `initcwnd363` body-path median (cross / same) | `fq_bbr` body-path median (cross / same) | `default` digest-path median | `initcwnd363` digest-path median | `fq_bbr` digest-path median |
+|-------------------|-----|------|-------------------------------------------|-----------------------------------------------|-----------------------------------------|------------------------------|----------------------------------|----------------------------|
+| Ideal zero-loss | `90ms` | `0%` | `524.3ms / 0.8ms` | `61.9ms / 0.4ms` | `61.8ms / 0.4ms` | `54.7ms` | `54.9ms` | `54.2ms` |
+| Good cloud | `85ms` | `0.005%` | `547.3ms / 0.7ms` | `56.3ms / 0.4ms` | `56.6ms / 0.4ms` | `50.3ms` | `50.4ms` | `49.9ms` |
+| Normal peering | `95ms` | `0.05%` | `591.8ms / 0.8ms` | `64.1ms / 0.4ms` | `64.3ms / 0.4ms` | `53.1ms` | `53.5ms` | `54.7ms` |
+| Congested peak | `125ms` | `0.3%` | `5990.4ms / 6.2ms` | `311.9ms / 0.6ms` | `149.1ms / 0.4ms` | `69.1ms` | `70.7ms` | `73.5ms` |
+
+Current takeaway from the trusted matrix:
+
+- on clean or only mildly lossy links, `initcwnd363` and true `fq_bbr` are effectively tied
+- on the most lossy tested profile, `fq_bbr` is clearly more robust than `initcwnd363`
+- `default` is worst in every profile and collapses badly once the path is both longer and lossy
+- same-region behavior stayed sane for `initcwnd363` and `fq_bbr` across the tested profiles
+
 ### ⚠️ Theory 2: Container-local BBR alone is not enough
 
 We tested `bbr` by setting `net.ipv4.tcp_congestion_control=bbr` inside each validator network namespace and then forcing the `:9001` peer sessions to reconnect.
@@ -258,6 +300,11 @@ Important caveat:
 
 - `net.core.default_qdisc` is not exposed in these validator netns
 - the validator `eth0` already carries the custom netem/prio root qdisc, so the closest container-only version of the requested test is `bbr` with the existing root qdisc unchanged
+
+Follow-up support now exists in the geo-devnet scripts:
+
+- the runtime image exposes `geodevnet-network apply-qdisc {legacy|fq}` so scenario reruns can switch the validator `eth0` tree without hand-editing `tc`
+- `fq_bbr` now means `tcp_congestion_control=bbr` plus `fq` as the actual leaf qdisc for both the unshaped validator path and the shaped cross-region band under `netem`
 
 **Result:** container-local `bbr` kept the digest/cert path healthy but still left a large cross-region body-path penalty.
 
@@ -308,8 +355,11 @@ The geo-devnet (`contrib/geo-devnet/geo-devnet.sh`) creates a Docker-based local
 - `default`
 - `initcwnd363`
 - `bbr`
+- `fq_bbr`
 
-It reconfigures the validator TCP settings inside the container namespaces, forces the validator `:9001` sessions to reconnect, runs the bench, and writes scenario-bounded TCP and propagation artifacts under `.geodevnet/scenario-runs/<timestamp>/`.
+It reconfigures the validator TCP settings inside the container namespaces, can swap the validator `eth0` qdisc tree between the legacy `prio -> netem/pfifo_fast` layout and a true `prio -> netem -> fq` plus `fq` unshaped layout, forces the validator `:9001` sessions to reconnect, runs the bench, and writes scenario-bounded TCP and propagation artifacts under `.geodevnet/scenario-runs/<timestamp>/`.
+
+For isolated fresh-stack reruns across multiple network profiles, `contrib/geo-devnet/run_profile_matrix.sh` recreates the stack between every scenario/profile pair and writes results under `.profile-matrix-runs/<timestamp>/`.
 
 ### Remote workflow used for this investigation
 
@@ -320,7 +370,7 @@ The working environment for these reruns is a remote benchmark host in a dedicat
 - Rebuild the runtime image from `contrib/geo-devnet/.geodevnet/Dockerfile.runtime`
 - Recreate the stack with `docker compose -p geodevnet -f contrib/geo-devnet/.geodevnet/docker-compose.yml up -d --force-recreate`
 - If testing a new `initcwnd` value on an already-running stack, update the validator subnet route inside each validator and kill the existing `:9001` sessions so the peer TCP connections reconnect under the new route settings
-- For a three-scenario comparison run, use `contrib/geo-devnet/run_scenario_matrix.sh` so the bench, TCP snapshots, and propagation analyses are captured together
+- For a comparison run, use `contrib/geo-devnet/run_scenario_matrix.sh` so the bench, TCP snapshots, and propagation analyses are captured together
 
 ### Known Issues with the Script
 
@@ -351,7 +401,7 @@ The working environment for these reruns is a remote benchmark host in a dedicat
 
 For the medium-block reruns in this document, `--tps 900` was the stable setting used to keep same-region behavior sane while still producing useful `~500–1100 tx` blocks.
 
-For the higher-load three-scenario matrix, the current settings are:
+For the higher-load scenario matrix, the current settings are:
 
 - `1800 TPS`
 - `60s` duration
@@ -364,6 +414,12 @@ Example:
 TPS=1800 DURATION=60 ACCOUNTS=400 MAX_CONCURRENT_REQUESTS=400 \
   FROM_MNEMONIC_INDEX_BASE=12000 \
   ./contrib/geo-devnet/run_scenario_matrix.sh
+
+# Or run only the true fq+bbr case:
+./contrib/geo-devnet/run_scenario_matrix.sh fq_bbr
+
+# Or run the isolated 3-profile matrix:
+./contrib/geo-devnet/run_profile_matrix.sh
 ```
 
 ### Applying/Removing Netem Manually
@@ -445,11 +501,11 @@ Important bug fixed during this investigation:
 
 ### 1. Reconcile testnet vs geo-devnet
 
-Geo-devnet now shows three clear regimes on the fixed setup:
+Geo-devnet now shows three trustworthy regimes on fresh-stack reruns:
 
-- `default`: body path about `~492ms` cross-region while same-region stays sub-millisecond
-- `initcwnd363`: body path about `~62ms` cross-region with same-region still sub-millisecond
-- `bbr`: body path about `~407ms` cross-region with same-region still sub-millisecond
+- `default`: body path stays in roughly the `~0.5s` regime on clean links and can become catastrophic on the lossiest tested profile
+- `initcwnd363`: body path drops to roughly `~56–64ms` on clean and mildly lossy profiles, but degrades to roughly `~312ms` under the `125ms / 0.3%` profile
+- `fq_bbr`: body path matches `initcwnd363` on clean and mildly lossy profiles, then stays materially better at roughly `~149ms` under the `125ms / 0.3%` profile
 
 The next task is to understand whether the testnet symptom is the same phenomenon and, if so, what effective startup-window or path differences exist there. Candidates still include:
 
@@ -504,7 +560,7 @@ while true; do ss -tin | grep -v State; sleep 0.01; done > /tmp/tcp_info.log
 
 Look for `cwnd`, `unacked`, `app_limited`, `snd_wnd`, and receive-window behavior at the moment of large sends.
 
-Recent geo-devnet snapshots now exist for all three scenarios under `.geodevnet/scenario-runs/<timestamp>/`. A side-by-side TCP_INFO capture under `default`, `initcwnd363`, and `bbr` would help quantify whether the remaining outliers are still congestion-window related or whether a second bottleneck appears once the initial window is no longer dominant.
+Recent geo-devnet snapshots now exist for both the clean-link isolated reruns and the three-profile loss matrix. A side-by-side TCP_INFO capture under `default`, `initcwnd363`, and `fq_bbr` would help quantify why `fq_bbr` and `initcwnd363` tie on clean paths but diverge once packet loss is introduced.
 
 ### 7. Test separate connections for control vs bulk
 
@@ -518,8 +574,8 @@ The most architecturally sound fix would be separating votes/certs (channel 0-1)
 
 ### OS-Level (No Code Changes)
 
-1. **Moderate `initcwnd` increase on the validator subnet route** — current geo-devnet evidence says this has by far the clearest impact, but it only matters for new peer connections
-2. **Container or host `bbr` tuning** — tested container-local `bbr` helps somewhat but does not come close to the `initcwnd363` result on its own
+1. **True `fq+bbr` on validator traffic** — current geo-devnet evidence says this matches `initcwnd363` on clean links and is clearly stronger once cross-region loss is introduced
+2. **Moderate `initcwnd` increase on the validator subnet route** — still extremely effective on clean and mildly lossy paths, but it only matters for new peer connections
 3. **`tcp_slow_start_after_idle=0`** on all validators — prevents cwnd reset during idle gaps
 4. **Larger TCP buffer sizes** — `tcp_wmem`/`tcp_rmem` tuning
 
@@ -556,7 +612,10 @@ The most architecturally sound fix would be separating votes/certs (channel 0-1)
 | `commonware-runtime/network/tokio.rs` | `write_all_buf` on `OwnedWriteHalf` — the actual TCP send |
 | `commonware-runtime/iobuf/pool.rs` | Buffer pool: 64KB max, oversized → heap fallback |
 | `crates/commonware-node/src/consensus/application/actor.rs` | New investigation log: `"sending block to execution layer for verification"` right before `verify_block(...)` |
+| `crates/commonware-node/src/consensus/engine.rs` | Investigation logs around buffered broadcast handoff, buffered-cache wait/resolve, and broadcast-channel receive |
 | `valscope/apps/api/src/parser.rs` | Log message → event type mapping |
 | `valscope/apps/api/src/store.rs:2538-2570` | `process_ms`, `verify_ms`, `receive_delay_ms` computation |
 | `contrib/geo-devnet/geo-devnet.sh` | Docker-based geo-devnet with netem shaping |
 | `contrib/geo-devnet/analyze_propagation.py` | Propagation delay analysis script, now keyed by proposal digest and `Built payload` metadata |
+| `contrib/geo-devnet/run_scenario_matrix.sh` | Shared-stack scenario runner for `default`, `initcwnd363`, `bbr`, and `fq_bbr` |
+| `contrib/geo-devnet/run_profile_matrix.sh` | Fresh-stack multi-profile runner for `default`, `initcwnd363`, and `fq_bbr` |

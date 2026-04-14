@@ -32,7 +32,7 @@ use prometheus_client::metrics::counter::Counter;
 
 use commonware_utils::{SystemTimeExt, channel::oneshot};
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
-use futures::{StreamExt as _, TryFutureExt as _, channel::mpsc, future::try_join};
+use futures::{StreamExt as _, channel::mpsc, future::try_join};
 use rand_08::{CryptoRng, Rng};
 use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_node_builder::{
@@ -241,7 +241,24 @@ impl Inner<Init> {
             latest_proposed.digest(),
         );
 
+        let started_at = Instant::now();
+        let view = round.view();
+        let block_height = latest_proposed.height();
+        let block_digest = latest_proposed.digest();
+        info!(
+            view = %view,
+            block.height = %block_height,
+            block.digest = %block_digest,
+            "requesting marshal to broadcast proposed block body",
+        );
         self.marshal.proposed(round, latest_proposed).await;
+        info!(
+            view = %view,
+            block.height = %block_height,
+            block.digest = %block_digest,
+            elapsed = %display_duration(started_at.elapsed()),
+            "marshal accepted proposed block body for broadcast",
+        );
         Ok(())
     }
 
@@ -659,24 +676,55 @@ impl Inner<Init> {
         proposer: PublicKey,
         round: Round,
     ) -> eyre::Result<(Block, bool)> {
-        let block_request = self
-            .marshal
-            .subscribe_by_digest(None, payload)
-            .await
-            .map_err(|_| eyre!("syncer dropped channel before the block-to-verified was sent"));
+        let verify_started_at = Instant::now();
+        let block_request_started_at = Instant::now();
+        let block_request = async {
+            info!(
+                block.digest = %payload,
+                total_elapsed = %display_duration(verify_started_at.elapsed()),
+                "waiting for block digest to resolve from marshal for verification",
+            );
+            let block = self
+                .marshal
+                .subscribe_by_digest(None, payload)
+                .await
+                .await
+                .map_err(|_| {
+                    eyre!("syncer dropped channel before the block-to-verified was sent")
+                })?;
+            info!(
+                block.height = %block.height(),
+                block.digest = %block.digest(),
+                elapsed = %display_duration(block_request_started_at.elapsed()),
+                total_elapsed = %display_duration(verify_started_at.elapsed()),
+                "resolved block digest for verification",
+            );
+            Ok::<_, eyre::Report>(block)
+        };
 
-        let (block, parent) = try_join(
-            block_request,
-            get_parent(
+        let parent_request_started_at = Instant::now();
+        let parent_request = async {
+            let parent = get_parent(
                 &self.execution_node,
                 round,
                 parent_digest,
                 parent_view,
                 &self.marshal,
-            ),
-        )
-        .await
-        .wrap_err("failed getting required blocks from syncer")?;
+            )
+            .await?;
+            info!(
+                parent.height = %parent.height(),
+                parent.digest = %parent.digest(),
+                elapsed = %display_duration(parent_request_started_at.elapsed()),
+                total_elapsed = %display_duration(verify_started_at.elapsed()),
+                "resolved parent block for verification",
+            );
+            Ok::<_, eyre::Report>(parent)
+        };
+
+        let (block, parent) = try_join(block_request, parent_request)
+            .await
+            .wrap_err("failed getting required blocks from syncer")?;
 
         // Can only repropose at the end of an epoch.
         //
@@ -696,6 +744,7 @@ impl Inner<Init> {
             }
         }
 
+        let header_verify_started_at = Instant::now();
         if let Err(reason) = verify_header_extra_data(
             &block,
             (parent_view, parent_digest),
@@ -712,7 +761,21 @@ impl Inner<Init> {
             );
             return Ok((block, false));
         }
+        info!(
+            block.height = %block.height(),
+            block.digest = %block.digest(),
+            elapsed = %display_duration(header_verify_started_at.elapsed()),
+            total_elapsed = %display_duration(verify_started_at.elapsed()),
+            "verified block header extra data before execution-layer handoff",
+        );
 
+        info!(
+            parent.height = %parent.height(),
+            parent.digest = %parent.digest(),
+            total_elapsed = %display_duration(verify_started_at.elapsed()),
+            "canonicalizing execution head to parent before block verification",
+        );
+        let canonicalize_started_at = Instant::now();
         if let Err(error) = self
             .state
             .executor
@@ -726,6 +789,21 @@ impl Inner<Init> {
                 "failed updating canonical head to parent",
             );
         }
+        info!(
+            parent.height = %parent.height(),
+            parent.digest = %parent.digest(),
+            elapsed = %display_duration(canonicalize_started_at.elapsed()),
+            total_elapsed = %display_duration(verify_started_at.elapsed()),
+            "finished canonicalizing execution head before block verification",
+        );
+
+        info!(
+            block.height = %block.height(),
+            block.digest = %block.digest(),
+            parent.height = %parent.height(),
+            parent.digest = %parent.digest(),
+            "sending block to execution layer for verification",
+        );
 
         let is_good = verify_block(
             context,
