@@ -13,7 +13,6 @@ on:
   pull_request:
 
 env:
-  FOUNDRY_PROFILE: ci
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: "sccache"
 
@@ -137,7 +136,7 @@ jobs:
         working-directory: tips/ref-impls
         run: forge test -vvv --no-match-contract TempoTransactionInvariantTest
 
-  tempo-foundry-test:
+  foundry-test:
     name: Forge Test (Rust Precompiles)
     needs: [check-specs-changes, check-precompiles]
     # Skip for forked repos
@@ -154,12 +153,12 @@ jobs:
           path: tempo
           persist-credentials: false
 
-      - name: Checkout tempo-foundry
+      - name: Checkout foundry
         uses: actions/checkout@v6
         with:
-          repository: tempoxyz/tempo-foundry
-          ref: tempo
-          path: tempo-foundry
+          repository: foundry-rs/foundry
+          ref: master
+          path: foundry
           persist-credentials: false
 
       - name: Setup Rust
@@ -169,15 +168,20 @@ jobs:
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       - uses: Swatinem/rust-cache@401aff9a7a08acb9d27b64936a90db81024cff97 # v2.8.2
         with:
-          workspaces: tempo-foundry
+          workspaces: foundry
 
       - name: Install llvm-tools
         if: needs.check-precompiles.outputs.coverage == 'true'
         run: rustup component add llvm-tools-preview
 
-      - name: Update tempo-foundry to use current commit
-        working-directory: tempo-foundry
+      - name: Update foundry to use current commit
+        working-directory: foundry
         run: |
+          if ! grep -q 'https://github.com/tempoxyz/tempo' Cargo.toml; then
+            echo "No Tempo git dependencies to rewrite in $(pwd)/Cargo.toml"
+            exit 0
+          fi
+
           COMMIT_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
           echo "Updating tempo dependencies to commit: $COMMIT_SHA"
 
@@ -194,30 +198,30 @@ jobs:
           cargo update
 
       # Build and run WITH coverage (only on PR when precompiles changed)
-      - name: Build tempo-foundry forge with coverage instrumentation
+      - name: Build foundry forge with coverage instrumentation
         if: needs.check-precompiles.outputs.coverage == 'true'
-        working-directory: tempo-foundry
+        working-directory: foundry
         run: RUSTFLAGS="-C instrument-coverage" cargo build -p forge --profile release
 
       - name: Run Forge tests with Rust precompiles (with coverage)
         if: needs.check-precompiles.outputs.coverage == 'true'
         working-directory: tempo/tips/ref-impls
         run: |
-          echo "Running forge test with tempo-foundry (isTempo=true)"
-          LLVM_PROFILE_FILE="$(pwd)/forge-coverage-%p.profraw" ../../../tempo-foundry/target/release/forge test -vvv
+          echo "Running forge test with Rust precompiles (isTempo=true)"
+          FOUNDRY_PROFILE=tempo LLVM_PROFILE_FILE="$(pwd)/forge-coverage-%p.profraw" ../../../foundry/target/release/forge test -vvv
 
       # Build and run WITHOUT coverage (main/merge_group or no precompiles changes)
-      - name: Build tempo-foundry forge
+      - name: Build foundry forge
         if: needs.check-precompiles.outputs.coverage != 'true'
-        working-directory: tempo-foundry
+        working-directory: foundry
         run: cargo build -p forge --profile release
 
       - name: Run Forge tests with Rust precompiles
         if: needs.check-precompiles.outputs.coverage != 'true'
         working-directory: tempo/tips/ref-impls
         run: |
-          echo "Running forge test with tempo-foundry (isTempo=true)"
-          ../../../tempo-foundry/target/release/forge test -vvv
+          echo "Running forge test with Rust precompiles (isTempo=true)"
+          FOUNDRY_PROFILE=tempo ../../../foundry/target/release/forge test -vvv
 
       - name: Generate coverage profdata
         if: needs.check-precompiles.outputs.coverage == 'true'
@@ -233,7 +237,7 @@ jobs:
           name: forge-test-coverage
           path: |
             coverage/forge-test.profdata
-            tempo-foundry/target/release/forge
+            foundry/target/release/forge
           retention-days: 1
 
   specs-success:
@@ -247,14 +251,14 @@ jobs:
       - build
       - lint
       - test
-      - tempo-foundry-test
+      - foundry-test
     timeout-minutes: 5
     steps:
       - name: Decide whether the needed jobs succeeded or failed
         uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe # v1.2.2
         with:
-          allowed-failures: tempo-foundry-test
-          allowed-skips: check-precompiles,build,lint,test,tempo-foundry-test
+          allowed-failures: foundry-test
+          allowed-skips: check-precompiles,build,lint,test,foundry-test
           jobs: ${{ toJSON(needs) }}
 
   precompiles-coverage:
