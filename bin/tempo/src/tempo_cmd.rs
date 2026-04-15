@@ -293,11 +293,14 @@ async fn read_validator_from_contract(
 /// Shared validator identity arguments used across add/rotate/sign commands.
 #[derive(Debug, clap::Args)]
 pub(crate) struct ValidatorIdentityArgs {
-    /// The validator's address
+    /// The validator's Ethereum address
     #[arg(long, value_name = "ETHEREUM_ADDRESS")]
     validator_address: Address,
-    /// The identity key of the validator (0x-prefixed hex).
-    #[arg(long = "consensus.public-key", value_name = "IDENTITY_KEY")]
+    /// The validator's signing key address (0x-prefixed hex).
+    #[arg(
+        long = "consensus.public-key",
+        value_name = "IDENTITY_PUBLIC_KEY_ADDRESS"
+    )]
     public_key: B256,
     /// The inbound address for the validator.
     #[arg(long, value_name = "IP:PORT")]
@@ -327,7 +330,7 @@ pub(crate) struct ValidatorSignatureArgs {
     #[arg(long, value_name = "SIGNATURE")]
     signature: Option<Bytes>,
 
-    /// Path to the ed25519 signing key file. The signature is computed
+    /// Path to the ed25519 signing private key file. The signature is computed
     /// automatically so a separate `create-*-signature` step is not needed.
     #[arg(long = "consensus.signing-key", value_name = "FILE")]
     signing_key: Option<PathBuf>,
@@ -354,7 +357,7 @@ impl ValidatorSignatureArgs {
 #[derive(Debug, clap::Args)]
 #[group(required = true, multiple = false)]
 pub(crate) struct WalletArgs {
-    /// Path to the file holding the Ethereum private key.
+    /// Path to the file holding the validator's Ethereum private key.
     #[arg(long, value_name = "FILE", help_heading = "Wallet options - raw")]
     wallet_key: Option<PathBuf>,
 
