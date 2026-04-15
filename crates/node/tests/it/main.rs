@@ -8,6 +8,7 @@ mod fork_schedule;
 mod key_authorization;
 mod liquidity;
 mod max_gas_limit;
+mod operator;
 mod payment_lane;
 mod pool;
 mod simulate;

@@ -1074,7 +1074,7 @@ impl ExecutionRuntimeHandle {
 /// avoids the type parameters.
 pub struct ExecutionNode {
     /// All handles to interact with the launched node instances and services.
-    pub node: TempoFullNode,
+    pub node: Box<TempoFullNode>,
     /// The [`Runtime`] that drives the node's services.
     pub runtime: Runtime,
     /// The exist future that resolves when the node's engine future resolves.
@@ -1235,7 +1235,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
     })?;
 
     Ok(ExecutionNode {
-        node: node_handle.node,
+        node: Box::new(node_handle.node),
         runtime,
         exit_fut: node_handle.node_exit_future,
     })
