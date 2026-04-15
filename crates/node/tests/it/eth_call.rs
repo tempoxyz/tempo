@@ -15,7 +15,7 @@ use alloy_rpc_types_eth::{
     state::{AccountOverride, StateOverride},
 };
 use reth_evm::revm::interpreter::instructions::utility::IntoU256;
-use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
+use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{
     IFeeManager,
     ITIP20::{self, transferCall},
@@ -294,9 +294,10 @@ async fn test_eth_estimate_gas(schedule: ForkSchedule) -> eyre::Result<()> {
     // gas estimation is calldata dependent, but should be consistent with same calldata
     // TIP-1000 (T1): gas includes 250k new account cost when nonce=0
     // T4 (devnet): state gas split changes the estimate
-    let expected_gas = match schedule {
-        ForkSchedule::Devnet => 86763,
-        _ => 549423,
+    let expected_gas = if schedule.is_active(TempoHardfork::T3) {
+        551540
+    } else {
+        549423
     };
     assert_eq!(gas, expected_gas);
 
