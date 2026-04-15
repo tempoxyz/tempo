@@ -212,7 +212,7 @@ impl StablecoinDEX {
         if user_balance >= amount {
             // When fully covered by internal balance, TIP-20 transferFrom won't run,
             // so we must check the pause state ourselves (spec: T3+).
-            if check_pause && self.storage.spec().is_t3() {
+            if check_pause && self.storage.spec().is_t4() {
                 tip20.check_not_paused()?;
             }
             self.sub_balance(user, token, amount)
@@ -687,8 +687,8 @@ impl StablecoinDEX {
             let tip20 = TIP20Token::from_address(escrow_token)?;
             tip20.ensure_transfer_authorized(sender, self.address)?;
             // Internal-balance-only path bypasses TIP-20 transferFrom,
-            // so we must check the pause state ourselves (spec: T3+).
-            if self.storage.spec().is_t3() {
+            // so we must check the pause state ourselves (spec: T4+).
+            if self.storage.spec().is_t4() {
                 tip20.check_not_paused()?;
             }
             let user_balance = self.balance_of(sender, escrow_token)?;
@@ -1445,9 +1445,9 @@ impl StablecoinDEX {
             let (base, quote) = {
                 let token_in_tip20 = TIP20Token::from_address(token_in)?;
 
-                // Ensure that the token is not paused (spec: T3+)
+                // Ensure that the token is not paused (spec: T4+)
                 // Necessary because TIP20 transfer checks don't cover internal DEX balance updates
-                if self.storage.spec().is_t3() {
+                if self.storage.spec().is_t4() {
                     token_in_tip20.check_not_paused()?;
                 }
 
@@ -5460,8 +5460,8 @@ mod tests {
     }
 
     #[test]
-    fn test_swap_paused_token_allowed_pre_t3_blocked_on_t3() -> eyre::Result<()> {
-        for spec in [TempoHardfork::T2, TempoHardfork::T3] {
+    fn test_swap_paused_token_allowed_pre_t4_blocked_on_t4() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T3, TempoHardfork::T4] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinDEX::new();
@@ -5496,7 +5496,7 @@ mod tests {
                     u128::MAX,
                 );
 
-                if spec.is_t3() {
+                if spec.is_t4() {
                     assert_eq!(res_in, res_out);
                     assert_eq!(res_in.unwrap_err(), TIP20Error::contract_paused().into());
                 } else {
@@ -5520,7 +5520,7 @@ mod tests {
         where
             F: FnMut(&mut StablecoinDEX, Address, Address, u128) -> Result<u128>,
         {
-            for spec in [TempoHardfork::T2, TempoHardfork::T3] {
+            for spec in [TempoHardfork::T3, TempoHardfork::T4] {
                 let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
                 StorageCtx::enter(&mut storage, || {
                     let mut exchange = StablecoinDEX::new();
@@ -5542,7 +5542,7 @@ mod tests {
                     let next_order_id_before = exchange.next_order_id()?;
                     let res = place_order(&mut exchange, alice, base_token, amount);
 
-                    if internal_balance_amount >= amount && !spec.is_t3() {
+                    if internal_balance_amount >= amount && !spec.is_t4() {
                         let order_id = res?;
                         assert_eq!(order_id, next_order_id_before);
                         assert_eq!(exchange.next_order_id()?, next_order_id_before + 1);
@@ -5638,8 +5638,8 @@ mod tests {
     }
 
     #[test]
-    fn test_swap_paused_intermediate_token_allowed_pre_t3_blocked_on_t3() -> eyre::Result<()> {
-        for spec in [TempoHardfork::T2, TempoHardfork::T3] {
+    fn test_swap_paused_intermediate_token_allowed_pre_t4_blocked_on_t4() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T3, TempoHardfork::T4] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinDEX::new();
@@ -5698,7 +5698,7 @@ mod tests {
                     u128::MAX,
                 );
 
-                if spec.is_t3() {
+                if spec.is_t4() {
                     assert_eq!(res_in, res_out);
                     assert_eq!(res_in.unwrap_err(), TIP20Error::contract_paused().into());
                 } else {
