@@ -2,9 +2,10 @@ use crate::{
     TempoPayloadTypes,
     engine::TempoEngineValidator,
     rpc::{
-        TempoAdminApi, TempoAdminApiServer, TempoEthApi, TempoEthApiBuilder, TempoEthExt,
-        TempoEthExtApiServer, TempoForkScheduleApiServer, TempoForkScheduleRpc, TempoSimulate,
-        TempoSimulateApiServer, TempoToken, TempoTokenApiServer,
+        OperatorApi, OperatorApiServer, TempoAdminApi, TempoAdminApiServer, TempoEthApi,
+        TempoEthApiBuilder, TempoEthExt, TempoEthExtApiServer, TempoForkScheduleApiServer,
+        TempoForkScheduleRpc, TempoSimulate, TempoSimulateApiServer, TempoToken,
+        TempoTokenApiServer,
     },
 };
 use alloy_primitives::B256;
@@ -208,8 +209,9 @@ where
                 let eth_api = registry.eth_api().clone();
                 let token = TempoToken::new(eth_api.clone());
                 let eth_ext = TempoEthExt::new(eth_api.clone());
-                let simulate = TempoSimulate::new(eth_api);
+                let simulate = TempoSimulate::new(eth_api.clone());
                 let admin = TempoAdminApi::new(self.validator_key);
+                let operator = OperatorApi::new(eth_api.network().clone());
                 let fork_schedule =
                     TempoForkScheduleRpc::new(registry.eth_api().provider().clone());
 
@@ -219,6 +221,7 @@ where
                 modules.merge_configured(fork_schedule.into_rpc())?;
                 modules.merge_if_module_configured(RethRpcModule::Admin, admin.into_rpc())?;
                 modules.merge_if_module_configured(RethRpcModule::Eth, eth_config.into_rpc())?;
+                modules.merge_configured(operator.into_rpc())?;
 
                 Ok(())
             })

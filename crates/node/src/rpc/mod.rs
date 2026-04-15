@@ -3,10 +3,12 @@ pub mod consensus;
 pub mod error;
 pub mod eth_ext;
 pub mod fork_schedule;
+pub mod operator;
 pub mod simulate;
 pub mod token;
 
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
+pub use operator::{OperatorApi, OperatorApiServer};
 use alloy_primitives::B256;
 use alloy_rpc_types_eth::{Log, ReceiptWithBloom};
 pub use consensus::{TempoConsensusApiServer, TempoConsensusRpc};
