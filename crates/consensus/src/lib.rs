@@ -4,7 +4,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 use alloy_consensus::{
-    BlockHeader, Transaction, TxReceipt, proofs::calculate_receipt_root, transaction::TxHashRef,
+    BlockHeader, Transaction, transaction::TxHashRef,
 };
 use alloy_evm::block::BlockExecutionResult;
 use reth_chainspec::EthChainSpec;
@@ -14,7 +14,7 @@ use reth_consensus_common::validation::{
     validate_against_parent_gas_limit, validate_against_parent_hash_number,
 };
 use reth_ethereum_consensus::EthBeaconConsensus;
-use reth_primitives_traits::{GotExpected, RecoveredBlock, SealedBlock, SealedHeader};
+use reth_primitives_traits::{RecoveredBlock, SealedBlock, SealedHeader};
 use std::sync::Arc;
 use tempo_chainspec::{
     hardfork::TempoHardforks,
@@ -205,81 +205,13 @@ impl FullConsensus<TempoPrimitives> for TempoConsensus {
         result: &BlockExecutionResult<TempoReceipt>,
         receipt_root_bloom: Option<ReceiptRootBloom>,
     ) -> Result<(), ConsensusError> {
-        // TIP-1016: header.gas_used = cumulative_tx_gas_used - block_state_gas_used.
-        // Reth's default compares header.gas_used against last_receipt.cumulative_gas_used,
-        // but with TIP-1016 these intentionally differ. Compare against result.gas_used
-        // instead, which was computed by TempoBlockExecutor::finish().
-        if block.header().gas_used() != result.gas_used {
-            return Err(ConsensusError::BlockGasUsed {
-                gas: GotExpected {
-                    got: result.gas_used,
-                    expected: block.header().gas_used(),
-                },
-                gas_spent_by_tx: reth_primitives_traits::receipt::gas_spent_by_transactions(
-                    &result.receipts,
-                ),
-            });
-        }
-
-        // Validate receipt root and logs bloom.
-        // We can't delegate to reth's inner validator because it also checks
-        // gas_used against receipts.last().cumulative_gas_used, which differs
-        // under TIP-1016.
-        validate_receipts_and_requests(block, result, receipt_root_bloom)
+        FullConsensus::<TempoPrimitives>::validate_block_post_execution(
+            &self.inner,
+            block,
+            result,
+            receipt_root_bloom,
+        )
     }
-}
-
-/// Validates receipt root, logs bloom, and requests hash without checking gas_used
-/// against receipts (which would fail under TIP-1016).
-fn validate_receipts_and_requests(
-    block: &RecoveredBlock<Block>,
-    result: &BlockExecutionResult<TempoReceipt>,
-    receipt_root_bloom: Option<ReceiptRootBloom>,
-) -> Result<(), ConsensusError> {
-    let (receipts_root, logs_bloom) = if let Some((root, bloom)) = receipt_root_bloom {
-        (root, bloom)
-    } else {
-        let with_bloom = result
-            .receipts
-            .iter()
-            .map(TxReceipt::with_bloom_ref)
-            .collect::<Vec<_>>();
-        let root = calculate_receipt_root(&with_bloom);
-        let bloom = with_bloom
-            .iter()
-            .fold(Default::default(), |bloom, r| bloom | r.bloom_ref());
-        (root, bloom)
-    };
-
-    if receipts_root != block.header().receipts_root() {
-        return Err(ConsensusError::BodyReceiptRootDiff(
-            GotExpected {
-                got: receipts_root,
-                expected: block.header().receipts_root(),
-            }
-            .into(),
-        ));
-    }
-    if logs_bloom != block.header().logs_bloom() {
-        return Err(ConsensusError::BodyBloomLogDiff(
-            GotExpected {
-                got: logs_bloom,
-                expected: block.header().logs_bloom(),
-            }
-            .into(),
-        ));
-    }
-
-    if let Some(header_requests_hash) = block.header().requests_hash() {
-        let requests_hash = result.requests.requests_hash();
-        if requests_hash != header_requests_hash {
-            return Err(ConsensusError::BodyRequestsHashDiff(
-                GotExpected::new(requests_hash, header_requests_hash).into(),
-            ));
-        }
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
