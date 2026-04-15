@@ -160,9 +160,10 @@ macro_rules! tempo_precompile {
         let gas_params = $cfg.gas_params.clone();
         DynPrecompile::new_stateful(PrecompileId::Custom($id.into()), move |$input| {
             if !$input.is_direct_call() {
-                return Ok(PrecompileOutput::new_reverted(
+                return Ok(PrecompileOutput::revert(
                     0,
                     DelegateCallNotAllowed {}.abi_encode().into(),
+                    0,
                 ));
             }
             let mut storage = crate::storage::evm::EvmPrecompileStorageProvider::new(
@@ -280,9 +281,10 @@ fn mutate<T: SolCall>(
     f: impl FnOnce(Address, T) -> Result<T::Return>,
 ) -> PrecompileResult {
     if StorageCtx.is_static() {
-        return Ok(PrecompileOutput::new_reverted(
+        return Ok(PrecompileOutput::revert(
             0,
             StaticCallNotAllowed {}.abi_encode().into(),
+            0,
         ));
     }
     f(sender, call).into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
@@ -298,9 +300,10 @@ fn mutate_void<T: SolCall>(
     f: impl FnOnce(Address, T) -> Result<()>,
 ) -> PrecompileResult {
     if StorageCtx.is_static() {
-        return Ok(PrecompileOutput::new_reverted(
+        return Ok(PrecompileOutput::revert(
             0,
             StaticCallNotAllowed {}.abi_encode().into(),
+            0,
         ));
     }
     f(sender, call).into_precompile_result(0, |()| Bytes::new())
@@ -310,11 +313,6 @@ fn mutate_void<T: SolCall>(
 #[inline]
 fn fill_precompile_output(mut output: PrecompileOutput, storage: &StorageCtx) -> PrecompileOutput {
     output.gas_used = storage.gas_used();
-
-    // add refund only if it is not reverted
-    if !output.reverted {
-        output.gas_refunded = storage.gas_refunded();
-    }
     output
 }
 
@@ -392,11 +390,11 @@ pub(crate) fn dispatch_call<T>(
     if calldata.len() < 4 {
         if storage.spec().is_t1() {
             return Ok(fill_precompile_output(
-                PrecompileOutput::new_reverted(0, Bytes::new()),
+                PrecompileOutput::revert(0, Bytes::new(), 0),
                 &storage,
             ));
         } else {
-            return Err(PrecompileError::Other(
+            return Err(PrecompileError::Fatal(
                 "Invalid input: missing function selector".into(),
             ));
         }
@@ -420,7 +418,7 @@ pub(crate) fn dispatch_call<T>(
                 .map(|res| fill_precompile_output(res, &storage))
         }
         Err(_) => Ok(fill_precompile_output(
-            PrecompileOutput::new_reverted(0, Bytes::new()),
+            PrecompileOutput::revert(0, Bytes::new(), 0),
             &storage,
         )),
     }
@@ -434,7 +432,7 @@ where
 {
     match result {
         Ok(result) => {
-            assert!(result.reverted);
+            assert!(result.is_revert());
             let decoded = E::abi_decode(&result.bytes).unwrap();
             assert_eq!(decoded, expected_error);
         }
@@ -487,13 +485,14 @@ mod tests {
             is_static: false,
             target_address,
             bytecode_address,
+            reservoir: 0,
         };
 
         let result = AlloyEvmPrecompile::call(&precompile, input);
 
         match result {
             Ok(output) => {
-                assert!(output.reverted);
+                assert!(output.is_revert());
                 let decoded = DelegateCallNotAllowed::abi_decode(&output.bytes).unwrap();
                 assert!(matches!(decoded, DelegateCallNotAllowed {}));
             }
@@ -533,6 +532,7 @@ mod tests {
                 value: U256::ZERO,
                 target_address: token_address,
                 bytecode_address: token_address,
+                reservoir: 0,
             };
 
             AlloyEvmPrecompile::call(&precompile, input)
@@ -547,7 +547,7 @@ mod tests {
             .abi_encode(),
         ));
         let output = result.expect("expected Ok");
-        assert!(output.reverted);
+        assert!(output.is_revert());
         assert!(StaticCallNotAllowed::abi_decode(&output.bytes).is_ok());
 
         // Static calls into mutate void functions should fail
@@ -559,7 +559,7 @@ mod tests {
             .abi_encode(),
         ));
         let output = result.expect("expected Ok");
-        assert!(output.reverted);
+        assert!(output.is_revert());
         assert!(StaticCallNotAllowed::abi_decode(&output.bytes).is_ok());
 
         // Static calls into view functions should succeed
@@ -571,7 +571,7 @@ mod tests {
         ));
         let output = result.expect("expected Ok");
         assert!(
-            !output.reverted,
+            !output.is_revert(),
             "view function should not revert in static context"
         );
     }
@@ -580,7 +580,7 @@ mod tests {
     fn test_invalid_calldata_hardfork_behavior() {
         let call_with_spec = |calldata: Bytes, spec: TempoHardfork| {
             let mut cfg = CfgEnv::<TempoHardfork>::default();
-            cfg.set_spec(spec);
+            cfg.set_spec_and_mainnet_gas_params(spec);
             let tx = TxEnv::default();
             let precompile = tempo_precompile!("TIP20Token", &cfg, |input| {
                 TIP20Token::from_address(PATH_USD_ADDRESS).expect("PATH_USD_ADDRESS is valid")
@@ -607,6 +607,7 @@ mod tests {
                 value: U256::ZERO,
                 target_address: PATH_USD_ADDRESS,
                 bytecode_address: PATH_USD_ADDRESS,
+                reservoir: 0,
             };
 
             AlloyEvmPrecompile::call(&precompile, input)
@@ -615,15 +616,14 @@ mod tests {
         // T1: empty calldata (missing selector) should return a reverted output
         let empty = call_with_spec(Bytes::new(), TempoHardfork::T1)
             .expect("T1: expected Ok with reverted output");
-        assert!(empty.reverted, "T1: expected reverted output");
+        assert!(empty.is_revert(), "T1: expected reverted output");
         assert!(empty.bytes.is_empty());
         assert!(empty.gas_used != 0);
-        assert_eq!(empty.gas_refunded, 0);
 
         // T1: unknown selector should return a reverted output with UnknownFunctionSelector error
         let unknown = call_with_spec(Bytes::from([0xAA; 4]), TempoHardfork::T1)
             .expect("T1: expected Ok with reverted output");
-        assert!(unknown.reverted, "T1: expected reverted output");
+        assert!(unknown.is_revert(), "T1: expected reverted output");
 
         // Verify it's an UnknownFunctionSelector error with the correct selector
         let decoded =
@@ -633,14 +633,13 @@ mod tests {
 
         // Verify gas is tracked for both cases (unknown selector may cost slightly more due `INPUT_PER_WORD_COST`)
         assert!(unknown.gas_used >= empty.gas_used);
-        assert_eq!(unknown.gas_refunded, empty.gas_refunded);
 
         // Pre-T1 (T0): invalid calldata should return PrecompileError
         let result = call_with_spec(Bytes::new(), TempoHardfork::T0);
         assert!(
             matches!(
                 &result,
-                Err(PrecompileError::Other(msg)) if msg.contains("missing function selector")
+                Err(PrecompileError::Fatal(msg)) if msg.contains("missing function selector")
             ),
             "T0: expected PrecompileError for invalid calldata, got {result:?}"
         );
@@ -672,13 +671,13 @@ mod tests {
                     ISelectorGatedTest::ISelectorGatedTestCalls::abi_decode,
                     |call| match call {
                         ISelectorGatedTest::ISelectorGatedTestCalls::stable(_) => {
-                            Ok(PrecompileOutput::new(0, Bytes::from_static(b"stable")))
+                            Ok(PrecompileOutput::new(0, Bytes::from_static(b"stable"), 0))
                         }
                         ISelectorGatedTest::ISelectorGatedTestCalls::t2Added(_) => {
-                            Ok(PrecompileOutput::new(0, Bytes::from_static(b"added")))
+                            Ok(PrecompileOutput::new(0, Bytes::from_static(b"added"), 0))
                         }
                         ISelectorGatedTest::ISelectorGatedTestCalls::t3Removed(_) => {
-                            Ok(PrecompileOutput::new(0, Bytes::from_static(b"removed")))
+                            Ok(PrecompileOutput::new(0, Bytes::from_static(b"removed"), 0))
                         }
                     },
                 )
@@ -690,7 +689,7 @@ mod tests {
 
         // pre-T2: selectors introduced at T2 must still look unknown.
         let pre_t2_added = call_with_spec(TempoHardfork::T1, &t2_added_calldata)?;
-        assert!(pre_t2_added.reverted);
+        assert!(pre_t2_added.is_revert());
         let decoded = UnknownFunctionSelector::abi_decode(&pre_t2_added.bytes)?;
         assert_eq!(
             decoded.selector.as_slice(),
@@ -699,17 +698,17 @@ mod tests {
 
         // T2+: that selector becomes available and dispatches normally.
         let post_t2_added = call_with_spec(TempoHardfork::T2, &t2_added_calldata)?;
-        assert!(!post_t2_added.reverted);
+        assert!(!post_t2_added.is_revert());
         assert_eq!(post_t2_added.bytes.as_ref(), b"added");
 
         // pre-T3: selectors removed at T3 still dispatch normally.
         let pre_t3_removed = call_with_spec(TempoHardfork::T2, &t3_removed_calldata)?;
-        assert!(!pre_t3_removed.reverted);
+        assert!(!pre_t3_removed.is_revert());
         assert_eq!(pre_t3_removed.bytes.as_ref(), b"removed");
 
         // T3+: the removed selector must now revert as unknown.
         let post_t3_removed = call_with_spec(TempoHardfork::T3, &t3_removed_calldata)?;
-        assert!(post_t3_removed.reverted);
+        assert!(post_t3_removed.is_revert());
         let decoded = UnknownFunctionSelector::abi_decode(&post_t3_removed.bytes)?;
         assert_eq!(
             decoded.selector.as_slice(),
@@ -721,7 +720,7 @@ mod tests {
             TempoHardfork::T1,
             &ISelectorGatedTest::t2AddedCall::SELECTOR,
         )?;
-        assert!(malformed_added.reverted);
+        assert!(malformed_added.is_revert());
         let decoded = UnknownFunctionSelector::abi_decode(&malformed_added.bytes)?;
         assert_eq!(
             decoded.selector.as_slice(),
@@ -749,7 +748,7 @@ mod tests {
     #[test]
     fn test_extend_tempo_precompiles_registers_precompiles() {
         let mut cfg = CfgEnv::<TempoHardfork>::default();
-        cfg.set_spec(TempoHardfork::T3);
+        cfg.set_spec_and_mainnet_gas_params(TempoHardfork::T3);
         let precompiles = tempo_precompiles(&cfg);
 
         // TIP20Factory should be registered
@@ -849,7 +848,7 @@ mod tests {
             let p256_addr = Address::from_word(U256::from(256).into());
 
             let mut cfg = CfgEnv::<TempoHardfork>::default();
-            cfg.set_spec(spec);
+            cfg.set_spec_and_mainnet_gas_params(spec);
             tempo_precompiles(&cfg).get(&p256_addr).is_some()
         };
 

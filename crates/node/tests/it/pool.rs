@@ -104,7 +104,7 @@ async fn test_insufficient_funds() -> eyre::Result<()> {
 
     let tx = TempoTransaction {
         chain_id: chain_spec.chain_id(),
-        nonce: U256::random().saturating_to(),
+        nonce: 1,
         fee_token: Some(DEFAULT_FEE_TOKEN),
         max_priority_fee_per_gas: 74982851675,
         max_fee_per_gas: 74982851675,

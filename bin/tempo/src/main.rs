@@ -70,7 +70,7 @@ use tempo_node::{
     telemetry::{PrometheusMetricsConfig, install_prometheus_metrics},
 };
 use tokio::sync::oneshot;
-use tracing::{debug, info, info_span, warn};
+use tracing::{info, info_span, warn};
 
 type TempoCli =
     Cli<TempoChainSpecParser, TempoArgs, DefaultRpcModuleValidator, tempo_cmd::TempoSubcommand>;
@@ -586,36 +586,7 @@ fn main() -> eyre::Result<()> {
                             "fetched bootnodes from endpoint"
                         );
                         for node in &nodes {
-                            if let Some(discv4) = network.discv4() {
-                                discv4.add_node(*node);
-                            }
-                            network.add_peer_kind(
-                                node.id,
-                                None,
-                                node.tcp_addr(),
-                                Some(node.udp_addr()),
-                            );
-                        }
-                        if let Some(discv5) = network.discv5() {
-                            let enr_requests = nodes.iter().filter_map(|node| {
-                                match reth_discv5::BootNode::from_unsigned(*node) {
-                                    Ok(boot_node) => Some(async move {
-                                        if let Err(err) = discv5
-                                            .with_discv5(|d| {
-                                                d.request_enr(boot_node.to_string())
-                                            })
-                                            .await
-                                        {
-                                            debug!(%err, %node, "failed adding boot node to discv5");
-                                        }
-                                    }),
-                                    Err(err) => {
-                                        warn!(%err, %node, "failed converting boot node for discv5");
-                                        None
-                                    }
-                                }
-                            });
-                            futures::future::join_all(enr_requests).await;
+                            network.add_peer_with_udp(node.id, node.tcp_addr(), node.udp_addr());
                         }
                     }
                     Err(err) => {

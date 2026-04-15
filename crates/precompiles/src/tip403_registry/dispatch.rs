@@ -9,7 +9,7 @@ use alloy::{
     primitives::Address,
     sol_types::{SolCall, SolInterface},
 };
-use revm::precompile::{PrecompileError, PrecompileResult};
+use revm::precompile::{PrecompileHalt, PrecompileOutput, PrecompileResult};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::ITIP403Registry::{self, ITIP403RegistryCalls};
 
@@ -23,9 +23,9 @@ const T2_ADDED: &[[u8; 4]] = &[
 
 impl Precompile for TIP403Registry {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
-        self.storage
-            .deduct_gas(input_cost(calldata.len()))
-            .map_err(|_| PrecompileError::OutOfGas)?;
+        if self.storage.deduct_gas(input_cost(calldata.len())).is_err() {
+            return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, 0));
+        }
 
         dispatch_call(
             calldata,
@@ -466,12 +466,12 @@ mod tests {
 
             let invalid_data = vec![0x12, 0x34, 0x56, 0x78];
             let result = registry.call(&invalid_data, sender)?;
-            assert!(result.reverted);
+            assert!(result.is_revert());
 
             // T1: insufficient data also returns reverted output
             let short_data = vec![0x12, 0x34];
             let result = registry.call(&short_data, sender)?;
-            assert!(result.reverted);
+            assert!(result.is_revert());
 
             Ok(())
         })?;

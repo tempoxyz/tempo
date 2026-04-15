@@ -39,12 +39,12 @@ pub fn check_selector_coverage<P: Precompile>(
 
         // Check if we got "Unknown function selector" error (old format)
         let is_unsupported_old = matches!(&result,
-            Err(PrecompileError::Other(msg)) if msg.contains("Unknown function selector")
+            Err(PrecompileError::Fatal(msg)) if msg.contains("Unknown function selector")
         );
 
         // Check if we got "Unknown function selector" error (new format - ABI-encoded)
         let is_unsupported_new = if let Ok(output) = &result {
-            output.reverted && UnknownFunctionSelector::abi_decode(&output.bytes).is_ok()
+            output.is_revert() && UnknownFunctionSelector::abi_decode(&output.bytes).is_ok()
         } else {
             false
         };
