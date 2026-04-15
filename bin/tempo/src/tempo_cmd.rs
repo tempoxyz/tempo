@@ -1434,9 +1434,6 @@ mod tests {
     fn tempo_rpc_module_validator_rejects_unknown_modules() {
         let err = crate::TempoRpcModuleValidator::parse_selection("not-a-real-module").unwrap_err();
 
-        assert!(
-            err.to_string()
-                .contains("Unknown RPC module: 'not-a-real-module'")
-        );
+        assert!(err.contains("Unknown RPC module: 'not-a-real-module'"));
     }
 }
