@@ -518,13 +518,24 @@ where
         let checkpoint = evm.ctx().journal_mut().checkpoint();
 
         let gas_limit = evm.ctx().tx().gas_limit();
-        // Deduct only the regular (non-state) portion of initial gas, matching
-        // revm's convention: regular_initial_gas = initial_total_gas - initial_state_gas.
-        // State gas goes to the reservoir and is tracked separately.
-        let regular_initial_gas = init_and_floor_gas
-            .initial_total_gas
-            .saturating_sub(init_and_floor_gas.initial_state_gas);
-        let mut remaining_gas = gas_limit.saturating_sub(regular_initial_gas);
+        let spec = *evm.ctx().cfg().spec();
+        // T4+: reserve the full initial gas (regular + state) upfront.
+        // Multi-call bypasses the reservoir, so initial_state_gas must be deducted
+        // from the execution budget to prevent subcalls from consuming it.
+        // build_result_gas in post_execution adds initial_state_gas to state_gas_spent.
+        //
+        // Pre-T4: deduct only regular initial gas to preserve existing gas semantics.
+        // State gas accounting is not active pre-T4, but initial_state_gas may be
+        // non-zero due to pre_execution synchronization; deducting it would change
+        // live chain gas accounting.
+        let initial_gas_to_deduct = if spec.is_t4() {
+            init_and_floor_gas.initial_total_gas
+        } else {
+            init_and_floor_gas
+                .initial_total_gas
+                .saturating_sub(init_and_floor_gas.initial_state_gas)
+        };
+        let mut remaining_gas = gas_limit.saturating_sub(initial_gas_to_deduct);
         let mut accumulated_gas_refund = 0i64;
         let mut accumulated_state_gas_spent = 0u64;
 
@@ -600,25 +611,18 @@ where
                     }
                 }
 
-                // Include gas from all previous successful calls + failed call
+                // Include gas from all previous successful calls + failed call.
                 let gas_spent_by_failed_call = frame_result.gas().total_gas_spent();
-                let total_gas_spent = (gas_limit - remaining_gas) + gas_spent_by_failed_call;
+                let mut total_gas_spent = (gas_limit - remaining_gas) + gas_spent_by_failed_call;
+                // Pre-T4: initial_state_gas was not reserved upfront, add it back.
+                if !spec.is_t4() {
+                    total_gas_spent =
+                        total_gas_spent.saturating_add(init_and_floor_gas.initial_state_gas);
+                }
                 // State gas only applies to successful calls that create state.
                 // On revert/halt no new state is created, so the failed call's
                 // state gas is not charged.
                 let total_state_gas = accumulated_state_gas_spent;
-
-                // TIP-1016: Include initial_state_gas in total_gas_spent to match
-                // the reservoir model formula: tx_gas_used = tx.gas - gas_left - reservoir.
-                // In single-call, the reservoir mechanism handles this automatically.
-                // In multi-call, we bypass the reservoir, so we add initial_state_gas
-                // directly to ensure ResultGas.total_gas_spent includes state gas.
-                // This ensures tx_gas_used() returns the full gas the user pays for,
-                // which is critical for correct gas estimation and receipt accounting.
-                // Note: state_gas_spent on Gas is NOT adjusted here because
-                // build_result_gas already adds init_and_floor_gas.initial_state_gas.
-                let initial_state_gas = init_and_floor_gas.initial_state_gas;
-                let total_gas_spent = total_gas_spent.saturating_add(initial_state_gas);
 
                 // Use flattened gas reconstruction (Gas::new_spent + erase_cost) for robustness
                 // under the EIP-8037 reservoir model. This avoids ambiguity from Gas::new's
@@ -654,18 +658,17 @@ where
         let mut result =
             final_result.ok_or_else(|| EVMError::Custom("No calls executed".into()))?;
 
-        let total_gas_spent = gas_limit - remaining_gas;
-
-        // TIP-1016: Include initial_state_gas in total_gas_spent to match
-        // the reservoir model formula: tx_gas_used = tx.gas - gas_left - reservoir.
-        // See the equivalent addition in the failure path above for full rationale.
-        let initial_state_gas = init_and_floor_gas.initial_state_gas;
-        let total_gas_spent = total_gas_spent.saturating_add(initial_state_gas);
+        // T4+: initial_total_gas was reserved upfront, so (gas_limit - remaining_gas)
+        // already includes both regular and state intrinsic gas.
+        // Pre-T4: only regular initial gas was reserved; add initial_state_gas back.
+        let mut total_gas_spent = gas_limit - remaining_gas;
+        if !spec.is_t4() {
+            total_gas_spent = total_gas_spent.saturating_add(init_and_floor_gas.initial_state_gas);
+        }
 
         // Use flattened gas reconstruction (Gas::new_spent + erase_cost) for robustness
-        // under the EIP-8037 reservoir model, and preserve accumulated state_gas_spent.
-        // Note: state_gas_spent on Gas is NOT adjusted because build_result_gas
-        // already adds init_and_floor_gas.initial_state_gas.
+        // under the EIP-8037 reservoir model. state_gas_spent holds only execution-phase
+        // state gas; build_result_gas in post_execution adds initial_state_gas.
         let mut corrected_gas = Gas::new_spent(gas_limit);
         corrected_gas.erase_cost(gas_limit - total_gas_spent);
         corrected_gas.set_refund(accumulated_gas_refund);
