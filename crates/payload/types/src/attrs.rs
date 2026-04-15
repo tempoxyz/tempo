@@ -181,6 +181,10 @@ impl PayloadAttributes for TempoPayloadAttributes {
     fn withdrawals(&self) -> Option<&Vec<Withdrawal>> {
         self.inner.withdrawals()
     }
+
+    fn slot_number(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// Constructs a [`PayloadId`] from the first 8 bytes of `block_hash`.

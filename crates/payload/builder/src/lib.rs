@@ -376,6 +376,7 @@ where
                         parent_beacon_block_root: attributes.parent_beacon_block_root,
                         withdrawals: attributes.withdrawals.clone().map(Into::into),
                         extra_data: attributes.extra_data().clone(),
+                        slot_number: None,
                     },
                     general_gas_limit,
                     shared_gas_limit,
@@ -799,7 +800,7 @@ where
             "Built payload"
         );
 
-        let eth_payload = EthBuiltPayload::new(sealed_block, total_fees, requests);
+        let eth_payload = EthBuiltPayload::new(sealed_block, total_fees, requests, None);
 
         let execution_output = BlockExecutionOutput {
             result: execution_result,
@@ -994,7 +995,7 @@ mod tests {
             },
         };
         let sealed = Arc::new(SealedBlock::seal_slow(block));
-        let eth = EthBuiltPayload::new(sealed, U256::ZERO, None);
+        let eth = EthBuiltPayload::new(sealed, U256::ZERO, None, None);
         TempoBuiltPayload::new(eth, None)
     }
 
