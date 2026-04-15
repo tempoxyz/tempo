@@ -171,6 +171,10 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         0
     }
 
+    fn reservoir(&self) -> u64 {
+        0
+    }
+
     fn spec(&self) -> TempoHardfork {
         self.spec
     }

@@ -407,6 +407,14 @@ impl TestNodeBuilder {
 
     /// Build HTTP-only setup
     pub(crate) async fn build_http_only(self) -> eyre::Result<HttpOnlySetup> {
+        self.build_http_only_with_api(RpcModuleSelection::All).await
+    }
+
+    /// Build HTTP-only setup with a custom RPC module selection.
+    pub(crate) async fn build_http_only_with_api(
+        self,
+        http_api: RpcModuleSelection,
+    ) -> eyre::Result<HttpOnlySetup> {
         if let Some(url) = self.external_rpc {
             return Ok(HttpOnlySetup {
                 http_url: url,
@@ -428,7 +436,7 @@ impl TestNodeBuilder {
                 RpcServerArgs::default()
                     .with_unused_ports()
                     .with_http()
-                    .with_http_api(RpcModuleSelection::All),
+                    .with_http_api(http_api),
             );
         node_config.txpool.max_account_slots = usize::MAX;
         node_config.dev.block_time = Some(Duration::from_millis(100));
