@@ -722,6 +722,7 @@ jobs:
             --feature "$FEATURE_REF"
             --bench-datadir "/reth-bench/tempo_${BENCH_BLOAT}mb"
             --tune
+            --gas-limit 1000000000000
           )
           [ "$BENCH_SAMPLY" = "true" ] && cmd+=(--samply)
           [ "$BENCH_TRACY" != "off" ] && cmd+=(--tracy "$BENCH_TRACY" --tracy-seconds "$BENCH_TRACY_SECONDS" --tracy-offset "$BENCH_TRACY_OFFSET")

@@ -329,7 +329,7 @@ pub(crate) fn charge_input_cost(
 /// Pre-T4, `state_gas_used` must remain 0 to avoid leaking into revm's reservoir
 /// accounting and corrupting `tx_gas_used()` via `handle_reservoir_remaining_gas`.
 #[inline]
-fn fill_state_gas(mut output: PrecompileOutput, storage: &StorageCtx) -> PrecompileOutput {
+fn fill_state_gas(output: &mut PrecompileOutput, storage: &StorageCtx) {
     if storage.spec().is_t4() {
         output.state_gas_used = storage.state_gas_used();
         // T4+: propagate SSTORE refunds via reservoir so the TempoPrecompileProvider
@@ -339,7 +339,6 @@ fn fill_state_gas(mut output: PrecompileOutput, storage: &StorageCtx) -> Precomp
             output.reservoir = storage.gas_refunded() as u64;
         }
     }
-    output
 }
 
 /// A selector schedule at a given hardfork boundary.
@@ -432,7 +431,8 @@ pub(crate) fn dispatch_call<T>(
             // TODO: fix this, each precompile handler should either return output with proper gas values or don't return any gas values at all.
             res.gas_used = storage.gas_used();
             res.reservoir = storage.reservoir();
-            fill_state_gas(res, &storage)
+            fill_state_gas(&mut res, &storage);
+            res
         }),
         Err(alloy::sol_types::Error::UnknownSelector { selector, .. }) => storage.error_result(
             error::TempoPrecompileError::UnknownFunctionSelector(*selector),

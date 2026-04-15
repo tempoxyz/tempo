@@ -480,11 +480,7 @@ where
         //   regular_initial_gas = initial_total_gas - initial_state_gas
         //   gas_limit = tx.gas_limit - regular_initial_gas
         let regular_initial_gas = init_and_floor_gas.initial_regular_gas();
-        let gas_limit = evm
-            .ctx()
-            .tx()
-            .gas_limit()
-            .saturating_sub(regular_initial_gas);
+        let gas_limit = evm.ctx().tx().gas_limit() - regular_initial_gas;
 
         // Create first frame action
         let first_frame_input = self.first_frame_input(evm, gas_limit, init_and_floor_gas)?;
@@ -549,7 +545,7 @@ where
         // build_result_gas in post_execution adds initial_state_gas to state_gas_spent.
         // Pre-T4: initial_state_gas is always zero, so this equals regular initial gas.
         let initial_gas_to_deduct = init_and_floor_gas.initial_total_gas;
-        let mut remaining_gas = gas_limit.saturating_sub(initial_gas_to_deduct);
+        let mut remaining_gas = gas_limit - initial_gas_to_deduct;
         let mut accumulated_gas_refund = 0i64;
         let mut accumulated_state_gas_spent = 0u64;
 
@@ -1744,14 +1740,11 @@ where
                 init_gas.floor_gas = 0u64;
             }
 
-            // Validate gas limit is sufficient for initial gas.
-            // In the new revm, initial_total_gas already includes initial_state_gas,
-            // so no need to add state gas separately.
-            let total_intrinsic = init_gas.initial_total_gas;
-            if gas_limit < total_intrinsic {
+            // Validate gas limit is sufficient for initial gas
+            if gas_limit < init_gas.initial_total_gas {
                 return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
                     gas_limit,
-                    initial_gas: total_intrinsic,
+                    initial_gas: init_gas.initial_total_gas,
                 }
                 .into());
             }
@@ -3297,6 +3290,130 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_t3_scope_validation_moves_to_execution() {
+        const CALL_SCOPE_SELECTOR: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
+
+        let caller = Address::repeat_byte(0x11);
+        let access_key = Address::repeat_byte(0x22);
+        let target = DEFAULT_FEE_TOKEN;
+
+        let signature =
+            TempoSignature::Keychain(tempo_primitives::transaction::KeychainSignature::new(
+                caller,
+                tempo_primitives::transaction::PrimitiveSignature::Secp256k1(
+                    alloy_primitives::Signature::test_signature(),
+                ),
+            ));
+
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T3;
+
+        let tx_env = TempoTxEnv {
+            inner: revm::context::TxEnv {
+                caller,
+                gas_limit: 1_000_000,
+                kind: TxKind::Call(target),
+                ..Default::default()
+            },
+            fee_token: Some(DEFAULT_FEE_TOKEN),
+            tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                signature,
+                aa_calls: vec![Call {
+                    to: TxKind::Call(target),
+                    value: U256::ZERO,
+                    input: Bytes::from_static(&CALL_SCOPE_SELECTOR),
+                }],
+                signature_hash: B256::ZERO,
+                override_key_id: Some(access_key),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+
+        let ctx = Context::mainnet()
+            .with_db(CacheDB::new(EmptyDB::default()))
+            .with_block(TempoBlockEnv::default())
+            .with_cfg(cfg)
+            .with_tx(tx_env)
+            .with_new_journal(create_test_journal());
+
+        let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
+        let mut handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+
+        StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+            let mut keychain = AccountKeychain::new();
+
+            keychain.initialize().expect("keychain initialized");
+            keychain
+                .set_transaction_key(Address::ZERO)
+                .expect("root key setup succeeds");
+            keychain
+                .set_tx_origin(caller)
+                .expect("tx.origin setup succeeds");
+            keychain
+                .authorize_key(
+                    caller,
+                    authorizeKeyCall {
+                        keyId: access_key,
+                        signatureType: PrecompileSignatureType::Secp256k1,
+                        config: KeyRestrictions {
+                            expiry: u64::MAX,
+                            enforceLimits: false,
+                            limits: vec![],
+                            allowAnyCalls: false,
+                            allowedCalls: vec![PrecompileCallScope {
+                                target,
+                                selectorRules: vec![PrecompileSelectorRule {
+                                    selector: CALL_SCOPE_SELECTOR.into(),
+                                    recipients: vec![],
+                                }],
+                            }],
+                        },
+                    },
+                )
+                .expect("access key authorization succeeds");
+        });
+
+        let init_gas = handler
+            .validate_initial_tx_gas(&mut evm)
+            .expect("initial gas validation should succeed");
+        assert!(
+            init_gas.floor_gas <= init_gas.initial_total_gas,
+            "test requires floor gas to not exceed intrinsic gas"
+        );
+
+        evm.inner.ctx.tx.inner.gas_limit = init_gas.initial_total_gas;
+
+        handler
+            .validate_against_state_and_deduct_caller(&mut evm)
+            .expect("scope validation no longer runs during state validation");
+
+        let result = handler
+            .execution(&mut evm, &init_gas)
+            .expect("execution should return a frame result");
+
+        assert!(
+            matches!(
+                result.instruction_result(),
+                revm::interpreter::InstructionResult::OutOfGas
+            ),
+            "expected scope validation to fail during execution with OOG, got: {:?}",
+            result.instruction_result()
+        );
+        assert_eq!(
+            result.gas().limit(),
+            init_gas.initial_total_gas,
+            "batch OOG should report the full tx gas budget"
+        );
+        assert_eq!(
+            result.gas().total_gas_spent(),
+            init_gas.initial_total_gas,
+            "batch OOG should consume the full tx gas budget"
+        );
+        assert_eq!(result.gas().refunded(), 0);
     }
 
     #[test]

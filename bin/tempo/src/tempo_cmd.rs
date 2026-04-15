@@ -1356,11 +1356,15 @@ mod tests {
     use super::*;
     use clap::Parser;
     use reth_ethereum_cli::Cli;
-    use reth_rpc_server_types::DefaultRpcModuleValidator;
+    use reth_rpc_server_types::{RethRpcModule, RpcModuleSelection, RpcModuleValidator};
     use tempo_chainspec::spec::TempoChainSpecParser;
 
-    type TempoCli =
-        Cli<TempoChainSpecParser, crate::TempoArgs, DefaultRpcModuleValidator, TempoSubcommand>;
+    type TempoCli = Cli<
+        TempoChainSpecParser,
+        crate::TempoArgs,
+        crate::TempoRpcModuleValidator,
+        TempoSubcommand,
+    >;
 
     #[test]
     fn parse_p2p_proxy_defaults() {
@@ -1412,5 +1416,24 @@ mod tests {
     fn parse_p2p_proxy_missing_rpc_url_fails() {
         let result = TempoCli::try_parse_from(["tempo", "p2p-proxy"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn tempo_rpc_module_validator_allows_tempo_custom_modules() {
+        for module in ["consensus", "operator", "tempo", "token"] {
+            let selection = crate::TempoRpcModuleValidator::parse_selection(module).unwrap();
+
+            assert_eq!(
+                selection,
+                RpcModuleSelection::from([RethRpcModule::Other(module.to_string())])
+            );
+        }
+    }
+
+    #[test]
+    fn tempo_rpc_module_validator_rejects_unknown_modules() {
+        let err = crate::TempoRpcModuleValidator::parse_selection("not-a-real-module").unwrap_err();
+
+        assert!(err.contains("Unknown RPC module: 'not-a-real-module'"));
     }
 }
