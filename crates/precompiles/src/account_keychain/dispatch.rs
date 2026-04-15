@@ -1,10 +1,7 @@
 //! ABI dispatch for the [`AccountKeychain`] precompile.
 
 use super::{AccountKeychain, KeyRestrictions, TokenLimit, authorizeKeyCall};
-use crate::{
-    Precompile, SelectorSchedule, charge_input_cost, dispatch_call, error::TempoPrecompileError,
-    mutate_void, view,
-};
+use crate::{Precompile, SelectorSchedule, charge_input_cost, dispatch_call, mutate_void, view};
 use alloy::{
     primitives::Address,
     sol_types::{SolCall, SolInterface},
@@ -40,12 +37,11 @@ impl Precompile for AccountKeychain {
             |call| match call {
                 IAccountKeychainCalls::authorizeKey_0(call) => {
                     if self.storage.spec().is_t3() {
-                        return TempoPrecompileError::AccountKeychainError(
+                        return self.storage.error_result(
                             AccountKeychainError::legacy_authorize_key_selector_changed(
                                 authorizeKeyCall::SELECTOR,
                             ),
-                        )
-                        .into_precompile_result(self.storage.gas_used());
+                        );
                     }
 
                     let call = authorizeKeyCall {

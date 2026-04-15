@@ -1,9 +1,7 @@
 //! ABI dispatch for the [`TIP20Token`] precompile.
 
 use crate::{
-    Precompile, SelectorSchedule, charge_input_cost, dispatch_call,
-    error::TempoPrecompileError,
-    metadata, mutate, mutate_void,
+    Precompile, SelectorSchedule, charge_input_cost, dispatch_call, metadata, mutate, mutate_void,
     storage::ContractStorage,
     tip20::{ITIP20, TIP20Token},
     view,
@@ -51,11 +49,10 @@ impl Precompile for TIP20Token {
         let initialized = match self.is_initialized() {
             Ok(v) => v,
             Err(_) if !self.storage.spec().is_t4() => false,
-            Err(e) => return e.into_precompile_result(self.storage.gas_used()),
+            Err(e) => return self.storage.error_result(e),
         };
         if !initialized {
-            return TempoPrecompileError::TIP20(TIP20Error::uninitialized())
-                .into_precompile_result(self.storage.gas_used());
+            return self.storage.error_result(TIP20Error::uninitialized());
         }
 
         dispatch_call(

@@ -3,7 +3,7 @@
 use super::*;
 use crate::{Precompile, charge_input_cost, dispatch_call, mutate, mutate_void, view};
 use alloy::{primitives::Address, sol_types::SolInterface};
-use revm::precompile::{PrecompileOutput, PrecompileResult};
+use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::IValidatorConfigV2::IValidatorConfigV2Calls;
 
 impl Precompile for ValidatorConfigV2 {
@@ -14,11 +14,7 @@ impl Precompile for ValidatorConfigV2 {
 
         // Pre-T2: behave like an empty contract (call succeeds, no execution)
         if !self.storage.spec().is_t2() {
-            return Ok(PrecompileOutput::new(
-                self.storage.gas_used(),
-                Default::default(),
-                0,
-            ));
+            return Ok(self.storage.success_output(Default::default()));
         }
 
         dispatch_call(

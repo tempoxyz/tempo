@@ -383,8 +383,9 @@ where
             ));
         };
 
+        // It's fine to set reservoir to 0 because this won't create any state.
         let (validation, gas_used) =
-            StorageCtx::enter_ctx_with_gas_limit(evm.ctx_mut(), *remaining_gas, || {
+            StorageCtx::enter_ctx_with_gas_limit(evm.ctx_mut(), *remaining_gas, 0, || {
                 let keychain = AccountKeychain::default();
                 for call in calls {
                     keychain.validate_call_scope_for_transaction(
@@ -402,7 +403,7 @@ where
                 *remaining_gas = remaining_gas.saturating_sub(gas_used);
                 Ok(None)
             }
-            Err(err) => match err.into_precompile_result(gas_used) {
+            Err(err) => match err.into_precompile_result(gas_used, 0) {
                 Ok(output) if output.is_halt() => Ok(Some(oog_frame_result(kind, *remaining_gas))),
                 Ok(revert_output) => {
                     let mut gas = Gas::new(gas_used);
@@ -1127,8 +1128,9 @@ where
                 cfg.gas_params.clone()
             };
 
+            // It's ok to set reservoir to 0 because pre-T1B it doesn't matter and post-T1B we have unlimited gas anyway.
             let mut provider = EvmPrecompileStorageProvider::new(
-                internals, gas_limit, cfg.spec, false, gas_params,
+                internals, gas_limit, 0, cfg.spec, false, gas_params,
             );
 
             // The core logic of setting up thread-local storage is here.

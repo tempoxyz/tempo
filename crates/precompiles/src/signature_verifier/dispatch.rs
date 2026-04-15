@@ -1,7 +1,7 @@
 use super::SignatureVerifier;
 use crate::{Precompile, charge_input_cost, dispatch_call, view};
 use alloy::{primitives::Address, sol_types::SolInterface};
-use revm::precompile::{PrecompileOutput, PrecompileResult};
+use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::{
     ISignatureVerifier::ISignatureVerifierCalls as ISVCalls, SignatureVerifierError,
 };
@@ -20,11 +20,9 @@ impl Precompile for SignatureVerifier {
         }
 
         if calldata.len() > MAX_CALLDATA_LEN {
-            return Ok(PrecompileOutput::revert(
-                self.storage.gas_used(),
-                SignatureVerifierError::invalid_format().abi_encode().into(),
-                0,
-            ));
+            return Ok(self
+                .storage
+                .abi_revert(SignatureVerifierError::invalid_format()));
         }
 
         dispatch_call(calldata, &[], ISVCalls::abi_decode, |call| match call {

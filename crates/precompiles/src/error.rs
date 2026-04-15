@@ -172,7 +172,7 @@ impl TempoPrecompileError {
     /// # Errors
     /// - `PrecompileOutput::halt(PrecompileHalt::OutOfGas, ..)` — if the variant is [`OutOfGas`](Self::OutOfGas)
     /// - `PrecompileError::Fatal` — if the variant is [`Fatal`](Self::Fatal)
-    pub fn into_precompile_result(self, gas: u64) -> PrecompileResult {
+    pub fn into_precompile_result(self, gas: u64, reservoir: u64) -> PrecompileResult {
         let bytes = match self {
             Self::StablecoinDEX(e) => e.abi_encode().into(),
             Self::TIP20(e) => e.abi_encode().into(),
@@ -195,7 +195,7 @@ impl TempoPrecompileError {
             Self::AccountKeychainError(e) => e.abi_encode().into(),
             Self::SignatureVerifierError(e) => e.abi_encode().into(),
             Self::OutOfGas => {
-                return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, 0));
+                return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, reservoir));
             }
             Self::UnknownFunctionSelector(selector) => UnknownFunctionSelector {
                 selector: selector.into(),
@@ -206,7 +206,7 @@ impl TempoPrecompileError {
                 return Err(PrecompileError::Fatal(msg));
             }
         };
-        Ok(PrecompileOutput::revert(gas, bytes, 0))
+        Ok(PrecompileOutput::revert(gas, bytes, reservoir))
     }
 }
 
@@ -289,6 +289,7 @@ pub trait IntoPrecompileResult<T> {
     fn into_precompile_result(
         self,
         gas: u64,
+        reservoir: u64,
         encode_ok: impl FnOnce(T) -> alloy::primitives::Bytes,
     ) -> PrecompileResult;
 }
@@ -297,22 +298,13 @@ impl<T> IntoPrecompileResult<T> for Result<T> {
     fn into_precompile_result(
         self,
         gas: u64,
+        reservoir: u64,
         encode_ok: impl FnOnce(T) -> alloy::primitives::Bytes,
     ) -> PrecompileResult {
         match self {
-            Ok(res) => Ok(PrecompileOutput::new(gas, encode_ok(res), 0)),
-            Err(err) => err.into_precompile_result(gas),
+            Ok(res) => Ok(PrecompileOutput::new(gas, encode_ok(res), reservoir)),
+            Err(err) => err.into_precompile_result(gas, reservoir),
         }
-    }
-}
-
-impl<T> IntoPrecompileResult<T> for TempoPrecompileError {
-    fn into_precompile_result(
-        self,
-        gas: u64,
-        _encode_ok: impl FnOnce(T) -> alloy::primitives::Bytes,
-    ) -> PrecompileResult {
-        Self::into_precompile_result(self, gas)
     }
 }
 

@@ -405,6 +405,10 @@ where
         unreachable!("'gas_refunded' not implemented in read-only context yet")
     }
 
+    fn reservoir(&self) -> u64 {
+        unreachable!("'reservoir' not implemented in read-only context yet")
+    }
+
     // Write operations are not supported in read-only context
     fn sstore(&mut self, _: Address, _: U256, _: U256) -> TempoResult<()> {
         unreachable!("'sstore' not supported in read-only context")
