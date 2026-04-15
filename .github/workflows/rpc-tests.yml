@@ -28,13 +28,16 @@ jobs:
     name: rpc-tests (${{ matrix.network }})
     runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
-    continue-on-error: true
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
-        network: [testnet, devnet]
+        include:
+          - network: testnet
+            allow_failure: false
+          - network: devnet
+            allow_failure: true
     steps:
       - uses: actions/checkout@v6
         with:
@@ -46,6 +49,14 @@ jobs:
         with:
           tool: nextest@0.9.124
       - name: Build RPC tests
+        id: build
+        continue-on-error: ${{ matrix.allow_failure }}
         run: cargo nextest run --profile ci-rpc -E 'package(tempo-node) & binary(it) & test(/test_matrices_${{ matrix.network }}/)' --no-run
       - name: Run RPC tests
+        id: run
+        if: steps.build.outcome == 'success'
+        continue-on-error: ${{ matrix.allow_failure }}
         run: cargo nextest run --profile ci-rpc -E 'package(tempo-node) & binary(it) & test(/test_matrices_${{ matrix.network }}/)'
+      - name: Report allowed devnet failure
+        if: matrix.allow_failure && (steps.build.outcome == 'failure' || steps.run.outcome == 'failure')
+        run: echo '::warning::Devnet RPC tests failed, but this check is allowed to fail so merge queue processing can continue.'

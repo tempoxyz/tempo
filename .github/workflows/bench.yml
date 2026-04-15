@@ -74,16 +74,6 @@ on:
         required: false
         default: "120"
         type: string
-      baseline-node-args:
-        description: "Additional node arguments for baseline runs only (space-separated)"
-        required: false
-        default: ""
-        type: string
-      feature-node-args:
-        description: "Additional node arguments for feature runs only (space-separated)"
-        required: false
-        default: ""
-        type: string
       baseline-hardfork:
         description: "Latest active hardfork for baseline (e.g. T1, T1C, T2). Empty = all forks active"
         required: false
@@ -102,6 +92,36 @@ on:
         options:
           - "manual"
           - "nightly"
+      baseline-args:
+        description: "Additional node arguments for baseline runs only (space-separated)"
+        required: false
+        default: ""
+        type: string
+      feature-args:
+        description: "Additional node arguments for feature runs only (space-separated)"
+        required: false
+        default: ""
+        type: string
+      bench-args:
+        description: "Additional tempo-bench arguments (e.g. --some-flag)"
+        required: false
+        default: ""
+        type: string
+      baseline-env:
+        description: "Environment variables for baseline node (KEY=VAL KEY2=VAL2)"
+        required: false
+        default: ""
+        type: string
+      feature-env:
+        description: "Environment variables for feature node (KEY=VAL KEY2=VAL2)"
+        required: false
+        default: ""
+        type: string
+      bench-env:
+        description: "Environment variables for tempo-bench (KEY=VAL KEY2=VAL2)"
+        required: false
+        default: ""
+        type: string
       no_slack:
         description: "Suppress Slack notifications for benchmark results"
         required: false
@@ -140,13 +160,17 @@ jobs:
       tracy: ${{ steps.args.outputs.tracy }}
       tracy-seconds: ${{ steps.args.outputs.tracy-seconds }}
       tracy-offset: ${{ steps.args.outputs.tracy-offset }}
-      baseline-node-args: ${{ steps.args.outputs.baseline-node-args }}
-      feature-node-args: ${{ steps.args.outputs.feature-node-args }}
+      baseline-args: ${{ steps.args.outputs.baseline-args }}
+      feature-args: ${{ steps.args.outputs.feature-args }}
       baseline-hardfork: ${{ steps.args.outputs.baseline-hardfork }}
       feature-hardfork: ${{ steps.args.outputs.feature-hardfork }}
       run-type: ${{ steps.args.outputs.run-type }}
       force-bloat: ${{ steps.args.outputs.force-bloat }}
       no-slack: ${{ steps.args.outputs.no-slack }}
+      bench-args: ${{ steps.args.outputs.bench-args }}
+      bench-env: ${{ steps.args.outputs.bench-env }}
+      baseline-env: ${{ steps.args.outputs.baseline-env }}
+      feature-env: ${{ steps.args.outputs.feature-env }}
       comment-id: ${{ steps.ack.outputs.comment-id }}
     steps:
       - name: Check org membership
@@ -174,7 +198,7 @@ jobs:
         with:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |
-            let pr, actor, preset, duration, bloat, tps, baseline, feature, samply, tracy, tracySeconds, tracyOffset, baselineNodeArgs, featureNodeArgs, baselineHardfork, featureHardfork, runType, forceBloat, noSlack;
+            let pr, actor, preset, duration, bloat, tps, baseline, feature, samply, tracy, tracySeconds, tracyOffset, baselineArgs, featureArgs, baselineHardfork, featureHardfork, runType, forceBloat, noSlack, benchArgs, benchEnv, baselineEnv, featureEnv;
 
             if (context.eventName === 'workflow_dispatch') {
               actor = '${{ github.actor }}';
@@ -188,13 +212,17 @@ jobs:
               tracy = '${{ github.event.inputs.tracy }}' || 'off';
               tracySeconds = '${{ github.event.inputs.tracy-seconds }}' || '30';
               tracyOffset = '${{ github.event.inputs.tracy-offset }}' || '120';
-              baselineNodeArgs = '${{ github.event.inputs.baseline-node-args }}' || '';
-              featureNodeArgs = '${{ github.event.inputs.feature-node-args }}' || '';
+              baselineArgs = '${{ github.event.inputs.baseline-args }}' || '';
+              featureArgs = '${{ github.event.inputs.feature-args }}' || '';
               baselineHardfork = '${{ github.event.inputs.baseline-hardfork }}' || '';
               featureHardfork = '${{ github.event.inputs.feature-hardfork }}' || '';
               runType = '${{ github.event.inputs.run-type }}' || 'manual';
               forceBloat = '${{ github.event.inputs.force-bloat }}' === 'true' ? 'true' : 'false';
               noSlack = '${{ github.event.inputs.no_slack }}' !== 'false' ? 'true' : 'false';
+              benchArgs = '${{ github.event.inputs.bench-args }}' || '';
+              benchEnv = '${{ github.event.inputs.bench-env }}' || '';
+              baselineEnv = '${{ github.event.inputs.baseline-env }}' || '';
+              featureEnv = '${{ github.event.inputs.feature-env }}' || '';
 
               // Find PR for the selected branch
               const branch = '${{ github.ref_name }}';
@@ -216,9 +244,9 @@ jobs:
               const body = context.payload.comment.body.trim();
               const intArgs = new Set(['duration', 'bloat', 'tps', 'tracy-seconds', 'tracy-offset']);
               const refArgs = new Set(['baseline', 'feature']);
-              const stringArgs = new Set(['preset', 'tracy', 'baseline-hardfork', 'feature-hardfork', 'baseline-node-args', 'feature-node-args']);
+              const stringArgs = new Set(['preset', 'tracy', 'baseline-args', 'feature-args', 'baseline-hardfork', 'feature-hardfork', 'bench-args', 'bench-env', 'baseline-env', 'feature-env']);
               const boolArgs = new Set(['samply', 'force-bloat', 'no-slack']);
-              const defaults = { preset: 'tip20', duration: '300', bloat: '1024', tps: '10000', baseline: '', feature: '', samply: 'false', tracy: 'off', 'tracy-seconds': '30', 'tracy-offset': '120', 'baseline-node-args': '', 'feature-node-args': '', 'baseline-hardfork': '', 'feature-hardfork': '', 'force-bloat': 'false', 'no-slack': 'false' };
+              const defaults = { preset: 'tip20', duration: '300', bloat: '1', tps: '10000', baseline: '', feature: '', samply: 'false', tracy: 'off', 'tracy-seconds': '30', 'tracy-offset': '120', 'baseline-args': '', 'feature-args': '', 'baseline-hardfork': '', 'feature-hardfork': '', 'force-bloat': 'false', 'no-slack': 'false', 'bench-args': '', 'bench-env': '', 'baseline-env': '', 'feature-env': '' };
               const unknown = [];
               const invalid = [];
               const args = body.replace(/^(?:@decofe|derek) bench\s*/, '');
@@ -269,7 +297,7 @@ jobs:
               if (unknown.length) errors.push(`Unknown argument(s): \`${unknown.join('`, `')}\``);
               if (invalid.length) errors.push(`Invalid value(s): ${invalid.join(', ')}`);
               if (errors.length) {
-                const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [force-bloat] [no-slack] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-node-args=ARGS] [feature-node-args=ARGS] [baseline-hardfork=FORK] [feature-hardfork=FORK]\``;
+                const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [force-bloat] [no-slack] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [baseline-hardfork=FORK] [feature-hardfork=FORK] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]\``;
                 await github.rest.issues.createComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
@@ -281,7 +309,7 @@ jobs:
               }
               preset = defaults.preset;
               duration = defaults.duration;
-              bloat = defaults.bloat;
+              bloat = String(parseInt(defaults.bloat, 10) * 1000);
               tps = defaults.tps;
               baseline = defaults.baseline;
               feature = defaults.feature;
@@ -289,16 +317,20 @@ jobs:
               tracy = defaults.tracy;
               tracySeconds = defaults['tracy-seconds'];
               tracyOffset = defaults['tracy-offset'];
-              baselineNodeArgs = defaults['baseline-node-args'];
-              featureNodeArgs = defaults['feature-node-args'];
+              baselineArgs = defaults['baseline-args'];
+              featureArgs = defaults['feature-args'];
               baselineHardfork = defaults['baseline-hardfork'];
               featureHardfork = defaults['feature-hardfork'];
               runType = 'manual';
               forceBloat = defaults['force-bloat'];
               noSlack = defaults['no-slack'];
+              benchArgs = defaults['bench-args'];
+              benchEnv = defaults['bench-env'];
+              baselineEnv = defaults['baseline-env'];
+              featureEnv = defaults['feature-env'];
             }
 
-            const usageStr = '**Usage:** `@decofe bench [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [force-bloat] [no-slack] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-node-args=ARGS] [feature-node-args=ARGS] [baseline-hardfork=FORK] [feature-hardfork=FORK]`';
+            const usageStr = '**Usage:** `@decofe bench [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [force-bloat] [no-slack] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [baseline-hardfork=FORK] [feature-hardfork=FORK] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]`';
 
             // Validate tracy value
             if (!['off', 'on', 'full'].includes(tracy)) {
@@ -387,13 +419,17 @@ jobs:
             core.setOutput('tracy', tracy);
             core.setOutput('tracy-seconds', tracySeconds);
             core.setOutput('tracy-offset', tracyOffset);
-            core.setOutput('baseline-node-args', baselineNodeArgs || '');
-            core.setOutput('feature-node-args', featureNodeArgs || '');
+            core.setOutput('baseline-args', baselineArgs || '');
+            core.setOutput('feature-args', featureArgs || '');
             core.setOutput('baseline-hardfork', baselineHardfork || '');
             core.setOutput('feature-hardfork', featureHardfork || '');
             core.setOutput('run-type', runType);
             core.setOutput('force-bloat', forceBloat);
             core.setOutput('no-slack', noSlack);
+            core.setOutput('bench-args', benchArgs || '');
+            core.setOutput('bench-env', benchEnv || '');
+            core.setOutput('baseline-env', baselineEnv || '');
+            core.setOutput('feature-env', featureEnv || '');
 
       - name: Acknowledge request
         id: ack
@@ -426,9 +462,9 @@ jobs:
             const samplyNote = samply ? ', samply: `enabled`' : '';
             const tracy = '${{ steps.args.outputs.tracy }}';
             const tracyNote = tracy !== 'off' ? `, tracy: \`${tracy}\`` : '';
-            const bNa = '${{ steps.args.outputs.baseline-node-args }}';
-            const fNa = '${{ steps.args.outputs.feature-node-args }}';
-            const naNote = (bNa || fNa) ? `${bNa ? `, baseline-node-args: \`${bNa}\`` : ''}${fNa ? `, feature-node-args: \`${fNa}\`` : ''}` : '';
+            const bNa = '${{ steps.args.outputs.baseline-args }}';
+            const fNa = '${{ steps.args.outputs.feature-args }}';
+            const naNote = (bNa || fNa) ? `${bNa ? `, baseline-args: \`${bNa}\`` : ''}${fNa ? `, feature-args: \`${fNa}\`` : ''}` : '';
             const bHf = '${{ steps.args.outputs.baseline-hardfork }}';
             const fHf = '${{ steps.args.outputs.feature-hardfork }}';
             const hfNote = bHf ? `, baseline-hardfork: \`${bHf}\`, feature-hardfork: \`${fHf}\`` : '';
@@ -458,13 +494,17 @@ jobs:
       BENCH_TRACY: ${{ needs.tempo-bench-ack.outputs.tracy }}
       BENCH_TRACY_SECONDS: ${{ needs.tempo-bench-ack.outputs.tracy-seconds }}
       BENCH_TRACY_OFFSET: ${{ needs.tempo-bench-ack.outputs.tracy-offset }}
-      BENCH_BASELINE_NODE_ARGS: ${{ needs.tempo-bench-ack.outputs.baseline-node-args }}
-      BENCH_FEATURE_NODE_ARGS: ${{ needs.tempo-bench-ack.outputs.feature-node-args }}
+      BENCH_BASELINE_ARGS: ${{ needs.tempo-bench-ack.outputs.baseline-args }}
+      BENCH_FEATURE_ARGS: ${{ needs.tempo-bench-ack.outputs.feature-args }}
       BENCH_BASELINE_HARDFORK: ${{ needs.tempo-bench-ack.outputs.baseline-hardfork }}
       BENCH_FEATURE_HARDFORK: ${{ needs.tempo-bench-ack.outputs.feature-hardfork }}
       BENCH_RUN_TYPE: ${{ needs.tempo-bench-ack.outputs.run-type }}
       BENCH_FORCE_BLOAT: ${{ needs.tempo-bench-ack.outputs.force-bloat }}
       BENCH_NO_SLACK: ${{ needs.tempo-bench-ack.outputs.no-slack }}
+      BENCH_BENCH_ARGS: ${{ needs.tempo-bench-ack.outputs.bench-args }}
+      BENCH_BENCH_ENV: ${{ needs.tempo-bench-ack.outputs.bench-env }}
+      BENCH_BASELINE_ENV: ${{ needs.tempo-bench-ack.outputs.baseline-env }}
+      BENCH_FEATURE_ENV: ${{ needs.tempo-bench-ack.outputs.feature-env }}
       BENCH_COMMENT_ID: ${{ needs.tempo-bench-ack.outputs.comment-id }}
       TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
       GRAFANA_TEMPO: ${{ secrets.GRAFANA_TEMPO }}
@@ -685,10 +725,14 @@ jobs:
           )
           [ "$BENCH_SAMPLY" = "true" ] && cmd+=(--samply)
           [ "$BENCH_TRACY" != "off" ] && cmd+=(--tracy "$BENCH_TRACY" --tracy-seconds "$BENCH_TRACY_SECONDS" --tracy-offset "$BENCH_TRACY_OFFSET")
-          [ -n "$BENCH_BASELINE_NODE_ARGS" ] && cmd+=(--baseline-node-args="$BENCH_BASELINE_NODE_ARGS")
-          [ -n "$BENCH_FEATURE_NODE_ARGS" ] && cmd+=(--feature-node-args="$BENCH_FEATURE_NODE_ARGS")
+          [ -n "$BENCH_BASELINE_ARGS" ] && cmd+=(--baseline-args="$BENCH_BASELINE_ARGS")
+          [ -n "$BENCH_FEATURE_ARGS" ] && cmd+=(--feature-args="$BENCH_FEATURE_ARGS")
           [ -n "$BENCH_BASELINE_HARDFORK" ] && cmd+=(--baseline-hardfork "$BENCH_BASELINE_HARDFORK" --feature-hardfork "$BENCH_FEATURE_HARDFORK")
           [ "$BENCH_FORCE_BLOAT" = "true" ] && cmd+=(--force)
+          [ -n "$BENCH_BENCH_ARGS" ] && cmd+=(--bench-args="$BENCH_BENCH_ARGS")
+          [ -n "$BENCH_BENCH_ENV" ] && cmd+=(--bench-env="$BENCH_BENCH_ENV")
+          [ -n "$BENCH_BASELINE_ENV" ] && cmd+=(--baseline-env="$BENCH_BASELINE_ENV")
+          [ -n "$BENCH_FEATURE_ENV" ] && cmd+=(--feature-env="$BENCH_FEATURE_ENV")
           "${cmd[@]}"
 
       - name: Find results directory

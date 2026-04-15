@@ -471,6 +471,8 @@ def run-bench-single [
     --bench-args: string = ""
     --loud
     --node-args: string = ""
+    --extra-env: string = ""
+    --bench-env: string = ""
     --bloat: int = 0
     --git-ref: string = ""
     --build-profile: string = ""
@@ -541,8 +543,9 @@ def run-bench-single [
     let node_cmd = wrap-samply [$tempo_bin ...$args] $samply $full_samply_args
     let node_cmd_str = ($node_cmd | str join " ")
     let profiling_label = if $samply { " (samply)" } else if $tracy != "off" { $" \(tracy=($tracy)\)" } else { "" }
+    let env_prefix = if $extra_env != "" { $"($extra_env) " } else { "" }
     print $"  Starting node: ($tempo_bin | path basename)($profiling_label)"
-    job spawn { sh -c $"($otel_attrs)($tracy_env_prefix)($node_cmd_str) 2>&1" | lines | each { |line| print $"[($run_label)] ($line)" } }
+    job spawn { sh -c $"($env_prefix)($otel_attrs)($tracy_env_prefix)($node_cmd_str) 2>&1" | lines | each { |line| print $"[($run_label)] ($line)" } }
 
     # Wait for RPC
     sleep 2sec
@@ -597,9 +600,10 @@ def run-bench-single [
     | append (if $build_profile != "" { ["--build-profile" $build_profile] } else { [] })
     | append (if $benchmark_mode != "" { ["--benchmark-mode" $benchmark_mode] } else { [] })
 
+    let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
     print $"  Running benchmark..."
     try {
-        bash -c $"ulimit -Sn unlimited && ($bench_cmd | str join ' ')"
+        bash -c $"($bench_env_export)ulimit -Sn unlimited && ($bench_cmd | str join ' ')"
     } catch { |e|
         print $"  Benchmark run ($run_label) failed: ($e.msg)"
     }
@@ -1569,9 +1573,12 @@ def "main bench" [
     --profile: string = $DEFAULT_PROFILE            # Cargo build profile
     --features: string = $DEFAULT_FEATURES          # Cargo features
     --node-args: string = ""                        # Additional node arguments (space-separated, applied to all runs)
-    --baseline-node-args: string = ""               # Additional node arguments for baseline runs only (space-separated)
-    --feature-node-args: string = ""                # Additional node arguments for feature runs only (space-separated)
+    --baseline-args: string = ""                    # Additional node arguments for baseline runs only (space-separated)
+    --feature-args: string = ""                     # Additional node arguments for feature runs only (space-separated)
     --bench-args: string = ""                       # Additional tempo-bench arguments (space-separated)
+    --baseline-env: string = ""                     # Environment variables for baseline node runs (KEY=VAL KEY2=VAL2)
+    --feature-env: string = ""                      # Environment variables for feature node runs (KEY=VAL KEY2=VAL2)
+    --bench-env: string = ""                        # Environment variables for tempo-bench (KEY=VAL KEY2=VAL2)
     --bloat: int = 0                                # Generate state bloat (size in MiB) for TIP20 tokens
     --no-infra                                      # Skip starting observability stack (Grafana + Prometheus)
     --baseline: string = ""                         # Git ref for baseline (comparison mode)
@@ -2009,9 +2016,10 @@ def "main bench" [
             # and feature-db subdirs at once.
             bench-recover $datadir
 
-            # Merge common node-args with per-side args (baseline-node-args / feature-node-args)
+            # Merge common node-args with per-side args (baseline-args / feature-args)
             let run_type = if ($run.label | str starts-with "baseline") { "baseline" } else { "feature" }
-            let side_args = if $run_type == "baseline" { $baseline_node_args } else { $feature_node_args }
+            let side_args = if $run_type == "baseline" { $baseline_args } else { $feature_args }
+            let side_env = if $run_type == "baseline" { $baseline_env } else { $feature_env }
             let effective_node_args = ([$node_args $side_args] | where { |a| $a != "" } | str join " ")
 
             (run-bench-single
@@ -2022,6 +2030,7 @@ def "main bench" [
                 --max-concurrent-requests $max_concurrent_requests
                 --weights $weights --preset $preset --bench-args $bench_args
                 --loud=$loud --node-args $effective_node_args --bloat $bloat
+                --extra-env $side_env --bench-env $bench_env
                 --git-ref $run.git_ref --build-profile $profile --benchmark-mode $mode
                 --benchmark-id $benchmark_id --reference-epoch $reference_epoch
                 --samply=$samply --samply-args $samply_args_list
@@ -2659,8 +2668,8 @@ def main [] {
     print $"  --profile <P>            Cargo profile \(default: ($DEFAULT_PROFILE)\)"
     print $"  --features <F>           Cargo features \(default: ($DEFAULT_FEATURES)\)"
     print "  --node-args <ARGS>       Additional node arguments (space-separated, all runs)"
-    print "  --baseline-node-args <ARGS>  Additional node arguments for baseline runs only"
-    print "  --feature-node-args <ARGS>   Additional node arguments for feature runs only"
+    print "  --baseline-args <ARGS>       Additional node arguments for baseline runs only"
+    print "  --feature-args <ARGS>        Additional node arguments for feature runs only"
     print "  --bench-args <ARGS>      Additional tempo-bench arguments (space-separated)"
     print "  --bloat <N>              Generate TIP20 state bloat (size in MiB)"
     print ""

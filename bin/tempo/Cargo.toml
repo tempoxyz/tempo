@@ -99,7 +99,7 @@ name = "tempo"
 path = "src/main.rs"
 
 [features]
-default = ["asm-keccak", "jemalloc", "otlp"]
+default = ["asm-keccak", "jemalloc", "otlp", "keccak-cache-global"]
 
 asm-keccak = [
 	"alloy/asm-keccak",
@@ -107,6 +107,10 @@ asm-keccak = [
 	"tempo-alloy/asm-keccak",
 	"tempo-node/asm-keccak",
 	"reth-ethereum-cli/asm-keccak",
+]
+keccak-cache-global = [
+	"alloy-primitives/keccak-cache-global",
+	"reth-ethereum/keccak-cache-global"
 ]
 
 otlp = [
