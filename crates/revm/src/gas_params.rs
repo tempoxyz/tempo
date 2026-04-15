@@ -89,6 +89,14 @@ pub fn tempo_gas_params(spec: TempoHardfork) -> GasParams {
                 GasId::tx_eip7702_per_empty_account_cost(),
                 T4_EIP7702_PER_AUTH_TOTAL,
             ),
+            (
+                GasId::tx_eip7702_per_auth_state_gas(),
+                T4_NEW_ACCOUNT_STATE, // 225,000
+            ),
+            // Auth refund is zeroed by apply_eip7702_auth_list override (TIP-1000:
+            // "no refund if the account already exists"), but set the value for
+            // upstream split_eip7702_refund correctness if the override is bypassed.
+            (GasId::tx_eip7702_auth_refund(), 0),
             // Auth account creation (keychain): same split as account creation
             (GasId::new(255), T4_NEW_ACCOUNT_REGULAR),
             (GasId::new(254), T4_NEW_ACCOUNT_STATE),
@@ -230,6 +238,22 @@ mod tests {
             250_000,
             "EIP-7702 per auth total = 25k regular + 225k state per spec"
         );
+        assert_eq!(
+            gas_params.tx_eip7702_per_auth_state_gas(),
+            225_000,
+            "EIP-7702 per auth state gas per spec"
+        );
+        assert_eq!(
+            gas_params.tx_eip7702_per_empty_account_cost()
+                - gas_params.tx_eip7702_per_auth_state_gas(),
+            25_000,
+            "EIP-7702 per auth regular gas = total - state = 25k"
+        );
+        assert_eq!(
+            gas_params.tx_eip7702_auth_refund(),
+            0,
+            "TIP-1000: no refund for existing accounts on T1+"
+        );
 
         // SSTORE set refund for 0→X→0 restoration (combined state + regular)
         // Spec: state_gas(230,000) + regular(20,000 - 2,100 - 100 = 17,800) = 247,800
@@ -285,9 +309,10 @@ mod tests {
             "auth_account_creation total must be 250,000"
         );
 
-        // EIP-7702: 250,000 total per auth
+        // EIP-7702: 25,000 regular + 225,000 state = 250,000 per auth
         assert_eq!(
-            t4.get(GasId::tx_eip7702_per_empty_account_cost()),
+            (t4.tx_eip7702_per_empty_account_cost() - t4.tx_eip7702_per_auth_state_gas())
+                + t4.tx_eip7702_per_auth_state_gas(),
             250_000,
             "EIP-7702 per auth total must be 250,000"
         );

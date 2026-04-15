@@ -1942,8 +1942,10 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
     gas.initial_total_gas += cold_account_cost * calls.len().saturating_sub(1) as u64;
 
     // 4. Authorization list costs (EIP-7702)
-    gas.initial_total_gas +=
-        authorization_list.len() as u64 * gas_params.tx_eip7702_per_empty_account_cost();
+    let num_auths = authorization_list.len() as u64;
+    gas.initial_total_gas += num_auths * gas_params.tx_eip7702_per_empty_account_cost();
+    // TIP-1016: Track state gas portion of per-auth cost (225k on T4, 0 pre-T4).
+    gas.initial_state_gas += num_auths * gas_params.tx_eip7702_per_auth_state_gas();
 
     // Add signature verification costs for each authorization
     // No need for v1 fork check as gas_params would be zero
@@ -5226,10 +5228,12 @@ mod tests {
         )
         .unwrap();
 
+        // State gas = per-auth state gas (225k) + nonce==0 account creation state gas (225k)
+        // Use hard-coded expected values to catch missing gas_params overrides.
         assert_eq!(
             gas.initial_state_gas,
-            gas_params.tx_tip1000_auth_account_creation_state_gas(),
-            "Auth list entry with nonce==0 should track state gas"
+            225_000 + 225_000,
+            "Auth list entry should track per-auth state gas (225k) + nonce==0 account creation state gas (225k)"
         );
     }
 
