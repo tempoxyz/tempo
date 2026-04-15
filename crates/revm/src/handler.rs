@@ -1694,8 +1694,7 @@ where
         &mut self,
         evm: &mut TempoEvm<DB, I>,
     ) -> Result<ValidationContext, EVMError<DB::Error, TempoInvalidTransaction>> {
-        self.validate(evm)?;
-        let mut init_and_floor_gas = InitialAndFloorGas::default();
+        let mut init_and_floor_gas = self.validate(evm)?;
         self.pre_execution(evm, &mut init_and_floor_gas)?;
         let result = ValidationContext {
             fee_token: evm
