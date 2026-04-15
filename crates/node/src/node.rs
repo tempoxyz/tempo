@@ -72,6 +72,10 @@ pub struct TempoNodeArgs {
     /// Enable prewarming for the payload builder.
     #[arg(long = "builder.enable-prewarming", default_value_t = false)]
     pub builder_enable_prewarming: bool,
+
+    /// Disable cached reads for the payload builder.
+    #[arg(long = "builder.disable-cached-reads", default_value_t = false)]
+    pub builder_disable_cached_reads: bool,
 }
 
 impl TempoNodeArgs {
@@ -89,6 +93,7 @@ impl TempoNodeArgs {
             state_provider_metrics: self.builder_state_provider_metrics,
             disable_state_cache: self.builder_disable_state_cache,
             enable_prewarming: self.builder_enable_prewarming,
+            disable_cached_reads: self.builder_disable_cached_reads,
         }
     }
 }
@@ -498,6 +503,9 @@ pub struct TempoPayloadBuilderBuilder {
     pub disable_state_cache: bool,
     /// Enable prewarming for the payload builder.
     pub enable_prewarming: bool,
+
+    /// Disable cached reads for the payload builder.
+    pub disable_cached_reads: bool,
 }
 
 impl<Node> PayloadBuilderBuilder<Node, TempoTransactionPool<Node::Provider>, TempoEvmConfig>
@@ -522,6 +530,7 @@ where
             self.state_provider_metrics,
             self.disable_state_cache,
             self.enable_prewarming,
+            self.disable_cached_reads,
         ))
     }
 }

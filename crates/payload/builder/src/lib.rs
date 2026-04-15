@@ -19,7 +19,7 @@ use reth_basic_payload_builder::{
 };
 use reth_chainspec::{ChainSpecProvider, EthChainSpec, EthereumHardforks};
 use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
-use reth_engine_tree::tree::instrumented_state::InstrumentedStateProvider;
+use reth_engine_tree::tree::{CachedStateProvider, instrumented_state::InstrumentedStateProvider};
 use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
     ConfigureEvm, Database, Evm, NextBlockEnvAttributes,
@@ -31,7 +31,7 @@ use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
 use reth_payload_primitives::{BuiltPayload, BuiltPayloadExecutedBlock};
 use reth_primitives_traits::{Recovered, transaction::error::InvalidTransactionError};
 use reth_revm::{State, context::Block, database::StateProviderDatabase};
-use reth_storage_api::{StateProvider, StateProviderFactory};
+use reth_storage_api::StateProviderFactory;
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, TransactionPool, ValidPoolTransaction,
@@ -95,6 +95,9 @@ pub struct TempoPayloadBuilder<Provider> {
     disable_state_cache: bool,
     /// Whether to enable prewarming of best transactions.
     enable_prewarming: bool,
+
+    /// Whether to disable cached reads.
+    disable_cached_reads: bool,
 }
 
 impl<Provider> TempoPayloadBuilder<Provider> {
@@ -108,6 +111,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
         state_provider_metrics: bool,
         disable_state_cache: bool,
         enable_prewarming: bool,
+        disable_cached_reads: bool,
     ) -> Self {
         Self {
             pool,
@@ -120,6 +124,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             state_provider_metrics,
             disable_state_cache,
             enable_prewarming,
+            disable_cached_reads,
         }
     }
 }
@@ -245,6 +250,7 @@ where
     {
         let BuildArguments {
             mut cached_reads,
+            execution_cache,
             trie_handle,
             config,
             cancel,
@@ -281,15 +287,25 @@ where
 
         let state_setup_start = Instant::now();
         let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
-        let state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
-        let state_provider: Box<dyn StateProvider> = if self.state_provider_metrics {
+        let mut state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
+        if !self.disable_state_cache
+            && let Some(execution_cache) = execution_cache
+        {
+            state_provider = Box::new(CachedStateProvider::new(
+                state_provider,
+                execution_cache.cache().clone(),
+                execution_cache.metrics().clone(),
+            ));
+        }
+        state_provider = if self.state_provider_metrics {
             Box::new(InstrumentedStateProvider::new(state_provider, "builder"))
         } else {
             state_provider
         };
+
         let state = StateProviderDatabase::new(&state_provider);
         let mut db = State::builder()
-            .with_database(if self.disable_state_cache {
+            .with_database(if self.disable_cached_reads {
                 Box::new(state) as Box<dyn Database<Error = ProviderError>>
             } else {
                 Box::new(cached_reads.as_db_mut(state))
