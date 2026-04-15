@@ -123,9 +123,9 @@ on:
         default: ""
         type: string
       gas-limit:
-        description: "Block gas limit for genesis (e.g. 500M, 1G, 2G)"
+        description: "Block gas limit for genesis (e.g. 500M, 1G, 1T)"
         required: false
-        default: "1G"
+        default: "1T"
         type: string
       no_slack:
         description: "Suppress Slack notifications for benchmark results"
@@ -253,7 +253,7 @@ jobs:
               const refArgs = new Set(['baseline', 'feature']);
               const stringArgs = new Set(['preset', 'tracy', 'baseline-args', 'feature-args', 'baseline-hardfork', 'feature-hardfork', 'bench-args', 'bench-env', 'baseline-env', 'feature-env', 'gas-limit']);
               const boolArgs = new Set(['samply', 'force-bloat', 'no-slack']);
-              const defaults = { preset: 'tip20', duration: '300', bloat: '1', tps: '10000', baseline: '', feature: '', samply: 'false', tracy: 'off', 'tracy-seconds': '30', 'tracy-offset': '120', 'baseline-args': '', 'feature-args': '', 'baseline-hardfork': '', 'feature-hardfork': '', 'force-bloat': 'false', 'no-slack': 'false', 'bench-args': '', 'bench-env': '', 'baseline-env': '', 'feature-env': '', 'gas-limit': '1G' };
+              const defaults = { preset: 'tip20', duration: '300', bloat: '1', tps: '10000', baseline: '', feature: '', samply: 'false', tracy: 'off', 'tracy-seconds': '30', 'tracy-offset': '120', 'baseline-args': '', 'feature-args': '', 'baseline-hardfork': '', 'feature-hardfork': '', 'force-bloat': 'false', 'no-slack': 'false', 'bench-args': '', 'bench-env': '', 'baseline-env': '', 'feature-env': '', 'gas-limit': '1T' };
               const unknown = [];
               const invalid = [];
               const args = body.replace(/^(?:@decofe|derek) bench\s*/, '');
@@ -397,12 +397,12 @@ jobs:
               return;
             }
 
-            // Parse human-readable gas limit (e.g. "1G", "500M", "450000000")
+            // Parse human-readable gas limit (e.g. "1T", "1G", "500M", "450000000")
             let gasLimit = '';
             if (gasLimitInput) {
-              const match = gasLimitInput.trim().match(/^(\d+)\s*([gGmM]?)$/);
+              const match = gasLimitInput.trim().match(/^(\d+)\s*([tTgGmM]?)$/);
               if (!match) {
-                const msg = `❌ **Invalid bench command**\n\n\`gas-limit=${gasLimitInput}\` is not valid. Use an integer with optional M/G suffix (e.g. \`500M\`, \`1G\`, \`1500000000\`).\n\n${usageStr}`;
+                const msg = `❌ **Invalid bench command**\n\n\`gas-limit=${gasLimitInput}\` is not valid. Use an integer with optional M/G/T suffix (e.g. \`1T\`, \`500M\`, \`1G\`).\n\n${usageStr}`;
                 if (context.eventName === 'issue_comment') {
                   await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number, body: msg });
                 }
@@ -411,7 +411,7 @@ jobs:
               }
               const base = BigInt(match[1]);
               const suffix = match[2].toUpperCase();
-              const mult = suffix === 'G' ? 1_000_000_000n : suffix === 'M' ? 1_000_000n : 1n;
+              const mult = suffix === 'T' ? 1_000_000_000_000n : suffix === 'G' ? 1_000_000_000n : suffix === 'M' ? 1_000_000n : 1n;
               const value = base * mult;
               if (value === 0n) {
                 const msg = `❌ **Invalid bench command**\n\n\`gas-limit=${gasLimitInput}\` must be greater than zero.\n\n${usageStr}`;
