@@ -93,7 +93,7 @@ pub trait Precompile {
     /// `dispatch_call` combined with the `view`, `mutate`, or `mutate_void` helpers.
     ///
     /// Business-logic errors are returned as reverted [`PrecompileOutput`]s with ABI-encoded
-    /// error data, while fatal failures (e.g. out-of-gas) are returned as [`PrecompileError`].
+    /// error data, while fatal failures (e.g. out-of-gas) are returned as [`revm::precompile::PrecompileError`].
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult;
 }
 
@@ -376,8 +376,6 @@ impl<'a> SelectorSchedule<'a> {
 /// Handles missing selectors (revert on T1+, error on earlier forks), hardfork-gated selectors,
 /// unknown selectors (ABI-encoded `UnknownFunctionSelector`), and malformed ABI data (empty
 /// revert).
-///
-/// Gas accounting is applied via [`fill_precompile_output`].
 #[inline]
 pub(crate) fn dispatch_call<T>(
     calldata: &[u8],
