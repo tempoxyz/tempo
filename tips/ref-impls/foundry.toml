@@ -4,7 +4,6 @@ out = "out"
 libs = ["lib"]
 optimizer = true
 optimizer_runs = 200
-hardfork = "tempo:T3"
 extra_output = ["storageLayout"]
 invariant = { fail_on_revert = true, show_solidity = true }
 fs_permissions = [{ access = "read-write", path = "./"}]
@@ -15,7 +14,16 @@ remappings = [
     "solady/=lib/solady/src/"
 ]
 
+[profile.tempo]
+hardfork = "tempo:T3"
+
 [profile.ci]
+optimizer = true
+optimizer_runs = 1
+invariant = { runs = 10, depth = 50, fail_on_revert = true, show_solidity = true }
+
+[profile.tempo_ci]
+hardfork = "tempo:T3"
 optimizer = true
 optimizer_runs = 1
 invariant = { runs = 10, depth = 50, fail_on_revert = true, show_solidity = true }
