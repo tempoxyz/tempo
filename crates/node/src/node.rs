@@ -306,16 +306,19 @@ impl PayloadAttributesBuilder<TempoPayloadAttributes, TempoHeader>
     for TempoPayloadAttributesBuilder
 {
     fn build(&self, _parent: &SealedHeader<TempoHeader>) -> TempoPayloadAttributes {
-        let timestamp_millis = std::time::SystemTime::now()
+        let millis = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
 
+        let (timestamp, timestamp_millis_part) = (millis / 1000, millis % 1000);
         TempoPayloadAttributes::new(
             Address::ZERO,
             None,
-            timestamp_millis,
+            timestamp,
+            timestamp_millis_part,
             Default::default(),
+            None,
             Vec::new,
         )
     }
@@ -502,6 +505,7 @@ where
             pool,
             ctx.provider().clone(),
             evm_config,
+            ctx.is_dev(),
             self.state_provider_metrics,
             self.disable_state_cache,
         ))
