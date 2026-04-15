@@ -175,28 +175,48 @@ jobs:
         if: needs.check-precompiles.outputs.coverage == 'true'
         run: rustup component add llvm-tools-preview
 
-      - name: Update foundry to use current commit
+      - name: Patch foundry to use checked-out tempo crates
         working-directory: foundry
         run: |
-          if ! grep -q 'https://github.com/tempoxyz/tempo' Cargo.toml; then
-            echo "No Tempo git dependencies to rewrite in $(pwd)/Cargo.toml"
-            exit 0
+          if ! grep -q '^\[patch\."https://github.com/tempoxyz/tempo"\]' Cargo.toml; then
+            PATCHES="$({
+              awk '
+                /^\[workspace.dependencies\]/ { in_section = 1; next }
+                in_section && /^\[/ { exit }
+                in_section && $1 ~ /^tempo-/ && index($0, "path = \"") {
+                  split($0, path_parts, /path = "/)
+                  split(path_parts[2], rest, /"/)
+                  print $1 "\t" rest[1]
+                }
+              ' ../tempo/Cargo.toml | sort
+            })"
+
+            if [[ -z "$PATCHES" ]]; then
+              echo "No path-based tempo-* workspace dependencies found in ../tempo/Cargo.toml"
+              exit 1
+            fi
+
+            {
+              printf '\n[patch."https://github.com/tempoxyz/tempo"]\n'
+              while IFS=$'\t' read -r crate path; do
+                [[ -n "$crate" ]] || continue
+                printf '%s = { path = "../tempo/%s" }\n' "$crate" "$path"
+              done <<< "$PATCHES"
+            } >> Cargo.toml
           fi
 
-          COMMIT_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
-          echo "Updating tempo dependencies to commit: $COMMIT_SHA"
-
-          # Update all tempo dependencies to point to the current commit
-          # Using # as delimiter since URLs contain /
-          sed -i -E \
-            "s#(tempo-[a-z-]+) = \{ git = \"https://github.com/tempoxyz/tempo\", rev = \"[^\"]+\"([^}]*)\}#\1 = { git = \"https://github.com/tempoxyz/tempo\", rev = \"$COMMIT_SHA\"\2}#g" \
-            Cargo.toml
-
-          echo "Updated Cargo.toml:"
-          grep "tempo-" Cargo.toml | head -20
+          echo "Updated Cargo.toml patch section:"
+          sed -n '/^\[patch\."https:\/\/github.com\/tempoxyz\/tempo"\]/,$p' Cargo.toml
 
           # Update Cargo.lock to resolve version conflicts
           cargo update
+
+          if grep -q '^source = "git+https://github.com/tempoxyz/tempo?rev=' Cargo.lock; then
+            echo "Tempo git sources still present in Cargo.lock after patching:"
+            grep '^source = "git+https://github.com/tempoxyz/tempo?rev=' Cargo.lock
+            echo "Expected all Tempo crates to resolve from ../tempo after patching"
+            exit 1
+          fi
 
       # Build and run WITH coverage (only on PR when precompiles changed)
       - name: Build foundry forge with coverage instrumentation
