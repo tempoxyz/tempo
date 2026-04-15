@@ -159,6 +159,7 @@ reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "
 reth-primitives-traits = { version = "0.3.0", default-features = false }
 reth-provider = { git = "https://github.com/paradigmxyz/reth", rev = "0b33057" }
 reth-rpc = { git = "https://github.com/paradigmxyz/reth", rev = "0b33057" }
+reth-rpc-api = { git = "https://github.com/paradigmxyz/reth", rev = "0b33057" }
 reth-rpc-builder = { git = "https://github.com/paradigmxyz/reth", rev = "0b33057" }
 reth-rpc-convert = { git = "https://github.com/paradigmxyz/reth", rev = "0b33057" }
 reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", rev = "0b33057" }
