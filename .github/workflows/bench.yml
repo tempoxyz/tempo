@@ -122,11 +122,6 @@ on:
         required: false
         default: ""
         type: string
-      gas-limit:
-        description: "Block gas limit for genesis (e.g. 500M, 1G, 1T)"
-        required: false
-        default: "1T"
-        type: string
       no_slack:
         description: "Suppress Slack notifications for benchmark results"
         required: false
@@ -176,7 +171,6 @@ jobs:
       bench-env: ${{ steps.args.outputs.bench-env }}
       baseline-env: ${{ steps.args.outputs.baseline-env }}
       feature-env: ${{ steps.args.outputs.feature-env }}
-      gas-limit: ${{ steps.args.outputs.gas-limit }}
       comment-id: ${{ steps.ack.outputs.comment-id }}
     steps:
       - name: Check org membership
@@ -204,7 +198,7 @@ jobs:
         with:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |
-            let pr, actor, preset, duration, bloat, tps, baseline, feature, samply, tracy, tracySeconds, tracyOffset, baselineArgs, featureArgs, baselineHardfork, featureHardfork, runType, forceBloat, noSlack, benchArgs, benchEnv, baselineEnv, featureEnv, gasLimitInput;
+            let pr, actor, preset, duration, bloat, tps, baseline, feature, samply, tracy, tracySeconds, tracyOffset, baselineArgs, featureArgs, baselineHardfork, featureHardfork, runType, forceBloat, noSlack, benchArgs, benchEnv, baselineEnv, featureEnv;
 
             if (context.eventName === 'workflow_dispatch') {
               actor = '${{ github.actor }}';
@@ -229,7 +223,6 @@ jobs:
               benchEnv = '${{ github.event.inputs.bench-env }}' || '';
               baselineEnv = '${{ github.event.inputs.baseline-env }}' || '';
               featureEnv = '${{ github.event.inputs.feature-env }}' || '';
-              gasLimitInput = '${{ github.event.inputs.gas-limit }}' || '';
 
               // Find PR for the selected branch
               const branch = '${{ github.ref_name }}';
@@ -251,9 +244,9 @@ jobs:
               const body = context.payload.comment.body.trim();
               const intArgs = new Set(['duration', 'bloat', 'tps', 'tracy-seconds', 'tracy-offset']);
               const refArgs = new Set(['baseline', 'feature']);
-              const stringArgs = new Set(['preset', 'tracy', 'baseline-args', 'feature-args', 'baseline-hardfork', 'feature-hardfork', 'bench-args', 'bench-env', 'baseline-env', 'feature-env', 'gas-limit']);
+              const stringArgs = new Set(['preset', 'tracy', 'baseline-args', 'feature-args', 'baseline-hardfork', 'feature-hardfork', 'bench-args', 'bench-env', 'baseline-env', 'feature-env']);
               const boolArgs = new Set(['samply', 'force-bloat', 'no-slack']);
-              const defaults = { preset: 'tip20', duration: '300', bloat: '1', tps: '10000', baseline: '', feature: '', samply: 'false', tracy: 'off', 'tracy-seconds': '30', 'tracy-offset': '120', 'baseline-args': '', 'feature-args': '', 'baseline-hardfork': '', 'feature-hardfork': '', 'force-bloat': 'false', 'no-slack': 'false', 'bench-args': '', 'bench-env': '', 'baseline-env': '', 'feature-env': '', 'gas-limit': '1T' };
+              const defaults = { preset: 'tip20', duration: '300', bloat: '1', tps: '10000', baseline: '', feature: '', samply: 'false', tracy: 'off', 'tracy-seconds': '30', 'tracy-offset': '120', 'baseline-args': '', 'feature-args': '', 'baseline-hardfork': '', 'feature-hardfork': '', 'force-bloat': 'false', 'no-slack': 'false', 'bench-args': '', 'bench-env': '', 'baseline-env': '', 'feature-env': '' };
               const unknown = [];
               const invalid = [];
               const args = body.replace(/^(?:@decofe|derek) bench\s*/, '');
@@ -304,7 +297,7 @@ jobs:
               if (unknown.length) errors.push(`Unknown argument(s): \`${unknown.join('`, `')}\``);
               if (invalid.length) errors.push(`Invalid value(s): ${invalid.join(', ')}`);
               if (errors.length) {
-                const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [force-bloat] [no-slack] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [baseline-hardfork=FORK] [feature-hardfork=FORK] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"] [gas-limit=SIZE]\``;
+                const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [force-bloat] [no-slack] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [baseline-hardfork=FORK] [feature-hardfork=FORK] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]\``;
                 await github.rest.issues.createComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
@@ -335,10 +328,9 @@ jobs:
               benchEnv = defaults['bench-env'];
               baselineEnv = defaults['baseline-env'];
               featureEnv = defaults['feature-env'];
-              gasLimitInput = defaults['gas-limit'];
             }
 
-            const usageStr = '**Usage:** `@decofe bench [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [force-bloat] [no-slack] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [baseline-hardfork=FORK] [feature-hardfork=FORK] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"] [gas-limit=SIZE]`';
+            const usageStr = '**Usage:** `@decofe bench [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [force-bloat] [no-slack] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [baseline-hardfork=FORK] [feature-hardfork=FORK] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]`';
 
             // Validate tracy value
             if (!['off', 'on', 'full'].includes(tracy)) {
@@ -397,33 +389,6 @@ jobs:
               return;
             }
 
-            // Parse human-readable gas limit (e.g. "1T", "1G", "500M", "450000000")
-            let gasLimit = '';
-            if (gasLimitInput) {
-              const match = gasLimitInput.trim().match(/^(\d+)\s*([tTgGmM]?)$/);
-              if (!match) {
-                const msg = `❌ **Invalid bench command**\n\n\`gas-limit=${gasLimitInput}\` is not valid. Use an integer with optional M/G/T suffix (e.g. \`1T\`, \`500M\`, \`1G\`).\n\n${usageStr}`;
-                if (context.eventName === 'issue_comment') {
-                  await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number, body: msg });
-                }
-                core.setFailed(msg);
-                return;
-              }
-              const base = BigInt(match[1]);
-              const suffix = match[2].toUpperCase();
-              const mult = suffix === 'T' ? 1_000_000_000_000n : suffix === 'G' ? 1_000_000_000n : suffix === 'M' ? 1_000_000n : 1n;
-              const value = base * mult;
-              if (value === 0n) {
-                const msg = `❌ **Invalid bench command**\n\n\`gas-limit=${gasLimitInput}\` must be greater than zero.\n\n${usageStr}`;
-                if (context.eventName === 'issue_comment') {
-                  await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number, body: msg });
-                }
-                core.setFailed(msg);
-                return;
-              }
-              gasLimit = value.toString();
-            }
-
             // Resolve display names for baseline/feature
             let baselineName = baseline || 'main';
             let featureName = feature;
@@ -465,7 +430,6 @@ jobs:
             core.setOutput('bench-env', benchEnv || '');
             core.setOutput('baseline-env', baselineEnv || '');
             core.setOutput('feature-env', featureEnv || '');
-            core.setOutput('gas-limit', gasLimit);
 
       - name: Acknowledge request
         id: ack
@@ -504,9 +468,7 @@ jobs:
             const bHf = '${{ steps.args.outputs.baseline-hardfork }}';
             const fHf = '${{ steps.args.outputs.feature-hardfork }}';
             const hfNote = bHf ? `, baseline-hardfork: \`${bHf}\`, feature-hardfork: \`${fHf}\`` : '';
-            const gasLim = '${{ steps.args.outputs.gas-limit }}';
-            const gasLimNote = gasLim ? `, gas-limit: \`${gasLim}\`` : '';
-            const config = `**Config:** preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} MiB\`, tps: \`${tps}\`, baseline: \`${baseline}\`, feature: \`${feature}\`${samplyNote}${tracyNote}${naNote}${hfNote}${gasLimNote}`;
+            const config = `**Config:** preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} MiB\`, tps: \`${tps}\`, baseline: \`${baseline}\`, feature: \`${feature}\`${samplyNote}${tracyNote}${naNote}${hfNote}`;
 
             const { data: comment } = await github.rest.issues.createComment({
               owner: context.repo.owner,
@@ -543,7 +505,6 @@ jobs:
       BENCH_BENCH_ENV: ${{ needs.tempo-bench-ack.outputs.bench-env }}
       BENCH_BASELINE_ENV: ${{ needs.tempo-bench-ack.outputs.baseline-env }}
       BENCH_FEATURE_ENV: ${{ needs.tempo-bench-ack.outputs.feature-env }}
-      BENCH_GAS_LIMIT: ${{ needs.tempo-bench-ack.outputs.gas-limit }}
       BENCH_COMMENT_ID: ${{ needs.tempo-bench-ack.outputs.comment-id }}
       TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
       GRAFANA_TEMPO: ${{ secrets.GRAFANA_TEMPO }}
@@ -630,9 +591,7 @@ jobs:
             const bHf2 = process.env.BENCH_BASELINE_HARDFORK || '';
             const fHf2 = process.env.BENCH_FEATURE_HARDFORK || '';
             const hfNote2 = bHf2 ? `, baseline-hardfork: \`${bHf2}\`, feature-hardfork: \`${fHf2}\`` : '';
-            const gasLim2 = process.env.BENCH_GAS_LIMIT || '';
-            const gasLimNote2 = gasLim2 ? `, gas-limit: \`${gasLim2}\`` : '';
-            core.exportVariable('BENCH_CONFIG', `**Config:** preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} MiB\`, tps: \`${tps}\`, baseline: \`${baseline}\`, feature: \`${feature}\`${samplyNote}${tracyNote}${hfNote2}${gasLimNote2}`);
+            core.exportVariable('BENCH_CONFIG', `**Config:** preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} MiB\`, tps: \`${tps}\`, baseline: \`${baseline}\`, feature: \`${feature}\`${samplyNote}${tracyNote}${hfNote2}`);
 
             const { buildBody } = require('./.github/scripts/bench-update-status.js');
             await github.rest.issues.updateComment({
@@ -763,6 +722,7 @@ jobs:
             --feature "$FEATURE_REF"
             --bench-datadir "/reth-bench/tempo_${BENCH_BLOAT}mb"
             --tune
+            --gas-limit 1000000000000
           )
           [ "$BENCH_SAMPLY" = "true" ] && cmd+=(--samply)
           [ "$BENCH_TRACY" != "off" ] && cmd+=(--tracy "$BENCH_TRACY" --tracy-seconds "$BENCH_TRACY_SECONDS" --tracy-offset "$BENCH_TRACY_OFFSET")
@@ -774,7 +734,6 @@ jobs:
           [ -n "$BENCH_BENCH_ENV" ] && cmd+=(--bench-env="$BENCH_BENCH_ENV")
           [ -n "$BENCH_BASELINE_ENV" ] && cmd+=(--baseline-env="$BENCH_BASELINE_ENV")
           [ -n "$BENCH_FEATURE_ENV" ] && cmd+=(--feature-env="$BENCH_FEATURE_ENV")
-          [ -n "$BENCH_GAS_LIMIT" ] && cmd+=(--gas-limit "$BENCH_GAS_LIMIT")
           "${cmd[@]}"
 
       - name: Find results directory
