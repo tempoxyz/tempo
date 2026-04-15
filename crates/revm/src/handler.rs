@@ -171,6 +171,14 @@ fn call_scope_storage_slots(auth: &tempo_primitives::transaction::KeyAuthorizati
 /// selector/set maintenance, and recipient-set writes. We use rounded constants here because the
 /// goal is to stop the undercharge without mirroring every storage helper exactly.
 ///
+/// The chosen values intentionally round upward:
+/// - base 5k covers the always-run empty-tree clear and restricted/unrestricted mode bookkeeping,
+/// - 7k per target and 7k per selector cover the set-maintenance work around each scope layer,
+/// - 5k per recipient covers the extra recipient-set persistence.
+///
+/// The objective is to stay roughly aligned with authorization pricing while avoiding materially low
+/// charges on larger scope trees, even if that means slight overcharging in simpler cases.
+///
 /// TODO: Refactor intrinsic gas accounting so this and the other intrinsic surcharges come from one
 /// shared model instead of per-feature heuristics.
 fn call_scope_extra_gas(auth: &tempo_primitives::transaction::KeyAuthorization) -> u64 {
