@@ -1,80 +1,61 @@
 #!/usr/bin/env bash
 #
-# Run forge commands using tempo-foundry's custom forge binary.
-# This tests the Solidity specs against the actual Rust precompile implementations.
+# Convenience wrapper for running forge in Tempo mode.
 #
 # Usage:
 #   ./tempo-forge [forge-args...]
 #
 # Examples:
-#   ./tempo-forge test                         # Run all tests
+#   ./tempo-forge test                         # Run all tests in Tempo mode
 #   ./tempo-forge test -vvv                    # Run with verbose output
-#   ./tempo-forge test --match-test test_mint  # Run specific test
-#   ./tempo-forge build                        # Build contracts
+#   ./tempo-forge test --match-test test_mint  # Run a specific test
+#   ./tempo-forge build                        # Build contracts in Tempo mode
 #
 # Prerequisites:
 #   - Rust toolchain installed
-#   - tempo-foundry repo cloned as a sibling to tempo repo:
-#       Tempo/
-#         tempo/          <- this repo
-#         tempo-foundry/  <- tempo-foundry repo
+#   - Either an installed `forge` binary (for example via `foundryup -b master`)
+#     or a local foundry-rs/foundry checkout.
 #
 # The script will:
-#   1. Locate or build the tempo-foundry forge binary
-#   2. Run forge with the Rust precompiles enabled (isTempo=true)
+#   1. Use `forge` from PATH, or fall back to a local Foundry checkout
+#   2. Run forge with `FOUNDRY_PROFILE=tempo` unless already set
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-# Try to find tempo-foundry in common locations
-TEMPO_FOUNDRY_PATHS=(
-    "$TEMPO_ROOT/../tempo-foundry"           # Sibling directory
-    "$TEMPO_ROOT/../../tempo-foundry"        # Parent's sibling
-    "${TEMPO_FOUNDRY_PATH:-}"                # Environment variable override
-)
+FORGE_BIN="$(command -v forge || true)"
 
-TEMPO_FOUNDRY_DIR=""
-for path in "${TEMPO_FOUNDRY_PATHS[@]}"; do
-    if [[ -n "$path" && -d "$path" && -f "$path/Cargo.toml" ]]; then
-        TEMPO_FOUNDRY_DIR="$path"
-        break
+if [[ -z "$FORGE_BIN" ]]; then
+    # Fall back to a local Foundry checkout when forge is not installed.
+    FOUNDRY_PATHS=(
+        "${FOUNDRY_PATH:-}"
+        "$TEMPO_ROOT/../foundry"
+        "$TEMPO_ROOT/../../foundry"
+    )
+
+    FOUNDRY_DIR=""
+    for path in "${FOUNDRY_PATHS[@]}"; do
+        if [[ -n "$path" && -d "$path" && -f "$path/Cargo.toml" ]]; then
+            FOUNDRY_DIR="$path"
+            break
+        fi
+    done
+
+    if [[ -z "$FOUNDRY_DIR" ]]; then
+        echo "Error: Could not find an installed forge binary or a local Foundry checkout."
+        echo "Install upstream Foundry with: foundryup -b master"
+        exit 1
     fi
-done
 
-if [[ -z "$TEMPO_FOUNDRY_DIR" ]]; then
-    echo "Error: Could not find tempo-foundry repository."
-    echo ""
-    echo "Please either:"
-    echo "  1. Clone tempo-foundry as a sibling to the tempo repo:"
-    echo "     git clone git@github.com:tempoxyz/tempo-foundry.git ../tempo-foundry"
-    echo ""
-    echo "  2. Set TEMPO_FOUNDRY_PATH environment variable:"
-    echo "     export TEMPO_FOUNDRY_PATH=/path/to/tempo-foundry"
-    exit 1
+    FORGE_BIN="$FOUNDRY_DIR/target/debug/forge"
+    # Check if forge binary exists, build if not
+    if [[ ! -x "$FORGE_BIN" ]]; then
+        echo "Building forge binary..."
+        (cd "$FOUNDRY_DIR" && cargo build -p forge --profile dev)
+    fi
 fi
 
-FORGE_BIN="$TEMPO_FOUNDRY_DIR/target/debug/forge"
-
-echo "Using tempo-foundry at: $TEMPO_FOUNDRY_DIR"
-
-# Check if forge binary exists, build if not
-if [[ ! -x "$FORGE_BIN" ]]; then
-    echo "Building tempo-foundry forge binary..."
-    echo "(This may take a few minutes on first run)"
-    echo ""
-    (cd "$TEMPO_FOUNDRY_DIR" && cargo build -p forge --profile dev)
-fi
-
-if [[ ! -x "$FORGE_BIN" ]]; then
-    echo "Error: Failed to build forge binary at $FORGE_BIN"
-    exit 1
-fi
-
-echo "Using forge binary: $FORGE_BIN"
-echo ""
-
-# Run forge from the specs directory
 cd "$SCRIPT_DIR"
-exec "$FORGE_BIN" "$@"
+FOUNDRY_PROFILE="${FOUNDRY_PROFILE:-tempo}" exec "$FORGE_BIN" "$@"
