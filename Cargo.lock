@@ -490,6 +490,7 @@ dependencies = [
  "cfg-if",
  "const-hex",
  "derive_more",
+ "fixed-cache",
  "foldhash 0.2.0",
  "getrandom 0.4.2",
  "hashbrown 0.16.1",
