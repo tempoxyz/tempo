@@ -17,6 +17,9 @@ workflows:
         "--left-side-feature-missing=ignore",
         # Ignore the case that `A` is outside of the workspace. Otherwise it will report errors in external dependencies that we have no influence on.
         "--left-side-outside-workspace=ignore",
+        # PublicKey serializes via B256, not ed25519-consensus's serde impl.
+        # Propagating would also break no_std (ed25519-consensus/serde pulls serde/std).
+        "--ignore-missing-propagate=tempo-primitives/serde:ed25519-consensus/serde",
         # Auxiliary flags:
         "--offline",
         "--locked",
