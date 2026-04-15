@@ -389,8 +389,21 @@ fn main() -> eyre::Result<()> {
             });
 
             info_span!("prepare_consensus").in_scope(|| {
+                let is_empty = match consensus_storage.read_dir() {
+                    Ok(mut entries) => entries.next().is_none(),
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
+                    Err(err) => {
+                        warn!(
+                            path = %consensus_storage.display(),
+                            error = %err,
+                            "failed to inspect consensus data directory",
+                        );
+                        false
+                    }
+                };
                 info!(
                     path = %consensus_storage.display(),
+                    is_empty,
                     "determined directory for consensus data",
                 )
             });
