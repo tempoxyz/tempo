@@ -183,7 +183,7 @@ impl PayloadAttributes for TempoPayloadAttributes {
     }
 
     fn slot_number(&self) -> Option<u64> {
-        None
+        self.inner.slot_number()
     }
 }
 
