@@ -63,6 +63,8 @@ tempo-contracts.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
 tempo-dkg-onchain-artifacts.workspace = true
 reth-cli-commands.workspace = true
+reth-discv5.workspace = true
+reth-network-api.workspace = true
 reth-cli-runner.workspace = true
 reth-cli-util.workspace = true
 reth-eth-wire-types.workspace = true
@@ -82,6 +84,7 @@ reth-trie.workspace = true
 reth-trie-db.workspace = true
 clap.workspace = true
 eyre.workspace = true
+reqwest.workspace = true
 jiff.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

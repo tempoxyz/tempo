@@ -7,8 +7,15 @@ use alloy_consensus::BlockHeader as _;
 use alloy_primitives::B256;
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, Read, Write};
-use commonware_consensus::{Heightable, types::Height};
-use commonware_cryptography::{Committable, Digestible};
+use commonware_consensus::{
+    Heightable,
+    simplex::types::Context,
+    types::{Epoch, Height, Round, View},
+};
+use commonware_cryptography::{
+    Committable, Digestible, Signer as _,
+    ed25519::{PrivateKey, PublicKey},
+};
 use reth_node_core::primitives::SealedBlock;
 
 use crate::consensus::Digest;
@@ -130,6 +137,31 @@ impl Heightable for Block {
 impl commonware_consensus::Block for Block {
     fn parent(&self) -> Digest {
         self.parent_digest()
+    }
+}
+
+impl commonware_consensus::CertifiableBlock for Block {
+    type Context = Context<Digest, PublicKey>;
+
+    fn context(&self) -> Self::Context {
+        match self.consensus_context {
+            Some(ctx) => Context {
+                leader: ctx.proposer.get().into(),
+                round: Round::new(Epoch::new(ctx.epoch), View::new(ctx.view)),
+                parent: (View::new(ctx.parent_view), self.parent_digest()),
+            },
+            None => {
+                // Pre-T4: Unused deterministic sentinel.
+                // Post-T4: Panic, all blocks where this is called must have a context.
+                //          Historical Pre-T4 blocks are never replayed in consensus
+                let leader = PublicKey::from(PrivateKey::from_seed(0));
+                Context {
+                    leader,
+                    round: Round::new(Epoch::new(0), View::new(0)),
+                    parent: (View::new(0), Digest(B256::ZERO)),
+                }
+            }
+        }
     }
 }
 
