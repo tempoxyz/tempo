@@ -13,6 +13,7 @@ on:
   pull_request:
 
 env:
+  FOUNDRY_PROFILE: ci
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: "sccache"
 
@@ -208,7 +209,7 @@ jobs:
         working-directory: tempo/tips/ref-impls
         run: |
           echo "Running forge test with Rust precompiles (isTempo=true)"
-          FOUNDRY_PROFILE=tempo LLVM_PROFILE_FILE="$(pwd)/forge-coverage-%p.profraw" ../../../foundry/target/release/forge test -vvv
+          FOUNDRY_PROFILE=tempo-ci LLVM_PROFILE_FILE="$(pwd)/forge-coverage-%p.profraw" ../../../foundry/target/release/forge test -vvv
 
       # Build and run WITHOUT coverage (main/merge_group or no precompiles changes)
       - name: Build foundry forge
@@ -221,7 +222,7 @@ jobs:
         working-directory: tempo/tips/ref-impls
         run: |
           echo "Running forge test with Rust precompiles (isTempo=true)"
-          FOUNDRY_PROFILE=tempo ../../../foundry/target/release/forge test -vvv
+          FOUNDRY_PROFILE=tempo-ci ../../../foundry/target/release/forge test -vvv
 
       - name: Generate coverage profdata
         if: needs.check-precompiles.outputs.coverage == 'true'
