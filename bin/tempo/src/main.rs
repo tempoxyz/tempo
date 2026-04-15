@@ -50,10 +50,11 @@ use eyre::WrapErr as _;
 use futures::{FutureExt as _, future::FusedFuture as _};
 use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands, evm::revm::primitives::B256};
 use reth_ethereum_cli::Cli;
+use reth_network_api::Peers;
 use reth_network_peers::pk2id;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
 use reth_rpc_server_types::DefaultRpcModuleValidator;
-use std::{sync::Arc, thread};
+use std::{sync::Arc, thread, time::Duration};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_commonware_node::{feed as consensus_feed, run_consensus_stack};
 use tempo_consensus::TempoConsensus;
@@ -69,7 +70,7 @@ use tempo_node::{
     telemetry::{PrometheusMetricsConfig, install_prometheus_metrics},
 };
 use tokio::sync::oneshot;
-use tracing::{info, info_span, warn};
+use tracing::{debug, info, info_span, warn};
 
 type TempoCli =
     Cli<TempoChainSpecParser, TempoArgs, DefaultRpcModuleValidator, tempo_cmd::TempoSubcommand>;
@@ -81,6 +82,19 @@ struct TempoArgs {
     /// If provided without a value, defaults to the RPC URL for the selected chain.
     #[arg(long, value_name = "URL", default_missing_value = "auto", num_args(0..=1), env = "TEMPO_FOLLOW")]
     pub follow: Option<String>,
+
+    /// HTTP endpoint that returns a JSON object mapping chain IDs to bootnode lists.
+    ///
+    /// The endpoint must return JSON in the format:
+    /// `{ "<chain_id>": ["enode://...", ...] }`
+    ///
+    /// Bootnodes for the current chain are added as peer hints to the discovery service.
+    #[arg(
+        long = "tempo.bootnodes-endpoint",
+        value_name = "URL",
+        env = "TEMPO_BOOTNODES_ENDPOINT"
+    )]
+    pub bootnodes_endpoint: Option<String>,
 
     #[command(flatten)]
     pub telemetry: defaults::TelemetryArgs,
@@ -185,6 +199,39 @@ fn print_extensions_footer() {
             println!("  {b}{name:<22}{r} {desc}");
         }
     }
+}
+
+/// Fetches bootnodes from the given endpoint for the specified chain ID.
+///
+/// The endpoint must return JSON in the format:
+/// `{ "<chain_id>": ["enode://...", ...] }`
+async fn fetch_bootnodes(
+    endpoint: &str,
+    chain_id: u64,
+) -> eyre::Result<Vec<reth_network_peers::NodeRecord>> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .wrap_err("failed to build HTTP client")?;
+
+    let resp: std::collections::HashMap<String, Vec<String>> = client
+        .get(endpoint)
+        .send()
+        .await
+        .wrap_err("request failed")?
+        .error_for_status()
+        .wrap_err("endpoint returned error status")?
+        .json()
+        .await
+        .wrap_err("failed to parse response as JSON")?;
+
+    let key = chain_id.to_string();
+    let enodes = match resp.get(&key) {
+        Some(enodes) => enodes,
+        None => return Ok(Vec::new()),
+    };
+
+    Ok(reth_network_peers::parse_nodes(enodes))
 }
 
 fn main() -> eyre::Result<()> {
@@ -469,6 +516,7 @@ fn main() -> eyre::Result<()> {
         } else {
             None
         };
+        let chain_id = builder.config().chain.chain().id();
 
         let NodeHandle {
             node,
@@ -522,6 +570,60 @@ fn main() -> eyre::Result<()> {
             .launch_with_debug_capabilities()
             .await
             .wrap_err("failed launching execution node")?;
+
+        // Fetch bootnodes from the endpoint in a background task and inject
+        // them into the already-running discovery services.
+        if let Some(endpoint) = args.bootnodes_endpoint.clone() {
+            let network = node.network.clone();
+            node.tasks().spawn_task(async move {
+                match fetch_bootnodes(&endpoint, chain_id).await {
+                    Ok(nodes) if nodes.is_empty() => {}
+                    Ok(nodes) => {
+                        info!(
+                            chain_id,
+                            count = nodes.len(),
+                            endpoint,
+                            "fetched bootnodes from endpoint"
+                        );
+                        for node in &nodes {
+                            if let Some(discv4) = network.discv4() {
+                                discv4.add_node(*node);
+                            }
+                            network.add_peer_kind(
+                                node.id,
+                                None,
+                                node.tcp_addr(),
+                                Some(node.udp_addr()),
+                            );
+                        }
+                        if let Some(discv5) = network.discv5() {
+                            let enr_requests = nodes.iter().filter_map(|node| {
+                                match reth_discv5::BootNode::from_unsigned(*node) {
+                                    Ok(boot_node) => Some(async move {
+                                        if let Err(err) = discv5
+                                            .with_discv5(|d| {
+                                                d.request_enr(boot_node.to_string())
+                                            })
+                                            .await
+                                        {
+                                            debug!(%err, %node, "failed adding boot node to discv5");
+                                        }
+                                    }),
+                                    Err(err) => {
+                                        warn!(%err, %node, "failed converting boot node for discv5");
+                                        None
+                                    }
+                                }
+                            });
+                            futures::future::join_all(enr_requests).await;
+                        }
+                    }
+                    Err(err) => {
+                        warn!(%err, endpoint, "failed to fetch bootnodes from endpoint");
+                    }
+                }
+            });
+        }
 
         let _ = args_and_node_handle_tx.send((node, args));
 

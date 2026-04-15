@@ -38,12 +38,14 @@ use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_node_builder::{
     Block as _, BuiltPayload, ConsensusEngineHandle, PayloadAttributes, PayloadKind,
 };
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks as _};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 use tempo_telemetry_util::display_duration;
 
 use reth_provider::{BlockHashReader as _, BlockReader as _};
 use tempo_payload_types::TempoPayloadAttributes;
+use tempo_primitives::TempoConsensusContext;
 use tokio::sync::RwLock;
 use tracing::{Level, debug, error, error_span, info, info_span, instrument, warn};
 
@@ -187,7 +189,7 @@ where
             Message::Propose(propose) => {
                 self.context.with_label("propose").spawn({
                     let inner = self.inner.clone();
-                    move |context| inner.handle_propose(propose, context)
+                    move |context| inner.handle_propose(*propose, context)
                 });
             }
             Message::Verify(verify) => {
@@ -323,6 +325,7 @@ impl Inner<Init> {
             parent: (parent_view, parent_digest),
             mut response,
             round,
+            leader,
         } = request;
 
         let (payload_id_tx, mut payload_id_rx) = oneshot::channel();
@@ -353,6 +356,7 @@ impl Inner<Init> {
                 parent_digest,
                 round,
                 payload_id_tx,
+                leader,
             ) => {
                 res.wrap_err("failed creating a proposal")
             }
@@ -461,6 +465,7 @@ impl Inner<Init> {
         parent_digest: Digest,
         round: Round,
         payload_id_tx: oneshot::Sender<PayloadId>,
+        leader: PublicKey,
     ) -> eyre::Result<Block> {
         let propose_start = Instant::now();
 
@@ -514,7 +519,7 @@ impl Inner<Init> {
             .await
             .wrap_err("failed verifying block against execution layer")?
         {
-            eyre::bail!("the proposal parent block is not valid");
+            bail!("the proposal parent block is not valid");
         }
 
         // Query DKG manager for ceremony data before building payload
@@ -571,12 +576,27 @@ impl Inner<Init> {
         //
         // We don't expect this being hit in practice because we validate the
         // timestamp is not in the future during EL validation.
-        let current_timestamp = context.current().epoch_millis();
-        let timestamp_millis = if current_timestamp <= parent.timestamp_millis() {
+        let mut epoch_millis = context.current().epoch_millis();
+        if epoch_millis <= parent.timestamp_millis() {
             self.metrics.parent_ahead_of_local_time.inc();
-            parent.timestamp_millis() + 1
+            epoch_millis = parent.timestamp_millis() + 1
+        };
+
+        let (timestamp, timestamp_millis_part) = (epoch_millis / 1000, epoch_millis % 1000);
+
+        let consensus_context = if self
+            .execution_node
+            .chain_spec()
+            .is_t4_active_at_timestamp(timestamp)
+        {
+            Some(TempoConsensusContext {
+                epoch: round.epoch().get(),
+                view: round.view().get(),
+                parent_view: parent_view.get(),
+                proposer: crate::utils::public_key_to_tempo_primitive(&leader),
+            })
         } else {
-            current_timestamp
+            None
         };
 
         let parent_hash = parent.block_hash();
@@ -584,8 +604,10 @@ impl Inner<Init> {
         let attrs = TempoPayloadAttributes::new(
             self.fee_recipient.unwrap_or_default(),
             Some(proposer_public_key),
-            timestamp_millis,
+            timestamp,
+            timestamp_millis_part,
             extra_data,
+            consensus_context,
             move || {
                 self.subblocks
                     .as_ref()
@@ -696,20 +718,18 @@ impl Inner<Init> {
             }
         }
 
-        if let Err(reason) = verify_header_extra_data(
+        if let Err(reason) = verify_header(
             &block,
             (parent_view, parent_digest),
             round,
+            self.execution_node.chain_spec().as_ref(),
             &self.state.dkg_manager,
             &self.epoch_strategy,
             &proposer,
         )
         .await
         {
-            warn!(
-                %reason,
-                "header extra data could not be verified; failing block",
-            );
+            warn!(%reason, "header could not be verified; failing block");
             return Ok((block, false));
         }
 
@@ -889,10 +909,11 @@ async fn verify_block<TContext: Pacer>(
 }
 
 #[instrument(skip_all, err(Display))]
-async fn verify_header_extra_data(
+async fn verify_header(
     block: &Block,
     parent: (View, Digest),
     round: Round,
+    chainspec: &TempoChainSpec,
     dkg_manager: &crate::dkg::manager::Mailbox,
     epoch_strategy: &FixedEpocher,
     proposer: &PublicKey,
@@ -900,6 +921,27 @@ async fn verify_header_extra_data(
     let epoch_info = epoch_strategy
         .containing(block.height())
         .expect("epoch strategy is for all heights");
+
+    if chainspec.is_t4_active_at_timestamp(block.timestamp()) {
+        let ctx = block
+            .header()
+            .consensus_context
+            .ok_or_eyre("missing consensus context")?;
+
+        let expected_ctx = TempoConsensusContext {
+            epoch: round.epoch().get(),
+            view: round.view().get(),
+            parent_view: parent.0.get(),
+            proposer: crate::utils::public_key_to_tempo_primitive(proposer),
+        };
+
+        if ctx != expected_ctx {
+            bail!("mismatching block consensus context");
+        }
+    } else if block.header().consensus_context.is_some() {
+        bail!("block consensus context set prior to activation");
+    }
+
     if epoch_info.last() == block.height() {
         info!(
             "on last block of epoch; verifying that the boundary block \

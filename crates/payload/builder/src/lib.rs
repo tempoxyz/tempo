@@ -92,6 +92,8 @@ pub struct TempoPayloadBuilder<Provider> {
     /// last height at which we've seen an invalid subblock, and not including any subblocks
     /// at this height for any payloads.
     highest_invalid_subblock: Arc<AtomicU64>,
+    /// Whether the node is configured in `--dev` miner mode.
+    is_dev: bool,
     /// Whether to enable state provider metrics.
     state_provider_metrics: bool,
     /// Whether to disable state cache.
@@ -103,6 +105,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
         pool: TempoTransactionPool<Provider>,
         provider: Provider,
         evm_config: TempoEvmConfig,
+        is_dev: bool,
         state_provider_metrics: bool,
         disable_state_cache: bool,
     ) -> Self {
@@ -112,6 +115,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             evm_config,
             metrics: TempoPayloadBuilderMetrics::default(),
             highest_invalid_subblock: Default::default(),
+            is_dev,
             state_provider_metrics,
             disable_state_cache,
         }
@@ -243,7 +247,11 @@ where
             attributes,
             payload_id,
         } = config;
-        let build_until_interrupt = trie_handle.is_some();
+        let build_until_interrupt =
+            // When trie handle is provided, we only build the payload once, until the interrupt is triggered
+            trie_handle.is_some()
+            // `--dev` mode doesn't have payload building interrupts
+            && !self.is_dev;
 
         macro_rules! check_cancel {
             () => {
@@ -372,6 +380,7 @@ where
                     general_gas_limit,
                     shared_gas_limit,
                     timestamp_millis_part: attributes.timestamp_millis_part(),
+                    consensus_context: attributes.consensus_context(),
                     subblock_fee_recipients,
                 },
             )
@@ -790,7 +799,7 @@ where
             "Built payload"
         );
 
-        let eth_payload = EthBuiltPayload::new(sealed_block, total_fees, requests);
+        let eth_payload = EthBuiltPayload::new(sealed_block, total_fees, requests, None);
 
         let execution_output = BlockExecutionOutput {
             result: execution_result,
@@ -985,7 +994,7 @@ mod tests {
             },
         };
         let sealed = Arc::new(SealedBlock::seal_slow(block));
-        let eth = EthBuiltPayload::new(sealed, U256::ZERO, None);
+        let eth = EthBuiltPayload::new(sealed, U256::ZERO, None, None);
         TempoBuiltPayload::new(eth, None)
     }
 
@@ -1031,8 +1040,15 @@ mod tests {
         // Test that extra_data in attributes can be accessed correctly
         let extra_data = Bytes::from(vec![42, 43, 44, 45, 46]);
 
-        let attrs =
-            TempoPayloadAttributes::new(Address::ZERO, None, 1000, extra_data.clone(), Vec::new);
+        let attrs = TempoPayloadAttributes::new(
+            Address::default(),
+            None,
+            1,
+            0,
+            extra_data.clone(),
+            None,
+            Vec::new,
+        );
 
         assert_eq!(attrs.extra_data(), &extra_data);
 

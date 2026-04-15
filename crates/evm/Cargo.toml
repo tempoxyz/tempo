@@ -43,6 +43,7 @@ tracing.workspace = true
 [dev-dependencies]
 revm.workspace = true
 reth-storage-api.workspace = true
+tempo-primitives = { workspace = true, features = ["arbitrary"] }
 
 [features]
 default = ["rpc", "engine"]
