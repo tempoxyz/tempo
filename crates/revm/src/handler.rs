@@ -313,19 +313,6 @@ fn calculate_key_authorization_gas(
     }
 }
 
-/// Returns the adjusted initial gas for transaction execution.
-///
-/// All state-dependent gas adjustments (2D nonce account creation, key authorization,
-/// scope validation) are now propagated into `init_and_floor_gas` during `pre_execution`,
-/// so this function simply passes through the struct.
-#[inline]
-fn adjusted_initial_gas(
-    _spec: tempo_chainspec::hardfork::TempoHardfork,
-    init_and_floor_gas: &InitialAndFloorGas,
-) -> InitialAndFloorGas {
-    *init_and_floor_gas
-}
-
 /// Tempo EVM [`Handler`] implementation with Tempo specific modifications:
 ///
 /// Fees are paid in fee tokens instead of account balance.
@@ -783,20 +770,18 @@ where
         I: Inspector<TempoContext<DB>, EthInterpreter>,
     {
         let spec = *evm.ctx_ref().cfg().spec();
-        let adjusted_gas = adjusted_initial_gas(spec, init_and_floor_gas);
-
         let tx = evm.tx();
 
-        if let Some(oog) = check_gas_limit(spec, tx, &adjusted_gas) {
+        if let Some(oog) = check_gas_limit(spec, tx, init_and_floor_gas) {
             return Ok(oog);
         }
 
         if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref() {
             let calls = tempo_tx_env.aa_calls.clone();
-            return self.inspect_execute_multi_call(evm, &adjusted_gas, calls);
+            return self.inspect_execute_multi_call(evm, init_and_floor_gas, calls);
         }
 
-        self.execute_single_call_with(evm, &adjusted_gas, &mut exec_loop)
+        self.execute_single_call_with(evm, init_and_floor_gas, &mut exec_loop)
     }
 }
 
@@ -826,18 +811,17 @@ where
         init_and_floor_gas: &InitialAndFloorGas,
     ) -> Result<FrameResult, Self::Error> {
         let spec = evm.ctx_ref().cfg().spec();
-        let adjusted_gas = adjusted_initial_gas(*spec, init_and_floor_gas);
         let tx = evm.tx();
 
-        if let Some(oog) = check_gas_limit(*spec, tx, &adjusted_gas) {
+        if let Some(oog) = check_gas_limit(*spec, tx, init_and_floor_gas) {
             return Ok(oog);
         }
 
         if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref() {
             let calls = tempo_tx_env.aa_calls.clone();
-            self.execute_multi_call(evm, &adjusted_gas, calls)
+            self.execute_multi_call(evm, init_and_floor_gas, calls)
         } else {
-            self.execute_single_call(evm, &adjusted_gas)
+            self.execute_single_call(evm, init_and_floor_gas)
         }
     }
 
@@ -2171,19 +2155,17 @@ where
         init_and_floor_gas: &InitialAndFloorGas,
     ) -> Result<FrameResult, Self::Error> {
         let spec = evm.ctx_ref().cfg().spec();
-        let adjusted_gas = adjusted_initial_gas(*spec, init_and_floor_gas);
-
         let tx = evm.tx();
 
-        if let Some(oog) = check_gas_limit(*spec, tx, &adjusted_gas) {
+        if let Some(oog) = check_gas_limit(*spec, tx, init_and_floor_gas) {
             return Ok(oog);
         }
 
         if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref() {
             let calls = tempo_tx_env.aa_calls.clone();
-            self.inspect_execute_multi_call(evm, &adjusted_gas, calls)
+            self.inspect_execute_multi_call(evm, init_and_floor_gas, calls)
         } else {
-            self.inspect_execute_single_call(evm, &adjusted_gas)
+            self.inspect_execute_single_call(evm, init_and_floor_gas)
         }
     }
 }
@@ -4980,52 +4962,6 @@ mod tests {
         assert_eq!(
             gas.initial_state_gas, expected_state_gas,
             "Mixed batch should have state gas only from CREATE call"
-        );
-    }
-
-    /// TIP-1016: adjusted_initial_gas passes through init_and_floor_gas on T1+.
-    ///
-    /// State gas from runtime checks is now propagated into init_and_floor_gas during
-    /// pre_execution, so adjusted_initial_gas simply passes through the struct.
-    #[test]
-    fn test_state_gas_adjusted_initial_gas_preserves_state_gas() {
-        // init simulates pre_execution output with all gas synchronized
-        let init = InitialAndFloorGas::new_with_state_gas(100_000, 57_000, 21_000);
-
-        // T4: passes through unchanged
-        let adjusted = adjusted_initial_gas(TempoHardfork::T4, &init);
-        assert_eq!(
-            adjusted.initial_state_gas, 57_000,
-            "adjusted_initial_gas must preserve initial_state_gas for T4"
-        );
-        assert_eq!(
-            adjusted.initial_total_gas, 100_000,
-            "initial_total_gas should pass through unchanged"
-        );
-
-        // T1: same behavior
-        let adjusted_t1 = adjusted_initial_gas(TempoHardfork::T1, &init);
-        assert_eq!(
-            adjusted_t1.initial_state_gas, 57_000,
-            "adjusted_initial_gas must preserve initial_state_gas for T1"
-        );
-        assert_eq!(
-            adjusted_t1.initial_total_gas, 100_000,
-            "initial_total_gas should pass through unchanged"
-        );
-
-        // T4: with runtime state gas already propagated into init_and_floor_gas
-        let init_with_extra =
-            InitialAndFloorGas::new_with_state_gas(345_000, 57_000 + 245_000, 21_000);
-        let adjusted_with_extra = adjusted_initial_gas(TempoHardfork::T4, &init_with_extra);
-        assert_eq!(
-            adjusted_with_extra.initial_state_gas,
-            57_000 + 245_000,
-            "adjusted_initial_gas must preserve propagated state gas for T4"
-        );
-        assert_eq!(
-            adjusted_with_extra.initial_total_gas, 345_000,
-            "initial_total_gas should pass through with propagated state gas"
         );
     }
 
