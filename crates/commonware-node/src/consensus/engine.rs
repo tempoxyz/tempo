@@ -23,7 +23,7 @@ use commonware_p2p::{AddressableManager, Blocker, Receiver, Sender};
 use commonware_parallel::Sequential;
 use commonware_runtime::{
     BufferPooler, Clock, ContextCell, Handle, Metrics, Network, Pacer, Spawner, Storage,
-    buffer::paged::CacheRef, spawn_cell,
+    buffer::paged::CacheRef,
 };
 use commonware_storage::archive::immutable;
 use commonware_utils::{NZU16, NZU64, NZUsize};
@@ -534,19 +534,22 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) -> Handle<eyre::Result<()>> {
-        spawn_cell!(
-            self.context,
-            self.run(
-                votes_network,
-                certificates_network,
-                resolver_network,
-                broadcast_network,
-                marshal_network,
-                dkg_channel,
-                subblocks_channel,
-            )
-            .await
-        )
+        let context = self.context.take();
+        context.spawn(move |context| {
+            Box::pin(async move {
+                self.context.restore(context);
+                self.run(
+                    votes_network,
+                    certificates_network,
+                    resolver_network,
+                    broadcast_network,
+                    marshal_network,
+                    dkg_channel,
+                    subblocks_channel,
+                )
+                .await
+            })
+        })
     }
 
     #[expect(
