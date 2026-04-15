@@ -1,5 +1,7 @@
+//! ABI dispatch for the [`ValidatorConfigV2`] precompile (T2+).
+
 use super::*;
-use crate::{Precompile, dispatch_call, input_cost, mutate_void, view};
+use crate::{Precompile, dispatch_call, input_cost, mutate, mutate_void, view};
 use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::IValidatorConfigV2::IValidatorConfigV2Calls;
@@ -20,12 +22,10 @@ impl Precompile for ValidatorConfigV2 {
 
         dispatch_call(
             calldata,
+            &[],
             IValidatorConfigV2Calls::abi_decode,
             |call| match call {
                 IValidatorConfigV2Calls::owner(call) => view(call, |_| self.owner()),
-                IValidatorConfigV2Calls::getAllValidators(call) => {
-                    view(call, |_| self.get_validators())
-                }
                 IValidatorConfigV2Calls::getActiveValidators(call) => {
                     view(call, |_| self.get_active_validators())
                 }
@@ -44,21 +44,24 @@ impl Precompile for ValidatorConfigV2 {
                 IValidatorConfigV2Calls::validatorByPublicKey(call) => {
                     view(call, |c| self.validator_by_public_key(c.publicKey))
                 }
-                IValidatorConfigV2Calls::getNextFullDkgCeremony(call) => {
-                    view(call, |_| self.get_next_full_dkg_ceremony())
+                IValidatorConfigV2Calls::getNextNetworkIdentityRotationEpoch(call) => {
+                    view(call, |_| self.get_next_network_identity_rotation_epoch())
                 }
                 IValidatorConfigV2Calls::isInitialized(call) => {
                     view(call, |_| self.is_initialized())
                 }
 
                 IValidatorConfigV2Calls::addValidator(call) => {
-                    mutate_void(call, msg_sender, |s, c| self.add_validator(s, c))
+                    mutate(call, msg_sender, |s, c| self.add_validator(s, c))
                 }
                 IValidatorConfigV2Calls::deactivateValidator(call) => {
                     mutate_void(call, msg_sender, |s, c| self.deactivate_validator(s, c))
                 }
                 IValidatorConfigV2Calls::rotateValidator(call) => {
                     mutate_void(call, msg_sender, |s, c| self.rotate_validator(s, c))
+                }
+                IValidatorConfigV2Calls::setFeeRecipient(call) => {
+                    mutate_void(call, msg_sender, |s, c| self.set_fee_recipient(s, c))
                 }
                 IValidatorConfigV2Calls::setIpAddresses(call) => {
                     mutate_void(call, msg_sender, |s, c| self.set_ip_addresses(s, c))
@@ -71,9 +74,9 @@ impl Precompile for ValidatorConfigV2 {
                 IValidatorConfigV2Calls::transferOwnership(call) => {
                     mutate_void(call, msg_sender, |s, c| self.transfer_ownership(s, c))
                 }
-                IValidatorConfigV2Calls::setNextFullDkgCeremony(call) => {
+                IValidatorConfigV2Calls::setNetworkIdentityRotationEpoch(call) => {
                     mutate_void(call, msg_sender, |s, c| {
-                        self.set_next_full_dkg_ceremony(s, c)
+                        self.set_network_identity_rotation_epoch(s, c)
                     })
                 }
                 IValidatorConfigV2Calls::migrateValidator(call) => {
@@ -196,8 +199,11 @@ mod tests {
                 tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS.as_slice(),
             );
             msg_data.extend_from_slice(validator_addr.as_slice());
+            msg_data.push(u8::try_from("192.168.1.1:8000".len()).unwrap());
             msg_data.extend_from_slice(b"192.168.1.1:8000");
+            msg_data.push(u8::try_from("192.168.1.1".len()).unwrap());
             msg_data.extend_from_slice(b"192.168.1.1");
+            msg_data.extend_from_slice(validator_addr.as_slice());
             let message = alloy::primitives::keccak256(&msg_data);
 
             // Sign with namespace
@@ -214,6 +220,7 @@ mod tests {
                 publicKey: public_key,
                 ingress: "192.168.1.1:8000".to_string(),
                 egress: "192.168.1.1".to_string(),
+                feeRecipient: validator_addr,
                 signature: signature.encode().to_vec().into(),
             };
             let calldata = add_call.abi_encode();
@@ -221,10 +228,10 @@ mod tests {
             let result = vc.call(&calldata, owner)?;
             assert!(!result.reverted);
 
-            let validators = vc.get_validators()?;
-            assert_eq!(validators.len(), 1);
-            assert_eq!(validators[0].validatorAddress, validator_addr);
-            assert_eq!(validators[0].publicKey, public_key);
+            assert_eq!(vc.validator_count()?, 1);
+            let v = vc.validator_by_index(0)?;
+            assert_eq!(v.validatorAddress, validator_addr);
+            assert_eq!(v.publicKey, public_key);
 
             Ok(())
         })
@@ -245,6 +252,7 @@ mod tests {
                 publicKey: FixedBytes::<32>::from([0x42; 32]),
                 ingress: "192.168.1.1:8000".to_string(),
                 egress: "192.168.1.1".to_string(),
+                feeRecipient: validator_addr,
                 signature: vec![0u8; 64].into(),
             };
             let calldata = add_call.abi_encode();

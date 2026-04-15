@@ -1,3 +1,9 @@
+//! Storable type system for EVM storage.
+//!
+//! Defines the core traits ([`StorableType`], [`Storable`], [`FromWord`], [`Packable`])
+//! and types ([`Slot`], [`Mapping`], [`Set`], [`vec::VecHandler`], [`array::ArrayHandler`]) that
+//! enable type-safe access to EVM storage slots with automatic packing.
+
 mod slot;
 pub use slot::*;
 
@@ -53,9 +59,7 @@ impl Layout {
         }
     }
 
-    /// Returns the number of bytes this type occupies.
-    ///
-    /// For `Bytes(n)`, returns n.
+    /// Returns the number of bytes this type occupies. For `Bytes(n)`, returns n.
     /// For `Slots(n)`, returns n * 32 (each slot is 32 bytes).
     pub const fn bytes(&self) -> usize {
         match self {
@@ -104,6 +108,7 @@ impl LayoutCtx {
     /// packed fields in the same slot.
     ///
     /// Only primitive types with `Layout::Bytes(n)` where `n < 32` support this context.
+    /// Note that these include enums which are representable as `u8`.
     pub const fn packed(offset: usize) -> Self {
         debug_assert!(offset < 32);
         Self(offset)
@@ -305,8 +310,7 @@ impl<T: Packable> Storable for T {
 /// # Encoding
 ///
 /// Mapping slots are computed as `keccak256(bytes32(key) | bytes32(slot))`, where the
-/// key's raw bytes are left-padded to 32 bytes
-/// and the slot is appended in big-endian.
+/// key's raw bytes are left-padded to 32 bytes and the slot is appended in big-endian.
 ///
 /// This differs from Solidity's `keccak256(abi.encode(key, slot))`, where signed integers
 /// are sign-extended and `bytesN` (N < 32) are right-padded. Per-type equivalence:

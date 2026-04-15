@@ -1,3 +1,9 @@
+//! Unified error handling for Tempo precompiles.
+//!
+//! Provides [`TempoPrecompileError`] — the top-level error enum — along with an
+//! ABI-selector-based decoder registry for mapping raw revert bytes back to
+//! typed error variants.
+
 use std::{
     collections::HashMap,
     sync::{Arc, LazyLock},
@@ -13,9 +19,9 @@ use revm::{
     precompile::{PrecompileError, PrecompileOutput, PrecompileResult},
 };
 use tempo_contracts::precompiles::{
-    AccountKeychainError, FeeManagerError, NonceError, RolesAuthError, StablecoinDEXError,
-    TIP20FactoryError, TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector,
-    ValidatorConfigError, ValidatorConfigV2Error,
+    AccountKeychainError, AddrRegistryError, FeeManagerError, NonceError, RolesAuthError,
+    SignatureVerifierError, StablecoinDEXError, TIP20FactoryError, TIP403RegistryError,
+    TIPFeeAMMError, UnknownFunctionSelector, ValidatorConfigError, ValidatorConfigV2Error,
 };
 
 /// Top-level error type for all Tempo precompile operations
@@ -39,11 +45,15 @@ pub enum TempoPrecompileError {
     #[error("Roles auth error: {0:?}")]
     RolesAuthError(RolesAuthError),
 
+    /// Error from TIP20 registry (TIP-1022)
+    #[error("TIP20 registry error: {0:?}")]
+    AddrRegistryError(AddrRegistryError),
+
     /// Error from 403 registry
     #[error("TIP403 registry error: {0:?}")]
     TIP403RegistryError(TIP403RegistryError),
 
-    /// Error from TIP  fee manager
+    /// Error from TIP fee manager
     #[error("TIP fee manager error: {0:?}")]
     FeeManagerError(FeeManagerError),
 
@@ -55,6 +65,7 @@ pub enum TempoPrecompileError {
     #[error("Tempo Transaction nonce error: {0:?}")]
     NonceError(NonceError),
 
+    /// EVM panic (i.e. arithmetic under/overflow, out-of-bounds access).
     #[error("Panic({0:?})")]
     Panic(PanicKind),
 
@@ -70,12 +81,19 @@ pub enum TempoPrecompileError {
     #[error("Account keychain error: {0:?}")]
     AccountKeychainError(AccountKeychainError),
 
+    /// Error from signature verifier precompile
+    #[error("Signature verifier error: {0:?}")]
+    SignatureVerifierError(SignatureVerifierError),
+
+    /// Gas limit exceeded during precompile execution.
     #[error("Gas limit exceeded")]
     OutOfGas,
 
+    /// The calldata's 4-byte selector does not match any known precompile function.
     #[error("Unknown function selector: {0:?}")]
     UnknownFunctionSelector([u8; 4]),
 
+    /// Unrecoverable internal error (e.g. database failure).
     #[error("Fatal precompile error: {0:?}")]
     #[from(skip)]
     Fatal(String),
@@ -104,30 +122,45 @@ impl TempoPrecompileError {
             | Self::NonceError(_)
             | Self::TIP20Factory(_)
             | Self::RolesAuthError(_)
+            | Self::AddrRegistryError(_)
             | Self::TIPFeeAMMError(_)
             | Self::FeeManagerError(_)
             | Self::TIP403RegistryError(_)
             | Self::ValidatorConfigError(_)
             | Self::ValidatorConfigV2Error(_)
             | Self::AccountKeychainError(_)
+            | Self::SignatureVerifierError(_)
             | Self::UnknownFunctionSelector(_) => false,
         }
     }
 
+    /// Creates an arithmetic under/overflow panic error.
     pub fn under_overflow() -> Self {
         Self::Panic(PanicKind::UnderOverflow)
     }
 
+    /// Creates an enum conversion error panic (Solidity Panic `0x21`).
+    pub fn enum_conversion_error() -> Self {
+        Self::Panic(PanicKind::EnumConversionError)
+    }
+
+    /// Creates an array out-of-bounds panic error.
     pub fn array_oob() -> Self {
         Self::Panic(PanicKind::ArrayOutOfBounds)
     }
 
+    /// ABI-encodes this error and wraps it as a reverted [`PrecompileResult`].
+    ///
+    /// # Errors
+    /// - `PrecompileError::OutOfGas` — if the variant is [`OutOfGas`](Self::OutOfGas)
+    /// - `PrecompileError::Fatal` — if the variant is [`Fatal`](Self::Fatal)
     pub fn into_precompile_result(self, gas: u64) -> PrecompileResult {
         let bytes = match self {
             Self::StablecoinDEX(e) => e.abi_encode().into(),
             Self::TIP20(e) => e.abi_encode().into(),
             Self::TIP20Factory(e) => e.abi_encode().into(),
             Self::RolesAuthError(e) => e.abi_encode().into(),
+            Self::AddrRegistryError(e) => e.abi_encode().into(),
             Self::TIP403RegistryError(e) => e.abi_encode().into(),
             Self::FeeManagerError(e) => e.abi_encode().into(),
             Self::TIPFeeAMMError(e) => e.abi_encode().into(),
@@ -142,6 +175,7 @@ impl TempoPrecompileError {
             Self::ValidatorConfigError(e) => e.abi_encode().into(),
             Self::ValidatorConfigV2Error(e) => e.abi_encode().into(),
             Self::AccountKeychainError(e) => e.abi_encode().into(),
+            Self::SignatureVerifierError(e) => e.abi_encode().into(),
             Self::OutOfGas => {
                 return Err(PrecompileError::OutOfGas);
             }
@@ -158,7 +192,7 @@ impl TempoPrecompileError {
     }
 }
 
-/// Registers all error selectors for a `SolInterface` type into the decoder registry.
+/// Registers all ABI error selectors for a [`SolInterface`] type into the decoder registry.
 pub fn add_errors_to_registry<T: SolInterface>(
     registry: &mut TempoPrecompileErrorRegistry,
     converter: impl Fn(T) -> TempoPrecompileError + 'static + Send + Sync,
@@ -192,8 +226,7 @@ pub type TempoPrecompileErrorRegistry = HashMap<
     Box<dyn for<'a> Fn(&'a [u8]) -> Option<DecodedTempoPrecompileError<'a>> + Send + Sync>,
 >;
 
-/// Returns a HashMap mapping error selectors to their decoder functions
-/// The decoder returns a `TempoPrecompileError` variant for the decoded error
+/// Builds a [`TempoPrecompileErrorRegistry`] mapping every known error selector to its decoder.
 pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     let mut registry: TempoPrecompileErrorRegistry = HashMap::new();
 
@@ -201,6 +234,7 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20Factory);
     add_errors_to_registry(&mut registry, TempoPrecompileError::RolesAuthError);
+    add_errors_to_registry(&mut registry, TempoPrecompileError::AddrRegistryError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP403RegistryError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::FeeManagerError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIPFeeAMMError);
@@ -208,6 +242,7 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     add_errors_to_registry(&mut registry, TempoPrecompileError::ValidatorConfigError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::ValidatorConfigV2Error);
     add_errors_to_registry(&mut registry, TempoPrecompileError::AccountKeychainError);
+    add_errors_to_registry(&mut registry, TempoPrecompileError::SignatureVerifierError);
 
     registry
 }
@@ -216,7 +251,9 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
 pub static ERROR_REGISTRY: LazyLock<TempoPrecompileErrorRegistry> =
     LazyLock::new(error_decoder_registry);
 
-/// Decode an error from raw bytes using the selector
+/// Decodes raw revert bytes into a typed [`DecodedTempoPrecompileError`] using the global
+/// [`ERROR_REGISTRY`], returning `None` if the data is shorter than 4 bytes or the selector
+/// is unrecognized.
 pub fn decode_error<'a>(data: &'a [u8]) -> Option<DecodedTempoPrecompileError<'a>> {
     if data.len() < 4 {
         return None;
@@ -228,8 +265,9 @@ pub fn decode_error<'a>(data: &'a [u8]) -> Option<DecodedTempoPrecompileError<'a
         .and_then(|decoder| decoder(data))
 }
 
-/// Extension trait to convert `Result<T, TempoPrecompileError` into `PrecompileResult`
+/// Extension trait to convert `Result<T, TempoPrecompileError>` into a [`PrecompileResult`].
 pub trait IntoPrecompileResult<T> {
+    /// Converts `self` into a [`PrecompileResult`], using `encode_ok` for the success path.
     fn into_precompile_result(
         self,
         gas: u64,

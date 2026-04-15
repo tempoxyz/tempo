@@ -6,6 +6,7 @@ use alloy_provider::{
     fillers::{FillerControlFlow, TxFiller},
 };
 use alloy_transport::{TransportErrorKind, TransportResult};
+use core::num::NonZeroU64;
 use dashmap::DashMap;
 use std::{
     sync::Arc,
@@ -151,7 +152,10 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for E
             // Nonce must be 0 for expiring nonce transactions
             builder.set_nonce(0);
             // Set valid_before to current time + expiry window
-            builder.set_valid_before(Self::current_timestamp() + self.expiry_secs);
+            builder.set_valid_before(
+                NonZeroU64::new(Self::current_timestamp() + self.expiry_secs)
+                    .expect("expiring nonce filler requires a non-zero valid_before"),
+            );
         }
     }
 

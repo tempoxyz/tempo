@@ -15,14 +15,18 @@ pub struct HashMapStorageProvider {
     internals: HashMap<(Address, U256), U256>,
     transient: HashMap<(Address, U256), U256>,
     accounts: HashMap<Address, AccountInfo>,
-    pub events: HashMap<Address, Vec<LogData>>,
+    fail_on_sload: Option<(Address, U256)>,
     chain_id: u64,
     timestamp: U256,
     beneficiary: Address,
     block_number: u64,
     spec: TempoHardfork,
     is_static: bool,
+    counter_sload: u64,
     snapshots: Vec<Snapshot>,
+
+    /// Emitted events keyed by contract address.
+    pub events: HashMap<Address, Vec<LogData>>,
 }
 
 /// Snapshot of mutable state for checkpoint/revert support.
@@ -34,15 +38,18 @@ struct Snapshot {
 }
 
 impl HashMapStorageProvider {
+    /// Creates a new provider with the given chain ID and default hardfork.
     pub fn new(chain_id: u64) -> Self {
         Self::new_with_spec(chain_id, TempoHardfork::default())
     }
 
+    /// Creates a new provider with the given chain ID and hardfork spec.
     pub fn new_with_spec(chain_id: u64, spec: TempoHardfork) -> Self {
         Self {
             internals: HashMap::new(),
             transient: HashMap::new(),
             accounts: HashMap::new(),
+            fail_on_sload: None,
             events: HashMap::new(),
             snapshots: Vec::new(),
             chain_id,
@@ -57,9 +64,11 @@ impl HashMapStorageProvider {
             block_number: 0,
             spec,
             is_static: false,
+            counter_sload: 0,
         }
     }
 
+    /// Returns self with the hardfork spec overridden (builder pattern).
     pub fn with_spec(mut self, spec: TempoHardfork) -> Self {
         self.spec = spec;
         self
@@ -126,6 +135,11 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
     }
 
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
+        if self.fail_on_sload == Some((address, key)) {
+            return Err(TempoPrecompileError::Fatal("injected sload failure".into()));
+        }
+
+        self.counter_sload += 1;
         Ok(self
             .internals
             .get(&(address, key))
@@ -174,14 +188,25 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         JournalCheckpoint {
             log_i: 0,
             journal_i: idx,
+            selfdestructed_i: 0,
         }
     }
 
-    fn checkpoint_commit(&mut self) {
+    fn checkpoint_commit(&mut self, checkpoint: JournalCheckpoint) {
+        assert_eq!(
+            checkpoint.journal_i,
+            self.snapshots.len() - 1,
+            "out-of-order checkpoint commit (expected top of stack)"
+        );
         self.snapshots.pop();
     }
 
     fn checkpoint_revert(&mut self, checkpoint: JournalCheckpoint) {
+        assert_eq!(
+            checkpoint.journal_i,
+            self.snapshots.len() - 1,
+            "out-of-order checkpoint revert (expected top of stack)"
+        );
         if let Some(snapshot) = self.snapshots.drain(checkpoint.journal_i..).next() {
             self.internals = snapshot.internals;
             self.events = snapshot.events;
@@ -191,45 +216,69 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
 
 #[cfg(any(test, feature = "test-utils"))]
 impl HashMapStorageProvider {
+    pub fn fail_next_sload_at(&mut self, address: Address, slot: U256) {
+        self.fail_on_sload = Some((address, slot));
+    }
+
+    /// Returns the account info for the given address, if it exists.
     pub fn get_account_info(&self, address: Address) -> Option<&AccountInfo> {
         self.accounts.get(&address)
     }
 
+    /// Returns all emitted events for the given address.
     pub fn get_events(&self, address: Address) -> &Vec<LogData> {
         static EMPTY: Vec<LogData> = Vec::new();
         self.events.get(&address).unwrap_or(&EMPTY)
     }
 
+    /// Sets the nonce for the given address.
     pub fn set_nonce(&mut self, address: Address, nonce: u64) {
         let account = self.accounts.entry(address).or_default();
         account.nonce = nonce;
     }
 
+    /// Overrides the block timestamp.
     pub fn set_timestamp(&mut self, timestamp: U256) {
         self.timestamp = timestamp;
     }
 
+    /// Overrides the block beneficiary (coinbase).
     pub fn set_beneficiary(&mut self, beneficiary: Address) {
         self.beneficiary = beneficiary;
     }
 
+    /// Overrides the block number.
     pub fn set_block_number(&mut self, block_number: u64) {
         self.block_number = block_number;
     }
 
+    /// Overrides the active hardfork spec.
     pub fn set_spec(&mut self, spec: TempoHardfork) {
         self.spec = spec;
     }
 
+    /// Clears all transient storage (simulates a new block).
     pub fn clear_transient(&mut self) {
         self.transient.clear();
     }
 
+    /// Clears all emitted events for the given address.
     pub fn clear_events(&mut self, address: Address) {
         let _ = self
             .events
             .entry(address)
             .and_modify(|v| v.clear())
             .or_default();
+    }
+
+    pub fn counter_sload(&self) -> u64 {
+        self.counter_sload
+    }
+
+    /// Returns all storage entries as `(address, slot, value)`.
+    pub fn into_storage(self) -> impl Iterator<Item = (Address, U256, U256)> {
+        self.internals
+            .into_iter()
+            .map(|((addr, slot), value)| (addr, slot, value))
     }
 }

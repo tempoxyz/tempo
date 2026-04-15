@@ -10,16 +10,52 @@ use alloy::{
     sol_types::{SolCall, SolError, SolEvent},
 };
 use alloy_eips::BlockId;
-use alloy_rpc_types_eth::TransactionInput;
+use alloy_rpc_types_eth::{
+    TransactionInput,
+    state::{AccountOverride, StateOverride},
+};
 use reth_evm::revm::interpreter::instructions::utility::IntoU256;
-use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
+use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{
     IFeeManager,
     ITIP20::{self, transferCall},
-    ITIPFeeAMM, UnknownFunctionSelector,
+    ITIPFeeAMM, IValidatorConfig, UnknownFunctionSelector,
 };
-use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::TIP20Token};
+use tempo_precompiles::{
+    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, error::TempoPrecompileError, storage::ContractStorage,
+    tip20::TIP20Token, validator_config::ValidatorConfig,
+};
 use test_case::test_case;
+
+/// Extracts ABI-encoded revert data from an RPC error response.
+fn extract_revert_data(
+    err: &alloy::transports::RpcError<alloy::transports::TransportErrorKind>,
+) -> Bytes {
+    serde_json::from_str(err.as_error_resp().unwrap().data.as_ref().unwrap().get()).unwrap()
+}
+
+/// Expected revert bytes for `Panic(UnderOverflow)`.
+fn under_overflow_revert() -> Bytes {
+    TempoPrecompileError::under_overflow()
+        .into_precompile_result(0)
+        .unwrap()
+        .bytes
+}
+
+/// Builds a `StateOverride` targeting `address` with the given slot→value diffs.
+fn state_diff(address: Address, diffs: &[(B256, U256)]) -> StateOverride {
+    [(
+        address,
+        AccountOverride::default().with_state_diff(
+            diffs
+                .iter()
+                .map(|(slot, val)| (*slot, B256::from(*val)))
+                .collect::<Vec<_>>(),
+        ),
+    )]
+    .into_iter()
+    .collect()
+}
 
 #[test_case(ForkSchedule::Devnet ; "devnet")]
 #[test_case(ForkSchedule::Testnet ; "testnet")]
@@ -257,7 +293,12 @@ async fn test_eth_estimate_gas(schedule: ForkSchedule) -> eyre::Result<()> {
     let gas = provider.estimate_gas(tx.clone()).await?;
     // gas estimation is calldata dependent, but should be consistent with same calldata
     // TIP-1000 (T1): gas includes 250k new account cost when nonce=0
-    assert_eq!(gas, 549423);
+    let expected_gas = if schedule.is_active(TempoHardfork::T3) {
+        551540
+    } else {
+        549423
+    };
+    assert_eq!(gas, expected_gas);
 
     // ensure we can successfully send the tx with that gas
     let receipt = provider
@@ -612,43 +653,99 @@ async fn test_unknown_selector_error_via_rpc(schedule: ForkSchedule) -> eyre::Re
         .to(TIP20_FACTORY_ADDRESS)
         .input(TransactionInput::new(Bytes::from(calldata)));
 
-    // The call should fail with UnknownFunctionSelector error
-    let result = provider.call(tx).await;
-
-    assert!(
-        result.is_err(),
-        "Call should have failed with unknown selector"
+    // The call should fail with UnknownFunctionSelector containing the unknown selector
+    let err = provider.call(tx).await.unwrap_err();
+    let expected = Bytes::from(
+        UnknownFunctionSelector {
+            selector: unknown_selector.into(),
+        }
+        .abi_encode(),
     );
+    assert_eq!(extract_revert_data(&err), expected);
 
-    let err = result.unwrap_err();
+    Ok(())
+}
 
-    // Get the error response payload
-    let error_payload = err.as_error_resp();
-    assert!(
-        error_payload.is_some(),
-        "Should have error response payload"
+#[tokio::test(flavor = "multi_thread")]
+async fn test_get_validators_state_override_no_oom() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let provider = ProviderBuilder::new().connect_http(setup.http_url);
+    let val_config = ValidatorConfig::new();
+    let tx = TransactionRequest::default()
+        .to(val_config.address())
+        .input(TransactionInput::new(
+            IValidatorConfig::getValidatorsCall::SELECTOR.into(),
+        ));
+    let len_slot: B256 = val_config.validators_array.len_slot().into();
+
+    // -- overflow: length > u32::MAX → Panic(UnderOverflow) revert --
+    let overrides = state_diff(
+        val_config.address(),
+        &[(len_slot, U256::from(0x0004000000000000u64))],
     );
+    let err = provider
+        .call(tx.clone())
+        .overrides(overrides)
+        .await
+        .unwrap_err();
+    assert_eq!(extract_revert_data(&err), under_overflow_revert());
 
-    let payload = error_payload.unwrap();
-    assert!(payload.data.is_some(), "Should have error data");
-
-    // Deserialize the error data as Bytes
-    let error_bytes: Bytes = serde_json::from_str(payload.data.as_ref().unwrap().get())
-        .expect("Failed to deserialize error data as bytes");
-
-    // Decode UnknownFunctionSelector from the error data
-    let decoded_error = UnknownFunctionSelector::abi_decode(&error_bytes);
-    assert!(
-        decoded_error.is_ok(),
-        "Error should be decodable as UnknownFunctionSelector"
+    // -- OOG: length < u32::MAX but huge → gas exhaustion on SLOAD loop --
+    let overrides = state_diff(
+        val_config.address(),
+        &[(len_slot, U256::from(1_000_000u64))],
     );
+    let err = provider
+        .call(tx)
+        .overrides(overrides)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("out of gas"), "expected OOG, got: {err}");
 
-    // Verify it contains the correct selector
-    let error = decoded_error.unwrap();
-    assert_eq!(
-        error.selector, unknown_selector,
-        "Error should contain the correct unknown selector"
+    // Verify the node is still alive (didn't OOM)
+    provider.get_block_number().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip20_name_state_override_no_oom() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let provider = ProviderBuilder::new().connect_http(setup.http_url);
+    let tx = TransactionRequest::default()
+        .to(PATH_USD_ADDRESS)
+        .input(TransactionInput::new(ITIP20::nameCall::SELECTOR.into()));
+    let name_slot = B256::from(U256::from(2)); // slot 2 in TIP20Token layout
+
+    // -- overflow: decoded len > u32::MAX → Panic(UnderOverflow) revert --
+    // 0x0008000000000001 → LSB=1 (long string), decoded len = 0x0004000000000000
+    let overrides = state_diff(
+        PATH_USD_ADDRESS,
+        &[(name_slot, U256::from(0x0008000000000001u64))],
     );
+    let err = provider
+        .call(tx.clone())
+        .overrides(overrides)
+        .await
+        .unwrap_err();
+    assert_eq!(extract_revert_data(&err), under_overflow_revert());
 
+    // -- OOG: decoded len < u32::MAX but huge → gas exhaustion on SLOAD loop --
+    // length 1_000_000 encoded as long string: value = 1_000_000 * 2 + 1 = 2_000_001
+    let overrides = state_diff(PATH_USD_ADDRESS, &[(name_slot, U256::from(2_000_001u64))]);
+    let err = provider
+        .call(tx)
+        .overrides(overrides)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("out of gas"), "expected OOG, got: {err}");
+
+    // Verify the node is still alive (didn't OOM)
+    provider.get_block_number().await?;
     Ok(())
 }

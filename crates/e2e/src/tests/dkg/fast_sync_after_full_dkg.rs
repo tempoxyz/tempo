@@ -9,11 +9,13 @@ use commonware_runtime::{
 use futures::future::join_all;
 use reth_ethereum::storage::BlockNumReader as _;
 use std::time::Duration;
+use tracing::info;
 
 use super::common::{
-    assert_no_dkg_failures, assert_skipped_rounds, wait_for_epoch, wait_for_outcome,
+    assert_no_dkg_failures, assert_skipped_rounds, wait_for_outcome,
+    wait_for_validators_to_reach_epoch,
 };
-use crate::{Setup, setup_validators};
+use crate::{Setup, connect_execution_peers, connect_execution_to_peers, setup_validators};
 
 /// Tests that a late-joining validator can sync and participate after a full DKG ceremony.
 ///
@@ -33,8 +35,7 @@ fn validator_can_fast_sync_after_full_dkg() {
 
     let setup = Setup::new()
         .how_many_signers(how_many_signers)
-        .epoch_length(epoch_length)
-        .connect_execution_layer_nodes(true);
+        .epoch_length(epoch_length);
 
     let cfg = Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);
@@ -44,6 +45,7 @@ fn validator_can_fast_sync_after_full_dkg() {
 
         let mut late_validator = validators.pop().unwrap();
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+        connect_execution_peers(&validators).await;
 
         let http_url: Url = validators[0]
             .execution()
@@ -58,7 +60,6 @@ fn validator_can_fast_sync_after_full_dkg() {
             .await
             .unwrap();
 
-        // wait for is_next_full_dkg flag
         let outcome_before =
             wait_for_outcome(&context, &validators, full_dkg_epoch - 1, epoch_length).await;
         assert!(
@@ -68,7 +69,8 @@ fn validator_can_fast_sync_after_full_dkg() {
         let pubkey_before = *outcome_before.sharing().public();
 
         // wait for full DKG completion (-1 because late validator not started yet)
-        wait_for_epoch(&context, full_dkg_epoch + 1, how_many_signers - 1).await;
+        wait_for_validators_to_reach_epoch(&context, full_dkg_epoch + 1, how_many_signers - 1)
+            .await;
 
         // verify new public key
         let outcome_after =
@@ -91,6 +93,9 @@ fn validator_can_fast_sync_after_full_dkg() {
 
         // start late validator
         late_validator.start(&context).await;
+        connect_execution_to_peers(&late_validator, &validators).await;
+        info!(id = late_validator.uid, "started late validator",);
+
         assert_eq!(
             late_validator
                 .execution_provider()

@@ -6,6 +6,7 @@
 use std::time::Duration;
 
 use commonware_consensus::types::FixedEpocher;
+use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{Metrics, Pacer, Spawner, Storage};
 
 use eyre::WrapErr as _;
@@ -37,8 +38,13 @@ pub(super) struct Config<TContext> {
     /// The execution context of the commonwarexyz application (tokio runtime, etc).
     pub(super) context: TContext,
 
-    /// Used as PayloadAttributes.suggested_fee_recipient
-    pub(super) fee_recipient: alloy_primitives::Address,
+    /// This node's ed25519 public key, used to look up the fee recipient from
+    /// the validator config v2 contract.
+    pub(super) public_key: PublicKey,
+
+    /// Deprecated CLI fallback for the fee recipient. Used when the on-chain
+    /// fee recipient is `Address::ZERO` or the V2 contract is not yet active.
+    pub(super) fee_recipient: Option<alloy_primitives::Address>,
 
     /// Number of messages from consensus to hold in our backlog
     /// before blocking.
@@ -53,10 +59,13 @@ pub(super) struct Config<TContext> {
     pub(super) execution_node: TempoFullNode,
 
     /// A handle to the subblocks service to get subblocks for proposals.
-    pub(crate) subblocks: subblocks::Mailbox,
+    pub(crate) subblocks: Option<subblocks::Mailbox>,
 
-    /// The minimum amount of time to wait before resolving a new payload from the builder
-    pub(super) new_payload_wait_time: Duration,
+    /// The minimum amount of time to wait before resolving a new payload from the builder.
+    pub(super) payload_resolve_time: Duration,
+
+    /// The minimum amount of time to wait before returning the built payload back to consensus for proposal.
+    pub(super) payload_return_time: Duration,
 
     /// The epoch strategy used by tempo, to map block heights to epochs.
     pub(super) epoch_strategy: FixedEpocher,

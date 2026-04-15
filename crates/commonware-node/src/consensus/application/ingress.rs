@@ -26,7 +26,7 @@ impl Mailbox {
 pub(super) enum Message {
     Broadcast(Broadcast),
     Genesis(Genesis),
-    Propose(Propose),
+    Propose(Box<Propose>),
     Verify(Box<Verify>),
 }
 
@@ -45,11 +45,12 @@ pub(super) struct Propose {
     pub(super) parent: (View, Digest),
     pub(super) response: oneshot::Sender<Digest>,
     pub(super) round: Round,
+    pub(super) leader: PublicKey,
 }
 
 impl From<Propose> for Message {
     fn from(value: Propose) -> Self {
-        Self::Propose(value)
+        Self::Propose(Box::new(value))
     }
 }
 
@@ -110,6 +111,7 @@ impl Automaton for Mailbox {
                     parent: context.parent,
                     response: tx,
                     round: context.round,
+                    leader: context.leader,
                 }
                 .into(),
             )
@@ -155,8 +157,10 @@ impl CertifiableAutomaton for Mailbox {
 
 impl Relay for Mailbox {
     type Digest = Digest;
+    type PublicKey = PublicKey;
+    type Plan = commonware_consensus::simplex::Plan<PublicKey>;
 
-    async fn broadcast(&mut self, digest: Self::Digest) {
+    async fn broadcast(&mut self, digest: Self::Digest, _plan: Self::Plan) {
         // TODO: panicking here is really not necessary. Just log at the ERROR or WARN levels instead?
         self.inner
             .send(Broadcast { payload: digest }.into())

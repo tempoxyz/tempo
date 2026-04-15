@@ -14,20 +14,22 @@ mod context;
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
 #[cfg(feature = "engine")]
 mod engine;
+#[cfg(feature = "engine")]
+use rayon as _;
 mod error;
 pub use error::TempoEvmError;
 pub mod evm;
 use std::{borrow::Cow, sync::Arc};
 
 use alloy_evm::{
-    self, Database, EvmEnv,
+    self, EvmEnv,
     block::{BlockExecutorFactory, BlockExecutorFor},
     eth::{EthBlockExecutionCtx, NextEvmEnvAttributes},
-    revm::{Inspector, database::State},
+    revm::Inspector,
 };
 pub use evm::TempoEvmFactory;
 use reth_chainspec::EthChainSpec;
-use reth_evm::{self, ConfigureEvm, EvmEnvFor};
+use reth_evm::{self, ConfigureEvm, EvmEnvFor, block::StateDB};
 use reth_primitives_traits::{SealedBlock, SealedHeader};
 use tempo_primitives::{
     Block, SubBlockMetadata, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
@@ -75,6 +77,11 @@ impl TempoEvmConfig {
         &self.inner
     }
 
+    /// Returns the moderato EVM config.
+    pub fn moderato() -> Self {
+        Self::new(Arc::new(TempoChainSpec::moderato()))
+    }
+
     /// Returns the mainnet EVM config.
     pub fn mainnet() -> Self {
         Self::new(Arc::new(TempoChainSpec::mainnet()))
@@ -93,12 +100,12 @@ impl BlockExecutorFactory for TempoEvmConfig {
 
     fn create_executor<'a, DB, I>(
         &'a self,
-        evm: TempoEvm<&'a mut State<DB>, I>,
+        evm: TempoEvm<DB, I>,
         ctx: Self::ExecutionCtx<'a>,
     ) -> impl BlockExecutorFor<'a, Self, DB, I>
     where
-        DB: Database + 'a,
-        I: Inspector<TempoContext<&'a mut State<DB>>> + 'a,
+        DB: StateDB + 'a,
+        I: Inspector<TempoContext<DB>> + 'a,
     {
         TempoBlockExecutor::new(evm, ctx, self.chain_spec())
     }
@@ -208,7 +215,11 @@ impl ConfigureEvm for TempoEvmConfig {
                 parent_beacon_block_root: block.header().parent_beacon_block_root(),
                 // no ommers in tempo
                 ommers: &[],
-                withdrawals: block.body().withdrawals.as_ref().map(Cow::Borrowed),
+                withdrawals: block
+                    .body()
+                    .withdrawals
+                    .as_ref()
+                    .map(|w| Cow::Borrowed(w.as_slice())),
                 extra_data: block.extra_data().clone(),
                 tx_count_hint: Some(block.body().transactions.len()),
             },
@@ -217,6 +228,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
             // Not available when we only have a block body.
             validator_set: None,
+            consensus_context: block.header().consensus_context,
             subblock_fee_recipients,
         })
     }
@@ -231,7 +243,10 @@ impl ConfigureEvm for TempoEvmConfig {
                 parent_hash: parent.hash(),
                 parent_beacon_block_root: attributes.parent_beacon_block_root,
                 ommers: &[],
-                withdrawals: attributes.inner.withdrawals.map(Cow::Owned),
+                withdrawals: attributes
+                    .inner
+                    .withdrawals
+                    .map(|w| Cow::Owned(w.into_inner())),
                 extra_data: attributes.inner.extra_data,
                 tx_count_hint: None,
             },
@@ -240,6 +255,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
             // Fine to not validate during block building.
             validator_set: None,
+            consensus_context: attributes.consensus_context,
             subblock_fee_recipients: attributes.subblock_fee_recipients,
         })
     }
@@ -285,6 +301,7 @@ mod tests {
             general_gas_limit: 10_000_000,
             timestamp_millis_part: 500,
             shared_gas_limit: 3_000_000,
+            ..Default::default()
         };
 
         let result = evm_config.evm_env(&header);
@@ -327,6 +344,7 @@ mod tests {
             general_gas_limit: 10_000_000,
             timestamp_millis_part: 0,
             shared_gas_limit: 3_000_000,
+            ..Default::default()
         };
 
         // Verify we're in T1
@@ -357,6 +375,7 @@ mod tests {
             general_gas_limit: 10_000_000,
             timestamp_millis_part: 0,
             shared_gas_limit: 3_000_000,
+            ..Default::default()
         };
 
         let attributes = TempoNextBlockEnvAttributes {
@@ -372,6 +391,7 @@ mod tests {
             general_gas_limit: 10_000_000,
             shared_gas_limit: 3_000_000,
             timestamp_millis_part: 750,
+            consensus_context: None,
             subblock_fee_recipients: HashMap::new(),
         };
 
@@ -439,6 +459,7 @@ mod tests {
             general_gas_limit: 10_000_000,
             timestamp_millis_part: 500,
             shared_gas_limit: 3_000_000,
+            ..Default::default()
         };
 
         let body = BlockBody {
@@ -496,6 +517,7 @@ mod tests {
             general_gas_limit: 10_000_000,
             timestamp_millis_part: 500,
             shared_gas_limit: 3_000_000,
+            ..Default::default()
         };
 
         let body = BlockBody {
@@ -531,6 +553,7 @@ mod tests {
             general_gas_limit: 10_000_000,
             timestamp_millis_part: 0,
             shared_gas_limit: 3_000_000,
+            ..Default::default()
         };
         let parent = SealedHeader::seal_slow(parent_header);
 
@@ -552,6 +575,7 @@ mod tests {
             general_gas_limit: 12_000_000,
             shared_gas_limit: 4_000_000,
             timestamp_millis_part: 999,
+            consensus_context: None,
             subblock_fee_recipients: subblock_fee_recipients.clone(),
         };
 

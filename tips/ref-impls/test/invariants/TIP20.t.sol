@@ -876,7 +876,10 @@ contract TIP20InvariantTest is InvariantBaseTest {
     }
 
     /// @notice Handler for attempting burnBlocked on protected addresses
-    /// @dev Tests TEMPO-TIP24 (protected addresses cannot be burned from)
+    /// @dev Tests TEMPO-TIP24 (protected addresses cannot be burned from).
+    ///      The precompile checks pause before protected-address, so when
+    ///      the token is paused it may revert with ContractPaused instead of
+    ///      ProtectedAddress. Both are valid rejections of the burn attempt.
     function burnBlockedProtectedAddress(uint256 tokenSeed, uint256 amount) external {
         TIP20 token = _selectBaseToken(tokenSeed);
 
@@ -888,28 +891,28 @@ contract TIP20InvariantTest is InvariantBaseTest {
         vm.startPrank(admin);
         token.grantRole(_BURN_BLOCKED_ROLE, admin);
 
-        // Try to burn from FeeManager - should revert with ProtectedAddress
+        // Try to burn from FeeManager - should revert
         try token.burnBlocked(feeManager, amount) {
             vm.stopPrank();
             revert("TEMPO-TIP24: Should revert for FeeManager");
         } catch (bytes memory reason) {
-            assertEq(
-                bytes4(reason),
-                ITIP20.ProtectedAddress.selector,
-                "TEMPO-TIP24: Should revert with ProtectedAddress for FeeManager"
+            bytes4 sel = bytes4(reason);
+            assertTrue(
+                sel == ITIP20.ProtectedAddress.selector || sel == ITIP20.ContractPaused.selector,
+                "TEMPO-TIP24: Should revert with ProtectedAddress or ContractPaused for FeeManager"
             );
         }
 
-        // Try to burn from DEX - should revert with ProtectedAddress
+        // Try to burn from DEX - should revert
         try token.burnBlocked(dex, amount) {
             vm.stopPrank();
             revert("TEMPO-TIP24: Should revert for DEX");
         } catch (bytes memory reason) {
             vm.stopPrank();
-            assertEq(
-                bytes4(reason),
-                ITIP20.ProtectedAddress.selector,
-                "TEMPO-TIP24: Should revert with ProtectedAddress for DEX"
+            bytes4 sel = bytes4(reason);
+            assertTrue(
+                sel == ITIP20.ProtectedAddress.selector || sel == ITIP20.ContractPaused.selector,
+                "TEMPO-TIP24: Should revert with ProtectedAddress or ContractPaused for DEX"
             );
         }
     }

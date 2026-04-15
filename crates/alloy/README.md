@@ -11,6 +11,14 @@ To use `tempo-alloy`, add the crate as a dependency in your `Cargo.toml` file:
 tempo-alloy = { git = "https://github.com/tempoxyz/tempo" }
 ```
 
+If you need the Reth RPC conversion/compatibility impls used by Tempo node-side code,
+enable the `reth` feature explicitly:
+
+```toml
+[dependencies]
+tempo-alloy = { git = "https://github.com/tempoxyz/tempo", features = ["reth"] }
+```
+
 ## Development Status
 
 `tempo-alloy` is currently in development and is not yet ready for production use.
@@ -28,14 +36,14 @@ use tempo_alloy::TempoNetwork;
 
 async fn build_provider() -> Result<impl Provider<TempoNetwork>, TransportError> {
     ProviderBuilder::new_with_network::<TempoNetwork>()
-        .connect("https://rpc.testnet.tempo.xyz")
+        .connect("https://rpc.moderato.tempo.xyz")
         .await
 }
 ```
 
 This crate also exposes bindings for all Tempo precompiles, such as [TIP20](https://docs.tempo.xyz/protocol/tip20/overview):
 
-```rust
+```rust,no_run
 use alloy::{
     primitives::{U256, address},
     providers::ProviderBuilder,
@@ -68,3 +76,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 See the [examples directory](https://github.com/tempoxyz/tempo/tree/main/crates/alloy/examples) for additional runnable code samples.
+
+## Provider Extensions
+
+`tempo-alloy` also exposes Tempo-specific provider helpers for fixed-address precompiles:
+
+```rust,no_run
+use alloy::{
+    primitives::address,
+    providers::ProviderBuilder,
+};
+use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderExt};
+
+async fn keychain_example() -> Result<(), Box<dyn std::error::Error>> {
+    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+        .connect("https://rpc.moderato.tempo.xyz")
+        .await?;
+
+    let account = address!("0x1111111111111111111111111111111111111111");
+    let key_id = address!("0x2222222222222222222222222222222222222222");
+
+    let key = provider.get_keychain_key(account, key_id).await?;
+    let same_key = provider.account_keychain().getKey(account, key_id).call().await?;
+
+    assert_eq!(key, same_key);
+    Ok(())
+}
+```

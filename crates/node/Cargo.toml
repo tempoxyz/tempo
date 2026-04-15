@@ -11,7 +11,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-tempo-alloy = { workspace = true, features = ["tempo-compat"] }
+tempo-alloy = { workspace = true, features = ["reth"] }
 tempo-evm = { workspace = true, features = ["rpc", "engine"] }
 tempo-transaction-pool.workspace = true
 tempo-chainspec.workspace = true
@@ -23,6 +23,7 @@ tempo-primitives = { workspace = true, features = ["default"] }
 
 thiserror.workspace = true
 
+reth-chainspec.workspace = true
 reth-errors.workspace = true
 reth-ethereum = { workspace = true, features = ["node", "rpc"] }
 reth-primitives-traits = { workspace = true, features = ["secp256k1", "rayon"] }
@@ -39,7 +40,6 @@ reth-rpc-builder.workspace = true
 reth-node-api.workspace = true
 reth-rpc-eth-types.workspace = true
 reth-node-ethereum.workspace = true
-reth-engine-local.workspace = true
 
 alloy-serde.workspace = true
 alloy-eips.workspace = true
@@ -82,6 +82,8 @@ alloy-rlp.workspace = true
 rand.workspace = true
 futures.workspace = true
 test-case.workspace = true
+indexmap.workspace = true
+insta.workspace = true
 p256 = { workspace = true, features = ["ecdsa"] }
 sha2 = { workspace = true }
 base64.workspace = true
@@ -112,6 +114,7 @@ jemalloc = [
 	"reth-ethereum/jemalloc",
 	"reth-node-core/jemalloc",
 	"reth-node-metrics/jemalloc",
+	"reth-provider/jemalloc",
 ]
 jemalloc-prof = [
 	"reth-ethereum/jemalloc-prof",
@@ -130,3 +133,8 @@ min-warn-logs = ["reth-node-core/min-warn-logs"]
 min-info-logs = ["reth-node-core/min-info-logs"]
 min-debug-logs = ["reth-node-core/min-debug-logs"]
 min-trace-logs = ["reth-node-core/min-trace-logs"]
+trie-debug = [
+	"reth-node-builder/trie-debug",
+	"reth-node-core/trie-debug",
+	"tempo-payload-builder/trie-debug",
+]
