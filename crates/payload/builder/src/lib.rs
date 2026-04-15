@@ -16,7 +16,7 @@ use reth_basic_payload_builder::{
 };
 use reth_chainspec::{ChainSpecProvider, EthChainSpec, EthereumHardforks};
 use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
-use reth_engine_tree::tree::instrumented_state::InstrumentedStateProvider;
+use reth_engine_tree::tree::{CachedStateProvider, instrumented_state::InstrumentedStateProvider};
 use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
     ConfigureEvm, Database, Evm, NextBlockEnvAttributes,
@@ -32,7 +32,7 @@ use reth_revm::{
     context::{Block, BlockEnv},
     database::StateProviderDatabase,
 };
-use reth_storage_api::{StateProvider, StateProviderFactory};
+use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, TransactionPool, ValidPoolTransaction,
     error::InvalidPoolTransactionError,
@@ -96,6 +96,8 @@ pub struct TempoPayloadBuilder<Provider> {
     state_provider_metrics: bool,
     /// Whether to disable state cache.
     disable_state_cache: bool,
+    /// Whether to disable cached reads.
+    disable_cached_reads: bool,
 }
 
 impl<Provider> TempoPayloadBuilder<Provider> {
@@ -106,6 +108,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
         is_dev: bool,
         state_provider_metrics: bool,
         disable_state_cache: bool,
+        disable_cached_reads: bool,
     ) -> Self {
         Self {
             pool,
@@ -116,6 +119,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             is_dev,
             state_provider_metrics,
             disable_state_cache,
+            disable_cached_reads,
         }
     }
 }
@@ -234,6 +238,7 @@ where
     {
         let BuildArguments {
             mut cached_reads,
+            execution_cache,
             trie_handle,
             config,
             cancel,
@@ -270,15 +275,25 @@ where
 
         let state_setup_start = Instant::now();
         let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
-        let state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
-        let state_provider: Box<dyn StateProvider> = if self.state_provider_metrics {
+        let mut state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
+        if !self.disable_state_cache
+            && let Some(execution_cache) = execution_cache
+        {
+            state_provider = Box::new(CachedStateProvider::new(
+                state_provider,
+                execution_cache.cache().clone(),
+                execution_cache.metrics().clone(),
+            ));
+        }
+        state_provider = if self.state_provider_metrics {
             Box::new(InstrumentedStateProvider::new(state_provider, "builder"))
         } else {
             state_provider
         };
+
         let state = StateProviderDatabase::new(&state_provider);
         let mut db = State::builder()
-            .with_database(if self.disable_state_cache {
+            .with_database(if self.disable_cached_reads {
                 Box::new(state) as Box<dyn Database<Error = ProviderError>>
             } else {
                 Box::new(cached_reads.as_db_mut(state))
