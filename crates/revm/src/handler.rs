@@ -479,9 +479,7 @@ where
         // This matches revm's Handler::execution() which computes:
         //   regular_initial_gas = initial_total_gas - initial_state_gas
         //   gas_limit = tx.gas_limit - regular_initial_gas
-        let regular_initial_gas = init_and_floor_gas
-            .initial_total_gas
-            .saturating_sub(init_and_floor_gas.initial_state_gas);
+        let regular_initial_gas = init_and_floor_gas.initial_regular_gas();
         let gas_limit = evm
             .ctx()
             .tx()
