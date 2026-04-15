@@ -200,6 +200,7 @@ alloy-signer-local = "2.0.0"
 alloy-signer-trezor = "2.0.0"
 
 coins-bip32 = "0.12"
+zeroize = "1"
 alloy-sol-types = { version = "1.5.7", default-features = false }
 alloy-transport = "2.0.0"
 

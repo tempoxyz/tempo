@@ -42,17 +42,12 @@ use tempo_contracts::precompiles::{
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_precompiles::validator_config_v2::{VALIDATOR_NS_ADD, VALIDATOR_NS_ROTATE};
 use tempo_validator_config::ValidatorConfig;
+use zeroize::Zeroizing;
 
 use crate::{init_state, p2p_proxy::P2pProxyArgs};
 
 fn get_env(key: &str) -> eyre::Result<String> {
-    match std::env::var(key) {
-        Ok(val) => Ok(val),
-        Err(std::env::VarError::NotPresent) => bail!("environment variable {key:?} not found"),
-        Err(std::env::VarError::NotUnicode(s)) => {
-            bail!("environment variable {key:?} was not valid unicode: {s:?}")
-        }
-    }
+    std::env::var(key).wrap_err_with(|| format!("failed reading environment variable `{key}`"))
 }
 
 /// Passthrough args for extension management commands.
@@ -302,7 +297,7 @@ pub(crate) struct ValidatorIdentityArgs {
     #[arg(long, value_name = "ETHEREUM_ADDRESS")]
     validator_address: Address,
     /// The identity key of the validator (0x-prefixed hex).
-    #[arg(long, value_name = "IDENTITY_KEY")]
+    #[arg(long = "consensus.public-key", value_name = "IDENTITY_KEY")]
     public_key: B256,
     /// The inbound address for the validator.
     #[arg(long, value_name = "IP:PORT")]
@@ -334,7 +329,7 @@ pub(crate) struct ValidatorSignatureArgs {
 
     /// Path to the ed25519 signing key file. The signature is computed
     /// automatically so a separate `create-*-signature` step is not needed.
-    #[arg(long, value_name = "FILE")]
+    #[arg(long = "consensus.signing-key", value_name = "FILE")]
     signing_key: Option<PathBuf>,
 }
 
@@ -350,7 +345,7 @@ impl ValidatorSignatureArgs {
                 Ok(sig.encode().into())
             }
             (None, None) => Err(eyre!(
-                "either --signature or --signing-key must be provided"
+                "either --signature or --consensus.signing-key must be provided"
             )),
         }
     }
@@ -361,7 +356,7 @@ impl ValidatorSignatureArgs {
 pub(crate) struct WalletArgs {
     /// Path to the file holding the Ethereum private key.
     #[arg(long, value_name = "FILE", help_heading = "Wallet options - raw")]
-    private_key: Option<PathBuf>,
+    wallet_key: Option<PathBuf>,
 
     /// Use a Ledger hardware wallet.
     #[arg(long, help_heading = "Wallet options - hardware wallet")]
@@ -471,12 +466,13 @@ impl ValidatorTransactionArgs {
                 .wrap_err("failed to create GCP KMS signer")?;
 
             Ok(EthereumWallet::new(signer))
-        } else if let Some(ref path) = self.wallet.private_key {
-            let private_key_bytes =
-                std::fs::read(path).wrap_err("failed reading validator ethereum private key")?;
-            let private_key = B256::try_from(private_key_bytes.as_slice())
-                .wrap_err("invalid validator ethereum private key")?;
-            let signer = PrivateKeySigner::from_bytes(&private_key)?;
+        } else if let Some(path) = &self.wallet.wallet_key {
+            let private_key_bytes = Zeroizing::new(std::fs::read(path).wrap_err_with(|| {
+                format!("failed reading private key from `{}`", path.display())
+            })?);
+
+            let signer = PrivateKeySigner::from_slice(private_key_bytes.as_slice())
+                .wrap_err_with(|| format!("invalid private key in `{}`", path.display()))?;
 
             Ok(EthereumWallet::new(signer))
         } else {
