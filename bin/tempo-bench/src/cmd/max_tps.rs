@@ -10,13 +10,16 @@ use reth_tracing::{
     tracing::{debug, error, info},
 };
 use tempo_alloy::{
-    TempoNetwork, TempoWallet, fillers::ExpiringNonceFiller, provider::ext::TempoProviderBuilderExt,
+    TempoNetwork, fillers::ExpiringNonceFiller, provider::ext::TempoProviderBuilderExt,
 };
 
 use alloy::{
     consensus::BlockHeader,
     eips::Encodable2718,
-    network::{NetworkTransactionBuilder, ReceiptResponse, TransactionBuilder, TxSignerSync},
+    network::{
+        EthereumWallet, NetworkTransactionBuilder, ReceiptResponse, TransactionBuilder,
+        TxSignerSync,
+    },
     primitives::{Address, B256, BlockNumber, U256},
     providers::{
         DynProvider, PendingTransactionBuilder, PendingTransactionError, Provider, ProviderBuilder,
@@ -237,7 +240,7 @@ impl MaxTpsArgs {
                 .fetch_chain_id()
                 .with_gas_estimation()
                 .with_nonce_management(cached_nonce_manager)
-                .wallet(TempoWallet::from(signer))
+                .wallet(EthereumWallet::new(signer))
                 .connect_http(target_url)
                 .erased()
         });

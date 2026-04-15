@@ -26,7 +26,6 @@ alloy-primitives = { workspace = true, features = ["rand"] }
 alloy-provider.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy-serde.workspace = true
-alloy-signer.workspace = true
 alloy-sol-types.workspace = true
 alloy-transport.workspace = true
 

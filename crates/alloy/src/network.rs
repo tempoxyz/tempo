@@ -4,8 +4,8 @@ use crate::rpc::{TempoHeaderResponse, TempoTransactionReceipt, TempoTransactionR
 use alloy_consensus::{ReceiptWithBloom, TxType, error::UnsupportedTransactionType};
 
 use alloy_network::{
-    BuildResult, Ethereum, EthereumWallet, Network, NetworkTransactionBuilder, NetworkWallet,
-    TransactionBuilder, TransactionBuilderError, UnbuiltTransactionError,
+    BuildResult, Ethereum, Network, NetworkTransactionBuilder, NetworkWallet, TransactionBuilder,
+    TransactionBuilderError, UnbuiltTransactionError,
 };
 use alloy_primitives::{Address, Bytes, ChainId, TxKind, U256};
 use alloy_provider::fillers::{
@@ -294,53 +294,6 @@ impl RecommendedFillers for TempoNetwork {
 
     fn recommended_fillers() -> Self::RecommendedFillers {
         Default::default()
-    }
-}
-
-/// Wallet for signing Tempo transactions.
-///
-/// Wraps an [`EthereumWallet`] and implements
-/// [`NetworkWallet<TempoNetwork>`](NetworkWallet) by delegating to the inner
-/// wallet's signers while converting between Tempo and Ethereum transaction
-/// types.
-#[derive(Debug, Clone)]
-pub struct TempoWallet(EthereumWallet);
-
-impl<S> From<S> for TempoWallet
-where
-    EthereumWallet: From<S>,
-{
-    fn from(signer: S) -> Self {
-        Self(EthereumWallet::from(signer))
-    }
-}
-
-impl NetworkWallet<TempoNetwork> for TempoWallet {
-    fn default_signer_address(&self) -> Address {
-        NetworkWallet::<alloy_network::Ethereum>::default_signer_address(&self.0)
-    }
-
-    fn has_signer_for(&self, address: &Address) -> bool {
-        NetworkWallet::<alloy_network::Ethereum>::has_signer_for(&self.0, address)
-    }
-
-    fn signer_addresses(&self) -> impl Iterator<Item = Address> {
-        NetworkWallet::<alloy_network::Ethereum>::signer_addresses(&self.0)
-    }
-
-    async fn sign_transaction_from(
-        &self,
-        sender: Address,
-        tx: TempoTypedTransaction,
-    ) -> alloy_signer::Result<TempoTxEnvelope> {
-        let mut signable = tx;
-        let signer = self.0.signer_by_address(sender).ok_or_else(|| {
-            alloy_signer::Error::other(format!("Missing signing credential for {sender}"))
-        })?;
-        let sig = signer
-            .sign_transaction(signable.as_dyn_signable_mut())
-            .await?;
-        Ok(signable.into_envelope(sig))
     }
 }
 

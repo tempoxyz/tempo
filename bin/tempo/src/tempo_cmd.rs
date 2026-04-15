@@ -7,6 +7,7 @@ use std::{
     sync::Arc,
 };
 
+use alloy::network::EthereumWallet;
 use alloy_primitives::{Address, B256, Bytes};
 use alloy_provider::{Provider, ProviderBuilder};
 use alloy_rpc_types_eth::TransactionRequest;
@@ -26,7 +27,7 @@ use reth_chainspec::EthChainSpec;
 use reth_cli_runner::CliRunner;
 use reth_ethereum_cli::ExtendedCommand;
 use serde::Serialize;
-use tempo_alloy::{TempoNetwork, TempoWallet};
+use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_commonware_node_config::SigningKey;
 use tempo_contracts::precompiles::{
@@ -402,7 +403,7 @@ impl ValidatorTransactionArgs {
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .fetch_chain_id()
             .with_gas_estimation()
-            .wallet(TempoWallet::from(signer))
+            .wallet(EthereumWallet::new(signer))
             .connect(&self.rpc_url)
             .await
             .wrap_err("failed to connect to RPC")?;
