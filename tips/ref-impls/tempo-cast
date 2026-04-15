@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Run cast commands using tempo-foundry's custom cast binary.
+# Convenience wrapper for running cast in Tempo mode.
 #
 # Usage:
 #   ./tempo-cast [cast-args...]
@@ -12,61 +12,48 @@
 #
 # Prerequisites:
 #   - Rust toolchain installed
-#   - tempo-foundry repo cloned as a sibling to tempo repo:
-#       Tempo/
-#         tempo/          <- this repo
-#         tempo-foundry/  <- tempo-foundry repo
+#   - Either an installed `cast` binary (for example via `foundryup -b master`)
+#     or a local foundry-rs/foundry checkout.
 #
 # The script will:
-#   1. Locate or build the tempo-foundry cast binary
-#   2. Run cast with the Rust precompiles enabled
+#   1. Use `cast` from PATH, or fall back to a local Foundry checkout
+#   2. Run cast with `FOUNDRY_PROFILE=tempo` unless already set
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-# Try to find tempo-foundry in common locations
-TEMPO_FOUNDRY_PATHS=(
-    "$TEMPO_ROOT/../tempo-foundry"           # Sibling directory
-    "$TEMPO_ROOT/../../tempo-foundry"        # Parent's sibling
-    "${TEMPO_FOUNDRY_PATH:-}"                # Environment variable override
-)
+CAST_BIN="$(command -v cast || true)"
 
-TEMPO_FOUNDRY_DIR=""
-for path in "${TEMPO_FOUNDRY_PATHS[@]}"; do
-    if [[ -n "$path" && -d "$path" && -f "$path/Cargo.toml" ]]; then
-        TEMPO_FOUNDRY_DIR="$path"
-        break
+if [[ -z "$CAST_BIN" ]]; then
+    # Fall back to a local Foundry checkout when cast is not installed.
+    FOUNDRY_PATHS=(
+        "${FOUNDRY_PATH:-}"
+        "$TEMPO_ROOT/../foundry"
+        "$TEMPO_ROOT/../../foundry"
+    )
+
+    FOUNDRY_DIR=""
+    for path in "${FOUNDRY_PATHS[@]}"; do
+        if [[ -n "$path" && -d "$path" && -f "$path/Cargo.toml" ]]; then
+            FOUNDRY_DIR="$path"
+            break
+        fi
+    done
+
+    if [[ -z "$FOUNDRY_DIR" ]]; then
+        echo "Error: Could not find an installed cast binary or a local Foundry checkout."
+        echo "Install upstream Foundry with: foundryup -b master"
+        exit 1
     fi
-done
 
-if [[ -z "$TEMPO_FOUNDRY_DIR" ]]; then
-    echo "Error: Could not find tempo-foundry repository."
-    echo ""
-    echo "Please either:"
-    echo "  1. Clone tempo-foundry as a sibling to the tempo repo:"
-    echo "     git clone git@github.com:tempoxyz/tempo-foundry.git ../tempo-foundry"
-    echo ""
-    echo "  2. Set TEMPO_FOUNDRY_PATH environment variable:"
-    echo "     export TEMPO_FOUNDRY_PATH=/path/to/tempo-foundry"
-    exit 1
+    CAST_BIN="$FOUNDRY_DIR/target/debug/cast"
+    # Check if cast binary exists, build if not
+    if [[ ! -x "$CAST_BIN" ]]; then
+        echo "Building cast binary..."
+        (cd "$FOUNDRY_DIR" && cargo build -p cast --profile dev)
+    fi
 fi
 
-CAST_BIN="$TEMPO_FOUNDRY_DIR/target/debug/cast"
-
-# Check if cast binary exists, build if not
-if [[ ! -x "$CAST_BIN" ]]; then
-    echo "Building tempo-foundry cast binary..."
-    echo "(This may take a few minutes on first run)"
-    echo ""
-    (cd "$TEMPO_FOUNDRY_DIR" && cargo build -p cast --profile dev)
-fi
-
-if [[ ! -x "$CAST_BIN" ]]; then
-    echo "Error: Failed to build cast binary at $CAST_BIN"
-    exit 1
-fi
-
-# Run cast
-exec "$CAST_BIN" "$@"
+FOUNDRY_PROFILE="${FOUNDRY_PROFILE:-tempo}" exec "$CAST_BIN" "$@"
