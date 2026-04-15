@@ -188,12 +188,12 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
                     valid_after: valid_after.map(NonZeroU64::get),
                     subblock_transaction: false,
                     override_key_id: key_id,
+                    expiring_nonce_idx: None,
                 }))
             } else {
                 None
             },
             inner: inner.try_into_tx_env(evm_env)?,
-            expiring_nonce_idx: None,
         })
     }
 }

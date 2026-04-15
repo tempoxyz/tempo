@@ -932,17 +932,13 @@ where
             StorageCtx::enter_evm(journal, block, cfg, tx, || {
                 let mut nonce_manager = NonceManager::new();
 
-                let prev_ptr = if let Some(expiring_nonce_idx) = tx.expiring_nonce_idx {
+                let prev_ptr = if let Some(expiring_nonce_idx) = tempo_tx_env.expiring_nonce_idx {
                     let ptr = nonce_manager
                         .expiring_nonce_ring_ptr
                         .read()
                         .map_err(|err| EVMError::Custom(err.to_string()))?;
 
-                    let next = if ptr + 1 >= EXPIRING_NONCE_SET_CAPACITY {
-                        0
-                    } else {
-                        ptr + expiring_nonce_idx as u32
-                    };
+                    let next = (ptr + expiring_nonce_idx as u32) % EXPIRING_NONCE_SET_CAPACITY;
 
                     nonce_manager
                         .expiring_nonce_ring_ptr
