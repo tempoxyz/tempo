@@ -190,6 +190,45 @@ fn normalize_failed_batch_result_gas(
     *frame_result.gas_mut() = corrected_gas;
 }
 
+/// Reconstructs the [`Gas`] object for a failed AA batch after `checkpoint_revert`.
+///
+/// Since `checkpoint_revert` rolls back ALL state changes from prior successful subcalls,
+/// no state was actually grown and state gas must be excluded from the result.
+///
+/// Batch subcalls run with `reservoir=0` (`InitialAndFloorGas::new(0,0)`), so all state gas
+/// was paid from `gas_left`. `remaining_gas` was decremented by each prior call's full
+/// `total_gas_spent` (regular + state), so `(gas_limit - remaining_gas)` includes
+/// `accumulated_state_gas_spent`. We subtract it to avoid reclassifying reverted state gas
+/// as regular gas in `block_regular_gas_used`.
+///
+/// For the failed call: `last_frame_result` zeros `state_gas_spent` on revert/halt and moves
+/// it to the reservoir. Since the subcall started with `reservoir=0`,
+/// `failed_call_reservoir` equals the failed call's refunded state gas.
+fn reconstruct_failed_batch_gas(
+    gas_limit: u64,
+    remaining_gas: u64,
+    accumulated_state_gas_spent: u64,
+    gas_spent_by_failed_call: u64,
+    failed_call_reservoir: u64,
+    initial_state_gas: u64,
+    is_revert: bool,
+) -> Gas {
+    let mut total_gas_spent = (gas_limit - remaining_gas) + gas_spent_by_failed_call;
+    total_gas_spent = total_gas_spent.saturating_add(initial_state_gas);
+    // Subtract all state gas (prior calls + failed call) from total.
+    total_gas_spent = total_gas_spent
+        .saturating_sub(accumulated_state_gas_spent)
+        .saturating_sub(failed_call_reservoir);
+
+    let mut corrected_gas = Gas::new_spent(gas_limit);
+    if is_revert {
+        corrected_gas.erase_cost(gas_limit - total_gas_spent);
+    }
+    corrected_gas.set_refund(0);
+    corrected_gas.set_state_gas_spent(0);
+    corrected_gas
+}
+
 fn translate_allowed_calls_for_precompile(
     key_auth: &tempo_primitives::transaction::SignedKeyAuthorization,
 ) -> Vec<PrecompileCallScope> {
@@ -611,29 +650,22 @@ where
                     }
                 }
 
-                // Include gas from all previous successful calls + failed call.
-                let gas_spent_by_failed_call = frame_result.gas().total_gas_spent();
-                let mut total_gas_spent = (gas_limit - remaining_gas) + gas_spent_by_failed_call;
                 // Pre-T4: initial_state_gas was not reserved upfront, add it back.
-                if !spec.is_t4() {
-                    total_gas_spent =
-                        total_gas_spent.saturating_add(init_and_floor_gas.initial_state_gas);
-                }
-                // State gas only applies to successful calls that create state.
-                // On revert/halt no new state is created, so the failed call's
-                // state gas is not charged.
-                let total_state_gas = accumulated_state_gas_spent;
+                let initial_state_gas = if spec.is_t4() {
+                    0
+                } else {
+                    init_and_floor_gas.initial_state_gas
+                };
 
-                // Use flattened gas reconstruction (Gas::new_spent + erase_cost) for robustness
-                // under the EIP-8037 reservoir model. This avoids ambiguity from Gas::new's
-                // reservoir initialization.
-                let mut corrected_gas = Gas::new_spent(gas_limit);
-                if frame_result.instruction_result().is_revert() {
-                    corrected_gas.erase_cost(gas_limit - total_gas_spent);
-                }
-                corrected_gas.set_refund(0); // No refunds when batch fails and all state is reverted
-                corrected_gas.set_state_gas_spent(total_state_gas);
-                *frame_result.gas_mut() = corrected_gas;
+                *frame_result.gas_mut() = reconstruct_failed_batch_gas(
+                    gas_limit,
+                    remaining_gas,
+                    accumulated_state_gas_spent,
+                    frame_result.gas().total_gas_spent(),
+                    frame_result.gas().reservoir(),
+                    initial_state_gas,
+                    frame_result.instruction_result().is_revert(),
+                );
 
                 return Ok(frame_result);
             }
@@ -5094,29 +5126,66 @@ mod tests {
         );
     }
 
-    /// TIP-1016: Multi-call corrected gas (failure path) must preserve
-    /// state_gas_spent from all calls up to and including the failed one.
+    /// TIP-1016: On AA batch failure, checkpoint_revert rolls back ALL state
+    /// changes from prior successful subcalls. Since no state was actually
+    /// grown, state_gas_spent must be zero and the reverted state gas must NOT
+    /// be reclassified as regular gas.
+    ///
+    /// Exercises [`reconstruct_failed_batch_gas`] which encapsulates the gas
+    /// reconstruction logic from the failure path of `execute_multi_call_with`.
     #[test]
-    fn test_state_gas_multi_call_corrected_gas_failure_preserves_state_gas() {
+    fn test_state_gas_multi_call_failure_zeros_state_gas() {
+        // Model a two-call AA batch:
+        //   Call 1 (success): 20k regular + 230k state = 250k total gas
+        //   Call 2 (revert):  50k regular gas
+        //
+        // Multi-call subcalls run with reservoir=0 (InitialAndFloorGas::new(0,0)),
+        // so all state gas is paid from gas_left. This means remaining_gas is
+        // decremented by the full total_gas_spent (regular + state) of each call.
         let gas_limit: u64 = 1_000_000;
-        let total_gas_spent: u64 = 600_000;
-        let accumulated_state_gas: u64 = 200_000;
+        let prior_regular_gas: u64 = 20_000;
+        let prior_state_gas: u64 = 230_000;
+        let prior_total_gas = prior_regular_gas + prior_state_gas;
+        let failed_call_gas: u64 = 50_000; // regular only (last_frame_result zeros state on revert)
+        let failed_call_reservoir: u64 = 10_000; // state gas refunded to reservoir on revert
 
-        // Simulate flattened gas reconstruction on failure (revert case)
-        let mut corrected_gas = Gas::new_spent(gas_limit);
-        corrected_gas.erase_cost(gas_limit - total_gas_spent);
-        corrected_gas.set_refund(0); // No refunds on batch failure
-        corrected_gas.set_state_gas_spent(accumulated_state_gas);
+        // After call 1 succeeds: remaining_gas -= prior_total_gas
+        let remaining_gas = gas_limit - prior_total_gas;
+
+        let corrected_gas = reconstruct_failed_batch_gas(
+            gas_limit,
+            remaining_gas,
+            prior_state_gas,
+            failed_call_gas,
+            failed_call_reservoir,
+            0,    // initial_state_gas (T4: already reserved)
+            true, // is_revert
+        );
+
+        let expected_regular = prior_regular_gas + failed_call_gas - failed_call_reservoir;
 
         assert_eq!(
             corrected_gas.total_gas_spent(),
-            total_gas_spent,
-            "Failure path: flattened gas must have correct spent"
+            expected_regular,
+            "Failed batch total_gas_spent must exclude reverted state gas"
         );
         assert_eq!(
             corrected_gas.state_gas_spent(),
-            accumulated_state_gas,
-            "Failure path: corrected gas must preserve state_gas_spent"
+            0,
+            "Failed batch must have zero state_gas_spent (no state persisted)"
+        );
+
+        // Verify block_regular_gas_used via ResultGas
+        let result_gas = revm::context::result::ResultGas::default()
+            .with_total_gas_spent(corrected_gas.total_gas_spent())
+            .with_refunded(0)
+            .with_floor_gas(0)
+            .with_state_gas_spent(corrected_gas.state_gas_spent());
+
+        assert_eq!(
+            result_gas.block_regular_gas_used(),
+            expected_regular,
+            "block_regular_gas_used must equal regular gas only, not inflated by reverted state gas"
         );
     }
 
