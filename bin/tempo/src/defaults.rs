@@ -3,7 +3,8 @@ use eyre::Context as _;
 use jiff::SignedDuration;
 use reth_cli_commands::download::DownloadDefaults;
 use reth_ethereum::node::core::args::{
-    DefaultEngineValues, DefaultPayloadBuilderValues, DefaultStorageValues, DefaultTxPoolValues,
+    DefaultEngineValues, DefaultNetworkArgs, DefaultPayloadBuilderValues, DefaultStorageValues,
+    DefaultTxPoolValues,
 };
 use std::{borrow::Cow, str::FromStr, time::Duration};
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -220,10 +221,18 @@ fn init_engine_defaults() {
         .expect("failed to initialize engine defaults");
 }
 
+fn init_network_defaults() {
+    DefaultNetworkArgs::default()
+        .with_enforce_enr_fork_id(true)
+        .try_init()
+        .expect("failed to initialize network defaults");
+}
+
 pub(crate) fn init_defaults() {
     init_storage_defaults();
     init_download_urls();
     init_payload_builder_defaults();
     init_txpool_defaults();
     init_engine_defaults();
+    init_network_defaults();
 }
