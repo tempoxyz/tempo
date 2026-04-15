@@ -4,14 +4,15 @@ use crate::rpc::{TempoHeaderResponse, TempoTransactionReceipt, TempoTransactionR
 use alloy_consensus::{ReceiptWithBloom, TxType, error::UnsupportedTransactionType};
 
 use alloy_network::{
-    BuildResult, Ethereum, Network, NetworkTransactionBuilder, NetworkWallet, TransactionBuilder,
-    TransactionBuilderError, UnbuiltTransactionError,
+    BuildResult, Ethereum, EthereumWallet, IntoWallet, Network, NetworkTransactionBuilder,
+    NetworkWallet, TransactionBuilder, TransactionBuilderError, UnbuiltTransactionError,
 };
 use alloy_primitives::{Address, Bytes, ChainId, TxKind, U256};
 use alloy_provider::fillers::{
     ChainIdFiller, GasFiller, JoinFill, NonceFiller, RecommendedFillers,
 };
 use alloy_rpc_types_eth::{AccessList, Block, Transaction};
+use alloy_signer_local::PrivateKeySigner;
 use tempo_primitives::{
     TempoHeader, TempoReceipt, TempoTxEnvelope, TempoTxType, transaction::TempoTypedTransaction,
 };
@@ -294,6 +295,14 @@ impl RecommendedFillers for TempoNetwork {
 
     fn recommended_fillers() -> Self::RecommendedFillers {
         Default::default()
+    }
+}
+
+impl IntoWallet<TempoNetwork> for PrivateKeySigner {
+    type NetworkWallet = EthereumWallet;
+
+    fn into_wallet(self) -> Self::NetworkWallet {
+        self.into()
     }
 }
 

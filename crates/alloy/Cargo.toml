@@ -26,6 +26,7 @@ alloy-primitives = { workspace = true, features = ["rand"] }
 alloy-provider.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy-serde.workspace = true
+alloy-signer-local.workspace = true
 alloy-sol-types.workspace = true
 alloy-transport.workspace = true
 
@@ -44,7 +45,6 @@ tracing.workspace = true
 [dev-dependencies]
 alloy = { workspace = true, features = ["providers", "rpc-types-eth", "sol-types"] }
 alloy-signer.workspace = true
-alloy-signer-local.workspace = true
 eyre.workspace = true
 serde_json.workspace = true
 test-case.workspace = true

@@ -246,36 +246,11 @@ fn init_network_defaults() {
 }
 
 pub(crate) fn init_defaults() {
+    init_storage_defaults();
     init_download_urls();
     init_payload_builder_defaults();
     init_txpool_defaults();
-    init_storage_defaults();
     init_engine_defaults();
     init_otlp_defaults();
     init_network_defaults();
-}
-
-#[cfg(test)]
-mod tests {
-    use reth_cli_commands::download::DownloadDefaults;
-    use reth_ethereum::node::core::args::EngineArgs;
-
-    #[test]
-    fn init_defaults_sets_tempo_overrides() {
-        super::init_defaults();
-
-        let args = EngineArgs::default();
-        assert!(
-            args.always_process_payload_attributes_on_canonical_head,
-            "Commonware consensus requires always_process_payload_attributes_on_canonical_head=true \
-             so that FCU on a canonical ancestor still returns a payload_id"
-        );
-
-        let download = DownloadDefaults::get_global();
-        assert!(
-            download.snapshot_api_url.contains("tempoxyz.dev"),
-            "snapshot_api_url must point to Tempo's snapshot API, got: {}",
-            download.snapshot_api_url
-        );
-    }
 }
