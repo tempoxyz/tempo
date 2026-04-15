@@ -194,7 +194,7 @@ impl StablecoinDEX {
     /// Decrement user's internal balance or transfer from external wallet.
     ///
     /// When `check_pause` is true and the full amount is covered by internal balance,
-    /// verifies the token is not paused (T3+). Callers that already check pause state
+    /// verifies the token is not paused (T4+). Callers that already check pause state
     /// (e.g. swaps via `validate_and_build_route`) should pass `false` to avoid a
     /// redundant SLOAD.
     fn decrement_balance_or_transfer_from(
@@ -211,7 +211,7 @@ impl StablecoinDEX {
         let user_balance = self.balance_of(user, token)?;
         if user_balance >= amount {
             // When fully covered by internal balance, TIP-20 transferFrom won't run,
-            // so we must check the pause state ourselves (spec: T3+).
+            // so we must check the pause state ourselves (spec: T4+).
             if check_pause && self.storage.spec().is_t4() {
                 tip20.check_not_paused()?;
             }
@@ -5567,7 +5567,7 @@ mod tests {
 
         let partial_internal_balance = MIN_ORDER_AMOUNT - 1;
 
-        // Full internal balance uses the internal-only path pre-T3, but T3 still rejects
+        // Full internal balance uses the internal-only path pre-T4, but T4 still rejects
         // paused-token orders.
         assert_paused_token_order_path(
             MIN_ORDER_AMOUNT,
