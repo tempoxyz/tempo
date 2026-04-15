@@ -17,7 +17,7 @@ This allows the same test suite to verify both implementations are in sync.
 The checked-in `foundry.toml` keeps these two modes separate with profiles:
 
 - `default` / `ci`: Solidity reference implementations (`isTempo = false`)
-- `tempo` / `tempo-ci`: Native Rust precompiles (`isTempo = true`)
+- `tempo` / `tempo_ci`: Native Rust precompiles (`isTempo = true`)
 
 ## Running Tests
 
@@ -101,6 +101,6 @@ forge test
 The CI runs both test modes:
 
 1. `forge test` - Validates Solidity implementations
-2. `FOUNDRY_PROFILE=tempo-ci forge test` - Validates Rust precompiles match Solidity specs
+2. `FOUNDRY_PROFILE=tempo_ci forge test` - Validates Rust precompiles match Solidity specs
 
 This ensures the Rust and Solidity implementations stay in sync.
