@@ -1286,7 +1286,7 @@ mod tests {
         tip20::slots as tip20_slots,
         tip403_registry::{CompoundPolicyData, PolicyData, TIP403Registry},
     };
-    use tempo_primitives::{Block, TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
+    use tempo_primitives::{Block, TempoHeader, TempoPrimitives, TempoTxEnvelope};
 
     fn provider_with_spending_limit(
         account: Address,
@@ -1412,7 +1412,6 @@ mod tests {
 
         let inner =
             EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
-                .with_custom_tx_type(TempoTxType::AA as u8)
                 .disable_balance_check()
                 .build(InMemoryBlobStore::default());
         let amm_cache =
