@@ -120,7 +120,7 @@ impl ExecutionPayload for TempoExecutionData {
     }
 
     fn slot_number(&self) -> Option<u64> {
-        None
+        self.block.slot_number()
     }
 
     fn block_access_list(&self) -> Option<&alloy_primitives::Bytes> {
