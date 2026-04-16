@@ -205,11 +205,17 @@ jobs:
             } >> Cargo.toml
 
             # Also patch crates-io so transitive deps (e.g. mpp-rs) resolve
-            # tempo crates from the local checkout instead of the registry
+            # tempo crates from the local checkout instead of the registry.
+            # Upstream foundry already has some tempo crates pinned to git revs
+            # in [patch.crates-io] — replace those with local paths too.
             while IFS=$'\t' read -r crate path; do
               [[ -n "$crate" ]] || continue
-              if ! grep -q "^${crate} = " <(sed -n '/^\[patch\.crates-io\]/,/^\[/p' Cargo.toml); then
-                sed -i "/^\[patch\.crates-io\]/a ${crate} = { path = \"../tempo/${path}\" }" Cargo.toml
+              local_path="../tempo/${path}"
+              # Replace existing entry in [patch.crates-io] or insert a new one
+              if sed -n '/^\[patch\.crates-io\]/,/^\[/{/^'"${crate}"' = /p}' Cargo.toml | grep -q .; then
+                sed -i '/^\[patch\.crates-io\]/,/^\[/{s|^'"${crate}"' = .*|'"${crate}"' = { path = "'"${local_path}"'" }|}' Cargo.toml
+              else
+                sed -i "/^\[patch\.crates-io\]/a ${crate} = { path = \"${local_path}\" }" Cargo.toml
               fi
             done <<< "$PATCHES"
           fi
