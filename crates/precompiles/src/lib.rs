@@ -331,12 +331,20 @@ pub(crate) fn charge_input_cost(
 #[inline]
 fn fill_state_gas(output: &mut PrecompileOutput, storage: &StorageCtx) {
     if storage.spec().is_t4() {
-        output.state_gas_used = storage.state_gas_used();
-        // T4+: propagate SSTORE refunds via reservoir so the TempoPrecompileProvider
-        // wrapper can apply them with record_refund. Pre-T4 blocks were executed
-        // without refund propagation, so we cannot change their gas accounting.
-        if output.is_success() && storage.gas_refunded() != 0 {
+        if output.is_success() {
+            // On success: parent takes the child's final reservoir.
+            output.reservoir = storage.reservoir();
+            output.state_gas_used = storage.state_gas_used();
+
+            // T4+: propagate SSTORE refunds via reservoir so the TempoPrecompileProvider
+            // wrapper can apply them with record_refund. Pre-T4 blocks were executed
+            // without refund propagation, so we cannot change their gas accounting.
             output.gas_refunded = storage.gas_refunded();
+        } else {
+            // On revert or halt: state changes are undone, so ALL state gas returns
+            // to the parent's reservoir.
+            output.reservoir = storage.state_gas_used() + storage.reservoir();
+            output.state_gas_used = 0;
         }
     }
 }
@@ -428,9 +436,7 @@ pub(crate) fn dispatch_call<T>(
 
     match result {
         Ok(call) => f(call).map(|mut res| {
-            // TODO: fix this, each precompile handler should either return output with proper gas values or don't return any gas values at all.
             res.gas_used = storage.gas_used();
-            res.reservoir = storage.reservoir();
             fill_state_gas(&mut res, &storage);
             res
         }),
