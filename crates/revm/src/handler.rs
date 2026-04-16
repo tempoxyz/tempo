@@ -137,8 +137,8 @@ fn tempo_signature_verification_gas(signature: &TempoSignature) -> u64 {
 
 /// Counts the storage rows written by T3 call-scope configuration.
 ///
-/// This lets intrinsic gas account for the scoped-call writes that `authorize_key`
-/// persists into keychain storage.
+/// This only covers the rows that already pay the dynamic SSTORE set cost. The helper
+/// bookkeeping around scope persistence is charged separately via a rounded surcharge.
 fn call_scope_storage_slots(auth: &tempo_primitives::transaction::KeyAuthorization) -> u64 {
     match auth.allowed_calls.as_ref() {
         None => 0,
@@ -167,6 +167,50 @@ fn call_scope_storage_slots(auth: &tempo_primitives::transaction::KeyAuthorizati
             1 + scopes.len() as u64 * 3 + selectors * 3 + constrained_selectors + recipients * 2
         }
     }
+}
+
+/// Charges the unpriced scope-helper bookkeeping for T3 key authorizations.
+///
+/// The dynamic SSTORE rows are already counted by `call_scope_storage_slots()`. What remains is the
+/// helper work around them: clearing the empty scope tree for fresh keys, target/set maintenance,
+/// selector/set maintenance, and recipient-set writes. We use rounded constants here because the
+/// goal is to stop the undercharge without mirroring every storage helper exactly.
+///
+/// The chosen values intentionally round upward:
+/// - base 5k covers the always-run empty-tree clear and restricted/unrestricted mode bookkeeping,
+/// - 7k per target and 7k per selector cover the set-maintenance work around each scope layer,
+/// - 5k per recipient covers the extra recipient-set persistence.
+///
+/// The objective is to stay roughly aligned with authorization pricing while avoiding materially low
+/// charges on larger scope trees, even if that means slight overcharging in simpler cases.
+///
+/// TODO: Refactor intrinsic gas accounting so this and the other intrinsic surcharges come from one
+/// shared model instead of per-feature heuristics.
+fn call_scope_extra_gas(auth: &tempo_primitives::transaction::KeyAuthorization) -> u64 {
+    const BASE_SCOPE_GAS: u64 = 5_000;
+    const TARGET_SCOPE_GAS: u64 = 7_000;
+    const SELECTOR_SCOPE_GAS: u64 = 7_000;
+    const RECIPIENT_SCOPE_GAS: u64 = 5_000;
+
+    let Some(scopes) = auth.allowed_calls.as_ref() else {
+        return BASE_SCOPE_GAS;
+    };
+
+    let num_targets = scopes.len() as u64;
+    let num_selectors = scopes
+        .iter()
+        .map(|scope| scope.selector_rules.len() as u64)
+        .sum::<u64>();
+    let num_recipients = scopes
+        .iter()
+        .flat_map(|scope| &scope.selector_rules)
+        .map(|rule| rule.recipients.len() as u64)
+        .sum::<u64>();
+
+    BASE_SCOPE_GAS
+        + TARGET_SCOPE_GAS.saturating_mul(num_targets)
+        + SELECTOR_SCOPE_GAS.saturating_mul(num_selectors)
+        + RECIPIENT_SCOPE_GAS.saturating_mul(num_recipients)
 }
 
 /// Rewrites a failed batch step's gas accounting to match whole-transaction semantics.
@@ -267,9 +311,11 @@ fn calculate_key_authorization_gas(
 
         // T3+: include scoped-call storage rows in intrinsic gas.
         if spec.is_t3() {
-            total = total.saturating_add(
-                sstore_cost.saturating_mul(call_scope_storage_slots(&key_auth.authorization)),
-            );
+            total = total
+                .saturating_add(
+                    sstore_cost.saturating_mul(call_scope_storage_slots(&key_auth.authorization)),
+                )
+                .saturating_add(call_scope_extra_gas(&key_auth.authorization));
         }
 
         total
@@ -2800,7 +2846,8 @@ mod tests {
                 &t1b_gas_params,
                 TempoHardfork::T3,
             );
-            let expected = ECRECOVER_GAS + sload + sstore * (1 + 2 * num_limits as u64) + BUFFER;
+            let expected =
+                ECRECOVER_GAS + sload + sstore * (1 + 2 * num_limits as u64) + BUFFER + 5_000;
             assert_eq!(gas, expected, "T3 with {num_limits} limits");
         }
 
@@ -2824,7 +2871,9 @@ mod tests {
         // 1 key write + 12 scope slots:
         // account mode(1) + target insertion rows(3) + selector insertion rows(3)
         // + constrained selector recipient-length(1) + recipients values+positions(2*2).
-        let expected = ECRECOVER_GAS + sload + sstore * (1 + 12) + BUFFER;
+        // The rounded surcharge adds 5k base + 7k per target + 7k per selector + 5k per
+        // recipient, which keeps larger scope trees from being materially underpriced.
+        let expected = ECRECOVER_GAS + sload + sstore * (1 + 12) + BUFFER + 29_000;
         assert_eq!(gas, expected, "T3 scope writes should be fully charged");
     }
 

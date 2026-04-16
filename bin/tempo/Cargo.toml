@@ -38,13 +38,18 @@ alloy = { workspace = true, default-features = false, features = [
 	"reqwest-rustls-tls",
 ] }
 alloy-consensus.workspace = true
+alloy-network.workspace = true
 alloy-primitives.workspace = true
 alloy-provider = { workspace = true, features = [
 	"reqwest",
 	"reqwest-rustls-tls",
 ] }
 alloy-rpc-types-eth.workspace = true
+alloy-signer-aws.workspace = true
+alloy-signer-gcp.workspace = true
+alloy-signer-ledger.workspace = true
 alloy-signer-local.workspace = true
+alloy-signer-trezor.workspace = true
 alloy-sol-types.workspace = true
 commonware-codec.workspace = true
 commonware-consensus.workspace = true
@@ -87,6 +92,7 @@ eyre.workspace = true
 reqwest.workspace = true
 jiff.workspace = true
 tokio.workspace = true
+zeroize.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 opentelemetry-otlp = { version = "0.31", default-features = false, optional = true }
