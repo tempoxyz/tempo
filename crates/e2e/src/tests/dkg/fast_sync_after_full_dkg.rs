@@ -56,7 +56,7 @@ fn validator_can_fast_sync_after_full_dkg() {
             .unwrap();
 
         execution_runtime
-            .set_next_full_dkg_ceremony(http_url, full_dkg_epoch)
+            .set_next_full_dkg_ceremony_v2(http_url, full_dkg_epoch)
             .await
             .unwrap();
 
@@ -64,21 +64,19 @@ fn validator_can_fast_sync_after_full_dkg() {
             wait_for_outcome(&context, &validators, full_dkg_epoch - 1, epoch_length).await;
         assert!(
             outcome_before.is_next_full_dkg,
-            "Expected is_next_full_dkg=true"
+            "outcome.is_next_full_dkg should be `true`"
         );
-        let pubkey_before = *outcome_before.sharing().public();
 
         // wait for full DKG completion (-1 because late validator not started yet)
         wait_for_validators_to_reach_epoch(&context, full_dkg_epoch + 1, how_many_signers - 1)
             .await;
 
-        // verify new public key
         let outcome_after =
             wait_for_outcome(&context, &validators, full_dkg_epoch, epoch_length).await;
         assert_ne!(
-            pubkey_before,
-            *outcome_after.sharing().public(),
-            "Full DKG must create different public key"
+            outcome_before.sharing().public(),
+            outcome_after.sharing().public(),
+            "full DKG must create different public key"
         );
 
         // wait for chain to advance
@@ -94,8 +92,8 @@ fn validator_can_fast_sync_after_full_dkg() {
         // start late validator
         late_validator.start(&context).await;
         connect_execution_to_peers(&late_validator, &validators).await;
-        info!(id = late_validator.uid, "started late validator",);
 
+        info!(id = late_validator.uid, "started late validator",);
         assert_eq!(
             late_validator
                 .execution_provider()

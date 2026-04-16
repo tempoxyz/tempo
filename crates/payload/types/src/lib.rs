@@ -115,6 +115,10 @@ impl ExecutionPayload for TempoExecutionData {
         self.block.gas_used()
     }
 
+    fn gas_limit(&self) -> u64 {
+        self.block.gas_limit()
+    }
+
     fn slot_number(&self) -> Option<u64> {
         self.block.slot_number()
     }

@@ -1,23 +1,20 @@
 //! ABI dispatch for the [`ValidatorConfigV2`] precompile (T2+).
 
 use super::*;
-use crate::{Precompile, dispatch_call, input_cost, mutate, mutate_void, view};
+use crate::{Precompile, charge_input_cost, dispatch_call, mutate, mutate_void, view};
 use alloy::{primitives::Address, sol_types::SolInterface};
-use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
+use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::IValidatorConfigV2::IValidatorConfigV2Calls;
 
 impl Precompile for ValidatorConfigV2 {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
-        self.storage
-            .deduct_gas(input_cost(calldata.len()))
-            .map_err(|_| PrecompileError::OutOfGas)?;
+        if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
+            return err;
+        }
 
         // Pre-T2: behave like an empty contract (call succeeds, no execution)
         if !self.storage.spec().is_t2() {
-            return Ok(PrecompileOutput::new(
-                self.storage.gas_used(),
-                Default::default(),
-            ));
+            return Ok(self.storage.success_output(Default::default()));
         }
 
         dispatch_call(
@@ -122,7 +119,7 @@ mod tests {
             let calldata = owner_call.abi_encode();
             let result = vc.call(&calldata, owner)?;
 
-            assert!(!result.reverted, "Pre-T2 call should not revert");
+            assert!(!result.is_revert(), "Pre-T2 call should not revert");
             assert!(
                 result.bytes.is_empty(),
                 "Pre-T2 call should return empty bytes"
@@ -140,12 +137,12 @@ mod tests {
             let calldata = IValidatorConfigV2::ownerCall {}.abi_encode();
             let result = vc.call(&calldata, owner)?;
 
-            assert!(!result.reverted);
+            assert!(!result.is_revert());
             assert!(result.bytes.is_empty());
 
             // Even empty calldata should succeed
             let result = vc.call(&[], owner)?;
-            assert!(!result.reverted);
+            assert!(!result.is_revert());
             assert!(result.bytes.is_empty());
 
             Ok(())
@@ -167,7 +164,7 @@ mod tests {
             let calldata = IValidatorConfigV2::ownerCall {}.abi_encode();
             let result = vc.call(&calldata, owner)?;
 
-            assert!(!result.reverted);
+            assert!(!result.is_revert());
             let decoded = Address::abi_decode(&result.bytes)?;
             assert_eq!(decoded, owner);
 
@@ -226,7 +223,7 @@ mod tests {
             let calldata = add_call.abi_encode();
 
             let result = vc.call(&calldata, owner)?;
-            assert!(!result.reverted);
+            assert!(!result.is_revert());
 
             assert_eq!(vc.validator_count()?, 1);
             let v = vc.validator_by_index(0)?;
@@ -276,11 +273,11 @@ mod tests {
             vc.initialize(owner)?;
 
             let result = vc.call(&[0x12, 0x34, 0x56, 0x78], sender)?;
-            assert!(result.reverted);
+            assert!(result.is_revert());
 
             // Insufficient calldata also returns reverted output
             let result = vc.call(&[0x12, 0x34], sender)?;
-            assert!(result.reverted);
+            assert!(result.is_revert());
 
             Ok(())
         })

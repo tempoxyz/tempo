@@ -1,9 +1,7 @@
 //! ABI dispatch for the [`TIP20Token`] precompile.
 
 use crate::{
-    Precompile, SelectorSchedule, dispatch_call,
-    error::TempoPrecompileError,
-    input_cost, metadata, mutate, mutate_void,
+    Precompile, SelectorSchedule, charge_input_cost, dispatch_call, metadata, mutate, mutate_void,
     storage::ContractStorage,
     tip20::{ITIP20, TIP20Token},
     view,
@@ -12,7 +10,7 @@ use alloy::{
     primitives::Address,
     sol_types::{SolCall, SolInterface},
 };
-use revm::precompile::{PrecompileError, PrecompileResult};
+use revm::precompile::PrecompileResult;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls, TIP20Error};
 
@@ -43,19 +41,18 @@ impl TIP20Call {
 
 impl Precompile for TIP20Token {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
-        self.storage
-            .deduct_gas(input_cost(calldata.len()))
-            .map_err(|_| PrecompileError::OutOfGas)?;
+        if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
+            return err;
+        }
 
         // Ensure that the token is initialized (has bytecode)
         let initialized = match self.is_initialized() {
             Ok(v) => v,
             Err(_) if !self.storage.spec().is_t4() => false,
-            Err(e) => return e.into_precompile_result(self.storage.gas_used()),
+            Err(e) => return self.storage.error_result(e),
         };
         if !initialized {
-            return TempoPrecompileError::TIP20(TIP20Error::uninitialized())
-                .into_precompile_result(self.storage.gas_used());
+            return self.storage.error_result(TIP20Error::uninitialized());
         }
 
         dispatch_call(
@@ -235,6 +232,7 @@ mod tests {
         primitives::{Bytes, U256, address},
         sol_types::{SolCall, SolError, SolInterface, SolValue},
     };
+
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         IRolesAuth, RolesAuthError, TIP20Error, UnknownFunctionSelector,
@@ -250,22 +248,23 @@ mod tests {
             let mut token = TIP20Setup::create("Test", "TST", sender).apply()?;
 
             let result = token.call(&Bytes::from([0x12, 0x34, 0x56, 0x78]), sender)?;
-            assert!(result.reverted);
+            assert!(result.is_revert());
 
             // T1: insufficient calldata also returns reverted output
             let result = token.call(&Bytes::from([0x12, 0x34]), sender)?;
-            assert!(result.reverted);
+            assert!(result.is_revert());
 
             Ok(())
         })?;
 
-        // Pre-T1 (T0): insufficient calldata returns error
+        // Pre-T1 (T0): insufficient calldata returns halt
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", sender).apply()?;
 
             let result = token.call(&Bytes::from([0x12, 0x34]), sender);
-            assert!(matches!(result, Err(PrecompileError::Other(_))));
+            let output = result.expect("expected Ok(halt) for short calldata");
+            assert!(output.is_halt());
 
             Ok(())
         })
@@ -583,7 +582,7 @@ mod tests {
             };
             let calldata = mint_call.abi_encode();
             let output = token.call(&calldata, admin)?;
-            assert!(output.reverted);
+            assert!(output.is_revert());
 
             let expected: Bytes = TIP20Error::supply_cap_exceeded().selector().into();
             assert_eq!(output.bytes, expected);
@@ -630,7 +629,7 @@ mod tests {
             };
             let calldata = mint_call.abi_encode();
             let output = token.call(&Bytes::from(calldata.clone()), unauthorized)?;
-            assert!(output.reverted);
+            assert!(output.is_revert());
             let expected: Bytes = RolesAuthError::unauthorized().selector().into();
             assert_eq!(output.bytes, expected);
 
@@ -720,7 +719,7 @@ mod tests {
             };
             let calldata = change_policy_call.abi_encode();
             let output = token.call(&calldata, non_admin)?;
-            assert!(output.reverted);
+            assert!(output.is_revert());
             let expected: Bytes = RolesAuthError::unauthorized().selector().into();
             assert_eq!(output.bytes, expected);
 
@@ -744,7 +743,7 @@ mod tests {
             .abi_encode();
             let result = token.call(&calldata, caller)?;
 
-            assert!(result.reverted);
+            assert!(result.is_revert());
             let expected: Bytes = TIP20Error::uninitialized().selector().into();
             assert_eq!(result.bytes, expected);
 
@@ -802,7 +801,7 @@ mod tests {
             }
             .abi_encode();
             let result = token.call(&permit_calldata, admin)?;
-            assert!(result.reverted);
+            assert!(result.is_revert());
             assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
 
             // Test nonces selector is gated
@@ -811,13 +810,13 @@ mod tests {
             }
             .abi_encode();
             let result = token.call(&nonces_calldata, admin)?;
-            assert!(result.reverted);
+            assert!(result.is_revert());
             assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
 
             // Test DOMAIN_SEPARATOR selector is gated
             let ds_calldata = ITIP20::DOMAIN_SEPARATORCall {}.abi_encode();
             let result = token.call(&ds_calldata, admin)?;
-            assert!(result.reverted);
+            assert!(result.is_revert());
             assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
 
             Ok(())

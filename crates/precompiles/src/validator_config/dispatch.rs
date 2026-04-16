@@ -2,14 +2,14 @@
 
 use super::ValidatorConfig;
 use crate::{
-    Precompile, SelectorSchedule, dispatch_call, error::TempoPrecompileError, input_cost,
+    Precompile, SelectorSchedule, charge_input_cost, dispatch_call, error::TempoPrecompileError,
     mutate_void, view,
 };
 use alloy::{
     primitives::Address,
     sol_types::{SolCall, SolInterface},
 };
-use revm::precompile::{PrecompileError, PrecompileResult};
+use revm::precompile::PrecompileResult;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::IValidatorConfig::{self, IValidatorConfigCalls};
 
@@ -17,9 +17,9 @@ const T1_ADDED: &[[u8; 4]] = &[IValidatorConfig::changeValidatorStatusByIndexCal
 
 impl Precompile for ValidatorConfig {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
-        self.storage
-            .deduct_gas(input_cost(calldata.len()))
-            .map_err(|_| PrecompileError::OutOfGas)?;
+        if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
+            return err;
+        }
 
         dispatch_call(
             calldata,
@@ -84,6 +84,7 @@ mod tests {
         primitives::{Address, FixedBytes},
         sol_types::{SolCall, SolValue},
     };
+
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         IValidatorConfig, IValidatorConfig::IValidatorConfigCalls, ValidatorConfigError,
@@ -101,11 +102,11 @@ mod tests {
             validator_config.initialize(owner)?;
 
             let result = validator_config.call(&[0x12, 0x34, 0x56, 0x78], sender)?;
-            assert!(result.reverted);
+            assert!(result.is_revert());
 
             // T1: insufficient calldata also returns reverted output
             let result = validator_config.call(&[0x12, 0x34], sender)?;
-            assert!(result.reverted);
+            assert!(result.is_revert());
 
             Ok(())
         })?;
@@ -117,7 +118,8 @@ mod tests {
             validator_config.initialize(owner)?;
 
             let result = validator_config.call(&[0x12, 0x34], sender);
-            assert!(matches!(result, Err(PrecompileError::Other(_))));
+            let output = result.expect("expected Ok(halt) for short calldata");
+            assert!(output.is_halt());
 
             Ok(())
         })
@@ -274,7 +276,7 @@ mod tests {
             let calldata = call.abi_encode();
             let result = validator_config.call(&calldata, owner)?;
 
-            assert!(result.reverted);
+            assert!(result.is_revert());
             let decoded = UnknownFunctionSelector::abi_decode(&result.bytes)?;
             assert_eq!(
                 decoded.selector.0,
@@ -311,7 +313,7 @@ mod tests {
             let result = validator_config.call(&calldata, owner)?;
 
             assert!(
-                !result.reverted,
+                !result.is_revert(),
                 "changeValidatorStatusByIndex should succeed in T1"
             );
 

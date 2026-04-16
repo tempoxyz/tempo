@@ -4,7 +4,8 @@ use alloy_evm::{
     Database, Evm, RecoveredTx,
     block::{
         BlockExecutionError, BlockExecutionResult, BlockExecutor, BlockValidationError,
-        ExecutableTx, OnStateHook, StateChangePreBlockSource, StateChangeSource, TxResult,
+        ExecutableTx, GasOutput, OnStateHook, StateChangePreBlockSource, StateChangeSource,
+        TxResult,
     },
     eth::{
         EthBlockExecutor, EthTxResult,
@@ -443,8 +444,11 @@ where
         &mut self,
         tx: impl ExecutableTx<Self>,
     ) -> Result<Self::Result, BlockExecutionError> {
-        let (tx_env, recovered) = tx.into_parts();
-
+        let (mut tx_env, recovered) = tx.into_parts();
+        // Remove any prewarming-specific context that was added to the tx env.
+        if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
+            tempo_tx_env.expiring_nonce_idx = None;
+        }
         let next_section = self.validate_tx_pre_execution(recovered.tx())?;
 
         let beneficiary = self.evm_mut().ctx_mut().block.beneficiary;
@@ -470,7 +474,7 @@ where
             next_section
         } else {
             // Otherwise, rely on post-execution validation to determine the next section.
-            self.validate_tx(recovered.tx(), inner.result.result.gas_used())?
+            self.validate_tx(recovered.tx(), inner.result.result.tx_gas_used())?
         };
         Ok(TempoTxResult {
             inner,
@@ -481,7 +485,10 @@ where
         })
     }
 
-    fn commit_transaction(&mut self, output: Self::Result) -> Result<u64, BlockExecutionError> {
+    fn commit_transaction(
+        &mut self,
+        output: Self::Result,
+    ) -> Result<GasOutput, BlockExecutionError> {
         let TempoTxResult {
             inner,
             next_section,
@@ -489,7 +496,8 @@ where
             tx,
         } = output;
 
-        let gas_used = self.inner.commit_transaction(inner)?;
+        let gas_output = self.inner.commit_transaction(inner)?;
+        let gas_used = gas_output.tx_gas_used();
 
         self.section = next_section;
 
@@ -527,7 +535,7 @@ where
             }
         }
 
-        Ok(gas_used)
+        Ok(gas_output)
     }
 
     fn finish(
@@ -629,7 +637,7 @@ mod tests {
         )];
         let result: ExecutionResult<TempoHaltReason> = ExecutionResult::Success {
             reason: revm::context::result::SuccessReason::Return,
-            gas: ResultGas::default().with_limit(21000).with_spent(21000),
+            gas: ResultGas::default().with_total_gas_spent(21000),
             logs,
             output: revm::context::result::Output::Call(Bytes::new()),
         };
@@ -1138,7 +1146,7 @@ mod tests {
                 result: ResultAndState {
                     result: revm::context::result::ExecutionResult::Success {
                         reason: revm::context::result::SuccessReason::Return,
-                        gas: ResultGas::default().with_limit(21000).with_spent(21000),
+                        gas: ResultGas::default().with_total_gas_spent(21000),
                         logs: vec![],
                         output: revm::context::result::Output::Call(Bytes::new()),
                     },
@@ -1154,7 +1162,7 @@ mod tests {
 
         let gas_used = executor.commit_transaction(output).unwrap();
 
-        assert_eq!(gas_used, 21000);
+        assert_eq!(gas_used.tx_gas_used(), 21000);
         assert_eq!(executor.section(), BlockSection::NonShared);
     }
 

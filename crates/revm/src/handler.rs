@@ -43,8 +43,13 @@ use tempo_precompiles::{
         SelectorRule as PrecompileSelectorRule, TokenLimit, authorizeKeyCall,
     },
     error::TempoPrecompileError,
-    nonce::{EXPIRING_NONCE_MAX_EXPIRY_SECS, INonce::getNonceCall, NonceManager},
-    storage::{PrecompileStorageProvider, StorageCtx, evm::EvmPrecompileStorageProvider},
+    nonce::{
+        EXPIRING_NONCE_MAX_EXPIRY_SECS, EXPIRING_NONCE_SET_CAPACITY, INonce::getNonceCall,
+        NonceManager,
+    },
+    storage::{
+        Handler as _, PrecompileStorageProvider, StorageCtx, evm::EvmPrecompileStorageProvider,
+    },
     tip_fee_manager::TipFeeManager,
     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token, is_tip20_prefix},
 };
@@ -132,8 +137,8 @@ fn tempo_signature_verification_gas(signature: &TempoSignature) -> u64 {
 
 /// Counts the storage rows written by T3 call-scope configuration.
 ///
-/// This lets intrinsic gas account for the scoped-call writes that `authorize_key`
-/// persists into keychain storage.
+/// This only covers the rows that already pay the dynamic SSTORE set cost. The helper
+/// bookkeeping around scope persistence is charged separately via a rounded surcharge.
 fn call_scope_storage_slots(auth: &tempo_primitives::transaction::KeyAuthorization) -> u64 {
     match auth.allowed_calls.as_ref() {
         None => 0,
@@ -164,6 +169,50 @@ fn call_scope_storage_slots(auth: &tempo_primitives::transaction::KeyAuthorizati
     }
 }
 
+/// Charges the unpriced scope-helper bookkeeping for T3 key authorizations.
+///
+/// The dynamic SSTORE rows are already counted by `call_scope_storage_slots()`. What remains is the
+/// helper work around them: clearing the empty scope tree for fresh keys, target/set maintenance,
+/// selector/set maintenance, and recipient-set writes. We use rounded constants here because the
+/// goal is to stop the undercharge without mirroring every storage helper exactly.
+///
+/// The chosen values intentionally round upward:
+/// - base 5k covers the always-run empty-tree clear and restricted/unrestricted mode bookkeeping,
+/// - 7k per target and 7k per selector cover the set-maintenance work around each scope layer,
+/// - 5k per recipient covers the extra recipient-set persistence.
+///
+/// The objective is to stay roughly aligned with authorization pricing while avoiding materially low
+/// charges on larger scope trees, even if that means slight overcharging in simpler cases.
+///
+/// TODO: Refactor intrinsic gas accounting so this and the other intrinsic surcharges come from one
+/// shared model instead of per-feature heuristics.
+fn call_scope_extra_gas(auth: &tempo_primitives::transaction::KeyAuthorization) -> u64 {
+    const BASE_SCOPE_GAS: u64 = 5_000;
+    const TARGET_SCOPE_GAS: u64 = 7_000;
+    const SELECTOR_SCOPE_GAS: u64 = 7_000;
+    const RECIPIENT_SCOPE_GAS: u64 = 5_000;
+
+    let Some(scopes) = auth.allowed_calls.as_ref() else {
+        return BASE_SCOPE_GAS;
+    };
+
+    let num_targets = scopes.len() as u64;
+    let num_selectors = scopes
+        .iter()
+        .map(|scope| scope.selector_rules.len() as u64)
+        .sum::<u64>();
+    let num_recipients = scopes
+        .iter()
+        .flat_map(|scope| &scope.selector_rules)
+        .map(|rule| rule.recipients.len() as u64)
+        .sum::<u64>();
+
+    BASE_SCOPE_GAS
+        + TARGET_SCOPE_GAS.saturating_mul(num_targets)
+        + SELECTOR_SCOPE_GAS.saturating_mul(num_selectors)
+        + RECIPIENT_SCOPE_GAS.saturating_mul(num_recipients)
+}
+
 /// Rewrites a failed batch step's gas accounting to match whole-transaction semantics.
 ///
 /// `frame_result` initially only reflects the final failed step. For atomic AA batches we surface
@@ -175,7 +224,7 @@ fn normalize_failed_batch_result_gas(
     gas_limit: u64,
     remaining_gas: u64,
 ) {
-    let gas_spent_by_failed_step = frame_result.gas().spent();
+    let gas_spent_by_failed_step = frame_result.gas().total_gas_spent();
     let total_gas_spent = (gas_limit - remaining_gas) + gas_spent_by_failed_step;
 
     // Create new Gas with correct limit, because Gas does not have a set_limit method
@@ -262,9 +311,11 @@ fn calculate_key_authorization_gas(
 
         // T3+: include scoped-call storage rows in intrinsic gas.
         if spec.is_t3() {
-            total = total.saturating_add(
-                sstore_cost.saturating_mul(call_scope_storage_slots(&key_auth.authorization)),
-            );
+            total = total
+                .saturating_add(
+                    sstore_cost.saturating_mul(call_scope_storage_slots(&key_auth.authorization)),
+                )
+                .saturating_add(call_scope_extra_gas(&key_auth.authorization));
         }
 
         total
@@ -383,8 +434,9 @@ where
             ));
         };
 
+        // It's fine to set reservoir to 0 because this won't create any state.
         let (validation, gas_used) =
-            StorageCtx::enter_ctx_with_gas_limit(evm.ctx_mut(), *remaining_gas, || {
+            StorageCtx::enter_ctx_with_gas_limit(evm.ctx_mut(), *remaining_gas, 0, || {
                 let keychain = AccountKeychain::default();
                 for call in calls {
                     keychain.validate_call_scope_for_transaction(
@@ -402,7 +454,8 @@ where
                 *remaining_gas = remaining_gas.saturating_sub(gas_used);
                 Ok(None)
             }
-            Err(err) => match err.into_precompile_result(gas_used) {
+            Err(err) => match err.into_precompile_result(gas_used, 0) {
+                Ok(output) if output.is_halt() => Ok(Some(oog_frame_result(kind, *remaining_gas))),
                 Ok(revert_output) => {
                     let mut gas = Gas::new(gas_used);
                     gas.set_spent(gas_used);
@@ -429,7 +482,6 @@ where
 
                     Ok(Some(frame_result))
                 }
-                Err(PrecompileError::OutOfGas) => Ok(Some(oog_frame_result(kind, *remaining_gas))),
                 Err(PrecompileError::Fatal(err)) => Err(EVMError::Custom(err)),
                 Err(err) => Err(EVMError::Custom(err.to_string())),
             },
@@ -453,10 +505,10 @@ where
             <<TempoEvm<DB, I> as EvmTr>::Frame as FrameTr>::FrameInit,
         ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>,
     {
-        let gas_limit = evm.ctx().tx().gas_limit() - init_and_floor_gas.initial_gas;
+        let gas_limit = evm.ctx().tx().gas_limit() - init_and_floor_gas.initial_total_gas;
 
         // Create first frame action
-        let first_frame_input = self.first_frame_input(evm, gas_limit)?;
+        let first_frame_input = self.first_frame_input(evm, gas_limit, init_and_floor_gas)?;
 
         // Run execution loop (standard or inspector)
         let mut frame_result = run_loop(self, evm, first_frame_input)?;
@@ -511,7 +563,7 @@ where
         let checkpoint = evm.ctx().journal_mut().checkpoint();
 
         let gas_limit = evm.ctx().tx().gas_limit();
-        let mut remaining_gas = gas_limit - init_and_floor_gas.initial_gas;
+        let mut remaining_gas = gas_limit - init_and_floor_gas.initial_total_gas;
         let mut accumulated_gas_refund = 0i64;
 
         // Store original TxEnv values to restore after batch execution
@@ -591,7 +643,7 @@ where
             }
 
             // Call succeeded - accumulate gas usage and refunds
-            let gas_spent = frame_result.gas().spent();
+            let gas_spent = frame_result.gas().total_gas_spent();
             let gas_refunded = frame_result.gas().refunded();
 
             accumulated_gas_refund = accumulated_gas_refund.saturating_add(gas_refunded);
@@ -772,7 +824,11 @@ where
     /// This override extends support to AA transactions (type 0x76) by checking for the presence
     /// of an aa_authorization_list in the tempo_tx_env.
     #[inline]
-    fn apply_eip7702_auth_list(&self, evm: &mut Self::Evm) -> Result<u64, Self::Error> {
+    fn apply_eip7702_auth_list(
+        &self,
+        evm: &mut Self::Evm,
+        init_and_floor_gas: &mut InitialAndFloorGas,
+    ) -> Result<u64, Self::Error> {
         let ctx = &mut evm.ctx;
         let spec = ctx.cfg.spec;
 
@@ -801,7 +857,7 @@ where
             )?
         } else {
             // For standard EIP-7702 transactions, use the default implementation
-            pre_execution::apply_eip7702_auth_list::<_, Self::Error>(evm.ctx())?
+            pre_execution::apply_eip7702_auth_list::<_, Self::Error>(evm.ctx(), init_and_floor_gas)?
         };
 
         // TIP-1000: State Creation Cost Increase
@@ -927,6 +983,24 @@ where
             StorageCtx::enter_evm(journal, block, cfg, tx, || {
                 let mut nonce_manager = NonceManager::new();
 
+                let prev_ptr = if let Some(expiring_nonce_idx) = tempo_tx_env.expiring_nonce_idx {
+                    let ptr = nonce_manager
+                        .expiring_nonce_ring_ptr
+                        .read()
+                        .map_err(|err| EVMError::Custom(err.to_string()))?;
+
+                    let next = (ptr + expiring_nonce_idx as u32) % EXPIRING_NONCE_SET_CAPACITY;
+
+                    nonce_manager
+                        .expiring_nonce_ring_ptr
+                        .write(next)
+                        .map_err(|err| EVMError::Custom(err.to_string()))?;
+
+                    Some(ptr)
+                } else {
+                    None
+                };
+
                 nonce_manager
                     .check_and_mark_expiring_nonce(replay_hash, valid_before)
                     .map_err(|err| match err {
@@ -950,6 +1024,13 @@ where
                         }
                         err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
                     })?;
+
+                if let Some(prev_ptr) = prev_ptr {
+                    nonce_manager
+                        .expiring_nonce_ring_ptr
+                        .write(prev_ptr)
+                        .map_err(|err| EVMError::Custom(err.to_string()))?;
+                }
 
                 Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
             })?;
@@ -1123,8 +1204,9 @@ where
                 cfg.gas_params.clone()
             };
 
+            // It's ok to set reservoir to 0 because pre-T1B it doesn't matter and post-T1B we have unlimited gas anyway.
             let mut provider = EvmPrecompileStorageProvider::new(
-                internals, gas_limit, cfg.spec, false, gas_params,
+                internals, gas_limit, 0, cfg.spec, false, gas_params,
             );
 
             // The core logic of setting up thread-local storage is here.
@@ -1600,14 +1682,15 @@ where
             // no need for v1 fork check as gas_params would be zero
             for auth in tx.authorization_list() {
                 if auth.nonce == 0 {
-                    init_gas.initial_gas += gas_params.tx_tip1000_auth_account_creation_cost();
+                    init_gas.initial_total_gas +=
+                        gas_params.tx_tip1000_auth_account_creation_cost();
                 }
             }
 
             // TIP-1000: Storage pricing updates for launch
             // Transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas.
             if spec.is_t1() && tx.nonce == 0 {
-                init_gas.initial_gas += gas_params.get(GasId::new_account_cost());
+                init_gas.initial_total_gas += gas_params.get(GasId::new_account_cost());
             }
 
             if evm.ctx.cfg.is_eip7623_disabled() {
@@ -1615,10 +1698,10 @@ where
             }
 
             // Validate gas limit is sufficient for initial gas
-            if gas_limit < init_gas.initial_gas {
+            if gas_limit < init_gas.initial_total_gas {
                 return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
                     gas_limit,
-                    initial_gas: init_gas.initial_gas,
+                    initial_gas: init_gas.initial_total_gas,
                 }
                 .into());
             }
@@ -1636,7 +1719,7 @@ where
         };
 
         // used to calculate key_authorization gas spending limit.
-        evm.initial_gas = init_gas.initial_gas;
+        evm.initial_gas = init_gas.initial_total_gas;
 
         Ok(init_gas)
     }
@@ -1668,7 +1751,7 @@ where
             Ok(ExecutionResult::Halt {
                 reason: TempoHaltReason::SubblockTxFeePayment,
                 logs: Default::default(),
-                gas: ResultGas::default().with_limit(evm.ctx.tx.gas_limit),
+                gas: ResultGas::new_with_state_gas(evm.ctx.tx.gas_limit, 0, 0, 0),
             })
         } else {
             MainnetHandler::default()
@@ -1689,8 +1772,8 @@ where
         &mut self,
         evm: &mut TempoEvm<DB, I>,
     ) -> Result<ValidationContext, EVMError<DB::Error, TempoInvalidTransaction>> {
-        self.validate(evm)?;
-        self.pre_execution(evm)?;
+        let mut init_and_floor_gas = self.validate(evm)?;
+        self.pre_execution(evm, &mut init_and_floor_gas)?;
         let result = ValidationContext {
             fee_token: evm
                 .fee_token
@@ -1742,36 +1825,36 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
     let mut gas = InitialAndFloorGas::default();
 
     // 1. Base stipend (21k, once per transaction)
-    gas.initial_gas += gas_params.tx_base_stipend();
+    gas.initial_total_gas += gas_params.tx_base_stipend();
 
     // 2. Signature verification gas
-    gas.initial_gas += tempo_signature_verification_gas(signature);
+    gas.initial_total_gas += tempo_signature_verification_gas(signature);
 
     let cold_account_cost =
         gas_params.warm_storage_read_cost() + gas_params.cold_account_additional_cost();
 
     // 3. Per-call overhead: cold account access
     // if the `to` address has not appeared in the call batch before.
-    gas.initial_gas += cold_account_cost * calls.len().saturating_sub(1) as u64;
+    gas.initial_total_gas += cold_account_cost * calls.len().saturating_sub(1) as u64;
 
     // 4. Authorization list costs (EIP-7702)
-    gas.initial_gas +=
+    gas.initial_total_gas +=
         authorization_list.len() as u64 * gas_params.tx_eip7702_per_empty_account_cost();
 
     // Add signature verification costs for each authorization
     // No need for v1 fork check as gas_params would be zero
     for auth in authorization_list {
-        gas.initial_gas += tempo_signature_verification_gas(auth.signature());
+        gas.initial_total_gas += tempo_signature_verification_gas(auth.signature());
         // TIP-1000: Storage pricing updates for launch
         // EIP-7702 authorisation list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
         if auth.nonce == 0 {
-            gas.initial_gas += gas_params.tx_tip1000_auth_account_creation_cost();
+            gas.initial_total_gas += gas_params.tx_tip1000_auth_account_creation_cost();
         }
     }
 
     // 5. Key authorization costs (if present)
     if let Some(key_auth) = key_authorization {
-        gas.initial_gas += calculate_key_authorization_gas(key_auth, gas_params, spec);
+        gas.initial_total_gas += calculate_key_authorization_gas(key_auth, gas_params, spec);
     }
 
     // 6. Per-call costs
@@ -1785,10 +1868,10 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
         // 4b. CREATE-specific costs
         if call.to.is_create() {
             // CREATE costs 500,000 gas in TIP-1000 (T1), 32,000 before
-            gas.initial_gas += gas_params.create_cost();
+            gas.initial_total_gas += gas_params.create_cost();
 
             // EIP-3860: Initcode analysis gas using revm helper
-            gas.initial_gas += gas_params.tx_initcode_cost(call.input.len());
+            gas.initial_total_gas += gas_params.tx_initcode_cost(call.input.len());
         }
 
         // Note: Transaction value is not allowed in AA transactions as there is no balances in accounts yet.
@@ -1800,19 +1883,19 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
         // 4c. Value transfer cost using revm constant
         // left here for future reference.
         if !call.value.is_zero() && call.to.is_call() {
-            gas.initial_gas += gas_params.get(GasId::transfer_value_cost()); // 9000 gas
+            gas.initial_total_gas += gas_params.get(GasId::transfer_value_cost()); // 9000 gas
         }
     }
 
-    gas.initial_gas += total_tokens * gas_params.tx_token_cost();
+    gas.initial_total_gas += total_tokens * gas_params.tx_token_cost();
 
     // 5. Access list costs using revm constants
     if let Some(access_list) = access_list {
         let (accounts, storages) = access_list.fold((0, 0), |(acc_count, storage_count), item| {
             (acc_count + 1, storage_count + item.storage_slots().count())
         });
-        gas.initial_gas += accounts * gas_params.tx_access_list_address_cost(); // 2400 per account
-        gas.initial_gas += storages as u64 * gas_params.tx_access_list_storage_key_cost(); // 1900 per storage
+        gas.initial_total_gas += accounts * gas_params.tx_access_list_address_cost(); // 2400 per account
+        gas.initial_total_gas += storages as u64 * gas_params.tx_access_list_storage_key_cost(); // 1900 per storage
     }
 
     // 6. Floor gas using revm helper
@@ -1867,15 +1950,15 @@ where
             // - Expiring nonce (nonce_key == MAX, T1 active): ring buffer + seen mapping operations
             // - 2D nonce (nonce_key != 0): SLOAD + SSTORE for nonce increment
             // - Regular nonce (nonce_key == 0): no additional gas
-            batch_gas.initial_gas += EXPIRING_NONCE_GAS;
+            batch_gas.initial_total_gas += EXPIRING_NONCE_GAS;
         } else if tx.nonce == 0 {
             // TIP-1000: Storage pricing updates for launch
             // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas
-            batch_gas.initial_gas += gas_params.get(GasId::new_account_cost());
+            batch_gas.initial_total_gas += gas_params.get(GasId::new_account_cost());
         } else if !aa_env.nonce_key.is_zero() {
             // Existing 2D nonce key usage (nonce > 0)
             // TIP-1000 Invariant 3: existing state updates must charge +5,000 gas
-            batch_gas.initial_gas += spec.gas_existing_nonce_key();
+            batch_gas.initial_total_gas += spec.gas_existing_nonce_key();
         }
     } else if let Some(aa_env) = &tx.tempo_tx_env
         && !aa_env.nonce_key.is_zero()
@@ -1896,13 +1979,13 @@ where
     // with gas_limit < intrinsic + nonce_2d_gas to pass validation, but the gas is still
     // charged during execution via init_and_floor_gas (not evm.initial_gas)
     if spec.is_t0() {
-        batch_gas.initial_gas += nonce_2d_gas;
+        batch_gas.initial_total_gas += nonce_2d_gas;
     }
 
-    if gas_limit < batch_gas.initial_gas {
+    if gas_limit < batch_gas.initial_total_gas {
         return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
             gas_limit,
-            initial_gas: batch_gas.initial_gas,
+            initial_gas: batch_gas.initial_total_gas,
         }
         .into());
     }
@@ -1910,7 +1993,7 @@ where
     // For pre-T0 (Genesis), add 2D nonce gas after validation
     // This gas will be charged via init_and_floor_gas, not evm.initial_gas
     if !spec.is_t0() {
-        batch_gas.initial_gas += nonce_2d_gas;
+        batch_gas.initial_total_gas += nonce_2d_gas;
     }
 
     // Validate floor gas (Prague+)
@@ -1988,7 +2071,7 @@ fn check_gas_limit(
     tx: &TempoTxEnv,
     adjusted_gas: &InitialAndFloorGas,
 ) -> Option<FrameResult> {
-    if spec.is_t0() && tx.gas_limit() < adjusted_gas.initial_gas {
+    if spec.is_t0() && tx.gas_limit() < adjusted_gas.initial_total_gas {
         let kind = *tx
             .first_call()
             .expect("we already checked that there is at least one call in aa tx")
@@ -2302,7 +2385,7 @@ mod tests {
         );
 
         // AA with secp256k1 + single call should match normal tx exactly
-        assert_eq!(aa_gas.initial_gas, normal_tx_gas.initial_gas);
+        assert_eq!(aa_gas.initial_total_gas, normal_tx_gas.initial_total_gas);
     }
 
     #[test]
@@ -2356,11 +2439,11 @@ mod tests {
 
         // For 3 calls: base (21k) + 3*calldata + 2*per-call overhead (calls 2 and 3)
         // = 21k + 2*(calldata cost) + 2*COLD_ACCOUNT_ACCESS_COST
-        let expected = base_tx_gas.initial_gas
+        let expected = base_tx_gas.initial_total_gas
             + 2 * (calldata.len() as u64 * 16)
             + 2 * COLD_ACCOUNT_ACCESS_COST;
         // Should charge per-call overhead for calls beyond the first
-        assert_eq!(gas.initial_gas, expected,);
+        assert_eq!(gas.initial_total_gas, expected,);
     }
 
     #[test]
@@ -2409,8 +2492,8 @@ mod tests {
         let base_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0);
 
         // Expected: normal tx + P256_VERIFY_GAS
-        let expected = base_gas.initial_gas + P256_VERIFY_GAS;
-        assert_eq!(gas.initial_gas, expected,);
+        let expected = base_gas.initial_total_gas + P256_VERIFY_GAS;
+        assert_eq!(gas.initial_total_gas, expected,);
     }
 
     #[test]
@@ -2454,7 +2537,7 @@ mod tests {
         );
 
         // AA CREATE should match normal CREATE exactly
-        assert_eq!(gas.initial_gas, base_gas.initial_gas,);
+        assert_eq!(gas.initial_total_gas, base_gas.initial_total_gas,);
     }
 
     #[test]
@@ -2533,7 +2616,7 @@ mod tests {
         let base_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0);
 
         // Expected: normal tx
-        assert_eq!(gas.initial_gas, base_gas.initial_gas,);
+        assert_eq!(gas.initial_total_gas, base_gas.initial_total_gas,);
     }
 
     #[test]
@@ -2763,7 +2846,8 @@ mod tests {
                 &t1b_gas_params,
                 TempoHardfork::T3,
             );
-            let expected = ECRECOVER_GAS + sload + sstore * (1 + 2 * num_limits as u64) + BUFFER;
+            let expected =
+                ECRECOVER_GAS + sload + sstore * (1 + 2 * num_limits as u64) + BUFFER + 5_000;
             assert_eq!(gas, expected, "T3 with {num_limits} limits");
         }
 
@@ -2787,7 +2871,9 @@ mod tests {
         // 1 key write + 12 scope slots:
         // account mode(1) + target insertion rows(3) + selector insertion rows(3)
         // + constrained selector recipient-length(1) + recipients values+positions(2*2).
-        let expected = ECRECOVER_GAS + sload + sstore * (1 + 12) + BUFFER;
+        // The rounded surcharge adds 5k base + 7k per target + 7k per selector + 5k per
+        // recipient, which keeps larger scope trees from being materially underpriced.
+        let expected = ECRECOVER_GAS + sload + sstore * (1 + 12) + BUFFER + 29_000;
         assert_eq!(gas, expected, "T3 scope writes should be fully charged");
     }
 
@@ -2918,7 +3004,7 @@ mod tests {
         let expected_key_auth_gas = KEY_AUTH_BASE_GAS + ECRECOVER_GAS + 2 * KEY_AUTH_PER_LIMIT_GAS;
 
         assert_eq!(
-            gas_with_key_auth.initial_gas - gas_without_key_auth.initial_gas,
+            gas_with_key_auth.initial_total_gas - gas_without_key_auth.initial_total_gas,
             expected_key_auth_gas,
             "Key authorization should add exactly {expected_key_auth_gas} gas to batch",
         );
@@ -2926,15 +3012,15 @@ mod tests {
         // Also verify absolute values
         let spec = tempo_chainspec::hardfork::TempoHardfork::default();
         let base_tx_gas = calculate_initial_tx_gas(spec.into(), &calldata, false, 0, 0, 0);
-        let expected_without = base_tx_gas.initial_gas; // no cold access for single call
+        let expected_without = base_tx_gas.initial_total_gas; // no cold access for single call
         let expected_with = expected_without + expected_key_auth_gas;
 
         assert_eq!(
-            gas_without_key_auth.initial_gas, expected_without,
+            gas_without_key_auth.initial_total_gas, expected_without,
             "Gas without key auth should match expected"
         );
         assert_eq!(
-            gas_with_key_auth.initial_gas, expected_with,
+            gas_with_key_auth.initial_total_gas, expected_with,
             "Gas with key auth should match expected"
         );
     }
@@ -2993,7 +3079,7 @@ mod tests {
                 let mut evm = make_evm(5, U256::ZERO);
                 let gas = handler.validate_initial_tx_gas(&mut evm).unwrap();
                 assert_eq!(
-                    gas.initial_gas, BASE_INTRINSIC_GAS,
+                    gas.initial_total_gas, BASE_INTRINSIC_GAS,
                     "{spec:?}: protocol nonce (nonce_key=0, nonce>0) should have no extra gas"
                 );
             }
@@ -3010,7 +3096,7 @@ mod tests {
                 let mut evm = make_evm(0, U256::from(42));
                 let gas = handler.validate_initial_tx_gas(&mut evm).unwrap();
                 assert_eq!(
-                    gas.initial_gas, expected,
+                    gas.initial_total_gas, expected,
                     "{spec:?}: nonce_key!=0, nonce==0 gas mismatch"
                 );
             }
@@ -3020,7 +3106,7 @@ mod tests {
                 let mut evm = make_evm(5, U256::from(42));
                 let gas = handler.validate_initial_tx_gas(&mut evm).unwrap();
                 assert_eq!(
-                    gas.initial_gas,
+                    gas.initial_total_gas,
                     BASE_INTRINSIC_GAS + spec.gas_existing_nonce_key(),
                     "{spec:?}: existing 2D nonce key gas mismatch"
                 );
@@ -3211,11 +3297,11 @@ mod tests {
             .validate_initial_tx_gas(&mut evm)
             .expect("initial gas validation should succeed");
         assert!(
-            init_gas.floor_gas <= init_gas.initial_gas,
+            init_gas.floor_gas <= init_gas.initial_total_gas,
             "test requires floor gas to not exceed intrinsic gas"
         );
 
-        evm.inner.ctx.tx.inner.gas_limit = init_gas.initial_gas;
+        evm.inner.ctx.tx.inner.gas_limit = init_gas.initial_total_gas;
 
         handler
             .validate_against_state_and_deduct_caller(&mut evm)
@@ -3235,12 +3321,12 @@ mod tests {
         );
         assert_eq!(
             result.gas().limit(),
-            init_gas.initial_gas,
+            init_gas.initial_total_gas,
             "batch OOG should report the full tx gas budget"
         );
         assert_eq!(
-            result.gas().spent(),
-            init_gas.initial_gas,
+            result.gas().total_gas_spent(),
+            init_gas.initial_total_gas,
             "batch OOG should consume the full tx gas budget"
         );
         assert_eq!(result.gas().refunded(), 0);
@@ -3486,7 +3572,7 @@ mod tests {
         let final_gas = result.gas();
 
         assert_eq!(
-            final_gas.spent(),
+            final_gas.total_gas_spent(),
             INTRINSIC_GAS + SPENT.0 + SPENT.1,
             "Total spent should be intrinsic_gas + sum of all calls' spent values"
         );
@@ -3648,13 +3734,13 @@ mod tests {
             let gas2 = compute_aa_gas(&make_single_call_env(Bytes::from(vec![1u8; calldata_len2])));
 
             if calldata_len1 <= calldata_len2 {
-                prop_assert!(gas1.initial_gas <= gas2.initial_gas,
+                prop_assert!(gas1.initial_total_gas <= gas2.initial_total_gas,
                     "More calldata should mean more gas: len1={}, gas1={}, len2={}, gas2={}",
-                    calldata_len1, gas1.initial_gas, calldata_len2, gas2.initial_gas);
+                    calldata_len1, gas1.initial_total_gas, calldata_len2, gas2.initial_total_gas);
             } else {
-                prop_assert!(gas1.initial_gas >= gas2.initial_gas,
+                prop_assert!(gas1.initial_total_gas >= gas2.initial_total_gas,
                     "Less calldata should mean less gas: len1={}, gas1={}, len2={}, gas2={}",
-                    calldata_len1, gas1.initial_gas, calldata_len2, gas2.initial_gas);
+                    calldata_len1, gas1.initial_total_gas, calldata_len2, gas2.initial_total_gas);
             }
         }
 
@@ -3669,13 +3755,13 @@ mod tests {
             let gas2 = compute_aa_gas(&make_single_call_env(Bytes::from(vec![0u8; calldata_len2])));
 
             if calldata_len1 <= calldata_len2 {
-                prop_assert!(gas1.initial_gas <= gas2.initial_gas,
+                prop_assert!(gas1.initial_total_gas <= gas2.initial_total_gas,
                     "More zero-byte calldata should mean more gas: len1={}, gas1={}, len2={}, gas2={}",
-                    calldata_len1, gas1.initial_gas, calldata_len2, gas2.initial_gas);
+                    calldata_len1, gas1.initial_total_gas, calldata_len2, gas2.initial_total_gas);
             } else {
-                prop_assert!(gas1.initial_gas >= gas2.initial_gas,
+                prop_assert!(gas1.initial_total_gas >= gas2.initial_total_gas,
                     "Less zero-byte calldata should mean less gas: len1={}, gas1={}, len2={}, gas2={}",
-                    calldata_len1, gas1.initial_gas, calldata_len2, gas2.initial_gas);
+                    calldata_len1, gas1.initial_total_gas, calldata_len2, gas2.initial_total_gas);
             }
         }
 
@@ -3686,9 +3772,9 @@ mod tests {
             let zero_gas = compute_aa_gas(&make_single_call_env(Bytes::from(vec![0u8; calldata_len])));
             let nonzero_gas = compute_aa_gas(&make_single_call_env(Bytes::from(vec![1u8; calldata_len])));
 
-            prop_assert!(zero_gas.initial_gas < nonzero_gas.initial_gas,
+            prop_assert!(zero_gas.initial_total_gas < nonzero_gas.initial_total_gas,
                 "Zero-byte calldata should cost less: len={}, zero_gas={}, nonzero_gas={}",
-                calldata_len, zero_gas.initial_gas, nonzero_gas.initial_gas);
+                calldata_len, zero_gas.initial_total_gas, nonzero_gas.initial_total_gas);
         }
 
         /// Property: mixed calldata gas is bounded by all-zero and all-nonzero extremes.
@@ -3707,12 +3793,12 @@ mod tests {
             let zero_gas = compute_aa_gas(&make_single_call_env(Bytes::from(vec![0u8; calldata_len])));
             let nonzero_gas = compute_aa_gas(&make_single_call_env(Bytes::from(vec![1u8; calldata_len])));
 
-            prop_assert!(mixed_gas.initial_gas >= zero_gas.initial_gas,
+            prop_assert!(mixed_gas.initial_total_gas >= zero_gas.initial_total_gas,
                 "Mixed calldata gas should be >= all-zero gas: mixed={}, zero={}",
-                mixed_gas.initial_gas, zero_gas.initial_gas);
-            prop_assert!(mixed_gas.initial_gas <= nonzero_gas.initial_gas,
+                mixed_gas.initial_total_gas, zero_gas.initial_total_gas);
+            prop_assert!(mixed_gas.initial_total_gas <= nonzero_gas.initial_total_gas,
                 "Mixed calldata gas should be <= all-nonzero gas: mixed={}, nonzero={}",
-                mixed_gas.initial_gas, nonzero_gas.initial_gas);
+                mixed_gas.initial_total_gas, nonzero_gas.initial_total_gas);
         }
 
         /// Property: gas calculation monotonicity - more calls means more gas
@@ -3725,13 +3811,13 @@ mod tests {
             let gas2 = compute_aa_gas(&make_multi_call_env(num_calls2));
 
             if num_calls1 <= num_calls2 {
-                prop_assert!(gas1.initial_gas <= gas2.initial_gas,
+                prop_assert!(gas1.initial_total_gas <= gas2.initial_total_gas,
                     "More calls should mean more gas: calls1={}, gas1={}, calls2={}, gas2={}",
-                    num_calls1, gas1.initial_gas, num_calls2, gas2.initial_gas);
+                    num_calls1, gas1.initial_total_gas, num_calls2, gas2.initial_total_gas);
             } else {
-                prop_assert!(gas1.initial_gas >= gas2.initial_gas,
+                prop_assert!(gas1.initial_total_gas >= gas2.initial_total_gas,
                     "Fewer calls should mean less gas: calls1={}, gas1={}, calls2={}, gas2={}",
-                    num_calls1, gas1.initial_gas, num_calls2, gas2.initial_gas);
+                    num_calls1, gas1.initial_total_gas, num_calls2, gas2.initial_total_gas);
             }
         }
 
@@ -3750,9 +3836,9 @@ mod tests {
 
             // Expected exactly: 21k base + cold account access for each additional call
             let expected = 21_000 + COLD_ACCOUNT_ACCESS_COST * (num_calls.saturating_sub(1) as u64);
-            prop_assert_eq!(gas.initial_gas, expected,
+            prop_assert_eq!(gas.initial_total_gas, expected,
                 "Gas {} should equal expected {} for {} calls (21k + {}*COLD_ACCOUNT_ACCESS_COST)",
-                gas.initial_gas, expected, num_calls, num_calls.saturating_sub(1));
+                gas.initial_total_gas, expected, num_calls, num_calls.saturating_sub(1));
         }
 
         /// Property: first_call returns the first call for AA transactions with any number of calls
@@ -4008,7 +4094,7 @@ mod tests {
 
         // Delta-based assertion: the difference should be new_account_cost - EXISTING_NONCE_KEY_GAS
         // nonce=0 charges 250k (new account), nonce>0 charges 5k (existing key update)
-        let gas_delta = gas_nonce_zero.initial_gas - gas_nonce_five.initial_gas;
+        let gas_delta = gas_nonce_zero.initial_total_gas - gas_nonce_five.initial_total_gas;
         let expected_delta = new_account_cost - EXISTING_NONCE_KEY_GAS;
         assert_eq!(
             gas_delta, expected_delta,
@@ -4028,7 +4114,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            gas_nonce_zero.initial_gas, gas_regular.initial_gas,
+            gas_nonce_zero.initial_total_gas, gas_regular.initial_total_gas,
             "nonce=0 should charge the same regardless of nonce_key (2D vs regular)"
         );
     }
@@ -4094,7 +4180,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            gas_existing.initial_gas,
+            gas_existing.initial_total_gas,
             BASE_INTRINSIC_GAS + EXISTING_NONCE_KEY_GAS,
             "T1 existing 2D nonce key (nonce>0) should charge BASE + EXISTING_NONCE_KEY_GAS ({EXISTING_NONCE_KEY_GAS})"
         );
@@ -4104,12 +4190,12 @@ mod tests {
         let gas_regular = handler.validate_initial_tx_gas(&mut evm_regular).unwrap();
 
         assert_eq!(
-            gas_regular.initial_gas, BASE_INTRINSIC_GAS,
+            gas_regular.initial_total_gas, BASE_INTRINSIC_GAS,
             "T1 regular nonce (nonce_key=0, nonce>0) should only charge BASE intrinsic gas"
         );
 
         // Verify the delta between 2D and regular nonce is exactly EXISTING_NONCE_KEY_GAS
-        let gas_delta = gas_existing.initial_gas - gas_regular.initial_gas;
+        let gas_delta = gas_existing.initial_total_gas - gas_regular.initial_total_gas;
         assert_eq!(
             gas_delta, EXISTING_NONCE_KEY_GAS,
             "Difference between existing 2D nonce and regular nonce should be EXISTING_NONCE_KEY_GAS ({EXISTING_NONCE_KEY_GAS})"

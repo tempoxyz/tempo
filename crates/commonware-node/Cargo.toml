@@ -12,7 +12,7 @@ workspace = true
 
 [dependencies]
 tempo-alloy = { workspace = true, features = ["reth"] }
-tempo-chainspec.workspace = true
+tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-commonware-node-config.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true
 tempo-node.workspace = true
