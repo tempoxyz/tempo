@@ -2,7 +2,7 @@ use std::{
     fs::OpenOptions,
     io::Write as _,
     net::{IpAddr, SocketAddr},
-    path::PathBuf,
+    path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
 };
@@ -41,7 +41,6 @@ use tempo_contracts::precompiles::{
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_precompiles::validator_config_v2::{VALIDATOR_NS_ADD, VALIDATOR_NS_ROTATE};
 use tempo_validator_config::ValidatorConfig;
-use zeroize::Zeroizing;
 
 use crate::{init_state, p2p_proxy::P2pProxyArgs};
 
@@ -422,12 +421,9 @@ impl ValidatorTransactionArgs {
 
             Ok(EthereumWallet::new(signer))
         } else if let Some(path) = &self.wallet.wallet_key {
-            let private_key_bytes = Zeroizing::new(std::fs::read(path).wrap_err_with(|| {
-                format!("failed reading private key from `{}`", path.display())
-            })?);
-
-            let signer = PrivateKeySigner::from_slice(private_key_bytes.as_slice())
-                .wrap_err_with(|| format!("invalid private key in `{}`", path.display()))?;
+            let signer = key_from_file(path).wrap_err_with(|| {
+                format!("failed reading private key from file `{}`", path.display())
+            })?;
 
             Ok(EthereumWallet::new(signer))
         } else {
@@ -526,12 +522,13 @@ impl TransferValidatorOwnership {
     async fn run(self) -> eyre::Result<()> {
         let provider = self.submit.provider().await?;
 
-        let new_private_key_bytes = std::fs::read(&self.new_private_key)
-            .wrap_err("failed reading new validator ethereum privatekey")?;
-        let new_private_key = B256::try_from(new_private_key_bytes.as_slice())
-            .wrap_err("invalid validator ethereum private key")?;
+        let new_signer = key_from_file(&self.new_private_key).wrap_err_with(|| {
+            format!(
+                "failed reading private key from file `{}`",
+                self.new_private_key.display()
+            )
+        })?;
 
-        let new_signer = PrivateKeySigner::from_bytes(&new_private_key)?;
         let new_validator_address = new_signer.address();
 
         let validator = read_validator_from_contract(&provider, self.id).await?;
@@ -1239,6 +1236,13 @@ impl ValidatorsInfo {
         println!("{}", serde_json::to_string_pretty(&output)?);
         Ok(())
     }
+}
+
+fn key_from_file<P: AsRef<Path>>(p: P) -> eyre::Result<PrivateKeySigner> {
+    let raw = std::fs::read(p).wrap_err("failed reading key from file")?;
+    let bytes = alloy::hex::decode(&raw).wrap_err("failed decoding file contents from hex")?;
+    PrivateKeySigner::from_slice(&bytes)
+        .wrap_err("failed converting file decoded hex bytes to private key")
 }
 
 #[cfg(test)]
