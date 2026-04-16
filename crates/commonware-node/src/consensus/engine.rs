@@ -125,6 +125,25 @@ where
             + Network
             + BufferPooler,
     {
+        Box::pin(self.try_init_inner(context)).await
+    }
+
+    async fn try_init_inner<TContext>(
+        self,
+        context: TContext,
+    ) -> eyre::Result<Engine<TContext, TBlocker, TPeerManager>>
+    where
+        TContext: Clock
+            + governor::clock::Clock
+            + Rng
+            + CryptoRng
+            + Pacer
+            + Spawner
+            + Storage
+            + Metrics
+            + Network
+            + BufferPooler,
+    {
         let execution_node = self
             .execution_node
             .clone()

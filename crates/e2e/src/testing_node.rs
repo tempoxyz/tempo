@@ -193,6 +193,10 @@ where
     /// # Panics
     /// Panics if either consensus or execution is already running.
     pub async fn start(&mut self, context: &Context) {
+        Box::pin(self.start_inner(context)).await
+    }
+
+    async fn start_inner(&mut self, context: &Context) {
         self.start_execution().await;
         self.start_consensus(context).await;
         self.n_starts += 1;
