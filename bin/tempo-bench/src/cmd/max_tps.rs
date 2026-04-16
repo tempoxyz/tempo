@@ -181,7 +181,7 @@ pub struct MaxTpsArgs {
     /// When enabled, TIP-20 and ERC-20 transfers are sent to the bench's own signer addresses
     /// (which already exist on-chain), avoiding cold SSTORE for account creation. This tests
     /// pure transfer throughput without state growth.
-    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    #[arg(long, default_value_t = true, default_missing_value = "true", num_args = 0..=1, action = clap::ArgAction::Set)]
     existing_recipients: bool,
 
     /// An amount of receipts to wait for after sending all the transactions.
