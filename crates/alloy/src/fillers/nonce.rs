@@ -200,28 +200,6 @@ pub struct NonceKeyFiller {
 const NONCE_NOT_FETCHED: u64 = u64::MAX;
 
 impl NonceKeyFiller {
-    /// Creates a new filler with an empty tracked nonce cache.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Returns the number of tracked `(address, nonce_key)` pairs.
-    pub fn len(&self) -> usize {
-        self.nonces.len()
-    }
-
-    /// Returns `true` when no nonce pairs are currently tracked.
-    pub fn is_empty(&self) -> bool {
-        self.nonces.is_empty()
-    }
-
-    /// Stops tracking one `(address, nonce_key)` pair.
-    ///
-    /// Returns `true` if the pair was present and future fills will refetch its nonce.
-    pub fn remove(&self, address: Address, nonce_key: U256) -> bool {
-        self.nonces.remove(&(address, nonce_key)).is_some()
-    }
-
     /// Clears every tracked `(address, nonce_key)` pair.
     ///
     /// Future fills will refetch nonces from the chain.
@@ -312,7 +290,7 @@ mod tests {
     use crate::{TempoNetwork, fillers::Random2DNonceFiller, rpc::TempoTransactionRequest};
     use alloy::sol_types::SolCall;
     use alloy_network::TransactionBuilder;
-    use alloy_primitives::{Address, Bytes, ruint::aliases::U256};
+    use alloy_primitives::{Bytes, ruint::aliases::U256};
     use alloy_provider::{ProviderBuilder, mock::Asserter};
     use eyre;
 
@@ -354,7 +332,7 @@ mod tests {
         let asserter = Asserter::new();
         let provider = ProviderBuilder::<_, _, TempoNetwork>::default()
             .connect_mocked_client(asserter.clone());
-        let filler = NonceKeyFiller::new();
+        let filler = NonceKeyFiller::default();
         let account = Address::repeat_byte(0x11);
         let nonce_key = U256::from(7_u64);
         let mut tx = TempoTransactionRequest::default().with_nonce_key(nonce_key);
@@ -369,12 +347,8 @@ mod tests {
 
         assert_eq!(first, 10);
         assert_eq!(second, 11);
-        assert_eq!(filler.len(), 1);
-        assert!(!filler.is_empty());
 
         filler.clear();
-
-        assert!(filler.is_empty());
 
         asserter.push_success(&Bytes::from(INonce::getNonceCall::abi_encode_returns(
             &42_u64,
@@ -383,58 +357,6 @@ mod tests {
         let reset = TxFiller::<TempoNetwork>::prepare(&filler, &provider, &tx).await?;
 
         assert_eq!(reset, 42);
-        assert_eq!(filler.len(), 1);
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_nonce_key_filler_remove_forgets_one_pair() -> eyre::Result<()> {
-        let asserter = Asserter::new();
-        let provider = ProviderBuilder::<_, _, TempoNetwork>::default()
-            .connect_mocked_client(asserter.clone());
-        let filler = NonceKeyFiller::new();
-        let account = Address::repeat_byte(0x22);
-        let nonce_key_a = U256::from(1_u64);
-        let nonce_key_b = U256::from(2_u64);
-        let mut tx_a = TempoTransactionRequest::default().with_nonce_key(nonce_key_a);
-        tx_a.set_from(account);
-        let mut tx_b = TempoTransactionRequest::default().with_nonce_key(nonce_key_b);
-        tx_b.set_from(account);
-
-        asserter.push_success(&Bytes::from(INonce::getNonceCall::abi_encode_returns(
-            &3_u64,
-        )));
-        asserter.push_success(&Bytes::from(INonce::getNonceCall::abi_encode_returns(
-            &9_u64,
-        )));
-
-        assert_eq!(
-            TxFiller::<TempoNetwork>::prepare(&filler, &provider, &tx_a).await?,
-            3
-        );
-        assert_eq!(
-            TxFiller::<TempoNetwork>::prepare(&filler, &provider, &tx_b).await?,
-            9
-        );
-        assert_eq!(filler.len(), 2);
-
-        assert!(filler.remove(account, nonce_key_a));
-        assert!(!filler.remove(account, nonce_key_a));
-        assert_eq!(filler.len(), 1);
-
-        asserter.push_success(&Bytes::from(INonce::getNonceCall::abi_encode_returns(
-            &15_u64,
-        )));
-
-        assert_eq!(
-            TxFiller::<TempoNetwork>::prepare(&filler, &provider, &tx_a).await?,
-            15
-        );
-        assert_eq!(
-            TxFiller::<TempoNetwork>::prepare(&filler, &provider, &tx_b).await?,
-            10
-        );
 
         Ok(())
     }

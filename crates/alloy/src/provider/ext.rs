@@ -135,16 +135,6 @@ pub trait TempoProviderBuilderExt {
     fn with_nonce_key_filler(
         self,
     ) -> ProviderBuilder<Identity, JoinFill<Identity, TempoFillers<NonceKeyFiller>>, TempoNetwork>;
-
-    /// Returns a provider builder with the recommended Tempo fillers and a caller-provided nonce
-    /// key filler handle.
-    ///
-    /// Use this when the caller needs to inspect or clear the tracked nonce cache via the
-    /// [`NonceKeyFiller`] instance they hold.
-    fn with_nonce_key_filler_handle(
-        self,
-        nonce_key_filler: NonceKeyFiller,
-    ) -> ProviderBuilder<Identity, JoinFill<Identity, TempoFillers<NonceKeyFiller>>, TempoNetwork>;
 }
 
 impl TempoProviderBuilderExt
@@ -178,15 +168,7 @@ impl TempoProviderBuilderExt
         self,
     ) -> ProviderBuilder<Identity, JoinFill<Identity, TempoFillers<NonceKeyFiller>>, TempoNetwork>
     {
-        self.with_nonce_key_filler_handle(NonceKeyFiller::default())
-    }
-
-    fn with_nonce_key_filler_handle(
-        self,
-        nonce_key_filler: NonceKeyFiller,
-    ) -> ProviderBuilder<Identity, JoinFill<Identity, TempoFillers<NonceKeyFiller>>, TempoNetwork>
-    {
-        ProviderBuilder::default().filler(TempoFillers::new(nonce_key_filler, Default::default()))
+        ProviderBuilder::default().filler(TempoFillers::default())
     }
 }
 
@@ -231,14 +213,6 @@ mod tests {
     fn test_with_nonce_key_filler() {
         let _: ProviderBuilder<_, JoinFill<Identity, TempoFillers<NonceKeyFiller>>, _> =
             ProviderBuilder::new_with_network::<TempoNetwork>().with_nonce_key_filler();
-    }
-
-    #[test]
-    fn test_with_nonce_key_filler_handle() {
-        let filler = NonceKeyFiller::new();
-        let _: ProviderBuilder<_, JoinFill<Identity, TempoFillers<NonceKeyFiller>>, _> =
-            ProviderBuilder::new_with_network::<TempoNetwork>()
-                .with_nonce_key_filler_handle(filler);
     }
 
     #[tokio::test]
