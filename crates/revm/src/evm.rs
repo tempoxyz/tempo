@@ -1153,7 +1153,7 @@ mod tests {
         let result = evm.transact_commit(tx_env)?;
         assert!(
             !result.is_success(),
-            "deny-all scope should fail during paid execution"
+            "deny-all scope should now fail during paid execution"
         );
         assert!(
             result.tx_gas_used() > 0,
