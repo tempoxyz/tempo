@@ -58,7 +58,20 @@ jobs:
           PY
 
       - uses: tempoxyz/changelogs@master
+        id: changelogs
         with:
           conventional-commit: true
           post-version-command: cargo update -w
           github-token: ${{ secrets.TEMPO_GITHUB_PAT }}
+
+      - name: Demote non-v* releases from latest
+        if: steps.changelogs.outputs.published == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.TEMPO_GITHUB_PAT }}
+        run: |
+          for tag in $(git tag --points-at HEAD); do
+            if [[ "$tag" != v* ]]; then
+              echo "Setting $tag as non-latest"
+              gh release edit "$tag" --latest=false || true
+            fi
+          done
