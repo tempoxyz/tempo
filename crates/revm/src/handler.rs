@@ -130,7 +130,7 @@ fn tempo_signature_verification_gas(signature: &TempoSignature) -> u64 {
     }
 }
 
-/// Counts the storage rows written by T4 call-scope configuration.
+/// Counts the storage rows written by T3 call-scope configuration.
 ///
 /// This only covers the rows that already pay the dynamic SSTORE set cost. The helper
 /// bookkeeping around scope persistence is charged separately via a rounded surcharge.
@@ -264,12 +264,16 @@ fn translate_allowed_calls_for_precompile(
 /// T1B+: Gas = signature verification + SLOAD (existing key check) +
 ///   SSTORE (write key) + N × SSTORE (per spending limit)
 ///   This is the sole gas accounting — the precompile runs with unlimited gas.
+///
+/// Returns `(total_gas, state_gas)` where `total_gas` includes the state gas portion.
+/// On T4+, each storage-creating SSTORE contributes `sstore_set_state_gas` to state gas
+/// per TIP-1016.
 #[inline]
 fn calculate_key_authorization_gas(
     key_auth: &tempo_primitives::transaction::SignedKeyAuthorization,
     gas_params: &GasParams,
     spec: tempo_chainspec::hardfork::TempoHardfork,
-) -> u64 {
+) -> (u64, u64) {
     // All signature types pay ECRECOVER_GAS (3k) as the baseline since
     // primitive_signature_verification_gas assumes ecrecover is already in base 21k.
     // For KeyAuthorization, we're doing an additional signature verification.
@@ -287,7 +291,6 @@ fn calculate_key_authorization_gas(
         // authorize_key does: 1 SLOAD (read existing key) + 1 SSTORE (write key)
         //   + N SSTOREs (one per spending limit) + 2k buffer (TSTORE + keccak + event)
         const BUFFER: u64 = 2_000;
-        let sstore_cost = gas_params.get(GasId::sstore_set_without_load_cost());
         let sload_cost =
             gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
 
@@ -299,21 +302,34 @@ fn calculate_key_authorization_gas(
             num_limits
         };
 
-        let mut total = sig_gas + sload_cost + sstore_cost * (1 + limit_slots) + BUFFER;
+        let mut num_sstores = 1 + limit_slots;
 
         // T3+: include scoped-call storage rows in intrinsic gas.
         if spec.is_t3() {
-            total = total
-                .saturating_add(
-                    sstore_cost.saturating_mul(call_scope_storage_slots(&key_auth.authorization)),
-                )
-                .saturating_add(call_scope_extra_gas(&key_auth.authorization));
+            num_sstores += call_scope_storage_slots(&key_auth.authorization);
         }
 
-        total
+        let sstore_cost = gas_params.get(GasId::sstore_set_without_load_cost());
+        let mut total_gas = sig_gas + sload_cost + sstore_cost * num_sstores + BUFFER;
+
+        // T3+: include extra gas for call scopes configuration
+        if spec.is_t3() {
+            total_gas += call_scope_extra_gas(&key_auth.authorization);
+        }
+
+        // TIP-1016: each storage-creating SSTORE also incurs state gas.
+        let state_gas = gas_params
+            .get(GasId::sstore_set_state_gas())
+            .saturating_mul(num_sstores);
+        total_gas += state_gas;
+
+        (total_gas, state_gas)
     } else {
         // Pre-T1B: Original heuristic constants
-        KEY_AUTH_BASE_GAS + sig_gas + num_limits * KEY_AUTH_PER_LIMIT_GAS
+        (
+            KEY_AUTH_BASE_GAS + sig_gas + num_limits * KEY_AUTH_PER_LIMIT_GAS,
+            0,
+        )
     }
 }
 
@@ -1788,7 +1804,10 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
 
     // 5. Key authorization costs (if present)
     if let Some(key_auth) = key_authorization {
-        gas.initial_total_gas += calculate_key_authorization_gas(key_auth, gas_params, spec);
+        let (key_auth_gas, key_auth_state_gas) =
+            calculate_key_authorization_gas(key_auth, gas_params, spec);
+        gas.initial_total_gas += key_auth_gas;
+        gas.initial_state_gas += key_auth_state_gas;
     }
 
     // 6. Per-call costs
@@ -2742,7 +2761,7 @@ mod tests {
         };
 
         // Test 0 limits: base (27k) + ecrecover (3k) = 30,000
-        let gas_0 = calculate_key_authorization_gas(
+        let (gas_0, state_0) = calculate_key_authorization_gas(
             &create_key_auth(0),
             &GasParams::default(),
             tempo_chainspec::hardfork::TempoHardfork::default(),
@@ -2752,9 +2771,10 @@ mod tests {
             KEY_AUTH_BASE_GAS + ECRECOVER_GAS,
             "0 limits should be 30,000"
         );
+        assert_eq!(state_0, 0, "pre-T1B has no state gas");
 
         // Test 1 limit: 30,000 + 22,000 = 52,000
-        let gas_1 = calculate_key_authorization_gas(
+        let (gas_1, state_1) = calculate_key_authorization_gas(
             &create_key_auth(1),
             &GasParams::default(),
             tempo_chainspec::hardfork::TempoHardfork::default(),
@@ -2764,9 +2784,10 @@ mod tests {
             KEY_AUTH_BASE_GAS + ECRECOVER_GAS + KEY_AUTH_PER_LIMIT_GAS,
             "1 limit should be 52,000"
         );
+        assert_eq!(state_1, 0, "pre-T1B has no state gas");
 
         // Test 2 limits: 30,000 + 44,000 = 74,000
-        let gas_2 = calculate_key_authorization_gas(
+        let (gas_2, _) = calculate_key_authorization_gas(
             &create_key_auth(2),
             &GasParams::default(),
             tempo_chainspec::hardfork::TempoHardfork::default(),
@@ -2778,7 +2799,7 @@ mod tests {
         );
 
         // Test 3 limits: 30,000 + 66,000 = 96,000
-        let gas_3 = calculate_key_authorization_gas(
+        let (gas_3, _) = calculate_key_authorization_gas(
             &create_key_auth(3),
             &GasParams::default(),
             tempo_chainspec::hardfork::TempoHardfork::default(),
@@ -2798,24 +2819,44 @@ mod tests {
         const BUFFER: u64 = 2_000;
 
         for num_limits in 0..=3 {
-            let gas = calculate_key_authorization_gas(
+            let (gas, state_gas) = calculate_key_authorization_gas(
                 &create_key_auth(num_limits),
                 &t1b_gas_params,
                 TempoHardfork::T1B,
             );
             let expected = ECRECOVER_GAS + sload + sstore * (1 + num_limits as u64) + BUFFER;
             assert_eq!(gas, expected, "T1B with {num_limits} limits");
+            assert_eq!(state_gas, 0, "T1B has no state gas");
         }
 
+        // T4 with T4 gas params: regular sstore = 19,900, state gas = 230,000 per SSTORE
+        let t4_gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T4);
+        let t4_sstore =
+            t4_gas_params.get(revm::context_interface::cfg::GasId::sstore_set_without_load_cost());
+        let t4_sload =
+            t4_gas_params.warm_storage_read_cost() + t4_gas_params.cold_storage_additional_cost();
+        let t4_sstore_state =
+            t4_gas_params.get(revm::context_interface::cfg::GasId::sstore_set_state_gas());
+
         for num_limits in 0..=3 {
-            let gas = calculate_key_authorization_gas(
+            let num_sstores = 1 + 2 * num_limits as u64;
+            let (gas, state_gas) = calculate_key_authorization_gas(
                 &create_key_auth(num_limits),
-                &t1b_gas_params,
+                &t4_gas_params,
                 TempoHardfork::T4,
             );
-            let expected =
-                ECRECOVER_GAS + sload + sstore * (1 + 2 * num_limits as u64) + BUFFER + 5_000;
-            assert_eq!(gas, expected, "T3 with {num_limits} limits");
+            let expected_state = t4_sstore_state * num_sstores;
+            let expected = ECRECOVER_GAS
+                + t4_sload
+                + t4_sstore * num_sstores
+                + BUFFER
+                + 5_000
+                + expected_state;
+            assert_eq!(gas, expected, "T4 with {num_limits} limits");
+            assert_eq!(
+                state_gas, expected_state,
+                "T4 state gas with {num_limits} limits"
+            );
         }
 
         let scoped = SignedKeyAuthorization {
@@ -2834,14 +2875,19 @@ mod tests {
             signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
         };
 
-        let gas = calculate_key_authorization_gas(&scoped, &t1b_gas_params, TempoHardfork::T4);
-        // 1 key write + 12 scope slots:
+        let (gas, state_gas) =
+            calculate_key_authorization_gas(&scoped, &t4_gas_params, TempoHardfork::T4);
+        // 1 key write + 12 scope slots = 13 SSTOREs:
         // account mode(1) + target insertion rows(3) + selector insertion rows(3)
         // + constrained selector recipient-length(1) + recipients values+positions(2*2).
         // The rounded surcharge adds 5k base + 7k per target + 7k per selector + 5k per
         // recipient, which keeps larger scope trees from being materially underpriced.
-        let expected = ECRECOVER_GAS + sload + sstore * (1 + 12) + BUFFER + 29_000;
-        assert_eq!(gas, expected, "T3 scope writes should be fully charged");
+        let num_sstores = 1 + 12;
+        let expected_state = t4_sstore_state * num_sstores;
+        let expected =
+            ECRECOVER_GAS + t4_sload + t4_sstore * num_sstores + BUFFER + 29_000 + expected_state;
+        assert_eq!(gas, expected, "T4 scope writes should be fully charged");
+        assert_eq!(state_gas, expected_state, "T4 scope state gas");
     }
 
     #[test]
@@ -3919,8 +3965,8 @@ mod tests {
                 (GasParams::default(), tempo_chainspec::hardfork::TempoHardfork::default()),
                 (crate::gas_params::tempo_gas_params(TempoHardfork::T1B), TempoHardfork::T1B),
             ] {
-                let gas1 = calculate_key_authorization_gas(&make_key_auth(num_limits1), &gas_params, spec);
-                let gas2 = calculate_key_authorization_gas(&make_key_auth(num_limits2), &gas_params, spec);
+                let (gas1, _) = calculate_key_authorization_gas(&make_key_auth(num_limits1), &gas_params, spec);
+                let (gas2, _) = calculate_key_authorization_gas(&make_key_auth(num_limits2), &gas_params, spec);
 
                 if num_limits1 <= num_limits2 {
                     prop_assert!(gas1 <= gas2,
@@ -3972,14 +4018,14 @@ mod tests {
             };
 
             // Pre-T1B: minimum is KEY_AUTH_BASE_GAS + ECRECOVER_GAS
-            let gas = calculate_key_authorization_gas(&key_auth, &GasParams::default(), tempo_chainspec::hardfork::TempoHardfork::default());
+            let (gas, _) = calculate_key_authorization_gas(&key_auth, &GasParams::default(), tempo_chainspec::hardfork::TempoHardfork::default());
             let min_gas = KEY_AUTH_BASE_GAS + ECRECOVER_GAS;
             prop_assert!(gas >= min_gas,
                 "Pre-T1B: Key auth gas should be at least {min_gas}, got {gas}");
 
             // T1B: minimum is ECRECOVER_GAS + sload + sstore (0 limits)
             let t1b_params = crate::gas_params::tempo_gas_params(TempoHardfork::T1B);
-            let gas_t1b = calculate_key_authorization_gas(&key_auth, &t1b_params, TempoHardfork::T1B);
+            let (gas_t1b, _) = calculate_key_authorization_gas(&key_auth, &t1b_params, TempoHardfork::T1B);
             let sstore = t1b_params.get(revm::context_interface::cfg::GasId::sstore_set_without_load_cost());
             let sload = t1b_params.warm_storage_read_cost() + t1b_params.cold_storage_additional_cost();
             let min_t1b = ECRECOVER_GAS + sload + sstore;
