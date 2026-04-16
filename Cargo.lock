@@ -12262,6 +12262,7 @@ dependencies = [
  "commonware-math",
  "commonware-runtime",
  "commonware-utils",
+ "const-hex",
  "eyre",
  "futures",
  "jiff",
