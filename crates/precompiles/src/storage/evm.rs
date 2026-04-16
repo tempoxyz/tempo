@@ -16,10 +16,6 @@ use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
 pub struct EvmPrecompileStorageProvider<'a> {
     internals: EvmInternals<'a>,
     gas_tracker: GasTracker,
-    /// State-creating gas accumulated (zero→non-zero SSTORE, code deposit).
-    /// Tracked separately from GasTracker because these are not deducted from
-    /// the reservoir yet — they are reported via PrecompileOutput::state_gas_used.
-    state_gas_spent: u64,
     spec: TempoHardfork,
     is_static: bool,
     gas_params: GasParams,
@@ -41,7 +37,6 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         Self {
             internals,
             gas_tracker: GasTracker::new(gas_limit, gas_limit, reservoir),
-            state_gas_spent: 0,
             spec,
             is_static,
             gas_params,
@@ -103,7 +98,9 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         self.deduct_gas(self.gas_params.code_deposit_cost(code_len))?;
 
         // Track state gas for code deposit
-        self.state_gas_spent += self.gas_params.code_deposit_state_gas(code_len);
+        if self.spec.is_t4() {
+            self.deduct_state_gas(self.gas_params.code_deposit_state_gas(code_len))?;
+        }
 
         self.internals
             .load_account_mut(address)?
@@ -165,7 +162,9 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         )?;
 
         // Track state gas (cold SSTORE zero->non-zero only)
-        self.state_gas_spent += self.gas_params.sstore_state_gas(&result.data);
+        if self.spec.is_t4() {
+            self.deduct_state_gas(self.gas_params.sstore_state_gas(&result.data))?;
+        }
 
         // refund gas.
         self.refund_gas(self.gas_params.sstore_refund(true, &result.data));
@@ -266,7 +265,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn state_gas_used(&self) -> u64 {
-        self.state_gas_spent
+        self.gas_tracker.state_gas_spent()
     }
 
     #[inline]
