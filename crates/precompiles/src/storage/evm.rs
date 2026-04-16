@@ -853,7 +853,11 @@ mod tests {
             3 * state_gas_per_sstore,
             "three SSTOREs should consume 690k state gas total"
         );
-        assert_eq!(provider.reservoir(), 0, "reservoir should be fully exhausted");
+        assert_eq!(
+            provider.reservoir(),
+            0,
+            "reservoir should be fully exhausted"
+        );
 
         // Regular gas increase = normal sstore cost + spill from reservoir
         let spill = state_gas_per_sstore - remaining_reservoir; // 230k - 40k = 190k
