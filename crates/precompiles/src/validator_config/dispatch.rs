@@ -141,6 +141,8 @@ mod tests {
             let calldata = owner_call.abi_encode();
 
             let result = validator_config.call(&calldata, sender)?;
+            // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
+            assert_eq!(result.gas_used, 0);
 
             // Verify we get the correct owner
             let decoded = Address::abi_decode(&result.bytes)?;
@@ -172,7 +174,10 @@ mod tests {
             };
             let calldata = add_call.abi_encode();
 
-            let _result = validator_config.call(&calldata, owner)?;
+            let result = validator_config.call(&calldata, owner)?;
+
+            // HashMapStorageProvider does not have gas accounting, so we expect 0
+            assert_eq!(result.gas_used, 0);
 
             // Verify validator was added by calling getValidators
             let validators = validator_config.get_validators()?;

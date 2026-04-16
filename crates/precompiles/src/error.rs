@@ -169,8 +169,6 @@ impl TempoPrecompileError {
 
     /// ABI-encodes this error and wraps it as a reverted [`PrecompileResult`].
     ///
-    /// `gas_limit` is the original call gas budget; `gas_used` is how much has been consumed.
-    ///
     /// # Errors
     /// - `PrecompileOutput::halt(PrecompileHalt::OutOfGas, ..)` — if the variant is [`OutOfGas`](Self::OutOfGas)
     /// - `PrecompileError::Fatal` — if the variant is [`Fatal`](Self::Fatal)
@@ -288,8 +286,6 @@ pub fn decode_error<'a>(data: &'a [u8]) -> Option<DecodedTempoPrecompileError<'a
 /// Extension trait to convert `Result<T, TempoPrecompileError>` into a [`PrecompileResult`].
 pub trait IntoPrecompileResult<T> {
     /// Converts `self` into a [`PrecompileResult`], using `encode_ok` for the success path.
-    ///
-    /// `gas_limit` is the original call gas budget; `gas_used` is how much has been consumed.
     fn into_precompile_result(
         self,
         gas: u64,
