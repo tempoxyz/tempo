@@ -4612,7 +4612,7 @@ mod tests {
         )
         .unwrap();
 
-        let expected_state_gas = gas_params.new_account_state_gas() + gas_params.create_state_gas();
+        let expected_state_gas = gas_params.create_state_gas();
 
         assert_eq!(
             gas.initial_state_gas, expected_state_gas,
@@ -4908,8 +4908,7 @@ mod tests {
         .unwrap();
 
         // Two CREATE calls should accumulate state gas
-        let per_create_state_gas =
-            gas_params.new_account_state_gas() + gas_params.create_state_gas();
+        let per_create_state_gas = gas_params.create_state_gas();
 
         assert_eq!(
             gas.initial_state_gas,
