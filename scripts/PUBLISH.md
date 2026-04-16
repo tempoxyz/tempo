@@ -1,17 +1,16 @@
 # Publishing Crates
 
-Publishes `tempo-contracts`, `tempo-primitives`, and `tempo-alloy` to crates.io with all reth-specific code and dependencies removed.
-
-The publish entrypoints now live in `scripts/publish/`:
-- `./scripts/publish/alloy.sh` for the SDK crates (`tempo-contracts`, `tempo-primitives`, `tempo-alloy`)
-- `./scripts/publish/revm.sh` for the revm stack (`tempo-chainspec`, `tempo-precompiles-macros`, `tempo-precompiles`, `tempo-revm`)
+Publishes two crate groups to crates.io with node-specific code and dependencies stripped:
+- **alloy** — `tempo-contracts`, `tempo-primitives`, `tempo-alloy`
+- **revm** — `tempo-chainspec`, `tempo-precompiles-macros`, `tempo-precompiles`, `tempo-revm`
 
 ## Usage
 
 ```bash
-./scripts/publish/alloy.sh                # dry-run (default)
-./scripts/publish/alloy.sh --publish      # actually publish
-./scripts/publish/alloy.sh --semver-check # dry-run + check for breaking changes
+./scripts/publish/publish.sh alloy                # dry-run (default)
+./scripts/publish/publish.sh alloy --publish      # actually publish
+./scripts/publish/publish.sh alloy --semver-check # dry-run + check for breaking changes
+./scripts/publish/publish.sh revm                 # same interface for the revm stack
 ```
 
 ## Architecture
@@ -39,25 +38,9 @@ NOTE: the working tree is never modified — all mutations happen on temp copies
 
 ## Scripts
 
-### `scripts/publish/alloy.sh`
+### `scripts/publish/publish.sh <alloy|revm> [--publish|--semver-check]`
 
-Orchestrator. Copies the 3 crates to a temp directory, runs the sanitization pipeline, verifies compilation, validates invariants, and publishes in dependency order.
-
-**Pre-resolve validation** (while workspace/path markers still visible):
-- No `reth-*` dependencies in any published manifest
-- No internal path-only workspace crates (dynamically discovered from workspace root)
-- No forbidden feature definitions (`reth`, `reth-codec`, `serde-bincode-compat`, `rpc`)
-- No reth-gated `cfg` attrs in `tempo-primitives` source
-- No reth-gated `cfg` attrs in `tempo-alloy` source
-
-**Post-resolve validation** (after concrete versions replace workspace refs):
-- No `workspace = true`, `path =`, or `git =` in any published `Cargo.toml`
-
-**Publish behavior:**
-- Preflight: runs `cargo publish --dry-run` for all 3 crates before any real publish
-- Publishes in dependency order (contracts → primitives → alloy)
-- Skips already-published crates (detects "already exists" from crates.io)
-- Retry: 10 attempts × 15s backoff to handle crates.io indexing delays
+Unified driver. Takes `alloy` or `revm` as first arg. Per-group config (crate lists, sanitize actions, validation rules) is set via a `case` block; the 8-stage pipeline is shared.
 
 ### `sanitize_source.py`
 
@@ -95,17 +78,17 @@ Transforms `Cargo.toml` files. Uses depth-aware brace/bracket tracking for robus
 
 **`gen_workspace <ws_toml> <out_toml> [crate1,crate2,...]`** — Generates a temporary workspace `Cargo.toml` for the compilation check step. Dynamically discovers internal path-only crates from the workspace root (no hardcoded list) and filters them out along with `reth-*` deps. Re-adds the specified publish crates as local path overrides.
 
-**`get_version <ws_toml>`** — Prints the workspace package version to stdout. Used by `scripts/publish/alloy.sh` to avoid duplicating version extraction logic.
+**`get_version <ws_toml>`** — Prints the workspace package version to stdout.
 
 ## CI Workflows
 
 ### `publish-check.yml`
 
-Runs the dry-run pipeline (`scripts/publish/alloy.sh`) on every PR touching the published crates or scripts. Catches sanitization regressions before merge.
+Runs dry-run pipelines on every PR touching published crates or scripts. Detects which groups (alloy/revm) are affected and runs only those.
 
 ### `semver-check.yml`
 
-Runs `scripts/publish/alloy.sh --semver-check` on PRs touching published crates. Sanitizes the crates, then runs `cargo-semver-checks` against the last published version on crates.io. Fails the PR if breaking changes are detected without an appropriate version bump. Skips crates that haven't been published yet.
+Runs `--semver-check` for affected groups. Sanitizes crates, then runs `cargo-semver-checks` against the last published version on crates.io.
 
 ### `changelog.yml`
 
@@ -117,4 +100,4 @@ Triggered on push to `main`. Uses `wevm/changelogs` to create/update a "Version 
 
 ### `publish.yml`
 
-Triggered when the RC PR (from `changelog-release/*` branch) is merged. Runs `scripts/publish/alloy.sh --publish` to sanitize and publish crates to crates.io via the `CARGO_REGISTRY_TOKEN` secret. The sanitize pipeline is the only publisher — `wevm/changelogs` handles versioning only.
+Triggered when the RC PR (from `changelog-release/*` branch) is merged. Detects which groups changed and runs `--publish` for each. The sanitize pipeline is the only publisher — `wevm/changelogs` handles versioning only.

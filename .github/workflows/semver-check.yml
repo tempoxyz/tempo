@@ -49,31 +49,30 @@ jobs:
       - name: Install cargo-semver-checks
         run: cargo binstall -y cargo-semver-checks
 
-      - name: Detect semver groups in PR
+      - name: Detect publish groups
         if: github.event_name == 'pull_request'
         id: semver-groups
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          python3 ./scripts/publish/detect_release_groups.py \
-            --base-sha "$BASE_SHA" \
-            --head-sha "$HEAD_SHA" \
-            --alloy-crates contracts,primitives,alloy \
-            --revm-crates chainspec,precompiles-macros,precompiles,revm \
-            --context pr \
-            --label "Files changed in PR:"
-
-      - name: Validate semver target detection
-        if: github.event_name == 'pull_request' && steps.semver-groups.outputs.alloy != 'true' && steps.semver-groups.outputs.revm != 'true'
-        run: |
-          echo "No published crate groups were detected for semver checks." >&2
-          exit 1
+          files=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          alloy=false; revm=false
+          if echo "$files" | grep -qE '^(scripts/publish/|scripts/sanitize_toml\.py$|Cargo\.toml$)'; then
+            alloy=true; revm=true
+          fi
+          echo "$files" | grep -qE '^(crates/(contracts|primitives|alloy)/|scripts/sanitize_source\.py$)' && alloy=true
+          echo "$files" | grep -qE '^crates/(chainspec|precompiles-macros|precompiles|revm)/' && revm=true
+          echo "alloy=$alloy" >> "$GITHUB_OUTPUT"
+          echo "revm=$revm" >> "$GITHUB_OUTPUT"
+          if [ "$alloy" = "false" ] && [ "$revm" = "false" ]; then
+            echo "No published crate groups detected." >&2; exit 1
+          fi
 
       - name: Run semver checks on sanitized alloy crates
         if: github.event_name != 'pull_request' || steps.semver-groups.outputs.alloy == 'true'
-        run: ./scripts/publish/alloy.sh --semver-check
+        run: ./scripts/publish/publish.sh alloy --semver-check
 
       - name: Run semver checks on sanitized revm stack crates
         if: github.event_name != 'pull_request' || steps.semver-groups.outputs.revm == 'true'
-        run: ./scripts/publish/revm.sh --semver-check
+        run: ./scripts/publish/publish.sh revm --semver-check

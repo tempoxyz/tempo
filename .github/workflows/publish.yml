@@ -29,34 +29,30 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
 
-      - name: Detect release groups in merged PR
+      - name: Detect publish groups
         id: release-groups
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          python3 ./scripts/publish/detect_release_groups.py \
-            --base-sha "$BASE_SHA" \
-            --head-sha "$HEAD_SHA" \
-            --alloy-crates contracts,primitives,alloy \
-            --revm-crates chainspec,precompiles-macros,precompiles,revm \
-            --context release \
-            --label "Files changed in merged release PR:"
-
-      - name: Validate release target detection
-        if: steps.release-groups.outputs.alloy != 'true' && steps.release-groups.outputs.revm != 'true'
-        run: |
-          echo "No published crate groups were detected in the merged changelog release PR." >&2
-          exit 1
+          files=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          alloy=false; revm=false
+          echo "$files" | grep -qE '^crates/(contracts|primitives|alloy)/' && alloy=true
+          echo "$files" | grep -qE '^crates/(chainspec|precompiles-macros|precompiles|revm)/' && revm=true
+          echo "alloy=$alloy" >> "$GITHUB_OUTPUT"
+          echo "revm=$revm" >> "$GITHUB_OUTPUT"
+          if [ "$alloy" = "false" ] && [ "$revm" = "false" ]; then
+            echo "No published crate groups detected in release PR." >&2; exit 1
+          fi
 
       - name: Publish alloy crates via sanitize pipeline
         if: steps.release-groups.outputs.alloy == 'true'
-        run: ./scripts/publish/alloy.sh --publish
+        run: ./scripts/publish/publish.sh alloy --publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
       - name: Publish revm stack crates via sanitize pipeline
         if: steps.release-groups.outputs.revm == 'true'
-        run: ./scripts/publish/revm.sh --publish
+        run: ./scripts/publish/publish.sh revm --publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

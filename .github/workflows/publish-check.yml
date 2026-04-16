@@ -41,30 +41,29 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
-      - name: Detect publish groups in PR
+      - name: Detect publish groups
         if: github.event_name == 'pull_request'
         id: publish-groups
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          python3 ./scripts/publish/detect_release_groups.py \
-            --base-sha "$BASE_SHA" \
-            --head-sha "$HEAD_SHA" \
-            --alloy-crates contracts,primitives,alloy \
-            --revm-crates chainspec,precompiles-macros,precompiles,revm \
-            --context pr \
-            --label "Files changed in PR:"
-
-      - name: Validate publish target detection
-        if: github.event_name == 'pull_request' && steps.publish-groups.outputs.alloy != 'true' && steps.publish-groups.outputs.revm != 'true'
-        run: |
-          echo "No published crate groups were detected for publish checks." >&2
-          exit 1
+          files=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          alloy=false; revm=false
+          if echo "$files" | grep -qE '^(scripts/publish/|scripts/sanitize_toml\.py$|Cargo\.toml$)'; then
+            alloy=true; revm=true
+          fi
+          echo "$files" | grep -qE '^(crates/(contracts|primitives|alloy)/|scripts/sanitize_source\.py$)' && alloy=true
+          echo "$files" | grep -qE '^crates/(chainspec|precompiles-macros|precompiles|revm)/' && revm=true
+          echo "alloy=$alloy" >> "$GITHUB_OUTPUT"
+          echo "revm=$revm" >> "$GITHUB_OUTPUT"
+          if [ "$alloy" = "false" ] && [ "$revm" = "false" ]; then
+            echo "No published crate groups detected." >&2; exit 1
+          fi
 
       - name: Verify alloy crates are publishable
         if: github.event_name != 'pull_request' || steps.publish-groups.outputs.alloy == 'true'
-        run: ./scripts/publish/alloy.sh
+        run: ./scripts/publish/publish.sh alloy
       - name: Verify revm stack crates are publishable
         if: github.event_name != 'pull_request' || steps.publish-groups.outputs.revm == 'true'
-        run: ./scripts/publish/revm.sh
+        run: ./scripts/publish/publish.sh revm

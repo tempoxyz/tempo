@@ -138,6 +138,68 @@ validate_no_reth_or_internal_deps() {
     return 0
 }
 
+# assert_no_features <toml> <feat...>
+#   Fails if any listed feature is still defined in the manifest.
+assert_no_features() {
+    local toml="$1"; shift
+    local crate_name
+    crate_name=$(basename "$(dirname "$toml")")
+    local feat
+    for feat in "$@"; do
+        grep -qE "^\s*${feat}\s*=" "$toml" && \
+            err "Feature '$feat' still defined in $crate_name/Cargo.toml"
+    done
+    return 0
+}
+
+# assert_no_dep <toml> <dep>
+#   Fails if the dependency is still present in the manifest.
+assert_no_dep() {
+    local toml="$1" dep="$2"
+    local crate_name
+    crate_name=$(basename "$(dirname "$toml")")
+    grep -qE "^\s*${dep}[\s.=]" "$toml" && \
+        err "Dependency '$dep' still in $crate_name/Cargo.toml"
+    return 0
+}
+
+# assert_no_source_refs <dir> <pattern...>
+#   Fails if any pattern is found in .rs files under dir.
+assert_no_source_refs() {
+    local dir="$1"; shift
+    local crate_name
+    crate_name=$(basename "$dir")
+    local pat
+    for pat in "$@"; do
+        grep -rq "$pat" "$dir/src/" && \
+            err "Forbidden pattern '$pat' still in $crate_name source"
+    done
+    return 0
+}
+
+# setup_tmp_workspace <crate_dir...>
+#   Creates a temp directory, copies crates, and sets:
+#   TMP_WORK_DIR, CRATE_MANIFESTS, CRATE_PATHS, MEMBERS_CSV, PATCHES_CSV
+setup_tmp_workspace() {
+    TMP_WORK_DIR=$(mktemp -d)
+    trap 'rm -rf "$TMP_WORK_DIR"' EXIT
+
+    copy_crates_to_tmp "$TMP_WORK_DIR" "$@"
+
+    CRATE_MANIFESTS=()
+    CRATE_PATHS=()
+    MEMBERS_CSV=""
+    PATCHES_CSV=""
+    local d crate_name
+    for d in "$@"; do
+        CRATE_MANIFESTS+=("$TMP_WORK_DIR/$d/Cargo.toml")
+        CRATE_PATHS+=("$TMP_WORK_DIR/$d")
+        crate_name=$(crate_name_from_dir "$TMP_WORK_DIR/$d")
+        MEMBERS_CSV="${MEMBERS_CSV:+$MEMBERS_CSV,}$d"
+        PATCHES_CSV="${PATCHES_CSV:+$PATCHES_CSV,}$crate_name=$d"
+    done
+}
+
 resolve_workspace_dependencies() {
     local sanitize_py="$1"
     local workspace_toml="$2"
