@@ -92,7 +92,6 @@ eyre.workspace = true
 reqwest.workspace = true
 jiff.workspace = true
 tokio.workspace = true
-zeroize.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 opentelemetry-otlp = { version = "0.31", default-features = false, optional = true }
