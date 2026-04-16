@@ -195,8 +195,14 @@ alloy-rpc-types-engine = "2.0.0"
 alloy-rpc-types-eth = { version = "2.0.0" }
 alloy-serde = { version = "2.0.0", default-features = false }
 alloy-signer = "2.0.0"
+alloy-signer-aws = "2.0.0"
+alloy-signer-gcp = "2.0.0"
+alloy-signer-ledger = "2.0.0"
 alloy-signer-local = "2.0.0"
+alloy-signer-trezor = "2.0.0"
+
 coins-bip32 = "0.12"
+zeroize = "1"
 alloy-sol-types = { version = "1.5.7", default-features = false }
 alloy-transport = "2.0.0"
 
