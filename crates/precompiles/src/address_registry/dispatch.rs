@@ -1,13 +1,10 @@
 use crate::{
-    Precompile,
-    address_registry::{
-        AddressRegistry, MasterId, UserTag, decode_virtual_address, is_virtual_address,
-    },
-    charge_input_cost, dispatch_call, mutate, view,
+    Precompile, address_registry::AddressRegistry, charge_input_cost, dispatch_call, mutate, view,
 };
 use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::IAddressRegistry::IAddressRegistryCalls;
+use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
 
 impl Precompile for AddressRegistry {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -36,10 +33,10 @@ impl Precompile for AddressRegistry {
                 }
                 // Pure functions
                 IAddressRegistryCalls::isVirtualAddress(call) => {
-                    view(call, |c| Ok(is_virtual_address(c.addr)))
+                    view(call, |c| Ok(c.addr.is_virtual()))
                 }
                 IAddressRegistryCalls::decodeVirtualAddress(call) => view(call, |c| {
-                    let (is_virtual, master_id, user_tag) = match decode_virtual_address(c.addr) {
+                    let (is_virtual, master_id, user_tag) = match c.addr.decode_virtual() {
                         Some((mid, tag)) => (true, mid, tag),
                         None => (false, MasterId::ZERO, UserTag::ZERO),
                     };

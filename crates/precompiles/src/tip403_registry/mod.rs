@@ -16,11 +16,11 @@ use tempo_precompiles_macros::{Storable, contract};
 
 use crate::{
     TIP403_REGISTRY_ADDRESS,
-    address_registry::is_virtual_address,
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
 };
 use alloy::primitives::Address;
+use tempo_primitives::TempoAddressExt;
 
 /// Built-in policy ID that always rejects authorization.
 pub const REJECT_ALL_POLICY_ID: u64 = 0;
@@ -294,7 +294,7 @@ impl TIP403Registry {
         // TIP-1022: reject virtual addresses in initial account set (spec T3+)
         if self.storage.spec().is_t3() {
             for account in call.accounts.iter() {
-                if is_virtual_address(*account) {
+                if account.is_virtual() {
                     return Err(TIP403RegistryError::virtual_address_not_allowed().into());
                 }
             }
@@ -412,7 +412,7 @@ impl TIP403Registry {
         call: ITIP403Registry::modifyPolicyWhitelistCall,
     ) -> Result<()> {
         // TIP-1022: virtual addresses are forwarding aliases, not valid policy members (spec: T3+)
-        if self.storage.spec().is_t3() && is_virtual_address(call.account) {
+        if self.storage.spec().is_t3() && call.account.is_virtual() {
             return Err(TIP403RegistryError::virtual_address_not_allowed().into());
         }
 
@@ -453,7 +453,7 @@ impl TIP403Registry {
         call: ITIP403Registry::modifyPolicyBlacklistCall,
     ) -> Result<()> {
         // TIP-1022: virtual addresses are forwarding aliases, not valid policy members (spec: T3+)
-        if self.storage.spec().is_t3() && is_virtual_address(call.account) {
+        if self.storage.spec().is_t3() && call.account.is_virtual() {
             return Err(TIP403RegistryError::virtual_address_not_allowed().into());
         }
 
@@ -748,6 +748,7 @@ mod tests {
     use rand_08::Rng;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::TIP403_REGISTRY_ADDRESS;
+    use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
 
     #[test]
     fn test_create_policy() -> eyre::Result<()> {
@@ -2270,14 +2271,6 @@ mod tests {
 
     // ────────────────── TIP-1022 Virtual Address Rejection ──────────────────
 
-    /// Builds a virtual address from a `masterId` and `userTag`.
-    fn make_virtual_address() -> Address {
-        use crate::address_registry::VIRTUAL_MAGIC;
-        let mut bytes = [0u8; 20];
-        bytes[4..14].copy_from_slice(&VIRTUAL_MAGIC);
-        Address::from(bytes)
-    }
-
     #[test]
     fn test_modify_whitelist_rejects_virtual_address() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
@@ -2297,7 +2290,7 @@ mod tests {
                 admin,
                 ITIP403Registry::modifyPolicyWhitelistCall {
                     policyId: policy_id,
-                    account: make_virtual_address(),
+                    account: Address::new_virtual(MasterId::ZERO, UserTag::ZERO),
                     allowed: true,
                 },
             );
@@ -2331,7 +2324,7 @@ mod tests {
                 admin,
                 ITIP403Registry::modifyPolicyBlacklistCall {
                     policyId: policy_id,
-                    account: make_virtual_address(),
+                    account: Address::new_virtual(MasterId::ZERO, UserTag::ZERO),
                     restricted: true,
                 },
             );
@@ -2359,7 +2352,10 @@ mod tests {
                 ITIP403Registry::createPolicyWithAccountsCall {
                     admin,
                     policyType: PolicyType::WHITELIST,
-                    accounts: vec![Address::random(), make_virtual_address()],
+                    accounts: vec![
+                        Address::random(),
+                        Address::new_virtual(MasterId::ZERO, UserTag::ZERO),
+                    ],
                 },
             );
             assert!(matches!(

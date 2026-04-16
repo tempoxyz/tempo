@@ -4,7 +4,7 @@
 use crate::error::TempoPrecompileError;
 use crate::{
     PATH_USD_ADDRESS, Precompile, Result,
-    address_registry::{AddressRegistry, IAddressRegistry, MasterId, UserTag, VIRTUAL_MAGIC},
+    address_registry::{AddressRegistry, IAddressRegistry},
     storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
     tip20::{self, ITIP20, TIP20Token},
     tip20_factory::{self, TIP20Factory},
@@ -17,6 +17,7 @@ use revm::precompile::PrecompileError;
 #[cfg(any(test, feature = "test-utils"))]
 use tempo_contracts::precompiles::TIP20Error;
 use tempo_contracts::precompiles::{TIP20_FACTORY_ADDRESS, UnknownFunctionSelector};
+use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
 
 /// Checks that all selectors in an interface have dispatch handlers.
 ///
@@ -459,15 +460,6 @@ pub const VIRTUAL_MASTER: Address = address!("f39Fd6e51aad88F6F4ce6aB8827279cffF
 pub const VIRTUAL_SALT: [u8; 32] =
     hex!("00000000000000000000000000000000000000000000000000000000abf52baf");
 
-/// Builds a virtual address from a `masterId` and `userTag`.
-pub fn make_virtual_address(master_id: MasterId, user_tag: UserTag) -> Address {
-    let mut bytes = [0u8; 20];
-    bytes[0..4].copy_from_slice(master_id.as_slice());
-    bytes[4..14].copy_from_slice(&VIRTUAL_MAGIC);
-    bytes[14..20].copy_from_slice(user_tag.as_slice());
-    Address::from(bytes)
-}
-
 /// Registers [`VIRTUAL_MASTER`] and returns `(master_id, virtual_address)`.
 pub fn register_virtual_master(registry: &mut AddressRegistry) -> Result<(MasterId, Address)> {
     let master_id = registry.register_virtual_master(
@@ -476,6 +468,6 @@ pub fn register_virtual_master(registry: &mut AddressRegistry) -> Result<(Master
             salt: VIRTUAL_SALT.into(),
         },
     )?;
-    let virtual_addr = make_virtual_address(master_id, UserTag::new(hex!("010203040506")));
+    let virtual_addr = Address::new_virtual(master_id, UserTag::new(hex!("010203040506")));
     Ok((master_id, virtual_addr))
 }

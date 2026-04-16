@@ -23,12 +23,13 @@ use crate::{
     error::{Result, TempoPrecompileError},
     stablecoin_dex::orderbook::{MAX_PRICE, MIN_PRICE, compute_book_key},
     storage::{Handler, Mapping},
-    tip20::{ITIP20, TIP20Token, is_tip20_prefix, validate_usd_currency},
+    tip20::{ITIP20, TIP20Token, validate_usd_currency},
     tip20_factory::TIP20Factory,
     tip403_registry::{AuthRole, TIP403Registry, is_policy_lookup_error},
 };
 use alloy::primitives::{Address, B256, U256};
 use tempo_precompiles_macros::contract;
+use tempo_primitives::TempoAddressExt;
 
 /// Minimum order size of $100 USD
 pub const MIN_ORDER_AMOUNT: u128 = 100_000_000;
@@ -1339,7 +1340,7 @@ impl StablecoinDEX {
         }
 
         // Validate that both tokens are TIP20 tokens
-        if !is_tip20_prefix(token_in) || !is_tip20_prefix(token_out) {
+        if !token_in.is_tip20() || !token_out.is_tip20() {
             return Err(StablecoinDEXError::invalid_token().into());
         }
 

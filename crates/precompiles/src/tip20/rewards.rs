@@ -7,7 +7,6 @@
 //! [Reward system]: <https://docs.tempo.xyz/protocol/tip20-rewards/overview>
 
 use crate::{
-    address_registry,
     error::{Result, TempoPrecompileError},
     storage::Handler,
     tip20::{Recipient, TIP20Token},
@@ -15,6 +14,7 @@ use crate::{
 use alloy::primitives::{Address, U256, uint};
 use tempo_contracts::precompiles::{ITIP20, TIP20Error, TIP20Event};
 use tempo_precompiles_macros::Storable;
+use tempo_primitives::TempoAddressExt;
 
 /// Precision multiplier for reward-per-token accumulator (1e18).
 pub const ACC_PRECISION: U256 = uint!(1000000000000000000_U256);
@@ -136,7 +136,7 @@ impl TIP20Token {
         self.check_not_paused()?;
 
         // TIP-1022: reject virtual addresses as reward recipients
-        if self.storage.spec().is_t3() && address_registry::is_virtual_address(call.recipient) {
+        if self.storage.spec().is_t3() && call.recipient.is_virtual() {
             return Err(TIP20Error::invalid_recipient().into());
         }
 
@@ -389,7 +389,7 @@ mod tests {
         address_registry::{MasterId, UserTag},
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{TIP20Setup, make_virtual_address},
+        test_util::TIP20Setup,
         tip403_registry::TIP403Registry,
     };
     use alloy::primitives::{Address, U256};
@@ -729,7 +729,7 @@ mod tests {
 
     #[test]
     fn test_set_reward_recipient_rejects_virtual_on_t3() -> eyre::Result<()> {
-        let virtual_addr = make_virtual_address(MasterId::ZERO, UserTag::ZERO);
+        let virtual_addr = Address::new_virtual(MasterId::ZERO, UserTag::ZERO);
 
         for hardfork in [TempoHardfork::T2, TempoHardfork::T3] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
