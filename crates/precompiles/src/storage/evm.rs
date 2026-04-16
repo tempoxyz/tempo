@@ -3,6 +3,7 @@ use alloy_evm::EvmInternals;
 use revm::{
     context::{Block, CfgEnv, journaled_state::JournalCheckpoint},
     context_interface::cfg::{GasParams, gas},
+    interpreter::gas::GasTracker,
     state::{AccountInfo, Bytecode},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -14,11 +15,7 @@ use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
 /// Wraps `EvmInternals` and tracks gas consumption for storage operations.
 pub struct EvmPrecompileStorageProvider<'a> {
     internals: EvmInternals<'a>,
-    gas_remaining: u64,
-    gas_refunded: i64,
-    gas_limit: u64,
-    reservoir: u64,
-    state_gas_spent: u64,
+    gas_tracker: GasTracker,
     spec: TempoHardfork,
     is_static: bool,
     gas_params: GasParams,
@@ -39,11 +36,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
     ) -> Self {
         Self {
             internals,
-            gas_remaining: gas_limit,
-            gas_refunded: 0,
-            gas_limit,
-            reservoir,
-            state_gas_spent: 0,
+            gas_tracker: GasTracker::new(gas_limit, gas_limit, reservoir),
             spec,
             is_static,
             gas_params,
@@ -80,6 +73,14 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             cfg.gas_params.clone(),
         )
     }
+
+    #[inline]
+    fn deduct_state_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
+        if !self.gas_tracker.record_state_cost(gas) {
+            return Err(TempoPrecompileError::OutOfGas);
+        }
+        Ok(())
+    }
 }
 
 impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
@@ -105,7 +106,9 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         self.deduct_gas(self.gas_params.code_deposit_cost(code_len))?;
 
         // Track state gas for code deposit
-        self.state_gas_spent += self.gas_params.code_deposit_state_gas(code_len);
+        if self.spec.is_t4() {
+            self.deduct_state_gas(self.gas_params.code_deposit_state_gas(code_len))?;
+        }
 
         self.internals
             .load_account_mut(address)?
@@ -128,13 +131,13 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
         // TODO(rakita) can be moved to the beginning of the function. Requires fork.
         deduct_gas(
-            &mut self.gas_remaining,
+            &mut self.gas_tracker,
             self.gas_params.warm_storage_read_cost(),
         )?;
 
         // dynamic gas
         if account.is_cold {
-            deduct_gas(&mut self.gas_remaining, additional_cost)?;
+            deduct_gas(&mut self.gas_tracker, additional_cost)?;
         }
 
         account.load_code()?;
@@ -165,7 +168,9 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         )?;
 
         // Track state gas (cold SSTORE zero->non-zero only)
-        self.state_gas_spent += self.gas_params.sstore_state_gas(&result.data);
+        if self.spec.is_t4() {
+            self.deduct_state_gas(self.gas_params.sstore_state_gas(&result.data))?;
+        }
 
         // refund gas.
         self.refund_gas(self.gas_params.sstore_refund(true, &result.data));
@@ -235,41 +240,37 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn deduct_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
-        self.gas_remaining = self
-            .gas_remaining
-            .checked_sub(gas)
-            .ok_or(TempoPrecompileError::OutOfGas)?;
-        Ok(())
+        deduct_gas(&mut self.gas_tracker, gas)
     }
 
     #[inline]
     fn refund_gas(&mut self, gas: i64) {
-        self.gas_refunded = self.gas_refunded.saturating_add(gas);
+        self.gas_tracker.record_refund(gas);
     }
 
     #[inline]
     fn gas_limit(&self) -> u64 {
-        self.gas_limit
+        self.gas_tracker.limit()
     }
 
     #[inline]
     fn gas_used(&self) -> u64 {
-        self.gas_limit - self.gas_remaining
+        self.gas_tracker.limit() - self.gas_tracker.remaining()
     }
 
     #[inline]
     fn state_gas_used(&self) -> u64 {
-        self.state_gas_spent
+        self.gas_tracker.state_gas_spent()
     }
 
     #[inline]
     fn gas_refunded(&self) -> i64 {
-        self.gas_refunded
+        self.gas_tracker.refunded()
     }
 
     #[inline]
     fn reservoir(&self) -> u64 {
-        self.reservoir
+        self.gas_tracker.reservoir()
     }
 
     #[inline]
@@ -334,10 +335,13 @@ impl EvmPrecompileStorageProvider<'_> {
 
 /// Deducts gas from the remaining gas and returns an error if insufficient.
 #[inline]
-pub fn deduct_gas(gas: &mut u64, additional_cost: u64) -> Result<(), TempoPrecompileError> {
-    *gas = gas
-        .checked_sub(additional_cost)
-        .ok_or(TempoPrecompileError::OutOfGas)?;
+pub fn deduct_gas(
+    gas_tracker: &mut GasTracker,
+    additional_cost: u64,
+) -> Result<(), TempoPrecompileError> {
+    if !gas_tracker.record_regular_cost(additional_cost) {
+        return Err(TempoPrecompileError::OutOfGas);
+    }
     Ok(())
 }
 
@@ -349,6 +353,7 @@ mod tests {
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use revm::{
+        context_interface::cfg::GasId,
         database::{CacheDB, EmptyDB},
         interpreter::StateLoad,
     };
@@ -774,6 +779,100 @@ mod tests {
             provider.state_gas_used(),
             state_gas_before_code + 2_300,
             "set_code(1 byte) should add 2,300 state gas"
+        );
+
+        Ok(())
+    }
+
+    /// Tests that state gas (EIP-8037) is deducted from the reservoir first and
+    /// spills into regular gas once the reservoir is exhausted.
+    #[test]
+    fn test_state_gas_spills_from_reservoir_to_regular_gas() -> eyre::Result<()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut cfg = revm::context::CfgEnv::<TempoHardfork>::default();
+        cfg.set_spec_and_mainnet_gas_params(TempoHardfork::T4);
+        cfg.gas_params.override_gas(vec![
+            (GasId::sstore_set_without_load_cost(), 19_900),
+            (GasId::sstore_set_state_gas(), 230_000),
+        ]);
+        let evm_env = EvmEnv {
+            cfg_env: cfg.clone(),
+            ..Default::default()
+        };
+
+        // Reservoir = 500k: enough for 2 full SSTOREs (2 × 230k = 460k)
+        // but the 3rd SSTORE (230k) must spill 190k into regular gas.
+        let gas_limit = 1_000_000u64;
+        let reservoir = 500_000u64;
+        let state_gas_per_sstore = 230_000u64;
+
+        let mut evm = TempoEvmFactory::default().create_evm(db, evm_env);
+        let ctx = evm.ctx_mut();
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+        let mut provider = EvmPrecompileStorageProvider::new(
+            evm_internals,
+            gas_limit,
+            reservoir,
+            cfg.spec,
+            false,
+            cfg.gas_params.clone(),
+        );
+
+        let address = address!("5000000000000000000000000000000000000005");
+
+        // --- First SSTORE (zero→non-zero): fully covered by reservoir ---
+        provider.sstore(address, U256::from(1), U256::from(42))?;
+
+        let regular_gas_per_sstore = provider.gas_used(); // static + dynamic (regular)
+        assert_eq!(
+            provider.state_gas_used(),
+            state_gas_per_sstore,
+            "first SSTORE should consume 230k state gas"
+        );
+        assert_eq!(
+            provider.reservoir(),
+            reservoir - state_gas_per_sstore,
+            "reservoir should decrease by state gas cost"
+        );
+
+        // --- Second SSTORE: still fits in remaining reservoir (270k left, need 230k) ---
+        provider.sstore(address, U256::from(2), U256::from(43))?;
+
+        assert_eq!(
+            provider.state_gas_used(),
+            2 * state_gas_per_sstore,
+            "two SSTOREs should consume 460k state gas"
+        );
+        assert_eq!(
+            provider.reservoir(),
+            reservoir - 2 * state_gas_per_sstore,
+            "reservoir should have 40k left after 2 SSTOREs"
+        );
+        let remaining_reservoir = provider.reservoir(); // 40k
+        let regular_gas_before_spill = provider.gas_used();
+
+        // --- Third SSTORE: reservoir insufficient, 190k spills to regular gas ---
+        provider.sstore(address, U256::from(3), U256::from(44))?;
+
+        assert_eq!(
+            provider.state_gas_used(),
+            3 * state_gas_per_sstore,
+            "three SSTOREs should consume 690k state gas total"
+        );
+        assert_eq!(
+            provider.reservoir(),
+            0,
+            "reservoir should be fully exhausted"
+        );
+
+        // Regular gas increase = normal sstore cost + spill from reservoir
+        let spill = state_gas_per_sstore - remaining_reservoir; // 230k - 40k = 190k
+        let expected_regular_after = regular_gas_before_spill + regular_gas_per_sstore + spill;
+        assert_eq!(
+            provider.gas_used(),
+            expected_regular_after,
+            "regular gas should include spill of {spill} from exhausted reservoir"
         );
 
         Ok(())
