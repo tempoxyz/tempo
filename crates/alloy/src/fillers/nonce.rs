@@ -222,6 +222,11 @@ impl NonceKeyFiller {
         self.cache_enabled = cache_enabled;
     }
 
+    /// Disables nonce caching.
+    pub fn disable_caching(&mut self) {
+        self.set_caching_enabled(false);
+    }
+
     /// Clears every tracked `(address, nonce_key)` pair.
     ///
     /// Future fills will refetch nonces from the chain.
@@ -389,7 +394,7 @@ mod tests {
         let provider = ProviderBuilder::<_, _, TempoNetwork>::default()
             .connect_mocked_client(asserter.clone());
         let mut filler = NonceKeyFiller::default();
-        filler.set_caching_enabled(false);
+        filler.disable_caching();
         let account = Address::repeat_byte(0x22);
         let nonce_key = U256::from(7_u64);
         let mut tx = TempoTransactionRequest::default().with_nonce_key(nonce_key);
