@@ -12,7 +12,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-tempo-chainspec.workspace = true
+tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-consensus.workspace = true
 tempo-contracts.workspace = true
 tempo-payload-types = { workspace = true, optional = true }

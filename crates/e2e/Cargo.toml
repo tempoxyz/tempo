@@ -44,7 +44,7 @@ reth-node-core.workspace = true
 reth-node-metrics.workspace = true
 reth-rpc-builder.workspace = true
 
-tempo-chainspec.workspace = true
+tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-dkg-onchain-artifacts.workspace = true
 tempo-commonware-node.workspace = true
 tempo-node.workspace = true

@@ -203,10 +203,19 @@ jobs:
                 printf '%s = { path = "../tempo/%s" }\n' "$crate" "$path"
               done <<< "$PATCHES"
             } >> Cargo.toml
+
+            # Also patch crates-io so transitive deps (e.g. mpp-rs) resolve
+            # tempo crates from the local checkout instead of the registry
+            while IFS=$'\t' read -r crate path; do
+              [[ -n "$crate" ]] || continue
+              if ! grep -q "^${crate} = " <(sed -n '/^\[patch\.crates-io\]/,/^\[/p' Cargo.toml); then
+                sed -i "/^\[patch\.crates-io\]/a ${crate} = { path = \"../tempo/${path}\" }" Cargo.toml
+              fi
+            done <<< "$PATCHES"
           fi
 
-          echo "Updated Cargo.toml patch section:"
-          sed -n '/^\[patch\."https:\/\/github.com\/tempoxyz\/tempo"\]/,$p' Cargo.toml
+          echo "Updated Cargo.toml patch sections:"
+          sed -n '/^\[patch\./,$p' Cargo.toml
 
           # Update Cargo.lock to resolve version conflicts
           cargo update
