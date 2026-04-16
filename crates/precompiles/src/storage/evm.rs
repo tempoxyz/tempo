@@ -130,16 +130,14 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             .load_account_mut_skip_cold_load(address, false)?;
 
         // TODO(rakita) can be moved to the beginning of the function. Requires fork.
-        if !self
-            .gas_tracker
-            .record_regular_cost(self.gas_params.warm_storage_read_cost())
-        {
-            return Err(TempoPrecompileError::OutOfGas);
-        }
+        deduct_gas(
+            &mut self.gas_tracker,
+            self.gas_params.warm_storage_read_cost(),
+        )?;
 
         // dynamic gas
-        if account.is_cold && !self.gas_tracker.record_regular_cost(additional_cost) {
-            return Err(TempoPrecompileError::OutOfGas);
+        if account.is_cold {
+            deduct_gas(&mut self.gas_tracker, additional_cost)?;
         }
 
         account.load_code()?;
@@ -242,10 +240,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn deduct_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
-        if !self.gas_tracker.record_regular_cost(gas) {
-            return Err(TempoPrecompileError::OutOfGas);
-        }
-        Ok(())
+        deduct_gas(&mut self.gas_tracker, gas)
     }
 
     #[inline]
@@ -336,6 +331,18 @@ impl EvmPrecompileStorageProvider<'_> {
             "out-of-order checkpoint {op} (expected top of stack)"
         );
     }
+}
+
+/// Deducts gas from the remaining gas and returns an error if insufficient.
+#[inline]
+pub fn deduct_gas(
+    gas_tracker: &mut GasTracker,
+    additional_cost: u64,
+) -> Result<(), TempoPrecompileError> {
+    if !gas_tracker.record_regular_cost(additional_cost) {
+        return Err(TempoPrecompileError::OutOfGas);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
