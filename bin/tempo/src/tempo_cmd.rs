@@ -1240,7 +1240,7 @@ impl ValidatorsInfo {
 
 fn key_from_file<P: AsRef<Path>>(p: P) -> eyre::Result<PrivateKeySigner> {
     let raw = std::fs::read(p).wrap_err("failed reading key from file")?;
-    let bytes = const_hex::decode(&raw).wrap_err("failed decoding file contents from hex")?;
+    let bytes = alloy::hex::decode(&raw).wrap_err("failed decoding file contents from hex")?;
     PrivateKeySigner::from_slice(&bytes)
         .wrap_err("failed converting file decoded hex bytes to private key")
 }

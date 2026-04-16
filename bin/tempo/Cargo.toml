@@ -98,7 +98,6 @@ opentelemetry-otlp = { version = "0.31", default-features = false, optional = tr
 pyroscope = { workspace = true, optional = true }
 pyroscope_pprofrs = { workspace = true, optional = true }
 tracy-client = { workspace = true, optional = true }
-const-hex.workspace = true
 
 [[bin]]
 name = "tempo"
