@@ -106,9 +106,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         self.deduct_gas(self.gas_params.code_deposit_cost(code_len))?;
 
         // Track state gas for code deposit
-        if self.spec.is_t4() {
-            self.deduct_state_gas(self.gas_params.code_deposit_state_gas(code_len))?;
-        }
+        self.deduct_state_gas(self.gas_params.code_deposit_state_gas(code_len))?;
 
         self.internals
             .load_account_mut(address)?
@@ -168,9 +166,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         )?;
 
         // Track state gas (cold SSTORE zero->non-zero only)
-        if self.spec.is_t4() {
-            self.deduct_state_gas(self.gas_params.sstore_state_gas(&result.data))?;
-        }
+        self.deduct_state_gas(self.gas_params.sstore_state_gas(&result.data))?;
 
         // refund gas.
         self.refund_gas(self.gas_params.sstore_refund(true, &result.data));

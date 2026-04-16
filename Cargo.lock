@@ -14993,3 +14993,8 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
+
+[[patch.unused]]
+name = "op-revm"
+version = "18.0.0"
+source = "git+https://github.com/foundry-rs/op-revm?rev=780b812#780b812fb1a4e1c982f3b1d7ccc2a68d5c9199a5"

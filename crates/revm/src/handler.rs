@@ -886,11 +886,7 @@ where
             && caller_account.nonce() == 0
         {
             let account_cost = cfg.gas_params.get(GasId::new_account_cost());
-            let account_state_gas = if spec.is_t4() {
-                cfg.gas_params.new_account_state_gas()
-            } else {
-                0
-            };
+            let account_state_gas = cfg.gas_params.new_account_state_gas();
             init_and_floor_gas.initial_total_gas += account_cost + account_state_gas;
             init_and_floor_gas.initial_state_gas += account_state_gas;
 
@@ -1621,11 +1617,7 @@ where
             // Transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas.
             if spec.is_t1() && tx.nonce == 0 {
                 let account_cost = gas_params.get(GasId::new_account_cost());
-                let account_state_gas = if spec.is_t4() {
-                    gas_params.new_account_state_gas()
-                } else {
-                    0
-                };
+                let account_state_gas = gas_params.new_account_state_gas();
                 // Add both execution and state portions to initial_total_gas
                 // (revm's invariant: initial_total_gas >= initial_state_gas)
                 init_gas.initial_total_gas += account_cost + account_state_gas;
@@ -1902,11 +1894,7 @@ where
             // TIP-1000: Storage pricing updates for launch
             // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas
             let account_cost = gas_params.get(GasId::new_account_cost());
-            let account_state_gas = if spec.is_t4() {
-                gas_params.new_account_state_gas()
-            } else {
-                0
-            };
+            let account_state_gas = gas_params.new_account_state_gas();
             batch_gas.initial_total_gas += account_cost + account_state_gas;
             batch_gas.initial_state_gas += account_state_gas;
         } else if !aa_env.nonce_key.is_zero() {
@@ -3114,12 +3102,7 @@ mod tests {
             } else {
                 spec.gas_new_nonce_key()
             };
-            // TIP-1016: For T4+, state gas must also fit within gas_limit
-            let nonce_zero_state_gas = if spec.is_t4() {
-                gas_params.new_account_state_gas()
-            } else {
-                0
-            };
+            let nonce_zero_state_gas = gas_params.new_account_state_gas();
             let nonce_zero_total = nonce_zero_gas + nonce_zero_state_gas;
 
             let cases = if spec.is_t0() {
