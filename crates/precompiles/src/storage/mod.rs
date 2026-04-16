@@ -79,6 +79,11 @@ pub trait PrecompileStorageProvider {
     /// Deducts gas from the remaining gas and returns an error if insufficient.
     fn deduct_gas(&mut self, gas: u64) -> Result<()>;
 
+    /// Deducts state gas (EIP-8037 reservoir model).
+    ///
+    /// State gas charges deduct from the reservoir first; when exhausted, spill into regular gas.
+    fn deduct_state_gas(&mut self, gas: u64) -> Result<()>;
+
     /// Add refund to the refund gas counter.
     fn refund_gas(&mut self, gas: i64);
 
