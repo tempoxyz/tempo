@@ -42,7 +42,7 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         let mut transactions = Vec::with_capacity(payload.block.body().transactions.len());
         let mut expiring_nonce_idx = 0;
 
-        for (idx, tx) in 0..payload.block.body().transactions.iter().enumerate() {
+        for (idx, tx) in payload.block.body().transactions.iter().enumerate() {
             if tx.is_expiring_nonce() {
                 transactions.push((block.clone(), idx, Some(expiring_nonce_idx)));
                 expiring_nonce_idx += 1;
