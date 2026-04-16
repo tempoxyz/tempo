@@ -386,11 +386,17 @@ impl ValidatorTransactionArgs {
     }
 
     fn signer(&self) -> eyre::Result<PrivateKeySigner> {
-        let private_key_bytes = std::fs::read(&self.private_key)
+        let raw = std::fs::read(&self.private_key)
             .wrap_err("failed reading validator ethereum private key")?;
 
-        let private_key = B256::try_from(private_key_bytes.as_slice())
-            .wrap_err("invalid validator ethereum private key")?;
+        // Support both raw 32-byte keys and hex-encoded strings (with optional 0x prefix)
+        let private_key = if raw.len() == 32 {
+            B256::from_slice(&raw)
+        } else {
+            let hex_str =
+                std::str::from_utf8(&raw).wrap_err("invalid validator ethereum private key")?;
+            hex_str.trim().parse::<B256>().wrap_err("invalid validator ethereum private key")?
+        };
 
         Ok(PrivateKeySigner::from_bytes(&private_key)?)
     }
@@ -490,10 +496,18 @@ impl TransferValidatorOwnership {
         let signer = self.submit.signer()?;
         let provider = self.submit.provider(signer).await?;
 
-        let new_private_key_bytes = std::fs::read(&self.new_private_key)
-            .wrap_err("failed reading new validator ethereum privatekey")?;
-        let new_private_key = B256::try_from(new_private_key_bytes.as_slice())
-            .wrap_err("invalid validator ethereum private key")?;
+        let new_raw = std::fs::read(&self.new_private_key)
+            .wrap_err("failed reading new validator ethereum private key")?;
+        let new_private_key = if new_raw.len() == 32 {
+            B256::from_slice(&new_raw)
+        } else {
+            let hex_str = std::str::from_utf8(&new_raw)
+                .wrap_err("invalid new validator ethereum private key")?;
+            hex_str
+                .trim()
+                .parse::<B256>()
+                .wrap_err("invalid new validator ethereum private key")?
+        };
 
         let new_signer = PrivateKeySigner::from_bytes(&new_private_key)?;
         let new_validator_address = new_signer.address();
