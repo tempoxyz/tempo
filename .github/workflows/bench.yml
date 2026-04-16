@@ -23,7 +23,7 @@ on:
       bloat:
         description: "State bloat in GB (0 = none)"
         required: false
-        default: "1"
+        default: "100"
         type: choice
         options:
           - "0"
@@ -204,7 +204,7 @@ jobs:
               actor = '${{ github.actor }}';
               preset = '${{ github.event.inputs.preset }}' || 'tip20';
               duration = '${{ github.event.inputs.duration }}' || '300';
-              bloat = String(parseInt('${{ github.event.inputs.bloat }}' || '1', 10) * 1000);
+              bloat = String(parseInt('${{ github.event.inputs.bloat }}' || '100', 10) * 1000);
               tps = '${{ github.event.inputs.tps }}' || '10000';
               baseline = '${{ github.event.inputs.baseline }}';
               feature = '${{ github.event.inputs.feature }}';
@@ -246,7 +246,7 @@ jobs:
               const refArgs = new Set(['baseline', 'feature']);
               const stringArgs = new Set(['preset', 'tracy', 'baseline-args', 'feature-args', 'baseline-hardfork', 'feature-hardfork', 'bench-args', 'bench-env', 'baseline-env', 'feature-env']);
               const boolArgs = new Set(['samply', 'force-bloat', 'no-slack']);
-              const defaults = { preset: 'tip20', duration: '300', bloat: '1', tps: '10000', baseline: '', feature: '', samply: 'false', tracy: 'off', 'tracy-seconds': '30', 'tracy-offset': '120', 'baseline-args': '', 'feature-args': '', 'baseline-hardfork': '', 'feature-hardfork': '', 'force-bloat': 'false', 'no-slack': 'false', 'bench-args': '', 'bench-env': '', 'baseline-env': '', 'feature-env': '' };
+              const defaults = { preset: 'tip20', duration: '300', bloat: '100', tps: '10000', baseline: '', feature: '', samply: 'false', tracy: 'off', 'tracy-seconds': '30', 'tracy-offset': '120', 'baseline-args': '', 'feature-args': '', 'baseline-hardfork': '', 'feature-hardfork': '', 'force-bloat': 'false', 'no-slack': 'false', 'bench-args': '', 'bench-env': '', 'baseline-env': '', 'feature-env': '' };
               const unknown = [];
               const invalid = [];
               const args = body.replace(/^(?:@decofe|derek) bench\s*/, '');
