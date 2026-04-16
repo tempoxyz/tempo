@@ -553,6 +553,9 @@ where
                 // Precompute the fee balance slot after validation has resolved the fee token.
                 transaction.transaction().fee_balance_slot();
 
+                // Warm the global keccak cache with storage slot hashes for this transaction.
+                transaction.transaction().precalculate_keccak_slots();
+
                 TransactionValidationOutcome::Valid {
                     balance,
                     state_nonce,

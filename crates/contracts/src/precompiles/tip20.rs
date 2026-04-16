@@ -1,5 +1,6 @@
 pub use IRolesAuth::{IRolesAuthErrors as RolesAuthError, IRolesAuthEvents as RolesAuthEvent};
 pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
+use alloy_primitives::Address;
 use alloy_sol_types::{SolCall, SolType};
 
 /// Decimal precision for all TIP-20 tokens.
@@ -229,6 +230,22 @@ impl ITIP20::ITIP20Calls {
             || is_call::<ITIP20::transferFromWithMemoCall>(input)
             || is_call::<ITIP20::burnCall>(input)
             || is_call::<ITIP20::burnWithMemoCall>(input)
+    }
+
+    /// Returns addresses whose balance slots are accessed by this call.
+    ///
+    /// For transfers: `[to]` or `[from, to]`. For mints: `[to]`.
+    /// For burns, approves, and view calls: empty.
+    pub fn balance_addresses(&self) -> [Option<Address>; 2] {
+        match self {
+            Self::transfer(c) => [Some(c.to), None],
+            Self::transferWithMemo(c) => [Some(c.to), None],
+            Self::transferFrom(c) => [Some(c.from), Some(c.to)],
+            Self::transferFromWithMemo(c) => [Some(c.from), Some(c.to)],
+            Self::mint(c) => [Some(c.to), None],
+            Self::mintWithMemo(c) => [Some(c.to), None],
+            _ => [None, None],
+        }
     }
 }
 
