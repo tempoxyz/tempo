@@ -253,11 +253,9 @@ where
             attributes,
             payload_id,
         } = config;
-        let build_until_interrupt =
-            // When trie handle is provided, we only build the payload once, until the interrupt is triggered
-            trie_handle.is_some()
-            // In `--dev` mode, use a deadline to simulate the consensus interrupt
-            || self.dev_build_duration.is_some();
+        // When trie handle is provided, we only build the payload once, until the interrupt is triggered.
+        // In `--dev` mode, use a deadline to simulate the consensus interrupt.
+        let build_until_interrupt = trie_handle.is_some();
 
         let start = Instant::now();
 
