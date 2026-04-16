@@ -19,7 +19,7 @@ import { LegacyTransaction, LegacyTransactionLib } from "tempo-std/tx/LegacyTran
 /// TIP-1000 specifies:
 /// - SSTORE to new slot: 250,000 gas (TEMPO-GAS1)
 /// - CREATE base cost: 500,000 gas (TEMPO-GAS5)
-/// - Code deposit: 1,000 gas per byte (TEMPO-GAS5)
+/// - Code deposit: 2,500 gas per byte (TEMPO-GAS5, updated by TIP-1016)
 /// - Account creation: 250,000 gas (part of TEMPO-GAS5)
 /// - Multiple new slots: 250,000 gas each (TEMPO-GAS8)
 ///
@@ -57,8 +57,8 @@ contract GasPricingInvariantTest is InvariantBase {
     /// @dev Account creation cost (nonce 0 -> 1)
     uint256 internal constant ACCOUNT_CREATION_GAS = 250_000;
 
-    /// @dev Code deposit cost per byte
-    uint256 internal constant CODE_DEPOSIT_PER_BYTE = 1000;
+    /// @dev Code deposit cost per byte (200 regular + 2,300 state)
+    uint256 internal constant CODE_DEPOSIT_PER_BYTE = 2_500;
 
     /// @dev Base transaction cost
     uint256 internal constant BASE_TX_GAS = 21_000;
