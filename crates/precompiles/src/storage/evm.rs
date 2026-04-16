@@ -346,6 +346,7 @@ mod tests {
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use revm::{
+        context_interface::cfg::GasId,
         database::{CacheDB, EmptyDB},
         interpreter::StateLoad,
     };
@@ -771,6 +772,96 @@ mod tests {
             provider.state_gas_used(),
             state_gas_before_code + 2_300,
             "set_code(1 byte) should add 2,300 state gas"
+        );
+
+        Ok(())
+    }
+
+    /// Tests that state gas (EIP-8037) is deducted from the reservoir first and
+    /// spills into regular gas once the reservoir is exhausted.
+    #[test]
+    fn test_state_gas_spills_from_reservoir_to_regular_gas() -> eyre::Result<()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut cfg = revm::context::CfgEnv::<TempoHardfork>::default();
+        cfg.set_spec_and_mainnet_gas_params(TempoHardfork::T4);
+        cfg.gas_params.override_gas(vec![
+            (GasId::sstore_set_without_load_cost(), 19_900),
+            (GasId::sstore_set_state_gas(), 230_000),
+        ]);
+        let evm_env = EvmEnv {
+            cfg_env: cfg.clone(),
+            ..Default::default()
+        };
+
+        // Reservoir = 500k: enough for 2 full SSTOREs (2 × 230k = 460k)
+        // but the 3rd SSTORE (230k) must spill 190k into regular gas.
+        let gas_limit = 1_000_000u64;
+        let reservoir = 500_000u64;
+        let state_gas_per_sstore = 230_000u64;
+
+        let mut evm = TempoEvmFactory::default().create_evm(db, evm_env);
+        let ctx = evm.ctx_mut();
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+        let mut provider = EvmPrecompileStorageProvider::new(
+            evm_internals,
+            gas_limit,
+            reservoir,
+            cfg.spec,
+            false,
+            cfg.gas_params.clone(),
+        );
+
+        let address = address!("5000000000000000000000000000000000000005");
+
+        // --- First SSTORE (zero→non-zero): fully covered by reservoir ---
+        provider.sstore(address, U256::from(1), U256::from(42))?;
+
+        let regular_gas_per_sstore = provider.gas_used(); // static + dynamic (regular)
+        assert_eq!(
+            provider.state_gas_used(),
+            state_gas_per_sstore,
+            "first SSTORE should consume 230k state gas"
+        );
+        assert_eq!(
+            provider.reservoir(),
+            reservoir - state_gas_per_sstore,
+            "reservoir should decrease by state gas cost"
+        );
+
+        // --- Second SSTORE: still fits in remaining reservoir (270k left, need 230k) ---
+        provider.sstore(address, U256::from(2), U256::from(43))?;
+
+        assert_eq!(
+            provider.state_gas_used(),
+            2 * state_gas_per_sstore,
+            "two SSTOREs should consume 460k state gas"
+        );
+        assert_eq!(
+            provider.reservoir(),
+            reservoir - 2 * state_gas_per_sstore,
+            "reservoir should have 40k left after 2 SSTOREs"
+        );
+        let remaining_reservoir = provider.reservoir(); // 40k
+        let regular_gas_before_spill = provider.gas_used();
+
+        // --- Third SSTORE: reservoir insufficient, 190k spills to regular gas ---
+        provider.sstore(address, U256::from(3), U256::from(44))?;
+
+        assert_eq!(
+            provider.state_gas_used(),
+            3 * state_gas_per_sstore,
+            "three SSTOREs should consume 690k state gas total"
+        );
+        assert_eq!(provider.reservoir(), 0, "reservoir should be fully exhausted");
+
+        // Regular gas increase = normal sstore cost + spill from reservoir
+        let spill = state_gas_per_sstore - remaining_reservoir; // 230k - 40k = 190k
+        let expected_regular_after = regular_gas_before_spill + regular_gas_per_sstore + spill;
+        assert_eq!(
+            provider.gas_used(),
+            expected_regular_after,
+            "regular gas should include spill of {spill} from exhausted reservoir"
         );
 
         Ok(())
