@@ -3,13 +3,13 @@ pragma solidity ^0.8.20;
 
 import { ISignatureVerifier } from "./interfaces/ISignatureVerifier.sol";
 import { ITIP20 } from "./interfaces/ITIP20.sol";
-import { ITempoStreamChannel } from "./interfaces/ITempoStreamChannel.sol";
+import { ITIP20ChannelEscrow } from "./interfaces/ITIP20ChannelEscrow.sol";
 
-/// @title TempoStreamChannel
+/// @title TIP20ChannelEscrow
 /// @notice Reference contract for the TIP-1034 channel model.
-contract TempoStreamChannel is ITempoStreamChannel {
+contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
 
-    address public constant MPP_CHANNEL_PRECOMPILE = 0x4d50500000000000000000000000000000000000;
+    address public constant TIP20_CHANNEL_ESCROW = 0x4d50500000000000000000000000000000000000;
     address public constant SIGNATURE_VERIFIER_PRECOMPILE =
         0x5165300000000000000000000000000000000000;
 
@@ -21,7 +21,7 @@ contract TempoStreamChannel is ITempoStreamChannel {
     bytes32 internal constant _EIP712_DOMAIN_TYPEHASH = keccak256(
         "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
     );
-    bytes32 internal constant _NAME_HASH = keccak256("Tempo Stream Channel");
+    bytes32 internal constant _NAME_HASH = keccak256("TIP20 Channel Escrow");
     bytes32 internal constant _VERSION_HASH = keccak256("1");
 
     mapping(bytes32 => Channel) public channels;
@@ -250,7 +250,7 @@ contract TempoStreamChannel is ITempoStreamChannel {
     {
         return keccak256(
             abi.encode(
-                payer, payee, token, salt, authorizedSigner, MPP_CHANNEL_PRECOMPILE, block.chainid
+                payer, payee, token, salt, authorizedSigner, TIP20_CHANNEL_ESCROW, block.chainid
             )
         );
     }
@@ -309,7 +309,7 @@ contract TempoStreamChannel is ITempoStreamChannel {
                 _NAME_HASH,
                 _VERSION_HASH,
                 block.chainid,
-                MPP_CHANNEL_PRECOMPILE
+                TIP20_CHANNEL_ESCROW
             )
         );
     }

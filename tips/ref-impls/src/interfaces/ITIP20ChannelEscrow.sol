@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity >=0.8.20 <0.9.0;
 
-/// @title ITempoStreamChannel
+/// @title ITIP20ChannelEscrow
 /// @notice Reference interface for the TIP-1034 channel model.
-interface ITempoStreamChannel {
+interface ITIP20ChannelEscrow {
 
     struct Channel {
         bool finalized;

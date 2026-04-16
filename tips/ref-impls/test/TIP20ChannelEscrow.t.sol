@@ -2,8 +2,8 @@
 pragma solidity ^0.8.20;
 
 import { TIP20 } from "../src/TIP20.sol";
-import { TempoStreamChannel } from "../src/TempoStreamChannel.sol";
-import { ITempoStreamChannel } from "../src/interfaces/ITempoStreamChannel.sol";
+import { TIP20ChannelEscrow } from "../src/TIP20ChannelEscrow.sol";
+import { ITIP20ChannelEscrow } from "../src/interfaces/ITIP20ChannelEscrow.sol";
 import { BaseTest } from "./BaseTest.t.sol";
 
 contract MockSignatureVerifier {
@@ -60,9 +60,9 @@ contract MockSignatureVerifier {
 
 }
 
-contract TempoStreamChannelTest is BaseTest {
+contract TIP20ChannelEscrowTest is BaseTest {
 
-    TempoStreamChannel public channel;
+    TIP20ChannelEscrow public channel;
     TIP20 public token;
 
     address public payer;
@@ -75,7 +75,7 @@ contract TempoStreamChannelTest is BaseTest {
     function setUp() public override {
         super.setUp();
 
-        channel = new TempoStreamChannel();
+        channel = new TIP20ChannelEscrow();
         MockSignatureVerifier verifier = new MockSignatureVerifier();
         vm.etch(channel.SIGNATURE_VERIFIER_PRECOMPILE(), address(verifier).code);
         token = TIP20(
@@ -133,7 +133,7 @@ contract TempoStreamChannelTest is BaseTest {
         bytes32 channelId =
             channel.open(payee, address(token), DEPOSIT, SALT, address(0), expiresAt);
 
-        TempoStreamChannel.Channel memory ch = channel.getChannel(channelId);
+        TIP20ChannelEscrow.Channel memory ch = channel.getChannel(channelId);
         assertFalse(ch.finalized);
         assertEq(ch.closeRequestedAt, 0);
         assertEq(ch.payer, payer);
@@ -147,25 +147,25 @@ contract TempoStreamChannelTest is BaseTest {
 
     function test_open_revert_zeroPayee() public {
         vm.prank(payer);
-        vm.expectRevert(ITempoStreamChannel.InvalidPayee.selector);
+        vm.expectRevert(ITIP20ChannelEscrow.InvalidPayee.selector);
         channel.open(address(0), address(token), DEPOSIT, SALT, address(0), _defaultExpiry());
     }
 
     function test_open_revert_zeroToken() public {
         vm.prank(payer);
-        vm.expectRevert(ITempoStreamChannel.InvalidToken.selector);
+        vm.expectRevert(ITIP20ChannelEscrow.InvalidToken.selector);
         channel.open(payee, address(0), DEPOSIT, SALT, address(0), _defaultExpiry());
     }
 
     function test_open_revert_zeroDeposit() public {
         vm.prank(payer);
-        vm.expectRevert(ITempoStreamChannel.ZeroDeposit.selector);
+        vm.expectRevert(ITIP20ChannelEscrow.ZeroDeposit.selector);
         channel.open(payee, address(token), 0, SALT, address(0), _defaultExpiry());
     }
 
     function test_open_revert_invalidExpiry() public {
         vm.prank(payer);
-        vm.expectRevert(ITempoStreamChannel.InvalidExpiry.selector);
+        vm.expectRevert(ITIP20ChannelEscrow.InvalidExpiry.selector);
         channel.open(payee, address(token), DEPOSIT, SALT, address(0), uint64(block.timestamp));
     }
 
@@ -173,7 +173,7 @@ contract TempoStreamChannelTest is BaseTest {
         _openChannel();
 
         vm.prank(payer);
-        vm.expectRevert(ITempoStreamChannel.ChannelAlreadyExists.selector);
+        vm.expectRevert(ITIP20ChannelEscrow.ChannelAlreadyExists.selector);
         channel.open(payee, address(token), DEPOSIT, SALT, address(0), _defaultExpiry());
     }
 
@@ -194,7 +194,7 @@ contract TempoStreamChannelTest is BaseTest {
 
         vm.warp(block.timestamp + 10);
         vm.prank(payee);
-        vm.expectRevert(ITempoStreamChannel.ChannelExpiredError.selector);
+        vm.expectRevert(ITIP20ChannelEscrow.ChannelExpiredError.selector);
         channel.settle(channelId, 500_000, sig);
     }
 
@@ -204,7 +204,7 @@ contract TempoStreamChannelTest is BaseTest {
         bytes memory sig = _signVoucher(channelId, 500_000, wrongKey);
 
         vm.prank(payee);
-        vm.expectRevert(ITempoStreamChannel.InvalidSignature.selector);
+        vm.expectRevert(ITIP20ChannelEscrow.InvalidSignature.selector);
         channel.settle(channelId, 500_000, sig);
     }
 
@@ -230,7 +230,7 @@ contract TempoStreamChannelTest is BaseTest {
         vm.prank(payer);
         channel.topUp(channelId, 250_000, nextExpiry);
 
-        TempoStreamChannel.Channel memory ch = channel.getChannel(channelId);
+        TIP20ChannelEscrow.Channel memory ch = channel.getChannel(channelId);
         assertEq(ch.deposit, DEPOSIT + 250_000);
         assertEq(ch.expiresAt, nextExpiry);
     }
@@ -239,7 +239,7 @@ contract TempoStreamChannelTest is BaseTest {
         bytes32 channelId = _openChannel();
 
         vm.prank(payer);
-        vm.expectRevert(ITempoStreamChannel.InvalidExpiry.selector);
+        vm.expectRevert(ITIP20ChannelEscrow.InvalidExpiry.selector);
         channel.topUp(channelId, 0, _defaultExpiry());
     }
 
@@ -265,7 +265,7 @@ contract TempoStreamChannelTest is BaseTest {
         vm.prank(payee);
         channel.close(channelId, 900_000, 600_000, sig);
 
-        TempoStreamChannel.Channel memory ch = channel.getChannel(channelId);
+        TIP20ChannelEscrow.Channel memory ch = channel.getChannel(channelId);
         assertTrue(ch.finalized);
         assertEq(ch.settled, 600_000);
         assertEq(token.balanceOf(payee), payeeBalanceBefore + 600_000);
@@ -298,7 +298,7 @@ contract TempoStreamChannelTest is BaseTest {
         vm.prank(payee);
         channel.close(channelId, DEPOSIT + 250_000, DEPOSIT, sig);
 
-        TempoStreamChannel.Channel memory ch = channel.getChannel(channelId);
+        TIP20ChannelEscrow.Channel memory ch = channel.getChannel(channelId);
         assertTrue(ch.finalized);
         assertEq(ch.settled, DEPOSIT);
         assertEq(token.balanceOf(payee), payeeBalanceBefore + DEPOSIT);
@@ -312,7 +312,7 @@ contract TempoStreamChannelTest is BaseTest {
         channel.settle(channelId, 300_000, settleSig);
 
         vm.prank(payee);
-        vm.expectRevert(ITempoStreamChannel.CaptureAmountInvalid.selector);
+        vm.expectRevert(ITIP20ChannelEscrow.CaptureAmountInvalid.selector);
         channel.close(channelId, 300_000, 200_000, "");
     }
 
@@ -378,14 +378,14 @@ contract TempoStreamChannelTest is BaseTest {
         ids[0] = channelId1;
         ids[1] = channelId2;
 
-        TempoStreamChannel.Channel[] memory states = channel.getChannelsBatch(ids);
+        TIP20ChannelEscrow.Channel[] memory states = channel.getChannelsBatch(ids);
         assertEq(states.length, 2);
         assertEq(states[0].settled, 400_000);
         assertEq(states[1].settled, 0);
     }
 
     function test_computeChannelId_usesFixedPrecompileAddress() public {
-        TempoStreamChannel other = new TempoStreamChannel();
+        TIP20ChannelEscrow other = new TIP20ChannelEscrow();
 
         bytes32 id1 = channel.computeChannelId(payer, payee, address(token), SALT, address(0));
         bytes32 id2 = other.computeChannelId(payer, payee, address(token), SALT, address(0));
