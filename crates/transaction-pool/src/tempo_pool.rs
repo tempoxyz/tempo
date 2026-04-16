@@ -349,6 +349,7 @@ where
                 if sender_evicted || recipient_evicted {
                     to_remove.push(*tx.hash());
                     blacklisted_count += 1;
+                    continue;
                 }
             }
 
@@ -394,6 +395,7 @@ where
                 if sender_evicted || recipient_evicted {
                     to_remove.push(*tx.hash());
                     unwhitelisted_count += 1;
+                    continue;
                 }
             }
 
@@ -1336,16 +1338,17 @@ mod tests {
         provider.latest().unwrap()
     }
 
-    fn set_fee_token_balance(
+    fn set_fee_token_balance_with_policy(
         provider: &MockEthProvider<TempoPrimitives, TempoChainSpec>,
         fee_token: Address,
         account: Address,
         balance: U256,
+        transfer_policy_id: u64,
     ) {
         let usd_currency_value =
             uint!(0x5553440000000000000000000000000000000000000000000000000000000006_U256);
         let transfer_policy_id_packed =
-            uint!(0x0000000000000000000000010000000000000000000000000000000000000000_U256);
+            U256::from(transfer_policy_id) << (tip20_slots::TRANSFER_POLICY_ID_OFFSET * 8);
         let balance_slot = TIP20Token::from_address(fee_token)
             .expect("fee token must be a valid TIP20 token")
             .balances[account]
@@ -1362,6 +1365,15 @@ mod tests {
                 (balance_slot.into(), balance),
             ]),
         );
+    }
+
+    fn set_fee_token_balance(
+        provider: &MockEthProvider<TempoPrimitives, TempoChainSpec>,
+        fee_token: Address,
+        account: Address,
+        balance: U256,
+    ) {
+        set_fee_token_balance_with_policy(provider, fee_token, account, balance, 1);
     }
 
     #[tokio::test]
@@ -1460,6 +1472,120 @@ mod tests {
             .entry(PATH_USD_ADDRESS)
             .or_default()
             .insert(fee_payer);
+
+        let evicted = pool.evict_invalidated_transactions(&updates);
+        assert_eq!(evicted, vec![*pooled.hash()]);
+        assert!(pool.get(pooled.hash()).is_none());
+    }
+
+    #[tokio::test]
+    async fn evicts_invalidated_transaction_once_when_multiple_policy_checks_match() {
+        let sender = Address::random();
+        let compound_policy_id: u64 = 5;
+        let sender_sub_policy: u64 = 3;
+        let recipient_sub_policy: u64 = 4;
+
+        let pooled = crate::test_utils::TxBuilder::aa(sender)
+            .fee_token(PATH_USD_ADDRESS)
+            .build();
+
+        let provider = MockEthProvider::<TempoPrimitives>::new()
+            .with_chain_spec(std::sync::Arc::unwrap_or_clone(MODERATO.clone()));
+        provider.add_account(sender, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
+        provider.add_block(
+            B256::random(),
+            Block {
+                header: TempoHeader {
+                    inner: Header {
+                        gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        set_fee_token_balance_with_policy(
+            &provider,
+            PATH_USD_ADDRESS,
+            sender,
+            pooled.fee_token_cost() + U256::from(1_u64),
+            compound_policy_id,
+        );
+
+        provider
+            .setup_storage(TempoHardfork::default(), || {
+                let mut registry = TIP403Registry::new();
+                registry.policy_records[compound_policy_id]
+                    .base
+                    .write(PolicyData {
+                        policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
+                        admin: Address::ZERO,
+                    })?;
+                registry.policy_records[compound_policy_id]
+                    .compound
+                    .write(CompoundPolicyData {
+                        sender_policy_id: sender_sub_policy,
+                        recipient_policy_id: recipient_sub_policy,
+                        mint_recipient_policy_id: 0,
+                    })?;
+                registry.policy_records[sender_sub_policy]
+                    .base
+                    .write(PolicyData {
+                        policy_type: ITIP403Registry::PolicyType::BLACKLIST as u8,
+                        admin: Address::ZERO,
+                    })?;
+                registry.policy_records[recipient_sub_policy]
+                    .base
+                    .write(PolicyData {
+                        policy_type: ITIP403Registry::PolicyType::WHITELIST as u8,
+                        admin: Address::ZERO,
+                    })
+            })
+            .unwrap();
+
+        let inner =
+            EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
+                .disable_balance_check()
+                .build(InMemoryBlobStore::default());
+        let amm_cache =
+            AmmLiquidityCache::new(provider.clone()).expect("failed to setup AmmLiquidityCache");
+        let validator = TempoTransactionValidator::new(
+            inner,
+            crate::validator::DEFAULT_AA_VALID_AFTER_MAX_SECS,
+            crate::validator::DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            amm_cache,
+        );
+
+        let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
+        let protocol_pool = Pool::new(
+            executor,
+            CoinbaseTipOrdering::default(),
+            InMemoryBlobStore::default(),
+            PoolConfig::default(),
+        );
+        let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
+
+        pooled.set_resolved_fee_token(PATH_USD_ADDRESS);
+        let validated = TransactionValidationOutcome::Valid {
+            balance: *pooled.cost(),
+            state_nonce: pooled.nonce(),
+            bytecode_hash: None,
+            transaction: ValidTransaction::new(pooled.clone(), None),
+            propagate: true,
+            authorities: None,
+        };
+        let add_result = pool.add_validated_transaction(TransactionOrigin::External, validated);
+        assert!(
+            add_result.is_ok(),
+            "transaction should be admitted before policy updates: {add_result:?}"
+        );
+
+        let mut updates = crate::maintain::TempoPoolUpdates::new();
+        updates.blacklist_additions.push((sender_sub_policy, sender));
+        updates
+            .whitelist_removals
+            .push((recipient_sub_policy, TIP_FEE_MANAGER_ADDRESS));
 
         let evicted = pool.evict_invalidated_transactions(&updates);
         assert_eq!(evicted, vec![*pooled.hash()]);
