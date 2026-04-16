@@ -343,13 +343,12 @@ jobs:
               featureEnv = defaults['feature-env'];
             }
 
-            // Inject --existing-recipients false into bench-args when disabled
-            const noExistingRecipients = context.eventName === 'workflow_dispatch'
-              ? ('${{ github.event.inputs.existing-recipients }}' === 'false')
-              : (defaults?.['no-existing-recipients'] === 'true');
-            if (noExistingRecipients) {
-              benchArgs = benchArgs ? `${benchArgs} --existing-recipients false` : '--existing-recipients false';
-            }
+            // Always inject --existing-recipients (tempo.nu no longer hardcodes it)
+            const existingRecipients = context.eventName === 'workflow_dispatch'
+              ? ('${{ github.event.inputs.existing-recipients }}' !== 'false')
+              : (defaults?.['no-existing-recipients'] !== 'true');
+            const erFlag = `--existing-recipients ${existingRecipients}`;
+            benchArgs = benchArgs ? `${benchArgs} ${erFlag}` : erFlag;
 
             const usageStr = '**Usage:** `@decofe bench [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [force-bloat] [no-slack] [existing-recipients=BOOL] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [baseline-hardfork=FORK] [feature-hardfork=FORK] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]`';
 
