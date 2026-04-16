@@ -4,7 +4,7 @@
 //! execution layer and tracks the digest of the latest finalized block.
 //! It also advances the canonical chain by sending forkchoice-updates.
 
-use std::{collections::BTreeMap, pin::Pin, sync::Arc, time::Duration};
+use std::{pin::Pin, sync::Arc, time::Duration};
 
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadId};
 use commonware_consensus::{Heightable as _, marshal::Update, types::Height};
@@ -31,7 +31,7 @@ use tracing::{
 
 use super::{
     Config,
-    ingress::{CanonicalizeHead, Command, Message, SubscribeFinalized},
+    ingress::{CanonicalizeHead, Command, Message},
 };
 use crate::{
     consensus::{Digest, block::Block},
@@ -118,10 +118,6 @@ pub(crate) struct Actor<TContext> {
 
     /// The timer for the next FCU heartbeat. Reset whenever an FCU is sent.
     fcu_heartbeat_timer: Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
-
-    /// A list of subscriptions waiting for the executor to finalize a block
-    /// at a given height.
-    pending_finalized_subscriptions: BTreeMap<Height, Vec<oneshot::Sender<()>>>,
 }
 
 impl<TContext> Actor<TContext>
@@ -170,7 +166,6 @@ where
             },
             fcu_heartbeat_interval,
             fcu_heartbeat_timer,
-            pending_finalized_subscriptions: BTreeMap::new(),
         })
     }
 
@@ -343,16 +338,6 @@ where
                     .await
                     .wrap_err("failed handling finalization")?;
             }
-            Command::SubscribeFinalized(SubscribeFinalized { height, response }) => {
-                if self.last_canonicalized.finalized_height >= height {
-                    let _ = response.send(());
-                } else {
-                    self.pending_finalized_subscriptions
-                        .entry(height)
-                        .or_default()
-                        .push(response);
-                }
-            }
         }
         Ok(())
     }
@@ -503,7 +488,6 @@ where
         block: Block,
         acknowledgment: Exact,
     ) -> eyre::Result<()> {
-        let height = block.height();
         let (response, rx) = oneshot::channel();
         self.canonicalize(
             Span::current(),
@@ -541,16 +525,6 @@ where
         );
 
         acknowledgment.acknowledge();
-
-        self.pending_finalized_subscriptions.retain(|&key, value| {
-            let retain = key > height;
-            if !retain {
-                value.drain(..).for_each(|tx| {
-                    let _ = tx.send(());
-                });
-            }
-            retain
-        });
 
         Ok(())
     }
