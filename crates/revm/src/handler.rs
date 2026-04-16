@@ -51,11 +51,14 @@ use tempo_precompiles::{
         Handler as _, PrecompileStorageProvider, StorageCtx, evm::EvmPrecompileStorageProvider,
     },
     tip_fee_manager::TipFeeManager,
-    tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token, is_tip20_prefix},
+    tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
 };
-use tempo_primitives::transaction::{
-    PrimitiveSignature, SignatureType, TEMPO_EXPIRING_NONCE_KEY, TempoSignature,
-    calc_gas_balance_spending, validate_calls,
+use tempo_primitives::{
+    TempoAddressExt,
+    transaction::{
+        PrimitiveSignature, SignatureType, TEMPO_EXPIRING_NONCE_KEY, TempoSignature,
+        calc_gas_balance_spending, validate_calls,
+    },
 };
 
 use crate::{
@@ -890,7 +893,7 @@ where
 
         // Always validate TIP20 prefix to prevent panics in get_token_balance.
         // This is a protocol-level check since validators could bypass initial validation.
-        if !is_tip20_prefix(fee_token) {
+        if !fee_token.is_tip20() {
             return Err(TempoInvalidTransaction::InvalidFeeToken(fee_token).into());
         }
 
@@ -2151,7 +2154,7 @@ mod tests {
         // guards against invalid tokens reaching get_token_balance.
         let invalid_token = Address::random(); // Random address won't have TIP20 prefix
         assert!(
-            !is_tip20_prefix(invalid_token),
+            !invalid_token.is_tip20(),
             "Test requires a non-TIP20 address"
         );
 

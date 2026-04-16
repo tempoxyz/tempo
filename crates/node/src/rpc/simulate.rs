@@ -18,10 +18,8 @@ use std::{
 };
 use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_evm::TempoStateAccess;
-use tempo_precompiles::{
-    error::TempoPrecompileError,
-    tip20::{TIP20Token, is_tip20_prefix},
-};
+use tempo_precompiles::{error::TempoPrecompileError, tip20::TIP20Token};
+use tempo_primitives::TempoAddressExt;
 
 /// keccak256("Transfer(address,address,uint256)")
 static TRANSFER_TOPIC: LazyLock<B256> =
@@ -93,21 +91,21 @@ fn extract_tip20_targets(
         for call in &block.calls {
             // Standard `to` field
             if let Some(to) = call.to.as_ref().and_then(|k| k.to())
-                && is_tip20_prefix(*to)
+                && to.is_tip20()
             {
                 addrs.insert(*to);
             }
             // AA calls array
             for c in &call.calls {
                 if let Some(to) = c.to.to()
-                    && is_tip20_prefix(*to)
+                    && to.is_tip20()
                 {
                     addrs.insert(*to);
                 }
             }
             // Fee token
             if let Some(ft) = call.fee_token
-                && is_tip20_prefix(ft)
+                && ft.is_tip20()
             {
                 addrs.insert(ft);
             }
@@ -146,7 +144,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoSimulateApiServer for TempoSimula
         for sim_block in &blocks {
             for call in &sim_block.calls {
                 for log in &call.logs {
-                    if is_tip20_prefix(log.address())
+                    if log.address().is_tip20()
                         && log.topics().first() == Some(&*TRANSFER_TOPIC)
                         && !token_metadata.contains_key(&log.address())
                     {

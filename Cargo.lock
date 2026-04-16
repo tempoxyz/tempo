@@ -12876,6 +12876,7 @@ dependencies = [
  "rustls",
  "tempo-alloy",
  "tempo-precompiles",
+ "tempo-primitives",
  "tempo-telemetry-util",
  "tokio",
  "tracing",

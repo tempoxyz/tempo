@@ -25,20 +25,14 @@ pub mod validator_config_v2;
 pub mod test_util;
 
 use crate::{
-    account_keychain::AccountKeychain,
-    address_registry::AddressRegistry,
-    nonce::NonceManager,
-    signature_verifier::SignatureVerifier,
-    stablecoin_dex::StablecoinDEX,
-    storage::StorageCtx,
-    tip_fee_manager::TipFeeManager,
-    tip20::{TIP20Token, is_tip20_prefix},
-    tip20_factory::TIP20Factory,
-    tip403_registry::TIP403Registry,
-    validator_config::ValidatorConfig,
+    account_keychain::AccountKeychain, address_registry::AddressRegistry, nonce::NonceManager,
+    signature_verifier::SignatureVerifier, stablecoin_dex::StablecoinDEX, storage::StorageCtx,
+    tip_fee_manager::TipFeeManager, tip20::TIP20Token, tip20_factory::TIP20Factory,
+    tip403_registry::TIP403Registry, validator_config::ValidatorConfig,
     validator_config_v2::ValidatorConfigV2,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_primitives::TempoAddressExt;
 
 #[cfg(test)]
 use alloy::sol_types::SolInterface;
@@ -121,7 +115,7 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
     let cfg = cfg.clone();
 
     precompiles.set_precompile_lookup(move |address: &Address| {
-        if is_tip20_prefix(*address) {
+        if address.is_tip20() {
             Some(TIP20Token::create_precompile(*address, &cfg))
         } else if *address == TIP20_FACTORY_ADDRESS {
             Some(TIP20Factory::create_precompile(&cfg))
