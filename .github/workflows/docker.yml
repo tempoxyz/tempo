@@ -62,7 +62,7 @@ jobs:
 
       - name: Docker metadata for tempo
         id: meta-tempo
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
         with:
           images: |
             ${{ env.REGISTRY }}/tempo
@@ -83,7 +83,7 @@ jobs:
 
       - name: Docker metadata for tempo-bench
         id: meta-tempo-bench
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
         with:
           images: |
             ${{ env.REGISTRY }}/tempo-bench
@@ -104,7 +104,7 @@ jobs:
 
       - name: Docker metadata for tempo-sidecar
         id: meta-tempo-sidecar
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
         with:
           images: |
             ${{ env.REGISTRY }}/tempo-sidecar
@@ -125,7 +125,7 @@ jobs:
 
       - name: Docker metadata for tempo-xtask
         id: meta-tempo-xtask
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
         with:
           images: |
             ${{ env.REGISTRY }}/tempo-xtask
@@ -145,14 +145,14 @@ jobs:
             type=ref,event=pr
 
       - name: Log in to Container Registry
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           username: ${{ vars.DOCKER_HUB_USER }}
           password: ${{ secrets.DOCKER_HUB_TOKEN }}
@@ -177,7 +177,7 @@ jobs:
           VERGEN_GIT_SHA_SHORT: ${{ steps.shortsha.outputs.shortsha }}
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@d7d6bc7722e3daa8354c50bcb52f4837da5e9b6a # v3.8.1
+        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
 
       - name: Sign Docker images
         shell: bash
