@@ -73,6 +73,14 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             cfg.gas_params.clone(),
         )
     }
+
+    #[inline]
+    fn deduct_state_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
+        if !self.gas_tracker.record_state_cost(gas) {
+            return Err(TempoPrecompileError::OutOfGas);
+        }
+        Ok(())
+    }
 }
 
 impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
@@ -235,14 +243,6 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     #[inline]
     fn deduct_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
         if !self.gas_tracker.record_regular_cost(gas) {
-            return Err(TempoPrecompileError::OutOfGas);
-        }
-        Ok(())
-    }
-
-    #[inline]
-    fn deduct_state_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
-        if !self.gas_tracker.record_state_cost(gas) {
             return Err(TempoPrecompileError::OutOfGas);
         }
         Ok(())

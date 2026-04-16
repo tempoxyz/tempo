@@ -438,10 +438,6 @@ where
         unreachable!("'deduct_gas' not supported in read-only context")
     }
 
-    fn deduct_state_gas(&mut self, _: u64) -> TempoResult<()> {
-        unreachable!("'deduct_state_gas' not supported in read-only context")
-    }
-
     fn refund_gas(&mut self, _: i64) {
         unreachable!("'refund_gas' not supported in read-only context")
     }

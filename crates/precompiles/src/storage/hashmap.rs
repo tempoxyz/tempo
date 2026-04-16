@@ -159,10 +159,6 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         Ok(())
     }
 
-    fn deduct_state_gas(&mut self, _gas: u64) -> Result<(), TempoPrecompileError> {
-        Ok(())
-    }
-
     fn refund_gas(&mut self, _gas: i64) {
         // No-op
     }
