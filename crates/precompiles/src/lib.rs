@@ -436,6 +436,7 @@ pub(crate) fn dispatch_call<T>(
 
     match result {
         Ok(call) => f(call).map(|mut res| {
+            // TODO: fix this, each precompile handler should either return output with proper gas values or don't return any gas values at all.
             res.gas_used = storage.gas_used();
             fill_state_gas(&mut res, &storage);
             res
