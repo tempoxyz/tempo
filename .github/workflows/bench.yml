@@ -343,7 +343,6 @@ jobs:
               featureEnv = defaults['feature-env'];
             }
 
-            // Always inject --existing-recipients (tempo.nu no longer hardcodes it)
             const existingRecipients = context.eventName === 'workflow_dispatch'
               ? ('${{ github.event.inputs.existing-recipients }}' !== 'false')
               : (defaults?.['no-existing-recipients'] !== 'true');
