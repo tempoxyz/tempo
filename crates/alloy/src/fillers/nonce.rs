@@ -223,28 +223,6 @@ impl NonceKeyFiller {
     pub fn clear(&self) {
         self.nonces.clear();
     }
-
-    async fn fetch_nonce<P, N>(
-        &self,
-        provider: &P,
-        from: Address,
-        nonce_key: U256,
-    ) -> TransportResult<u64>
-    where
-        P: Provider<N>,
-        N: Network<TransactionRequest = TempoTransactionRequest>,
-    {
-        if nonce_key.is_zero() {
-            provider.get_transaction_count(from).await
-        } else {
-            let contract = INonce::new(NONCE_PRECOMPILE_ADDRESS, provider);
-            contract
-                .getNonce(from, nonce_key)
-                .call()
-                .await
-                .map_err(|e| TransportErrorKind::custom_str(&e.to_string()))
-        }
-    }
 }
 
 impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for NonceKeyFiller {
@@ -284,10 +262,6 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for N
             return Ok(0);
         }
 
-        if !self.cache_enabled {
-            return self.fetch_nonce(provider, from, nonce_key).await;
-        }
-
         let key = (from, nonce_key);
         let mutex = self
             .nonces
@@ -297,8 +271,17 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for N
 
         let mut nonce = mutex.lock().await;
 
-        if *nonce == NONCE_NOT_FETCHED {
-            *nonce = self.fetch_nonce(provider, from, nonce_key).await?;
+        if *nonce == NONCE_NOT_FETCHED || !self.cache_enabled {
+            *nonce = if nonce_key.is_zero() {
+                provider.get_transaction_count(from).await?
+            } else {
+                let contract = INonce::new(NONCE_PRECOMPILE_ADDRESS, provider);
+                contract
+                    .getNonce(from, nonce_key)
+                    .call()
+                    .await
+                    .map_err(|e| TransportErrorKind::custom_str(&e.to_string()))?
+            };
         } else {
             *nonce += 1;
         }
