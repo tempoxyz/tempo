@@ -432,7 +432,9 @@ impl ValidatorTransactionArgs {
             } else {
                 let hex_str = std::str::from_utf8(&raw)
                     .wrap_err_with(|| format!("invalid private key in `{}`", path.display()))?;
-                hex_str.trim().parse::<B256>()
+                hex_str
+                    .trim()
+                    .parse::<B256>()
                     .wrap_err_with(|| format!("invalid private key in `{}`", path.display()))?
             };
 
