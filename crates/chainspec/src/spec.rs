@@ -519,7 +519,15 @@ mod tests {
             // At and after T2 activation
             assert!(cs.is_t2_active_at_timestamp(1774965600));
             assert_eq!(cs.tempo_hardfork_at(1774965600), TempoHardfork::T2);
-            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T2);
+
+            // Before T3 activation (1777298400 = Apr 27th 2026 16:00 CEST)
+            assert!(!cs.is_t3_active_at_timestamp(1777298399));
+            assert_eq!(cs.tempo_hardfork_at(1777298399), TempoHardfork::T2);
+
+            // At and after T3 activation
+            assert!(cs.is_t3_active_at_timestamp(1777298400));
+            assert_eq!(cs.tempo_hardfork_at(1777298400), TempoHardfork::T3);
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T3);
         }
 
         #[test]
@@ -558,9 +566,15 @@ mod tests {
             // At and after T2 activation
             assert!(cs.is_t2_active_at_timestamp(1774537200));
             assert_eq!(cs.tempo_hardfork_at(1774537200), TempoHardfork::T2);
-            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T2);
 
-            assert!(!cs.is_t3_active_at_timestamp(u64::MAX));
+            // Before T3 activation (1776780000 = Apr 21st 2026 16:00 CEST)
+            assert!(!cs.is_t3_active_at_timestamp(1776779999));
+            assert_eq!(cs.tempo_hardfork_at(1776779999), TempoHardfork::T2);
+
+            // At and after T3 activation
+            assert!(cs.is_t3_active_at_timestamp(1776780000));
+            assert_eq!(cs.tempo_hardfork_at(1776780000), TempoHardfork::T3);
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T3);
         }
 
         #[test]

@@ -1,15 +1,17 @@
 //! ABI dispatch for the [`TIP20Factory`] precompile.
 
-use crate::{Precompile, dispatch_call, input_cost, mutate, tip20_factory::TIP20Factory, view};
+use crate::{
+    Precompile, charge_input_cost, dispatch_call, mutate, tip20_factory::TIP20Factory, view,
+};
 use alloy::{primitives::Address, sol_types::SolInterface};
-use revm::precompile::{PrecompileError, PrecompileResult};
+use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::ITIP20Factory::ITIP20FactoryCalls;
 
 impl Precompile for TIP20Factory {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
-        self.storage
-            .deduct_gas(input_cost(calldata.len()))
-            .map_err(|_| PrecompileError::OutOfGas)?;
+        if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
+            return err;
+        }
 
         dispatch_call(
             calldata,

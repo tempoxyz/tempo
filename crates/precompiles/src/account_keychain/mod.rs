@@ -148,6 +148,10 @@ impl SpendingLimitState {
     /// Computes the period end for the current rollover window, saturating on
     /// all intermediate operations to avoid overflow in extreme timestamps.
     fn compute_next_period_end(&self, current_timestamp: u64) -> u64 {
+        debug_assert!(
+            self.period != 0,
+            "period rollovers require a non-zero period"
+        );
         let elapsed = current_timestamp.saturating_sub(self.period_end);
         let periods_elapsed = (elapsed / self.period).saturating_add(1);
         let advance = self.period.saturating_mul(periods_elapsed);

@@ -16,7 +16,6 @@ jobs:
         id: pr
         run: |
           PR_DATA=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.issue.number }})
-          echo "sha=$(echo "$PR_DATA" | jq -r .head.sha)" >> "$GITHUB_OUTPUT"
           echo "branch=$(echo "$PR_DATA" | jq -r .head.ref)" >> "$GITHUB_OUTPUT"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -28,15 +27,26 @@ jobs:
           echo "${{ secrets.EVENTS_KEY }}" > ${{ runner.temp }}/key
           echo "${{ secrets.EVENTS_CERT }}" > ${{ runner.temp }}/cert
 
+          payload=$(jq -n \
+            --arg repository "${{ github.repository }}" \
+            --arg event "build_devnet" \
+            --arg name "devnet-pr-${{ github.event.issue.number }}" \
+            --arg branch "${{ steps.pr.outputs.branch }}" \
+            --arg requested_by "${{ github.event.comment.user.login }}" \
+            --argjson pr_number "${{ github.event.issue.number }}" \
+            '{
+              repository: $repository,
+              event: $event,
+              data: {
+                name: $name,
+                pr_number: $pr_number,
+                branch: $branch,
+                requested_by: $requested_by
+              }
+            }')
+
           curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }} \
             -H "Content-Type: application/json" \
             --key "${{ runner.temp }}/key" \
             --cert "${{ runner.temp }}/cert" \
-            -d '{
-              "repository": "${{ github.repository }}",
-              "event": "build_devnet",
-              "data": {
-                "name": "devnet-pr-${{ github.event.issue.number }}",
-                "branch": "${{ steps.pr.outputs.branch }}"
-              }
-            }'
+            -d "$payload"

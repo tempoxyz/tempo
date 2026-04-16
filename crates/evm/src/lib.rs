@@ -162,6 +162,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 suggested_fee_recipient: attributes.suggested_fee_recipient,
                 prev_randao: attributes.prev_randao,
                 gas_limit: attributes.gas_limit,
+                slot_number: attributes.slot_number,
             },
             self.chain_spec()
                 .next_block_base_fee(parent, attributes.timestamp)
@@ -387,6 +388,7 @@ mod tests {
                 parent_beacon_block_root: Some(B256::ZERO),
                 withdrawals: None,
                 extra_data: Default::default(),
+                slot_number: None,
             },
             general_gas_limit: 10_000_000,
             shared_gas_limit: 3_000_000,
@@ -571,6 +573,7 @@ mod tests {
                 parent_beacon_block_root: Some(B256::repeat_byte(0x05)),
                 withdrawals: None,
                 extra_data: Default::default(),
+                slot_number: None,
             },
             general_gas_limit: 12_000_000,
             shared_gas_limit: 4_000_000,

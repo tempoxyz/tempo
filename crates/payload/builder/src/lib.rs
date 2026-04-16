@@ -376,6 +376,7 @@ where
                         parent_beacon_block_root: attributes.parent_beacon_block_root,
                         withdrawals: attributes.withdrawals.clone().map(Into::into),
                         extra_data: attributes.extra_data().clone(),
+                        slot_number: attributes.slot_number,
                     },
                     general_gas_limit,
                     shared_gas_limit,
