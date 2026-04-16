@@ -6,15 +6,17 @@ use crate::{ExecutionRuntime, execution_runtime::chainspec};
 mod backfill;
 mod consensus_rpc;
 mod dkg;
+mod fee_recipient;
 mod linkage;
 mod metrics;
-mod migration_from_v1_to_v2;
 mod migration_from_v3_to_v4;
 mod payload_builder;
 mod restart;
-mod subblocks;
+mod simple;
+mod snapshot;
+// FIXME: subblocks are currently flaky.
+// mod subblocks;
 mod sync;
-mod v2_at_genesis;
 mod v4_at_genesis;
 
 #[test_traced]

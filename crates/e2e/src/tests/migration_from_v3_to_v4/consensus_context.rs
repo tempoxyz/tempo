@@ -23,8 +23,6 @@ fn consensus_context_appears_after_t4_activation() {
     let setup = Setup::new()
         .how_many_signers(4)
         .epoch_length(100)
-        .t2_time(0)
-        .t3_time(0)
         .t4_time(t4_time)
         .seed(0);
 

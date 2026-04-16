@@ -257,6 +257,12 @@ impl TempoTxEnvelope {
             Either::Right(core::iter::once((self.kind(), self.input())))
         }
     }
+
+    /// Returns true if this is an expiring nonce transaction.
+    pub fn is_expiring_nonce(&self) -> bool {
+        self.as_aa()
+            .is_some_and(|tx| tx.tx().is_expiring_nonce_tx())
+    }
 }
 
 impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {

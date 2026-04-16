@@ -40,6 +40,8 @@ std = [
     "alloy-genesis/std",
     "alloy-primitives/std",
     "once_cell/std",
+    "reth-chainspec?/std",
+    "reth-network-peers?/std",
     "serde/std",
     "serde_json/std",
     "tempo-primitives/std",
@@ -54,8 +56,6 @@ reth = [
     "std",
     "dep:reth-chainspec",
     "dep:reth-network-peers",
-    "reth-chainspec/std",
-    "reth-network-peers/std",
     "tempo-primitives/reth",
 ]
 cli = ["reth", "dep:reth-cli", "dep:eyre", "tempo-primitives/reth-codec"]

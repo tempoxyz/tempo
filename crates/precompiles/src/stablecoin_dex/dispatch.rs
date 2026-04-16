@@ -1,20 +1,20 @@
 //! ABI dispatch for the [`StablecoinDEX`] precompile.
 
 use alloy::{primitives::Address, sol_types::SolInterface};
-use revm::precompile::{PrecompileError, PrecompileResult};
+use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::IStablecoinDEX::IStablecoinDEXCalls;
 
 use crate::{
-    Precompile, dispatch_call, input_cost, mutate, mutate_void,
+    Precompile, charge_input_cost, dispatch_call, mutate, mutate_void,
     stablecoin_dex::{StablecoinDEX, orderbook::compute_book_key},
     view,
 };
 
 impl Precompile for StablecoinDEX {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
-        self.storage
-            .deduct_gas(input_cost(calldata.len()))
-            .map_err(|_| PrecompileError::OutOfGas)?;
+        if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
+            return err;
+        }
 
         dispatch_call(
             calldata,

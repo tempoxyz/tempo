@@ -89,6 +89,9 @@ pub mod mainnet {
     pub const MAINNET_T2_BLOCK: u64 = 12_286_033;
     /// T2 activation timestamp (Mar 31st 2026 14:00 UTC).
     pub const MAINNET_T2_TIMESTAMP: u64 = 1_774_965_600;
+
+    /// T3 activation timestamp (Apr 27th 2026 14:00 UTC).
+    pub const MAINNET_T3_TIMESTAMP: u64 = 1_777_298_400;
 }
 
 pub mod moderato {
@@ -128,4 +131,7 @@ pub mod moderato {
     pub const MODERATO_T2_BLOCK: u64 = 10_072_242;
     /// T2 activation timestamp (Mar 26th 2026 14:00 UTC).
     pub const MODERATO_T2_TIMESTAMP: u64 = 1_774_537_200;
+
+    /// T3 activation timestamp (Apr 21st 2026 14:00 UTC).
+    pub const MODERATO_T3_TIMESTAMP: u64 = 1_776_780_000;
 }

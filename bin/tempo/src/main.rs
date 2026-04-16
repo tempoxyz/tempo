@@ -53,7 +53,7 @@ use reth_ethereum_cli::Cli;
 use reth_network_api::Peers;
 use reth_network_peers::pk2id;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
-use reth_rpc_server_types::DefaultRpcModuleValidator;
+use reth_rpc_server_types::{RethRpcModule, RpcModuleSelection, RpcModuleValidator};
 use std::{sync::Arc, thread, time::Duration};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_commonware_node::{feed as consensus_feed, run_consensus_stack};
@@ -73,7 +73,34 @@ use tokio::sync::oneshot;
 use tracing::{debug, info, info_span, warn};
 
 type TempoCli =
-    Cli<TempoChainSpecParser, TempoArgs, DefaultRpcModuleValidator, tempo_cmd::TempoSubcommand>;
+    Cli<TempoChainSpecParser, TempoArgs, TempoRpcModuleValidator, tempo_cmd::TempoSubcommand>;
+
+const TEMPO_CUSTOM_RPC_MODULES: &[&str] = &["consensus", "operator", "tempo", "token"];
+
+#[derive(Debug, Clone, Copy)]
+struct TempoRpcModuleValidator;
+
+impl RpcModuleValidator for TempoRpcModuleValidator {
+    fn parse_selection(s: &str) -> Result<RpcModuleSelection, String> {
+        let selection = s
+            .parse::<RpcModuleSelection>()
+            .map_err(|e| format!("Failed to parse RPC modules: {e}"))?;
+
+        if let RpcModuleSelection::Selection(modules) = &selection {
+            for module in modules {
+                let RethRpcModule::Other(name) = module else {
+                    continue;
+                };
+
+                if !TEMPO_CUSTOM_RPC_MODULES.contains(&name.as_str()) {
+                    return Err(format!("Unknown RPC module: '{name}'"));
+                }
+            }
+        }
+
+        Ok(selection)
+    }
+}
 
 // TODO: migrate this to tempo_node eventually.
 #[derive(Debug, Clone, clap::Args)]

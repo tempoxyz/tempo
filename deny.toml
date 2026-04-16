@@ -10,6 +10,10 @@ ignore = [
   "RUSTSEC-2025-0141",
   # https://rustsec.org/advisories/RUSTSEC-2026-0097 rand is unsound with a custom logger
   "RUSTSEC-2026-0097",
+  # https://rustsec.org/advisories/RUSTSEC-2026-0098 rustls-webpki upgrade is pending
+  "RUSTSEC-2026-0098",
+  # https://rustsec.org/advisories/RUSTSEC-2026-0099 rustls-webpki upgrade is pending
+  "RUSTSEC-2026-0099",
 ]
 
 # This section is considered when running `cargo deny check bans`.

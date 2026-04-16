@@ -136,6 +136,14 @@ pub(crate) fn assert_no_dkg_failures(context: &Context) {
     }
 }
 
+/// Asserts that no DKG ceremony failures have occurred.
+#[track_caller]
+pub(crate) fn assert_no_dkg_failure(metric: &str, value: &str) {
+    if metric.ends_with("_dkg_manager_ceremony_failures_total") {
+        assert_eq!(0, value.parse::<u64>().unwrap(),);
+    }
+}
+
 /// Asserts that at least one validator has skipped rounds (indicating sync occurred).
 #[track_caller]
 pub(crate) fn assert_skipped_rounds(context: &Context) {
