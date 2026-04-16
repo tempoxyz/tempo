@@ -421,7 +421,7 @@ impl ValidatorTransactionArgs {
 
             Ok(EthereumWallet::new(signer))
         } else if let Some(path) = &self.wallet.wallet_key {
-            let signer = key_from_file(&path).wrap_err_with(|| {
+            let signer = key_from_file(path).wrap_err_with(|| {
                 format!("failed reading private key from file `{}`", path.display())
             })?;
 
