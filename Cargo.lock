@@ -12314,7 +12314,6 @@ dependencies = [
  "tracing",
  "tracy-client",
  "url",
- "zeroize",
 ]
 
 [[package]]

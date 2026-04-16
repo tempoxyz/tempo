@@ -80,6 +80,6 @@ baseline: 274318
 "keychain_p256::batch_2_transfers": 832296
 "keychain_p256::batch_5_transfers": 852380
 "keychain_p256::batch_10_transfers": 885853
-"keychain_secp256k1_selector_any_recipient::transfer": 2598964
+"keychain_secp256k1_selector_any_recipient::transfer": 2600980
 "keychain_secp256k1_selector_recipient::transfer": 3360057
 "keychain_secp256k1_target_any_selector::transfer": 1835755

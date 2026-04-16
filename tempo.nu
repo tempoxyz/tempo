@@ -592,7 +592,6 @@ def run-bench-single [
     | append (if $bloat > 0 {
         [
             "--mnemonic" $"'($BLOAT_MNEMONIC)'"
-            "--existing-recipients"
         ]
     } else { [] })
     | append (if $bench_args != "" { $bench_args | split row " " } else { [] })
@@ -2171,7 +2170,6 @@ def "main bench" [
     | append (if $bloat > 0 {
         [
             "--mnemonic" "'test test test test test test test test test test test junk'"
-            "--existing-recipients"
         ]
     } else { [] })
     | append (if $bench_args != "" { $bench_args | split row " " } else { [] })
