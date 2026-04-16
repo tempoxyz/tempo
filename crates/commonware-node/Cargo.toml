@@ -12,7 +12,7 @@ workspace = true
 
 [dependencies]
 tempo-alloy = { workspace = true, features = ["reth"] }
-tempo-chainspec.workspace = true
+tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-commonware-node-config.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true
 tempo-node.workspace = true
@@ -61,7 +61,9 @@ reth-node-core.workspace = true
 reth-revm.workspace = true
 reth-primitives-traits.workspace = true
 reth-provider.workspace = true
-reth-rpc-convert.workspace = true
 
 tokio = { workspace = true, features = ["macros", "sync"] }
 tracing.workspace = true
+
+[dev-dependencies]
+tempo-primitives = { workspace = true, features = ["arbitrary"] }

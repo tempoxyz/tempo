@@ -915,7 +915,7 @@ impl TIP20Token {
         self.total_supply.write(amount)
     }
 
-    fn check_not_paused(&self) -> Result<()> {
+    pub fn check_not_paused(&self) -> Result<()> {
         if self.paused()? {
             return Err(TIP20Error::contract_paused().into());
         }
@@ -1137,7 +1137,7 @@ impl TIP20Token {
 
 /// Resolved transfer recipient for [TIP-1022] virtual address support.
 ///
-/// `to` is always the effective (resolved) address where the balance is credited. For virtual
+/// `target` is always the effective (resolved) address where the balance is credited. For virtual
 /// recipients, `virtual_addr` carries the original virtual address for event emission.
 ///
 /// [TIP-1022]: <https://docs.tempo.xyz/protocol/tip1022>

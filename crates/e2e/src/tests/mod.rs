@@ -9,6 +9,7 @@ mod dkg;
 mod fee_recipient;
 mod linkage;
 mod metrics;
+mod migration_from_v3_to_v4;
 mod payload_builder;
 mod restart;
 mod simple;
@@ -16,13 +17,7 @@ mod snapshot;
 // FIXME: subblocks are currently flaky.
 // mod subblocks;
 mod sync;
-
-#[track_caller]
-fn assert_no_dkg_failure(metric: &str, value: &str) {
-    if metric.ends_with("_dkg_manager_ceremony_failures_total") {
-        assert_eq!(0, value.parse::<u64>().unwrap(),);
-    }
-}
+mod v4_at_genesis;
 
 #[test_traced]
 fn spawning_execution_node_works() {

@@ -75,6 +75,7 @@ pub const TEST_MNEMONIC: &str = "test test test test test test test test test te
 pub struct Builder {
     epoch_length: Option<u64>,
     initial_dkg_outcome: Option<OnchainDkgOutcome>,
+    t4_time: Option<u64>,
     validators: Option<ordered::Map<PublicKey, ConsensusNodeConfig>>,
 }
 
@@ -83,6 +84,7 @@ impl Builder {
         Self {
             epoch_length: None,
             initial_dkg_outcome: None,
+            t4_time: None,
             validators: None,
         }
     }
@@ -108,10 +110,15 @@ impl Builder {
         }
     }
 
+    pub fn with_t4_time(self, t4_time: Option<u64>) -> Self {
+        Self { t4_time, ..self }
+    }
+
     pub fn launch(self) -> eyre::Result<ExecutionRuntime> {
         let Self {
             epoch_length,
             initial_dkg_outcome,
+            t4_time,
             validators,
         } = self;
 
@@ -135,6 +142,15 @@ impl Builder {
             .extra_fields
             .insert_value("epochLength".to_string(), epoch_length)
             .unwrap();
+
+        if let Some(t4_time) = t4_time {
+            genesis
+                .config
+                .extra_fields
+                .insert_value("t4Time".to_string(), t4_time)
+                .unwrap();
+        }
+
         genesis.extra_data = initial_dkg_outcome.encode().to_vec().into();
 
         // Just remove whatever is already written into chainspec.
@@ -744,7 +760,7 @@ impl ExecutionRuntimeHandle {
 /// avoids the type parameters.
 pub struct ExecutionNode {
     /// All handles to interact with the launched node instances and services.
-    pub node: TempoFullNode,
+    pub node: Box<TempoFullNode>,
     /// The [`Runtime`] that drives the node's services.
     pub runtime: Runtime,
     /// The exist future that resolves when the node's engine future resolves.
@@ -905,7 +921,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
     })?;
 
     Ok(ExecutionNode {
-        node: node_handle.node,
+        node: Box::new(node_handle.node),
         runtime,
         exit_fut: node_handle.node_exit_future,
     })

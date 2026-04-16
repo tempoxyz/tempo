@@ -1,5 +1,5 @@
 use alloy::primitives::{Address, Log, LogData, U256};
-use alloy_evm::{EvmInternals, EvmInternalsError};
+use alloy_evm::EvmInternals;
 use revm::{
     context::{Block, CfgEnv, journaled_state::JournalCheckpoint},
     context_interface::cfg::{GasParams, gas},
@@ -17,6 +17,7 @@ pub struct EvmPrecompileStorageProvider<'a> {
     gas_remaining: u64,
     gas_refunded: i64,
     gas_limit: u64,
+    reservoir: u64,
     spec: TempoHardfork,
     is_static: bool,
     gas_params: GasParams,
@@ -30,6 +31,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
     pub fn new(
         internals: EvmInternals<'a>,
         gas_limit: u64,
+        reservoir: u64,
         spec: TempoHardfork,
         is_static: bool,
         gas_params: GasParams,
@@ -39,6 +41,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             gas_remaining: gas_limit,
             gas_refunded: 0,
             gas_limit,
+            reservoir,
             spec,
             is_static,
             gas_params,
@@ -49,7 +52,14 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
 
     /// Creates a new storage provider with maximum gas limit and non-static context.
     pub fn new_max_gas(internals: EvmInternals<'a>, cfg: &CfgEnv<TempoHardfork>) -> Self {
-        Self::new(internals, u64::MAX, cfg.spec, false, cfg.gas_params.clone())
+        Self::new(
+            internals,
+            u64::MAX,
+            0,
+            cfg.spec,
+            false,
+            cfg.gas_params.clone(),
+        )
     }
 
     /// Creates a new storage provider with the given gas limit, deriving spec from `cfg`.
@@ -57,10 +67,12 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         internals: EvmInternals<'a>,
         cfg: &CfgEnv<TempoHardfork>,
         gas_limit: u64,
+        reservoir: u64,
     ) -> Self {
         Self::new(
             internals,
             gas_limit,
+            reservoir,
             cfg.spec,
             false,
             cfg.gas_params.clone(),
@@ -237,6 +249,11 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     }
 
     #[inline]
+    fn reservoir(&self) -> u64 {
+        self.reservoir
+    }
+
+    #[inline]
     fn spec(&self) -> TempoHardfork {
         self.spec
     }
@@ -293,12 +310,6 @@ impl EvmPrecompileStorageProvider<'_> {
             top,
             "out-of-order checkpoint {op} (expected top of stack)"
         );
-    }
-}
-
-impl From<EvmInternalsError> for TempoPrecompileError {
-    fn from(value: EvmInternalsError) -> Self {
-        Self::Fatal(value.to_string())
     }
 }
 
@@ -627,7 +638,7 @@ mod tests {
         let evm_internals =
             EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
         let mut provider =
-            EvmPrecompileStorageProvider::new_with_gas_limit(evm_internals, &ctx.cfg, 30);
+            EvmPrecompileStorageProvider::new_with_gas_limit(evm_internals, &ctx.cfg, 30, 0);
         assert!(matches!(
             provider.keccak256(b"hello"),
             Err(TempoPrecompileError::OutOfGas)
@@ -671,7 +682,7 @@ mod tests {
         let evm_internals =
             EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
         let mut provider =
-            EvmPrecompileStorageProvider::new_with_gas_limit(evm_internals, &ctx.cfg, 100);
+            EvmPrecompileStorageProvider::new_with_gas_limit(evm_internals, &ctx.cfg, 100, 0);
         assert!(matches!(
             provider.recover_signer(digest, v, r, s),
             Err(TempoPrecompileError::OutOfGas)

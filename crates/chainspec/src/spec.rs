@@ -1,16 +1,12 @@
+pub use crate::constants::gas::*;
+
 use crate::{
     bootnodes::{moderato_nodes, presto_nodes},
     hardfork::{TempoHardfork, TempoHardforks},
 };
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use alloy_eips::eip7840::BlobParams;
-use alloy_evm::{
-    eth::spec::EthExecutorSpec,
-    revm::interpreter::gas::{
-        COLD_SLOAD_COST as COLD_SLOAD, SSTORE_SET, WARM_SSTORE_RESET,
-        WARM_STORAGE_READ_COST as WARM_SLOAD,
-    },
-};
+use alloy_evm::eth::spec::EthExecutorSpec;
 use alloy_genesis::Genesis;
 use alloy_primitives::{Address, B256, U256};
 use once_cell as _;
@@ -26,48 +22,9 @@ use reth_network_peers::NodeRecord;
 use std::sync::LazyLock;
 use tempo_primitives::TempoHeader;
 
-/// T0 base fee: 10 billion attodollars (1×10^10)
-///
-/// Attodollars are the atomic gas accounting units at 10^-18 USD precision.
-/// Basefee is denominated in attodollars.
-pub const TEMPO_T0_BASE_FEE: u64 = 10_000_000_000;
-
-/// T1 base fee: 20 billion attodollars (2×10^10)
-///
-/// Attodollars are the atomic gas accounting units at 10^-18 USD precision.
-/// Basefee is denominated in attodollars.
-///
-/// At this basefee, a standard TIP-20 transfer (~50,000 gas) costs:
-/// - Gas: 50,000 × 20 billion attodollars/gas = 1 quadrillion attodollars
-/// - Tokens: 1 quadrillion attodollars / 10^12 = 1,000 microdollars
-/// - Economic: 1,000 microdollars = 0.001 USD = 0.1 cents
-pub const TEMPO_T1_BASE_FEE: u64 = 20_000_000_000;
-
-/// [TIP-1010] general (non-payment) gas limit: 30 million gas per block.
-/// Cap for non-payment transactions.
-///
-/// [TIP-1010]: <https://docs.tempo.xyz/protocol/tips/tip-1010>
-pub const TEMPO_T1_GENERAL_GAS_LIMIT: u64 = 30_000_000;
-
-/// TIP-1010 per-transaction gas limit cap: 30 million gas.
-/// Allows maximum-sized contract deployments under [TIP-1000] state creation costs.
-///
-/// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
-pub const TEMPO_T1_TX_GAS_LIMIT_CAP: u64 = 30_000_000;
-
 // End-of-block system transactions
 pub const SYSTEM_TX_COUNT: usize = 1;
 pub const SYSTEM_TX_ADDRESSES: [Address; SYSTEM_TX_COUNT] = [Address::ZERO];
-
-/// Gas cost for using an existing 2D nonce key (cold SLOAD + warm SSTORE reset)
-pub const TEMPO_T1_EXISTING_NONCE_KEY_GAS: u64 = COLD_SLOAD + WARM_SSTORE_RESET;
-/// T2 adds 2 warm SLOADs for the extended nonce key lookup
-pub const TEMPO_T2_EXISTING_NONCE_KEY_GAS: u64 = TEMPO_T1_EXISTING_NONCE_KEY_GAS + 2 * WARM_SLOAD;
-
-/// Gas cost for using a new 2D nonce key (cold SLOAD + SSTORE set for 0 -> non-zero)
-pub const TEMPO_T1_NEW_NONCE_KEY_GAS: u64 = COLD_SLOAD + SSTORE_SET;
-/// T2 adds 2 warm SLOADs for the extended nonce key lookup
-pub const TEMPO_T2_NEW_NONCE_KEY_GAS: u64 = TEMPO_T1_NEW_NONCE_KEY_GAS + 2 * WARM_SLOAD;
 
 /// Tempo genesis info extracted from genesis extra_fields
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
@@ -164,6 +121,17 @@ impl reth_cli::chainspec::ChainSpecParser for TempoChainSpecParser {
     }
 }
 
+/// Resolve a [`TempoChainSpec`] from a chain id.
+///
+/// Returns `None` for unknown chain ids.
+pub fn chainspec_from_chain_id(chain_id: u64) -> Option<Arc<TempoChainSpec>> {
+    match chain_id {
+        4217 => Some(PRESTO.clone()),
+        42431 => Some(MODERATO.clone()),
+        _ => None,
+    }
+}
+
 pub static MODERATO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
     let genesis: Genesis = serde_json::from_str(include_str!("./genesis/moderato.json"))
         .expect("`./genesis/moderato.json` must be present and deserializable");
@@ -224,6 +192,7 @@ impl TempoChainSpec {
                 general_gas_limit: 0,
                 timestamp_millis_part: inner.timestamp % 1000,
                 shared_gas_limit: 0,
+                consensus_context: None,
                 inner,
             }),
             info,
@@ -256,8 +225,9 @@ impl From<ChainSpec> for TempoChainSpec {
             inner: spec.map_header(|inner| TempoHeader {
                 general_gas_limit: 0,
                 timestamp_millis_part: inner.timestamp % 1000,
-                inner,
                 shared_gas_limit: 0,
+                consensus_context: None,
+                inner,
             }),
             info: TempoGenesisInfo::default(),
             default_follow_url: None,
@@ -506,7 +476,15 @@ mod tests {
             // At and after T2 activation
             assert!(cs.is_t2_active_at_timestamp(1774965600));
             assert_eq!(cs.tempo_hardfork_at(1774965600), TempoHardfork::T2);
-            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T2);
+
+            // Before T3 activation (1777298400 = Apr 27th 2026 16:00 CEST)
+            assert!(!cs.is_t3_active_at_timestamp(1777298399));
+            assert_eq!(cs.tempo_hardfork_at(1777298399), TempoHardfork::T2);
+
+            // At and after T3 activation
+            assert!(cs.is_t3_active_at_timestamp(1777298400));
+            assert_eq!(cs.tempo_hardfork_at(1777298400), TempoHardfork::T3);
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T3);
         }
 
         #[test]
@@ -545,9 +523,15 @@ mod tests {
             // At and after T2 activation
             assert!(cs.is_t2_active_at_timestamp(1774537200));
             assert_eq!(cs.tempo_hardfork_at(1774537200), TempoHardfork::T2);
-            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T2);
 
-            assert!(!cs.is_t3_active_at_timestamp(u64::MAX));
+            // Before T3 activation (1776780000 = Apr 21st 2026 16:00 CEST)
+            assert!(!cs.is_t3_active_at_timestamp(1776779999));
+            assert_eq!(cs.tempo_hardfork_at(1776779999), TempoHardfork::T2);
+
+            // At and after T3 activation
+            assert!(cs.is_t3_active_at_timestamp(1776780000));
+            assert_eq!(cs.tempo_hardfork_at(1776780000), TempoHardfork::T3);
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T3);
         }
 
         #[test]
@@ -559,6 +543,22 @@ mod tests {
             let moderato = super::super::TempoChainSpecParser::parse("moderato")
                 .expect("the moderato chainspec must always be well formed");
             assert_eq!(cs.inner.chain(), moderato.inner.chain());
+        }
+    }
+
+    #[test]
+    #[allow(clippy::expect_fun_call)]
+    fn chainspec_from_chain_id_roundtrips_supported_chains() {
+        use reth_chainspec::EthChainSpec;
+
+        for &name in super::SUPPORTED_CHAINS {
+            let spec =
+                super::chain_value_parser(name).expect(&format!("failed to parse chain `{name}`"));
+
+            let resolved = super::chainspec_from_chain_id(spec.chain().id())
+                .expect(&format!("failed to parse chain `{name}`"));
+
+            assert_eq!(spec.chain(), resolved.chain(), "chain mismatch for {name}");
         }
     }
 }

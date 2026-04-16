@@ -12,10 +12,12 @@ use commonware_consensus::{
 use commonware_cryptography::{
     Signer as _,
     bls12381::{
-        dkg::{self, DealerLog, DealerPrivMsg, DealerPubMsg, PlayerAck, SignedDealerLog, observe},
+        dkg::{
+            self, DealerLog, DealerPrivMsg, DealerPubMsg, Logs, PlayerAck, SignedDealerLog, observe,
+        },
         primitives::{group::Share, variant::MinSig},
     },
-    ed25519::{PrivateKey, PublicKey},
+    ed25519::{self, PrivateKey, PublicKey},
     transcript::Summary,
 };
 use commonware_math::algebra::Random as _;
@@ -728,14 +730,14 @@ where
             debug!("using cached DKG outcome");
             (outcome.clone(), share.clone())
         } else {
-            let logs = storage
-                .logs_for_epoch(round.epoch())
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect::<BTreeMap<_, _>>();
+            let mut logs = Logs::<MinSig, PublicKey, N3f1>::new(round.info().clone());
+            for (k, v) in storage.logs_for_epoch(round.epoch()) {
+                logs.record(k.clone(), v.clone());
+            }
 
-            let player_outcome = player_state.take().and_then(|player| {
+            let player_outcome = if let Some(player) = player_state.take() {
                 info!("we were a player in the ceremony; finalizing share");
-                match player.finalize(logs.clone(), &Sequential) {
+                match player.finalize(&mut self.context, logs.clone(), &Sequential) {
                     Ok((new_output, new_share)) => {
                         info!("local DKG ceremony was a success");
                         Some((new_output, state::ShareState::Plaintext(Some(new_share))))
@@ -761,10 +763,14 @@ where
                         Some((state.output.clone(), state.share.clone()))
                     }
                 }
-            });
+            } else {
+                None
+            };
 
-            player_outcome.unwrap_or_else(move || {
-                match observe::<_, _, N3f1>(round.info().clone(), logs, &Sequential) {
+            if let Some(outcome) = player_outcome {
+                outcome
+            } else {
+                match observe::<_, _, N3f1, ed25519::Batch>(&mut self.context, logs, &Sequential) {
                     Ok(output) => {
                         info!("local DKG ceremony was a success");
                         (output, state::ShareState::Plaintext(None))
@@ -777,7 +783,7 @@ where
                         (state.output.clone(), state.share.clone())
                     }
                 }
-            })
+            }
         };
 
         if local_output != onchain_outcome.output {
@@ -1103,13 +1109,13 @@ where
         {
             output
         } else {
-            let mut logs = storage
+            let mut raw_logs = storage
                 .logs_for_epoch(round.epoch())
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect::<BTreeMap<_, _>>();
 
             'ensure_enough_logs: {
-                if logs.len() == round.dealers().len() {
+                if raw_logs.len() == round.dealers().len() {
                     info!("collected as many logs as there are dealers; concluding DKG");
                     break 'ensure_enough_logs;
                 }
@@ -1128,7 +1134,7 @@ where
                     if let Some(block) =
                         storage.get_notarized_reduced_block(&round.epoch(), &digest)
                     {
-                        logs.extend(block.log.clone());
+                        raw_logs.extend(block.log.clone());
                         height = if let Some(height) = block.height.previous() {
                             height
                         } else {
@@ -1141,6 +1147,11 @@ where
                 }
             }
 
+            let mut logs = Logs::<MinSig, PublicKey, N3f1>::new(round.info().clone());
+            for (k, v) in raw_logs {
+                logs.record(k, v);
+            }
+
             // Create a player-state ad hoc: the DKG player object is not
             // cloneable, and finalizing consumes it.
             let player_state = player_state.is_some().then(||
@@ -1151,9 +1162,9 @@ where
             );
 
             let (output, share) = {
-                let player_outcome = player_state.and_then(|player| {
+                let player_outcome = if let Some(player) = player_state {
                     info!("we were a player in the ceremony; finalizing share");
-                    match player.finalize(logs.clone(), &Sequential) {
+                    match player.finalize(&mut self.context, logs.clone(), &Sequential) {
                         Ok((new_output, new_share)) => {
                             info!("local DKG ceremony was a success");
                             Some((new_output, state::ShareState::Plaintext(Some(new_share))))
@@ -1179,10 +1190,18 @@ where
                             Some((state.output.clone(), state.share.clone()))
                         }
                     }
-                });
+                } else {
+                    None
+                };
 
-                player_outcome.unwrap_or_else(move || {
-                    match observe::<_, _, N3f1>(round.info().clone(), logs, &Sequential) {
+                if let Some(outcome) = player_outcome {
+                    outcome
+                } else {
+                    match observe::<_, _, N3f1, ed25519::Batch>(
+                        &mut self.context,
+                        logs,
+                        &Sequential,
+                    ) {
                         Ok(output) => {
                             info!("local DKG ceremony was a success");
                             (output, state::ShareState::Plaintext(None))
@@ -1195,7 +1214,7 @@ where
                             (state.output.clone(), state.share.clone())
                         }
                     }
-                })
+                }
             };
 
             storage.cache_dkg_outcome(state.epoch, request.digest, output.clone(), share);

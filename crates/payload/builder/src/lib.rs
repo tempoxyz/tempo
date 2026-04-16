@@ -68,8 +68,11 @@ use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 /// Returns true if a subblock has any expired transactions for the given timestamp.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
     subblock.transactions.iter().any(|tx| {
-        tx.as_aa()
-            .is_some_and(|tx| tx.tx().valid_before.is_some_and(|valid| valid <= timestamp))
+        tx.as_aa().is_some_and(|tx| {
+            tx.tx()
+                .valid_before
+                .is_some_and(|valid| valid.get() <= timestamp)
+        })
     })
 }
 
@@ -89,6 +92,8 @@ pub struct TempoPayloadBuilder<Provider> {
     /// last height at which we've seen an invalid subblock, and not including any subblocks
     /// at this height for any payloads.
     highest_invalid_subblock: Arc<AtomicU64>,
+    /// Whether the node is configured in `--dev` miner mode.
+    is_dev: bool,
     /// Whether to enable state provider metrics.
     state_provider_metrics: bool,
     /// Whether to disable state cache.
@@ -100,6 +105,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
         pool: TempoTransactionPool<Provider>,
         provider: Provider,
         evm_config: TempoEvmConfig,
+        is_dev: bool,
         state_provider_metrics: bool,
         disable_state_cache: bool,
     ) -> Self {
@@ -109,6 +115,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             evm_config,
             metrics: TempoPayloadBuilderMetrics::default(),
             highest_invalid_subblock: Default::default(),
+            is_dev,
             state_provider_metrics,
             disable_state_cache,
         }
@@ -240,7 +247,11 @@ where
             attributes,
             payload_id,
         } = config;
-        let build_until_interrupt = trie_handle.is_some();
+        let build_until_interrupt =
+            // When trie handle is provided, we only build the payload once, until the interrupt is triggered
+            trie_handle.is_some()
+            // `--dev` mode doesn't have payload building interrupts
+            && !self.is_dev;
 
         macro_rules! check_cancel {
             () => {
@@ -365,10 +376,12 @@ where
                         parent_beacon_block_root: attributes.parent_beacon_block_root,
                         withdrawals: attributes.withdrawals.clone().map(Into::into),
                         extra_data: attributes.extra_data().clone(),
+                        slot_number: attributes.slot_number,
                     },
                     general_gas_limit,
                     shared_gas_limit,
                     timestamp_millis_part: attributes.timestamp_millis_part(),
+                    consensus_context: attributes.consensus_context(),
                     subblock_fee_recipients,
                 },
             )
@@ -787,7 +800,7 @@ where
             "Built payload"
         );
 
-        let eth_payload = EthBuiltPayload::new(sealed_block, total_fees, requests);
+        let eth_payload = EthBuiltPayload::new(sealed_block, total_fees, requests, None);
 
         let execution_output = BlockExecutionOutput {
             result: execution_result,
@@ -900,15 +913,20 @@ mod tests {
     use super::*;
     use alloy_consensus::BlockBody;
     use alloy_primitives::{Address, B256, Bytes, Signature};
+    use core::num::NonZeroU64;
     use reth_primitives_traits::SealedBlock;
     use tempo_primitives::{
         AASigned, Block, SignedSubBlock, SubBlock, SubBlockVersion, TempoSignature,
         TempoTransaction,
     };
 
+    fn nz(value: u64) -> NonZeroU64 {
+        NonZeroU64::new(value).expect("test valid_before must be non-zero")
+    }
+
     trait TestExt {
         fn random() -> Self;
-        fn with_valid_before(_: Option<u64>) -> Self
+        fn with_valid_before(_: Option<NonZeroU64>) -> Self
         where
             Self: Sized,
         {
@@ -932,7 +950,7 @@ mod tests {
             Self::with_valid_before(None)
         }
 
-        fn with_valid_before(valid_before: Option<u64>) -> Self {
+        fn with_valid_before(valid_before: Option<NonZeroU64>) -> Self {
             let tx = TempoTxEnvelope::AA(AASigned::new_unhashed(
                 TempoTransaction {
                     valid_before,
@@ -977,7 +995,7 @@ mod tests {
             },
         };
         let sealed = Arc::new(SealedBlock::seal_slow(block));
-        let eth = EthBuiltPayload::new(sealed, U256::ZERO, None);
+        let eth = EthBuiltPayload::new(sealed, U256::ZERO, None, None);
         TempoBuiltPayload::new(eth, None)
     }
 
@@ -1023,8 +1041,15 @@ mod tests {
         // Test that extra_data in attributes can be accessed correctly
         let extra_data = Bytes::from(vec![42, 43, 44, 45, 46]);
 
-        let attrs =
-            TempoPayloadAttributes::new(Address::ZERO, None, 1000, extra_data.clone(), Vec::new);
+        let attrs = TempoPayloadAttributes::new(
+            Address::default(),
+            None,
+            1,
+            0,
+            extra_data.clone(),
+            None,
+            Vec::new,
+        );
 
         assert_eq!(attrs.extra_data(), &extra_data);
 
@@ -1037,7 +1062,7 @@ mod tests {
     #[test]
     fn test_has_expired_transactions_boundary() {
         // valid_before == timestamp → expired
-        let subblock = RecoveredSubBlock::with_valid_before(Some(1000));
+        let subblock = RecoveredSubBlock::with_valid_before(Some(nz(1000)));
         assert!(has_expired_transactions(&subblock, 1000));
 
         // valid_before < timestamp → expired

@@ -2,15 +2,20 @@ use std::{
     fs::OpenOptions,
     io::Write as _,
     net::{IpAddr, SocketAddr},
-    path::PathBuf,
+    path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
 };
 
+use alloy_network::EthereumWallet;
 use alloy_primitives::{Address, B256, Bytes};
 use alloy_provider::{Provider, ProviderBuilder};
 use alloy_rpc_types_eth::TransactionRequest;
+use alloy_signer_aws::{AwsSigner, aws_config, aws_sdk_kms};
+use alloy_signer_gcp::{GcpKeyRingRef, GcpSigner, KeySpecifier, gcloud_sdk};
+use alloy_signer_ledger::{HDPath as LedgerHDPath, LedgerSigner};
 use alloy_signer_local::PrivateKeySigner;
+use alloy_signer_trezor::{HDPath as TrezorHDPath, TrezorSigner};
 use alloy_sol_types::SolCall;
 use clap::Subcommand;
 use commonware_codec::{DecodeExt as _, Encode as _, ReadExt as _};
@@ -21,7 +26,8 @@ use commonware_cryptography::{
 };
 use commonware_math::algebra::Random as _;
 use commonware_utils::NZU64;
-use eyre::{OptionExt as _, Report, WrapErr as _, eyre};
+use eyre::{OptionExt as _, Report, WrapErr as _, bail, eyre};
+use reth_chainspec::EthChainSpec;
 use reth_cli_runner::CliRunner;
 use reth_ethereum_cli::ExtendedCommand;
 use serde::Serialize;
@@ -29,15 +35,18 @@ use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_commonware_node_config::SigningKey;
 use tempo_contracts::precompiles::{
-    IValidatorConfig::{self},
     IValidatorConfigV2::{self, Validator},
-    VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    VALIDATOR_CONFIG_V2_ADDRESS,
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_precompiles::validator_config_v2::{VALIDATOR_NS_ADD, VALIDATOR_NS_ROTATE};
 use tempo_validator_config::ValidatorConfig;
 
-use crate::init_state;
+use crate::{init_state, p2p_proxy::P2pProxyArgs};
+
+fn get_env(key: &str) -> eyre::Result<String> {
+    std::env::var(key).wrap_err_with(|| format!("failed reading environment variable `{key}`"))
+}
 
 /// Passthrough args for extension management commands.
 ///
@@ -52,14 +61,13 @@ pub(crate) struct ExtArgs {
 
 /// Tempo-specific subcommands that extend the reth CLI.
 #[derive(Debug, Subcommand)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "one-off commands; size doesn't matter"
-)]
 pub(crate) enum TempoSubcommand {
     /// Consensus-related commands.
     #[command(subcommand)]
     Consensus(ConsensusSubcommand),
+
+    /// Run a proxy P2P node that serves cached block data fetched from an RPC endpoint.
+    P2pProxy(P2pProxyArgs),
 
     /// Initialize state from a binary dump file.
     ///
@@ -100,6 +108,7 @@ impl ExtendedCommand for TempoSubcommand {
                 runner.run_blocking_until_ctrl_c(cmd.run())?;
                 Ok(())
             }
+            Self::P2pProxy(cmd) => runner.run_command_until_exit(|_| cmd.run()),
             Self::InitFromBinaryDump(cmd) => {
                 let runtime = runner.runtime();
                 runner.run_blocking_until_ctrl_c(
@@ -190,53 +199,6 @@ impl FromStr for ValidatorId {
     }
 }
 
-async fn is_validator_config_v2_activated(
-    provider: &impl Provider<TempoNetwork>,
-) -> eyre::Result<bool> {
-    let call = IValidatorConfigV2::getInitializedAtHeightCall {};
-    let tx = TransactionRequest::default()
-        .to(VALIDATOR_CONFIG_V2_ADDRESS)
-        .input(call.abi_encode().into());
-
-    let resp = provider
-        .call(tx.into())
-        .await
-        .wrap_err("failed to check v2 contract")?;
-
-    // The contract is not deployed if empty
-    if resp.is_empty() {
-        return Ok(false);
-    }
-
-    let initialized_height =
-        IValidatorConfigV2::getInitializedAtHeightCall::abi_decode_returns(&resp)
-            .wrap_err("failed to decode v2 getInitializedAtHeight call")?;
-
-    let latest_block_number = provider
-        .get_block_number()
-        .await
-        .wrap_err("failed to fetch block number")?;
-
-    if latest_block_number < initialized_height {
-        return Ok(false);
-    }
-
-    let call = IValidatorConfigV2::isInitializedCall {};
-    let tx = TransactionRequest::default()
-        .to(VALIDATOR_CONFIG_V2_ADDRESS)
-        .input(call.abi_encode().into());
-
-    let resp = provider
-        .call(tx.into())
-        .await
-        .wrap_err("failed to check v2 contract")?;
-
-    let initialized = IValidatorConfigV2::isInitializedCall::abi_decode_returns(&resp)
-        .wrap_err("failed to decode v2 initialized call")?;
-
-    Ok(initialized)
-}
-
 async fn read_validator_from_contract(
     provider: &impl Provider<TempoNetwork>,
     lookup: ValidatorId,
@@ -282,11 +244,14 @@ async fn read_validator_from_contract(
 /// Shared validator identity arguments used across add/rotate/sign commands.
 #[derive(Debug, clap::Args)]
 pub(crate) struct ValidatorIdentityArgs {
-    /// The validator's address
+    /// The validator's Ethereum address
     #[arg(long, value_name = "ETHEREUM_ADDRESS")]
     validator_address: Address,
-    /// The identity key of the validator (0x-prefixed hex).
-    #[arg(long, value_name = "IDENTITY_KEY")]
+    /// The validator's signing key address (0x-prefixed hex).
+    #[arg(
+        long = "consensus.public-key",
+        value_name = "IDENTITY_PUBLIC_KEY_ADDRESS"
+    )]
     public_key: B256,
     /// The inbound address for the validator.
     #[arg(long, value_name = "IP:PORT")]
@@ -316,9 +281,9 @@ pub(crate) struct ValidatorSignatureArgs {
     #[arg(long, value_name = "SIGNATURE")]
     signature: Option<Bytes>,
 
-    /// Path to the ed25519 signing key file. The signature is computed
+    /// Path to the ed25519 signing private key file. The signature is computed
     /// automatically so a separate `create-*-signature` step is not needed.
-    #[arg(long, value_name = "FILE")]
+    #[arg(long = "consensus.signing-key", value_name = "FILE")]
     signing_key: Option<PathBuf>,
 }
 
@@ -334,18 +299,42 @@ impl ValidatorSignatureArgs {
                 Ok(sig.encode().into())
             }
             (None, None) => Err(eyre!(
-                "either --signature or --signing-key must be provided"
+                "either --signature or --consensus.signing-key must be provided"
             )),
         }
     }
 }
 
+#[derive(Debug, clap::Args)]
+#[group(required = true, multiple = false)]
+pub(crate) struct WalletArgs {
+    /// Path to the file holding the validator's Ethereum private key.
+    #[arg(long, value_name = "FILE", help_heading = "Wallet options - raw")]
+    wallet_key: Option<PathBuf>,
+
+    /// Use a Ledger hardware wallet.
+    #[arg(long, help_heading = "Wallet options - hardware wallet")]
+    ledger: bool,
+
+    /// Use a Trezor hardware wallet.
+    #[arg(long, help_heading = "Wallet options - hardware wallet")]
+    trezor: bool,
+
+    /// Use AWS KMS. Requires AWS_KMS_KEY_ID env var
+    #[arg(long, help_heading = "Wallet options - remote")]
+    aws: bool,
+
+    /// Use GCP KMS. Requires GCP_PROJECT_ID, GCP_LOCATION, GCP_KEY_RING, GCP_KEY_NAME,
+    /// GCP_KEY_VERSION env vars
+    #[arg(long, help_heading = "Wallet options - remote")]
+    gcp: bool,
+}
+
 /// Shared arguments for commands that update the validator config contract.
 #[derive(Debug, clap::Args)]
 pub(crate) struct ValidatorTransactionArgs {
-    /// Path to the file holding the Ethereum private key.
-    #[arg(long, value_name = "FILE")]
-    private_key: PathBuf,
+    #[command(flatten)]
+    wallet: WalletArgs,
 
     /// The RPC URL to submit the transaction to.
     #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
@@ -384,24 +373,70 @@ impl ValidatorTransactionArgs {
         }
     }
 
-    fn signer(&self) -> eyre::Result<PrivateKeySigner> {
-        let private_key_bytes = std::fs::read(&self.private_key)
-            .wrap_err("failed reading validator ethereum private key")?;
+    async fn wallet(&self) -> eyre::Result<EthereumWallet> {
+        if self.wallet.ledger {
+            let signer = LedgerSigner::new(LedgerHDPath::LedgerLive(0), None)
+                .await
+                .wrap_err("failed to connect to Ledger device")?;
 
-        let private_key = B256::try_from(private_key_bytes.as_slice())
-            .wrap_err("invalid validator ethereum private key")?;
+            Ok(EthereumWallet::new(signer))
+        } else if self.wallet.trezor {
+            let signer = TrezorSigner::new(TrezorHDPath::TrezorLive(0), None)
+                .await
+                .wrap_err("failed to connect to Trezor device")?;
 
-        Ok(PrivateKeySigner::from_bytes(&private_key)?)
+            Ok(EthereumWallet::new(signer))
+        } else if self.wallet.aws {
+            let key_id = get_env("AWS_KMS_KEY_ID")?;
+            let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
+            let client = aws_sdk_kms::Client::new(&config);
+            let signer = AwsSigner::new(client, key_id, None)
+                .await
+                .wrap_err("failed to create AWS KMS signer")?;
+
+            Ok(EthereumWallet::new(signer))
+        } else if self.wallet.gcp {
+            let project = get_env("GCP_PROJECT_ID")?;
+            let location = get_env("GCP_LOCATION")?;
+            let keyring = get_env("GCP_KEY_RING")?;
+            let key_name = get_env("GCP_KEY_NAME")?;
+            let key_version: u64 = get_env("GCP_KEY_VERSION")?
+                .parse()
+                .wrap_err("GCP_KEY_VERSION must be a valid u64")?;
+
+            let keyring_ref = GcpKeyRingRef::new(&project, &location, &keyring);
+            let specifier = KeySpecifier::new(keyring_ref, &key_name, key_version);
+
+            let client = gcloud_sdk::GoogleApi::from_function(
+                gcloud_sdk::google::cloud::kms::v1::key_management_service_client::KeyManagementServiceClient::new,
+                "https://cloudkms.googleapis.com",
+                None,
+            )
+            .await
+            .wrap_err("failed to create GCP KMS client")?;
+
+            let signer = GcpSigner::new(client, specifier, None)
+                .await
+                .wrap_err("failed to create GCP KMS signer")?;
+
+            Ok(EthereumWallet::new(signer))
+        } else if let Some(path) = &self.wallet.wallet_key {
+            let signer = key_from_file(path).wrap_err_with(|| {
+                format!("failed reading private key from file `{}`", path.display())
+            })?;
+
+            Ok(EthereumWallet::new(signer))
+        } else {
+            bail!("a wallet option must be set")
+        }
     }
 
-    async fn provider(
-        &self,
-        signer: PrivateKeySigner,
-    ) -> eyre::Result<impl Provider<TempoNetwork>> {
+    async fn provider(&self) -> eyre::Result<impl Provider<TempoNetwork>> {
+        let wallet = self.wallet().await?;
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .fetch_chain_id()
             .with_gas_estimation()
-            .wallet(signer)
+            .wallet(wallet)
             .connect(&self.rpc_url)
             .await
             .wrap_err("failed to connect to RPC")?;
@@ -425,8 +460,7 @@ pub(crate) struct AddValidator {
 
 impl AddValidator {
     async fn run(self) -> eyre::Result<()> {
-        let signer = self.submit.signer()?;
-        let provider = self.submit.provider(signer).await?;
+        let provider = self.submit.provider().await?;
 
         let chain_id = provider
             .get_chain_id()
@@ -486,15 +520,15 @@ pub(crate) struct TransferValidatorOwnership {
 
 impl TransferValidatorOwnership {
     async fn run(self) -> eyre::Result<()> {
-        let signer = self.submit.signer()?;
-        let provider = self.submit.provider(signer).await?;
+        let provider = self.submit.provider().await?;
 
-        let new_private_key_bytes = std::fs::read(&self.new_private_key)
-            .wrap_err("failed reading new validator ethereum privatekey")?;
-        let new_private_key = B256::try_from(new_private_key_bytes.as_slice())
-            .wrap_err("invalid validator ethereum private key")?;
+        let new_signer = key_from_file(&self.new_private_key).wrap_err_with(|| {
+            format!(
+                "failed reading private key from file `{}`",
+                self.new_private_key.display()
+            )
+        })?;
 
-        let new_signer = PrivateKeySigner::from_bytes(&new_private_key)?;
         let new_validator_address = new_signer.address();
 
         let validator = read_validator_from_contract(&provider, self.id).await?;
@@ -534,8 +568,7 @@ pub(crate) struct RotateValidator {
 
 impl RotateValidator {
     async fn run(self) -> eyre::Result<()> {
-        let signer = self.submit.signer()?;
-        let provider = self.submit.provider(signer).await?;
+        let provider = self.submit.provider().await?;
 
         let chain_id = provider
             .get_chain_id()
@@ -686,8 +719,7 @@ pub(crate) struct SetValidatorIpAddress {
 
 impl SetValidatorIpAddress {
     async fn run(self) -> eyre::Result<()> {
-        let signer = self.submit.signer()?;
-        let provider = self.submit.provider(signer).await?;
+        let provider = self.submit.provider().await?;
 
         if self.ingress.is_none() && self.egress.is_none() {
             return Err(eyre!("at least one of --ingress or --egress must be set"));
@@ -731,8 +763,7 @@ pub(crate) struct DeactivateValidator {
 
 impl DeactivateValidator {
     async fn run(self) -> eyre::Result<()> {
-        let signer = self.submit.signer()?;
-        let provider = self.submit.provider(signer).await?;
+        let provider = self.submit.provider().await?;
 
         let validator = read_validator_from_contract(&provider, self.id).await?;
 
@@ -773,8 +804,7 @@ pub(crate) struct SetValidatorFeeRecipient {
 
 impl SetValidatorFeeRecipient {
     async fn run(self) -> eyre::Result<()> {
-        let signer = self.submit.signer()?;
-        let provider = self.submit.provider(signer).await?;
+        let provider = self.submit.provider().await?;
 
         let validator = read_validator_from_contract(&provider, self.id).await?;
 
@@ -864,9 +894,28 @@ pub(crate) struct ValidatorInfo {
     /// Validator ethereum address, ed25519 public key, or index
     #[arg()]
     id: ValidatorId,
+
     /// RPC URL to query.
     #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
     rpc_url: String,
+
+    /// Chain spec override for local/unknown chains (mainnet, testnet, moderato, or path to
+    /// chainspec file). Resolved automatically from the RPC chain id when omitted.
+    #[arg(long, short, value_parser = tempo_chainspec::spec::chain_value_parser)]
+    chain: Option<Arc<TempoChainSpec>>,
+
+    /// Skip crosschecking the validator with the last DKG round.
+    #[arg(long)]
+    no_dkg_information: bool,
+}
+
+/// Output for the single-validator lookup enriched with DKG role and epoch context.
+#[derive(Debug, Serialize)]
+struct SingleValidatorOutput {
+    current_epoch: u64,
+    current_height: u64,
+    #[serde(flatten)]
+    validator: ValidatorEntry,
 }
 
 impl ValidatorInfo {
@@ -876,79 +925,107 @@ impl ValidatorInfo {
             .await
             .wrap_err("failed to connect to RPC")?;
 
-        let is_v2_initialized = is_validator_config_v2_activated(&provider).await?;
+        let chain_id = provider
+            .get_chain_id()
+            .await
+            .wrap_err("failed to get chain id")?;
 
-        // Once migrated, this block will be removed
-        if !is_v2_initialized {
-            if let ValidatorId::PublicKey(pubkey) = &self.id {
-                let call = IValidatorConfig::getValidatorsCall {};
-                let resp = provider
-                    .call(
-                        TransactionRequest::default()
-                            .to(VALIDATOR_CONFIG_ADDRESS)
-                            .input(call.abi_encode().into())
-                            .into(),
-                    )
-                    .await
-                    .wrap_err("failed to call getValidators")?;
-
-                let validators = IValidatorConfig::getValidatorsCall::abi_decode_returns(&resp)
-                    .wrap_err("failed to decode getValidators response")?;
-
-                let validator = validators
-                    .iter()
-                    .find(|v| v.publicKey == *pubkey)
-                    .ok_or_else(|| eyre!("no validator found with public key {pubkey}"))?;
-
-                println!("{}", serde_json::to_string_pretty(&validator)?);
-                return Ok(());
-            }
-
-            let address = match &self.id {
-                ValidatorId::PublicKey(_) => unreachable!(), // already handled
-                ValidatorId::Address(addr) => *addr,
-                ValidatorId::Index(idx) => {
-                    let call = IValidatorConfig::validatorsArrayCall {
-                        index: alloy_primitives::U256::from(*idx),
-                    };
-
-                    let resp = provider
-                        .call(
-                            TransactionRequest::default()
-                                .to(VALIDATOR_CONFIG_ADDRESS)
-                                .input(call.abi_encode().into())
-                                .into(),
-                        )
-                        .await
-                        .wrap_err("failed to call validatorsArray")?;
-
-                    IValidatorConfig::validatorsArrayCall::abi_decode_returns(&resp)
-                        .wrap_err("failed to decode validatorsArray response")?
+        let chain = match self.chain {
+            Some(chain) => {
+                let spec_chain_id = chain.chain().id();
+                if spec_chain_id != chain_id {
+                    eprintln!(
+                        "warning: --chain spec has chain id {spec_chain_id} but RPC returned {chain_id}"
+                    );
                 }
-            };
+                chain
+            }
+            None => tempo_chainspec::spec::chainspec_from_chain_id(chain_id)
+                .ok_or_else(|| eyre!("unknown chain id {chain_id}, pass --chain explicitly"))?,
+        };
 
-            let call = IValidatorConfig::validatorsCall { validator: address };
-            let resp = provider
-                .call(
-                    TransactionRequest::default()
-                        .to(VALIDATOR_CONFIG_ADDRESS)
-                        .input(call.abi_encode().into())
-                        .into(),
-                )
-                .await
-                .wrap_err("failed to call validators")?;
-
-            let validator = IValidatorConfig::validatorsCall::abi_decode_returns(&resp)
-                .wrap_err("failed to decode validators response")?;
-
-            println!("{}", serde_json::to_string_pretty(&validator)?);
-
-            return Ok(());
-        }
+        let epoch_length = chain
+            .info
+            .epoch_length()
+            .ok_or_eyre("epochLength not found in chainspec")?;
 
         let validator = read_validator_from_contract(&provider, self.id).await?;
-        println!("{}", serde_json::to_string_pretty(&validator)?);
+        let pubkey_bytes = validator.publicKey.0;
 
+        let latest_block_number = provider
+            .get_block_number()
+            .await
+            .wrap_err("failed to get latest block number")?;
+
+        let epoch_strategy = FixedEpocher::new(NZU64!(epoch_length));
+        let current_height = Height::new(latest_block_number);
+        let current_epoch_info = epoch_strategy
+            .containing(current_height)
+            .ok_or_else(|| eyre!("failed to determine epoch for height {latest_block_number}"))?;
+        let current_epoch = current_epoch_info.epoch();
+
+        let mut is_dkg_dealer = None;
+        let mut is_dkg_player = None;
+        let mut in_committee = None;
+
+        if !self.no_dkg_information {
+            use alloy_consensus::BlockHeader;
+
+            let boundary_height = current_epoch
+                .previous()
+                .map(|epoch| epoch_strategy.last(epoch).expect("valid epoch"))
+                .unwrap_or_default();
+
+            let boundary_block = provider
+                .get_block_by_number(boundary_height.get().into())
+                .hashes()
+                .await
+                .wrap_err_with(|| {
+                    format!(
+                        "failed to get block header at height {}",
+                        boundary_height.get()
+                    )
+                })?
+                .ok_or_eyre("boundary block not found")?;
+
+            let extra_data = boundary_block.header.extra_data();
+            if extra_data.is_empty() {
+                return Err(eyre!(
+                    "boundary block at height {} has no DKG outcome in extra_data",
+                    boundary_height.get()
+                ));
+            }
+
+            let dkg_outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref())
+                .wrap_err("failed to decode DKG outcome from extra_data")?;
+
+            let key = PublicKey::decode(&mut &pubkey_bytes[..])
+                .wrap_err("failed decoding on-chain ed25519 key")?;
+
+            let committee = dkg_outcome.players().position(&key).is_some();
+            is_dkg_dealer = Some(committee);
+            is_dkg_player = Some(dkg_outcome.next_players().position(&key).is_some());
+            in_committee = Some(committee);
+        }
+
+        let output = SingleValidatorOutput {
+            current_epoch: current_epoch.get(),
+            current_height: current_height.get(),
+            validator: ValidatorEntry {
+                onchain_address: validator.validatorAddress,
+                public_key: alloy_primitives::hex::encode(pubkey_bytes),
+                inbound_address: validator.ingress,
+                outbound_address: validator.egress,
+                fee_recipient: Some(validator.feeRecipient),
+                index: Some(validator.index),
+                active: validator.deactivatedAtHeight == 0,
+                is_dkg_dealer,
+                is_dkg_player,
+                in_committee,
+            },
+        };
+
+        println!("{}", serde_json::to_string_pretty(&output)?);
         Ok(())
     }
 }
@@ -983,29 +1060,35 @@ struct ValidatorEntry {
     inbound_address: String,
     /// Outbound IP address
     outbound_address: String,
+    /// Fee recipient address
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fee_recipient: Option<Address>,
+    /// Validator index
+    #[serde(skip_serializing_if = "Option::is_none")]
+    index: Option<u64>,
     /// Whether the validator is active in the current contract state
     active: bool,
-    // Whether the validator is a dealer in th ecurrent epoch.
-    is_dkg_dealer: bool,
+    // Whether the validator is a dealer in the current epoch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_dkg_dealer: Option<bool>,
     /// Whether the validator is a player in the current epoch.
-    is_dkg_player: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_dkg_player: Option<bool>,
     /// Whether the validator is in the committee for the given epoch.
-    in_committee: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    in_committee: Option<bool>,
 }
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct ValidatorsInfo {
-    /// Chain to query (presto, testnet, moderato, or path to chainspec file)
-    #[arg(long, short, default_value = "mainnet", value_parser = tempo_chainspec::spec::chain_value_parser)]
-    chain: Arc<TempoChainSpec>,
-
     /// RPC URL to query. Defaults to <https://rpc.presto.tempo.xyz>
     #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
     rpc_url: String,
 
-    /// Whether to include historic validators (deactivated and not in the current committee).
-    #[arg(long)]
-    with_historic: bool,
+    /// Chain spec override for local/unknown chains (mainnet, testnet, moderato, or path to
+    /// chainspec file). Resolved automatically from the RPC chain id when omitted.
+    #[arg(long, short, value_parser = tempo_chainspec::spec::chain_value_parser)]
+    chain: Option<Arc<TempoChainSpec>>,
 }
 
 impl ValidatorsInfo {
@@ -1013,16 +1096,34 @@ impl ValidatorsInfo {
         use alloy_consensus::BlockHeader;
         use alloy_provider::ProviderBuilder;
 
-        let epoch_length = self
-            .chain
-            .info
-            .epoch_length()
-            .ok_or_eyre("epochLength not found in chainspec")?;
-
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect(&self.rpc_url)
             .await
             .wrap_err("failed to connect to RPC")?;
+
+        let chain_id = provider
+            .get_chain_id()
+            .await
+            .wrap_err("failed to get chain id")?;
+
+        let chain = match self.chain {
+            Some(chain) => {
+                let spec_chain_id = chain.chain().id();
+                if spec_chain_id != chain_id {
+                    eprintln!(
+                        "warning: --chain spec has chain id {spec_chain_id} but RPC returned {chain_id}"
+                    );
+                }
+                chain
+            }
+            None => tempo_chainspec::spec::chainspec_from_chain_id(chain_id)
+                .ok_or_else(|| eyre!("unknown chain id {chain_id}, pass --chain explicitly"))?,
+        };
+
+        let epoch_length = chain
+            .info
+            .epoch_length()
+            .ok_or_eyre("epochLength not found in chainspec")?;
 
         let latest_block_number = provider
             .get_block_number()
@@ -1064,126 +1165,63 @@ impl ValidatorsInfo {
         let dkg_outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref())
             .wrap_err("failed to decode DKG outcome from extra_data")?;
 
-        let is_v2_initialized = is_validator_config_v2_activated(&provider).await?;
-        if self.with_historic {
-            return Err(eyre!(
-                "--with-historic unsupported for the validator v2 configuration"
-            ));
-        }
+        let tx = TransactionRequest::default()
+            .to(VALIDATOR_CONFIG_V2_ADDRESS)
+            .input(
+                IValidatorConfigV2::getActiveValidatorsCall {}
+                    .abi_encode()
+                    .into(),
+            );
 
-        let next_full_dkg_epoch: u64;
-        let mut validator_entries = Vec::new();
+        let resp = provider
+            .call(tx.into())
+            .await
+            .wrap_err("failed to call getActiveValidators")?;
 
-        // Once migrated, this block will be removed
-        if !is_v2_initialized {
-            let validators_result = provider
-                .call(
-                    TransactionRequest::default()
-                        .to(VALIDATOR_CONFIG_ADDRESS)
-                        .input(IValidatorConfig::getValidatorsCall {}.abi_encode().into())
-                        .into(),
-                )
-                .await
-                .wrap_err("failed to call getValidators")?;
+        let validators = IValidatorConfigV2::getActiveValidatorsCall::abi_decode_returns(&resp)
+            .wrap_err("failed to decode getActiveValidators response")?;
 
-            let decoded_validators =
-                IValidatorConfig::getValidatorsCall::abi_decode_returns(&validators_result)
-                    .wrap_err("failed to decode getValidators response")?;
+        let next_dkg_result = provider
+            .call(
+                TransactionRequest::default()
+                    .to(VALIDATOR_CONFIG_V2_ADDRESS)
+                    .input(
+                        IValidatorConfigV2::getNextNetworkIdentityRotationEpochCall {}
+                            .abi_encode()
+                            .into(),
+                    )
+                    .into(),
+            )
+            .await
+            .wrap_err("failed to call getNextNetworkIdentityRotationEpoch")?;
 
-            let next_dkg_result = provider
-                .call(
-                    TransactionRequest::default()
-                        .to(VALIDATOR_CONFIG_ADDRESS)
-                        .input(
-                            IValidatorConfig::getNextFullDkgCeremonyCall {}
-                                .abi_encode()
-                                .into(),
-                        )
-                        .into(),
-                )
-                .await
-                .wrap_err("failed to call getNextFullDkgCeremony")?;
+        let next_full_dkg_epoch =
+            IValidatorConfigV2::getNextNetworkIdentityRotationEpochCall::abi_decode_returns(
+                &next_dkg_result,
+            )
+            .wrap_err("failed to decode getNextNetworkIdentityRotationEpoch response")?;
 
-            next_full_dkg_epoch =
-                IValidatorConfig::getNextFullDkgCeremonyCall::abi_decode_returns(&next_dkg_result)
-                    .wrap_err("failed to decode getNextFullDkgCeremony response")?;
-
-            for validator in decoded_validators.into_iter() {
-                let pubkey_bytes = validator.publicKey.0;
-                let key = PublicKey::decode(&mut &validator.publicKey.0[..])
-                    .wrap_err("failed decoding on-chain ed25519 key")?;
-
-                let in_committee = dkg_outcome.players().position(&key).is_some();
-
-                if self.with_historic || (validator.active || in_committee) {
-                    validator_entries.push(ValidatorEntry {
-                        onchain_address: validator.validatorAddress,
-                        public_key: alloy_primitives::hex::encode(pubkey_bytes),
-                        inbound_address: validator.inboundAddress,
-                        outbound_address: validator.outboundAddress,
-                        active: validator.active,
-                        is_dkg_dealer: dkg_outcome.players().position(&key).is_some(),
-                        is_dkg_player: dkg_outcome.next_players().position(&key).is_some(),
-                        in_committee,
-                    });
-                }
-            }
-        } else {
-            let tx = TransactionRequest::default()
-                .to(VALIDATOR_CONFIG_V2_ADDRESS)
-                .input(
-                    IValidatorConfigV2::getActiveValidatorsCall {}
-                        .abi_encode()
-                        .into(),
-                );
-
-            let resp = provider
-                .call(tx.into())
-                .await
-                .wrap_err("failed to call getActiveValidators")?;
-
-            let validators = IValidatorConfigV2::getActiveValidatorsCall::abi_decode_returns(&resp)
-                .wrap_err("failed to decode getActiveValidators response")?;
-
-            let next_dkg_result = provider
-                .call(
-                    TransactionRequest::default()
-                        .to(VALIDATOR_CONFIG_V2_ADDRESS)
-                        .input(
-                            IValidatorConfigV2::getNextNetworkIdentityRotationEpochCall {}
-                                .abi_encode()
-                                .into(),
-                        )
-                        .into(),
-                )
-                .await
-                .wrap_err("failed to call getNextNetworkIdentityRotationEpoch")?;
-
-            next_full_dkg_epoch =
-                IValidatorConfigV2::getNextNetworkIdentityRotationEpochCall::abi_decode_returns(
-                    &next_dkg_result,
-                )
-                .wrap_err("failed to decode getNextNetworkIdentityRotationEpoch response")?;
-
-            for validator in validators {
+        let validator_entries = validators
+            .into_iter()
+            .map(|validator| {
                 let pubkey_bytes = validator.publicKey.0;
                 let key = PublicKey::decode(&mut &pubkey_bytes[..])
                     .wrap_err("failed decoding on-chain ed25519 key")?;
 
-                let in_committee = dkg_outcome.players().position(&key).is_some();
-
-                validator_entries.push(ValidatorEntry {
+                Ok(ValidatorEntry {
                     onchain_address: validator.validatorAddress,
                     public_key: alloy_primitives::hex::encode(pubkey_bytes),
                     inbound_address: validator.ingress,
                     outbound_address: validator.egress,
+                    fee_recipient: None,
+                    index: None,
                     active: true,
-                    is_dkg_dealer: dkg_outcome.players().position(&key).is_some(),
-                    is_dkg_player: dkg_outcome.next_players().position(&key).is_some(),
-                    in_committee,
-                });
-            }
-        }
+                    is_dkg_dealer: Some(dkg_outcome.players().position(&key).is_some()),
+                    is_dkg_player: Some(dkg_outcome.next_players().position(&key).is_some()),
+                    in_committee: Some(dkg_outcome.players().position(&key).is_some()),
+                })
+            })
+            .collect::<eyre::Result<Vec<_>>>()?;
 
         let output = ValidatorInfoOutput {
             current_epoch: current_epoch.get(),
@@ -1197,5 +1235,99 @@ impl ValidatorsInfo {
 
         println!("{}", serde_json::to_string_pretty(&output)?);
         Ok(())
+    }
+}
+
+fn key_from_file<P: AsRef<Path>>(p: P) -> eyre::Result<PrivateKeySigner> {
+    let raw = std::fs::read(p).wrap_err("failed reading key from file")?;
+    let bytes = alloy::hex::decode(&raw).wrap_err("failed decoding file contents from hex")?;
+    PrivateKeySigner::from_slice(&bytes)
+        .wrap_err("failed converting file decoded hex bytes to private key")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+    use reth_ethereum_cli::Cli;
+    use reth_rpc_server_types::{RethRpcModule, RpcModuleSelection, RpcModuleValidator};
+    use tempo_chainspec::spec::TempoChainSpecParser;
+
+    type TempoCli = Cli<
+        TempoChainSpecParser,
+        crate::TempoArgs,
+        crate::TempoRpcModuleValidator,
+        TempoSubcommand,
+    >;
+
+    #[test]
+    fn parse_p2p_proxy_defaults() {
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "p2p-proxy",
+            "--rpc-url",
+            "https://rpc.moderato.tempo.xyz",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            reth_ethereum::cli::Commands::Ext(TempoSubcommand::P2pProxy(_))
+        ));
+    }
+
+    #[test]
+    fn parse_p2p_proxy_all_args() {
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "p2p-proxy",
+            "--rpc-url",
+            "ws://localhost:8546",
+            "--chain",
+            "moderato",
+            "--port",
+            "9999",
+            "--discovery-port",
+            "9998",
+            "--max-inbound",
+            "50",
+            "--max-concurrent-inbound",
+            "10",
+            "--cache-blocks",
+            "1000",
+            "--p2p-secret-key",
+            "/tmp/test-enode.key",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            reth_ethereum::cli::Commands::Ext(TempoSubcommand::P2pProxy(_))
+        ));
+    }
+
+    #[test]
+    fn parse_p2p_proxy_missing_rpc_url_fails() {
+        let result = TempoCli::try_parse_from(["tempo", "p2p-proxy"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn tempo_rpc_module_validator_allows_tempo_custom_modules() {
+        for module in ["consensus", "operator", "tempo", "token"] {
+            let selection = crate::TempoRpcModuleValidator::parse_selection(module).unwrap();
+
+            assert_eq!(
+                selection,
+                RpcModuleSelection::from([RethRpcModule::Other(module.to_string())])
+            );
+        }
+    }
+
+    #[test]
+    fn tempo_rpc_module_validator_rejects_unknown_modules() {
+        let err = crate::TempoRpcModuleValidator::parse_selection("not-a-real-module").unwrap_err();
+
+        assert!(err.contains("Unknown RPC module: 'not-a-real-module'"));
     }
 }

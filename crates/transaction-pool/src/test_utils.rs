@@ -7,6 +7,7 @@ use crate::transaction::TempoPooledTransaction;
 use alloy_consensus::{Transaction, TxEip1559};
 use alloy_eips::eip2930::AccessList;
 use alloy_primitives::{Address, B256, Signature, TxKind, U256};
+use core::num::NonZeroU64;
 use reth_chainspec::EthChainSpec;
 use reth_primitives_traits::Recovered;
 use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
@@ -58,8 +59,8 @@ pub(crate) struct TxBuilder {
     max_priority_fee_per_gas: u128,
     max_fee_per_gas: u128,
     fee_token: Option<Address>,
-    valid_after: Option<u64>,
-    valid_before: Option<u64>,
+    valid_after: Option<NonZeroU64>,
+    valid_before: Option<NonZeroU64>,
     chain_id: u64,
     /// Custom calls for AA transactions. If None, a default call is created from `kind` and `value`.
     calls: Option<Vec<Call>>,
@@ -152,13 +153,13 @@ impl TxBuilder {
 
     /// Set the valid_after timestamp (AA transactions only).
     pub(crate) fn valid_after(mut self, valid_after: u64) -> Self {
-        self.valid_after = Some(valid_after);
+        self.valid_after = NonZeroU64::new(valid_after);
         self
     }
 
     /// Set the valid_before timestamp (AA transactions only).
     pub(crate) fn valid_before(mut self, valid_before: u64) -> Self {
-        self.valid_before = Some(valid_before);
+        self.valid_before = NonZeroU64::new(valid_before);
         self
     }
 

@@ -1,28 +1,35 @@
 //! ABI dispatch for the [`TIP403Registry`] precompile.
 
 use crate::{
-    Precompile, dispatch_call, input_cost, mutate, mutate_void,
+    Precompile, SelectorSchedule, charge_input_cost, dispatch_call, mutate, mutate_void,
     tip403_registry::{AuthRole, TIP403Registry},
-    unknown_selector, view,
+    view,
 };
 use alloy::{
     primitives::Address,
     sol_types::{SolCall, SolInterface},
 };
-use revm::precompile::{PrecompileError, PrecompileResult};
-use tempo_contracts::precompiles::ITIP403Registry::{
-    ITIP403RegistryCalls, compoundPolicyDataCall, createCompoundPolicyCall,
-    isAuthorizedMintRecipientCall, isAuthorizedRecipientCall, isAuthorizedSenderCall,
-};
+use revm::precompile::PrecompileResult;
+use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_contracts::precompiles::ITIP403Registry::{self, ITIP403RegistryCalls};
+
+const T2_ADDED: &[[u8; 4]] = &[
+    ITIP403Registry::isAuthorizedSenderCall::SELECTOR,
+    ITIP403Registry::isAuthorizedRecipientCall::SELECTOR,
+    ITIP403Registry::isAuthorizedMintRecipientCall::SELECTOR,
+    ITIP403Registry::compoundPolicyDataCall::SELECTOR,
+    ITIP403Registry::createCompoundPolicyCall::SELECTOR,
+];
 
 impl Precompile for TIP403Registry {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
-        self.storage
-            .deduct_gas(input_cost(calldata.len()))
-            .map_err(|_| PrecompileError::OutOfGas)?;
+        if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
+            return err;
+        }
 
         dispatch_call(
             calldata,
+            &[SelectorSchedule::new(TempoHardfork::T2).with_added(T2_ADDED)],
             ITIP403RegistryCalls::abi_decode,
             |call| match call {
                 ITIP403RegistryCalls::policyIdCounter(call) => {
@@ -33,47 +40,17 @@ impl Precompile for TIP403Registry {
                 ITIP403RegistryCalls::isAuthorized(call) => view(call, |c| {
                     self.is_authorized_as(c.policyId, c.user, AuthRole::Transfer)
                 }),
-                // TIP-1015: T2+ only
-                ITIP403RegistryCalls::isAuthorizedSender(call) => {
-                    if !self.storage.spec().is_t2() {
-                        return unknown_selector(
-                            isAuthorizedSenderCall::SELECTOR,
-                            self.storage.gas_used(),
-                        );
-                    }
-                    view(call, |c| {
-                        self.is_authorized_as(c.policyId, c.user, AuthRole::Sender)
-                    })
-                }
-                ITIP403RegistryCalls::isAuthorizedRecipient(call) => {
-                    if !self.storage.spec().is_t2() {
-                        return unknown_selector(
-                            isAuthorizedRecipientCall::SELECTOR,
-                            self.storage.gas_used(),
-                        );
-                    }
-                    view(call, |c| {
-                        self.is_authorized_as(c.policyId, c.user, AuthRole::Recipient)
-                    })
-                }
-                ITIP403RegistryCalls::isAuthorizedMintRecipient(call) => {
-                    if !self.storage.spec().is_t2() {
-                        return unknown_selector(
-                            isAuthorizedMintRecipientCall::SELECTOR,
-                            self.storage.gas_used(),
-                        );
-                    }
-                    view(call, |c| {
-                        self.is_authorized_as(c.policyId, c.user, AuthRole::MintRecipient)
-                    })
-                }
+                // TIP-1015: T2+ only (gated via T2_ADDED_SELECTORS)
+                ITIP403RegistryCalls::isAuthorizedSender(call) => view(call, |c| {
+                    self.is_authorized_as(c.policyId, c.user, AuthRole::Sender)
+                }),
+                ITIP403RegistryCalls::isAuthorizedRecipient(call) => view(call, |c| {
+                    self.is_authorized_as(c.policyId, c.user, AuthRole::Recipient)
+                }),
+                ITIP403RegistryCalls::isAuthorizedMintRecipient(call) => view(call, |c| {
+                    self.is_authorized_as(c.policyId, c.user, AuthRole::MintRecipient)
+                }),
                 ITIP403RegistryCalls::compoundPolicyData(call) => {
-                    if !self.storage.spec().is_t2() {
-                        return unknown_selector(
-                            compoundPolicyDataCall::SELECTOR,
-                            self.storage.gas_used(),
-                        );
-                    }
                     view(call, |c| self.compound_policy_data(c))
                 }
                 ITIP403RegistryCalls::createPolicy(call) => {
@@ -93,14 +70,8 @@ impl Precompile for TIP403Registry {
                 ITIP403RegistryCalls::modifyPolicyBlacklist(call) => {
                     mutate_void(call, msg_sender, |s, c| self.modify_policy_blacklist(s, c))
                 }
-                // TIP-1015: T2+ only
+                // TIP-1015: T2+ only (gated via T2_ADDED_SELECTORS)
                 ITIP403RegistryCalls::createCompoundPolicy(call) => {
-                    if !self.storage.spec().is_t2() {
-                        return unknown_selector(
-                            createCompoundPolicyCall::SELECTOR,
-                            self.storage.gas_used(),
-                        );
-                    }
                     mutate(call, msg_sender, |s, c| self.create_compound_policy(s, c))
                 }
             },
@@ -495,12 +466,12 @@ mod tests {
 
             let invalid_data = vec![0x12, 0x34, 0x56, 0x78];
             let result = registry.call(&invalid_data, sender)?;
-            assert!(result.reverted);
+            assert!(result.is_revert());
 
             // T1: insufficient data also returns reverted output
             let short_data = vec![0x12, 0x34];
             let result = registry.call(&short_data, sender)?;
-            assert!(result.reverted);
+            assert!(result.is_revert());
 
             Ok(())
         })?;
@@ -512,7 +483,8 @@ mod tests {
 
             let short_data = vec![0x12, 0x34];
             let result = registry.call(&short_data, sender);
-            assert!(result.is_err());
+            let output = result.expect("expected Ok(halt) for short calldata");
+            assert!(output.is_halt());
 
             Ok(())
         })

@@ -928,7 +928,7 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
 
             let expiry_value = match expiry {
                 KeyExpiry::None => None,
-                KeyExpiry::Past => Some(1u64),
+                KeyExpiry::Past => std::num::NonZeroU64::new(1),
             };
 
             let spending_limits = match limits {
@@ -1236,7 +1236,7 @@ async fn run_raw_access_key_case<E: TestEnv>(
     nonce_before: u64,
     chain_id: u64,
     auth_chain_id_value: u64,
-    expiry: Option<u64>,
+    expiry: Option<std::num::NonZeroU64>,
     spending_limits: Option<Vec<TokenLimit>>,
     pre_step: Option<AccessKeyPreStep>,
 ) -> eyre::Result<()> {
@@ -2201,7 +2201,7 @@ pub(super) async fn run_keychain_expiry_scenario<E: TestEnv>(env: &mut E) -> eyr
         short_addr,
         create_mock_p256_sig(short_pub_x, short_pub_y),
         chain_id,
-        Some(short_expiry),
+        std::num::NonZeroU64::new(short_expiry),
         Some(create_default_token_limit(funded)),
     )?;
     let mut auth_tx = create_basic_aa_tx(
@@ -2291,7 +2291,7 @@ pub(super) async fn run_keychain_expiry_scenario<E: TestEnv>(env: &mut E) -> eyr
         past_addr,
         create_mock_p256_sig(past_pub_x, past_pub_y),
         chain_id,
-        Some(1),
+        std::num::NonZeroU64::new(1),
         Some(create_default_token_limit(funded)),
     )?;
     let mut past_tx = create_basic_aa_tx(

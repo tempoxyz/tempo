@@ -16,7 +16,10 @@ use tempo_alloy::{
 use alloy::{
     consensus::BlockHeader,
     eips::Encodable2718,
-    network::{EthereumWallet, ReceiptResponse, TransactionBuilder, TxSignerSync},
+    network::{
+        EthereumWallet, NetworkTransactionBuilder, ReceiptResponse, TransactionBuilder,
+        TxSignerSync,
+    },
     primitives::{Address, B256, BlockNumber, U256},
     providers::{
         DynProvider, PendingTransactionBuilder, PendingTransactionError, Provider, ProviderBuilder,
@@ -178,7 +181,7 @@ pub struct MaxTpsArgs {
     /// When enabled, TIP-20 and ERC-20 transfers are sent to the bench's own signer addresses
     /// (which already exist on-chain), avoiding cold SSTORE for account creation. This tests
     /// pure transfer throughput without state growth.
-    #[arg(long, default_value_t = true)]
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     existing_recipients: bool,
 
     /// An amount of receipts to wait for after sending all the transactions.
@@ -938,7 +941,10 @@ fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_secs())
                     .unwrap_or(0);
-                req.set_valid_before(now + expiry_secs);
+                req.set_valid_before(
+                    NonZeroU64::new(now + expiry_secs)
+                        .expect("current time plus expiry should be non-zero"),
+                );
             }
 
             // Sign and encode
