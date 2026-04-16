@@ -1,12 +1,14 @@
 use alloy_primitives::{Address, FixedBytes, hex};
 
+/// TIP20 token address prefix (12 bytes)
+/// The full address is: TIP20_TOKEN_PREFIX (12 bytes) || derived_bytes (8 bytes)
 const TIP20_TOKEN_PREFIX: [u8; 12] = hex!("20C000000000000000000000");
 
 /// Returns `true` if `addr` has the TIP-20 token prefix.
 ///
 /// NOTE: This only checks the prefix, not whether the token was actually created.
 /// Use `TIP20Factory::is_tip20()` for full validation.
-pub fn is_tip20_prefix(addr: &Address) -> bool {
+pub fn is_tip20_prefix(addr: Address) -> bool {
     addr.as_slice().starts_with(&TIP20_TOKEN_PREFIX)
 }
 
@@ -61,7 +63,7 @@ impl TempoAddressExt for Address {
     const VIRTUAL_MAGIC: [u8; 10] = [0xFD; 10];
 
     fn is_tip20(&self) -> bool {
-        is_tip20_prefix(self)
+        is_tip20_prefix(*self)
     }
 
     fn is_virtual(&self) -> bool {
