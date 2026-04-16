@@ -39,9 +39,17 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         payload: &TempoExecutionData,
     ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
         let block = payload.block.clone();
-        let transactions: Vec<_> = (0..payload.block.body().transactions.len())
-            .map(move |i| (block.clone(), i))
-            .collect();
+        let mut transactions = Vec::with_capacity(payload.block.body().transactions.len());
+        let mut expiring_nonce_idx = 0;
+
+        for (idx, tx) in payload.block.body().transactions.iter().enumerate() {
+            if tx.is_expiring_nonce() {
+                transactions.push((block.clone(), idx, Some(expiring_nonce_idx)));
+                expiring_nonce_idx += 1;
+            } else {
+                transactions.push((block.clone(), idx, None));
+            }
+        }
 
         Ok((transactions, RecoveredInBlock::new))
     }
@@ -55,15 +63,19 @@ struct RecoveredInBlock {
     block: Arc<SealedBlock<Block>>,
     index: usize,
     sender: Address,
+    expiring_nonce_idx: Option<usize>,
 }
 
 impl RecoveredInBlock {
-    fn new((block, index): (Arc<SealedBlock<Block>>, usize)) -> Result<Self, RecoveryError> {
+    fn new(
+        (block, index, expiring_nonce_idx): (Arc<SealedBlock<Block>>, usize, Option<usize>),
+    ) -> Result<Self, RecoveryError> {
         let sender = block.body().transactions[index].try_recover()?;
         Ok(Self {
             block,
             index,
             sender,
+            expiring_nonce_idx,
         })
     }
 }
@@ -80,7 +92,12 @@ impl RecoveredTx<TempoTxEnvelope> for RecoveredInBlock {
 
 impl ToTxEnv<TempoTxEnv> for RecoveredInBlock {
     fn to_tx_env(&self) -> TempoTxEnv {
-        TempoTxEnv::from_recovered_tx(self.tx(), *self.signer())
+        let mut tx_env = TempoTxEnv::from_recovered_tx(self.tx(), *self.signer());
+        if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
+            tempo_tx_env.expiring_nonce_idx = self.expiring_nonce_idx;
+        }
+
+        tx_env
     }
 }
 
