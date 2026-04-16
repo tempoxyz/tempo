@@ -1,11 +1,22 @@
 use alloy_primitives::{Address, FixedBytes, hex};
 
+const TIP20_TOKEN_PREFIX: [u8; 12] = hex!("20C000000000000000000000");
+
+/// Returns `true` if `addr` has the TIP-20 token prefix.
+///
+/// NOTE: This only checks the prefix, not whether the token was actually created.
+/// Use `TIP20Factory::is_tip20()` for full validation.
+pub fn is_tip20_prefix(addr: &Address) -> bool {
+    addr.as_slice().starts_with(&TIP20_TOKEN_PREFIX)
+}
+
 /// 4-byte master identifier derived from the registration hash.
 pub type MasterId = FixedBytes<4>;
 
 /// 6-byte user tag occupying the trailing bytes of a virtual address.
 pub type UserTag = FixedBytes<6>;
 
+/// Extension trait with helper functions for Tempo addresses.
 pub trait TempoAddressExt {
     /// 12-byte prefix shared by all TIP-20 token addresses.
     ///
@@ -17,10 +28,12 @@ pub trait TempoAddressExt {
     /// [TIP-1022]: <https://docs.tempo.xyz/protocol/tip1022>
     const VIRTUAL_MAGIC: [u8; 10];
 
-    /// Returns `true` if the address has the TIP-20 token prefix.
+    /// Returns `true` if the address has the [TIP-20] token prefix.
     ///
     /// NOTE: This only checks the prefix, not whether the token was actually created.
     /// Use `TIP20Factory::is_tip20()` for full validation.
+    ///
+    /// [TIP-20]: <https://docs.tempo.xyz/protocol/tip20>
     fn is_tip20(&self) -> bool;
 
     /// Returns `true` if the address matches the [TIP-1022] virtual-address format
@@ -37,15 +50,18 @@ pub trait TempoAddressExt {
     /// Returns `None` if the address does not match the virtual-address format.
     fn decode_virtual(&self) -> Option<(MasterId, UserTag)>;
 
+    /// Builds a [TIP-1022] virtual address from a `masterId` and `userTag`.
+    ///
+    /// [TIP-1022]: <https://docs.tempo.xyz/protocol/tip1022>
     fn new_virtual(master_id: MasterId, user_tag: UserTag) -> Self;
 }
 
 impl TempoAddressExt for Address {
-    const TIP20_PREFIX: [u8; 12] = hex!("20C000000000000000000000");
+    const TIP20_PREFIX: [u8; 12] = TIP20_TOKEN_PREFIX;
     const VIRTUAL_MAGIC: [u8; 10] = [0xFD; 10];
 
     fn is_tip20(&self) -> bool {
-        self.as_slice().starts_with(&Self::TIP20_PREFIX)
+        is_tip20_prefix(self)
     }
 
     fn is_virtual(&self) -> bool {
@@ -67,7 +83,6 @@ impl TempoAddressExt for Address {
         ))
     }
 
-    /// Builds a virtual address from a `masterId` and `userTag`.
     fn new_virtual(master_id: MasterId, user_tag: UserTag) -> Self {
         let mut bytes = [0u8; 20];
         bytes[0..4].copy_from_slice(master_id.as_slice());

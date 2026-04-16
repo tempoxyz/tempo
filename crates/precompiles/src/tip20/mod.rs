@@ -37,6 +37,7 @@ use alloy::{
 use std::sync::LazyLock;
 use tempo_precompiles_macros::contract;
 use tempo_primitives::TempoAddressExt;
+pub use tempo_primitives::is_tip20_prefix;
 use tracing::trace;
 
 /// u128::MAX as U256
