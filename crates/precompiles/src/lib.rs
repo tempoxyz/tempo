@@ -953,10 +953,10 @@ mod tests {
         let output = AlloyEvmPrecompile::call(&precompile, input).expect("transfer should succeed");
         assert!(output.is_success(), "transfer should be successful");
 
-        // T4+: gas refund must be encoded in the reservoir field
+        // T4+: gas refund must be encoded in the gas_refunded field
         assert!(
-            output.reservoir > 0,
-            "T4+ successful precompile with SSTORE refund must encode refund in reservoir, got 0"
+            output.gas_refunded != 0,
+            "T4+ successful precompile with SSTORE refund must encode refund in gas_refunded, got 0"
         );
     }
 

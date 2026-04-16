@@ -3,6 +3,7 @@ use alloy_evm::EvmInternals;
 use revm::{
     context::{Block, CfgEnv, journaled_state::JournalCheckpoint},
     context_interface::cfg::{GasParams, gas},
+    interpreter::gas::GasTracker,
     state::{AccountInfo, Bytecode},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -14,10 +15,10 @@ use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
 /// Wraps `EvmInternals` and tracks gas consumption for storage operations.
 pub struct EvmPrecompileStorageProvider<'a> {
     internals: EvmInternals<'a>,
-    gas_remaining: u64,
-    gas_refunded: i64,
-    gas_limit: u64,
-    reservoir: u64,
+    gas_tracker: GasTracker,
+    /// State-creating gas accumulated (zero→non-zero SSTORE, code deposit).
+    /// Tracked separately from GasTracker because these are not deducted from
+    /// the reservoir yet — they are reported via PrecompileOutput::state_gas_used.
     state_gas_spent: u64,
     spec: TempoHardfork,
     is_static: bool,
@@ -39,10 +40,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
     ) -> Self {
         Self {
             internals,
-            gas_remaining: gas_limit,
-            gas_refunded: 0,
-            gas_limit,
-            reservoir,
+            gas_tracker: GasTracker::new(gas_limit, gas_limit, reservoir),
             state_gas_spent: 0,
             spec,
             is_static,
@@ -127,14 +125,16 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             .load_account_mut_skip_cold_load(address, false)?;
 
         // TODO(rakita) can be moved to the beginning of the function. Requires fork.
-        deduct_gas(
-            &mut self.gas_remaining,
-            self.gas_params.warm_storage_read_cost(),
-        )?;
+        if !self
+            .gas_tracker
+            .record_regular_cost(self.gas_params.warm_storage_read_cost())
+        {
+            return Err(TempoPrecompileError::OutOfGas);
+        }
 
         // dynamic gas
-        if account.is_cold {
-            deduct_gas(&mut self.gas_remaining, additional_cost)?;
+        if account.is_cold && !self.gas_tracker.record_regular_cost(additional_cost) {
+            return Err(TempoPrecompileError::OutOfGas);
         }
 
         account.load_code()?;
@@ -235,26 +235,25 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn deduct_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
-        self.gas_remaining = self
-            .gas_remaining
-            .checked_sub(gas)
-            .ok_or(TempoPrecompileError::OutOfGas)?;
+        if !self.gas_tracker.record_regular_cost(gas) {
+            return Err(TempoPrecompileError::OutOfGas);
+        }
         Ok(())
     }
 
     #[inline]
     fn refund_gas(&mut self, gas: i64) {
-        self.gas_refunded = self.gas_refunded.saturating_add(gas);
+        self.gas_tracker.record_refund(gas);
     }
 
     #[inline]
     fn gas_limit(&self) -> u64 {
-        self.gas_limit
+        self.gas_tracker.limit()
     }
 
     #[inline]
     fn gas_used(&self) -> u64 {
-        self.gas_limit - self.gas_remaining
+        self.gas_tracker.limit() - self.gas_tracker.remaining()
     }
 
     #[inline]
@@ -264,12 +263,12 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn gas_refunded(&self) -> i64 {
-        self.gas_refunded
+        self.gas_tracker.refunded()
     }
 
     #[inline]
     fn reservoir(&self) -> u64 {
-        self.reservoir
+        self.gas_tracker.reservoir()
     }
 
     #[inline]
@@ -330,15 +329,6 @@ impl EvmPrecompileStorageProvider<'_> {
             "out-of-order checkpoint {op} (expected top of stack)"
         );
     }
-}
-
-/// Deducts gas from the remaining gas and returns an error if insufficient.
-#[inline]
-pub fn deduct_gas(gas: &mut u64, additional_cost: u64) -> Result<(), TempoPrecompileError> {
-    *gas = gas
-        .checked_sub(additional_cost)
-        .ok_or(TempoPrecompileError::OutOfGas)?;
-    Ok(())
 }
 
 #[cfg(test)]
