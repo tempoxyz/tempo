@@ -560,11 +560,11 @@ fn main() -> eyre::Result<()> {
                 dev_build_duration,
             ))
             .apply(|mut builder: WithLaunchContext<_>| {
-                // Default `--dev.block-time` to `--consensus.minimum-time-before-propose`
-                // so the mining interval matches the payload builder's interrupt deadline.
-                // An explicit `--dev.block-time` on the CLI takes precedence.
+                // Default `--dev.block-time` and `--dev.payload-wait-time` to `--consensus.minimum-time-before-propose`
+                // so the local mining intervals match the consensus payload builder interrupt deadline.
                 if let Some(duration) = dev_build_duration {
                     builder.config_mut().dev.block_time.get_or_insert(duration);
+                    builder.config_mut().dev.payload_wait_time.get_or_insert(duration);
                 }
 
                 // Enable discv5 peer discovery
