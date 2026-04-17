@@ -8,7 +8,10 @@ use alloy_evm::{
     },
 };
 use alloy_primitives::{Address, Bytes, TxKind};
-use reth_revm::{InspectSystemCallEvm, MainContext, context::result::ExecutionResult};
+use reth_revm::{
+    InspectSystemCallEvm, MainContext,
+    context::{CfgEnv, result::ExecutionResult},
+};
 use std::ops::{Deref, DerefMut};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_revm::{
@@ -170,6 +173,10 @@ where
 
     fn block(&self) -> &Self::BlockEnv {
         &self.block
+    }
+
+    fn cfg_env(&self) -> &CfgEnv<Self::Spec> {
+        &self.cfg
     }
 
     fn chain_id(&self) -> u64 {
