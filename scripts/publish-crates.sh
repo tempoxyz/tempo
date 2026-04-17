@@ -163,6 +163,9 @@ EOF
 python3 "$SANITIZE_PY" gen_workspace "$REPO_ROOT/Cargo.toml" "$TMP_WORK_DIR/Cargo.toml" \
     "tempo-contracts,tempo-primitives,tempo-chainspec,tempo-alloy"
 
+# Seed the lockfile so transitive deps use the same versions as the main workspace
+cp "$REPO_ROOT/Cargo.lock" "$TMP_WORK_DIR/Cargo.lock"
+
 log "Running cargo check …"
 if ! cargo check --manifest-path "$TMP_WORK_DIR/Cargo.toml" 2>&1; then
     err "Stripped crates failed to compile!"
