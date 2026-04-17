@@ -473,8 +473,15 @@ where
             // If pre-execution validation returned a section to use, just use it.
             next_section
         } else {
-            // Otherwise, rely on post-execution validation to determine the next section.
-            self.validate_tx(recovered.tx(), inner.result.result.tx_gas_used())?
+            // T4+: use block_regular_gas_used (excludes state gas) for section validation,
+            // matching block gas limit semantics. Pre-T4: use tx_gas_used.
+            let timestamp = self.evm().block().timestamp.to::<u64>();
+            let gas_used = if self.inner.spec.is_t4_active_at_timestamp(timestamp) {
+                inner.result.result.gas().block_regular_gas_used()
+            } else {
+                inner.result.result.tx_gas_used()
+            };
+            self.validate_tx(recovered.tx(), gas_used)?
         };
         Ok(TempoTxResult {
             inner,
@@ -496,8 +503,18 @@ where
             tx,
         } = output;
 
+        let prev_regular = self.inner.block_regular_gas_used;
         let gas_output = self.inner.commit_transaction(inner)?;
-        let gas_used = gas_output.tx_gas_used();
+
+        // T4+: use block_regular_gas_used (excludes state gas, ignores refunds per EIP-7778)
+        // for payment lane and incentive gas accounting, matching block gas limit semantics.
+        // Pre-T4: use tx_gas_used (state gas is 0 anyway).
+        let timestamp = self.evm().block().timestamp.to::<u64>();
+        let gas_used = if self.inner.spec.is_t4_active_at_timestamp(timestamp) {
+            self.inner.block_regular_gas_used - prev_regular
+        } else {
+            gas_output.tx_gas_used()
+        };
 
         self.section = next_section;
 
@@ -622,6 +639,8 @@ mod tests {
         context::result::{ExecutionResult, ResultGas},
         database::EmptyDB,
     };
+    use std::sync::Arc;
+    use tempo_chainspec::spec::DEV;
     use tempo_primitives::{
         SubBlockMetadata, TempoSignature, TempoTransaction, TempoTxType,
         subblock::{SubBlockVersion, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
@@ -1348,6 +1367,98 @@ mod tests {
         executor.commit_transaction(output).unwrap();
 
         assert_eq!(executor.non_shared_gas_left, initial_non_shared - 50_000);
+    }
+
+    /// T4: payment lane gas accounting must exclude state gas and use
+    /// block_regular_gas_used semantics (no refunds, no state gas).
+    #[test]
+    fn test_t4_non_shared_gas_excludes_state_gas() {
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_general_gas_limit(30_000_000)
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+
+        let initial_non_shared = executor.non_shared_gas_left;
+        let initial_non_payment = executor.non_payment_gas_left;
+
+        // tx with total_gas_spent=300k, state_gas=100k
+        // block_regular_gas_used = max(300k - 100k, 0) = 200k
+        // tx_gas_used = max(300k - 0_refund, 0) = 300k
+        let tx = create_legacy_tx();
+        let output = TempoTxResult {
+            inner: EthTxResult {
+                result: ResultAndState {
+                    result: revm::context::result::ExecutionResult::Success {
+                        reason: revm::context::result::SuccessReason::Return,
+                        gas: ResultGas::new_with_state_gas(300_000, 0, 0, 100_000),
+                        logs: vec![],
+                        output: revm::context::result::Output::Call(Bytes::new()),
+                    },
+                    state: Default::default(),
+                },
+                blob_gas_used: 0,
+                tx_type: tx.tx_type(),
+            },
+            next_section: BlockSection::NonShared,
+            is_payment: false,
+            tx: None,
+        };
+        executor.commit_transaction(output).unwrap();
+
+        // non_shared_gas_left should decrease by regular gas (200k), not total (300k)
+        assert_eq!(
+            executor.non_shared_gas_left,
+            initial_non_shared - 200_000,
+            "T4: non_shared_gas_left should exclude state gas"
+        );
+        assert_eq!(
+            executor.non_payment_gas_left,
+            initial_non_payment - 200_000,
+            "T4: non_payment_gas_left should exclude state gas"
+        );
+    }
+
+    /// T4: incentive gas accounting must also exclude state gas.
+    #[test]
+    fn test_t4_incentive_gas_excludes_state_gas() {
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_general_gas_limit(30_000_000)
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+
+        let tx = create_legacy_tx();
+        let output = TempoTxResult {
+            inner: EthTxResult {
+                result: ResultAndState {
+                    result: revm::context::result::ExecutionResult::Success {
+                        reason: revm::context::result::SuccessReason::Return,
+                        gas: ResultGas::new_with_state_gas(300_000, 0, 0, 100_000),
+                        logs: vec![],
+                        output: revm::context::result::Output::Call(Bytes::new()),
+                    },
+                    state: Default::default(),
+                },
+                blob_gas_used: 0,
+                tx_type: tx.tx_type(),
+            },
+            next_section: BlockSection::GasIncentive,
+            is_payment: false,
+            tx: None,
+        };
+        executor.commit_transaction(output).unwrap();
+
+        assert_eq!(
+            executor.incentive_gas_used, 200_000,
+            "T4: incentive_gas_used should exclude state gas"
+        );
     }
 
     #[test]
