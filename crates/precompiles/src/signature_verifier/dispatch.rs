@@ -52,15 +52,13 @@ impl Precompile for SignatureVerifier {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use super::super::{P384_VERIFY_GAS, sha384_gas_cost};
+    use super::{
+        super::{P384_VERIFY_GAS, sha384_gas_cost},
+        *,
+    };
     use crate::{
         Precompile, expect_precompile_revert,
-        storage::{
-            StorageCtx,
-            evm::EvmPrecompileStorageProvider,
-            hashmap::HashMapStorageProvider,
-        },
+        storage::{StorageCtx, evm::EvmPrecompileStorageProvider, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
     };
     use alloy::{primitives::B256, sol_types::SolCall};
@@ -71,7 +69,10 @@ mod tests {
         ecdsa::{SigningKey, signature::hazmat::PrehashSigner},
         elliptic_curve::rand_core::OsRng,
     };
-    use revm::{database::{CacheDB, EmptyDB}, precompile::PrecompileError};
+    use revm::{
+        database::{CacheDB, EmptyDB},
+        precompile::PrecompileError,
+    };
     use sha2::{Digest, Sha384};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::ISignatureVerifier;
@@ -83,13 +84,12 @@ mod tests {
         let ctx = evm.ctx_mut();
         let evm_internals =
             EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
-        let mut storage = EvmPrecompileStorageProvider::new_with_gas_limit(
-            evm_internals,
-            &ctx.cfg,
-            gas_limit,
-        );
+        let mut storage =
+            EvmPrecompileStorageProvider::new_with_gas_limit(evm_internals, &ctx.cfg, gas_limit);
 
-        StorageCtx::enter(&mut storage, || SignatureVerifier::new().call(calldata, Address::ZERO))
+        StorageCtx::enter(&mut storage, || {
+            SignatureVerifier::new().call(calldata, Address::ZERO)
+        })
     }
 
     fn sample_verify_es384_calldata() -> eyre::Result<Vec<u8>> {
@@ -101,7 +101,11 @@ mod tests {
         Ok(ISignatureVerifier::verifyES384Call {
             digest: digest.to_vec().into(),
             signature: signature.to_bytes().to_vec().into(),
-            publicKey: verifying_key.to_encoded_point(false).as_bytes().to_vec().into(),
+            publicKey: verifying_key
+                .to_encoded_point(false)
+                .as_bytes()
+                .to_vec()
+                .into(),
         }
         .abi_encode())
     }
@@ -327,7 +331,10 @@ mod tests {
     #[test]
     fn test_sha384_charges_expected_gas() -> eyre::Result<()> {
         let data = vec![0xAB; 77];
-        let calldata = ISignatureVerifier::sha384Call { data: data.clone().into() }.abi_encode();
+        let calldata = ISignatureVerifier::sha384Call {
+            data: data.clone().into(),
+        }
+        .abi_encode();
         let expected_gas = input_cost(calldata.len()) + sha384_gas_cost(data.len());
 
         let output = call_with_gas_limit(&calldata, expected_gas)?;
@@ -339,7 +346,10 @@ mod tests {
     #[test]
     fn test_sha384_out_of_gas_before_completion() -> eyre::Result<()> {
         let data = vec![0xCD; 77];
-        let calldata = ISignatureVerifier::sha384Call { data: data.clone().into() }.abi_encode();
+        let calldata = ISignatureVerifier::sha384Call {
+            data: data.clone().into(),
+        }
+        .abi_encode();
         let expected_gas = input_cost(calldata.len()) + sha384_gas_cost(data.len());
 
         let result = call_with_gas_limit(&calldata, expected_gas - 1);
