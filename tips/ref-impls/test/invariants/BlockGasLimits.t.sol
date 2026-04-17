@@ -275,9 +275,8 @@ contract BlockGasLimitsInvariantTest is InvariantBase {
         uint64 nonce = uint64(vm.getNonce(sender));
 
         // Nonce-0 senders incur an additional account creation cost
-        uint256 nonceCost = nonce == 0
-            ? ACCOUNT_CREATION_REGULAR_GAS + ACCOUNT_CREATION_STATE_GAS
-            : 0;
+        uint256 nonceCost =
+            nonce == 0 ? ACCOUNT_CREATION_REGULAR_GAS + ACCOUNT_CREATION_STATE_GAS : 0;
 
         uint256 totalGas = requiredRegularGas + requiredStateGas + nonceCost;
 
