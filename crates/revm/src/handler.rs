@@ -1642,7 +1642,7 @@ where
         let gas_limit = tx.gas_limit();
 
         // Route to appropriate gas calculation and validation based on transaction type
-        let init_gas = if tx.tempo_tx_env.is_some() {
+        let mut init_gas = if tx.tempo_tx_env.is_some() {
             // AA transaction - use batch gas calculation (includes validation)
             validate_aa_initial_tx_gas(evm)?
         } else {
@@ -1691,10 +1691,6 @@ where
                 init_gas.initial_state_gas += account_state_gas;
             }
 
-            if evm.ctx.cfg.is_eip7623_disabled() {
-                init_gas.floor_gas = 0u64;
-            }
-
             // Validate gas limit is sufficient for initial gas
             if gas_limit < init_gas.initial_total_gas {
                 return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
@@ -1704,17 +1700,33 @@ where
                 .into());
             }
 
-            // Validate floor gas (Prague+)
-            if !evm.ctx.cfg.is_eip7623_disabled() && gas_limit < init_gas.floor_gas {
-                return Err(InvalidTransaction::GasFloorMoreThanGasLimit {
-                    gas_limit,
-                    gas_floor: init_gas.floor_gas,
-                }
-                .into());
-            }
-
             init_gas
         };
+
+        if evm.ctx.cfg.is_eip7623_disabled() {
+            init_gas.floor_gas = 0u64;
+        }
+
+        // Validate floor gas (Prague+)
+        if gas_limit < init_gas.floor_gas {
+            return Err(InvalidTransaction::GasFloorMoreThanGasLimit {
+                gas_limit,
+                gas_floor: init_gas.floor_gas,
+            }
+            .into());
+        }
+
+        // Validate that regular gas does not exceed the cap.
+        if evm.ctx.cfg.is_amsterdam_eip8037_enabled()
+            && init_gas.initial_regular_gas().max(init_gas.floor_gas)
+                > evm.ctx.cfg.tx_gas_limit_cap()
+        {
+            return Err(InvalidTransaction::GasFloorMoreThanGasLimit {
+                gas_floor: init_gas.initial_regular_gas(),
+                gas_limit: evm.ctx.cfg.tx_gas_limit_cap(),
+            }
+            .into());
+        }
 
         Ok(init_gas)
     }
@@ -1981,10 +1993,6 @@ where
         };
     };
 
-    if evm.ctx.cfg.is_eip7623_disabled() {
-        batch_gas.floor_gas = 0u64;
-    }
-
     // For T0+, include 2D nonce gas in validation (charged upfront)
     // For pre-T0 (Genesis), 2D nonce gas is added AFTER validation to allow transactions
     // with gas_limit < intrinsic + nonce_2d_gas to pass validation, but the gas is still
@@ -2008,15 +2016,6 @@ where
     // This gas will be charged via init_and_floor_gas, not evm.initial_gas
     if !spec.is_t0() {
         batch_gas.initial_total_gas += nonce_2d_gas;
-    }
-
-    // Validate floor gas (Prague+)
-    if !evm.ctx.cfg.is_eip7623_disabled() && gas_limit < batch_gas.floor_gas {
-        return Err(InvalidTransaction::GasFloorMoreThanGasLimit {
-            gas_limit,
-            gas_floor: batch_gas.floor_gas,
-        }
-        .into());
     }
 
     Ok(batch_gas)
