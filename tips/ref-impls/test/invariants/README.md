@@ -546,31 +546,50 @@ TIP20 is the Tempo token standard that extends ERC-20 with transfer policies, me
 
 ## TIP-1020 Signature Verification Precompile
 
-The SignatureVerifier precompile (`0x5165300000000000000000000000000000000000`) verifies Tempo signature types (secp256k1, P256, WebAuthn) onchain via `recover()` and `verify()` functions.
+The SignatureVerifier precompile (`0x5165300000000000000000000000000000000000`)
+verifies Tempo signature types (secp256k1, P256, P384, WebAuthn) onchain via `recover()` and
+`verify()` functions. It also exposes `verifyES384()` and `sha384()` helper methods for raw
+P-384 / SHA-384 flows; those helpers are currently covered by unit tests rather than this
+invariant suite.
 
 ### Differential Verification Invariants
 
-- **SV1**: Transaction-equivalent verification - `recover()` must match `ecrecover` for secp256k1, return the correct P256/WebAuthn-derived address, and `verify()` must return true for correct signers and false for wrong signers. Both raw `v` (0/1) and Ethereum-style `v` (27/28) must be accepted.
+- **SV1**: Transaction-equivalent verification - `recover()` must match `ecrecover` for secp256k1,
+  return the correct P256/P384/WebAuthn-derived address, and `verify()` must return true for
+  correct signers and false for wrong signers. Both raw `v` (0/1) and Ethereum-style `v`
+  (27/28) must be accepted.
 
 ### Malleability Resistance Invariants
 
-- **SV2**: P256 and ECDSA signature malleability resistance - signatures with high-s values (`s > n/2`) must be rejected for secp256k1, P256, and WebAuthn (inner P256 signature). Both `recover()` and `verify()` must revert.
+- **SV2**: Tempo signature malleability resistance - signatures with high-s values (`s > n/2`)
+  must be rejected for secp256k1, P256, P384, and WebAuthn (inner P256 signature). Both
+  `recover()` and `verify()` must revert.
 
 ### Size Enforcement Invariants
 
-- **SV3**: Signature size enforcement - the precompile must enforce per-type size limits (65 bytes secp256k1, 130 bytes P256, 129–2049 bytes WebAuthn) before any decoding. Wrong-sized inputs and zero-length inputs must revert via both `recover()` and `verify()`.
+- **SV3**: Signature size enforcement - the precompile must enforce per-type size limits (65 bytes
+  secp256k1, 130 bytes P256, 194 bytes P384, 129–2049 bytes WebAuthn) before any decoding.
+  Wrong-sized inputs and zero-length inputs must revert via both `recover()` and `verify()`.
 
 ### Failure Handling Invariants
 
-- **SV4**: Revert on failure - structurally valid but cryptographically invalid (garbage) signatures must cause both `recover()` and `verify()` to revert for all signature types (secp256k1, P256, WebAuthn). Additionally, when `ecrecover` returns `address(0)` for a secp256k1 input, the precompile must revert rather than return a zero address. All reverts must use one of the two defined errors: `InvalidFormat()` (encoding/size issues) or `InvalidSignature()` (cryptographic verification failure).
+- **SV4**: Revert on failure - structurally valid but cryptographically invalid (garbage)
+  signatures must cause both `recover()` and `verify()` to revert for all signature types
+  (secp256k1, P256, P384, WebAuthn). Additionally, when `ecrecover` returns `address(0)` for a
+  secp256k1 input, the precompile must revert rather than return a zero address. All reverts must
+  use one of the two defined errors: `InvalidFormat()` (encoding/size issues) or
+  `InvalidSignature()` (cryptographic verification failure).
 
 ### Gas Schedule Invariants
 
-- **SV5**: Gas schedule consistency - gas charged must follow the spec (secp256k1: 3,000, P256: 8,000, WebAuthn: 8,000 + input cost). **Not covered in this invariant suite; requires dedicated low-level gas tests.**
+- **SV5**: Gas schedule consistency - gas charged must follow the spec (secp256k1: 3,000,
+  P256: 8,000, P384: 12,000, WebAuthn: 8,000 + input cost). **Not covered in this invariant
+  suite; requires dedicated low-level gas tests.**
 
 ### Type Disambiguation Invariants
 
-- **SV6**: Signature type disambiguation - exactly 65 bytes is secp256k1 (no prefix). Non-65-byte signatures with unknown type prefixes must revert via both `recover()` and `verify()`.
+- **SV6**: Signature type disambiguation - exactly 65 bytes is secp256k1 (no prefix). Non-65-byte
+  signatures with unknown type prefixes must revert via both `recover()` and `verify()`.
 
 ### Keychain Rejection Invariants
 

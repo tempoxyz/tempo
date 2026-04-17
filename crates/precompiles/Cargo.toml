@@ -19,6 +19,8 @@ tempo-precompiles-macros.workspace = true
 alloy = { workspace = true, features = ["sol-types", "consensus"] }
 alloy-evm = { workspace = true, features = ["std"] }
 revm.workspace = true
+aws-lc-rs = { version = "1.16.2", default-features = false, features = ["alloc", "non-fips", "ring-sig-verify"] }
+p384 = { version = "0.13", default-features = false, features = ["ecdsa", "std"] }
 
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -27,6 +29,7 @@ tracing.workspace = true
 thiserror.workspace = true
 derive_more.workspace = true
 scoped-tls = "1.0"
+sha2.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
