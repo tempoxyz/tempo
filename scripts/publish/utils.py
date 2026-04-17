@@ -5,13 +5,17 @@ import re
 import sys
 from pathlib import Path
 
+
 def _tomllib():
     try:
         import tomllib
+
         return tomllib
     except ModuleNotFoundError:
         import tomli
+
         return tomli
+
 
 GROUP_DIRS = {
     "alloy": {"contracts", "primitives", "alloy"},
@@ -23,18 +27,16 @@ PUBLISH_GROUPS = {
 }
 
 
-# Extra file patterns (beyond crate dirs) that trigger a specific group.
-GROUP_EXTRA_PATHS = {
-    "alloy": [r"^scripts/sanitize_source\.py$"],
-    "revm": [],
-}
-
-# File patterns that trigger ALL groups when changed.
-SHARED_PATHS = [
+# File patterns (beyond crate dirs) that trigger a group's publish pipeline.
+_SHARED_PATHS = [
     r"^scripts/publish/",
     r"^scripts/sanitize_toml\.py$",
     r"^Cargo\.toml$",
 ]
+GROUP_EXTRA_PATHS = {
+    "alloy": _SHARED_PATHS + [r"^scripts/sanitize_source\.py$"],
+    "revm": _SHARED_PATHS,
+}
 
 EXTRA_WORKSPACE_DEPS = {
     "alloy": [],
@@ -45,7 +47,10 @@ EXTRA_WORKSPACE_DEPS = {
 def group_config(group):
     """Print shell variable assignments for the given publish group."""
     if group not in GROUP_DIRS:
-        print(f"Unknown group '{group}', expected: {', '.join(GROUP_DIRS)}", file=sys.stderr)
+        print(
+            f"Unknown group '{group}', expected: {', '.join(GROUP_DIRS)}",
+            file=sys.stderr,
+        )
         sys.exit(1)
     dirs = sorted(GROUP_DIRS[group])
     crate_names = sorted(PUBLISH_GROUPS[group])
@@ -61,20 +66,18 @@ def detect_groups(files_text):
     """Print group=true/false lines for each group with changed files.
 
     Reads a newline-separated file list (e.g. from git diff --name-only).
-    Checks crate dirs, per-group extra paths, and shared paths.
+    Checks crate dirs and extra path patterns.
     Exits 1 if no published group is affected.
     """
     files = files_text.strip().splitlines()
-
-    shared = any(re.search(p, f) for p in SHARED_PATHS for f in files)
 
     results = {}
     for group, dirs in GROUP_DIRS.items():
         crate_pat = re.compile(rf"^crates/({'|'.join(re.escape(d) for d in dirs)})/")
         extra_pats = GROUP_EXTRA_PATHS.get(group, [])
-        results[group] = shared or \
-            any(crate_pat.match(f) for f in files) or \
-            any(re.search(p, f) for p in extra_pats for f in files)
+        results[group] = any(crate_pat.match(f) for f in files) or any(
+            re.search(p, f) for p in extra_pats for f in files
+        )
 
     if not any(results.values()):
         print("No published crate groups detected.", file=sys.stderr)
