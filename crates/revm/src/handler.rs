@@ -20,11 +20,11 @@ use revm::{
     handler::{
         EvmTr, FrameResult, FrameTr, Handler, MainnetHandler,
         pre_execution::{self, apply_auth_list, calculate_caller_fee},
-        validation,
+        precompile_output_to_interpreter_result, validation,
     },
     inspector::{Inspector, InspectorHandler},
     interpreter::{
-        CallOutcome, CreateOutcome, Gas, InitialAndFloorGas, InstructionResult, InterpreterResult,
+        CallOutcome, CreateOutcome, Gas, InitialAndFloorGas,
         gas::{
             COLD_SLOAD_COST, STANDARD_TOKEN_COST, WARM_SSTORE_RESET,
             get_tokens_in_calldata_istanbul,
@@ -398,6 +398,7 @@ where
         evm: &mut TempoEvm<DB, I>,
         calls: &[tempo_primitives::transaction::Call],
         remaining_gas: &mut u64,
+        reservoir: u64,
     ) -> Result<Option<FrameResult>, EVMError<DB::Error, TempoInvalidTransaction>> {
         let spec = *evm.ctx().cfg().spec();
         if !spec.is_t3() {
@@ -440,7 +441,7 @@ where
 
         // It's fine to set reservoir to 0 because this won't create any state.
         let (validation, gas_used) =
-            StorageCtx::enter_ctx_with_gas_limit(evm.ctx_mut(), *remaining_gas, 0, || {
+            StorageCtx::enter_ctx_with_gas_limit(evm.ctx_mut(), *remaining_gas, reservoir, || {
                 let keychain = AccountKeychain::default();
                 for call in calls {
                     keychain.validate_call_scope_for_transaction(
@@ -458,30 +459,15 @@ where
                 *remaining_gas = remaining_gas.saturating_sub(gas_used);
                 Ok(None)
             }
-            Err(err) => match err.into_precompile_result(gas_used, 0) {
-                Ok(output) if output.is_halt() => Ok(Some(oog_frame_result(kind, *remaining_gas))),
-                Ok(revert_output) => {
-                    let mut gas = Gas::new(*remaining_gas);
-                    gas.set_spent(gas_used);
+            Err(err) => match err.into_precompile_result(gas_used, reservoir) {
+                Ok(output) => {
+                    let interpreter_result =
+                        precompile_output_to_interpreter_result(output, *remaining_gas);
 
                     let frame_result = if kind.is_call() {
-                        FrameResult::Call(CallOutcome::new(
-                            InterpreterResult::new(
-                                InstructionResult::Revert,
-                                revert_output.bytes,
-                                gas,
-                            ),
-                            0..0,
-                        ))
+                        FrameResult::Call(CallOutcome::new(interpreter_result, 0..0))
                     } else {
-                        FrameResult::Create(CreateOutcome::new(
-                            InterpreterResult::new(
-                                InstructionResult::Revert,
-                                revert_output.bytes,
-                                gas,
-                            ),
-                            None,
-                        ))
+                        FrameResult::Create(CreateOutcome::new(interpreter_result, None))
                     };
 
                     Ok(Some(frame_result))
@@ -579,7 +565,7 @@ where
         let mut final_result = None;
 
         if let Some(mut frame_result) =
-            self.prevalidate_keychain_call_scopes(evm, &calls, &mut remaining_gas)?
+            self.prevalidate_keychain_call_scopes(evm, &calls, &mut remaining_gas, reservoir)?
         {
             // This path only runs for keychain batches that already passed the structural CREATE
             // rejection in validation, so there is no first-call CREATE nonce to preserve here.
@@ -2159,7 +2145,9 @@ mod tests {
         context::CfgEnv,
         database::{CacheDB, EmptyDB},
         handler::Handler,
-        interpreter::{gas::COLD_ACCOUNT_ACCESS_COST, instructions::utility::IntoU256},
+        interpreter::{
+            InstructionResult, gas::COLD_ACCOUNT_ACCESS_COST, instructions::utility::IntoU256,
+        },
         primitives::hardfork::SpecId,
     };
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -3549,7 +3537,7 @@ mod tests {
         let mut remaining_gas = 100_000;
 
         let err = handler
-            .prevalidate_keychain_call_scopes(&mut evm, &[], &mut remaining_gas)
+            .prevalidate_keychain_call_scopes(&mut evm, &[], &mut remaining_gas, 0)
             .expect_err("empty calls should return an error instead of panicking");
 
         match err {

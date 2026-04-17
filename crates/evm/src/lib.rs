@@ -223,6 +223,7 @@ impl ConfigureEvm for TempoEvmConfig {
                     .map(|w| Cow::Borrowed(w.as_slice())),
                 extra_data: block.extra_data().clone(),
                 tx_count_hint: Some(block.body().transactions.len()),
+                slot_number: block.slot_number(),
             },
             general_gas_limit: block.header().general_gas_limit,
             shared_gas_limit: block.header().gas_limit()
@@ -243,6 +244,7 @@ impl ConfigureEvm for TempoEvmConfig {
             inner: EthBlockExecutionCtx {
                 parent_hash: parent.hash(),
                 parent_beacon_block_root: attributes.parent_beacon_block_root,
+                slot_number: attributes.slot_number,
                 ommers: &[],
                 withdrawals: attributes
                     .inner

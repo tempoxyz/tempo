@@ -179,6 +179,7 @@ where
                 NoopEngineApiBuilder::default(),
                 BasicEngineValidatorBuilder::default(),
                 Identity::default(),
+                Default::default(),
             ),
             validator_key,
         }
