@@ -503,18 +503,18 @@ where
             tx,
         } = output;
 
-        let prev_regular = self.inner.block_regular_gas_used;
-        let gas_output = self.inner.commit_transaction(inner)?;
-
         // T4+: use block_regular_gas_used (excludes state gas, ignores refunds per EIP-7778)
         // for payment lane and incentive gas accounting, matching block gas limit semantics.
         // Pre-T4: use tx_gas_used (state gas is 0 anyway).
         let timestamp = self.evm().block().timestamp.to::<u64>();
-        let gas_used = if self.inner.spec.is_t4_active_at_timestamp(timestamp) {
-            self.inner.block_regular_gas_used - prev_regular
-        } else {
-            gas_output.tx_gas_used()
-        };
+        let regular_gas = self
+            .inner
+            .spec
+            .is_t4_active_at_timestamp(timestamp)
+            .then(|| inner.result.result.gas().block_regular_gas_used());
+
+        let gas_output = self.inner.commit_transaction(inner)?;
+        let gas_used = regular_gas.unwrap_or_else(|| gas_output.tx_gas_used());
 
         self.section = next_section;
 
