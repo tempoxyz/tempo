@@ -545,6 +545,9 @@ fn main() -> eyre::Result<()> {
         };
         let chain_id = builder.config().chain.chain().id();
 
+        let minimum_time_before_propose =
+            args.consensus.minimum_time_before_propose.into_duration();
+
         let NodeHandle {
             node,
             node_exit_future,
@@ -572,6 +575,15 @@ fn main() -> eyre::Result<()> {
                         Some(follow.clone())
                     };
                     builder.config_mut().debug.rpc_consensus_url = follow_url;
+                }
+
+                // In dev mode, default payload-wait-time to minimum_time_before_propose
+                // so the LocalMiner sleeps between fcu and resolve, matching consensus behavior
+                if builder.config().dev.dev
+                    && builder.config().dev.payload_wait_time.is_none()
+                {
+                    builder.config_mut().dev.payload_wait_time =
+                        Some(minimum_time_before_propose);
                 }
 
                 builder

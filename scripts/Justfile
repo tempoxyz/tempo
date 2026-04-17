@@ -7,7 +7,6 @@ tempo-dev-up:
 		--datadir data \
 		--dev \
 		--dev.block-time 1sec \
-		--dev.payload-wait-time 450ms \
 		--http \
 		--http.addr 0.0.0.0 \
 		--http.port 8545 \
