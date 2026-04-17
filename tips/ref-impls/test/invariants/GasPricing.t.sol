@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 pragma solidity >=0.8.13 <0.9.0;
 
-import {Test} from "forge-std/Test.sol";
+import { Test } from "forge-std/Test.sol";
 
-import {ITIP20} from "../../src/interfaces/ITIP20.sol";
-import {GasTestStorage} from "../helpers/GasTestStorage.sol";
-import {InvariantBase} from "../helpers/InvariantBase.sol";
-import {Counter, InitcodeHelper, SimpleStorage} from "../helpers/TestContracts.sol";
-import {TxBuilder} from "../helpers/TxBuilder.sol";
+import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
+import { GasTestStorage } from "../helpers/GasTestStorage.sol";
+import { InvariantBase } from "../helpers/InvariantBase.sol";
+import { Counter, InitcodeHelper, SimpleStorage } from "../helpers/TestContracts.sol";
+import { TxBuilder } from "../helpers/TxBuilder.sol";
 
-import {VmExecuteTransaction, VmRlp} from "tempo-std/StdVm.sol";
-import {LegacyTransaction, LegacyTransactionLib} from "tempo-std/tx/LegacyTransactionLib.sol";
+import { VmExecuteTransaction, VmRlp } from "tempo-std/StdVm.sol";
+import { LegacyTransaction, LegacyTransactionLib } from "tempo-std/tx/LegacyTransactionLib.sol";
 
 /// @title TIP-1000 / TIP-1016 Gas Pricing Invariant Tests
 /// @notice Fuzz-based invariant tests for Tempo's state creation gas costs
@@ -30,6 +30,7 @@ import {LegacyTransaction, LegacyTransactionLib} from "tempo-std/tx/LegacyTransa
 ///
 /// Protocol-level invariants (tx gas cap, intrinsic gas) are tested in Rust.
 contract GasPricingInvariantTest is InvariantBase {
+
     using TxBuilder for *;
     using LegacyTransactionLib for LegacyTransaction;
 
@@ -57,7 +58,7 @@ contract GasPricingInvariantTest is InvariantBase {
     uint256 internal constant ACCOUNT_CREATION_GAS = 250_000;
 
     /// @dev Code deposit cost per byte (200 regular + 2,300 state)
-    uint256 internal constant CODE_DEPOSIT_PER_BYTE = 2_500;
+    uint256 internal constant CODE_DEPOSIT_PER_BYTE = 2500;
 
     /// @dev Base transaction cost
     uint256 internal constant BASE_TX_GAS = 21_000;
@@ -121,7 +122,7 @@ contract GasPricingInvariantTest is InvariantBase {
         selectors[0] = this.handler_sstoreNewSlot.selector;
         selectors[1] = this.handler_createContract.selector;
         selectors[2] = this.handler_multipleNewSlots.selector;
-        targetSelector(FuzzSelector({addr: address(this), selectors: selectors}));
+        targetSelector(FuzzSelector({ addr: address(this), selectors: selectors }));
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -138,7 +139,11 @@ contract GasPricingInvariantTest is InvariantBase {
     /// @notice TEMPO-GAS1: SSTORE to new slot must cost ~250k gas
     /// @dev Violations occur if tx succeeds with gas clearly below threshold
     function _invariantSstoreNewSlotCost() internal view {
-        assertEq(ghost_sstoreViolations, 0, "TEMPO-GAS1: SSTORE to new slot succeeded with insufficient gas");
+        assertEq(
+            ghost_sstoreViolations,
+            0,
+            "TEMPO-GAS1: SSTORE to new slot succeeded with insufficient gas"
+        );
     }
 
     /// @notice TEMPO-GAS5: CREATE must cost 500k base + code + account creation
@@ -150,7 +155,11 @@ contract GasPricingInvariantTest is InvariantBase {
     /// @notice TEMPO-GAS8: Multiple new slots must cost 250k each
     /// @dev Violations occur if all N slots written with gas for only 1
     function _invariantMultiSlotScaling() internal view {
-        assertEq(ghost_multiSlotViolations, 0, "TEMPO-GAS8: Multi-slot write succeeded with insufficient gas");
+        assertEq(
+            ghost_multiSlotViolations,
+            0,
+            "TEMPO-GAS8: Multi-slot write succeeded with insufficient gas"
+        );
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -181,8 +190,9 @@ contract GasPricingInvariantTest is InvariantBase {
         // is not wired in), so the EVM charges standard EIP-2200 costs (~20k for SSTORE set).
         // We set gas below BASE_TX_GAS + CALL_OVERHEAD + SSTORE_REGULAR_GAS to guarantee failure.
         uint64 lowGas = uint64(BASE_TX_GAS + SSTORE_REGULAR_GAS);
-        bytes memory lowGasTx =
-            TxBuilder.buildLegacyCallWithGas(vmRlp, vm, address(storageContract), callData, nonce, lowGas, privateKey);
+        bytes memory lowGasTx = TxBuilder.buildLegacyCallWithGas(
+            vmRlp, vm, address(storageContract), callData, nonce, lowGas, privateKey
+        );
 
         vm.coinbase(validator);
 
@@ -202,8 +212,9 @@ contract GasPricingInvariantTest is InvariantBase {
         callData = abi.encodeCall(GasTestStorage.storeValue, (slot2, 1));
 
         uint64 highGas = uint64(BASE_TX_GAS + CALL_OVERHEAD + SSTORE_SET_GAS + GAS_TOLERANCE);
-        bytes memory highGasTx =
-            TxBuilder.buildLegacyCallWithGas(vmRlp, vm, address(storageContract), callData, nonce, highGas, privateKey);
+        bytes memory highGasTx = TxBuilder.buildLegacyCallWithGas(
+            vmRlp, vm, address(storageContract), callData, nonce, highGas, privateKey
+        );
 
         try vmExec.executeTransaction(highGasTx) {
             if (storageContract.getValue(slot2) != 0) {
@@ -232,15 +243,16 @@ contract GasPricingInvariantTest is InvariantBase {
         bytes memory initcode = InitcodeHelper.counterInitcode();
 
         // Expected gas: base tx + CREATE base + code deposit + account creation
-        uint256 expectedGas =
-            BASE_TX_GAS + CREATE_BASE_GAS + (initcode.length * CODE_DEPOSIT_PER_BYTE) + ACCOUNT_CREATION_GAS;
+        uint256 expectedGas = BASE_TX_GAS + CREATE_BASE_GAS
+            + (initcode.length * CODE_DEPOSIT_PER_BYTE) + ACCOUNT_CREATION_GAS;
 
         uint64 nonce = uint64(vm.getNonce(sender));
 
         // Test 1: Insufficient gas — barely covers intrinsic gas, far below CREATE + code deposit.
         // See handler_sstoreNewSlot comment: tempo-foundry uses standard EVM gas costs.
         uint64 lowGas = uint64(BASE_TX_GAS + 1000);
-        bytes memory lowGasTx = TxBuilder.buildLegacyCreateWithGas(vmRlp, vm, initcode, nonce, lowGas, privateKey);
+        bytes memory lowGasTx =
+            TxBuilder.buildLegacyCreateWithGas(vmRlp, vm, initcode, nonce, lowGas, privateKey);
 
         vm.coinbase(validator);
         address expectedAddr = TxBuilder.computeCreateAddress(sender, nonce);
@@ -258,7 +270,8 @@ contract GasPricingInvariantTest is InvariantBase {
         // Test 2: Sufficient gas
         nonce = uint64(vm.getNonce(sender));
         uint64 highGas = uint64(expectedGas + GAS_TOLERANCE);
-        bytes memory highGasTx = TxBuilder.buildLegacyCreateWithGas(vmRlp, vm, initcode, nonce, highGas, privateKey);
+        bytes memory highGasTx =
+            TxBuilder.buildLegacyCreateWithGas(vmRlp, vm, initcode, nonce, highGas, privateKey);
 
         expectedAddr = TxBuilder.computeCreateAddress(sender, nonce);
 
@@ -299,8 +312,9 @@ contract GasPricingInvariantTest is InvariantBase {
         // Test 1: Insufficient gas — enough for base tx + call overhead but not enough for
         // any SSTORE regular gas. See handler_sstoreNewSlot comment re: tempo-foundry gas costs.
         uint64 lowGas = uint64(BASE_TX_GAS + CALL_OVERHEAD);
-        bytes memory lowGasTx =
-            TxBuilder.buildLegacyCallWithGas(vmRlp, vm, address(storageContract), callData, nonce, lowGas, privateKey);
+        bytes memory lowGasTx = TxBuilder.buildLegacyCallWithGas(
+            vmRlp, vm, address(storageContract), callData, nonce, lowGas, privateKey
+        );
 
         vm.coinbase(validator);
 
@@ -334,9 +348,11 @@ contract GasPricingInvariantTest is InvariantBase {
         }
         callData = abi.encodeCall(GasTestStorage.storeMultiple, (slots2));
 
-        uint64 highGas = uint64(BASE_TX_GAS + CALL_OVERHEAD + (SSTORE_SET_GAS * numSlots) + GAS_TOLERANCE);
-        bytes memory highGasTx =
-            TxBuilder.buildLegacyCallWithGas(vmRlp, vm, address(storageContract), callData, nonce, highGas, privateKey);
+        uint64 highGas =
+            uint64(BASE_TX_GAS + CALL_OVERHEAD + (SSTORE_SET_GAS * numSlots) + GAS_TOLERANCE);
+        bytes memory highGasTx = TxBuilder.buildLegacyCallWithGas(
+            vmRlp, vm, address(storageContract), callData, nonce, highGas, privateKey
+        );
 
         try vmExec.executeTransaction(highGasTx) {
             uint256 written = 0;
@@ -354,4 +370,5 @@ contract GasPricingInvariantTest is InvariantBase {
             ghost_totalTxReverted++;
         }
     }
+
 }
