@@ -312,7 +312,6 @@ where
         );
 
         let mut cumulative_gas_used = 0;
-        let mut cumulative_state_gas_used = 0u64;
         let mut non_payment_gas_used = 0;
         // initial block size usage - size of withdrawals plus 1Kb of overhead for the block header
         let mut block_size_used = attributes
@@ -435,6 +434,8 @@ where
             .pool_fetch_duration_seconds
             .record(pool_fetch_start.elapsed());
 
+        let is_t4 = builder.evm().cfg.spec.is_t4();
+
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
         loop {
@@ -520,18 +521,21 @@ where
 
             let tx_with_env = pool_tx.transaction.clone().into_with_tx_env();
             let tx_execution_start = Instant::now();
-            let mut tx_state_gas = 0u64;
-            let gas_used = match builder.execute_transaction_with_result_closure(
-                tx_with_env,
-                |result| {
-                    tx_state_gas = result.result().result.gas().state_gas_spent();
-                },
-            ) {
-                Ok(gas_used) => gas_used,
-                Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
+            let mut gas_used = 0;
+            if let Err(err) =
+                builder.execute_transaction_with_result_closure(tx_with_env, |result| {
+                    gas_used = if is_t4 {
+                        result.result().result.gas().block_regular_gas_used()
+                    } else {
+                        result.result().result.tx_gas_used()
+                    };
+                })
+            {
+                if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
                     error,
                     ..
-                })) => {
+                }) = &err
+                {
                     if error.is_nonce_too_low() {
                         // if the nonce is too low, we can skip this transaction
                         trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
@@ -549,9 +553,9 @@ where
                         self.metrics.inc_pool_tx_skipped("invalid_tx");
                     }
                     continue;
+                } else {
+                    return Err(PayloadBuilderError::evm(err));
                 }
-                // this is an error that we should treat as fatal for this attempt
-                Err(err) => return Err(PayloadBuilderError::evm(err)),
             };
             let elapsed = tx_execution_start.elapsed();
             self.metrics
@@ -575,7 +579,6 @@ where
                 warn!("no resolved fee token for a pool transaction")
             }
             cumulative_gas_used += gas_used;
-            cumulative_state_gas_used += tx_state_gas;
             if !is_payment {
                 non_payment_gas_used += gas_used;
             }
@@ -620,12 +623,7 @@ where
             let mut subblock_tx_count = 0f64;
 
             for tx in subblock.transactions_recovered() {
-                let mut tx_state_gas = 0u64;
-                if let Err(err) =
-                    builder.execute_transaction_with_result_closure(tx.cloned(), |result| {
-                        tx_state_gas = result.result().result.gas().state_gas_spent();
-                    })
-                {
+                if let Err(err) = builder.execute_transaction(tx.cloned()) {
                     if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
                         ..
                     }) = &err
@@ -643,7 +641,6 @@ where
                     }
                 }
 
-                cumulative_state_gas_used += tx_state_gas;
                 subblock_tx_count += 1.0;
             }
 
@@ -680,7 +677,6 @@ where
                     tx_state_gas = result.result().result.gas().state_gas_spent();
                 })
                 .map_err(PayloadBuilderError::evm)?;
-            cumulative_state_gas_used += tx_state_gas;
         }
         drop(_system_txs_span);
         let system_txs_execution_elapsed = system_txs_execution_start.elapsed();
@@ -759,12 +755,6 @@ where
         self.metrics.gas_used.record(gas_used as f64);
         self.metrics.gas_used_last.set(gas_used as f64);
         self.metrics
-            .state_gas_used
-            .record(cumulative_state_gas_used as f64);
-        self.metrics
-            .state_gas_used_last
-            .set(cumulative_state_gas_used as f64);
-        self.metrics
             .general_gas_used_last
             .set(non_payment_gas_used as f64);
         self.metrics
@@ -811,7 +801,6 @@ where
             timestamp = sealed_block.timestamp_millis(),
             gas_limit = sealed_block.gas_limit(),
             gas_used,
-            cumulative_state_gas_used,
             extra_data = %sealed_block.extra_data(),
             subblocks_count,
             payment_transactions,
