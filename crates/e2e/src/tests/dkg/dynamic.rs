@@ -8,13 +8,25 @@ use commonware_runtime::{
 };
 use futures::future::join_all;
 
-use crate::{CONSENSUS_NODE_PREFIX, Setup, setup_validators};
+use crate::{
+    CONSENSUS_NODE_PREFIX, Setup, setup_validators,
+    tests::dkg::common::{assert_no_dkg_failure, target_epoch},
+};
 
 #[test_traced]
-fn validator_is_added_to_a_set_of_three() {
+fn validator_is_added_to_a_set_of_two() {
     AssertValidatorIsAdded {
-        how_many_initial: 3,
-        epoch_length: 30,
+        how_many_initial: 2,
+        epoch_length: 20,
+    }
+    .run();
+}
+
+#[test_traced]
+fn validator_is_added_to_a_set_of_four() {
+    AssertValidatorIsAdded {
+        how_many_initial: 4,
+        epoch_length: 40,
     }
     .run();
 }
@@ -43,13 +55,13 @@ struct AssertValidatorIsAdded {
 }
 
 impl AssertValidatorIsAdded {
+    #[track_caller]
     fn run(self) {
         let Self {
             how_many_initial,
             epoch_length,
         } = self;
         let _ = tempo_eyre::install();
-
         let setup = Setup::new()
             .how_many_signers(how_many_initial)
             .how_many_verifiers(1)
@@ -61,26 +73,20 @@ impl AssertValidatorIsAdded {
         executor.start(|mut context| async move {
             let (mut validators, execution_runtime) = setup_validators(&mut context, setup).await;
 
-            let mut new_validator = {
-                let idx = validators
-                    .iter()
-                    .position(|node| node.consensus_config().share.is_none())
-                    .expect("at least one node must be a verifier, i.e. not have a share");
-                validators.remove(idx)
-            };
-
-            assert!(
-                validators
-                    .iter()
-                    .all(|node| node.consensus_config().share.is_some()),
-                "must have removed the one non-signer node; must be left with only signers",
-            );
-
+            let added_uid = validators
+                .iter()
+                .find(|v| v.is_verifier())
+                .unwrap()
+                .uid
+                .clone();
             join_all(validators.iter_mut().map(|v| v.start(&context))).await;
 
             // We will send an arbitrary node of the initial validator set the smart
             // contract call.
-            let http_url = validators[0]
+            let http_url = validators
+                .iter()
+                .find(|v| v.is_signer())
+                .unwrap()
                 .execution()
                 .rpc_server_handle()
                 .http_url()
@@ -88,13 +94,10 @@ impl AssertValidatorIsAdded {
                 .parse::<Url>()
                 .unwrap();
 
-            // Now add and start the new validator.
             let receipt = execution_runtime
-                .add_validator(
+                .add_validator_v2(
                     http_url.clone(),
-                    new_validator.chain_address,
-                    new_validator.public_key().clone(),
-                    new_validator.network_address,
+                    validators.iter().find(|v| v.is_verifier()).unwrap(),
                 )
                 .await
                 .unwrap();
@@ -104,82 +107,76 @@ impl AssertValidatorIsAdded {
                 "addValidator call returned receipt"
             );
 
-            let _new_validator = new_validator.start(&context).await;
-            tracing::info!("new validator was started");
+            let player_epoch = target_epoch(epoch_length, receipt.block_number.unwrap());
+            let dealer_epoch = player_epoch.next();
 
-            // First, all initial validator nodes must observe a ceremony with
-            // dealers = how_many_initial, players = how_many_initial + 1.
-            loop {
+            'becomes_signer: loop {
                 context.sleep(Duration::from_secs(1)).await;
 
-                let mut dealers_is_initial = 0;
-                let mut players_is_initial_plus_one = 0;
+                let mut added_epoch = None;
+                let mut added_signer= None;
+                let mut dealers = None;
+                let mut network_epoch = None;
+                let mut players = None;
 
-                let metrics = context.encode();
-                for line in metrics.lines() {
+                for line in context.encode().lines() {
                     if !line.starts_with(CONSENSUS_NODE_PREFIX) {
                         continue;
                     }
 
-                    // Only consider metrics from the initial set of validators.
-                    if !validators.iter().any(|val| line.contains(val.uid())) {
-                        continue;
-                    }
-
                     let mut parts = line.split_whitespace();
-                    let metric = parts.next().unwrap();
+                    let key = parts.next().unwrap();
                     let value = parts.next().unwrap();
 
-                    if metric.ends_with("_dkg_manager_ceremony_dealers") {
-                        let value = value.parse::<u64>().unwrap();
-                        if value as u32 > how_many_initial {
-                            panic!(
-                                "observed dealers = {value} before observing \
-                            dealers = {how_many_initial}, \
-                            players = {how_many_initial} +1",
-                            );
+                    assert_no_dkg_failure(key, value);
+
+                    if key.ends_with("_epoch_manager_latest_epoch")
+                    {
+                        let epoch = value.parse::<u64>().unwrap();
+                        if key.contains(&added_uid) {
+                            added_epoch.replace(epoch);
+                        } else {
+                            network_epoch.replace(epoch);
                         }
-                        dealers_is_initial += (value as u32 == how_many_initial) as u32;
                     }
 
-                    if metric.ends_with("_dkg_manager_ceremony_players") {
-                        let value = value.parse::<u64>().unwrap();
-                        players_is_initial_plus_one +=
-                            (value as u32 == how_many_initial + 1) as u32;
+                    if key.ends_with("_dkg_manager_ceremony_players")
+                    && key.contains(&added_uid)
+                    {
+                        players.replace(value.parse::<u32>().unwrap());
+                    }
+                    if key.ends_with("_dkg_manager_ceremony_dealers")
+                    && key.contains(&added_uid)
+                    {
+                        dealers.replace(value.parse::<u32>().unwrap());
+                    }
+                    if key.ends_with("_epoch_manager_how_often_signer_total")
+                    && key.contains(&added_uid) {
+                        added_signer.replace(value.parse::<u64>().unwrap());
                     }
                 }
-                if dealers_is_initial == how_many_initial
-                    && players_is_initial_plus_one == how_many_initial
-                {
-                    break;
+
+                let added_epoch = added_epoch.unwrap();
+                let added_signer = added_signer.unwrap();
+                let dealers = dealers.unwrap();
+                let network_epoch = network_epoch.unwrap();
+                let players = players.unwrap();
+
+                if added_epoch >= player_epoch.get() && added_epoch < dealer_epoch.get() {
+                        assert_eq!(how_many_initial + 1, players);
+                        assert_eq!(how_many_initial, dealers);
                 }
-            }
 
-            // Then, all how_many_initial + 1 nodes must observe an epoch with the
-            // same number of participants (= how_many_initial + 1).
-            loop {
-                context.sleep(Duration::from_secs(1)).await;
-
-                let metrics = context.encode();
-                let mut participants_is_initial_plus_one = 0;
-
-                for line in metrics.lines() {
-                    if !line.starts_with(CONSENSUS_NODE_PREFIX) {
-                        continue;
-                    }
-                    let mut parts = line.split_whitespace();
-                    let metric = parts.next().unwrap();
-                    let value = parts.next().unwrap();
-
-                    if metric.ends_with("_epoch_manager_latest_participants") {
-                        let value = value.parse::<u64>().unwrap();
-                        participants_is_initial_plus_one +=
-                            (value as u32 == how_many_initial + 1) as u32;
-                    }
+                if added_epoch >= dealer_epoch.get() {
+                    assert_eq!(how_many_initial + 1, dealers);
+                    assert!(added_signer > 0);
+                    break 'becomes_signer;
                 }
-                if participants_is_initial_plus_one == how_many_initial + 1 {
-                    break;
-                }
+
+                assert!(
+                    network_epoch <= dealer_epoch.get(),
+                    "network reached epoch `{network_epoch}` without added validator getting a share",
+                );
             }
         })
     }
@@ -191,13 +188,13 @@ struct AssertValidatorIsRemoved {
 }
 
 impl AssertValidatorIsRemoved {
+    #[track_caller]
     fn run(self) {
         let Self {
             how_many_initial,
             epoch_length,
         } = self;
         let _ = tempo_eyre::install();
-
         let setup = Setup::new()
             .how_many_signers(how_many_initial)
             .epoch_length(epoch_length);
@@ -212,7 +209,10 @@ impl AssertValidatorIsRemoved {
 
             // We will send an arbitrary node of the initial validator set the smart
             // contract call.
-            let http_url = validators[0]
+            let http_url = validators
+                .iter()
+                .find(|v| v.is_signer())
+                .unwrap()
                 .execution()
                 .rpc_server_handle()
                 .http_url()
@@ -220,97 +220,89 @@ impl AssertValidatorIsRemoved {
                 .parse::<Url>()
                 .unwrap();
 
-            // The addValidator calls during genesis add validators 0..validators.len().
-            // So the last validator has index `validators.len() - 1`.
-            let last_validator_index = (validators.len() - 1) as u64;
+            let removed_validator = validators.pop().unwrap();
+
             let receipt = execution_runtime
-                .change_validator_status(http_url, last_validator_index, false)
+                .deactivate_validator_v2(http_url, &removed_validator)
                 .await
                 .unwrap();
 
+            let removal_epoch = target_epoch(epoch_length, receipt.block_number.unwrap());
+            let removed_epoch = removal_epoch.next();
+
             tracing::debug!(
                 block.number = receipt.block_number,
-                "changeValidatorStatus call returned receipt"
+                %removal_epoch,
+                %removed_epoch,
+                "deactivateValidator call returned receipt; now monitoring \
+                removal of validator"
             );
 
-            tracing::info!("validator was removed");
-
-            // First, all initial validator nodes must observe a ceremony with
-            // dealers = how_many_initial, players = how_many_initial - 1,
-            // including the validator to be removed because it is part of the
-            // original dealer set.
-            loop {
+            'is_removed: loop {
                 context.sleep(Duration::from_secs(1)).await;
 
-                let mut dealers_is_initial = 0;
-                let mut players_is_initial_minus_one = 0;
-
-                let metrics = context.encode();
-                for line in metrics.lines() {
+                let mut dealers = None;
+                let mut network_epoch = None;
+                let mut peers = None;
+                let mut players = None;
+                for line in context.encode().lines() {
                     if !line.starts_with(CONSENSUS_NODE_PREFIX) {
                         continue;
                     }
 
-                    // Only consider metrics from the initial set of validators.
-                    if !validators.iter().any(|val| line.contains(val.uid())) {
-                        continue;
-                    }
-
                     let mut parts = line.split_whitespace();
-                    let metric = parts.next().unwrap();
+                    let key = parts.next().unwrap();
                     let value = parts.next().unwrap();
 
-                    if metric.ends_with("_dkg_manager_ceremony_dealers") {
-                        let value = value.parse::<u64>().unwrap();
-                        if (value as u32) < how_many_initial {
-                            panic!(
-                                "observed dealers = {value} before observing \
-                            dealers = {how_many_initial}, \
-                            players = {how_many_initial} - 1",
-                            );
-                        }
-                        dealers_is_initial += (value as u32 == how_many_initial) as u32;
+                    assert_no_dkg_failure(key, value);
+
+                    if key.ends_with("_epoch_manager_latest_epoch")
+                        && !key.contains(&removed_validator.uid)
+                    {
+                        network_epoch.replace(value.parse::<u64>().unwrap());
                     }
 
-                    if metric.ends_with("_dkg_manager_ceremony_players") {
-                        let value = value.parse::<u64>().unwrap();
-                        players_is_initial_minus_one +=
-                            (value as u32 == how_many_initial - 1) as u32;
+                    if key.ends_with("_dkg_manager_ceremony_players")
+                        && !key.contains(&removed_validator.uid)
+                    {
+                        players.replace(value.parse::<u32>().unwrap());
+                    }
+                    if key.ends_with("_dkg_manager_ceremony_dealers")
+                        && !key.contains(&removed_validator.uid)
+                    {
+                        dealers.replace(value.parse::<u32>().unwrap());
+                    }
+                    if key.ends_with("peer_manager_peers") && !key.contains(&removed_validator.uid)
+                    {
+                        peers.replace(value.parse::<u32>().unwrap());
                     }
                 }
-                if dealers_is_initial == how_many_initial
-                    && players_is_initial_minus_one == how_many_initial
-                {
-                    break;
+
+                let dealers = dealers.unwrap();
+                let network_epoch = network_epoch.unwrap();
+                let peers = peers.unwrap();
+                let players = players.unwrap();
+                if network_epoch < removed_epoch.get() && network_epoch >= removal_epoch.get() {
+                    assert_eq!(how_many_initial - 1, players);
+                    assert_eq!(how_many_initial, dealers);
                 }
-            }
 
-            // Then, all how_many_initial nodes must observe an epoch with the
-            // same number of participants (= how_many_intial - 1). This even
-            // includes the validator to be removed, since it will still transition.
-            loop {
-                context.sleep(Duration::from_secs(1)).await;
-
-                let metrics = context.encode();
-                let mut participants_is_initial_minus_one = 0;
-
-                for line in metrics.lines() {
-                    if !line.starts_with(CONSENSUS_NODE_PREFIX) {
-                        continue;
-                    }
-                    let mut parts = line.split_whitespace();
-                    let metric = parts.next().unwrap();
-                    let value = parts.next().unwrap();
-
-                    if metric.ends_with("_epoch_manager_latest_participants") {
-                        let value = value.parse::<u64>().unwrap();
-                        participants_is_initial_minus_one +=
-                            (value as u32 == how_many_initial - 1) as u32;
-                    }
+                if network_epoch >= removed_epoch.get() {
+                    assert_eq!(
+                        how_many_initial - 1,
+                        peers,
+                        "once the peer is deactivated and no longer a dealer, \
+                        it should be removed from the list of peers immediately"
+                    );
+                    assert_eq!(how_many_initial - 1, dealers);
+                    break 'is_removed;
                 }
-                if participants_is_initial_minus_one == how_many_initial {
-                    break;
-                }
+
+                assert!(
+                    network_epoch <= removed_epoch.get(),
+                    "network epoch `{network_epoch}` exceeded `{removed_epoch}` \
+                    without validator being removed"
+                );
             }
         })
     }

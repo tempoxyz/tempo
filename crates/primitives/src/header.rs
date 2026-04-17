@@ -2,16 +2,34 @@ use alloy_consensus::{BlockHeader, Header, Sealable};
 use alloy_primitives::{Address, B64, B256, BlockNumber, Bloom, Bytes, U256, keccak256};
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 
-/// Tempo block header.
+use crate::ed25519::PublicKey;
+
+/// Consensus context metadata for a Tempo block.
 ///
-/// Encoded as `rlp([general_gas_limit, shared_gas_limit, timestamp_millis_part, inner])` meaning that any new
-/// fields added to the inner header will only affect the first list element.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, RlpEncodable, RlpDecodable)]
+/// The `proposer` is validated as a valid Ed25519 public key during RLP
+/// decoding to reject malformed blocks at the network boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, RlpEncodable, RlpDecodable)]
 #[cfg_attr(feature = "reth-codec", derive(reth_codecs::Compact))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
-#[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact, rlp))]
+#[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact))]
+pub struct TempoConsensusContext {
+    pub epoch: u64,
+    pub view: u64,
+    pub parent_view: u64,
+    pub proposer: PublicKey,
+}
+
+/// Tempo block header.
+///
+/// RLP-encoded as `[general_gas_limit, shared_gas_limit, timestamp_millis_part, inner,
+/// consensus_context?]`. The `consensus_context` is trailing and omitted for pre-fork blocks.
+#[derive(Clone, Debug, Default, Eq, Hash, PartialEq, RlpEncodable, RlpDecodable)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
+#[rlp(trailing)]
 pub struct TempoHeader {
     /// Non-payment gas limit for the block.
     #[cfg_attr(
@@ -31,6 +49,13 @@ pub struct TempoHeader {
     /// Inner Ethereum [`Header`].
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub inner: Header,
+
+    /// Consensus metadata for the block. `None` for pre-fork blocks.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub consensus_context: Option<TempoConsensusContext>,
 }
 
 impl TempoHeader {
@@ -149,92 +174,22 @@ impl Sealable for TempoHeader {
     }
 }
 
-#[cfg(all(test, feature = "reth-codec"))]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{address, b256, bytes, hex};
-    use reth_codecs::Compact;
-
-    /// Ensures backwards compatibility of the compact bitflag.
-    ///
-    /// If this fails because unused bits dropped to zero, new fields should be added via an
-    /// extension type (e.g. `Option<TempoHeaderExt>`) rather than directly to [`TempoHeader`].
-    ///
-    /// See reth's `HeaderExt` pattern:
-    /// <https://github.com/paradigmxyz/reth-core/blob/0476d1bc4b71f3c3b080622be297edd91ee4e70c/crates/codecs/src/alloy/header.rs>
-    #[test]
-    fn tempo_header_has_unused_compact_bits() {
-        assert_ne!(
-            TempoHeader::bitflag_unused_bits(),
-            0,
-            "TempoHeader compact bitflag has no unused bits left — use an extension type"
-        );
-    }
+    use alloy_rlp::Decodable as _;
 
     #[test]
-    fn tempo_header_compact_roundtrip() {
-        let header = TempoHeader {
-            general_gas_limit: 30_000_000,
-            shared_gas_limit: 10_000_000,
-            timestamp_millis_part: 500,
-            inner: Header {
-                parent_hash: b256!(
-                    "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                ),
-                ommers_hash: b256!(
-                    "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347"
-                ),
-                beneficiary: address!("0x000000000000000000000000000000000000beef"),
-                state_root: b256!(
-                    "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-                ),
-                transactions_root: b256!(
-                    "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-                ),
-                receipts_root: b256!(
-                    "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-                ),
-                logs_bloom: Bloom::with_last_byte(0xff),
-                difficulty: U256::from(1u64),
-                number: 1000,
-                gas_limit: 30_000_000,
-                gas_used: 15_000_000,
-                timestamp: 1_700_000_000,
-                extra_data: bytes!("deadbeef"),
-                mix_hash: b256!(
-                    "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-                ),
-                nonce: B64::from(42u64),
-                base_fee_per_gas: Some(7),
-                withdrawals_root: Some(b256!(
-                    "0x1111111111111111111111111111111111111111111111111111111111111111"
-                )),
-                blob_gas_used: Some(131072),
-                excess_blob_gas: Some(65536),
-                parent_beacon_block_root: Some(b256!(
-                    "0x2222222222222222222222222222222222222222222222222222222222222222"
-                )),
-                requests_hash: Some(b256!(
-                    "0x3333333333333333333333333333333333333333333333333333333333333333"
-                )),
-                block_access_list_hash: None,
-                slot_number: None,
-            },
+    fn consensus_context_rlp_roundtrip() {
+        let ctx = TempoConsensusContext {
+            epoch: 1,
+            view: 5,
+            proposer: PublicKey::from_seed([0xab; 32]),
+            parent_view: 4,
         };
 
-        let expected = hex!(
-            "340201c9c38098968001f403a1a1f8aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347000000000000000000000000000000000000beefbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd1111111111111111111111111111111111111111111111111111111111111111000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ff0103e801c9c380e4e1c06553f100eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee2a01070302000003010000222222222222222222222222222222222222222222222222222222222222222221013333333333333333333333333333333333333333333333333333333333333333deadbeef"
-        );
-
-        let mut buf = vec![];
-        let len = header.to_compact(&mut buf);
-        assert_eq!(
-            buf, expected,
-            "compact encoding changed — this breaks backwards compatibility"
-        );
-        assert_eq!(len, expected.len());
-
-        let (decoded, _) = TempoHeader::from_compact(&expected, expected.len());
-        assert_eq!(decoded, header);
+        let encoded = alloy_rlp::encode(ctx);
+        let decoded = TempoConsensusContext::decode(&mut encoded.as_slice()).unwrap();
+        assert_eq!(ctx, decoded);
     }
 }

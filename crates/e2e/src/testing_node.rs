@@ -193,6 +193,10 @@ where
     /// # Panics
     /// Panics if either consensus or execution is already running.
     pub async fn start(&mut self, context: &Context) {
+        Box::pin(self.start_inner(context)).await
+    }
+
+    async fn start_inner(&mut self, context: &Context) {
         self.start_execution().await;
         self.start_consensus(context).await;
         self.n_starts += 1;
@@ -252,7 +256,7 @@ where
         self.consensus_config = self
             .consensus_config
             .clone()
-            .with_execution_node(execution_node.node.clone());
+            .with_execution_node((*execution_node.node).clone());
         self.execution_node = Some(execution_node);
         debug!(%self.uid, "started execution node for testing node");
     }

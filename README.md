@@ -76,7 +76,7 @@ You can connect to Tempo's public testnet using the following details:
 
 Next, grab some stablecoins to test with from Tempo's [Faucet](https://docs.tempo.xyz/quickstart/faucet#faucet).
 
-Alternatively, use [`cast`](https://github.com/tempoxyz/tempo-foundry):
+Alternatively, use [`cast`](https://github.com/foundry-rs/foundry):
 
 ```bash
 cast rpc tempo_fundAddress <ADDRESS> --rpc-url https://rpc.moderato.tempo.xyz

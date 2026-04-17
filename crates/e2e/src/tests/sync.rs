@@ -70,16 +70,15 @@ fn joins_from_snapshot() {
             .parse::<Url>()
             .unwrap();
 
-        // First, remove the last actual validator (index 3 = last of 4 signers).
-        let receiver_index = 3u64;
+        // First, deactivate the last actual validator (the receiver).
         let receipt = execution_runtime
-            .change_validator_status(http_url.clone(), receiver_index, false)
+            .deactivate_validator_v2(http_url.clone(), &receiver)
             .await
             .unwrap();
 
         tracing::debug!(
             block.number = receipt.block_number,
-            "changeValidatorStatus call returned receipt"
+            "deactivateValidator call returned receipt"
         );
 
         // Then wait until the validator has left the committee.
@@ -89,18 +88,13 @@ fn joins_from_snapshot() {
 
         // Then, add the sacrificial validator without starting it(!).
         let receipt = execution_runtime
-            .add_validator(
-                http_url.clone(),
-                donor.chain_address,
-                donor.public_key().clone(),
-                donor.network_address,
-            )
+            .add_validator_v2(http_url.clone(), &donor)
             .await
             .unwrap();
 
         tracing::debug!(
             block.number = receipt.block_number,
-            "addValidator call returned receipt"
+            "addValidatorV2 call returned receipt"
         );
 
         // Wait until it was added to the committee
@@ -221,16 +215,15 @@ fn can_restart_after_joining_from_snapshot() {
             .parse::<Url>()
             .unwrap();
 
-        // First, remove the last actual validator (index 3 = last of 4 signers).
-        let receiver_index = 3u64;
+        // First, deactivate the last actual validator (the receiver).
         let receipt = execution_runtime
-            .change_validator_status(http_url.clone(), receiver_index, false)
+            .deactivate_validator_v2(http_url.clone(), &receiver)
             .await
             .unwrap();
 
         tracing::debug!(
             block.number = receipt.block_number,
-            "changeValidatorStatus call returned receipt"
+            "deactivateValidator call returned receipt"
         );
 
         // Then wait until the validator has left the committee.
@@ -240,18 +233,13 @@ fn can_restart_after_joining_from_snapshot() {
 
         // Then, add the sacrificial validator without starting it(!).
         let receipt = execution_runtime
-            .add_validator(
-                http_url.clone(),
-                donor.chain_address,
-                donor.public_key().clone(),
-                donor.network_address,
-            )
+            .add_validator_v2(http_url.clone(), &donor)
             .await
             .unwrap();
 
         tracing::debug!(
             block.number = receipt.block_number,
-            "addValidator call returned receipt"
+            "addValidatorV2 call returned receipt"
         );
 
         // Wait until it was added to the committee

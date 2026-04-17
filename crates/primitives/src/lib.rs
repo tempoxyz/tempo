@@ -6,6 +6,10 @@
 
 pub use alloy_consensus::Header;
 
+mod address;
+pub use address::{MasterId, TempoAddressExt, UserTag, is_tip20_prefix};
+pub mod ed25519;
+
 pub mod transaction;
 pub use transaction::{
     AASigned, MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH,
@@ -14,7 +18,7 @@ pub use transaction::{
 };
 
 mod header;
-pub use header::TempoHeader;
+pub use header::{TempoConsensusContext, TempoHeader};
 
 pub mod subblock;
 pub use subblock::{

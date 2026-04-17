@@ -323,6 +323,7 @@ mod tests {
                 shared_gas_limit,
                 general_gas_limit,
                 timestamp_millis_part: self.timestamp_millis_part,
+                ..Default::default()
             }
         }
     }
