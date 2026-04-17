@@ -27,7 +27,7 @@ use alloy::sol_types::SolCall;
 use alloy_eips::{BlockId, BlockNumberOrTag, eip2718::Encodable2718};
 use alloy_network::TxSignerSync;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-use tempo_contracts::{CREATEX_ADDRESS, CreateX};
+use tempo_contracts::{CREATEX_ADDRESS, CreateX, Multicall3, precompiles::DEFAULT_FEE_TOKEN};
 
 use crate::utils::{TEST_MNEMONIC, TestNodeBuilder};
 
@@ -811,22 +811,26 @@ async fn test_tip1016_inner_call_revert_no_state_gas_exemption() -> eyre::Result
     Ok(())
 }
 
-/// Stress test: a single transaction at the 30M gas limit cap that does many TIP-20
-/// transfers to fresh addresses, each creating a new balance storage slot.
+/// Stress test: a single AA transaction with gas_limit=150M that does 400 TIP-20
+/// transfers to fresh addresses via Multicall3, each creating a new balance storage slot.
 ///
 /// Under TIP-1016, each transfer to a new address creates a SSTORE zero->non-zero
-/// (230,000 state gas) that is exempted from block gas accounting. This means a 30M
-/// gas limit tx can create far more storage than 30M / 250,000 = 120 slots would
-/// suggest pre-TIP-1016, because only the ~20,000 regular gas per SSTORE counts
-/// toward the limit.
+/// (230,000 state gas) that is exempted from block gas accounting. The tx gas_limit
+/// covers both regular and state gas, so 150M is needed to accommodate state gas
+/// from many transfers even though regular gas usage is much lower.
 ///
 /// This tests that:
-/// 1. A tx with gas_limit=30M doing 50 TIP-20 transfers to fresh addresses succeeds.
+/// 1. A tx with gas_limit=150M doing 400 TIP-20 transfers to fresh addresses succeeds.
 /// 2. The receipt gas_used includes all gas (execution + state creation).
 /// 3. The block header gas_used excludes state gas (TIP-1016 exemption).
 /// 4. The state gas from many TIP-20 balance slot creations is correctly exempted.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip1016_high_gas_limit_batch_tip20_transfers() -> eyre::Result<()> {
+    use alloy::signers::SignerSync;
+    use reth_primitives_traits::transaction::TxHashRef;
+    use tempo_precompiles::{PATH_USD_ADDRESS, tip20::ITIP20};
+    use tempo_primitives::{TempoTransaction, TempoTxEnvelope, transaction::tempo_transaction::Call};
+
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
@@ -836,159 +840,91 @@ async fn test_tip1016_high_gas_limit_batch_tip20_transfers() -> eyre::Result<()>
     let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
-    let token =
-        tempo_precompiles::tip20::ITIP20::new(tempo_precompiles::PATH_USD_ADDRESS, &provider);
+    let num_transfers: u64 = 400;
 
-    let num_transfers: u64 = 50;
-
-    // Step 1: Mint PATH_USD to signer so the batch contract can receive tokens.
+    // Step 1: Mint PATH_USD to Multicall3 so it has tokens to transfer.
+    let token = ITIP20::new(PATH_USD_ADDRESS, &provider);
     let mint_calldata: Bytes = token
-        .mint(signer.address(), U256::from(num_transfers * 10))
+        .mint(tempo_contracts::MULTICALL3_ADDRESS, U256::from(num_transfers * 10))
         .calldata()
         .clone();
     let mint_raw = build_call_tx(
-        &signer,
-        chain_id,
-        0,
-        5_000_000,
-        tempo_precompiles::PATH_USD_ADDRESS,
-        mint_calldata,
+        &signer, chain_id, 0, 5_000_000, PATH_USD_ADDRESS, mint_calldata,
     );
     setup.node.rpc.inject_tx(mint_raw).await?;
     setup.node.advance_block().await?;
 
-    // Step 2: Deploy a batch transfer contract via CreateX.
-    //
-    // Runtime loops N times, calling PATH_USD.transfer(address(0xdead0001+i), 1).
-    // Each transfer to a fresh address creates a new balance storage slot
-    // (SSTORE zero->non-zero), incurring 230,000 state gas.
-    let path_usd_bytes = tempo_precompiles::PATH_USD_ADDRESS.0 .0;
-    let transfer_selector = &tempo_precompiles::tip20::ITIP20::transferCall::SELECTOR;
+    // Step 2: Build Multicall3.aggregate() calldata with 400 TIP-20 transfers.
+    // Each transfer goes to address(0xdead0001 + i), creating a new balance slot.
+    let multicall_calls: Vec<Multicall3::Call> = (0..num_transfers)
+        .map(|i| {
+            let to = Address::from_word(
+                alloy_primitives::B256::left_padding_from(&(0xdead0001u64 + i).to_be_bytes()),
+            );
+            Multicall3::Call {
+                target: PATH_USD_ADDRESS,
+                callData: ITIP20::transferCall { to, amount: U256::from(1) }
+                    .abi_encode()
+                    .into(),
+            }
+        })
+        .collect();
 
-    let mut runtime = Vec::new();
-    // Preamble: N = calldataload(0), i = 0. Stack: [N, i]
-    runtime.extend_from_slice(&[
-        0x60, 0x00, 0x35,       // PUSH1 0, CALLDATALOAD -> N
-        0x60, 0x00,             // PUSH1 0 -> i
-    ]);
-    // Loop header (JUMPDEST @ offset 5). Stack: [N, i]
-    runtime.extend_from_slice(&[
-        0x5b,                   // JUMPDEST (loop_start)
-        0x81, 0x81, 0x10,      // DUP2(N), DUP2(i), LT -> i < N
-    ]);
-    let jumpi_offset = runtime.len();
-    runtime.extend_from_slice(&[
-        0x60, 0x00,             // PUSH1 <body> (placeholder)
-        0x57, 0x00,             // JUMPI, STOP
-    ]);
-    // Loop body
-    let body_offset = runtime.len();
-    runtime[jumpi_offset + 1] = body_offset as u8;
-    runtime.push(0x5b);        // JUMPDEST
+    let multicall = Multicall3::new(tempo_contracts::MULTICALL3_ADDRESS, &provider);
+    let aggregate_calldata: Bytes = multicall.aggregate(multicall_calls).calldata().clone();
 
-    // mstore(0, selector << 224)
-    runtime.push(0x63);
-    runtime.extend_from_slice(transfer_selector);
-    runtime.extend_from_slice(&[0x60, 0xe0, 0x1b, 0x60, 0x00, 0x52]);
+    // Step 3: Send as AA tx with a single call to Multicall3, gas_limit=150M.
+    let tx = TempoTransaction {
+        chain_id,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 150_000_000, // 150M
+        calls: vec![Call {
+            to: tempo_contracts::MULTICALL3_ADDRESS.into(),
+            value: U256::ZERO,
+            input: aggregate_calldata,
+        }],
+        nonce_key: U256::ZERO,
+        nonce: 1,
+        fee_token: Some(DEFAULT_FEE_TOKEN),
+        ..Default::default()
+    };
 
-    // mstore(4, 0xdead0001 + i) — recipient address
-    runtime.extend_from_slice(&[
-        0x80,                               // DUP1 (i)
-        0x63, 0xde, 0xad, 0x00, 0x01,      // PUSH4 0xdead0001
-        0x01,                               // ADD
-        0x60, 0x04, 0x52,                   // PUSH1 4, MSTORE
-    ]);
-
-    // mstore(0x24, 1) — amount
-    runtime.extend_from_slice(&[0x60, 0x01, 0x60, 0x24, 0x52]);
-
-    // CALL(GAS, PATH_USD, 0, 0, 68, 68, 32)
-    runtime.extend_from_slice(&[
-        0x60, 0x20, 0x60, 0x44, 0x60, 0x44, 0x60, 0x00, 0x60, 0x00,
-        0x73,
-    ]);
-    runtime.extend_from_slice(&path_usd_bytes);
-    runtime.extend_from_slice(&[0x5a, 0xf1, 0x50]); // GAS, CALL, POP
-
-    // i++, jump to loop_start
-    runtime.extend_from_slice(&[0x60, 0x01, 0x01, 0x60, 0x05, 0x56]);
-
-    // Wrap in init code
-    let runtime_len = runtime.len();
-    assert!(runtime_len < 256);
-    let mut init_code = vec![
-        0x60, runtime_len as u8, 0x60, 0x0c, 0x60, 0x00, 0x39,
-        0x60, runtime_len as u8, 0x60, 0x00, 0xf3,
-    ];
-    init_code.extend_from_slice(&runtime);
-
-    let createx = CreateX::new(CREATEX_ADDRESS, &provider);
-    let deploy_calldata: Bytes = createx.deployCreate(Bytes::from(init_code)).calldata().clone();
-    let deploy_raw = build_call_tx(&signer, chain_id, 1, 5_000_000, CREATEX_ADDRESS, deploy_calldata);
-    setup.node.rpc.inject_tx(deploy_raw).await?;
-    let deploy_payload = setup.node.advance_block().await?;
-    let contract_addr = get_createx_deployed_address(
-        &provider, deploy_payload.block().header().inner.number,
-    ).await?;
-
-    // Step 3: Transfer PATH_USD to the batch contract.
-    let fund_calldata: Bytes = token
-        .transfer(contract_addr, U256::from(num_transfers * 10))
-        .calldata()
-        .clone();
-    let fund_raw = build_call_tx(
-        &signer, chain_id, 2, 5_000_000,
-        tempo_precompiles::PATH_USD_ADDRESS, fund_calldata,
-    );
-    setup.node.rpc.inject_tx(fund_raw).await?;
-    setup.node.advance_block().await?;
-
-    // Step 4: Call the batch contract with gas_limit=30M, requesting N transfers.
-    // The 30M cap covers regular gas only; state gas (230k per transfer) is exempted
-    // from block accounting by TIP-1016, so 50 transfers fit easily.
-    let calldata: Bytes = alloy_primitives::B256::left_padding_from(&num_transfers.to_be_bytes())
-        .as_slice()
-        .to_vec()
-        .into();
-    let call_raw = build_call_tx(&signer, chain_id, 3, 30_000_000, contract_addr, calldata);
-    setup.node.rpc.inject_tx(call_raw).await?;
+    let sig_hash = tx.signature_hash();
+    let signature: alloy::primitives::Signature = signer.sign_hash_sync(&sig_hash)?;
+    let envelope: TempoTxEnvelope = tx.into_signed(signature.into()).into();
+    let tx_hash = *envelope.tx_hash();
+    setup.node.rpc.inject_tx(envelope.encoded_2718().into()).await?;
     let call_payload = setup.node.advance_block().await?;
 
-    let call_blk = call_payload.block().header().inner.number;
     let block_gas_used = call_payload.block().header().inner.gas_used;
 
-    let block_id = BlockId::Number(BlockNumberOrTag::Number(call_blk));
-    let receipts = loop {
-        if let Some(r) = provider.get_block_receipts(block_id).await? {
-            break r;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    };
-    let user_receipt = receipts
-        .iter()
-        .find(|r| r.gas_used > 100_000)
-        .expect("should have a user tx receipt with significant gas");
+    // Fetch receipt via raw RPC (AA tx type 0x76 isn't deserializable by standard types).
+    let receipt_raw: serde_json::Value = provider
+        .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
+        .await?;
+    let receipt_status = receipt_raw["status"].as_str().unwrap();
+    assert_eq!(receipt_status, "0x1", "150M gas multicall tx should succeed");
 
-    assert!(user_receipt.status(), "30M gas batch transfer tx should succeed");
-
-    let receipt_gas = user_receipt.gas_used;
-    let receipts_total_gas: u64 = receipts.iter().map(|r| r.gas_used).sum();
+    let receipt_gas = u64::from_str_radix(
+        receipt_raw["gasUsed"].as_str().unwrap().trim_start_matches("0x"), 16,
+    )?;
 
     // Receipt gas includes state gas; block header excludes it.
     // Each transfer to a fresh address: 230,000 state gas per new balance slot.
     let min_expected_state_gas = num_transfers * 230_000;
-    let state_gas = receipts_total_gas - block_gas_used;
+    let state_gas = receipt_gas.saturating_sub(block_gas_used);
     assert!(
         state_gas >= min_expected_state_gas,
         "state gas ({state_gas}) should be at least {min_expected_state_gas} \
          ({num_transfers} transfers × 230,000), \
-         block_gas_used={block_gas_used}, receipts_total_gas={receipts_total_gas}"
+         block_gas_used={block_gas_used}, receipt_gas={receipt_gas}"
     );
 
     assert!(
-        block_gas_used < receipts_total_gas,
-        "block gas_used ({block_gas_used}) should be less than receipts_total_gas \
-         ({receipts_total_gas}) due to TIP-1016 state gas exemption"
+        block_gas_used < receipt_gas,
+        "block gas_used ({block_gas_used}) should be less than receipt gas \
+         ({receipt_gas}) due to TIP-1016 state gas exemption"
     );
 
     assert!(
