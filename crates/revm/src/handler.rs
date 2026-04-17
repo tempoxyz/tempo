@@ -461,7 +461,7 @@ where
             Err(err) => match err.into_precompile_result(gas_used, 0) {
                 Ok(output) if output.is_halt() => Ok(Some(oog_frame_result(kind, *remaining_gas))),
                 Ok(revert_output) => {
-                    let mut gas = Gas::new(gas_used);
+                    let mut gas = Gas::new(*remaining_gas);
                     gas.set_spent(gas_used);
 
                     let frame_result = if kind.is_call() {
@@ -3443,7 +3443,7 @@ mod tests {
             .with_db(CacheDB::new(EmptyDB::default()))
             .with_block(TempoBlockEnv::default())
             .with_cfg(cfg)
-            .with_tx(tx_env)
+            .with_tx(tx_env.clone())
             .with_new_journal(create_test_journal());
 
         let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
@@ -3499,6 +3499,10 @@ mod tests {
 
         assert_eq!(result.instruction_result(), InstructionResult::Revert);
         assert_eq!(result.output().data(), &expected_revert);
+        assert!(
+            result.gas().total_gas_spent() < tx_env.gas_limit,
+            "prevalidate revert must not consume the full gas_limit"
+        );
     }
 
     #[test]
