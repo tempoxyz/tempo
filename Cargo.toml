@@ -365,9 +365,6 @@ revm-state = { git = "https://github.com/bluealloy/revm", rev = "ea8d1f5" }
 revm-primitives = { git = "https://github.com/bluealloy/revm", rev = "ea8d1f5" }
 revm-interpreter = { git = "https://github.com/bluealloy/revm", rev = "ea8d1f5" }
 revm-database-interface = { git = "https://github.com/bluealloy/revm", rev = "ea8d1f5" }
-## op-revm — foundry depends on op-revm from crates.io, which is incompatible with
-## our patched revm (f1f0765). This fork updates the Handler trait impl to match.
-op-revm = { git = "https://github.com/foundry-rs/op-revm", rev = "780b812" }
 reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth-core", rev = "6b12498" }
 reth-codecs = { git = "https://github.com/paradigmxyz/reth-core", rev = "6b12498" }
 reth-codecs-derive = { git = "https://github.com/paradigmxyz/reth-core", rev = "6b12498" }
