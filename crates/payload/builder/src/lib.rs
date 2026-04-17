@@ -671,11 +671,8 @@ where
         let _system_txs_span =
             debug_span!(target: "payload_builder", "execute_system_txs").entered();
         for system_tx in system_txs {
-            let mut tx_state_gas = 0u64;
             builder
-                .execute_transaction_with_result_closure(system_tx, |result| {
-                    tx_state_gas = result.result().result.gas().state_gas_spent();
-                })
+                .execute_transaction(system_tx)
                 .map_err(PayloadBuilderError::evm)?;
         }
         drop(_system_txs_span);
