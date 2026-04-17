@@ -108,9 +108,18 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         // Track state gas for code deposit
         self.deduct_state_gas(self.gas_params.code_deposit_state_gas(code_len))?;
 
-        self.internals
-            .load_account_mut(address)?
-            .set_code_and_hash_slow(code);
+        let was_empty = {
+            let mut account = self.internals.load_account_mut(address)?;
+            let was_empty = account.data.account().info.is_empty();
+            account.set_code_and_hash_slow(code);
+            was_empty
+        };
+
+        // T4: charge TIP20 creations as CREATE
+        if self.spec.is_t4() && was_empty {
+            self.deduct_gas(self.gas_params.create_cost())?;
+            self.deduct_state_gas(self.gas_params.create_state_gas())?;
+        }
 
         Ok(())
     }
