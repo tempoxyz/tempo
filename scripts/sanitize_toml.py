@@ -360,7 +360,7 @@ def main():
         # the crates we're publishing: tempo-contracts and tempo-primitives)
         ws_toml_path = sys.argv[3]
         _, _, ws_path_deps, _, _ = parse_workspace_deps(ws_toml_path)
-        publish_keep = {'tempo-contracts', 'tempo-primitives', 'tempo-alloy'}
+        publish_keep = {'tempo-contracts', 'tempo-primitives', 'tempo-chainspec', 'tempo-alloy'}
         internal_deps = ws_path_deps - publish_keep
         text = strip_dep_lines(text, lambda n: n in internal_deps)
 
@@ -389,6 +389,11 @@ def main():
 
         # Remove "reth" and "cli" from the default feature array
         text = strip_feature_array_entries(text, {'reth', 'cli'})
+
+        # The tempo_hardfork! macro generates #[cfg(feature = "reth")] blocks that remain in source.
+        # Tell check-cfg that "reth" is an expected (but never enabled) feature to suppress warnings.
+        if '[lints.rust]' not in text:
+            text += '\n[lints.rust]\nunexpected_cfgs = { level = "allow", check-cfg = [\'cfg(feature, values("reth"))\'] }\n'
 
     elif action == "resolve_deps":
         ws_toml_path = sys.argv[3]
@@ -481,7 +486,7 @@ def main():
         out_path = sys.argv[3]
         publish_crates = set(sys.argv[4].split(',')) if len(sys.argv) > 4 else set()
 
-        ws_deps, _, ws_path_deps, _, _ = parse_workspace_deps(ws_toml_path)
+        ws_deps, ws_no_default, ws_path_deps, _, _ = parse_workspace_deps(ws_toml_path)
 
         # Read the [workspace.dependencies] section text
         ws_text = Path(ws_toml_path).read_text(encoding='utf-8')
@@ -508,7 +513,10 @@ def main():
         existing += filtered + '\n'
         for crate in sorted(publish_crates):
             dirname = crate.removeprefix('tempo-')
-            existing += f'{crate} = {{ path = "{dirname}" }}\n'
+            parts = [f'path = "{dirname}"']
+            if crate in ws_no_default:
+                parts.append('default-features = false')
+            existing += f'{crate} = {{ {", ".join(parts)} }}\n'
 
         Path(out_path).write_text(existing, encoding='utf-8')
         sys.exit(0)

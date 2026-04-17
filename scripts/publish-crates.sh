@@ -232,7 +232,9 @@ grep -qE "^\s*reth\s*=" "$TMP_WORK_DIR/alloy/Cargo.toml" && \
 grep -rq 'feature = "reth"' "$TMP_WORK_DIR/alloy/src/" && \
     err "reth-gated code still in tempo-alloy source"
 
-grep -rq 'feature = "reth"' "$TMP_WORK_DIR/chainspec/src/" && \
+# Exclude hardfork.rs: the tempo_hardfork! macro generates #[cfg(feature = "reth")]
+# blocks that are dead code when the reth feature is absent (suppressed via check-cfg).
+grep -rq --exclude='hardfork.rs' 'feature = "reth"' "$TMP_WORK_DIR/chainspec/src/" && \
     err "reth-gated code still in tempo-chainspec source"
 
 log "Pre-resolve validation passed ✓"
