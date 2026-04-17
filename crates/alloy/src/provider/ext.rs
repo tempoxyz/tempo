@@ -11,6 +11,8 @@ use tempo_contracts::precompiles::{
 };
 use tempo_primitives::transaction::CallScope;
 
+use tempo_chainspec::hardfork::TempoHardfork;
+
 use crate::{
     TempoFillers, TempoNetwork,
     fillers::{ExpiringNonceFiller, NonceKeyFiller, Random2DNonceFiller},
@@ -93,6 +95,29 @@ pub trait TempoProviderExt: Provider<TempoNetwork> {
         Self: Sized,
     {
         self.account_keychain().getTransactionKey().call().await
+    }
+
+    /// Returns `true` if the given Tempo hardfork is active on the connected chain.
+    ///
+    /// Queries the node's `tempo_forkSchedule` RPC to determine the currently active hardfork.
+    async fn is_hardfork_active(
+        &self,
+        hardfork: TempoHardfork,
+    ) -> Result<bool, alloy_transport::TransportError>
+    where
+        Self: Sized,
+    {
+        #[derive(Debug, serde::Deserialize)]
+        struct Response {
+            active: String,
+        }
+
+        let resp: Response = self.raw_request("tempo_forkSchedule".into(), ()).await?;
+
+        Ok(resp
+            .active
+            .parse::<TempoHardfork>()
+            .is_ok_and(|h| h >= hardfork))
     }
 }
 

@@ -371,6 +371,25 @@ def main():
         text = re.sub(r', "rpc"', '', text)
         text = re.sub(r'"rpc", ', '', text)
 
+    elif action == "sanitize_chainspec":
+        # Remove reth and cli feature blocks entirely
+        text = strip_feature_blocks(text, ['reth', 'cli'])
+
+        # Track removed deps so we can auto-strip orphaned feature entries
+        removed = set()
+
+        # Remove reth and eyre (only used by cli feature) dependency lines
+        text = strip_dep_lines(text, lambda n: n.startswith('reth-'), removed)
+        text = strip_dep_lines(text, lambda n: n == 'eyre', removed)
+        # Remove # Reth comment
+        text = re.sub(r'^# Reth\n', '', text, flags=re.MULTILINE)
+
+        # Auto-strip feature entries referencing removed deps
+        text = strip_orphaned_feature_entries(text, removed)
+
+        # Remove "reth" and "cli" from the default feature array
+        text = strip_feature_array_entries(text, {'reth', 'cli'})
+
     elif action == "resolve_deps":
         ws_toml_path = sys.argv[3]
         ws_deps, ws_no_default, _, _, _ = parse_workspace_deps(ws_toml_path)

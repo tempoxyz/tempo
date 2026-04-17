@@ -14,7 +14,7 @@ workspace = true
 [dependencies]
 tempo-contracts = { workspace = true, features = ["rpc"] }
 tempo-primitives = { workspace = true, features = ["serde", "rpc"] }
-tempo-chainspec = { workspace = true, optional = true }
+tempo-chainspec = { workspace = true, default-features = false }
 tempo-evm = { workspace = true, optional = true }
 tempo-revm = { workspace = true, optional = true }
 
@@ -53,7 +53,6 @@ tokio.workspace = true
 [features]
 default = []
 reth = [
-    "dep:tempo-chainspec",
     "dep:tempo-evm",
     "dep:tempo-revm",
     "dep:reth-evm",
@@ -61,6 +60,7 @@ reth = [
     "dep:reth-rpc-convert",
     "dep:reth-rpc-eth-types",
     "tempo-primitives/reth",
+    "tempo-chainspec/reth",
 ]
 asm-keccak = [
     "alloy-primitives/asm-keccak",
