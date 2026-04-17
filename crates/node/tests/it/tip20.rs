@@ -10,8 +10,9 @@ use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{IAddressRegistry, ITIP20, ITIP403Registry, TIP20Error};
 use tempo_precompiles::{
     ADDRESS_REGISTRY_ADDRESS, TIP403_REGISTRY_ADDRESS,
-    test_util::{VIRTUAL_MASTER, VIRTUAL_SALT, make_virtual_address},
+    test_util::{VIRTUAL_MASTER, VIRTUAL_SALT},
 };
+use tempo_primitives::TempoAddressExt;
 
 use crate::utils::{TestNodeBuilder, await_receipts, setup_test_token};
 
@@ -973,8 +974,7 @@ async fn setup_virtual_test() -> eyre::Result<(
         .expect("MasterRegistered event should be emitted");
     assert_eq!(master_event.masterAddress, VIRTUAL_MASTER);
 
-    let virtual_addr =
-        make_virtual_address(master_event.masterId, FixedBytes::from([1, 2, 3, 4, 5, 6]));
+    let virtual_addr = Address::new_virtual(master_event.masterId, FixedBytes::random());
 
     Ok((setup, http_url, admin, token, virtual_addr))
 }

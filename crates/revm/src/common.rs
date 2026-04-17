@@ -17,10 +17,10 @@ use tempo_precompiles::{
     error::{Result as TempoResult, TempoPrecompileError},
     storage::{Handler, PrecompileStorageProvider, StorageCtx},
     tip_fee_manager::TipFeeManager,
-    tip20::{ITIP20, TIP20Token, is_tip20_prefix},
+    tip20::{ITIP20, TIP20Token},
     tip403_registry::{AuthRole, TIP403Registry},
 };
-use tempo_primitives::TempoTxEnvelope;
+use tempo_primitives::{TempoAddressExt, TempoTxEnvelope};
 
 /// Returns true if the calldata is for a TIP-20 function that should trigger fee token inference.
 /// Only `transfer`, `transferWithMemo`, and `distributeReward` qualify.
@@ -214,7 +214,7 @@ pub trait TempoStateAccess<M = ()> {
         Self: Sized,
     {
         // Must have TIP20 prefix to be a valid fee token
-        if !is_tip20_prefix(fee_token) {
+        if !fee_token.is_tip20() {
             return Ok(false);
         }
 

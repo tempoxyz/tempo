@@ -194,7 +194,7 @@ jobs:
           done
 
       - name: Publish event (sha tag)
-        if: ${{ github.repository == 'tempoxyz/tempo' }}
+        if: ${{ github.repository == 'tempoxyz/tempo' && github.event_name != 'merge_group' }}
         shell: bash
         run: |
           set -euo pipefail

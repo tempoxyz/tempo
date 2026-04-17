@@ -13,11 +13,9 @@ use eyre::{OptionExt as _, WrapErr as _};
 use reth_ethereum::evm::revm::{State, database::StateProviderDatabase};
 use reth_node_builder::ConfigureEvm as _;
 use reth_provider::{HeaderProvider as _, StateProviderFactory as _};
-use tempo_chainspec::hardfork::TempoHardforks as _;
 use tempo_node::TempoFullNode;
 use tempo_precompiles::{
     storage::StorageCtx,
-    validator_config::{IValidatorConfig, ValidatorConfig},
     validator_config_v2::{IValidatorConfigV2, ValidatorConfigV2},
 };
 
@@ -25,76 +23,11 @@ use tracing::{Level, instrument, warn};
 
 use crate::utils::public_key_to_b256;
 
-/// Returns all active validators read from block state at block `hash`.
-///
-/// The returned validators are those that are marked active according to
-/// block state, and those that are `known`. This accounts for those validators
-/// that are actively participating in consensus (including DKG) but might
-/// be marked inactive on chain.
-///
-/// This function reads the `header` corresponding to `hash` from `node` and
-/// checks if the T2 hardfork is active at `header.timestamp` and if the
-/// Validator Config V2 is initialized.
-///
-/// If T2 is active and the contract is initialized, it will read the entries
-/// from the Validator Config V2 contract.
-///
-/// Otherwise, it will read the entries from the V1 contract.
-pub(crate) fn read_active_and_known_peers_at_block_hash(
-    node: &TempoFullNode,
-    known: &ordered::Set<PublicKey>,
-    hash: B256,
-) -> eyre::Result<ordered::Map<PublicKey, commonware_p2p::Address>> {
-    if can_use_v2_at_block_hash(node, hash, None)
-        .wrap_err("failed to determine validator config v2 status")?
-    {
-        read_active_and_known_peers_at_block_hash_v2(node, known, hash)
-            .wrap_err("failed reading peers from validator config v2")
-    } else {
-        read_active_and_known_peers_at_block_hash_v1(node, known, hash)
-            .wrap_err("failed reading peers from validator config v1")
-    }
-}
-
-/// Returns all validator config v1 entries at block `hash`.
-///
-/// Reads the validator config v1 contract at the block state identified by
-/// `hash` and retains all validators for which `$entry.active = true` or
-/// for which `$entry.publicKey` is in `known`.
-pub(crate) fn read_active_and_known_peers_at_block_hash_v1(
-    node: &TempoFullNode,
-    known: &ordered::Set<PublicKey>,
-    hash: B256,
-) -> eyre::Result<ordered::Map<PublicKey, commonware_p2p::Address>> {
-    read_validator_config_at_block_hash(node, hash, |config: &ValidatorConfig| {
-        let mut all = HashMap::new();
-        for raw in config
-            .get_validators()
-            .wrap_err("failed to query contract for validator config")?
-        {
-            if let Ok(decoded) = DecodedValidatorV1::decode_from_contract(raw)
-                && let Some(dupe) = all.insert(decoded.public_key.clone(), decoded)
-            {
-                warn!(
-                    duplicate = %dupe.public_key,
-                    "found duplicate public keys",
-                );
-            }
-        }
-        all.retain(|k, v| v.active || known.position(k).is_some());
-        Ok(
-            ordered::Map::try_from_iter(all.into_iter().map(|(k, v)| (k, v.to_address())))
-                .expect("hashmaps don't contain duplicates"),
-        )
-    })
-    .map(|(_height, _hash, value)| value)
-}
-
 /// Returns active validator config v2 entries at block `hash`.
 ///
 /// This returns both the validators that are `active` as per the contract, and
 /// those that are `known`.
-pub(crate) fn read_active_and_known_peers_at_block_hash_v2(
+pub(crate) fn read_active_and_known_peers_at_block_hash(
     node: &TempoFullNode,
     known: &ordered::Set<PublicKey>,
     hash: B256,
@@ -132,22 +65,6 @@ pub(crate) fn read_active_and_known_peers_at_block_hash_v2(
         Ok(ordered::Map::try_from_iter(all).expect("hashmaps don't contain duplicates"))
     })
     .map(|(_height, _hash, value)| value)
-}
-
-fn v2_initialization_height_at_block_hash(node: &TempoFullNode, hash: B256) -> eyre::Result<u64> {
-    read_validator_config_at_block_hash(node, hash, |config: &ValidatorConfigV2| {
-        config
-            .get_initialized_at_height()
-            .map_err(eyre::Report::new)
-    })
-    .map(|(_, _, activation_height)| activation_height)
-}
-
-fn is_v2_initialized_at_block_hash(node: &TempoFullNode, hash: B256) -> eyre::Result<bool> {
-    read_validator_config_at_block_hash(node, hash, |config: &ValidatorConfigV2| {
-        config.is_initialized().map_err(eyre::Report::new)
-    })
-    .map(|(_, _, activated)| activated)
 }
 
 /// Reads the validator state at the given block hash.
@@ -190,139 +107,6 @@ where
         || read_fn(&C::default()),
     )?;
     Ok((header.number(), block_hash, res))
-}
-
-/// Returns if the validator config v2 can be used exactly at `hash` and the
-/// timestamp of the corresponding `header`.
-///
-/// If `latest` is set, then the function will look at the timestamp of `hash`
-/// to determine hardfork activation, but `latest` to determine contract
-/// initialization. This is an optimization that makes use of the fact that
-/// the initialization height is stored in the contract.
-///
-/// Validators can be read from the V2 contract if the following conditions hold:
-///
-/// 1. `timestamp(hash) >= T2`.
-/// 2. `initialization_height(<state>) <= number(hash)`.
-/// 3. `is_init(<state>) == true`.
-///
-/// `<state>` is read at either `hash` or `latest` if set.
-///
-/// This makes use of the following assumption:
-///
-/// If `initialization_height > 0`, then `is_init == true` always (invariant of
-/// the smart contract).
-///
-/// If `initialization_height == 0`, then `is_init` is used to determine if
-/// the contract was initialized at genesis or not.
-pub(crate) fn can_use_v2_at_block_hash(
-    node: &TempoFullNode,
-    hash: B256,
-    latest: Option<B256>,
-) -> eyre::Result<bool> {
-    let header = node
-        .provider
-        .header(hash)
-        .map_err(eyre::Report::new)
-        .and_then(|maybe| maybe.ok_or_eyre("hash not known"))
-        .wrap_err_with(|| {
-            format!("failed reading header for block hash `{hash}` from execution layer")
-        })?;
-    let state_hash = latest.unwrap_or(hash);
-    Ok(node
-        .chain_spec()
-        .is_t2_active_at_timestamp(header.timestamp())
-        && is_v2_initialized_at_block_hash(node, state_hash)
-            .wrap_err("failed reading validator config v2 initialization flag")?
-        && v2_initialization_height_at_block_hash(node, state_hash)
-            .wrap_err("failed reading validator config v2 initialization height")?
-            <= header.number())
-}
-
-/// A ContractValidator is a peer read from the validator config smart const.
-///
-/// The inbound and outbound addresses stored herein are guaranteed to be of the
-/// form `<host>:<port>` for inbound, and `<ip>:<port>` for outbound. Here,
-/// `<host>` is either an IPv4 or IPV6 address, or a fully qualified domain name.
-/// `<ip>` is an IPv4 or IPv6 address.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DecodedValidatorV1 {
-    pub(crate) active: bool,
-    /// The `publicKey` field of the contract. Used by other validators to
-    /// identify a peer by verifying the signatures of its p2p messages and
-    /// as a dealer/player/participant in DKG ceremonies and consensus for a
-    /// given epoch. Part of the set registered with the lookup p2p manager.
-    pub(crate) public_key: PublicKey,
-    /// The `inboundAddress` field of the contract. Used by other validators
-    /// to dial a peer and ensure that messages from that peer are coming from
-    /// this address. Part of the set registered with the lookup p2p manager.
-    pub(crate) inbound: SocketAddr,
-    /// The `outboundAddress` field of the contract. Currently ignored because
-    /// all p2p communication is symmetric (outbound and inbound) via the
-    /// `inboundAddress` field.
-    pub(crate) outbound: SocketAddr,
-    /// The `index` field of the contract. Not used by consensus and just here
-    /// for debugging purposes to identify the contract entry. Emitted in
-    /// tracing events.
-    pub(crate) index: u64,
-    /// The `address` field of the contract. Not used by consensus and just here
-    /// for debugging purposes to identify the contract entry. Emitted in
-    /// tracing events.
-    pub(crate) address: Address,
-}
-
-impl DecodedValidatorV1 {
-    /// Attempts to decode a single validator from the values read in the smart contract.
-    ///
-    /// This function does not perform hostname lookup on either of the addresses.
-    /// Instead, only the shape of the addresses are checked for whether they are
-    /// socket addresses (IP:PORT pairs), or fully qualified domain names.
-    #[instrument(ret(Display, level = Level::DEBUG), err(level = Level::WARN))]
-    fn decode_from_contract(
-        IValidatorConfig::Validator {
-            active,
-            publicKey,
-            index,
-            validatorAddress,
-            inboundAddress,
-            outboundAddress,
-        }: IValidatorConfig::Validator,
-    ) -> eyre::Result<Self> {
-        let public_key = PublicKey::decode(publicKey.as_ref())
-            .wrap_err("failed decoding publicKey field as ed25519 public key")?;
-        let inbound = inboundAddress
-            .parse()
-            .wrap_err("inboundAddress was not valid")?;
-        let outbound = outboundAddress
-            .parse()
-            .wrap_err("outboundAddress was not valid")?;
-        Ok(Self {
-            active,
-            public_key,
-            inbound,
-            outbound,
-            index,
-            address: validatorAddress,
-        })
-    }
-
-    fn to_address(&self) -> commonware_p2p::Address {
-        // NOTE: commonware takes egress as socket address but only uses the IP part.
-        // So setting port to 0 is ok.
-        commonware_p2p::Address::Asymmetric {
-            ingress: Ingress::Socket(self.inbound),
-            egress: self.outbound,
-        }
-    }
-}
-
-impl std::fmt::Display for DecodedValidatorV1 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!(
-            "public key = `{}`, inbound = `{}`, outbound = `{}`, index = `{}`, address = `{}`",
-            self.public_key, self.inbound, self.outbound, self.index, self.address
-        ))
-    }
 }
 
 /// An entry in the validator config v2 contract with all its fields decoded

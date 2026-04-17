@@ -138,18 +138,6 @@ pub struct Setup {
     /// a build a payload.
     pub new_payload_wait_time: Duration,
 
-    /// The t2 hardfork time.
-    ///
-    /// Validators will only be written into the V2 contract if t2_time == 0.
-    ///
-    /// Default: 1.
-    pub t2_time: u64,
-
-    /// The t3 hardfork time.
-    ///
-    /// Default: `None` (not activated).
-    pub t3_time: Option<u64>,
-
     /// The t4 hardfork time.
     ///
     /// Default: `None` (not activated).
@@ -175,8 +163,6 @@ impl Setup {
             },
             epoch_length: 20,
             new_payload_wait_time: Duration::from_millis(300),
-            t2_time: 1,
-            t3_time: None,
             t4_time: None,
             with_subblocks: false,
             fee_recipient: Address::ZERO,
@@ -226,20 +212,9 @@ impl Setup {
         }
     }
 
-    pub fn t2_time(self, t2_time: u64) -> Self {
-        Self { t2_time, ..self }
-    }
-
     pub fn fee_recipient(self, fee_recipient: Address) -> Self {
         Self {
             fee_recipient,
-            ..self
-        }
-    }
-
-    pub fn t3_time(self, t3_time: u64) -> Self {
-        Self {
-            t3_time: Some(t3_time),
             ..self
         }
     }
@@ -272,8 +247,6 @@ pub async fn setup_validators(
         how_many_verifiers,
         linkage,
         new_payload_wait_time,
-        t2_time,
-        t3_time,
         t4_time,
         with_subblocks,
         fee_recipient,
@@ -300,8 +273,6 @@ pub async fn setup_validators(
     let execution_runtime = ExecutionRuntime::builder()
         .with_epoch_length(epoch_length)
         .with_initial_dkg_outcome(onchain_dkg_outcome)
-        .with_t2_time(t2_time)
-        .with_t3_time(t3_time)
         .with_t4_time(t4_time)
         .with_validators(validators.clone())
         .launch()
@@ -398,18 +369,6 @@ pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> 
                 if metric.ends_with("_peers_blocked") {
                     let value = value.parse::<u64>().unwrap();
                     assert_eq!(value, 0);
-                }
-
-                if setup.t2_time == 0 {
-                    if metric.ends_with("_dkg_manager_read_players_from_v1_contract_total") {
-                        assert_eq!(0, value.parse::<u64>().unwrap());
-                    }
-                    if metric.ends_with("_dkg_manager_syncing_players") {
-                        assert_eq!(0, value.parse::<u64>().unwrap());
-                    }
-                    if metric.ends_with("_dkg_manager_read_re_dkg_epoch_from_v1_contract_total") {
-                        assert_eq!(0, value.parse::<u64>().unwrap());
-                    }
                 }
 
                 if stop_condition(metric, value) {

@@ -19,7 +19,6 @@ fn blocks_have_consensus_context() {
     let setup = Setup::new()
         .how_many_signers(4)
         .epoch_length(100)
-        .t2_time(0)
         .t4_time(0)
         .seed(0);
 
