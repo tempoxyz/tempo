@@ -757,11 +757,7 @@ where
             return Ok(oog);
         }
 
-        let (gas_limit, reservoir) = init_and_floor_gas.initial_gas_and_reservoir(
-            tx.gas_limit,
-            evm.ctx().cfg().tx_gas_limit_cap(),
-            evm.ctx.cfg().is_amsterdam_eip8037_enabled(),
-        );
+        let (gas_limit, reservoir) = evm.initial_gas_and_reservoir(init_and_floor_gas);
 
         if let Some(tempo_tx_env) = evm.ctx().tx().tempo_tx_env.as_ref() {
             let calls = tempo_tx_env.aa_calls.clone();
@@ -2048,11 +2044,7 @@ where
             return Ok(oog);
         }
 
-        let (gas_limit, reservoir) = init_and_floor_gas.initial_gas_and_reservoir(
-            tx.gas_limit,
-            evm.ctx().cfg().tx_gas_limit_cap(),
-            evm.ctx.cfg().is_amsterdam_eip8037_enabled(),
-        );
+        let (gas_limit, reservoir) = evm.initial_gas_and_reservoir(init_and_floor_gas);
 
         if let Some(tempo_tx_env) = evm.ctx().tx().tempo_tx_env.as_ref() {
             let calls = tempo_tx_env.aa_calls.clone();

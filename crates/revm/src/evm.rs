@@ -3,12 +3,12 @@ use alloy_evm::{Database, precompiles::PrecompilesMap};
 use alloy_primitives::{Address, U256};
 use revm::{
     Context, Inspector,
-    context::{CfgEnv, ContextError, Evm, FrameStack},
+    context::{Cfg, CfgEnv, ContextError, Evm, FrameStack},
     handler::{
         EthFrame, EvmTr, FrameInitOrResult, FrameTr, ItemOrResult, instructions::EthInstructions,
     },
     inspector::InspectorEvmTr,
-    interpreter::interpreter::EthInterpreter,
+    interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 
@@ -81,6 +81,25 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             key_expiry: None,
             skip_valid_after_check: false,
             skip_liquidity_check: false,
+        }
+    }
+
+    /// Computes initial gas limit and reservoir for a transaction given its initial gas spending.
+    pub(crate) fn initial_gas_and_reservoir(
+        &self,
+        init_and_floor_gas: &InitialAndFloorGas,
+    ) -> (u64, u64) {
+        // Pre-T0 it could happen that the initial gas spending is greater than the gas limit due to faulty validation.
+        //
+        // Before that it would overflow, so we are reproducing this behavior here by setting the gas limit to u64::MAX and the reservoir to 0.
+        if !self.cfg.spec.is_t0() && init_and_floor_gas.initial_total_gas > self.tx.gas_limit {
+            (u64::MAX, 0)
+        } else {
+            init_and_floor_gas.initial_gas_and_reservoir(
+                self.tx.gas_limit,
+                self.cfg.tx_gas_limit_cap(),
+                self.cfg.is_amsterdam_eip8037_enabled(),
+            )
         }
     }
 }
