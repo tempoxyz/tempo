@@ -183,6 +183,10 @@ where
         self.cfg.chain_id
     }
 
+    fn cfg_env(&self) -> &alloy_evm::revm::context::CfgEnv<Self::Spec> {
+        &self.cfg
+    }
+
     fn transact_raw(
         &mut self,
         tx: Self::Tx,
