@@ -508,10 +508,14 @@ where
             <<TempoEvm<DB, I> as EvmTr>::Frame as FrameTr>::FrameInit,
         ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>,
     {
-        let gas_limit = evm.ctx().tx().gas_limit() - init_and_floor_gas.initial_total_gas;
+        let (gas_limit, reservoir) = init_and_floor_gas.initial_gas_and_reservoir(
+            evm.ctx().tx().gas_limit(),
+            evm.ctx().cfg().tx_gas_limit_cap(),
+            evm.ctx().cfg().is_amsterdam_eip8037_enabled(),
+        );
 
         // Create first frame action
-        let first_frame_input = self.first_frame_input(evm, gas_limit, init_and_floor_gas)?;
+        let first_frame_input = self.first_frame_input(evm, gas_limit, reservoir)?;
 
         // Run execution loop (standard or inspector)
         let mut frame_result = run_loop(self, evm, first_frame_input)?;
@@ -876,6 +880,7 @@ where
     fn validate_against_state_and_deduct_caller(
         &self,
         evm: &mut Self::Evm,
+        _init_and_floor_gas: &mut InitialAndFloorGas,
     ) -> Result<(), Self::Error> {
         self.seed_tx_origin(evm)?;
 
@@ -2175,7 +2180,7 @@ mod tests {
             (),
         );
 
-        let result = handler.validate_against_state_and_deduct_caller(&mut evm);
+        let result = handler.validate_against_state_and_deduct_caller(&mut evm, &mut InitialAndFloorGas::new(0, 0));
 
         assert!(
             matches!(
@@ -3307,7 +3312,7 @@ mod tests {
         evm.inner.ctx.tx.inner.gas_limit = init_gas.initial_total_gas;
 
         handler
-            .validate_against_state_and_deduct_caller(&mut evm)
+            .validate_against_state_and_deduct_caller(&mut evm, &mut InitialAndFloorGas::new(0, 0))
             .expect("scope validation no longer runs during state validation");
 
         let result = handler
@@ -3429,7 +3434,7 @@ mod tests {
             .expect("initial gas validation should succeed");
 
         handler
-            .validate_against_state_and_deduct_caller(&mut evm)
+            .validate_against_state_and_deduct_caller(&mut evm, &mut InitialAndFloorGas::new(0, 0))
             .expect("scope validation no longer runs during state validation");
 
         let result = handler
@@ -4328,7 +4333,7 @@ mod tests {
             let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T2, None, true);
 
             assert!(matches!(
-                h.validate_against_state_and_deduct_caller(&mut evm),
+                h.validate_against_state_and_deduct_caller(&mut evm, &mut InitialAndFloorGas::new(0, 0)),
                 Err(EVMError::Transaction(
                     TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot { .. }
                 ))
@@ -4348,7 +4353,7 @@ mod tests {
             let (mut evm, h) = make_evm(user, tx_key, Some(signed), TempoHardfork::T2, None, true);
 
             assert!(matches!(
-                h.validate_against_state_and_deduct_caller(&mut evm),
+                h.validate_against_state_and_deduct_caller(&mut evm, &mut InitialAndFloorGas::new(0, 0)),
                 Err(EVMError::Transaction(
                     TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys
                 ))
@@ -4366,7 +4371,7 @@ mod tests {
                 );
                 let (mut evm, h) = make_evm(user, key, Some(signed), spec, None, false);
 
-                let result = h.validate_against_state_and_deduct_caller(&mut evm);
+                let result = h.validate_against_state_and_deduct_caller(&mut evm, &mut InitialAndFloorGas::new(0, 0));
                 if !spec.is_t1c() {
                     assert!(
                         result.is_ok(),
@@ -4394,7 +4399,7 @@ mod tests {
                 );
                 let (mut evm, h) = make_evm(user, key, Some(signed), spec, None, true);
                 assert!(
-                    h.validate_against_state_and_deduct_caller(&mut evm)
+                    h.validate_against_state_and_deduct_caller(&mut evm, &mut InitialAndFloorGas::new(0, 0))
                         .is_err(),
                     "{spec:?}: wrong chain_id should be rejected"
                 );
@@ -4407,7 +4412,7 @@ mod tests {
                     KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key),
                 );
                 let (mut evm, h) = make_evm(user, key, Some(signed), spec, None, true);
-                let result = h.validate_against_state_and_deduct_caller(&mut evm);
+                let result = h.validate_against_state_and_deduct_caller(&mut evm, &mut InitialAndFloorGas::new(0, 0));
                 assert!(
                     !matches!(&result, Err(EVMError::Transaction(TempoInvalidTransaction::KeychainValidationFailed { reason })) if reason.contains("chain_id")),
                     "{spec:?}: matching chain_id should be accepted, got: {result:?}"
@@ -4428,7 +4433,7 @@ mod tests {
             );
             let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T2, None, false);
 
-            let _ = h.validate_against_state_and_deduct_caller(&mut evm);
+            let _ = h.validate_against_state_and_deduct_caller(&mut evm, &mut InitialAndFloorGas::new(0, 0));
             assert_eq!(evm.key_expiry, Some(expiry));
         }
 
@@ -4443,7 +4448,7 @@ mod tests {
                 true,
             );
 
-            let result = h.validate_against_state_and_deduct_caller(&mut evm);
+            let result = h.validate_against_state_and_deduct_caller(&mut evm, &mut InitialAndFloorGas::new(0, 0));
             assert!(
                 !matches!(
                     result,
@@ -4504,7 +4509,7 @@ mod tests {
             );
             let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T2, None, false);
 
-            let result = h.validate_against_state_and_deduct_caller(&mut evm);
+            let result = h.validate_against_state_and_deduct_caller(&mut evm, &mut InitialAndFloorGas::new(0, 0));
             assert!(
                 !matches!(
                     result,

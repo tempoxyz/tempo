@@ -223,6 +223,7 @@ impl ConfigureEvm for TempoEvmConfig {
                     .map(|w| Cow::Borrowed(w.as_slice())),
                 extra_data: block.extra_data().clone(),
                 tx_count_hint: Some(block.body().transactions.len()),
+                slot_number: None,
             },
             general_gas_limit: block.header().general_gas_limit,
             shared_gas_limit: block.header().gas_limit()
@@ -250,6 +251,7 @@ impl ConfigureEvm for TempoEvmConfig {
                     .map(|w| Cow::Owned(w.into_inner())),
                 extra_data: attributes.inner.extra_data,
                 tx_count_hint: None,
+                slot_number: None,
             },
             general_gas_limit: attributes.general_gas_limit,
             shared_gas_limit: attributes.inner.gas_limit
