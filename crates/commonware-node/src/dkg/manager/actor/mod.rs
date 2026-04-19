@@ -776,8 +776,7 @@ where
     /// 2. Computes the local DKG outcome from the dealer logs collected
     ///    during the epoch and compares it against the on-chain result.
     /// 3. Records whether the ceremony was a success or failure.
-    /// 4. Reads the next set of validators from the smart contract.
-    /// 5. Returns the new state that drives the next epoch's DKG round.
+    /// 4. Returns the new state that drives the next epoch's DKG round.
     #[instrument(
         skip_all,
         fields(
@@ -804,6 +803,8 @@ where
             &mut block.header().extra_data().as_ref(),
         )
         .expect("the last block of an epoch must contain the DKG outcome");
+
+        info!("reading validator from contract");
 
         let (local_output, mut share) = if let Some((outcome, share)) =
             storage.get_dkg_outcome(&state.epoch, &block.parent_digest())

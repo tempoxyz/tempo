@@ -41,7 +41,6 @@ impl MidEpochBlockTest {
 
         let setup = Setup::new()
             .how_many_signers(self.how_many_signers)
-            .t2_time(0)
             .epoch_length(self.epoch_length);
 
         let cfg = Config::default().with_seed(setup.seed);
@@ -84,7 +83,7 @@ impl MidEpochBlockTest {
 fn early_phase_dealer_distributes_shares() {
     let _ = tempo_eyre::install();
 
-    let setup = Setup::new().how_many_signers(4).t2_time(0).epoch_length(20);
+    let setup = Setup::new().how_many_signers(4).epoch_length(20);
 
     let cfg = Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);
@@ -117,7 +116,7 @@ fn early_phase_dealer_distributes_shares() {
 fn midpoint_and_late_phase_dealer_finalization() {
     let _ = tempo_eyre::install();
 
-    let setup = Setup::new().how_many_signers(4).t2_time(0).epoch_length(20);
+    let setup = Setup::new().how_many_signers(4).epoch_length(20);
 
     let cfg = Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);
@@ -168,7 +167,6 @@ impl RestartMidEpochTest {
 
         let setup = Setup::new()
             .how_many_signers(self.how_many_signers)
-            .t2_time(0)
             .epoch_length(self.epoch_length);
 
         let cfg = Config::default().with_seed(setup.seed);
@@ -231,7 +229,6 @@ impl BoundaryBlockTest {
 
         let setup = Setup::new()
             .how_many_signers(self.how_many_signers)
-            .t2_time(0)
             .epoch_length(self.epoch_length);
 
         let cfg = Config::default().with_seed(setup.seed);
@@ -315,7 +312,7 @@ fn dealer_log_in_block_extra_data_is_stored() {
     let _ = tempo_eyre::install();
 
     // 4 signers so each node acts as both dealer and player.
-    let setup = Setup::new().how_many_signers(4).t2_time(0).epoch_length(20);
+    let setup = Setup::new().how_many_signers(4).epoch_length(20);
 
     let cfg = Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);
@@ -348,7 +345,7 @@ fn dealer_log_in_block_extra_data_is_stored() {
 fn own_dealer_log_in_block_is_cleared_from_state() {
     let _ = tempo_eyre::install();
 
-    let setup = Setup::new().how_many_signers(4).t2_time(0).epoch_length(20);
+    let setup = Setup::new().how_many_signers(4).epoch_length(20);
 
     let cfg = Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);
