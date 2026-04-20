@@ -5,7 +5,7 @@ use reth_ethereum_engine_primitives::EthPayloadAttributes;
 use reth_node_api::PayloadAttributes;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, atomic, atomic::Ordering};
-use tempo_primitives::RecoveredSubBlock;
+use tempo_primitives::{RecoveredSubBlock, TempoConsensusContext};
 
 /// A handle for a payload interrupt flag.
 ///
@@ -50,6 +50,12 @@ pub struct TempoPayloadAttributes {
     /// This is empty when no DKG data is available (e.g., when the DKG manager
     /// hasn't produced ceremony outcomes yet, or when DKG operations fail).
     extra_data: Bytes,
+    /// The proposer's public key used to resolve the fee recipient from the
+    /// validator config contract. When `None`, `suggested_fee_recipient` from
+    /// the inner attributes is used as-is.
+    proposer_public_key: Option<B256>,
+    /// Consensus view for this block
+    consensus_context: Option<TempoConsensusContext>,
     /// Subblocks closure.
     #[debug(skip)]
     #[serde(skip, default = "default_subblocks")]
@@ -66,22 +72,27 @@ impl TempoPayloadAttributes {
     /// Creates new `TempoPayloadAttributes` with `inner` attributes.
     pub fn new(
         suggested_fee_recipient: Address,
-        timestamp_millis: u64,
+        proposer_public_key: Option<B256>,
+        timestamp: u64,
+        timestamp_millis_part: u64,
         extra_data: Bytes,
+        consensus_context: Option<TempoConsensusContext>,
         subblocks: impl Fn() -> Vec<RecoveredSubBlock> + Send + Sync + 'static,
     ) -> Self {
-        let (seconds, millis) = (timestamp_millis / 1000, timestamp_millis % 1000);
         Self {
             inner: EthPayloadAttributes {
-                timestamp: seconds,
+                timestamp,
                 suggested_fee_recipient,
                 prev_randao: B256::ZERO,
                 withdrawals: Some(Default::default()),
                 parent_beacon_block_root: Some(B256::ZERO),
+                slot_number: None,
             },
             interrupt: InterruptHandle::default(),
-            timestamp_millis_part: millis,
+            timestamp_millis_part,
             extra_data,
+            proposer_public_key,
+            consensus_context,
             subblocks: Arc::new(subblocks),
         }
     }
@@ -89,6 +100,11 @@ impl TempoPayloadAttributes {
     /// Returns the extra data to be included in the block header.
     pub fn extra_data(&self) -> &Bytes {
         &self.extra_data
+    }
+
+    /// Returns the proposer's public key.
+    pub fn proposer_public_key(&self) -> Option<&B256> {
+        self.proposer_public_key.as_ref()
     }
 
     /// Returns the `interrupt` flag. If true, it marks that a payload is requested to stop
@@ -115,6 +131,11 @@ impl TempoPayloadAttributes {
             .saturating_add(self.timestamp_millis_part)
     }
 
+    /// Returns the consensus context
+    pub fn consensus_context(&self) -> Option<TempoConsensusContext> {
+        self.consensus_context
+    }
+
     /// Returns the subblocks.
     pub fn subblocks(&self) -> Vec<RecoveredSubBlock> {
         (self.subblocks)()
@@ -131,6 +152,8 @@ impl From<EthPayloadAttributes> for TempoPayloadAttributes {
             interrupt: InterruptHandle::default(),
             timestamp_millis_part: 0,
             extra_data: Bytes::default(),
+            proposer_public_key: None,
+            consensus_context: None,
             subblocks: Arc::new(Vec::new),
         }
     }
@@ -157,6 +180,10 @@ impl PayloadAttributes for TempoPayloadAttributes {
 
     fn withdrawals(&self) -> Option<&Vec<Withdrawal>> {
         self.inner.withdrawals()
+    }
+
+    fn slot_number(&self) -> Option<u64> {
+        self.inner.slot_number()
     }
 }
 
@@ -188,7 +215,15 @@ mod tests {
 
     impl TestExt for TempoPayloadAttributes {
         fn random() -> Self {
-            Self::new(Address::random(), 1000, Bytes::default(), Vec::new)
+            Self::new(
+                Address::random(),
+                None,
+                1, // 1s
+                0,
+                Bytes::default(),
+                None,
+                Vec::new,
+            )
         }
 
         fn with_timestamp(mut self, millis: u64) -> Self {
@@ -238,11 +273,17 @@ mod tests {
         let parent = B256::random();
         let recipient = Address::random();
         let extra_data = Bytes::from(vec![1, 2, 3, 4, 5]);
-        let timestamp_millis = 1500; // 1s + 500ms
 
         // With extra_data
-        let attrs =
-            TempoPayloadAttributes::new(recipient, timestamp_millis, extra_data.clone(), Vec::new);
+        let attrs = TempoPayloadAttributes::new(
+            recipient,
+            None,
+            1,
+            500, // 1.5s
+            extra_data.clone(),
+            None,
+            Vec::new,
+        );
         assert_eq!(attrs.extra_data(), &extra_data);
         assert_eq!(attrs.suggested_fee_recipient, recipient);
         assert_eq!(
@@ -260,8 +301,11 @@ mod tests {
         // Without extra_data
         let attrs2 = TempoPayloadAttributes::new(
             recipient,
-            timestamp_millis + 500, // 1.5 seconds + 500ms
+            None,
+            2, // +500ms
+            0,
             Bytes::default(),
+            None,
             Vec::new,
         );
         assert_eq!(attrs2.extra_data(), &Bytes::default());
@@ -344,6 +388,7 @@ mod tests {
             prev_randao: B256::random(),
             withdrawals: Some(Default::default()),
             parent_beacon_block_root: Some(B256::random()),
+            slot_number: None,
         };
 
         let tempo_attrs: TempoPayloadAttributes = eth_attrs.clone().into();
@@ -384,6 +429,7 @@ mod tests {
                 suggested_fee_recipient: Address::random(),
                 withdrawals: Some(vec![]),
                 parent_beacon_block_root: Some(B256::random()),
+                slot_number: None,
             },
             timestamp_millis_part,
             ..Default::default()
@@ -423,6 +469,7 @@ mod tests {
                     amount: 500,
                 }]),
                 parent_beacon_block_root: Some(beacon_root),
+                slot_number: None,
             },
             timestamp_millis_part: 123,
             ..Default::default()
@@ -442,6 +489,7 @@ mod tests {
                 suggested_fee_recipient: Address::random(),
                 withdrawals: None,
                 parent_beacon_block_root: None,
+                slot_number: None,
             },
             timestamp_millis_part: 0,
             ..Default::default()

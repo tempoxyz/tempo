@@ -2,14 +2,16 @@ use crate::{
     TempoPayloadTypes,
     engine::TempoEngineValidator,
     rpc::{
-        TempoAdminApi, TempoAdminApiServer, TempoEthApiBuilder, TempoEthExt, TempoEthExtApiServer,
+        TempoAdminApi, TempoAdminApiServer, TempoEthApi, TempoEthApiBuilder, TempoEthExt,
+        TempoEthExtApiServer, TempoForkScheduleApiServer, TempoForkScheduleRpc,
+        TempoOperatorApiServer, TempoOperatorRpc, TempoSimulate, TempoSimulateApiServer,
         TempoToken, TempoTokenApiServer,
     },
 };
 use alloy_primitives::B256;
 use reth_evm::revm::primitives::Address;
 use reth_node_api::{
-    AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodePrimitives, NodeTypes,
+    AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
     PayloadAttributesBuilder, PayloadTypes,
 };
 use reth_node_builder::{
@@ -19,8 +21,8 @@ use reth_node_builder::{
         PayloadBuilderBuilder, PoolBuilder, TxPoolBuilder, spawn_maintenance_tasks,
     },
     rpc::{
-        BasicEngineValidatorBuilder, EngineValidatorAddOn, EngineValidatorBuilder, EthApiBuilder,
-        NoopEngineApiBuilder, PayloadValidatorBuilder, RethRpcAddOns, RpcAddOns,
+        BasicEngineValidatorBuilder, EngineValidatorAddOn, NoopEngineApiBuilder,
+        PayloadValidatorBuilder, RethRpcAddOns, RpcAddOns, RpcHandle, RpcHooks,
     },
 };
 use reth_node_ethereum::EthereumNetworkBuilder;
@@ -152,18 +154,19 @@ impl NodeTypes for TempoNode {
 }
 
 #[derive(Debug)]
-pub struct TempoAddOns<
-    N: FullNodeComponents,
-    EthB: EthApiBuilder<N> = TempoEthApiBuilder,
-    PVB = TempoEngineValidatorBuilder,
-    EVB = BasicEngineValidatorBuilder<PVB>,
-    RpcMiddleware = Identity,
-> {
-    inner: RpcAddOns<N, EthB, PVB, NoopEngineApiBuilder, EVB, RpcMiddleware>,
+pub struct TempoAddOns<N: FullNodeTypes<Types = TempoNode>> {
+    inner: RpcAddOns<
+        NodeAdapter<N>,
+        TempoEthApiBuilder,
+        TempoEngineValidatorBuilder,
+        NoopEngineApiBuilder,
+        BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>,
+        Identity,
+    >,
     validator_key: Option<B256>,
 }
 
-impl<N> TempoAddOns<NodeAdapter<N>, TempoEthApiBuilder>
+impl<N> TempoAddOns<N>
 where
     N: FullNodeTypes<Types = TempoNode>,
 {
@@ -182,20 +185,20 @@ where
     }
 }
 
-impl<N, EthB, PVB, EVB> NodeAddOns<N> for TempoAddOns<N, EthB, PVB, EVB>
+impl<N> NodeAddOns<NodeAdapter<N>> for TempoAddOns<N>
 where
-    N: FullNodeComponents<Types = TempoNode, Evm = TempoEvmConfig>,
-    EthB: EthApiBuilder<N>,
-    PVB: Send + PayloadValidatorBuilder<N>,
-    EVB: EngineValidatorBuilder<N>,
-    EthB::EthApi:
-        RpcNodeCore<Evm = TempoEvmConfig, Primitives: NodePrimitives<BlockHeader = TempoHeader>>,
+    N: FullNodeTypes<Types = TempoNode>,
 {
-    type Handle = <RpcAddOns<N, EthB, PVB, NoopEngineApiBuilder, EVB> as NodeAddOns<N>>::Handle;
+    type Handle = RpcHandle<NodeAdapter<N>, TempoEthApi<N>>;
 
-    async fn launch_add_ons(self, ctx: AddOnsContext<'_, N>) -> eyre::Result<Self::Handle> {
-        let eth_config =
-            EthConfigHandler::new(ctx.node.provider().clone(), ctx.node.evm_config().clone());
+    async fn launch_add_ons(
+        self,
+        ctx: AddOnsContext<'_, NodeAdapter<N>>,
+    ) -> eyre::Result<Self::Handle> {
+        let eth_config = EthConfigHandler::new(
+            ctx.node.provider.clone(),
+            ctx.node.components.evm_config.clone(),
+        );
 
         self.inner
             .launch_add_ons_with(ctx, move |container| {
@@ -205,11 +208,21 @@ where
 
                 let eth_api = registry.eth_api().clone();
                 let token = TempoToken::new(eth_api.clone());
-                let eth_ext = TempoEthExt::new(eth_api);
+                let eth_ext = TempoEthExt::new(eth_api.clone());
+                let simulate = TempoSimulate::new(eth_api);
                 let admin = TempoAdminApi::new(self.validator_key);
+                let operator = TempoOperatorRpc::new(registry.admin_api());
+                let fork_schedule =
+                    TempoForkScheduleRpc::new(registry.eth_api().provider().clone());
 
                 modules.merge_configured(token.into_rpc())?;
                 modules.merge_configured(eth_ext.into_rpc())?;
+                modules.merge_if_module_configured(RethRpcModule::Eth, simulate.into_rpc())?;
+                modules.merge_configured(fork_schedule.into_rpc())?;
+                modules.merge_if_module_configured(
+                    RethRpcModule::Other("operator".to_string()),
+                    operator.into_rpc(),
+                )?;
                 modules.merge_if_module_configured(RethRpcModule::Admin, admin.into_rpc())?;
                 modules.merge_if_module_configured(RethRpcModule::Eth, eth_config.into_rpc())?;
 
@@ -219,30 +232,22 @@ where
     }
 }
 
-impl<N, EthB, PVB, EVB> RethRpcAddOns<N> for TempoAddOns<N, EthB, PVB, EVB>
+impl<N> RethRpcAddOns<NodeAdapter<N>> for TempoAddOns<N>
 where
-    N: FullNodeComponents<Types = TempoNode, Evm = TempoEvmConfig>,
-    EthB: EthApiBuilder<N>,
-    PVB: PayloadValidatorBuilder<N>,
-    EVB: EngineValidatorBuilder<N>,
-    EthB::EthApi:
-        RpcNodeCore<Evm = TempoEvmConfig, Primitives: NodePrimitives<BlockHeader = TempoHeader>>,
+    N: FullNodeTypes<Types = TempoNode>,
 {
-    type EthApi = EthB::EthApi;
+    type EthApi = TempoEthApi<N>;
 
-    fn hooks_mut(&mut self) -> &mut reth_node_builder::rpc::RpcHooks<N, Self::EthApi> {
+    fn hooks_mut(&mut self) -> &mut RpcHooks<NodeAdapter<N>, Self::EthApi> {
         self.inner.hooks_mut()
     }
 }
 
-impl<N, EthB, PVB, EVB> EngineValidatorAddOn<N> for TempoAddOns<N, EthB, PVB, EVB>
+impl<N> EngineValidatorAddOn<NodeAdapter<N>> for TempoAddOns<N>
 where
-    N: FullNodeComponents<Types = TempoNode, Evm = TempoEvmConfig>,
-    EthB: EthApiBuilder<N>,
-    PVB: Send,
-    EVB: EngineValidatorBuilder<N>,
+    N: FullNodeTypes<Types = TempoNode>,
 {
-    type ValidatorBuilder = EVB;
+    type ValidatorBuilder = BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>;
 
     fn engine_validator_builder(&self) -> Self::ValidatorBuilder {
         self.inner.engine_validator_builder()
@@ -262,7 +267,7 @@ where
         TempoConsensusBuilder,
     >;
 
-    type AddOns = TempoAddOns<NodeAdapter<N>>;
+    type AddOns = TempoAddOns<N>;
 
     fn components_builder(&self) -> Self::ComponentsBuilder {
         Self::components(self.pool_builder, self.payload_builder_builder)
@@ -307,15 +312,19 @@ impl PayloadAttributesBuilder<TempoPayloadAttributes, TempoHeader>
     for TempoPayloadAttributesBuilder
 {
     fn build(&self, _parent: &SealedHeader<TempoHeader>) -> TempoPayloadAttributes {
-        let timestamp_millis = std::time::SystemTime::now()
+        let millis = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
 
+        let (timestamp, timestamp_millis_part) = (millis / 1000, millis % 1000);
         TempoPayloadAttributes::new(
             Address::ZERO,
-            timestamp_millis,
+            None,
+            timestamp,
+            timestamp_millis_part,
             Default::default(),
+            None,
             Vec::new,
         )
     }
@@ -502,6 +511,7 @@ where
             pool,
             ctx.provider().clone(),
             evm_config,
+            ctx.is_dev(),
             self.state_provider_metrics,
             self.disable_state_cache,
         ))

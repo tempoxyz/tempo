@@ -3,7 +3,8 @@ use eyre::Context as _;
 use jiff::SignedDuration;
 use reth_cli_commands::download::DownloadDefaults;
 use reth_ethereum::node::core::args::{
-    DefaultPayloadBuilderValues, DefaultStorageValues, DefaultTxPoolValues,
+    DefaultEngineValues, DefaultNetworkArgs, DefaultPayloadBuilderValues, DefaultStorageValues,
+    DefaultTxPoolValues,
 };
 use std::{borrow::Cow, str::FromStr, time::Duration};
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -205,9 +206,51 @@ fn init_storage_defaults() {
         .expect("failed to initialize storage defaults");
 }
 
+fn init_engine_defaults() {
+    DefaultEngineValues::default()
+        // In Commonware consensus, it might happen that a head is notarized (causing it to become a canonical tip for reth),
+        // and immediately nullified (allowing to build a payload on top of its parent). In that case reth might be asked to
+        // build a payload on top an ancestor of canonical tip, which is not possible without this flag.
+        //
+        // Another case when this might happen is if we optimistically canonicalize a valid block that is later getting nullified (reorged).
+        // In that case, if we are asked to propose, we would have to build a payload on top of its parent, which is an ancestor of the canonical tip as well.
+        //
+        // This setting allows reth to process payload attributes even if `headBlockHash` is an ancestor of the canonical tip.
+        .with_always_process_payload_attributes_on_canonical_head(true)
+        .try_init()
+        .expect("failed to initialize engine defaults");
+}
+
+fn init_otlp_defaults() {
+    // Override the default OTLP max queue size (2048) to prevent trace/log dropping under load.
+    // See also reth-bench-compare which uses the same approach via env vars.
+    if std::env::var_os("OTEL_BSP_MAX_QUEUE_SIZE").is_none() {
+        // SAFETY: Must be called at startup before any other threads are spawned
+        unsafe {
+            std::env::set_var("OTEL_BSP_MAX_QUEUE_SIZE", "65536");
+        }
+    }
+    if std::env::var_os("OTEL_BLRP_MAX_QUEUE_SIZE").is_none() {
+        // SAFETY: Must be called at startup before any other threads are spawned
+        unsafe {
+            std::env::set_var("OTEL_BLRP_MAX_QUEUE_SIZE", "65536");
+        }
+    }
+}
+
+fn init_network_defaults() {
+    DefaultNetworkArgs::default()
+        .with_enforce_enr_fork_id(true)
+        .try_init()
+        .expect("failed to initialize network defaults");
+}
+
 pub(crate) fn init_defaults() {
     init_storage_defaults();
     init_download_urls();
     init_payload_builder_defaults();
     init_txpool_defaults();
+    init_engine_defaults();
+    init_otlp_defaults();
+    init_network_defaults();
 }

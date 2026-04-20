@@ -97,6 +97,36 @@ impl ForkSchedule {
     }
 }
 
+/// Build a genesis JSON string from `test-genesis.json` with only forks up to
+/// (and including) `last_active` enabled.  All subsequent forks are removed so
+/// the node starts in a "pre-<next fork>" configuration.
+///
+/// This scales automatically when new hardforks are appended to
+/// `TempoHardfork` — no manual maintenance required.
+pub(crate) fn make_genesis_at(last_active: TempoHardfork) -> String {
+    let mut genesis: serde_json::Value =
+        serde_json::from_str(include_str!("../assets/test-genesis.json"))
+            .expect("test-genesis.json must parse");
+    let config = genesis["config"]
+        .as_object_mut()
+        .expect("genesis must have config");
+
+    let mut past_cutoff = false;
+    for &fork in TempoHardfork::VARIANTS {
+        if fork == TempoHardfork::Genesis {
+            continue;
+        }
+        if past_cutoff {
+            let key = format!("{}Time", fork.name().to_lowercase());
+            config.remove(&key);
+        }
+        if fork == last_active {
+            past_cutoff = true;
+        }
+    }
+    serde_json::to_string(&genesis).expect("genesis must serialize")
+}
+
 /// Standard test mnemonic phrase used across integration tests
 pub(crate) const TEST_MNEMONIC: &str =
     "test test test test test test test test test test test junk";
@@ -377,6 +407,14 @@ impl TestNodeBuilder {
 
     /// Build HTTP-only setup
     pub(crate) async fn build_http_only(self) -> eyre::Result<HttpOnlySetup> {
+        self.build_http_only_with_api(RpcModuleSelection::All).await
+    }
+
+    /// Build HTTP-only setup with a custom RPC module selection.
+    pub(crate) async fn build_http_only_with_api(
+        self,
+        http_api: RpcModuleSelection,
+    ) -> eyre::Result<HttpOnlySetup> {
         if let Some(url) = self.external_rpc {
             return Ok(HttpOnlySetup {
                 http_url: url,
@@ -398,7 +436,7 @@ impl TestNodeBuilder {
                 RpcServerArgs::default()
                     .with_unused_ports()
                     .with_http()
-                    .with_http_api(RpcModuleSelection::All),
+                    .with_http_api(http_api),
             );
         node_config.txpool.max_account_slots = usize::MAX;
         node_config.dev.block_time = Some(Duration::from_millis(100));
@@ -454,6 +492,7 @@ fn default_attributes_generator(timestamp: u64) -> TempoPayloadAttributes {
         suggested_fee_recipient: alloy::primitives::Address::ZERO,
         withdrawals: Some(vec![]),
         parent_beacon_block_root: Some(alloy::primitives::B256::ZERO),
+        slot_number: None,
     }
     .into()
 }

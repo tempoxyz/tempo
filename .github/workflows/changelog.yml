@@ -6,6 +6,7 @@ on:
     paths:
       - crates/contracts/**
       - crates/primitives/**
+      - crates/chainspec/**
       - crates/alloy/**
 
 jobs:
@@ -27,5 +28,6 @@ jobs:
       - uses: wevm/changelogs/check@master
         with:
           ai: 'amp -x'
+          ecosystem: rust
         env:
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}

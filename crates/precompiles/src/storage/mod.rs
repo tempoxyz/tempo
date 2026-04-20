@@ -88,6 +88,9 @@ pub trait PrecompileStorageProvider {
     /// Returns the gas refunded so far.
     fn gas_refunded(&self) -> i64;
 
+    /// Returns the state gas reservoir.
+    fn reservoir(&self) -> u64;
+
     /// Returns the currently active hardfork.
     fn spec(&self) -> TempoHardfork;
 

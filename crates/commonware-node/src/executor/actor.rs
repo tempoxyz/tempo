@@ -4,7 +4,7 @@
 //! execution layer and tracks the digest of the latest finalized block.
 //! It also advances the canonical chain by sending forkchoice-updates.
 
-use std::{collections::BTreeMap, pin::Pin, sync::Arc, time::Duration};
+use std::{pin::Pin, sync::Arc, time::Duration};
 
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadId};
 use commonware_consensus::{Heightable as _, marshal::Update, types::Height};
@@ -31,7 +31,7 @@ use tracing::{
 
 use super::{
     Config,
-    ingress::{CanonicalizeHead, Command, Message, SubscribeFinalized},
+    ingress::{CanonicalizeHead, Command, Message},
 };
 use crate::{
     consensus::{Digest, block::Block},
@@ -77,15 +77,15 @@ impl LastCanonicalized {
 
     /// Updates the head height and head block hash to `height` and `digest`.
     ///
-    /// If `height > self.finalized_height`, this method will return a new
-    /// canonical state with `self.head_height = height` and
+    /// If `height > self.finalized_height` or `digest` is the same as the finalized block hash,
+    /// this method will return a new canonical state with `self.head_height = height` and
     /// `self.forkchoice.head = hash`.
     ///
     /// If `height <= self.finalized_height`, then this method will return
     /// `self` unchanged.
     fn update_head(self, height: Height, digest: Digest) -> Self {
         let mut this = self;
-        if height > this.finalized_height {
+        if height > this.finalized_height || digest.0 == this.forkchoice.finalized_block_hash {
             this.head_height = height;
             this.forkchoice.head_block_hash = digest.0;
         }
@@ -118,10 +118,6 @@ pub(crate) struct Actor<TContext> {
 
     /// The timer for the next FCU heartbeat. Reset whenever an FCU is sent.
     fcu_heartbeat_timer: Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
-
-    /// A list of subscriptions waiting for the executor to finalize a block
-    /// at a given height.
-    pending_finalized_subscriptions: BTreeMap<Height, Vec<oneshot::Sender<()>>>,
 }
 
 impl<TContext> Actor<TContext>
@@ -170,7 +166,6 @@ where
             },
             fcu_heartbeat_interval,
             fcu_heartbeat_timer,
-            pending_finalized_subscriptions: BTreeMap::new(),
         })
     }
 
@@ -333,7 +328,7 @@ where
                     digest,
                     JustCanonicalizeOrAlsoBuild::AlsoBuild {
                         response,
-                        attributes: *attributes,
+                        attributes: Box::new(*attributes),
                     },
                 )
                 .await;
@@ -342,16 +337,6 @@ where
                 self.finalize(cause, *finalized)
                     .await
                     .wrap_err("failed handling finalization")?;
-            }
-            Command::SubscribeFinalized(SubscribeFinalized { height, response }) => {
-                if self.last_canonicalized.finalized_height >= height {
-                    let _ = response.send(());
-                } else {
-                    self.pending_finalized_subscriptions
-                        .entry(height)
-                        .or_default()
-                        .push(response);
-                }
             }
         }
         Ok(())
@@ -503,7 +488,6 @@ where
         block: Block,
         acknowledgment: Exact,
     ) -> eyre::Result<()> {
-        let height = block.height();
         let (response, rx) = oneshot::channel();
         self.canonicalize(
             Span::current(),
@@ -542,16 +526,6 @@ where
 
         acknowledgment.acknowledge();
 
-        self.pending_finalized_subscriptions.retain(|&key, value| {
-            let retain = key > height;
-            if !retain {
-                value.drain(..).for_each(|tx| {
-                    let _ = tx.send(());
-                });
-            }
-            retain
-        });
-
         Ok(())
     }
 }
@@ -563,7 +537,7 @@ enum JustCanonicalizeOrAlsoBuild {
     },
     AlsoBuild {
         response: oneshot::Sender<eyre::Result<PayloadId>>,
-        attributes: TempoPayloadAttributes,
+        attributes: Box<TempoPayloadAttributes>,
     },
 }
 

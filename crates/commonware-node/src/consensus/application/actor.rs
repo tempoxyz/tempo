@@ -17,6 +17,7 @@ use std::{
 
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{B256, Bytes};
+use alloy_rpc_types_engine::PayloadId;
 use commonware_codec::{Encode as _, ReadExt as _};
 use commonware_consensus::{
     Heightable as _,
@@ -34,13 +35,17 @@ use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
 use futures::{StreamExt as _, TryFutureExt as _, channel::mpsc, future::try_join};
 use rand_08::{CryptoRng, Rng};
 use reth_ethereum::chainspec::EthChainSpec as _;
-use reth_node_builder::{Block as _, BuiltPayload, ConsensusEngineHandle};
+use reth_node_builder::{
+    Block as _, BuiltPayload, ConsensusEngineHandle, PayloadAttributes, PayloadKind,
+};
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks as _};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 use tempo_telemetry_util::display_duration;
 
-use reth_provider::{BlockHashReader as _, BlockReader as _, CanonStateSubscriptions as _};
+use reth_provider::{BlockHashReader as _, BlockReader as _};
 use tempo_payload_types::TempoPayloadAttributes;
+use tempo_primitives::TempoConsensusContext;
 use tokio::sync::RwLock;
 use tracing::{Level, debug, error, error_span, info, info_span, instrument, warn};
 
@@ -184,7 +189,7 @@ where
             Message::Propose(propose) => {
                 self.context.with_label("propose").spawn({
                     let inner = self.inner.clone();
-                    move |context| inner.handle_propose(propose, context)
+                    move |context| inner.handle_propose(*propose, context)
                 });
             }
             Message::Verify(verify) => {
@@ -320,10 +325,25 @@ impl Inner<Init> {
             parent: (parent_view, parent_digest),
             mut response,
             round,
+            leader,
         } = request;
+
+        let (payload_id_tx, mut payload_id_rx) = oneshot::channel();
 
         let proposal = select!(
             () = response.closed() => {
+                // If we got interrupted, fetch payload resolve future and drop it
+                // to make sure that payload building is canceled.
+                if let Ok(payload_id) = payload_id_rx.try_recv() {
+                    let fut = self
+                        .execution_node
+                        .payload_builder_handle
+                        .resolve_kind_fut(payload_id, PayloadKind::WaitForPending)
+                        .await
+                        .wrap_err("failed resolving payload")?;
+                    drop(fut);
+                }
+
                 Err(eyre!(
                     "proposal return channel was closed by consensus \
                     engine before block could be proposed; aborting"
@@ -334,7 +354,9 @@ impl Inner<Init> {
                 context.clone(),
                 parent_view,
                 parent_digest,
-                round
+                round,
+                payload_id_tx,
+                leader,
             ) => {
                 res.wrap_err("failed creating a proposal")
             }
@@ -442,6 +464,8 @@ impl Inner<Init> {
         parent_view: View,
         parent_digest: Digest,
         round: Round,
+        payload_id_tx: oneshot::Sender<PayloadId>,
+        leader: PublicKey,
     ) -> eyre::Result<Block> {
         let propose_start = Instant::now();
 
@@ -453,14 +477,16 @@ impl Inner<Init> {
             &self.marshal,
         )
         .await?;
+
         debug!(height = %parent.height(), "retrieved parent block",);
 
         let parent_epoch_info = self
             .epoch_strategy
             .containing(parent.height())
             .expect("epoch strategy is for all heights");
-        // XXX: Re-propose the parent if the parent is the last height of the
-        // epoch. parent.height+1 should be proposed as the first block of the
+
+        // If in the same epoch, re-propose the parent if the parent is the last height
+        // of the epoch. parent.height+1 should be proposed as the first block of the
         // next epoch.
         if parent_epoch_info.last() == parent.height() && parent_epoch_info.epoch() == round.epoch()
         {
@@ -468,24 +494,32 @@ impl Inner<Init> {
             return Ok(parent);
         }
 
-        // Send the proposal parent to reth to cover edge cases when we were not asked to verify it directly.
-        if !verify_block(
-            context.clone(),
-            parent_epoch_info.epoch(),
-            &self.epoch_strategy,
-            self.execution_node
-                .add_ons_handle
-                .beacon_engine_handle
-                .clone(),
-            &parent,
-            // It is safe to not verify the parent of the parent because this block is already notarized.
-            parent.parent_digest(),
-            &self.scheme_provider,
-        )
-        .await
-        .wrap_err("failed verifying block against execution layer")?
+        let is_genesis_parent = parent.height().is_zero()
+            || parent_epoch_info.last() == parent.height()
+                && parent_epoch_info.epoch().next() == round.epoch();
+
+        // Send the proposal parent to execution layer to cover edge cases when we were not asked to
+        // to verify it (and hence are missing it in the EL).
+        //
+        // If proposing the first block of an epoch, its parent (genesis/boundary block) must exist and be finalized, so we can skip it.
+        if !is_genesis_parent
+            && !verify_block(
+                context.clone(),
+                parent_epoch_info.epoch(),
+                &self.epoch_strategy,
+                self.execution_node
+                    .add_ons_handle
+                    .beacon_engine_handle
+                    .clone(),
+                &parent,
+                // It is safe to not verify the parent of the parent because this block is already notarized.
+                parent.parent_digest(),
+                &self.scheme_provider,
+            )
+            .await
+            .wrap_err("failed verifying block against execution layer")?
         {
-            eyre::bail!("the proposal parent block is not valid");
+            bail!("the proposal parent block is not valid");
         }
 
         // Query DKG manager for ceremony data before building payload
@@ -542,31 +576,53 @@ impl Inner<Init> {
         //
         // We don't expect this being hit in practice because we validate the
         // timestamp is not in the future during EL validation.
-        let current_timestamp = context.current().epoch_millis();
-        let timestamp_millis = if current_timestamp <= parent.timestamp_millis() {
+        let mut epoch_millis = context.current().epoch_millis();
+        if epoch_millis <= parent.timestamp_millis() {
             self.metrics.parent_ahead_of_local_time.inc();
-            parent.timestamp_millis() + 1
+            epoch_millis = parent.timestamp_millis() + 1
+        };
+
+        let (timestamp, timestamp_millis_part) = (epoch_millis / 1000, epoch_millis % 1000);
+
+        let consensus_context = if self
+            .execution_node
+            .chain_spec()
+            .is_t4_active_at_timestamp(timestamp)
+        {
+            Some(TempoConsensusContext {
+                epoch: round.epoch().get(),
+                view: round.view().get(),
+                parent_view: parent_view.get(),
+                proposer: crate::utils::public_key_to_tempo_primitive(&leader),
+            })
         } else {
-            current_timestamp
+            None
         };
 
         let parent_hash = parent.block_hash();
-        let fee_recipient = self
-            .resolve_fee_recipient(parent_hash, parent.height())
-            .await
-            .wrap_err("failed resolving fee recipient for proposal")?;
-        let attrs =
-            TempoPayloadAttributes::new(fee_recipient, timestamp_millis, extra_data, move || {
+        let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
+        let attrs = TempoPayloadAttributes::new(
+            self.fee_recipient.unwrap_or_default(),
+            Some(proposer_public_key),
+            timestamp,
+            timestamp_millis_part,
+            extra_data,
+            consensus_context,
+            move || {
                 self.subblocks
                     .as_ref()
                     .and_then(|s| s.get_subblocks(parent_hash).ok())
                     .unwrap_or_default()
-            });
+            },
+        );
 
+        let payload_id = attrs.payload_id(&parent.digest().0);
+        payload_id_tx.send(payload_id).map_err(|_| {
+            eyre!("caller went away before payload job ID could be returned; aborting proposal")
+        })?;
         let interrupt_handle = attrs.interrupt_handle().clone();
 
-        let payload_id = self
-            .state
+        self.state
             .executor
             .canonicalize_and_build(parent.height(), parent.digest(), attrs)
             .await
@@ -617,65 +673,6 @@ impl Inner<Init> {
         Ok(Block::from_execution_block(payload.block().clone()))
     }
 
-    /// Resolves the fee recipient to use for a proposal built on top of
-    /// `parent_hash`. Waits for canonical state events if the state at
-    /// `parent_hash` is not yet available.
-    #[instrument(skip_all, fields(%parent_hash, %parent_height), ret(Display), err(level = Level::WARN))]
-    async fn resolve_fee_recipient(
-        &self,
-        parent_hash: B256,
-        parent_height: Height,
-    ) -> eyre::Result<alloy_primitives::Address> {
-        // Subscribe before the first read so we don't miss canonical state
-        // updates that arrive between a failed read and subscribing.
-        // `canonical_state_stream` wraps a `broadcast::Receiver` that only
-        // delivers events sent after subscription.
-        let mut canonical_events = self.execution_node.provider.canonical_state_stream();
-
-        match read_fee_recipient(
-            &self.execution_node,
-            &self.public_key,
-            parent_hash,
-            self.fee_recipient,
-        ) {
-            Ok(fee_recipient) => return Ok(fee_recipient),
-            Err(error) => {
-                warn!(
-                    %error,
-                    "failed reading proposer fee recipient from validator \
-                     config v2; waiting for canonical state events",
-                );
-            }
-        }
-
-        loop {
-            let Some(event) = canonical_events.next().await else {
-                bail!("canonical state stream ended unexpectedly");
-            };
-            let committed = event.committed();
-            let Some(block) = committed.blocks().get(&parent_height.get()) else {
-                continue;
-            };
-            if block.hash() != parent_hash {
-                warn!(
-                    committed_hash = %block.hash(),
-                    "canonical event contained parent height but hash did not match",
-                );
-                continue;
-            }
-            return read_fee_recipient(
-                &self.execution_node,
-                &self.public_key,
-                parent_hash,
-                self.fee_recipient,
-            )
-            .wrap_err(
-                "failed reading fee recipient from validator config v2 \
-                 after parent was committed",
-            );
-        }
-    }
-
     async fn verify<TContext: Pacer>(
         self,
         context: TContext,
@@ -721,20 +718,18 @@ impl Inner<Init> {
             }
         }
 
-        if let Err(reason) = verify_header_extra_data(
+        if let Err(reason) = verify_header(
             &block,
             (parent_view, parent_digest),
             round,
+            self.execution_node.chain_spec().as_ref(),
             &self.state.dkg_manager,
             &self.epoch_strategy,
             &proposer,
         )
         .await
         {
-            warn!(
-                %reason,
-                "header extra data could not be verified; failing block",
-            );
+            warn!(%reason, "header could not be verified; failing block");
             return Ok((block, false));
         }
 
@@ -820,39 +815,6 @@ struct Init {
     executor: crate::executor::Mailbox,
 }
 
-/// Reads the fee recipient from the V2 contract at `block_hash`,
-/// falling back to `fallback` when V2 is not active or the on-chain
-/// address is `Address::ZERO`.
-fn read_fee_recipient(
-    execution_node: &TempoFullNode,
-    public_key: &PublicKey,
-    block_hash: B256,
-    fallback: Option<alloy_primitives::Address>,
-) -> eyre::Result<alloy_primitives::Address> {
-    let fee_recipient;
-    let msg = match crate::validators::read_fee_recipient_at_block_hash(
-        execution_node,
-        public_key,
-        block_hash,
-    ) {
-        Ok(Some(recipient)) if recipient.is_zero() && fallback.is_some() => {
-            fee_recipient = fallback.expect("match arm checks it is set");
-            "on-chain fee recipient is zero; using fallback"
-        }
-        Ok(Some(recipient)) => {
-            fee_recipient = recipient;
-            "using on-chain fee recipient"
-        }
-        Ok(None) => {
-            fee_recipient = fallback.unwrap_or_default();
-            "v2 contract not active; using fallback"
-        }
-        Err(error) => return Err(error),
-    };
-    debug!(%fee_recipient, msg);
-    Ok(fee_recipient)
-}
-
 /// Verifies `block` given its `parent` against the execution layer.
 ///
 /// Returns whether the block is valid or not. Returns an error if validation
@@ -899,24 +861,18 @@ async fn verify_block<TContext: Pacer>(
         return Ok(false);
     }
 
-    // FIXME: in cases where validate_block is called on the boundary block,
-    // the scheme might not be available.
-    //
-    // The fix is to track directly track notarizations and feed them to the
-    // EL that way, instead of doing this at the automaton/proposal level.
-    //
-    // https://github.com/tempoxyz/tempo/issues/1411
-    //
-    // let scheme = scheme_provider
-    //     .scoped(epoch)
-    //     .ok_or_eyre("cannot determine participants in the current epoch")?;
-    let validator_set = scheme_provider.scoped(epoch).map(|scheme| {
+    // Scheme registration precedes engine creation, so the scheme must exist
+    let scheme = scheme_provider
+        .scoped(epoch)
+        .ok_or_eyre("cannot determine participants in the current epoch")?;
+
+    let validator_set = Some(
         scheme
             .participants()
             .into_iter()
             .map(|p| B256::from_slice(p))
-            .collect()
-    });
+            .collect(),
+    );
     let block = block.clone().into_inner();
     let execution_data = TempoExecutionData {
         block: Arc::new(block),
@@ -953,10 +909,11 @@ async fn verify_block<TContext: Pacer>(
 }
 
 #[instrument(skip_all, err(Display))]
-async fn verify_header_extra_data(
+async fn verify_header(
     block: &Block,
     parent: (View, Digest),
     round: Round,
+    chainspec: &TempoChainSpec,
     dkg_manager: &crate::dkg::manager::Mailbox,
     epoch_strategy: &FixedEpocher,
     proposer: &PublicKey,
@@ -964,6 +921,27 @@ async fn verify_header_extra_data(
     let epoch_info = epoch_strategy
         .containing(block.height())
         .expect("epoch strategy is for all heights");
+
+    if chainspec.is_t4_active_at_timestamp(block.timestamp()) {
+        let ctx = block
+            .header()
+            .consensus_context
+            .ok_or_eyre("missing consensus context")?;
+
+        let expected_ctx = TempoConsensusContext {
+            epoch: round.epoch().get(),
+            view: round.view().get(),
+            parent_view: parent.0.get(),
+            proposer: crate::utils::public_key_to_tempo_primitive(proposer),
+        };
+
+        if ctx != expected_ctx {
+            bail!("mismatching block consensus context");
+        }
+    } else if block.header().consensus_context.is_some() {
+        bail!("block consensus context set prior to activation");
+    }
+
     if epoch_info.last() == block.height() {
         info!(
             "on last block of epoch; verifying that the boundary block \

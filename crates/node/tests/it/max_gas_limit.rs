@@ -19,7 +19,7 @@ use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
 use tempo_chainspec::spec::{TEMPO_T1_BASE_FEE, TEMPO_T1_TX_GAS_LIMIT_CAP};
 
-use crate::utils::{TEST_MNEMONIC, TestNodeBuilder};
+use crate::utils::{TEST_MNEMONIC, TestNodeBuilder, make_genesis_at};
 
 /// Helper to build and encode a signed EIP-1559 transaction with a specific gas limit.
 fn build_tx(
@@ -160,15 +160,7 @@ async fn test_post_t1a_tx_exceeding_tempo_cap() -> eyre::Result<()> {
 async fn test_pre_t1a_tx_at_osaka_limit() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let genesis_str = include_str!("../assets/test-genesis.json");
-    let mut genesis: serde_json::Value = serde_json::from_str(genesis_str)?;
-    genesis["config"].as_object_mut().unwrap().remove("t1Time");
-    genesis["config"].as_object_mut().unwrap().remove("t1aTime");
-    genesis["config"].as_object_mut().unwrap().remove("t1bTime");
-    genesis["config"].as_object_mut().unwrap().remove("t1cTime");
-    genesis["config"].as_object_mut().unwrap().remove("t2Time");
-    genesis["config"].as_object_mut().unwrap().remove("t3Time");
-    let pre_t1a_genesis = serde_json::to_string(&genesis)?;
+    let pre_t1a_genesis = make_genesis_at(tempo_chainspec::hardfork::TempoHardfork::T0);
 
     let mut setup = TestNodeBuilder::new()
         .with_genesis(pre_t1a_genesis)
@@ -201,15 +193,7 @@ async fn test_pre_t1a_tx_at_osaka_limit() -> eyre::Result<()> {
 async fn test_pre_t1a_tx_above_osaka_limit() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let genesis_str = include_str!("../assets/test-genesis.json");
-    let mut genesis: serde_json::Value = serde_json::from_str(genesis_str)?;
-    genesis["config"].as_object_mut().unwrap().remove("t1Time");
-    genesis["config"].as_object_mut().unwrap().remove("t1aTime");
-    genesis["config"].as_object_mut().unwrap().remove("t1bTime");
-    genesis["config"].as_object_mut().unwrap().remove("t1cTime");
-    genesis["config"].as_object_mut().unwrap().remove("t2Time");
-    genesis["config"].as_object_mut().unwrap().remove("t3Time");
-    let pre_t1a_genesis = serde_json::to_string(&genesis)?;
+    let pre_t1a_genesis = make_genesis_at(tempo_chainspec::hardfork::TempoHardfork::T0);
 
     let setup = TestNodeBuilder::new()
         .with_genesis(pre_t1a_genesis)

@@ -160,6 +160,7 @@ impl TipFeeManager {
         user_token: Address,
         max_amount: U256,
         beneficiary: Address,
+        skip_liquidity_check: bool,
     ) -> Result<Address> {
         // Get the validator's token preference
         let validator_token = self.get_validator_token(beneficiary)?;
@@ -170,7 +171,7 @@ impl TipFeeManager {
         tip20_token.ensure_transfer_authorized(fee_payer, self.address)?;
         tip20_token.transfer_fee_pre_tx(fee_payer, max_amount)?;
 
-        if user_token != validator_token {
+        if user_token != validator_token && !skip_liquidity_check {
             let pool_id = PoolKey::new(user_token, validator_token).get_id();
             let amount_out_needed = self.check_sufficient_liquidity(pool_id, max_amount)?;
 
@@ -474,7 +475,7 @@ mod tests {
 
             // Call collect_fee_pre_tx directly
             let result =
-                fee_manager.collect_fee_pre_tx(user, token.address(), max_amount, validator);
+                fee_manager.collect_fee_pre_tx(user, token.address(), max_amount, validator, false);
             assert!(result.is_ok());
             assert_eq!(result?, token.address());
 
@@ -622,7 +623,13 @@ mod tests {
             let max_amount = U256::from(1000);
 
             // Call collect_fee_pre_tx
-            fee_manager.collect_fee_pre_tx(user, user_token.address(), max_amount, validator)?;
+            fee_manager.collect_fee_pre_tx(
+                user,
+                user_token.address(),
+                max_amount,
+                validator,
+                false,
+            )?;
 
             // With different tokens:
             // - Liquidity is checked (not reserved)
@@ -692,7 +699,13 @@ mod tests {
             let refund_amount = U256::from(200);
 
             // First call collect_fee_pre_tx (checks liquidity)
-            fee_manager.collect_fee_pre_tx(user, user_token.address(), max_amount, validator)?;
+            fee_manager.collect_fee_pre_tx(
+                user,
+                user_token.address(),
+                max_amount,
+                validator,
+                false,
+            )?;
 
             // Then call collect_fee_post_tx (executes swap immediately)
             fee_manager.collect_fee_post_tx(
@@ -764,10 +777,72 @@ mod tests {
             // 1000 * 0.997 = 997 output needed, but only 100 available
             let max_amount = U256::from(1000);
 
-            let result =
-                fee_manager.collect_fee_pre_tx(user, user_token.address(), max_amount, validator);
+            let result = fee_manager.collect_fee_pre_tx(
+                user,
+                user_token.address(),
+                max_amount,
+                validator,
+                false,
+            );
 
             assert!(result.is_err(), "Should fail with insufficient liquidity");
+
+            Ok(())
+        })
+    }
+
+    /// Test that `skip_liquidity_check = true` bypasses the insufficient-liquidity error
+    /// when `user_token != validator_token`.
+    #[test]
+    fn test_collect_fee_pre_tx_skip_liquidity_check() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let user = Address::random();
+        let validator = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                .with_issuer(admin)
+                .with_mint(user, U256::from(10000))
+                .with_approval(user, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
+                .apply()?;
+
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .with_issuer(admin)
+                .apply()?;
+
+            let mut fee_manager = TipFeeManager::new();
+            fee_manager.set_validator_token(
+                validator,
+                IFeeManager::setValidatorTokenCall {
+                    token: validator_token.address(),
+                },
+                Address::random(),
+            )?;
+
+            // Skip liquidity check = false should fail
+            let result = fee_manager.collect_fee_pre_tx(
+                user,
+                user_token.address(),
+                U256::from(1000),
+                validator,
+                false,
+            );
+            assert!(
+                result.is_err(),
+                "Should fail without liquidity, got: {result:?}"
+            );
+
+            // Skip liquidity check = true should pass
+            let result = fee_manager.collect_fee_pre_tx(
+                user,
+                user_token.address(),
+                U256::from(1000),
+                validator,
+                true,
+            );
+            assert!(result.is_ok());
+            assert_eq!(result?, user_token.address());
 
             Ok(())
         })

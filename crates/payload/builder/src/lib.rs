@@ -20,7 +20,7 @@ use reth_engine_tree::tree::instrumented_state::InstrumentedStateProvider;
 use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
     ConfigureEvm, Database, Evm, NextBlockEnvAttributes,
-    block::{BlockExecutionError, BlockValidationError},
+    block::{BlockExecutionError, BlockExecutor, BlockValidationError},
     execute::{BlockBuilder, BlockBuilderOutcome},
 };
 use reth_execution_types::BlockExecutionOutput;
@@ -42,12 +42,15 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_consensus::TEMPO_SHARED_GAS_DIVISOR;
-use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
+use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, evm::TempoEvm};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
+use tempo_precompiles::{
+    storage::StorageCtx, tip_fee_manager::TipFeeManager, validator_config_v2::ValidatorConfigV2,
+};
 use tempo_primitives::{
     RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoTxEnvelope,
     subblock::PartialValidatorKey,
@@ -65,8 +68,11 @@ use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 /// Returns true if a subblock has any expired transactions for the given timestamp.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
     subblock.transactions.iter().any(|tx| {
-        tx.as_aa()
-            .is_some_and(|tx| tx.tx().valid_before.is_some_and(|valid| valid <= timestamp))
+        tx.as_aa().is_some_and(|tx| {
+            tx.tx()
+                .valid_before
+                .is_some_and(|valid| valid.get() <= timestamp)
+        })
     })
 }
 
@@ -86,6 +92,8 @@ pub struct TempoPayloadBuilder<Provider> {
     /// last height at which we've seen an invalid subblock, and not including any subblocks
     /// at this height for any payloads.
     highest_invalid_subblock: Arc<AtomicU64>,
+    /// Whether the node is configured in `--dev` miner mode.
+    is_dev: bool,
     /// Whether to enable state provider metrics.
     state_provider_metrics: bool,
     /// Whether to disable state cache.
@@ -97,6 +105,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
         pool: TempoTransactionPool<Provider>,
         provider: Provider,
         evm_config: TempoEvmConfig,
+        is_dev: bool,
         state_provider_metrics: bool,
         disable_state_cache: bool,
     ) -> Self {
@@ -106,6 +115,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             evm_config,
             metrics: TempoPayloadBuilderMetrics::default(),
             highest_invalid_subblock: Default::default(),
+            is_dev,
             state_provider_metrics,
             disable_state_cache,
         }
@@ -226,6 +236,7 @@ where
     {
         let BuildArguments {
             mut cached_reads,
+            trie_handle,
             config,
             cancel,
             best_payload,
@@ -234,8 +245,23 @@ where
         let PayloadConfig {
             parent_header,
             attributes,
-            payload_id: _,
+            payload_id,
         } = config;
+        let build_until_interrupt =
+            // When trie handle is provided, we only build the payload once, until the interrupt is triggered
+            trie_handle.is_some()
+            // `--dev` mode doesn't have payload building interrupts
+            && !self.is_dev;
+
+        macro_rules! check_cancel {
+            () => {
+                if cancel.is_cancelled() {
+                    return Ok(BuildOutcome::Cancelled);
+                }
+            };
+        }
+
+        check_cancel!();
 
         let start = Instant::now();
 
@@ -265,6 +291,8 @@ where
         self.metrics
             .state_setup_duration_seconds
             .record(state_setup_start.elapsed());
+
+        check_cancel!();
 
         let chain_spec = self.provider.chain_spec();
         let is_osaka = self
@@ -348,19 +376,35 @@ where
                         parent_beacon_block_root: attributes.parent_beacon_block_root,
                         withdrawals: attributes.withdrawals.clone().map(Into::into),
                         extra_data: attributes.extra_data().clone(),
+                        slot_number: attributes.slot_number,
                     },
                     general_gas_limit,
                     shared_gas_limit,
                     timestamp_millis_part: attributes.timestamp_millis_part(),
+                    consensus_context: attributes.consensus_context(),
                     subblock_fee_recipients,
                 },
             )
             .map_err(PayloadBuilderError::other)?;
 
+        check_cancel!();
+
+        // Override the fee recipient with the on-chain value from the V2
+        // validator config contract, if available.
+        maybe_override_fee_recipient(&mut builder, &attributes);
+
+        if let Some(ref handle) = trie_handle {
+            builder
+                .executor_mut()
+                .set_state_hook(Some(Box::new(handle.state_hook())));
+        }
+
         builder.apply_pre_execution_changes().map_err(|err| {
             warn!(%err, "failed to apply pre-execution changes");
             PayloadBuilderError::Internal(err.into())
         })?;
+
+        check_cancel!();
 
         debug!("building new payload");
 
@@ -376,6 +420,7 @@ where
             .record(prepare_system_txs_elapsed);
 
         let base_fee = builder.evm_mut().block().basefee;
+        let validator_fee_token = resolve_validator_fee_token(&mut builder)?;
         let pool_fetch_start = Instant::now();
         let mut best_txs = best_txs(BestTransactionsAttributes::new(
             base_fee,
@@ -391,7 +436,21 @@ where
 
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
-        while let Some(pool_tx) = best_txs.next() {
+        loop {
+            if attributes.is_interrupted() {
+                break;
+            }
+
+            check_cancel!();
+
+            let Some(pool_tx) = best_txs.next() else {
+                if build_until_interrupt && cumulative_gas_used < non_shared_gas_limit {
+                    std::thread::sleep(Duration::from_millis(1));
+                    continue;
+                }
+                break;
+            };
+
             // Ensure we still have capacity for this transaction within the non-shared gas limit.
             // The remaining `shared_gas_limit` is reserved for validator subblocks and must not
             // be consumed by proposer's pool transactions.
@@ -431,11 +490,7 @@ where
                 break;
             }
 
-            // check if the job was cancelled, if so we can exit early
-            if cancel.is_cancelled() {
-                return Ok(BuildOutcome::Cancelled);
-            }
-
+            check_cancel!();
             let is_payment = pool_tx.transaction.is_payment();
             if is_payment {
                 payment_transactions += 1;
@@ -497,8 +552,21 @@ where
                 .record(elapsed);
             trace!(?elapsed, "Transaction executed");
 
-            // update and add to total fees
-            total_fees += calc_gas_balance_spending(gas_used, effective_gas_price);
+            // Score payload value by actual validator payout, applying the AMM
+            // haircut when the transaction's fee token differs from the validator's.
+            let nominal_spending = calc_gas_balance_spending(gas_used, effective_gas_price);
+            if let Some(fee_token) = pool_tx.transaction.resolved_fee_token() {
+                if fee_token == validator_fee_token {
+                    total_fees += nominal_spending;
+                } else {
+                    total_fees += tempo_precompiles::tip_fee_manager::amm::compute_amount_out(
+                        nominal_spending,
+                    )
+                    .map_err(PayloadBuilderError::other)?;
+                }
+            } else {
+                warn!("no resolved fee token for a pool transaction")
+            }
             cumulative_gas_used += gas_used;
             if !is_payment {
                 non_payment_gas_used += gas_used;
@@ -516,6 +584,8 @@ where
         self.metrics
             .payment_transactions_last
             .set(payment_transactions as f64);
+
+        check_cancel!();
 
         // check if we have a better block or received more subblocks
         if !is_better_payload(best_payload.as_ref(), total_fees)
@@ -607,16 +677,52 @@ where
 
         let builder_finish_start = Instant::now();
         let _finish_span = debug_span!(target: "payload_builder", "finish_block").entered();
-        let instrumented_provider = InstrumentedFinishProvider {
+        let finish_provider = || InstrumentedFinishProvider {
             inner: &*state_provider,
             metrics: self.metrics.clone(),
         };
+
+        check_cancel!();
+
         let BlockBuilderOutcome {
             execution_result,
             block,
             hashed_state,
             trie_updates,
-        } = builder.finish(instrumented_provider, None)?;
+        } = if let Some(mut handle) = trie_handle {
+            // Dropping the hook signals that execution is complete and the sparse trie task can
+            // finalize the state root it has been updating incrementally.
+            builder.executor_mut().set_state_hook(None);
+
+            match handle.state_root() {
+                Ok(outcome) => {
+                    debug!(
+                        target: "payload_builder",
+                        id = %payload_id,
+                        state_root = ?outcome.state_root,
+                        "received state root from sparse trie"
+                    );
+                    builder.finish(
+                        finish_provider(),
+                        Some((
+                            outcome.state_root,
+                            Arc::unwrap_or_clone(outcome.trie_updates),
+                        )),
+                    )?
+                }
+                Err(err) => {
+                    warn!(
+                        target: "payload_builder",
+                        id = %payload_id,
+                        %err,
+                        "sparse trie failed, falling back to sync state root"
+                    );
+                    builder.finish(finish_provider(), None)?
+                }
+            }
+        } else {
+            builder.finish(finish_provider(), None)?
+        };
         drop(_finish_span);
         let builder_finish_elapsed = builder_finish_start.elapsed();
         self.metrics
@@ -694,7 +800,7 @@ where
             "Built payload"
         );
 
-        let eth_payload = EthBuiltPayload::new(sealed_block, total_fees, requests);
+        let eth_payload = EthBuiltPayload::new(sealed_block, total_fees, requests, None);
 
         let execution_output = BlockExecutionOutput {
             result: execution_result,
@@ -711,10 +817,14 @@ where
         let payload = TempoBuiltPayload::new(eth_payload, Some(executed_block));
 
         drop(db);
-        Ok(BuildOutcome::Better {
-            payload,
-            cached_reads,
-        })
+        if build_until_interrupt {
+            Ok(BuildOutcome::Freeze(payload))
+        } else {
+            Ok(BuildOutcome::Better {
+                payload,
+                cached_reads,
+            })
+        }
     }
 }
 
@@ -739,20 +849,84 @@ pub fn is_more_subblocks(
     subblocks.len() > best_metadata.len()
 }
 
+/// Overrides the block's fee recipient (beneficiary) with the value from the
+/// V2 validator config contract, if the contract is active and returns a
+/// non-zero address for the given `public_key`.
+fn maybe_override_fee_recipient<DB: Database>(
+    builder: &mut impl BlockBuilder<Executor: BlockExecutor<Evm = TempoEvm<DB>>>,
+    attributes: &TempoPayloadAttributes,
+) {
+    let Some(public_key) = attributes.proposer_public_key() else {
+        return;
+    };
+    let ctx = builder.evm_mut().ctx_mut();
+    if !ctx.cfg.spec.is_t2() {
+        return;
+    }
+    let parent_number = ctx.block.number.saturating_to::<u64>() - 1;
+    match StorageCtx::enter_ctx(ctx, || -> Result<Option<Address>, PayloadBuilderError> {
+        let config = ValidatorConfigV2::default();
+        if !config
+            .is_initialized()
+            .map_err(PayloadBuilderError::other)?
+        {
+            return Ok(None);
+        }
+        let init_height = config
+            .get_initialized_at_height()
+            .map_err(PayloadBuilderError::other)?;
+        if init_height > parent_number {
+            return Ok(None);
+        }
+        let on_chain = config
+            .validator_by_public_key(*public_key)
+            .map(|v| v.feeRecipient)
+            .map_err(PayloadBuilderError::other)?;
+        Ok((!on_chain.is_zero()).then_some(on_chain))
+    }) {
+        Ok(Some(fee_recipient)) => {
+            debug!(%fee_recipient, "resolved fee recipient from contract");
+            builder.evm_mut().ctx_mut().block.beneficiary = fee_recipient;
+        }
+        Ok(None) => {}
+        Err(err) => {
+            warn!(%err, "failed resolving fee recipient from contract; using fallback");
+        }
+    }
+}
+
+/// Resolves the validator's preferred fee token.
+fn resolve_validator_fee_token(
+    builder: &mut impl BlockBuilder<Executor: BlockExecutor<Evm = TempoEvm<impl Database>>>,
+) -> Result<Address, PayloadBuilderError> {
+    let ctx = builder.evm_mut().ctx_mut();
+    let beneficiary = ctx.block.beneficiary;
+    StorageCtx::enter_ctx(ctx, || {
+        TipFeeManager::new()
+            .get_validator_token(beneficiary)
+            .map_err(PayloadBuilderError::other)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use alloy_consensus::BlockBody;
     use alloy_primitives::{Address, B256, Bytes, Signature};
+    use core::num::NonZeroU64;
     use reth_primitives_traits::SealedBlock;
     use tempo_primitives::{
         AASigned, Block, SignedSubBlock, SubBlock, SubBlockVersion, TempoSignature,
         TempoTransaction,
     };
 
+    fn nz(value: u64) -> NonZeroU64 {
+        NonZeroU64::new(value).expect("test valid_before must be non-zero")
+    }
+
     trait TestExt {
         fn random() -> Self;
-        fn with_valid_before(_: Option<u64>) -> Self
+        fn with_valid_before(_: Option<NonZeroU64>) -> Self
         where
             Self: Sized,
         {
@@ -776,7 +950,7 @@ mod tests {
             Self::with_valid_before(None)
         }
 
-        fn with_valid_before(valid_before: Option<u64>) -> Self {
+        fn with_valid_before(valid_before: Option<NonZeroU64>) -> Self {
             let tx = TempoTxEnvelope::AA(AASigned::new_unhashed(
                 TempoTransaction {
                     valid_before,
@@ -821,7 +995,7 @@ mod tests {
             },
         };
         let sealed = Arc::new(SealedBlock::seal_slow(block));
-        let eth = EthBuiltPayload::new(sealed, U256::ZERO, None);
+        let eth = EthBuiltPayload::new(sealed, U256::ZERO, None, None);
         TempoBuiltPayload::new(eth, None)
     }
 
@@ -867,8 +1041,15 @@ mod tests {
         // Test that extra_data in attributes can be accessed correctly
         let extra_data = Bytes::from(vec![42, 43, 44, 45, 46]);
 
-        let attrs =
-            TempoPayloadAttributes::new(Address::default(), 1000, extra_data.clone(), Vec::new);
+        let attrs = TempoPayloadAttributes::new(
+            Address::default(),
+            None,
+            1,
+            0,
+            extra_data.clone(),
+            None,
+            Vec::new,
+        );
 
         assert_eq!(attrs.extra_data(), &extra_data);
 
@@ -881,7 +1062,7 @@ mod tests {
     #[test]
     fn test_has_expired_transactions_boundary() {
         // valid_before == timestamp → expired
-        let subblock = RecoveredSubBlock::with_valid_before(Some(1000));
+        let subblock = RecoveredSubBlock::with_valid_before(Some(nz(1000)));
         assert!(has_expired_transactions(&subblock, 1000));
 
         // valid_before < timestamp → expired

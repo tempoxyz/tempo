@@ -134,9 +134,9 @@ jobs:
 
           # Build object flags
           OBJECT_FLAGS=""
-          if [[ -f forge-coverage/tempo-foundry/target/release/forge ]]; then
-            chmod +x forge-coverage/tempo-foundry/target/release/forge
-            OBJECT_FLAGS="$OBJECT_FLAGS --object=forge-coverage/tempo-foundry/target/release/forge"
+          if [[ -f forge-coverage/foundry/target/release/forge ]]; then
+            chmod +x forge-coverage/foundry/target/release/forge
+            OBJECT_FLAGS="$OBJECT_FLAGS --object=forge-coverage/foundry/target/release/forge"
           fi
           if [[ -d cargo-coverage/precompiles-bin ]]; then
             for bin in cargo-coverage/precompiles-bin/*; do
@@ -159,7 +159,7 @@ jobs:
             --ignore-filename-regex='/rustc/' \
             --ignore-filename-regex='\.cargo/' \
             --ignore-filename-regex='\.rustup/' \
-            --ignore-filename-regex='tempo-foundry/' \
+            --ignore-filename-regex='foundry/' \
             --ignore-filename-regex='library/' \
             2>/dev/null > coverage-report/full-summary.txt || true
 
@@ -183,7 +183,7 @@ jobs:
             --ignore-filename-regex='/rustc/' \
             --ignore-filename-regex='\.cargo/' \
             --ignore-filename-regex='\.rustup/' \
-            --ignore-filename-regex='tempo-foundry/' \
+            --ignore-filename-regex='foundry/' \
             --ignore-filename-regex='library/' \
             > coverage-report/full.lcov 2>/dev/null || true
 

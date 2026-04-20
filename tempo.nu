@@ -217,7 +217,7 @@ def bench-recover [datadir: string] {
     } else {
         print $"Restoring snapshot from ($datadir).virgin..."
         rm -rf $datadir
-        cp -a $"($datadir).virgin" $datadir
+        ^cp -a $"($datadir).virgin" $datadir
     }
 }
 
@@ -229,7 +229,7 @@ def bench-promote [datadir: string] {
     } else {
         print $"Saving snapshot to ($datadir).virgin..."
         rm -rf $"($datadir).virgin"
-        cp -a $datadir $"($datadir).virgin"
+        ^cp -a $datadir $"($datadir).virgin"
     }
 }
 
@@ -280,12 +280,12 @@ def read-bench-marker [datadir: string] {
 # ============================================================================
 
 # Ordered list of all Tempo hardforks (must match TempoHardfork enum in crates/chainspec)
-const TEMPO_HARDFORKS = ["T0" "T1" "T1A" "T1B" "T1C" "T2"]
+const TEMPO_HARDFORKS = ["T0" "T1" "T1A" "T1B" "T1C" "T2" "T3" "T4"]
 
 # Map a hardfork name to generate-genesis CLI args.
 # Forks up to and including the given fork are active at genesis (time=0).
 # Forks after are disabled (time=max u64).
-# Returns a list of CLI flag strings, e.g. ["--t0-time" "0" "--t1-time" "0" "--t1a-time" "18446744073709551615" ...]
+# Returns a list of CLI flag strings, e.g. ["--t0-time" "0" "--t1-time" "0" "--t1a-time" "9223372036854775807" ...]
 def hardfork-to-genesis-args [fork: string] {
     let fork_upper = ($fork | str upcase)
     let idx = ($TEMPO_HARDFORKS | enumerate | where item == $fork_upper)
@@ -296,7 +296,7 @@ def hardfork-to-genesis-args [fork: string] {
     let cutoff = ($idx | get 0.index)
     $TEMPO_HARDFORKS | enumerate | each { |it|
         let flag = $"--($it.item | str downcase)-time"
-        let time = if $it.index <= $cutoff { "0" } else { "18446744073709551615" }
+        let time = if $it.index <= $cutoff { "0" } else { "9223372036854775807" }
         [$flag $time]
     } | flatten
 }
@@ -421,6 +421,39 @@ def worktree-bin [worktree_dir: string, profile: string, bin_name: string] {
     }
 }
 
+# Dedup CLI args: if extra_args provides a flag already present in base_args,
+# the default (in base_args) is dropped so clap doesn't see it twice.
+# Handles both `--flag value` and `--flag=value` forms.
+def dedup-args [base_args: list<string>, extra_args: list<string>] {
+    if ($extra_args | is-empty) { return $base_args }
+
+    # Collect flag keys the user wants to override
+    let override_keys = ($extra_args | where { |a| $a starts-with "--" }
+        | each { |a| $a | split row "=" | first })
+
+    # Walk base_args, skip any flag (and its value) whose key is overridden
+    mut result = []
+    mut skip_next = false
+    for arg in $base_args {
+        if $skip_next {
+            $skip_next = false
+            continue
+        }
+        if ($arg starts-with "--") {
+            let key = ($arg | split row "=" | first)
+            if ($key in $override_keys) {
+                # Skip this flag; if it's `--flag value` form (no =), skip next token too
+                if not ($arg | str contains "=") {
+                    $skip_next = true
+                }
+                continue
+            }
+        }
+        $result = ($result | append $arg)
+    }
+    $result | append $extra_args
+}
+
 # Run a single benchmark run (start node, run bench, stop node, collect report)
 def run-bench-single [
     --tempo-bin: string
@@ -438,6 +471,8 @@ def run-bench-single [
     --bench-args: string = ""
     --loud
     --node-args: string = ""
+    --extra-env: string = ""
+    --bench-env: string = ""
     --bloat: int = 0
     --git-ref: string = ""
     --build-profile: string = ""
@@ -483,13 +518,13 @@ def run-bench-single [
     # Parse extra node args
     let extra_args = if $node_args == "" { [] } else { $node_args | split row " " }
 
-    # Build node arguments
-    let args = (build-base-args $genesis_path $datadir $log_dir "0.0.0.0" 8545 9001)
+    # Build node arguments, then dedup so user-provided args override defaults
+    let base_args = (build-base-args $genesis_path $datadir $log_dir "0.0.0.0" 8545 9001)
         | append (build-dev-args)
         | append (log-filter-args $loud)
-        | append $extra_args
         | append (if $tracy != "off" { ["--log.tracy" "--log.tracy.filter" $tracy_filter] } else { [] })
         | append (if $tracing_otlp != "" { [$"--tracing-otlp=($tracing_otlp)"] } else { [] })
+    let args = (dedup-args $base_args $extra_args)
 
     # Tracy environment variables
     let tracy_env_prefix = if $tracy == "on" {
@@ -508,8 +543,9 @@ def run-bench-single [
     let node_cmd = wrap-samply [$tempo_bin ...$args] $samply $full_samply_args
     let node_cmd_str = ($node_cmd | str join " ")
     let profiling_label = if $samply { " (samply)" } else if $tracy != "off" { $" \(tracy=($tracy)\)" } else { "" }
+    let env_prefix = if $extra_env != "" { $"($extra_env) " } else { "" }
     print $"  Starting node: ($tempo_bin | path basename)($profiling_label)"
-    job spawn { sh -c $"($otel_attrs)($tracy_env_prefix)($node_cmd_str) 2>&1" | lines | each { |line| print $"[($run_label)] ($line)" } }
+    job spawn { sh -c $"($env_prefix)($otel_attrs)($tracy_env_prefix)($node_cmd_str) 2>&1" | lines | each { |line| print $"[($run_label)] ($line)" } }
 
     # Wait for RPC
     sleep 2sec
@@ -556,7 +592,6 @@ def run-bench-single [
     | append (if $bloat > 0 {
         [
             "--mnemonic" $"'($BLOAT_MNEMONIC)'"
-            "--existing-recipients"
         ]
     } else { [] })
     | append (if $bench_args != "" { $bench_args | split row " " } else { [] })
@@ -564,9 +599,10 @@ def run-bench-single [
     | append (if $build_profile != "" { ["--build-profile" $build_profile] } else { [] })
     | append (if $benchmark_mode != "" { ["--benchmark-mode" $benchmark_mode] } else { [] })
 
+    let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
     print $"  Running benchmark..."
     try {
-        bash -c $"ulimit -Sn unlimited && ($bench_cmd | str join ' ')"
+        bash -c $"($bench_env_export)ulimit -Sn unlimited && ($bench_cmd | str join ' ')"
     } catch { |e|
         print $"  Benchmark run ($run_label) failed: ($e.msg)"
     }
@@ -847,8 +883,8 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         let latencies = ($blocks | where latency_ms != null | get latency_ms | sort)
         {
             n: ($blocks | length)
-            mean: (if ($latencies | length) > 0 { $latencies | math avg | math round --precision 1 } else { 0 })
-            stddev: (if ($latencies | length) > 1 { $latencies | math stddev | math round --precision 1 } else { 0 })
+            mean: (if ($latencies | length) > 0 { $latencies | math avg | math round --precision 1 } else { 0.0 })
+            stddev: (if ($latencies | length) > 1 { $latencies | math stddev | math round --precision 1 } else { 0.0 })
             p50: (percentile $latencies 50 | math round --precision 1)
             p90: (percentile $latencies 90 | math round --precision 1)
             p99: (percentile $latencies 99 | math round --precision 1)
@@ -867,13 +903,13 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     let baseline_runs = ($run_data | where { |r| $r.label | str starts-with "baseline" })
     let feature_runs = ($run_data | where { |r| $r.label | str starts-with "feature" })
 
-    let b_tps = if ($baseline_runs | length) > 0 { $baseline_runs | get tps | math avg | math round --precision 0 } else { 0 }
-    let f_tps = if ($feature_runs | length) > 0 { $feature_runs | get tps | math avg | math round --precision 0 } else { 0 }
-    let b_mgas = if ($baseline_runs | length) > 0 { $baseline_runs | get mgas_s | math avg | math round --precision 1 } else { 0 }
-    let f_mgas = if ($feature_runs | length) > 0 { $feature_runs | get mgas_s | math avg | math round --precision 1 } else { 0 }
+    let b_tps = if ($baseline_runs | length) > 0 { $baseline_runs | get tps | math avg | math round --precision 0 } else { 0.0 }
+    let f_tps = if ($feature_runs | length) > 0 { $feature_runs | get tps | math avg | math round --precision 0 } else { 0.0 }
+    let b_mgas = if ($baseline_runs | length) > 0 { $baseline_runs | get mgas_s | math avg | math round --precision 1 } else { 0.0 }
+    let f_mgas = if ($feature_runs | length) > 0 { $feature_runs | get mgas_s | math avg | math round --precision 1 } else { 0.0 }
 
     # Compute deltas (feature vs baseline)
-    let delta = { |base: float, feat: float| if $base != 0 { ((($feat - $base) / $base) * 100) | math round --precision 1 } else { 0 } }
+    let delta = { |base: float, feat: float| if $base != 0.0 { ((($feat - $base) / $base) * 100) | math round --precision 1 } else { 0.0 } }
 
     # Build summary markdown
     let summary = ([
@@ -1193,7 +1229,6 @@ def build-dev-args [] {
         "--dev"
         "--dev.block-time" "1sec"
         "--builder.gaslimit" "3000000000"
-        "--builder.max-tasks" "8"
         "--builder.deadline" "3"
     ]
 }
@@ -1536,8 +1571,13 @@ def "main bench" [
     --loud                                          # Show node logs (silent by default)
     --profile: string = $DEFAULT_PROFILE            # Cargo build profile
     --features: string = $DEFAULT_FEATURES          # Cargo features
-    --node-args: string = ""                        # Additional node arguments (space-separated)
+    --node-args: string = ""                        # Additional node arguments (space-separated, applied to all runs)
+    --baseline-args: string = ""                    # Additional node arguments for baseline runs only (space-separated)
+    --feature-args: string = ""                     # Additional node arguments for feature runs only (space-separated)
     --bench-args: string = ""                       # Additional tempo-bench arguments (space-separated)
+    --baseline-env: string = ""                     # Environment variables for baseline node runs (KEY=VAL KEY2=VAL2)
+    --feature-env: string = ""                      # Environment variables for feature node runs (KEY=VAL KEY2=VAL2)
+    --bench-env: string = ""                        # Environment variables for tempo-bench (KEY=VAL KEY2=VAL2)
     --bloat: int = 0                                # Generate state bloat (size in MiB) for TIP20 tokens
     --no-infra                                      # Skip starting observability stack (Grafana + Prometheus)
     --baseline: string = ""                         # Git ref for baseline (comparison mode)
@@ -1553,6 +1593,7 @@ def "main bench" [
     --tracing-otlp: string = ""                     # OTLP endpoint for tracing (auto-derived from TEMPO_TELEMETRY_URL if not set)
     --baseline-hardfork: string = ""                # Latest active hardfork for baseline (e.g. T1, T1C, T2)
     --feature-hardfork: string = ""                 # Latest active hardfork for feature (e.g. T1, T1C, T2)
+    --gas-limit: string = ""                        # Block gas limit for genesis (raw number, e.g. 1000000000)
 ] {
     validate-mode $mode
 
@@ -1576,6 +1617,7 @@ def "main bench" [
     }
 
     let weights = if $preset != "" { $PRESETS | get $preset } else { [0.0, 0.0, 0.0, 0.0] }
+    let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
 
     # Auto-derive tracing OTLP URL: prefer GRAFANA_TEMPO, fall back to TEMPO_TELEMETRY_URL
     let tracing_otlp = if $tracing_otlp == "" and ($env.GRAFANA_TEMPO? | default "" | str length) > 0 {
@@ -1790,6 +1832,7 @@ def "main bench" [
                 and ($marker.accounts | into int) == $genesis_accounts
                 and ($marker | get -o baseline_hardfork | default "") == ($baseline_hardfork | str upcase)
                 and ($marker | get -o feature_hardfork | default "") == ($feature_hardfork | str upcase)
+                and ($marker | get -o gas_limit | default "") == $gas_limit
                 and ($"($baseline_datadir)/db" | path exists)
                 and ($"($feature_datadir)/db" | path exists)
                 and ($"($meta_dir)/genesis-baseline.json" | path exists)
@@ -1807,11 +1850,11 @@ def "main bench" [
                 if ($baseline_genesis_dir | path exists) { rm -rf $baseline_genesis_dir }
                 mkdir $baseline_genesis_dir
                 if $baseline == "local" {
-                    cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $baseline_genesis_dir -a $genesis_accounts --no-dkg-in-genesis ...$baseline_genesis_args
+                    cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $baseline_genesis_dir -a $genesis_accounts --no-dkg-in-genesis ...$baseline_genesis_args ...$gas_limit_args
                 } else {
                     do {
                         cd $baseline_wt
-                        cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $baseline_genesis_dir -a $genesis_accounts --no-dkg-in-genesis ...$baseline_genesis_args
+                        cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $baseline_genesis_dir -a $genesis_accounts --no-dkg-in-genesis ...$baseline_genesis_args ...$gas_limit_args
                     }
                 }
                 cp $"($baseline_genesis_dir)/genesis.json" $baseline_genesis_path
@@ -1822,13 +1865,13 @@ def "main bench" [
                 if ($feature_genesis_dir | path exists) { rm -rf $feature_genesis_dir }
                 mkdir $feature_genesis_dir
                 if $feature == "local" {
-                    cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $feature_genesis_dir -a $genesis_accounts --no-dkg-in-genesis ...$feature_genesis_args
+                    cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $feature_genesis_dir -a $genesis_accounts --no-dkg-in-genesis ...$feature_genesis_args ...$gas_limit_args
                 } else {
                     # Use feature worktree for feature genesis so it picks up any
                     # new hardfork-related genesis changes from the feature branch
                     do {
                         cd $feature_wt
-                        cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $feature_genesis_dir -a $genesis_accounts --no-dkg-in-genesis ...$feature_genesis_args
+                        cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $feature_genesis_dir -a $genesis_accounts --no-dkg-in-genesis ...$feature_genesis_args ...$gas_limit_args
                     }
                 }
                 cp $"($feature_genesis_dir)/genesis.json" $feature_genesis_path
@@ -1864,6 +1907,7 @@ def "main bench" [
                     bench_datadir: $datadir
                     baseline_hardfork: ($baseline_hardfork | str upcase)
                     feature_hardfork: ($feature_hardfork | str upcase)
+                    gas_limit: $gas_limit
                 } [[$baseline_genesis_path "genesis-baseline.json"] [$feature_genesis_path "genesis-feature.json"]] $bloat $bloat_file
 
                 print "Dual-hardfork databases initialized and promoted."
@@ -1880,6 +1924,7 @@ def "main bench" [
                 and $marker != null
                 and ($marker.bloat_mib | into int) == $bloat
                 and ($marker.accounts | into int) == $genesis_accounts
+                and ($marker | get -o gas_limit | default "") == $gas_limit
                 and ($"($datadir)/db" | path exists)
                 and ($"($meta_dir)/genesis.json" | path exists)
             )
@@ -1894,11 +1939,11 @@ def "main bench" [
                     if not ($abs_localnet | path exists) { mkdir $abs_localnet }
                     print $"Generating genesis with ($genesis_accounts) accounts from baseline..."
                     if $baseline == "local" {
-                        cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts --no-dkg-in-genesis
+                        cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts --no-dkg-in-genesis ...$gas_limit_args
                     } else {
                         do {
                             cd $baseline_wt
-                            cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts --no-dkg-in-genesis
+                            cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts --no-dkg-in-genesis ...$gas_limit_args
                         }
                     }
                 }
@@ -1922,7 +1967,8 @@ def "main bench" [
                 bench-save-and-promote $datadir $meta_dir {
                     bloat_mib: $bloat,
                     accounts: $genesis_accounts,
-                    bench_datadir: $datadir
+                    bench_datadir: $datadir,
+                    gas_limit: $gas_limit
                 } [[$genesis_path_std "genesis.json"]] $bloat $bloat_file
 
                 print "Database initialized and promoted to virgin baseline."
@@ -1974,6 +2020,13 @@ def "main bench" [
             # virgin state. In dual-hardfork mode this resets both baseline-db
             # and feature-db subdirs at once.
             bench-recover $datadir
+
+            # Merge common node-args with per-side args (baseline-args / feature-args)
+            let run_type = if ($run.label | str starts-with "baseline") { "baseline" } else { "feature" }
+            let side_args = if $run_type == "baseline" { $baseline_args } else { $feature_args }
+            let side_env = if $run_type == "baseline" { $baseline_env } else { $feature_env }
+            let effective_node_args = ([$node_args $side_args] | where { |a| $a != "" } | str join " ")
+
             (run-bench-single
                 --tempo-bin $run.tempo --bench-bin $baseline_bench_bin
                 --genesis-path $run.genesis --datadir $run.datadir
@@ -1981,7 +2034,8 @@ def "main bench" [
                 --tps $tps --duration $duration --accounts $accounts
                 --max-concurrent-requests $max_concurrent_requests
                 --weights $weights --preset $preset --bench-args $bench_args
-                --loud=$loud --node-args $node_args --bloat $bloat
+                --loud=$loud --node-args $effective_node_args --bloat $bloat
+                --extra-env $side_env --bench-env $bench_env
                 --git-ref $run.git_ref --build-profile $profile --benchmark-mode $mode
                 --benchmark-id $benchmark_id --reference-epoch $reference_epoch
                 --samply=$samply --samply-args $samply_args_list
@@ -2116,7 +2170,6 @@ def "main bench" [
     | append (if $bloat > 0 {
         [
             "--mnemonic" "'test test test test test test test test test test test junk'"
-            "--existing-recipients"
         ]
     } else { [] })
     | append (if $bench_args != "" { $bench_args | split row " " } else { [] })
@@ -2618,9 +2671,12 @@ def main [] {
     print "  --loud                   Show all node logs (WARN/ERROR shown by default)"
     print $"  --profile <P>            Cargo profile \(default: ($DEFAULT_PROFILE)\)"
     print $"  --features <F>           Cargo features \(default: ($DEFAULT_FEATURES)\)"
-    print "  --node-args <ARGS>       Additional node arguments (space-separated)"
+    print "  --node-args <ARGS>       Additional node arguments (space-separated, all runs)"
+    print "  --baseline-args <ARGS>       Additional node arguments for baseline runs only"
+    print "  --feature-args <ARGS>        Additional node arguments for feature runs only"
     print "  --bench-args <ARGS>      Additional tempo-bench arguments (space-separated)"
     print "  --bloat <N>              Generate TIP20 state bloat (size in MiB)"
+    print "  --gas-limit <N>          Block gas limit for genesis (raw number, default: 1000000000000)"
     print ""
     print "Localnet flags:"
     print "  --mode <dev|consensus>   Mode (default: dev)"

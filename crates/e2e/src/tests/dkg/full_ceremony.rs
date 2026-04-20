@@ -53,7 +53,7 @@ impl FullDkgTest {
                 .unwrap();
 
             execution_runtime
-                .set_next_full_dkg_ceremony(http_url, self.full_dkg_epoch)
+                .set_next_full_dkg_ceremony_v2(http_url, self.full_dkg_epoch)
                 .await
                 .unwrap();
 
