@@ -7,6 +7,7 @@ use std::{
     sync::Arc,
 };
 
+use alloy::hex::ToHexExt;
 use alloy_network::EthereumWallet;
 use alloy_primitives::{Address, B256, Bytes};
 use alloy_provider::{Provider, ProviderBuilder};
@@ -25,7 +26,7 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_math::algebra::Random as _;
-use commonware_utils::NZU64;
+use commonware_utils::{NZU64, ordered};
 use eyre::{OptionExt as _, Report, WrapErr as _, bail, eyre};
 use reth_chainspec::EthChainSpec;
 use reth_cli_runner::CliRunner;
@@ -1165,22 +1166,6 @@ impl ValidatorsInfo {
         let dkg_outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref())
             .wrap_err("failed to decode DKG outcome from extra_data")?;
 
-        let tx = TransactionRequest::default()
-            .to(VALIDATOR_CONFIG_V2_ADDRESS)
-            .input(
-                IValidatorConfigV2::getActiveValidatorsCall {}
-                    .abi_encode()
-                    .into(),
-            );
-
-        let resp = provider
-            .call(tx.into())
-            .await
-            .wrap_err("failed to call getActiveValidators")?;
-
-        let validators = IValidatorConfigV2::getActiveValidatorsCall::abi_decode_returns(&resp)
-            .wrap_err("failed to decode getActiveValidators response")?;
-
         let next_dkg_result = provider
             .call(
                 TransactionRequest::default()
@@ -1192,6 +1177,7 @@ impl ValidatorsInfo {
                     )
                     .into(),
             )
+            .number(latest_block_number)
             .await
             .wrap_err("failed to call getNextNetworkIdentityRotationEpoch")?;
 
@@ -1201,27 +1187,63 @@ impl ValidatorsInfo {
             )
             .wrap_err("failed to decode getNextNetworkIdentityRotationEpoch response")?;
 
-        let validator_entries = validators
-            .into_iter()
-            .map(|validator| {
-                let pubkey_bytes = validator.publicKey.0;
-                let key = PublicKey::decode(&mut &pubkey_bytes[..])
-                    .wrap_err("failed decoding on-chain ed25519 key")?;
+        let active_validators_result = provider
+            .call(
+                TransactionRequest::default()
+                    .to(VALIDATOR_CONFIG_V2_ADDRESS)
+                    .input(
+                        IValidatorConfigV2::getActiveValidatorsCall {}
+                            .abi_encode()
+                            .into(),
+                    )
+                    .into(),
+            )
+            .number(latest_block_number)
+            .await
+            .wrap_err("failed to call getActiveValidators")?;
 
-                Ok(ValidatorEntry {
-                    onchain_address: validator.validatorAddress,
-                    public_key: alloy_primitives::hex::encode(pubkey_bytes),
-                    inbound_address: validator.ingress,
-                    outbound_address: validator.egress,
-                    fee_recipient: None,
-                    index: None,
-                    active: true,
-                    is_dkg_dealer: Some(dkg_outcome.players().position(&key).is_some()),
-                    is_dkg_player: Some(dkg_outcome.next_players().position(&key).is_some()),
-                    in_committee: Some(dkg_outcome.players().position(&key).is_some()),
-                })
+        let active_validators = IValidatorConfigV2::getActiveValidatorsCall::abi_decode_returns(
+            &active_validators_result,
+        )
+        .wrap_err("failed to decode getActiveValidators response")?;
+
+        let active_validator_by_pubkey =
+            ordered::Map::from_iter_dedup(active_validators.iter().map(|v| {
+                let pubkey_bytes = v.publicKey.0;
+                let key = PublicKey::decode(&mut &pubkey_bytes[..])
+                    .expect("failed decoding on-chain ed25519 key");
+
+                (key, v.clone())
+            }));
+
+        let players = dkg_outcome.players();
+        let next_players = dkg_outcome.players();
+
+        let mut validator_entries: Vec<ValidatorEntry> = Vec::new();
+        for public_key in players.iter().chain(next_players) {
+            let (validator, active) = match active_validator_by_pubkey.get_value(public_key) {
+                Some(validator) => (validator.clone(), true),
+                None => {
+                    // Must be available in contract state
+                    let id = ValidatorId::PublicKey(B256::from_slice(public_key.as_ref()));
+                    let validator = read_validator_from_contract(&provider, id).await?;
+                    (validator, false)
+                }
+            };
+
+            validator_entries.push(ValidatorEntry {
+                active,
+                onchain_address: validator.validatorAddress,
+                public_key: public_key.encode_hex(),
+                inbound_address: validator.ingress.clone(),
+                outbound_address: validator.egress.clone(),
+                fee_recipient: Some(validator.feeRecipient),
+                index: Some(validator.index),
+                is_dkg_dealer: Some(players.position(public_key).is_some()),
+                is_dkg_player: Some(next_players.position(public_key).is_some()),
+                in_committee: Some(players.position(public_key).is_some()),
             })
-            .collect::<eyre::Result<Vec<_>>>()?;
+        }
 
         let output = ValidatorInfoOutput {
             current_epoch: current_epoch.get(),
