@@ -6,6 +6,7 @@ on:
     paths:
       - crates/contracts/**
       - crates/primitives/**
+      - crates/chainspec/**
       - crates/alloy/**
 
 jobs:
