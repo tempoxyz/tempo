@@ -837,7 +837,7 @@ where
     fn validate_against_state_and_deduct_caller(
         &self,
         evm: &mut Self::Evm,
-        init_and_floor_gas: &mut InitialAndFloorGas,
+        init_gas: &mut InitialAndFloorGas,
     ) -> Result<(), Self::Error> {
         self.seed_tx_origin(evm)?;
 
@@ -908,14 +908,25 @@ where
         {
             let account_cost = cfg.gas_params.get(GasId::new_account_cost());
             let account_state_gas = cfg.gas_params.new_account_state_gas();
-            init_and_floor_gas.initial_total_gas += account_cost + account_state_gas;
-            init_and_floor_gas.initial_state_gas += account_state_gas;
+            init_gas.initial_total_gas += account_cost + account_state_gas;
+            init_gas.initial_state_gas += account_state_gas;
 
             // do the gas limit check again (include state gas for T4+).
-            if tx.gas_limit() < init_and_floor_gas.initial_total_gas {
+            if tx.gas_limit() < init_gas.initial_total_gas {
                 return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
                     gas_limit: tx.gas_limit(),
-                    initial_gas: init_and_floor_gas.initial_total_gas,
+                    initial_gas: init_gas.initial_total_gas,
+                }
+                .into());
+            }
+
+            // Validate that regular gas does not exceed the cap.
+            if cfg.is_amsterdam_eip8037_enabled()
+                && init_gas.initial_regular_gas().max(init_gas.floor_gas) > cfg.tx_gas_limit_cap()
+            {
+                return Err(InvalidTransaction::GasFloorMoreThanGasLimit {
+                    gas_floor: init_gas.initial_regular_gas(),
+                    gas_limit: cfg.tx_gas_limit_cap(),
                 }
                 .into());
             }
@@ -1149,7 +1160,7 @@ where
             // unlimited gas also eliminates the OOG path that caused the CREATE
             // nonce replay vulnerability (protocol nonce not bumped on OOG).
             let gas_limit = if spec.is_t1() && !spec.is_t1b() {
-                tx.gas_limit() - init_and_floor_gas.initial_total_gas
+                tx.gas_limit() - init_gas.initial_total_gas
             } else {
                 u64::MAX
             };
@@ -1268,10 +1279,10 @@ where
                 if spec.is_t1b() {
                     journal.checkpoint_commit();
                 } else if out_of_gas {
-                    init_and_floor_gas.initial_total_gas = u64::MAX;
+                    init_gas.initial_total_gas = u64::MAX;
                     journal.checkpoint_revert(keychain_checkpoint);
                 } else {
-                    init_and_floor_gas.initial_total_gas += gas_used;
+                    init_gas.initial_total_gas += gas_used;
                     journal.checkpoint_commit();
                 };
             }
