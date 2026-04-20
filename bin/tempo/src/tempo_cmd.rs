@@ -1219,10 +1219,10 @@ impl ValidatorsInfo {
             }));
 
         let players = dkg_outcome.players();
-        let next_players = dkg_outcome.players();
+        let next_players = dkg_outcome.next_players();
 
         let mut validator_entries: Vec<ValidatorEntry> = Vec::new();
-        for public_key in players.iter().chain(next_players) {
+        for public_key in ordered::Set::from_iter_dedup(players.iter().chain(next_players)) {
             let (validator, active) = match active_validator_by_pubkey.get_value(public_key) {
                 Some(validator) => (validator.clone(), true),
                 None => {
