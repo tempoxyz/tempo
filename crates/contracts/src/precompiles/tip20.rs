@@ -199,6 +199,7 @@ impl ITIP20::ITIP20Calls {
             || is_call::<ITIP20::transferFromCall>(input)
             || is_call::<ITIP20::transferFromWithMemoCall>(input)
             || is_call::<ITIP20::approveCall>(input)
+            || is_call::<ITIP20::burnBlockedCall>(input)
             || is_call::<ITIP20::mintCall>(input)
             || is_call::<ITIP20::mintWithMemoCall>(input)
             || is_call::<ITIP20::burnCall>(input)
