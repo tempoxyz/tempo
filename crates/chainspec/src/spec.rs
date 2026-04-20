@@ -137,7 +137,7 @@ pub static MODERATO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
         .expect("`./genesis/moderato.json` must be present and deserializable");
     TempoChainSpec::from_genesis(genesis)
         .with_default_follow_url("wss://rpc.moderato.tempo.xyz")
-        .with_default_bootnodes_endpoint("https://testnet-peers.tempo.xyz")
+        .with_default_bootnodes_endpoint("https://peers.tempo.xyz")
         .into()
 });
 

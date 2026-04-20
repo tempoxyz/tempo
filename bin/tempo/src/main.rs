@@ -117,8 +117,7 @@ struct TempoArgs {
     ///
     /// Bootnodes for the current chain are added as peer hints to the discovery service.
     ///
-    /// Defaults to the chain-specific endpoint (e.g. `https://peers.tempo.xyz` on mainnet,
-    /// `https://testnet-peers.tempo.xyz` on moderato). Set to "none" to disable.
+    /// Defaults to `https://peers.tempo.xyz`. Set to "none" to disable.
     #[arg(
         long = "tempo.bootnodes-endpoint",
         value_name = "URL",
