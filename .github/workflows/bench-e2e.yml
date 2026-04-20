@@ -35,6 +35,12 @@ on:
       feature:
         type: string
         required: true
+      backend:
+        type: string
+        required: true
+      txgen-ref:
+        type: string
+        required: false
       baseline-name:
         type: string
         required: true
@@ -128,6 +134,8 @@ jobs:
       BENCH_DURATION: ${{ inputs.duration }}
       BENCH_BLOAT: ${{ inputs.bloat }}
       BENCH_TPS: ${{ inputs.tps }}
+      BENCH_BACKEND: ${{ inputs.backend }}
+      BENCH_TXGEN_REF: ${{ inputs.txgen-ref }}
       BENCH_SAMPLY: ${{ inputs.samply }}
       BENCH_TRACY: ${{ inputs.tracy }}
       BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds }}
@@ -201,6 +209,22 @@ jobs:
           fetch-depth: 0
           ref: ${{ steps.checkout-ref.outputs.ref }}
 
+      - name: Checkout txgen repository
+        if: env.BENCH_BACKEND == 'txgen'
+        uses: actions/checkout@v6
+        with:
+          repository: tempoxyz/txgen
+          token: ${{ secrets.DEREK_PAT || github.token }}
+          path: txgen
+          fetch-depth: 0
+
+      - name: Checkout txgen ref
+        if: env.BENCH_BACKEND == 'txgen' && env.BENCH_TXGEN_REF != ''
+        working-directory: txgen
+        run: |
+          git fetch origin "$BENCH_TXGEN_REF" --quiet
+          git checkout --detach FETCH_HEAD
+
       - name: Resolve job URL and update status
         if: env.BENCH_COMMENT_ID
         uses: actions/github-script@v8
@@ -223,6 +247,8 @@ jobs:
             const tps = process.env.BENCH_TPS;
             const baseline = '${{ inputs.baseline-name }}';
             const feature = '${{ inputs.feature-name }}';
+            const backend = process.env.BENCH_BACKEND;
+            const txgenRef = process.env.BENCH_TXGEN_REF || 'default';
             const samply = '${{ inputs.samply }}' === 'true';
             const samplyNote = samply ? ', samply: `enabled`' : '';
             const tracy = '${{ inputs.tracy }}';
@@ -230,7 +256,7 @@ jobs:
             const bHf2 = process.env.BENCH_BASELINE_HARDFORK || '';
             const fHf2 = process.env.BENCH_FEATURE_HARDFORK || '';
             const hfNote2 = bHf2 ? `, baseline-hardfork: \`${bHf2}\`, feature-hardfork: \`${fHf2}\`` : '';
-            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} MiB\`, tps: \`${tps}\`, baseline: \`${baseline}\`, feature: \`${feature}\`${samplyNote}${tracyNote}${hfNote2}`);
+            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} MiB\`, tps: \`${tps}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, backend: \`${backend}\`, txgen-ref: \`${txgenRef}\`${samplyNote}${tracyNote}${hfNote2}`);
 
             const { buildBody } = require('./.github/scripts/bench-update-status.js');
             await github.rest.issues.updateComment({
@@ -243,6 +269,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: mozilla-actions/sccache-action@v0.0.9
         continue-on-error: true
+
+      - name: Build txgen backend
+        if: env.BENCH_BACKEND == 'txgen'
+        working-directory: txgen
+        run: |
+          cargo build --release --bin txgen-tempo --bin bench-cli
+          echo "TXGEN_REPO_DIR=$GITHUB_WORKSPACE/txgen" >> "$GITHUB_ENV"
+          echo "TXGEN_TEMPO_BIN=$GITHUB_WORKSPACE/txgen/target/release/txgen-tempo" >> "$GITHUB_ENV"
+          echo "TXGEN_BENCH_BIN=$GITHUB_WORKSPACE/txgen/target/release/bench-cli" >> "$GITHUB_ENV"
 
       - name: Resolve PR head branch
         id: pr-info
@@ -349,8 +384,12 @@ jobs:
           BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
           FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
         run: |
-          cmd=(
-            nu tempo.nu bench
+          if [ "$BENCH_BACKEND" = "txgen" ]; then
+            cmd=(nu contrib/bench/bench-txgen.nu run)
+          else
+            cmd=(nu tempo.nu bench)
+          fi
+          cmd+=(
             --preset "$BENCH_PRESET"
             --mode "$BENCH_MODE"
             --bloat "$BENCH_BLOAT"

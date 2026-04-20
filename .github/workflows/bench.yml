@@ -34,6 +34,8 @@ jobs:
       tps: ${{ steps.args.outputs.tps }}
       baseline: ${{ steps.args.outputs.baseline }}
       feature: ${{ steps.args.outputs.feature }}
+      backend: ${{ steps.args.outputs.backend }}
+      txgen-ref: ${{ steps.args.outputs.txgen-ref }}
       baseline-name: ${{ steps.args.outputs.baseline-name }}
       feature-name: ${{ steps.args.outputs.feature-name }}
       samply: ${{ steps.args.outputs.samply }}
@@ -78,17 +80,17 @@ jobs:
         with:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |
-            let pr, actor, mode, preset, duration, bloat, tps, baseline, feature, samply, tracy, tracySeconds, tracyOffset, baselineArgs, featureArgs, baselineHardfork, featureHardfork, runType, forceBloat, noSlack, benchArgs, benchEnv, baselineEnv, featureEnv;
+            let pr, actor, mode, preset, duration, bloat, tps, baseline, feature, backend, txgenRef, samply, tracy, tracySeconds, tracyOffset, baselineArgs, featureArgs, baselineHardfork, featureHardfork, runType, forceBloat, noSlack, benchArgs, benchEnv, baselineEnv, featureEnv;
 
             pr = String(context.issue.number);
             actor = context.payload.comment.user.login;
 
             const body = context.payload.comment.body.trim();
             const intArgs = new Set(['duration', 'bloat', 'tps', 'tracy-seconds', 'tracy-offset']);
-            const refArgs = new Set(['baseline', 'feature']);
-            const stringArgs = new Set(['mode', 'preset', 'tracy', 'baseline-args', 'feature-args', 'baseline-hardfork', 'feature-hardfork', 'bench-args', 'bench-env', 'baseline-env', 'feature-env']);
+            const refArgs = new Set(['baseline', 'feature', 'txgen-ref']);
+            const stringArgs = new Set(['mode', 'preset', 'backend', 'tracy', 'baseline-args', 'feature-args', 'baseline-hardfork', 'feature-hardfork', 'bench-args', 'bench-env', 'baseline-env', 'feature-env']);
             const boolArgs = new Set(['samply', 'force-bloat', 'no-slack', 'no-existing-recipients']);
-            const defaults = { mode: 'e2e', preset: 'tip20', duration: '300', bloat: '100', tps: '10000', baseline: '', feature: '', samply: 'false', tracy: 'off', 'tracy-seconds': '30', 'tracy-offset': '120', 'baseline-args': '', 'feature-args': '', 'baseline-hardfork': '', 'feature-hardfork': '', 'force-bloat': 'false', 'no-slack': 'false', 'no-existing-recipients': 'false', 'bench-args': '', 'bench-env': '', 'baseline-env': '', 'feature-env': '' };
+            const defaults = { mode: 'e2e', preset: 'tip20', duration: '300', bloat: '100', tps: '10000', baseline: '', feature: '', backend: 'tempo-bench', 'txgen-ref': '', samply: 'false', tracy: 'off', 'tracy-seconds': '30', 'tracy-offset': '120', 'baseline-args': '', 'feature-args': '', 'baseline-hardfork': '', 'feature-hardfork': '', 'force-bloat': 'false', 'no-slack': 'false', 'no-existing-recipients': 'false', 'bench-args': '', 'bench-env': '', 'baseline-env': '', 'feature-env': '' };
             const unknown = [];
             const invalid = [];
             const args = body.replace(/^(?:@decofe|derek) bench\s*/, '');
@@ -147,7 +149,7 @@ jobs:
             if (unknown.length) errors.push(`Unknown argument(s): \`${unknown.join('`, `')}\``);
             if (invalid.length) errors.push(`Invalid value(s): ${invalid.join(', ')}`);
             if (errors.length) {
-              const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [mode=MODE] [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [force-bloat] [no-slack] [existing-recipients=BOOL] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [baseline-hardfork=FORK] [feature-hardfork=FORK] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]\``;
+              const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [mode=MODE] [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [backend=NAME] [txgen-ref=REF] [samply] [force-bloat] [no-slack] [existing-recipients=BOOL] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [baseline-hardfork=FORK] [feature-hardfork=FORK] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]\``;
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -164,6 +166,8 @@ jobs:
             tps = defaults.tps;
             baseline = defaults.baseline;
             feature = defaults.feature;
+            backend = defaults.backend;
+            txgenRef = defaults['txgen-ref'];
             samply = defaults.samply;
             tracy = defaults.tracy;
             tracySeconds = defaults['tracy-seconds'];
@@ -184,11 +188,24 @@ jobs:
             const erFlag = `--existing-recipients=${existingRecipients}`;
             benchArgs = benchArgs ? `${benchArgs} ${erFlag}` : erFlag;
 
-            const usageStr = '**Usage:** `@decofe bench [mode=MODE] [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [force-bloat] [no-slack] [existing-recipients=BOOL] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [baseline-hardfork=FORK] [feature-hardfork=FORK] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]`';
+            const usageStr = '**Usage:** `@decofe bench [mode=MODE] [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [backend=NAME] [txgen-ref=REF] [samply] [force-bloat] [no-slack] [existing-recipients=BOOL] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [baseline-hardfork=FORK] [feature-hardfork=FORK] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]`';
 
             // Validate mode value
             if (!['e2e', 'replay'].includes(mode)) {
               const msg = `❌ **Invalid bench command**\n\n\`mode=${mode}\` is not valid. Must be \`e2e\` or \`replay\`.\n\n${usageStr}`;
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: msg,
+              });
+              core.setFailed(msg);
+              return;
+            }
+
+            // Validate backend value
+            if (!['tempo-bench', 'txgen'].includes(backend)) {
+              const msg = `❌ **Invalid bench command**\n\n\`backend=${backend}\` is not valid. Must be \`tempo-bench\` or \`txgen\`.\n\n${usageStr}`;
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -273,6 +290,8 @@ jobs:
             core.setOutput('tps', tps);
             core.setOutput('baseline', baseline);
             core.setOutput('feature', feature);
+            core.setOutput('backend', backend);
+            core.setOutput('txgen-ref', txgenRef || '');
             core.setOutput('baseline-name', baselineName);
             core.setOutput('feature-name', featureName);
             core.setOutput('samply', samply);
@@ -319,6 +338,8 @@ jobs:
             const tps = '${{ steps.args.outputs.tps }}';
             const baseline = '${{ steps.args.outputs.baseline-name }}';
             const feature = '${{ steps.args.outputs.feature-name }}';
+            const backend = '${{ steps.args.outputs.backend }}';
+            const txgenRef = '${{ steps.args.outputs.txgen-ref }}' || 'default';
             const samply = '${{ steps.args.outputs.samply }}' === 'true';
             const samplyNote = samply ? ', samply: `enabled`' : '';
             const tracy = '${{ steps.args.outputs.tracy }}';
@@ -329,7 +350,7 @@ jobs:
             const bHf = '${{ steps.args.outputs.baseline-hardfork }}';
             const fHf = '${{ steps.args.outputs.feature-hardfork }}';
             const hfNote = bHf ? `, baseline-hardfork: \`${bHf}\`, feature-hardfork: \`${fHf}\`` : '';
-            const config = `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} MiB\`, tps: \`${tps}\`, baseline: \`${baseline}\`, feature: \`${feature}\`${samplyNote}${tracyNote}${naNote}${hfNote}`;
+            const config = `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} MiB\`, tps: \`${tps}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, backend: \`${backend}\`, txgen-ref: \`${txgenRef}\`${samplyNote}${tracyNote}${naNote}${hfNote}`;
 
             const { data: comment } = await github.rest.issues.createComment({
               owner: context.repo.owner,
@@ -353,6 +374,8 @@ jobs:
       tps: ${{ needs.tempo-bench-ack.outputs.tps }}
       baseline: ${{ needs.tempo-bench-ack.outputs.baseline }}
       feature: ${{ needs.tempo-bench-ack.outputs.feature }}
+      backend: ${{ needs.tempo-bench-ack.outputs.backend }}
+      txgen-ref: ${{ needs.tempo-bench-ack.outputs.txgen-ref }}
       baseline-name: ${{ needs.tempo-bench-ack.outputs.baseline-name }}
       feature-name: ${{ needs.tempo-bench-ack.outputs.feature-name }}
       samply: ${{ needs.tempo-bench-ack.outputs.samply }}
