@@ -80,7 +80,10 @@ echo "Updated Cargo.toml patch sections:"
 sed -n '/^\[patch\./,$p' "$FOUNDRY_CARGO"
 
 # ── 4. Re-resolve the lockfile ──────────────────────────────────────────────
-(cd "$FOUNDRY_ROOT" && cargo update)
+# Use --workspace to only re-resolve patched (local) crates. A full
+# `cargo update` can pull semver-compatible bumps (e.g. revm-handler
+# 18.0→18.1) that break lockfile-pinned dependents (revm-inspector 18.0).
+(cd "$FOUNDRY_ROOT" && cargo update --workspace)
 
 if grep -q '^source = "git+https://github.com/tempoxyz/tempo?rev=' "$FOUNDRY_ROOT/Cargo.lock"; then
   echo "ERROR: Tempo git sources still present in Cargo.lock after patching:" >&2
