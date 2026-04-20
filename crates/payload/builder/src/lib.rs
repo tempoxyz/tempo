@@ -19,7 +19,10 @@ use reth_basic_payload_builder::{
 };
 use reth_chainspec::{ChainSpecProvider, EthChainSpec, EthereumHardforks};
 use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
-use reth_engine_tree::tree::{CachedStateProvider, instrumented_state::InstrumentedStateProvider};
+use reth_engine_tree::tree::{
+    CachedStateMetrics, CachedStateMetricsSource, CachedStateProvider,
+    instrumented_state::InstrumentedStateProvider,
+};
 use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
     ConfigureEvm, Database, Evm, NextBlockEnvAttributes,
@@ -77,6 +80,7 @@ pub struct TempoPayloadBuilder<Provider> {
     executor: TaskExecutor,
     evm_config: TempoEvmConfig,
     metrics: TempoPayloadBuilderMetrics,
+    cache_metrics: CachedStateMetrics,
     /// Height at which we've seen an invalid subblock.
     ///
     /// We pre-validate all of the subblock transactions when collecting subblocks, so this
@@ -119,6 +123,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             executor,
             evm_config,
             metrics: TempoPayloadBuilderMetrics::default(),
+            cache_metrics: CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
             highest_invalid_subblock: Default::default(),
             is_dev,
             state_provider_metrics,
@@ -294,14 +299,12 @@ where
             state_provider = Box::new(CachedStateProvider::new(
                 state_provider,
                 execution_cache.cache().clone(),
-                execution_cache.metrics().clone(),
+                self.cache_metrics.clone(),
             ));
         }
-        state_provider = if self.state_provider_metrics {
-            Box::new(InstrumentedStateProvider::new(state_provider, "builder"))
-        } else {
-            state_provider
-        };
+        if self.state_provider_metrics {
+            state_provider = Box::new(InstrumentedStateProvider::new(state_provider, "builder"));
+        }
 
         let state = StateProviderDatabase::new(&state_provider);
         let mut db = State::builder()
