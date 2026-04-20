@@ -24,7 +24,6 @@ use std::{
     time::Duration,
 };
 
-use alloy_primitives::B256;
 use alloy_rpc_types_engine::{
     ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatus, PayloadStatusEnum,
 };
@@ -45,13 +44,14 @@ use futures::{
     future::BoxFuture,
 };
 use pin_project::pin_project;
+use reth_ethereum::{chainspec::EthChainSpec, rpc::eth::primitives::BlockNumHash};
 use reth_node_builder::{BeaconForkChoiceUpdateError, BeaconOnNewPayloadError};
-use reth_provider::{BlockHashReader as _, BlockNumReader as _};
+use reth_provider::BlockIdReader as _;
 use tempo_chainspec::hardfork::TempoHardforks as _;
 use tempo_node::{TempoExecutionData, TempoFullNode};
 use tempo_payload_types::TempoPayloadAttributes;
 use tokio::select;
-use tracing::{debug, error, info, info_span, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use super::{Config, ingress::MessageWithSpan};
 use crate::{
@@ -71,8 +71,9 @@ pub(crate) struct Actor<TContext> {
     /// The epoch strategy used throughout the node.
     epoch_strategy: FixedEpocher,
 
-    last_consensus_finalized_height: Height,
-    last_execution_finalized_height: Height,
+    /// The last finalized height as reported by the marshal actor. Important
+    /// when reconciling Consensus Layer and Execution Layer state at startup.
+    last_marshal_finalized_height: Height,
 
     /// The channel over which the agent will receive new commands from the
     /// application actor.
@@ -133,6 +134,7 @@ impl<TContext> Actor<TContext>
 where
     TContext: Clock + Metrics + Pacer + Spawner,
 {
+    #[instrument(skip_all, err)]
     pub(super) fn init(
         context: TContext,
         config: super::Config,
@@ -145,35 +147,35 @@ where
             marshal,
             fcu_heartbeat_interval,
         } = config;
-        let last_execution_finalized_height = execution_node
+        let BlockNumHash {
+            number: finalized_number,
+            hash: finalized_hash,
+        } = execution_node
             .provider
-            .last_block_number()
-            .wrap_err("unable to read latest block number from execution layer")?;
-        let last_finalized_block_hash = execution_node
-            .provider
-            .block_hash(last_execution_finalized_height)
-            .map_or_else(
-                |e| Err(Report::new(e)),
-                |hash: Option<B256>| {
-                    hash.ok_or_eyre("execution layer does not have the block hash")
-                },
-            )
-            .wrap_err("failed to read the last finalized block hash")?;
+            .finalized_block_num_hash()
+            .wrap_err("failed to read finalized block number and hash from execution layer")?
+            .unwrap_or_else(|| {
+                info!("execution layer reported no finalized block number/hash; using genesis");
+                BlockNumHash {
+                    number: 0,
+                    hash: execution_node.chain_spec().genesis_hash(),
+                }
+            });
+
         let fcu_heartbeat_timer = OptionFuture::some(context.sleep(fcu_heartbeat_interval).boxed());
         Ok(Self {
             context: ContextCell::new(context),
             execution_node,
             epoch_strategy,
-            last_consensus_finalized_height: last_finalized_height,
-            last_execution_finalized_height: Height::new(last_execution_finalized_height),
+            last_marshal_finalized_height: last_finalized_height,
             mailbox,
             marshal,
             fcu_heartbeat_interval,
             fcu_heartbeat_timer,
 
             latest_state: LatestState::from_finalized_state(
-                Height::new(last_execution_finalized_height),
-                Digest::new(last_finalized_block_hash),
+                Height::new(finalized_number),
+                Digest::new(finalized_hash),
             ),
             finalized_tip: None,
 
@@ -193,15 +195,6 @@ where
     }
 
     async fn run(mut self) {
-        info_span!("start").in_scope(|| {
-            info!(
-                last_finalized_consensus_height = %self.last_consensus_finalized_height,
-                last_finalized_execution_height = %self.last_execution_finalized_height,
-                "consensus and execution layers reported last finalized heights; \
-                backfilling blocks from consensus to execution if necessary",
-            );
-        });
-
         let reason: eyre::Result<()> = loop {
             select! {
                 biased;
@@ -220,12 +213,6 @@ where
                     let Some(msg) = msg else { break Err(eyre::Report::msg(
                         "actor mailbox closed unexpectedly"
                     )); };
-                    // XXX: updating forkchoice and finalizing blocks must
-                    // happen sequentially, so blocking the event loop on await
-                    // is desired.
-                    //
-                    // Backfills will be spawned as tasks and will also send
-                    // resolved the blocks to this queue.
                     if let Err(error) = self.handle_message(msg).await {
                         break Err(error).wrap_err(
                             "executor encountered fatal fork choice update error; \
@@ -506,20 +493,57 @@ where
     ///
     /// The order of blocks and state updates submitted is like this:
     ///
-    /// 1. `canonicalize-and-build` have highest priority so that proposers can
+    /// 1. backfilling has highest priority: if the marshal actor's finalization
+    ///    view is ahead of the execution layer, the node likely suffered a
+    ///    persistence loss after shutdown/restart.
+    /// 2. `canonicalize-and-build` have highest priority so that proposers can
     ///    return as proposal as soon as follow.
-    /// 2. certified blocks follow to ensure the node stays at the tip of the
+    /// 3. certified blocks follow to ensure the node stays at the tip of the
     ///    (notarized/certified) tip.
-    /// 3. notarized (but not yet finalized) blocks to get a lagging node to the
+    /// 4. notarized (but not yet finalized) blocks to get a lagging node to the
     ///    tip of the chain as fast as possible.
-    /// 4. finalized blocks last.
+    /// 5. finalized blocks last.
     #[instrument(skip_all, err)]
     async fn submit_next_state(&mut self) -> eyre::Result<()> {
         if self.pending_state_submission.is_some() {
             return Ok(());
         }
 
-        if let Some(CanonicalizeAndBuild {
+        if self.last_marshal_finalized_height > self.latest_state.finalized_height {
+            debug!(
+                consensus_layer.finalized_height = %self.last_marshal_finalized_height,
+                execution_layer.finalized_height = %self.latest_state.finalized_height,
+                "gap detected on startup; reconciling consensus and exection layers",
+            );
+            let next_block_to_backfill = self.latest_state.finalized_height.next();
+            let block = self
+                .marshal
+                .get_block(next_block_to_backfill)
+                .await
+                .ok_or_else(|| {
+                    eyre!(
+                        "reconciliation on restart failed; consensus layer is \
+                        at height `{}` while execution layer is at height `{}`, \
+                        but consensus layer does not have block `{next_block_to_backfill}`",
+                        self.last_marshal_finalized_height,
+                        self.latest_state.finalized_height,
+                    )
+                })?;
+            let (acknowledgement, _) = Exact::handle();
+            self.pending_state_submission.replace(
+                StateSubmission {
+                    execution_node: self.execution_node.clone(),
+                    submission_type: SubmissionType::Finalized { acknowledgement },
+                    digest: block.digest(),
+                    height: block.height(),
+                    block: Some(block),
+                    base_state: self.latest_state.clone(),
+                    payload_attributes: None,
+                }
+                .send()
+                .boxed(),
+            );
+        } else if let Some(CanonicalizeAndBuild {
             height,
             digest,
             payload_attributes,
