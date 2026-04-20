@@ -312,6 +312,7 @@ where
         );
 
         let mut cumulative_gas_used = 0;
+        let mut cumulative_state_gas_used = 0u64;
         let mut non_payment_gas_used = 0;
         // initial block size usage - size of withdrawals plus 1Kb of overhead for the block header
         let mut block_size_used = attributes
@@ -536,6 +537,7 @@ where
                     };
 
                     cumulative_gas_used += gas_used;
+                    cumulative_state_gas_used += result.result().result.gas().state_gas_spent();
                     if !is_payment {
                         non_payment_gas_used += gas_used;
                     }
@@ -765,6 +767,12 @@ where
         self.metrics.gas_used.record(gas_used as f64);
         self.metrics.gas_used_last.set(gas_used as f64);
         self.metrics
+            .state_gas_used
+            .record(cumulative_state_gas_used as f64);
+        self.metrics
+            .state_gas_used_last
+            .set(cumulative_state_gas_used as f64);
+        self.metrics
             .general_gas_used_last
             .set(non_payment_gas_used as f64);
         self.metrics
@@ -811,6 +819,7 @@ where
             timestamp = sealed_block.timestamp_millis(),
             gas_limit = sealed_block.gas_limit(),
             gas_used,
+            cumulative_state_gas_used,
             extra_data = %sealed_block.extra_data(),
             subblocks_count,
             payment_transactions,
