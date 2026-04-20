@@ -1,8 +1,7 @@
-# Bootstrap stub for the txgen workflow_dispatch entrypoint.
+# Runs the txgen benchmark path directly via workflow_dispatch.
 #
-# GitHub only exposes workflow_dispatch for workflows that exist on the default
-# branch. Keep this file on main so branch-local implementations can replace it
-# at the same path and still be dispatched from the Actions UI or CLI.
+# This is intentionally separate from bench-e2e.yml so the txgen script can be
+# tested in isolation before it is fully integrated into the main benchmark flow.
 
 name: bench-txgen-dispatch
 
@@ -139,27 +138,125 @@ on:
         required: true
         default: false
 
+env:
+  CARGO_TERM_COLOR: always
+  RUSTC_WRAPPER: "sccache"
+
 permissions:
   contents: read
 
 jobs:
   bench-txgen-dispatch:
     name: bench-txgen-dispatch
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, bare-metal]
+    timeout-minutes: 300
     steps:
-      - name: Explain bootstrap behavior
-        run: |
-          {
-            echo "### bench-txgen-dispatch bootstrap"
-            echo
-            echo "This default-branch stub exists so GitHub exposes the workflow_dispatch entrypoint."
-            echo "Run this workflow against a branch that contains the txgen benchmark implementation."
-            echo
-            echo "- ref: \`${GITHUB_REF}\`"
-            echo "- sha: \`${GITHUB_SHA}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Clean up previous results
+        run: sudo rm -rf bench-results/ 2>/dev/null || true
 
-      - name: Print next step
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Pre-fetch comparison refs
         run: |
-          echo "No benchmark runs on this stub."
-          echo "Dispatch the workflow against a branch that replaces .github/workflows/bench-txgen-dispatch.yml."
+          for ref in "${{ inputs.baseline }}" "${{ inputs.feature }}"; do
+            [ -z "$ref" ] && continue
+            [ "$ref" = "local" ] && continue
+            git fetch origin "$ref" --quiet || true
+          done
+
+      - name: Checkout txgen repository
+        uses: actions/checkout@v6
+        with:
+          repository: tempoxyz/txgen
+          token: ${{ secrets.DEREK_PAT || github.token }}
+          path: txgen
+          fetch-depth: 0
+
+      - name: Checkout txgen ref
+        if: inputs.txgen-ref != ''
+        working-directory: txgen
+        run: |
+          git fetch origin "${{ inputs.txgen-ref }}" --quiet
+          git checkout --detach FETCH_HEAD
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: mozilla-actions/sccache-action@v0.0.9
+        continue-on-error: true
+
+      - name: Build txgen backend
+        working-directory: txgen
+        run: |
+          cargo build --release --bin txgen-tempo --bin bench-cli
+          echo "TXGEN_REPO_DIR=$GITHUB_WORKSPACE/txgen" >> "$GITHUB_ENV"
+          echo "TXGEN_TEMPO_BIN=$GITHUB_WORKSPACE/txgen/target/release/txgen-tempo" >> "$GITHUB_ENV"
+          echo "TXGEN_BENCH_BIN=$GITHUB_WORKSPACE/txgen/target/release/bench-cli" >> "$GITHUB_ENV"
+
+      - name: Run txgen benchmark
+        run: |
+          cmd=(
+            nu contrib/bench/bench-txgen.nu run
+            --mode e2e
+            --preset "${{ inputs.preset }}"
+            --duration "${{ inputs.duration }}"
+            --bloat "${{ inputs.bloat }}"
+            --tps "${{ inputs.tps }}"
+            --accounts "${{ inputs.accounts }}"
+            --max-concurrent-requests "${{ inputs.max-concurrent-requests }}"
+            --no-infra
+            --baseline "${{ inputs.baseline }}"
+            --feature "${{ inputs.feature }}"
+            --bench-datadir "/reth-bench/tempo_${{ inputs.bloat }}mb"
+            --tune
+            --gas-limit "${{ inputs.gas-limit }}"
+          )
+
+          [ "${{ inputs.samply }}" = 'true' ] && cmd+=(--samply)
+          [ "${{ inputs.no-cache }}" = 'true' ] && cmd+=(--no-cache)
+          [ "${{ inputs.force }}" = 'true' ] && cmd+=(--force)
+          [ "${{ inputs.tracy }}" != 'off' ] && cmd+=(--tracy "${{ inputs.tracy }}" --tracy-seconds "${{ inputs.tracy-seconds }}" --tracy-offset "${{ inputs.tracy-offset }}")
+          [ -n "${{ inputs.node-args }}" ] && cmd+=(--node-args="${{ inputs.node-args }}")
+          [ -n "${{ inputs.baseline-args }}" ] && cmd+=(--baseline-args="${{ inputs.baseline-args }}")
+          [ -n "${{ inputs.feature-args }}" ] && cmd+=(--feature-args="${{ inputs.feature-args }}")
+          [ -n "${{ inputs.bench-args }}" ] && cmd+=(--bench-args="${{ inputs.bench-args }}")
+          [ -n "${{ inputs.bench-env }}" ] && cmd+=(--bench-env="${{ inputs.bench-env }}")
+          [ -n "${{ inputs.baseline-env }}" ] && cmd+=(--baseline-env="${{ inputs.baseline-env }}")
+          [ -n "${{ inputs.feature-env }}" ] && cmd+=(--feature-env="${{ inputs.feature-env }}")
+          [ -n "${{ inputs.baseline-hardfork }}" ] && cmd+=(--baseline-hardfork "${{ inputs.baseline-hardfork }}" --feature-hardfork "${{ inputs.feature-hardfork }}")
+
+          printf 'Running command:\n'
+          printf '  %q' "${cmd[@]}"
+          printf '\n'
+
+          "${cmd[@]}"
+
+      - name: Find results directory
+        id: results-dir
+        if: success()
+        run: |
+          RESULTS_DIR=$(ls -d bench-results/*/ 2>/dev/null | tail -1 | sed 's:/$::')
+          if [ -z "$RESULTS_DIR" ]; then
+            echo "::error::No results directory found"
+            exit 1
+          fi
+          echo "path=$RESULTS_DIR" >> "$GITHUB_OUTPUT"
+          echo "Results directory: $RESULTS_DIR"
+
+      - name: Add Summary To Job
+        if: success()
+        run: |
+          RESULTS_DIR="${{ steps.results-dir.outputs.path }}"
+          if [ -f "$RESULTS_DIR/summary.md" ]; then
+            cat "$RESULTS_DIR/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Benchmark completed, but no summary.md was produced." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload results
+        if: "!cancelled()"
+        uses: actions/upload-artifact@v4
+        with:
+          name: tempo-bench-txgen-results
+          path: bench-results/
