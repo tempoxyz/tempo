@@ -883,8 +883,8 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         let latencies = ($blocks | where latency_ms != null | get latency_ms | sort)
         {
             n: ($blocks | length)
-            mean: (if ($latencies | length) > 0 { $latencies | math avg | math round --precision 1 } else { 0 })
-            stddev: (if ($latencies | length) > 1 { $latencies | math stddev | math round --precision 1 } else { 0 })
+            mean: (if ($latencies | length) > 0 { $latencies | math avg | math round --precision 1 } else { 0.0 })
+            stddev: (if ($latencies | length) > 1 { $latencies | math stddev | math round --precision 1 } else { 0.0 })
             p50: (percentile $latencies 50 | math round --precision 1)
             p90: (percentile $latencies 90 | math round --precision 1)
             p99: (percentile $latencies 99 | math round --precision 1)
@@ -903,13 +903,13 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     let baseline_runs = ($run_data | where { |r| $r.label | str starts-with "baseline" })
     let feature_runs = ($run_data | where { |r| $r.label | str starts-with "feature" })
 
-    let b_tps = if ($baseline_runs | length) > 0 { $baseline_runs | get tps | math avg | math round --precision 0 } else { 0 }
-    let f_tps = if ($feature_runs | length) > 0 { $feature_runs | get tps | math avg | math round --precision 0 } else { 0 }
-    let b_mgas = if ($baseline_runs | length) > 0 { $baseline_runs | get mgas_s | math avg | math round --precision 1 } else { 0 }
-    let f_mgas = if ($feature_runs | length) > 0 { $feature_runs | get mgas_s | math avg | math round --precision 1 } else { 0 }
+    let b_tps = if ($baseline_runs | length) > 0 { $baseline_runs | get tps | math avg | math round --precision 0 } else { 0.0 }
+    let f_tps = if ($feature_runs | length) > 0 { $feature_runs | get tps | math avg | math round --precision 0 } else { 0.0 }
+    let b_mgas = if ($baseline_runs | length) > 0 { $baseline_runs | get mgas_s | math avg | math round --precision 1 } else { 0.0 }
+    let f_mgas = if ($feature_runs | length) > 0 { $feature_runs | get mgas_s | math avg | math round --precision 1 } else { 0.0 }
 
     # Compute deltas (feature vs baseline)
-    let delta = { |base: float, feat: float| if $base != 0 { ((($feat - $base) / $base) * 100) | math round --precision 1 } else { 0 } }
+    let delta = { |base: float, feat: float| if $base != 0.0 { ((($feat - $base) / $base) * 100) | math round --precision 1 } else { 0.0 } }
 
     # Build summary markdown
     let summary = ([
