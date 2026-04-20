@@ -1,21 +1,20 @@
-//! Drives the actual execution forwarding blocks and setting forkchoice state.
+//! Drives the execution layer.
 //!
-//! This agent forwards finalized blocks from the consensus layer to the
-//! execution layer and tracks the digest of the latest finalized block.
-//! It also advances the canonical chain by sending forkchoice-updates.
+//! This agent maps consensus layer finalizations and certifications to
+//! execution layer forkchoice states. It is solely responsible for sending
+//! blocks to the execution layer and updating its state.
 //!
+//! # Types of state updates.
 //!
-//! # Backfilling behavior
-//!
-//! There are two backfilling processes running concurrently:
+//! There are two processes pushing blocks and updating FCU state running
+//! concurrently:
 //!
 //! 1. bottom to top driven by the finalization pipeline of the marshal
-//!    actor. The marshal actor sends blocks from ascending by height and waits
+//!    actor. The marshal actor sends blocks ascending by height and waits
 //!    for the executor to acknowledge their successful execution.
 //! 2. top to bottom driven by notarizations/certifications. If a notarization
 //!    certificate is received, a stream walking the ancestors of the proposal
-//!    is kickstarted to backfill all blocks to the execution layer, where
-//!    necessary.
+//!    is kickstarted to backfill all blocks to the execution layer.
 use std::{
     collections::{BTreeMap, VecDeque},
     pin::Pin,
