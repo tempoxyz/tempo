@@ -1210,8 +1210,10 @@ impl ValidatorsInfo {
         let active_validator_by_pubkey =
             ordered::Map::from_iter_dedup(active_validators.iter().map(|v| {
                 let pubkey_bytes = v.publicKey.0;
-                let key = PublicKey::decode(&mut &pubkey_bytes[..])
-                    .expect("failed decoding on-chain ed25519 key");
+                let key = PublicKey::decode(&mut &pubkey_bytes[..]).expect(&format!(
+                    "failed decoding onchain validator ed25519 key: {}",
+                    pubkey_bytes.encode_hex()
+                ));
 
                 (key, v.clone())
             }));
