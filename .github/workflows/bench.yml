@@ -67,11 +67,14 @@ jobs:
                 org: 'tempoxyz',
                 username: user,
               });
+              core.info(`Org membership check for @${user} returned status ${status}`);
               if (status !== 204 && status !== 302) {
-                core.setFailed(`@${user} is not a member of tempoxyz`);
+                core.setFailed(`@${user} failed tempoxyz membership check with status ${status}`);
               }
             } catch (e) {
-              core.setFailed(`@${user} is not a member of tempoxyz`);
+              const status = e.status ?? e.response?.status ?? 'unknown';
+              const message = e.message ?? e.response?.data?.message ?? 'unknown error';
+              core.setFailed(`@${user} failed tempoxyz membership check with status ${status}: ${message}`);
             }
 
       - name: Parse arguments

@@ -1,0 +1,66 @@
+name: Debug org membership
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - .github/workflows/debug-org-membership.yml
+      - .github/workflows/bench.yml
+  workflow_dispatch:
+    inputs:
+      username:
+        description: "GitHub username to check"
+        required: false
+        type: string
+
+jobs:
+  check-org-membership:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check org membership with GITHUB_TOKEN
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const user = context.payload.inputs?.username
+              || context.payload.pull_request?.user?.login
+              || context.actor;
+
+            core.info(`Event: ${context.eventName}`);
+            core.info(`Repository: ${context.repo.owner}/${context.repo.repo}`);
+            core.info(`Actor: ${context.actor}`);
+            core.info(`Checking tempoxyz membership for @${user}`);
+
+            try {
+              const response = await github.rest.orgs.checkMembershipForUser({
+                org: 'tempoxyz',
+                username: user,
+              });
+
+              core.info(`Membership check status: ${response.status}`);
+
+              if (response.status !== 204 && response.status !== 302) {
+                core.setFailed(`Unexpected membership check status for @${user}: ${response.status}`);
+              }
+            } catch (e) {
+              const status = e.status ?? e.response?.status ?? 'unknown';
+              const message = e.message ?? e.response?.data?.message ?? 'unknown error';
+              const documentationUrl = e.response?.data?.documentation_url ?? 'n/a';
+
+              core.error(`Membership check failed for @${user}`);
+              core.error(`status=${status}`);
+              core.error(`message=${message}`);
+              core.error(`documentation_url=${documentationUrl}`);
+
+              if (e.response?.headers) {
+                const sso = e.response.headers['x-github-sso'] ?? e.response.headers['X-GitHub-SSO'];
+                if (sso) {
+                  core.error(`x-github-sso=${sso}`);
+                }
+              }
+
+              core.setFailed(`@${user} failed tempoxyz membership check with status ${status}: ${message}`);
+            }
