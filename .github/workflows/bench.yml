@@ -180,7 +180,7 @@ jobs:
     steps:
       - name: Check org membership
         if: github.event_name == 'issue_comment'
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -199,7 +199,7 @@ jobs:
 
       - name: Parse arguments
         id: args
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           INPUT_ACTOR: ${{ github.actor }}
           INPUT_PRESET: ${{ github.event.inputs.preset }}
@@ -223,6 +223,7 @@ jobs:
           INPUT_BENCH_ENV: ${{ github.event.inputs.bench-env }}
           INPUT_BASELINE_ENV: ${{ github.event.inputs.baseline-env }}
           INPUT_FEATURE_ENV: ${{ github.event.inputs.feature-env }}
+          INPUT_EXISTING_RECIPIENTS: ${{ github.event.inputs.existing-recipients }}
           INPUT_REF_NAME: ${{ github.ref_name }}
         with:
           github-token: ${{ secrets.DEREK_PAT }}
@@ -368,7 +369,7 @@ jobs:
             }
 
             const existingRecipients = context.eventName === 'workflow_dispatch'
-              ? ('${{ github.event.inputs.existing-recipients }}' !== 'false')
+              ? ((process.env.INPUT_EXISTING_RECIPIENTS || '') !== 'false')
               : (defaults?.['no-existing-recipients'] !== 'true');
             const erFlag = `--existing-recipients=${existingRecipients}`;
             benchArgs = benchArgs ? `${benchArgs} ${erFlag}` : erFlag;
@@ -476,7 +477,7 @@ jobs:
 
       - name: Acknowledge request
         id: ack
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           ACK_PR: ${{ steps.args.outputs.pr }}
           ACK_ACTOR: ${{ steps.args.outputs.actor }}
@@ -591,7 +592,7 @@ jobs:
 
       - name: Resolve checkout ref
         id: checkout-ref
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           INPUT_GITHUB_REF: ${{ github.ref }}
         with:
@@ -626,7 +627,7 @@ jobs:
 
       - name: Resolve job URL and update status
         if: env.BENCH_COMMENT_ID
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           BENCH_BASELINE_NAME: ${{ needs.tempo-bench-ack.outputs.baseline-name }}
           BENCH_FEATURE_NAME: ${{ needs.tempo-bench-ack.outputs.feature-name }}
@@ -671,7 +672,7 @@ jobs:
 
       - name: Resolve PR head branch
         id: pr-info
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           INPUT_REF_NAME: ${{ github.ref_name }}
           INPUT_SHA: ${{ github.sha }}
@@ -692,7 +693,7 @@ jobs:
 
       - name: Resolve baseline and feature refs
         id: refs
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           INPUT_BASELINE: ${{ needs.tempo-bench-ack.outputs.baseline }}
           INPUT_FEATURE: ${{ needs.tempo-bench-ack.outputs.feature }}
@@ -745,7 +746,7 @@ jobs:
             core.setOutput('feature-name', featureName);
 
       - name: Resolve PR attribution
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           INPUT_FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
         with:
@@ -772,7 +773,7 @@ jobs:
 
       - name: Update status (running benchmark)
         if: success() && env.BENCH_COMMENT_ID
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |
@@ -825,7 +826,7 @@ jobs:
 
       - name: Upload results
         if: "!cancelled()"
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: tempo-bench-results
           path: bench-results/
@@ -842,7 +843,7 @@ jobs:
 
       - name: Post results to PR
         if: success()
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
         with:
@@ -958,7 +959,7 @@ jobs:
 
       - name: Send Slack notification (success)
         if: success() && steps.results-dir.outputs.path && env.BENCH_NO_SLACK != 'true'
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           BENCH_WORK_DIR: ${{ steps.results-dir.outputs.path }}
           BENCH_BASELINE_NAME: ${{ steps.refs.outputs.baseline-name }}
@@ -970,7 +971,7 @@ jobs:
 
       - name: Send Slack notification (failure)
         if: failure() && env.BENCH_NO_SLACK != 'true'
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const notify = require('./.github/scripts/bench-slack-notify.js');
@@ -978,7 +979,7 @@ jobs:
 
       - name: Update status (failed)
         if: failure() && env.BENCH_COMMENT_ID
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |
@@ -992,7 +993,7 @@ jobs:
 
       - name: Update status (cancelled)
         if: cancelled() && env.BENCH_COMMENT_ID
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |
