@@ -123,7 +123,7 @@ tempo-validator-config = { path = "crates/validator-config", default-features = 
 reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "a550b7a" }
 reth-chainspec = { git = "https://github.com/paradigmxyz/reth", rev = "a550b7a", default-features = false }
 reth-cli = { git = "https://github.com/paradigmxyz/reth", rev = "a550b7a" }
-reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", rev = "a550b7a" }
+reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", rev = "8cd653b" }
 reth-cli-runner = { git = "https://github.com/paradigmxyz/reth", rev = "a550b7a" }
 reth-cli-util = { git = "https://github.com/paradigmxyz/reth", rev = "a550b7a" }
 reth-codecs = { version = "0.1.0", default-features = false }
