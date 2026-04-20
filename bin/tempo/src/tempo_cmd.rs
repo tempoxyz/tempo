@@ -66,6 +66,9 @@ pub(crate) enum TempoSubcommand {
     #[command(subcommand)]
     Consensus(ConsensusSubcommand),
 
+    /// Generate a genesis file and optional validator keys.
+    GenerateGenesis(GenerateGenesis),
+
     /// Run a proxy P2P node that serves cached block data fetched from an RPC endpoint.
     P2pProxy(P2pProxyArgs),
 
@@ -108,6 +111,10 @@ impl ExtendedCommand for TempoSubcommand {
                 runner.run_blocking_until_ctrl_c(cmd.run())?;
                 Ok(())
             }
+            Self::GenerateGenesis(cmd) => {
+                runner.run_blocking_until_ctrl_c(cmd.run())?;
+                Ok(())
+            }
             Self::P2pProxy(cmd) => runner.run_command_until_exit(|_| cmd.run()),
             Self::InitFromBinaryDump(cmd) => {
                 let runtime = runner.runtime();
@@ -124,6 +131,29 @@ impl ExtendedCommand for TempoSubcommand {
                 Ok(())
             }
         }
+    }
+}
+
+/// Generate a genesis file and optional validator keys.
+#[derive(Debug, clap::Args)]
+pub(crate) struct GenerateGenesis {
+    /// Output directory path. Genesis and validator keys will be written here.
+    #[arg(short, long)]
+    output: PathBuf,
+
+    #[clap(flatten)]
+    genesis_args: tempo_genesis::GenesisArgs,
+}
+
+impl GenerateGenesis {
+    async fn run(self) -> eyre::Result<()> {
+        let (genesis, consensus_config) = self
+            .genesis_args
+            .generate_genesis()
+            .await
+            .wrap_err("failed generating genesis")?;
+
+        tempo_genesis::write_genesis(&self.output, &genesis, consensus_config.as_ref())
     }
 }
 

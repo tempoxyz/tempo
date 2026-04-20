@@ -26,6 +26,7 @@ tempo-chainspec = { workspace = true, features = ["default"] }
 tempo-consensus.workspace = true
 tempo-evm.workspace = true
 tempo-faucet.workspace = true
+tempo-genesis.workspace = true
 
 alloy = { workspace = true, default-features = false, features = [
 	"network",

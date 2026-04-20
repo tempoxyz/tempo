@@ -12305,6 +12305,7 @@ dependencies = [
  "tempo-ext",
  "tempo-eyre",
  "tempo-faucet",
+ "tempo-genesis",
  "tempo-node",
  "tempo-precompiles",
  "tempo-primitives",
@@ -12623,6 +12624,34 @@ dependencies = [
  "reth-rpc-server-types",
  "tempo-alloy",
  "tempo-precompiles",
+]
+
+[[package]]
+name = "tempo-genesis"
+version = "1.6.0"
+dependencies = [
+ "alloy",
+ "alloy-primitives",
+ "clap",
+ "commonware-codec",
+ "commonware-consensus",
+ "commonware-cryptography",
+ "commonware-math",
+ "commonware-utils",
+ "eyre",
+ "indicatif",
+ "itertools 0.14.0",
+ "rand 0.8.5",
+ "rayon",
+ "reth-evm",
+ "serde_json",
+ "tempo-chainspec",
+ "tempo-commonware-node-config",
+ "tempo-contracts",
+ "tempo-dkg-onchain-artifacts",
+ "tempo-evm",
+ "tempo-precompiles",
+ "tempo-validator-config",
 ]
 
 [[package]]
@@ -12971,6 +13000,7 @@ dependencies = [
  "tempo-contracts",
  "tempo-dkg-onchain-artifacts",
  "tempo-evm",
+ "tempo-genesis",
  "tempo-precompiles",
  "tempo-primitives",
  "tempo-revm",
