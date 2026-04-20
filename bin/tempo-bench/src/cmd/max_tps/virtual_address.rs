@@ -1,5 +1,5 @@
 use alloy::primitives::{Address, B256, address, hex_literal::hex};
-use tempo_precompiles::address_registry::{MasterId, VIRTUAL_MAGIC};
+use tempo_alloy::primitives::{MasterId, TempoAddressExt, UserTag};
 
 /// Pre-mined TIP-1022 PoW salts for the first 7 anvil mnemonic accounts.
 ///
@@ -50,9 +50,5 @@ pub(crate) const ANVIL_VIRTUAL_SALTS: [(Address, B256); 6] = [
 ///
 /// Layout: `[4-byte masterId][10-byte 0xFD MAGIC][6-byte random userTag]`.
 pub(crate) fn make_virtual_address(master_id: MasterId) -> Address {
-    let mut bytes = [0u8; 20];
-    bytes[0..4].copy_from_slice(master_id.as_slice());
-    bytes[4..14].copy_from_slice(&VIRTUAL_MAGIC);
-    rand::fill(&mut bytes[14..20]);
-    Address::from(bytes)
+    Address::new_virtual(master_id, UserTag::random())
 }

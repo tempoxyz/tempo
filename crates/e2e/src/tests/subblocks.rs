@@ -34,116 +34,7 @@ use tempo_node::consensus::TEMPO_SHARED_GAS_DIVISOR;
 use crate::{Setup, TestingNode, setup_validators};
 
 #[test_traced]
-fn subblocks_are_included_1_node() {
-    let _ = tempo_eyre::install();
-
-    Runner::from(Config::default().with_seed(0)).start(|mut context| async move {
-        let how_many_signers = 1;
-
-        let setup = Setup::new()
-            .how_many_signers(how_many_signers)
-            .epoch_length(100)
-            // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
-            // to ensure that payload builder has enough time to accumulate subblocks.
-            .new_payload_wait_time(Duration::from_millis(500))
-            .subblocks(true);
-
-        // Setup and start all nodes.
-        let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup.clone()).await;
-
-        let mut fee_recipients = Vec::new();
-
-        for node in &mut nodes {
-            let fee_recipient = Address::random();
-            node.consensus_config_mut()
-                .fee_recipient
-                .replace(fee_recipient);
-            fee_recipients.push(fee_recipient);
-        }
-
-        join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
-
-        let mut stream = nodes[0]
-            .execution()
-            .add_ons_handle
-            .engine_events
-            .new_listener();
-
-        let mut expected_transactions: Vec<TxHash> = Vec::new();
-        while let Some(update) = stream.next().await {
-            let block = match update {
-                ConsensusEngineEvent::BlockReceived(_)
-                | ConsensusEngineEvent::ForkchoiceUpdated(_, _)
-                | ConsensusEngineEvent::CanonicalChainCommitted(_, _) => continue,
-                ConsensusEngineEvent::ForkBlockAdded(_, _) => unreachable!("unexpected reorg"),
-                ConsensusEngineEvent::InvalidBlock(_) => unreachable!("unexpected invalid block"),
-                ConsensusEngineEvent::SlowBlock(_) => unreachable!("unexpected slow block"),
-                ConsensusEngineEvent::CanonicalBlockAdded(block, _) => block,
-            };
-
-            let receipts = &block.execution_outcome().receipts;
-
-            // Assert that block only contains our subblock transactions and the system transactions
-            assert_eq!(
-                block.sealed_block().body().transactions.len(),
-                SYSTEM_TX_COUNT + expected_transactions.len()
-            );
-
-            // Assert that all expected transactions are included in the block.
-            for tx in expected_transactions.drain(..) {
-                if !block
-                    .sealed_block()
-                    .body()
-                    .transactions
-                    .iter()
-                    .any(|t| t.tx_hash() == *tx)
-                {
-                    panic!("transaction {tx} was not included");
-                }
-            }
-
-            // Assert that all transactions were successful
-            for receipt in receipts {
-                assert!(receipt.status());
-            }
-
-            if !expected_transactions.is_empty() {
-                let fee_token_storage = &block
-                    .execution_outcome()
-                    .state
-                    .account(&DEFAULT_FEE_TOKEN)
-                    .unwrap()
-                    .storage;
-
-                // Assert that all validators were paid for their subblock transactions
-                for fee_recipient in &fee_recipients {
-                    let balance_slot = TIP20Token::from_address(DEFAULT_FEE_TOKEN)
-                        .unwrap()
-                        .balances[*fee_recipient]
-                        .slot();
-                    let slot = fee_token_storage.get(&balance_slot).unwrap();
-
-                    assert!(slot.present_value > slot.original_value());
-                }
-            }
-
-            // Exit once we reach height 20.
-            if block.block_number() == 20 {
-                break;
-            }
-
-            // Send subblock transactions to all nodes.
-            for node in nodes.iter() {
-                for _ in 0..5 {
-                    expected_transactions.push(submit_subblock_tx(node).await);
-                }
-            }
-        }
-    });
-}
-
-#[test_traced]
-fn subblocks_are_included_4_nodes() {
+fn subblocks_are_included() {
     let _ = tempo_eyre::install();
 
     Runner::from(Config::default().with_seed(0)).start(|mut context| async move {
@@ -151,11 +42,7 @@ fn subblocks_are_included_4_nodes() {
 
         let setup = Setup::new()
             .how_many_signers(how_many_signers)
-            .epoch_length(40)
-            // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
-            // to ensure that payload builder has enough time to accumulate subblocks.
-            .new_payload_wait_time(Duration::from_millis(500))
-            .subblocks(true);
+            .epoch_length(10);
 
         // Setup and start all nodes.
         let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup.clone()).await;
@@ -163,10 +50,12 @@ fn subblocks_are_included_4_nodes() {
         let mut fee_recipients = Vec::new();
 
         for node in &mut nodes {
+            // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
+            // to ensure that payload builder has enough time to accumulate subblocks.
+            node.consensus_config_mut().new_payload_wait_time = Duration::from_millis(500);
+
             let fee_recipient = Address::random();
-            node.consensus_config_mut()
-                .fee_recipient
-                .replace(fee_recipient);
+            node.consensus_config_mut().fee_recipient = Some(fee_recipient);
             fee_recipients.push(fee_recipient);
         }
 
@@ -186,7 +75,6 @@ fn subblocks_are_included_4_nodes() {
                 | ConsensusEngineEvent::CanonicalChainCommitted(_, _) => continue,
                 ConsensusEngineEvent::ForkBlockAdded(_, _) => unreachable!("unexpected reorg"),
                 ConsensusEngineEvent::InvalidBlock(_) => unreachable!("unexpected invalid block"),
-                ConsensusEngineEvent::SlowBlock(_) => unreachable!("unexpected slow block"),
                 ConsensusEngineEvent::CanonicalBlockAdded(block, _) => block,
             };
 
@@ -220,7 +108,8 @@ fn subblocks_are_included_4_nodes() {
                 let fee_token_storage = &block
                     .execution_outcome()
                     .state
-                    .account(&DEFAULT_FEE_TOKEN)
+                    .state
+                    .get(&DEFAULT_FEE_TOKEN)
                     .unwrap()
                     .storage;
 
@@ -252,7 +141,7 @@ fn subblocks_are_included_4_nodes() {
 }
 
 #[test_traced]
-fn subblocks_are_included_with_failing_txs_5_nodes() {
+fn subblocks_are_included_with_failing_txs() {
     let _ = tempo_eyre::install();
 
     Runner::from(Config::default().with_seed(0)).start(|mut context| async move {
@@ -260,11 +149,7 @@ fn subblocks_are_included_with_failing_txs_5_nodes() {
 
         let setup = Setup::new()
             .how_many_signers(how_many_signers)
-            .epoch_length(100)
-            // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
-            // to ensure that payload builder has enough time to accumulate subblocks.
-            .new_payload_wait_time(Duration::from_millis(500))
-            .subblocks(true);
+            .epoch_length(10);
 
         // Setup and start all nodes.
         let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup.clone()).await;
@@ -272,10 +157,12 @@ fn subblocks_are_included_with_failing_txs_5_nodes() {
         let mut fee_recipients = Vec::new();
 
         for node in &mut nodes {
+            // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
+            // to ensure that payload builder has enough time to accumulate subblocks.
+            node.consensus_config_mut().new_payload_wait_time = Duration::from_millis(500);
+
             let fee_recipient = Address::random();
-            node.consensus_config_mut()
-                .fee_recipient
-                .replace(fee_recipient);
+            node.consensus_config_mut().fee_recipient = Some(fee_recipient);
             fee_recipients.push(fee_recipient);
         }
 
@@ -296,7 +183,6 @@ fn subblocks_are_included_with_failing_txs_5_nodes() {
                 | ConsensusEngineEvent::CanonicalChainCommitted(_, _) => continue,
                 ConsensusEngineEvent::ForkBlockAdded(_, _) => unreachable!("unexpected reorg"),
                 ConsensusEngineEvent::InvalidBlock(_) => unreachable!("unexpected invalid block"),
-                ConsensusEngineEvent::SlowBlock(_) => unreachable!("unexpected slow block"),
                 ConsensusEngineEvent::CanonicalBlockAdded(block, _) => block,
             };
             let receipts = &block.execution_outcome().receipts;
@@ -374,7 +260,8 @@ fn subblocks_are_included_with_failing_txs_5_nodes() {
                 let slot = block
                     .execution_outcome()
                     .state
-                    .account(&NONCE_PRECOMPILE_ADDRESS)
+                    .state
+                    .get(&NONCE_PRECOMPILE_ADDRESS)
                     .unwrap()
                     .storage
                     .get(&nonce_slot)
@@ -391,7 +278,8 @@ fn subblocks_are_included_with_failing_txs_5_nodes() {
                 let fee_token_storage = &block
                     .execution_outcome()
                     .state
-                    .account(&DEFAULT_FEE_TOKEN)
+                    .state
+                    .get(&DEFAULT_FEE_TOKEN)
                     .unwrap()
                     .storage;
 
@@ -443,13 +331,13 @@ fn oversized_subblock_txs_are_removed() {
 
         let setup = Setup::new()
             .how_many_signers(how_many_signers)
-            .epoch_length(100)
-            // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
-            // to ensure that payload builder has enough time to accumulate subblocks.
-            .new_payload_wait_time(Duration::from_millis(500))
-            .subblocks(true);
+            .epoch_length(10);
 
         let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup.clone()).await;
+
+        for node in &mut nodes {
+            node.consensus_config_mut().new_payload_wait_time = Duration::from_millis(500);
+        }
 
         join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
 

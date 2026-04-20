@@ -8,6 +8,7 @@ on:
     paths:
       - crates/contracts/**
       - crates/primitives/**
+      - crates/chainspec/**
       - crates/alloy/**
       - scripts/publish-crates.sh
       - scripts/sanitize_source.py

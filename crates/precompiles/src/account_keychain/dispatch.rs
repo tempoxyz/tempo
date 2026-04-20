@@ -1,15 +1,12 @@
 //! ABI dispatch for the [`AccountKeychain`] precompile.
 
 use super::{AccountKeychain, KeyRestrictions, TokenLimit, authorizeKeyCall};
-use crate::{
-    Precompile, SelectorSchedule, dispatch_call, error::TempoPrecompileError, input_cost,
-    mutate_void, view,
-};
+use crate::{Precompile, SelectorSchedule, charge_input_cost, dispatch_call, mutate_void, view};
 use alloy::{
     primitives::Address,
     sol_types::{SolCall, SolInterface},
 };
-use revm::precompile::{PrecompileError, PrecompileResult};
+use revm::precompile::PrecompileResult;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     AccountKeychainError,
@@ -27,9 +24,9 @@ const T3_DROPPED: &[[u8; 4]] = &[IAccountKeychain::getRemainingLimitCall::SELECT
 
 impl Precompile for AccountKeychain {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
-        self.storage
-            .deduct_gas(input_cost(calldata.len()))
-            .map_err(|_| PrecompileError::OutOfGas)?;
+        if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
+            return err;
+        }
 
         dispatch_call(
             calldata,
@@ -40,12 +37,11 @@ impl Precompile for AccountKeychain {
             |call| match call {
                 IAccountKeychainCalls::authorizeKey_0(call) => {
                     if self.storage.spec().is_t3() {
-                        return TempoPrecompileError::AccountKeychainError(
+                        return self.storage.error_result(
                             AccountKeychainError::legacy_authorize_key_selector_changed(
                                 authorizeKeyCall::SELECTOR,
                             ),
-                        )
-                        .into_precompile_result(self.storage.gas_used());
+                        );
                     }
 
                     let call = authorizeKeyCall {
@@ -215,7 +211,7 @@ mod tests {
             .abi_encode();
 
             let result = keychain.call(&calldata, account)?;
-            assert!(result.reverted);
+            assert!(result.is_revert());
 
             Ok(())
         })
@@ -240,7 +236,7 @@ mod tests {
             .abi_encode();
 
             let result = keychain.call(&calldata, account)?;
-            assert!(result.reverted);
+            assert!(result.is_revert());
             let decoded =
                 IAccountKeychain::LegacyAuthorizeKeySelectorChanged::abi_decode(&result.bytes)?;
             assert_eq!(decoded.newSelector, authorizeKeyCall::SELECTOR);
@@ -281,7 +277,7 @@ mod tests {
             .abi_encode();
 
             let output = keychain.call(&get_limit_calldata, account)?;
-            assert!(!output.reverted);
+            assert!(!output.is_revert());
             assert_eq!(
                 output.bytes.len(),
                 32,
@@ -312,7 +308,7 @@ mod tests {
             .abi_encode();
 
             let result = keychain.call(&calldata, account)?;
-            assert!(result.reverted);
+            assert!(result.is_revert());
 
             Ok(())
         })
@@ -338,7 +334,7 @@ mod tests {
 
             let result = keychain.call(&calldata, account)?;
             assert!(
-                result.reverted,
+                result.is_revert(),
                 "expected revert for dropped selector post-T3"
             );
 
@@ -362,7 +358,7 @@ mod tests {
             let mut keychain = AccountKeychain::new();
 
             let result = keychain.call(&calldata, Address::ZERO)?;
-            assert!(result.reverted, "expected revert");
+            assert!(result.is_revert(), "expected revert");
 
             let decoded = UnknownFunctionSelector::abi_decode(&result.bytes)?;
             assert_eq!(decoded.selector.as_slice(), &selector);

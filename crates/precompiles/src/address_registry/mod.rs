@@ -11,7 +11,6 @@ use crate::{
     ADDRESS_REGISTRY_ADDRESS,
     error::Result,
     storage::{Handler, Mapping},
-    tip20::is_tip20_prefix,
 };
 use alloy::{
     primitives::{Address, FixedBytes, keccak256},
@@ -19,43 +18,7 @@ use alloy::{
 };
 pub use tempo_contracts::precompiles::{AddrRegistryError, AddrRegistryEvent, IAddressRegistry};
 use tempo_precompiles_macros::{Storable, contract};
-
-/// 4-byte master identifier derived from the registration hash.
-pub type MasterId = FixedBytes<4>;
-
-/// 6-byte user tag occupying the trailing bytes of a virtual address.
-pub type UserTag = FixedBytes<6>;
-
-/// 10-byte magic value identifying virtual addresses at bytes `[4:14]`.
-pub const VIRTUAL_MAGIC: [u8; 10] = [0xFD; 10];
-
-/// Returns `true` if `addr` matches the [TIP-1022] virtual-address format
-/// (bytes `[4:14]` == [`VIRTUAL_MAGIC`]).
-///
-/// [TIP-1022]: <https://docs.tempo.xyz/protocol/tip1022>
-pub fn is_virtual_address(addr: Address) -> bool {
-    addr.as_slice()[4..14] == VIRTUAL_MAGIC
-}
-
-/// Returns `true` if `addr` is eligible to be a virtual-address master per TIP-1022.
-pub fn is_valid_master_address(addr: Address) -> bool {
-    !addr.is_zero() && !is_virtual_address(addr) && !is_tip20_prefix(addr)
-}
-
-/// Decodes a virtual address into its `(masterId, userTag)` components.
-///
-/// Returns `None` if the address does not match [`is_virtual_address`] format.
-pub fn decode_virtual_address(addr: Address) -> Option<(MasterId, UserTag)> {
-    if !is_virtual_address(addr) {
-        return None;
-    }
-
-    let bytes = addr.as_slice();
-    Some((
-        MasterId::from_slice(&bytes[0..4]),
-        UserTag::from_slice(&bytes[14..20]),
-    ))
-}
+pub use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
 
 /// [TIP-1022] virtual address registry contract.
 ///
@@ -116,7 +79,7 @@ impl AddressRegistry {
         call: IAddressRegistry::registerVirtualMasterCall,
     ) -> Result<MasterId> {
         // Validate master address
-        if !is_valid_master_address(msg_sender) {
+        if !msg_sender.is_valid_master() {
             return Err(AddrRegistryError::invalid_master_address().into());
         }
 
@@ -175,7 +138,7 @@ impl AddressRegistry {
             return Ok(to);
         }
 
-        match decode_virtual_address(to) {
+        match to.decode_virtual() {
             None => Ok(to),
             Some((master_id, _)) => self
                 .get_master(master_id)?
@@ -187,7 +150,7 @@ impl AddressRegistry {
     ///
     /// Returns `address(0)` if the address is not virtual or the [`MasterId`] is unregistered.
     pub fn resolve_virtual_address(&self, addr: Address) -> Result<Address> {
-        match decode_virtual_address(addr) {
+        match addr.decode_virtual() {
             None => Ok(Address::ZERO),
             Some((master_id, _)) => Ok(self.get_master(master_id)?.unwrap_or(Address::ZERO)),
         }
@@ -200,7 +163,7 @@ mod tests {
     use crate::{
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{VIRTUAL_MASTER, VIRTUAL_SALT, make_virtual_address},
+        test_util::{VIRTUAL_MASTER, VIRTUAL_SALT},
     };
     use alloy_primitives::hex_literal::hex;
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -272,13 +235,11 @@ mod tests {
     fn test_register_rejects_virtual_address_as_master() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
 
-        let virtual_addr = make_virtual_address(MasterId::ZERO, UserTag::ZERO);
-
         StorageCtx::enter(&mut storage, || {
             let mut registry = AddressRegistry::new();
 
             let result = registry.register_virtual_master(
-                virtual_addr,
+                Address::new_virtual(MasterId::ZERO, UserTag::ZERO),
                 IAddressRegistry::registerVirtualMasterCall {
                     salt: FixedBytes::ZERO,
                 },
@@ -345,27 +306,21 @@ mod tests {
 
     #[test]
     fn test_is_virtual_address() {
-        let random_addr = Address::random();
-        assert!(!is_virtual_address(random_addr));
-
-        let virtual_addr = make_virtual_address(
-            MasterId::new(hex!("07A3B1C2")),
-            UserTag::new(hex!("D4E5A7C3F19E")),
-        );
-        assert!(is_virtual_address(virtual_addr));
+        assert!(!Address::random().is_virtual());
+        assert!(Address::new_virtual(MasterId::random(), UserTag::random()).is_virtual());
     }
 
     #[test]
     fn test_decode_virtual_address() {
-        let mid = MasterId::new(hex!("07A3B1C2"));
-        let tag = UserTag::new(hex!("D4E5A7C3F19E"));
-        let addr = make_virtual_address(mid, tag);
+        let mid = MasterId::random();
+        let tag = UserTag::random();
+        let addr = Address::new_virtual(mid, tag);
 
-        let (master_id, user_tag) = decode_virtual_address(addr).unwrap();
+        let (master_id, user_tag) = addr.decode_virtual().unwrap();
         assert_eq!(master_id, mid);
         assert_eq!(user_tag, tag);
 
-        assert!(decode_virtual_address(Address::random()).is_none());
+        assert!(Address::random().decode_virtual().is_none());
     }
 
     #[test]
@@ -386,7 +341,7 @@ mod tests {
     #[test]
     fn test_resolve_recipient_virtual_unregistered_reverts() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
-        let virtual_addr = make_virtual_address(MasterId::ZERO, UserTag::ZERO);
+        let virtual_addr = Address::new_virtual(MasterId::ZERO, UserTag::ZERO);
 
         StorageCtx::enter(&mut storage, || {
             let registry = AddressRegistry::new();
@@ -416,7 +371,7 @@ mod tests {
                 IAddressRegistry::registerVirtualMasterCall { salt },
             )?;
 
-            let virtual_addr = make_virtual_address(master_id, UserTag::new(hex!("010203040506")));
+            let virtual_addr = Address::new_virtual(master_id, UserTag::new(hex!("010203040506")));
 
             let resolved = registry.resolve_recipient(virtual_addr)?;
             assert_eq!(resolved, master);
@@ -440,7 +395,7 @@ mod tests {
             );
 
             // Unregistered virtual → zero
-            let unregistered = make_virtual_address(MasterId::ZERO, UserTag::ZERO);
+            let unregistered = Address::new_virtual(MasterId::ZERO, UserTag::ZERO);
             assert_eq!(
                 registry.resolve_virtual_address(unregistered)?,
                 Address::ZERO
@@ -451,7 +406,7 @@ mod tests {
                 master,
                 IAddressRegistry::registerVirtualMasterCall { salt },
             )?;
-            let virtual_addr = make_virtual_address(master_id, UserTag::new(hex!("aabbccddeeff")));
+            let virtual_addr = Address::new_virtual(master_id, UserTag::new(hex!("aabbccddeeff")));
             assert_eq!(registry.resolve_virtual_address(virtual_addr)?, master);
 
             Ok(())
@@ -461,7 +416,7 @@ mod tests {
     #[test]
     fn test_resolve_recipient_pre_t3_returns_literal() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
-        let virtual_addr = make_virtual_address(MasterId::ZERO, UserTag::ZERO);
+        let virtual_addr = Address::new_virtual(MasterId::ZERO, UserTag::ZERO);
 
         StorageCtx::enter(&mut storage, || {
             let registry = AddressRegistry::new();
@@ -472,16 +427,9 @@ mod tests {
 
     #[test]
     fn test_is_valid_master_address() {
-        // Zero → invalid
-        assert!(!is_valid_master_address(Address::ZERO));
-        // Virtual address → invalid
-        assert!(!is_valid_master_address(make_virtual_address(
-            MasterId::ZERO,
-            UserTag::ZERO
-        )));
-        // TIP-20 prefix → invalid
-        assert!(!is_valid_master_address(crate::PATH_USD_ADDRESS));
-        // Normal address → valid
-        assert!(is_valid_master_address(Address::repeat_byte(0x42)));
+        assert!(!Address::ZERO.is_valid_master());
+        assert!(!Address::new_virtual(MasterId::ZERO, UserTag::ZERO).is_valid_master());
+        assert!(!crate::PATH_USD_ADDRESS.is_valid_master());
+        assert!(Address::repeat_byte(0x42).is_valid_master());
     }
 }
