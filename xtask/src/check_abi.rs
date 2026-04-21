@@ -56,6 +56,9 @@ static INTERFACE_SPECS: &[InterfaceSpec] = &[
     interface_spec!(IValidatorConfig),
 ];
 
+/// List of `(kind, signature)` pairs, e.g. `("function", "foo(uint256) [view]")`.
+type DiffEntries = Vec<(String, String)>;
+
 #[derive(Default)]
 struct AbiSurface {
     functions: BTreeSet<String>,
@@ -162,7 +165,7 @@ fn check_interface(
     spec: &InterfaceSpec,
     artifact_path: &Path,
     all_specs: &HashMap<&str, &InterfaceSpec>,
-) -> eyre::Result<(Vec<(String, String)>, Vec<(String, String)>)> {
+) -> eyre::Result<(DiffEntries, DiffEntries)> {
     let rust_surface = surface_for_spec(spec, all_specs, &mut Vec::new())?;
 
     let solidity_abi = load_foundry_abi(artifact_path)
@@ -227,7 +230,7 @@ impl AbiSurface {
     }
 
     /// Returns `(only_in_self, only_in_other)` diffs grouped by kind.
-    fn diff(&self, other: &Self) -> (Vec<(String, String)>, Vec<(String, String)>) {
+    fn diff(&self, other: &Self) -> (DiffEntries, DiffEntries) {
         let mut only_self = Vec::new();
         let mut only_other = Vec::new();
         for (kind, a, b) in [
