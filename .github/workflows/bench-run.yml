@@ -1,10 +1,10 @@
-# Builder benchmark job.
+# Benchmark runner.
 #
-# Called by bench.yml when mode=builder. Runs `nu tempo.nu bench` for an
-# interleaved B-F-F-B comparison on a single --dev node using synthetic
-# transactions.
+# Called by bench.yml. Dispatches to either:
+#   - builder mode (single --dev node, B-F-F-B on one runner)
+#   - e2e mode (2-validator consensus across two runners)
 
-name: bench-builder
+name: bench-run
 
 on:
   workflow_call:
@@ -123,7 +123,11 @@ permissions:
   pull-requests: write
 
 jobs:
+  # ----------------------------------------------------------------
+  # Builder mode: single --dev node, B-F-F-B on one runner
+  # ----------------------------------------------------------------
   bench-builder:
+    if: inputs.mode != 'e2e'
     name: bench-builder
     runs-on: [self-hosted, Linux, X64, bare-metal]
     timeout-minutes: 300
@@ -603,4 +607,350 @@ jobs:
               repo: context.repo.repo,
               comment_id: parseInt(process.env.BENCH_COMMENT_ID),
               body: `cc @${process.env.BENCH_ACTOR}\n\n⚠️ Benchmark cancelled. [View logs](${jobUrl})`,
+            });
+
+  # ----------------------------------------------------------------
+  # E2E mode: 2-validator consensus across two runners (B-F-F-B)
+  #
+  # Runner-specific config is set as persistent env vars on each runner:
+  #   BENCH_E2E_NODE_DIR, BENCH_E2E_GENESIS, BENCH_E2E_TRUSTED_PEERS,
+  #   BENCH_E2E_CONSENSUS_PORT, BENCH_E2E_PEER_URL
+  # ----------------------------------------------------------------
+
+  e2e-prepare:
+    if: inputs.mode == 'e2e'
+    name: e2e-prepare
+    runs-on: ubuntu-latest
+    outputs:
+      baseline-sha: ${{ steps.refs.outputs.baseline-sha }}
+      feature-sha: ${{ steps.refs.outputs.feature-sha }}
+      benchmark-id: ${{ steps.meta.outputs.benchmark-id }}
+      reference-epoch: ${{ steps.meta.outputs.reference-epoch }}
+      checkout-ref: ${{ steps.checkout-ref.outputs.ref }}
+    steps:
+      - name: Resolve checkout ref
+        id: checkout-ref
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.DEREK_PAT }}
+          script: |
+            const pr = '${{ inputs.pr }}';
+            if (!pr) {
+              core.setOutput('ref', '${{ github.ref }}');
+              return;
+            }
+            const { data: prData } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: parseInt(pr),
+            });
+            if (prData.state !== 'open' || !prData.mergeable) {
+              core.setOutput('ref', prData.head.sha);
+            } else {
+              core.setOutput('ref', `refs/pull/${pr}/merge`);
+            }
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.checkout-ref.outputs.ref }}
+
+      - name: Resolve refs to SHAs
+        id: refs
+        env:
+          INPUT_BASELINE: ${{ inputs.baseline }}
+          INPUT_FEATURE: ${{ inputs.feature }}
+          INPUT_PR: ${{ inputs.pr }}
+        run: |
+          baseline="${INPUT_BASELINE:-main}"
+          if [ -z "$INPUT_FEATURE" ]; then
+            feature="refs/pull/${INPUT_PR}/head"
+            git fetch origin "$feature" --quiet
+          else
+            feature="$INPUT_FEATURE"
+          fi
+          baseline_sha=$(git rev-parse "$baseline")
+          feature_sha=$(git rev-parse "$feature")
+          echo "baseline-sha=$baseline_sha" >> "$GITHUB_OUTPUT"
+          echo "feature-sha=$feature_sha" >> "$GITHUB_OUTPUT"
+          echo "Baseline: $baseline → $baseline_sha"
+          echo "Feature: $feature → $feature_sha"
+
+      - name: Generate benchmark metadata
+        id: meta
+        run: |
+          echo "benchmark-id=bench-e2e-$(date +%Y%m%d-%H%M%S)" >> "$GITHUB_OUTPUT"
+          echo "reference-epoch=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - name: Update status (running)
+        if: inputs.comment-id
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.DEREK_PAT }}
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const config = `**Config:** mode: \`e2e\`, preset: \`${{ inputs.preset }}\`, duration: \`${{ inputs.duration }}s\`, bloat: \`${{ inputs.bloat }} MiB\`, tps: \`${{ inputs.tps }}\`, baseline: \`${{ inputs.baseline-name }}\`, feature: \`${{ inputs.feature-name }}\``;
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: parseInt('${{ inputs.comment-id }}'),
+              body: `cc @${{ inputs.actor }}\n\n🚀 E2E Benchmark running! [View run](${runUrl})\n\n⏳ **Status:** Running baseline-1...\n\n${config}`,
+            });
+
+  # B-F-F-B phase pairs. Runner A runs tempo-bench (txgen), runner B runs node only.
+
+  baseline-1-a:
+    needs: [e2e-prepare]
+    if: inputs.mode == 'e2e'
+    name: baseline-1-a
+    runs-on: [self-hosted, Linux, X64, bench-a]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+        with: { fetch-depth: 0, ref: "${{ needs.e2e-prepare.outputs.checkout-ref }}" }
+      - uses: ./.github/actions/bench-e2e-phase
+        with:
+          role: a
+          phase: baseline-1
+          ref: ${{ needs.e2e-prepare.outputs.baseline-sha }}
+          preset: ${{ inputs.preset }}
+          tps: ${{ inputs.tps }}
+          duration: ${{ inputs.duration }}
+          bloat: ${{ inputs.bloat }}
+          benchmark-id: ${{ needs.e2e-prepare.outputs.benchmark-id }}
+          reference-epoch: ${{ needs.e2e-prepare.outputs.reference-epoch }}
+          bench-args: ${{ inputs.bench-args }}
+
+  baseline-1-b:
+    needs: [e2e-prepare]
+    if: inputs.mode == 'e2e'
+    name: baseline-1-b
+    runs-on: [self-hosted, Linux, X64, bench-b]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+        with: { fetch-depth: 0, ref: "${{ needs.e2e-prepare.outputs.checkout-ref }}" }
+      - uses: ./.github/actions/bench-e2e-phase
+        with:
+          role: b
+          phase: baseline-1
+          ref: ${{ needs.e2e-prepare.outputs.baseline-sha }}
+          preset: ${{ inputs.preset }}
+          tps: ${{ inputs.tps }}
+          duration: ${{ inputs.duration }}
+          bloat: ${{ inputs.bloat }}
+          benchmark-id: ${{ needs.e2e-prepare.outputs.benchmark-id }}
+          reference-epoch: ${{ needs.e2e-prepare.outputs.reference-epoch }}
+
+  feature-1-a:
+    needs: [e2e-prepare, baseline-1-a, baseline-1-b]
+    if: inputs.mode == 'e2e'
+    name: feature-1-a
+    runs-on: [self-hosted, Linux, X64, bench-a]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+        with: { fetch-depth: 0, ref: "${{ needs.e2e-prepare.outputs.checkout-ref }}" }
+      - uses: ./.github/actions/bench-e2e-phase
+        with:
+          role: a
+          phase: feature-1
+          ref: ${{ needs.e2e-prepare.outputs.feature-sha }}
+          preset: ${{ inputs.preset }}
+          tps: ${{ inputs.tps }}
+          duration: ${{ inputs.duration }}
+          bloat: ${{ inputs.bloat }}
+          benchmark-id: ${{ needs.e2e-prepare.outputs.benchmark-id }}
+          reference-epoch: ${{ needs.e2e-prepare.outputs.reference-epoch }}
+          bench-args: ${{ inputs.bench-args }}
+
+  feature-1-b:
+    needs: [e2e-prepare, baseline-1-a, baseline-1-b]
+    if: inputs.mode == 'e2e'
+    name: feature-1-b
+    runs-on: [self-hosted, Linux, X64, bench-b]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+        with: { fetch-depth: 0, ref: "${{ needs.e2e-prepare.outputs.checkout-ref }}" }
+      - uses: ./.github/actions/bench-e2e-phase
+        with:
+          role: b
+          phase: feature-1
+          ref: ${{ needs.e2e-prepare.outputs.feature-sha }}
+          preset: ${{ inputs.preset }}
+          tps: ${{ inputs.tps }}
+          duration: ${{ inputs.duration }}
+          bloat: ${{ inputs.bloat }}
+          benchmark-id: ${{ needs.e2e-prepare.outputs.benchmark-id }}
+          reference-epoch: ${{ needs.e2e-prepare.outputs.reference-epoch }}
+
+  feature-2-a:
+    needs: [e2e-prepare, feature-1-a, feature-1-b]
+    if: inputs.mode == 'e2e'
+    name: feature-2-a
+    runs-on: [self-hosted, Linux, X64, bench-a]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+        with: { fetch-depth: 0, ref: "${{ needs.e2e-prepare.outputs.checkout-ref }}" }
+      - uses: ./.github/actions/bench-e2e-phase
+        with:
+          role: a
+          phase: feature-2
+          ref: ${{ needs.e2e-prepare.outputs.feature-sha }}
+          preset: ${{ inputs.preset }}
+          tps: ${{ inputs.tps }}
+          duration: ${{ inputs.duration }}
+          bloat: ${{ inputs.bloat }}
+          benchmark-id: ${{ needs.e2e-prepare.outputs.benchmark-id }}
+          reference-epoch: ${{ needs.e2e-prepare.outputs.reference-epoch }}
+          bench-args: ${{ inputs.bench-args }}
+
+  feature-2-b:
+    needs: [e2e-prepare, feature-1-a, feature-1-b]
+    if: inputs.mode == 'e2e'
+    name: feature-2-b
+    runs-on: [self-hosted, Linux, X64, bench-b]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+        with: { fetch-depth: 0, ref: "${{ needs.e2e-prepare.outputs.checkout-ref }}" }
+      - uses: ./.github/actions/bench-e2e-phase
+        with:
+          role: b
+          phase: feature-2
+          ref: ${{ needs.e2e-prepare.outputs.feature-sha }}
+          preset: ${{ inputs.preset }}
+          tps: ${{ inputs.tps }}
+          duration: ${{ inputs.duration }}
+          bloat: ${{ inputs.bloat }}
+          benchmark-id: ${{ needs.e2e-prepare.outputs.benchmark-id }}
+          reference-epoch: ${{ needs.e2e-prepare.outputs.reference-epoch }}
+
+  baseline-2-a:
+    needs: [e2e-prepare, feature-2-a, feature-2-b]
+    if: inputs.mode == 'e2e'
+    name: baseline-2-a
+    runs-on: [self-hosted, Linux, X64, bench-a]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+        with: { fetch-depth: 0, ref: "${{ needs.e2e-prepare.outputs.checkout-ref }}" }
+      - uses: ./.github/actions/bench-e2e-phase
+        with:
+          role: a
+          phase: baseline-2
+          ref: ${{ needs.e2e-prepare.outputs.baseline-sha }}
+          preset: ${{ inputs.preset }}
+          tps: ${{ inputs.tps }}
+          duration: ${{ inputs.duration }}
+          bloat: ${{ inputs.bloat }}
+          benchmark-id: ${{ needs.e2e-prepare.outputs.benchmark-id }}
+          reference-epoch: ${{ needs.e2e-prepare.outputs.reference-epoch }}
+          bench-args: ${{ inputs.bench-args }}
+
+  baseline-2-b:
+    needs: [e2e-prepare, feature-2-a, feature-2-b]
+    if: inputs.mode == 'e2e'
+    name: baseline-2-b
+    runs-on: [self-hosted, Linux, X64, bench-b]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+        with: { fetch-depth: 0, ref: "${{ needs.e2e-prepare.outputs.checkout-ref }}" }
+      - uses: ./.github/actions/bench-e2e-phase
+        with:
+          role: b
+          phase: baseline-2
+          ref: ${{ needs.e2e-prepare.outputs.baseline-sha }}
+          preset: ${{ inputs.preset }}
+          tps: ${{ inputs.tps }}
+          duration: ${{ inputs.duration }}
+          bloat: ${{ inputs.bloat }}
+          benchmark-id: ${{ needs.e2e-prepare.outputs.benchmark-id }}
+          reference-epoch: ${{ needs.e2e-prepare.outputs.reference-epoch }}
+
+  e2e-aggregate:
+    needs: [e2e-prepare, baseline-1-a, baseline-1-b, feature-1-a, feature-1-b, feature-2-a, feature-2-b, baseline-2-a, baseline-2-b]
+    if: always() && inputs.mode == 'e2e' && needs.e2e-prepare.result == 'success'
+    name: e2e-aggregate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all phase artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: e2e-*
+          path: bench-results/
+          merge-multiple: true
+
+      - name: Post results to PR
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.DEREK_PAT }}
+          script: |
+            const fs = require('fs');
+            const phases = ['baseline-1', 'feature-1', 'feature-2', 'baseline-2'];
+            const phaseResults = {
+              'baseline-1': '${{ needs.baseline-1-a.result }}',
+              'feature-1': '${{ needs.feature-1-a.result }}',
+              'feature-2': '${{ needs.feature-2-a.result }}',
+              'baseline-2': '${{ needs.baseline-2-a.result }}',
+            };
+
+            const lines = ['## E2E Benchmark Results\n'];
+            lines.push(`**Baseline:** \`${{ inputs.baseline-name }}\` (\`${{ needs.e2e-prepare.outputs.baseline-sha }}\`)`);
+            lines.push(`**Feature:** \`${{ inputs.feature-name }}\` (\`${{ needs.e2e-prepare.outputs.feature-sha }}\`)`);
+            lines.push(`**Benchmark ID:** \`${{ needs.e2e-prepare.outputs.benchmark-id }}\`\n`);
+            lines.push('| Phase | Status |');
+            lines.push('|-------|--------|');
+            for (const phase of phases) {
+              const result = phaseResults[phase];
+              const icon = result === 'success' ? '✅' : result === 'skipped' ? '⏭️' : '❌';
+              lines.push(`| ${phase} | ${icon} ${result} |`);
+            }
+
+            for (const phase of phases) {
+              const reportPath = `bench-results/${phase}/report-${phase}.json`;
+              try {
+                const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+                if (report.summary) {
+                  lines.push(`\n### ${phase}\n`);
+                  lines.push('```');
+                  lines.push(JSON.stringify(report.summary, null, 2));
+                  lines.push('```');
+                }
+              } catch (e) {}
+            }
+
+            const allSuccess = Object.values(phaseResults).every(r => r === 'success');
+            const jobUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const icon = allSuccess ? '✅' : '❌';
+            const status = allSuccess ? 'complete' : 'finished with failures';
+            const body = `cc @${{ inputs.actor }}\n\n${icon} E2E Benchmark ${status}! [View run](${jobUrl})\n\n${lines.join('\n')}`;
+
+            const commentId = '${{ inputs.comment-id }}';
+            if (commentId) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: parseInt(commentId),
+                body,
+              });
+            } else {
+              await core.summary.addRaw(body).write();
+            }
+
+      - name: Update status (cancelled)
+        if: cancelled() && inputs.comment-id
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.DEREK_PAT }}
+          script: |
+            const jobUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: parseInt('${{ inputs.comment-id }}'),
+              body: `cc @${{ inputs.actor }}\n\n⚠️ E2E benchmark cancelled. [View logs](${jobUrl})`,
             });

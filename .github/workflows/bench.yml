@@ -360,10 +360,9 @@ jobs:
             });
             core.setOutput('comment-id', String(comment.id));
 
-  bench-builder:
+  bench-run:
     needs: tempo-bench-ack
-    if: needs.tempo-bench-ack.outputs.mode == 'builder'
-    uses: ./.github/workflows/bench-builder.yml
+    uses: ./.github/workflows/bench-run.yml
     with:
       pr: ${{ needs.tempo-bench-ack.outputs.pr }}
       actor: ${{ needs.tempo-bench-ack.outputs.actor }}
@@ -401,30 +400,5 @@ jobs:
       CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
       CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
       CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
-      SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
-      SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
-
-  bench-e2e:
-    needs: tempo-bench-ack
-    if: needs.tempo-bench-ack.outputs.mode == 'e2e'
-    uses: ./.github/workflows/bench-e2e.yml
-    with:
-      pr: ${{ needs.tempo-bench-ack.outputs.pr }}
-      actor: ${{ needs.tempo-bench-ack.outputs.actor }}
-      mode: ${{ needs.tempo-bench-ack.outputs.mode }}
-      preset: ${{ needs.tempo-bench-ack.outputs.preset }}
-      duration: ${{ needs.tempo-bench-ack.outputs.duration }}
-      bloat: ${{ needs.tempo-bench-ack.outputs.bloat }}
-      tps: ${{ needs.tempo-bench-ack.outputs.tps }}
-      baseline: ${{ needs.tempo-bench-ack.outputs.baseline }}
-      feature: ${{ needs.tempo-bench-ack.outputs.feature }}
-      baseline-name: ${{ needs.tempo-bench-ack.outputs.baseline-name }}
-      feature-name: ${{ needs.tempo-bench-ack.outputs.feature-name }}
-      run-type: ${{ needs.tempo-bench-ack.outputs.run-type }}
-      no-slack: ${{ needs.tempo-bench-ack.outputs.no-slack }}
-      bench-args: ${{ needs.tempo-bench-ack.outputs.bench-args }}
-      comment-id: ${{ needs.tempo-bench-ack.outputs.comment-id }}
-    secrets:
-      DEREK_PAT: ${{ secrets.DEREK_PAT }}
       SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
       SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
