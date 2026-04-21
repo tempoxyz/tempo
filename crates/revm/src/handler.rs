@@ -140,8 +140,8 @@ fn tempo_signature_verification_gas(signature: &TempoSignature) -> u64 {
 
 /// Counts the storage rows written by T3 call-scope configuration.
 ///
-/// This only covers the rows that already pay the dynamic SSTORE set cost. The helper
-/// bookkeeping around scope persistence is charged separately via a rounded surcharge.
+/// This lets intrinsic gas account for the scoped-call writes that `authorize_key`
+/// persists into keychain storage.
 fn call_scope_storage_slots(auth: &tempo_primitives::transaction::KeyAuthorization) -> u64 {
     match auth.allowed_calls.as_ref() {
         None => 0,
@@ -172,7 +172,7 @@ fn call_scope_storage_slots(auth: &tempo_primitives::transaction::KeyAuthorizati
     }
 }
 
-/// Charges the unpriced scope-helper bookkeeping for T3 key authorizations.
+/// Charges the unpriced scope-helper bookkeeping for T4+ key authorizations.
 ///
 /// The dynamic SSTORE rows are already counted by `call_scope_storage_slots()`. What remains is the
 /// helper work around them: clearing the empty scope tree for fresh keys, target/set maintenance,
@@ -314,11 +314,14 @@ fn calculate_key_authorization_gas(
 
         // T3+: include scoped-call storage rows in intrinsic gas.
         if spec.is_t3() {
-            total = total
-                .saturating_add(
-                    sstore_cost.saturating_mul(call_scope_storage_slots(&key_auth.authorization)),
-                )
-                .saturating_add(call_scope_extra_gas(&key_auth.authorization));
+            total = total.saturating_add(
+                sstore_cost.saturating_mul(call_scope_storage_slots(&key_auth.authorization)),
+            );
+        }
+
+        // T4+: add rounded surcharge for scope-helper bookkeeping.
+        if spec.is_t4() {
+            total = total.saturating_add(call_scope_extra_gas(&key_auth.authorization));
         }
 
         total
@@ -2849,9 +2852,20 @@ mod tests {
                 &t1b_gas_params,
                 TempoHardfork::T3,
             );
+            let expected = ECRECOVER_GAS + sload + sstore * (1 + 2 * num_limits as u64) + BUFFER;
+            assert_eq!(gas, expected, "T3 with {num_limits} limits");
+        }
+
+        // T4: surcharge is added on top of T3 scope-slot charges.
+        for num_limits in 0..=3 {
+            let gas = calculate_key_authorization_gas(
+                &create_key_auth(num_limits),
+                &t1b_gas_params,
+                TempoHardfork::T4,
+            );
             let expected =
                 ECRECOVER_GAS + sload + sstore * (1 + 2 * num_limits as u64) + BUFFER + 5_000;
-            assert_eq!(gas, expected, "T3 with {num_limits} limits");
+            assert_eq!(gas, expected, "T4 with {num_limits} limits");
         }
 
         let scoped = SignedKeyAuthorization {
@@ -2870,14 +2884,15 @@ mod tests {
             signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
         };
 
+        // T3: scope slots are charged but no rounded surcharge.
         let gas = calculate_key_authorization_gas(&scoped, &t1b_gas_params, TempoHardfork::T3);
-        // 1 key write + 12 scope slots:
-        // account mode(1) + target insertion rows(3) + selector insertion rows(3)
-        // + constrained selector recipient-length(1) + recipients values+positions(2*2).
-        // The rounded surcharge adds 5k base + 7k per target + 7k per selector + 5k per
-        // recipient, which keeps larger scope trees from being materially underpriced.
+        let expected = ECRECOVER_GAS + sload + sstore * (1 + 12) + BUFFER;
+        assert_eq!(gas, expected, "T3 scope writes without surcharge");
+
+        // T4: scope slots + rounded surcharge (5k base + 7k*1 target + 7k*1 selector + 5k*2 recipients = 29k).
+        let gas = calculate_key_authorization_gas(&scoped, &t1b_gas_params, TempoHardfork::T4);
         let expected = ECRECOVER_GAS + sload + sstore * (1 + 12) + BUFFER + 29_000;
-        assert_eq!(gas, expected, "T3 scope writes should be fully charged");
+        assert_eq!(gas, expected, "T4 scope writes should be fully charged");
     }
 
     #[test]
