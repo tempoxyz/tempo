@@ -396,7 +396,7 @@ jobs:
           fi
           cmd+=(
             --preset "$BENCH_PRESET"
-            --mode "$BENCH_MODE"
+            --mode dev
             --bloat "$BENCH_BLOAT"
             --duration "$BENCH_DURATION"
             --tps "$BENCH_TPS"
