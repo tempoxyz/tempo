@@ -104,6 +104,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
         let code_len = code.len();
         self.deduct_gas(self.gas_params.code_deposit_cost(code_len))?;
+        self.deduct_gas(self.gas_params.keccak256_cost(code_len))?;
 
         // Track state gas for code deposit
         self.deduct_state_gas(self.gas_params.code_deposit_state_gas(code_len))?;
@@ -358,7 +359,6 @@ mod tests {
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use revm::{
-        context_interface::cfg::GasId,
         database::{CacheDB, EmptyDB},
         interpreter::StateLoad,
     };
@@ -370,23 +370,14 @@ mod tests {
 
     impl TestEvm {
         fn default() -> Self {
-            Self::with_gas_overrides(TempoHardfork::default(), [])
+            Self::new(TempoHardfork::default())
         }
 
         fn new(spec: TempoHardfork) -> Self {
-            Self::with_gas_overrides(spec, [])
-        }
-
-        fn with_gas_overrides<const N: usize>(
-            spec: TempoHardfork,
-            overrides: [(GasId, u64); N],
-        ) -> Self {
             let db = CacheDB::new(EmptyDB::new());
             let mut cfg = revm::context::CfgEnv::<TempoHardfork>::default();
             cfg.spec = spec;
             cfg.gas_params = tempo_gas_params(spec);
-            cfg.gas_params
-                .override_gas(overrides.into_iter().collect::<Vec<_>>());
 
             Self(TempoEvmFactory::default().create_evm(
                 db,
@@ -732,15 +723,7 @@ mod tests {
 
     #[test]
     fn test_state_gas_used_only_counts_state_creating_ops() -> eyre::Result<()> {
-        let mut evm = TestEvm::with_gas_overrides(
-            TempoHardfork::T4,
-            [
-                (GasId::sstore_set_without_load_cost(), 19_900),
-                (GasId::sstore_set_state_gas(), 230_000),
-                (GasId::code_deposit_cost(), 200),
-                (GasId::code_deposit_state_gas(), 2_300),
-            ],
-        );
+        let mut evm = TestEvm::new(TempoHardfork::T4);
         let gas_params = evm.ctx().cfg.gas_params.clone();
         let mut provider = evm.provider_with_reservoir(0);
 
@@ -797,13 +780,7 @@ mod tests {
     /// spills into regular gas once the reservoir is exhausted.
     #[test]
     fn test_state_gas_spills_from_reservoir_to_regular_gas() -> eyre::Result<()> {
-        let mut evm = TestEvm::with_gas_overrides(
-            TempoHardfork::T4,
-            [
-                (GasId::sstore_set_without_load_cost(), 19_900),
-                (GasId::sstore_set_state_gas(), 230_000),
-            ],
-        );
+        let mut evm = TestEvm::new(TempoHardfork::T4);
 
         // Reservoir = 500k: enough for 2 full SSTOREs (2 × 230k = 460k)
         // but the 3rd SSTORE (230k) must spill 190k into regular gas.
@@ -870,20 +847,18 @@ mod tests {
         Ok(())
     }
 
-    // -- FOUND DIVERGENCES VS TIP-1016 SPEC -------------------------------------------------------
-
     #[test]
-    #[ignore = "TIP-1016 mismatch: runtime still charges the Berlin cold-slot surcharge (extra 21k)"]
     fn test_t4_cold_sstore_matches_tip1016_spec() -> eyre::Result<()> {
-        let expected_regular_gas = 20_000u64;
         let mut evm = TestEvm::new(TempoHardfork::T4);
-        let mut provider = evm.provider_with_reservoir(230_000);
+        let mut provider = evm.provider_with_reservoir(460_000);
 
-        provider.sstore(Address::random(), U256::ONE, U256::ONE)?;
+        let (address, cold_slot, warm_slot) = (Address::random(), U256::ONE, U256::from(2));
+
+        provider.sstore(address, cold_slot, U256::ONE)?;
         assert_eq!(
             provider.gas_used(),
-            expected_regular_gas,
-            "TIP-1016 cold SSTORE should consume 20,000 regular gas"
+            22_200,
+            "TIP-1016 cold SSTORE should consume 22,200 regular gas including the retained Berlin cold-slot access charge"
         );
         assert_eq!(
             provider.state_gas_used(),
@@ -891,38 +866,26 @@ mod tests {
             "TIP-1016 cold SSTORE should consume 230,000 state gas"
         );
 
-        Ok(())
-    }
+        provider.sload(address, warm_slot)?;
+        let gas_before_warm_sstore = provider.gas_used();
+        let state_gas_before_warm_sstore = provider.state_gas_used();
 
-    #[test]
-    fn test_t4_cold_sstore_matches_tip1016_spec_poc() -> eyre::Result<()> {
-        // POC: if the Berlin cold-slot surcharge is zeroed, the runtime path matches the TIP-1016 cold SSTORE split.
-        let mut evm = TestEvm::with_gas_overrides(
-            TempoHardfork::T4,
-            [
-                (GasId::sstore_set_without_load_cost(), 19_900),
-                (GasId::cold_storage_cost(), 0),
-            ],
-        );
-        let mut provider = evm.provider_with_reservoir(230_000);
-
-        provider.sstore(Address::random(), U256::ONE, U256::ONE)?;
+        provider.sstore(address, warm_slot, U256::ONE)?;
         assert_eq!(
-            provider.gas_used(),
-            20_000,
-            "with cold_storage_cost zeroed, cold SSTORE regular gas matches TIP-1016"
+            provider.gas_used() - gas_before_warm_sstore,
+            20_100,
+            "TIP-1016 warm zero-to-non-zero SSTORE should consume 20,100 regular gas after the slot is warmed by SLOAD"
         );
         assert_eq!(
-            provider.state_gas_used(),
+            provider.state_gas_used() - state_gas_before_warm_sstore,
             230_000,
-            "with cold_storage_cost zeroed, cold SSTORE state gas still matches TIP-1016"
+            "TIP-1016 warm zero-to-non-zero SSTORE should still consume 230,000 state gas"
         );
 
         Ok(())
     }
 
     #[test]
-    #[ignore = "TIP-1016 mismatch: set_code path does not charge HASH_COST (missing 6 gas)"]
     fn test_t4_set_code_new_account_matches_tip1016_success_path() -> eyre::Result<()> {
         let mut evm = TestEvm::new(TempoHardfork::T4);
         let gas_params = evm.ctx().cfg.gas_params.clone();
@@ -955,7 +918,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "TIP-1016 mismatch: 0->X->0 refund math does not net to GAS_WARM_ACCESS (100 gas)"]
+    #[ignore = "TIP-1016 mismatch: 0->X->0 refund math does not net to GAS_WARM_ACCESS (100 gas) yet"]
     fn test_t4_sstore_restore_refund_matches_tip1016_spec() -> eyre::Result<()> {
         let mut evm = TestEvm::new(TempoHardfork::T4);
         let mut provider = evm.provider_with_reservoir(230_000);
