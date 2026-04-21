@@ -71,17 +71,25 @@ pub(crate) struct CheckAbi {
     /// Only check a specific interface (by Solidity name, e.g. "ITIP20").
     #[arg(long)]
     only: Option<String>,
+
+    /// Path to a tempo-std repo root (uses the workspace submodule by default).
+    #[arg(long)]
+    tempo_std: Option<PathBuf>,
 }
 
 impl CheckAbi {
     pub(crate) fn run(self) -> eyre::Result<()> {
-        let workspace_root = find_workspace_root()?;
-        let artifacts_dir = workspace_root.join("tips/ref-impls/lib/tempo-std/out");
+        let tempo_std_root = match self.tempo_std {
+            Some(p) => p,
+            None => find_workspace_root()?.join("tips/ref-impls/lib/tempo-std"),
+        };
+        let artifacts_dir = tempo_std_root.join("out");
 
         if !artifacts_dir.exists() {
             bail!(
-                "tempo-std artifacts not found at {}. Run `forge build` in tips/ref-impls/lib/tempo-std first.",
-                artifacts_dir.display()
+                "tempo-std artifacts not found at {}. Run `forge build` in {} first.",
+                artifacts_dir.display(),
+                tempo_std_root.display(),
             );
         }
 
