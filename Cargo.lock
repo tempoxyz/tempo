@@ -12369,7 +12369,6 @@ dependencies = [
  "mimalloc",
  "rand 0.8.5",
  "rand 0.9.4",
- "rayon",
  "reth-tracing",
  "rlimit",
  "serde",
@@ -12506,7 +12505,6 @@ dependencies = [
  "commonware-cryptography",
  "commonware-math",
  "commonware-utils",
- "modular-bitfield",
  "rand 0.8.5",
 ]
 
@@ -12973,7 +12971,6 @@ dependencies = [
  "tempo-evm",
  "tempo-precompiles",
  "tempo-primitives",
- "tempo-revm",
  "tempo-validator-config",
  "tokio",
 ]
