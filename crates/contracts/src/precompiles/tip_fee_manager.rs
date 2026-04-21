@@ -41,15 +41,9 @@ crate::sol! {
         event FeesDistributed(address indexed validator, address indexed token, uint256 amount);
 
         // Errors
-        error OnlyValidator();
-        error OnlySystemContract();
         error InvalidToken();
-        error PoolDoesNotExist();
         error InsufficientFeeTokenBalance();
-        error InternalError();
         error CannotChangeWithinBlock();
-        error CannotChangeWithPendingFees();
-        error TokenPolicyForbids();
     }
 }
 
@@ -115,24 +109,9 @@ sol! {
 }
 
 impl FeeManagerError {
-    /// Creates an error for only validator access.
-    pub const fn only_validator() -> Self {
-        Self::OnlyValidator(IFeeManager::OnlyValidator {})
-    }
-
-    /// Creates an error for only system contract access.
-    pub const fn only_system_contract() -> Self {
-        Self::OnlySystemContract(IFeeManager::OnlySystemContract {})
-    }
-
     /// Creates an error for invalid token.
     pub const fn invalid_token() -> Self {
         Self::InvalidToken(IFeeManager::InvalidToken {})
-    }
-
-    /// Creates an error when pool does not exist.
-    pub const fn pool_does_not_exist() -> Self {
-        Self::PoolDoesNotExist(IFeeManager::PoolDoesNotExist {})
     }
 
     /// Creates an error for insufficient fee token balance.
@@ -143,16 +122,6 @@ impl FeeManagerError {
     /// Creates an error for cannot change within block.
     pub const fn cannot_change_within_block() -> Self {
         Self::CannotChangeWithinBlock(IFeeManager::CannotChangeWithinBlock {})
-    }
-
-    /// Creates an error for cannot change with pending fees.
-    pub const fn cannot_change_with_pending_fees() -> Self {
-        Self::CannotChangeWithPendingFees(IFeeManager::CannotChangeWithPendingFees {})
-    }
-
-    /// Creates an error for token policy forbids.
-    pub const fn token_policy_forbids() -> Self {
-        Self::TokenPolicyForbids(IFeeManager::TokenPolicyForbids {})
     }
 }
 
