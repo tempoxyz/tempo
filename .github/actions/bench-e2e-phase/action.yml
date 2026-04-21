@@ -33,6 +33,18 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Validate runner env
+      shell: bash
+      run: |
+        missing=()
+        for var in BENCH_E2E_NODE_DIR BENCH_E2E_GENESIS BENCH_E2E_TRUSTED_PEERS BENCH_E2E_CONSENSUS_PORT BENCH_E2E_PEER_URL; do
+          if [ -z "${!var}" ]; then missing+=("$var"); fi
+        done
+        if [ ${#missing[@]} -gt 0 ]; then
+          echo "::error::Missing required runner env vars: ${missing[*]}"
+          exit 1
+        fi
+
     - name: Run phase
       shell: bash
       run: |
@@ -53,3 +65,4 @@ runs:
       with:
         name: e2e-${{ inputs.phase }}-${{ inputs.role }}
         path: bench-results/
+        if-no-files-found: ignore

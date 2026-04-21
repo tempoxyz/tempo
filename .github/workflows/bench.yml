@@ -259,6 +259,24 @@ jobs:
               }
             }
 
+            // Reject unsupported options for e2e mode
+            if (mode === 'e2e') {
+              const unsupported = [];
+              if (backend !== 'tempo-bench') unsupported.push(`backend=${backend}`);
+              if (samply === 'true') unsupported.push('samply');
+              if (tracy !== 'off') unsupported.push(`tracy=${tracy}`);
+              if (baselineArgs) unsupported.push('baseline-args');
+              if (featureArgs) unsupported.push('feature-args');
+              if (baselineHardfork) unsupported.push('baseline-hardfork');
+              if (featureHardfork) unsupported.push('feature-hardfork');
+              if (unsupported.length > 0) {
+                const msg = `❌ **Invalid bench command**\n\n\`mode=e2e\` does not support: ${unsupported.map(s => `\`${s}\``).join(', ')}`;
+                await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number, body: msg });
+                core.setFailed(msg);
+                return;
+              }
+            }
+
             if (!['manual', 'nightly'].includes(runType)) {
               const msg = `❌ **Invalid benchmark type**\n\n\`run-type=${runType}\` is not valid. Must be \`manual\` or \`nightly\`.`;
               core.setFailed(msg);

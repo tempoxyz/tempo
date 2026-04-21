@@ -1674,13 +1674,12 @@ def "main bench-consensus-phase" [
         | append (if $bloat > 0 { ["--mnemonic" $"'($BLOAT_MNEMONIC)'"] } else { [] })
         | append (if $bench_args != "" { $bench_args | split row " " } else { [] })
         | append ["--node-commit-sha" $ref "--build-profile" $profile "--benchmark-mode" "e2e"]
-        | append (if $benchmark_id != "" { ["--benchmark-id" $benchmark_id] } else { [] })
 
         print $"  Running benchmark \(targets: ($target_urls)\)..."
-        try {
-            bash -c $"ulimit -Sn unlimited && ($bench_cmd | str join ' ')"
-        } catch { |e|
-            print $"  Benchmark failed: ($e.msg)"
+        let bench_result = (bash -c $"ulimit -Sn unlimited && ($bench_cmd | str join ' ')" | complete)
+        if $bench_result.exit_code != 0 {
+            print $"  Benchmark failed with exit code ($bench_result.exit_code)"
+            error make { msg: $"Benchmark run ($phase) failed" }
         }
 
         if ("report.json" | path exists) {
@@ -1688,10 +1687,12 @@ def "main bench-consensus-phase" [
             rm report.json
             print $"  Report saved: report-($phase).json"
         } else {
-            print $"  WARNING: no report.json produced"
+            error make { msg: $"Benchmark run ($phase) produced no report.json" }
         }
     } else {
-        let wait_secs = $duration + 60
+        # Role B: keep node alive until well past the benchmark duration.
+        # Use a large cushion because role A may start load later (build time variance).
+        let wait_secs = $duration + 600
         print $"  Role B: running node for ($wait_secs)s..."
         sleep ($"($wait_secs)sec" | into duration)
     }
@@ -2422,14 +2423,19 @@ def wait-for-peers [url: string, min_peers: int = 1, max_attempts: int = 120] {
         }
         let result = (do { curl -sf $url -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"net_peerCount","params":[],"id":1}' } | complete)
         if $result.exit_code == 0 {
-            let hex = ($result.stdout | from json | get result)
-            let count = ($hex | str replace "0x" "" | into int --radix 16)
-            if $count >= $min_peers {
-                print $"  ($url) has ($count) peer\(s\)"
-                break
-            }
-            if ($attempt mod 10) == 0 {
-                print $"  Waiting for peers at ($url)... ($count)/($min_peers) \(($attempt)s\)"
+            let parsed = try { $result.stdout | from json } catch { null }
+            let hex = if $parsed != null { $parsed | get -o result | default "" } else { "" }
+            if $hex != "" {
+                let count = ($hex | str replace "0x" "" | into int --radix 16)
+                if $count >= $min_peers {
+                    print $"  ($url) has ($count) peer\(s\)"
+                    break
+                }
+                if ($attempt mod 10) == 0 {
+                    print $"  Waiting for peers at ($url)... ($count)/($min_peers) \(($attempt)s\)"
+                }
+            } else if ($attempt mod 10) == 0 {
+                print $"  Waiting for peers at ($url)... \(($attempt)s\)"
             }
         } else {
             if ($attempt mod 10) == 0 {

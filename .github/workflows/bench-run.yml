@@ -662,6 +662,12 @@ jobs:
           INPUT_FEATURE: ${{ inputs.feature }}
           INPUT_PR: ${{ inputs.pr }}
         run: |
+          resolve_ref() {
+            local ref="$1"
+            git fetch origin "$ref" --quiet 2>/dev/null || true
+            git rev-parse "$ref" 2>/dev/null || git rev-parse "origin/$ref"
+          }
+
           baseline="${INPUT_BASELINE:-main}"
           if [ -z "$INPUT_FEATURE" ]; then
             feature="refs/pull/${INPUT_PR}/head"
@@ -669,8 +675,8 @@ jobs:
           else
             feature="$INPUT_FEATURE"
           fi
-          baseline_sha=$(git rev-parse "$baseline")
-          feature_sha=$(git rev-parse "$feature")
+          baseline_sha=$(resolve_ref "$baseline")
+          feature_sha=$(resolve_ref "$feature")
           echo "baseline-sha=$baseline_sha" >> "$GITHUB_OUTPUT"
           echo "feature-sha=$feature_sha" >> "$GITHUB_OUTPUT"
           echo "Baseline: $baseline → $baseline_sha"
@@ -892,38 +898,37 @@ jobs:
             const fs = require('fs');
             const phases = ['baseline-1', 'feature-1', 'feature-2', 'baseline-2'];
             const phaseResults = {
-              'baseline-1': '${{ needs.baseline-1-a.result }}',
-              'feature-1': '${{ needs.feature-1-a.result }}',
-              'feature-2': '${{ needs.feature-2-a.result }}',
-              'baseline-2': '${{ needs.baseline-2-a.result }}',
+              'baseline-1': { a: '${{ needs.baseline-1-a.result }}', b: '${{ needs.baseline-1-b.result }}' },
+              'feature-1': { a: '${{ needs.feature-1-a.result }}', b: '${{ needs.feature-1-b.result }}' },
+              'feature-2': { a: '${{ needs.feature-2-a.result }}', b: '${{ needs.feature-2-b.result }}' },
+              'baseline-2': { a: '${{ needs.baseline-2-a.result }}', b: '${{ needs.baseline-2-b.result }}' },
             };
 
             const lines = ['## E2E Benchmark Results\n'];
             lines.push(`**Baseline:** \`${{ inputs.baseline-name }}\` (\`${{ needs.e2e-prepare.outputs.baseline-sha }}\`)`);
             lines.push(`**Feature:** \`${{ inputs.feature-name }}\` (\`${{ needs.e2e-prepare.outputs.feature-sha }}\`)`);
             lines.push(`**Benchmark ID:** \`${{ needs.e2e-prepare.outputs.benchmark-id }}\`\n`);
-            lines.push('| Phase | Status |');
-            lines.push('|-------|--------|');
+            lines.push('| Phase | Runner A | Runner B |');
+            lines.push('|-------|----------|----------|');
             for (const phase of phases) {
-              const result = phaseResults[phase];
-              const icon = result === 'success' ? '✅' : result === 'skipped' ? '⏭️' : '❌';
-              lines.push(`| ${phase} | ${icon} ${result} |`);
+              const r = phaseResults[phase];
+              const iconA = r.a === 'success' ? '✅' : r.a === 'skipped' ? '⏭️' : '❌';
+              const iconB = r.b === 'success' ? '✅' : r.b === 'skipped' ? '⏭️' : '❌';
+              lines.push(`| ${phase} | ${iconA} ${r.a} | ${iconB} ${r.b} |`);
             }
 
             for (const phase of phases) {
               const reportPath = `bench-results/${phase}/report-${phase}.json`;
               try {
                 const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
-                if (report.summary) {
-                  lines.push(`\n### ${phase}\n`);
-                  lines.push('```');
-                  lines.push(JSON.stringify(report.summary, null, 2));
-                  lines.push('```');
-                }
+                lines.push(`\n### ${phase}\n`);
+                lines.push('```json');
+                lines.push(JSON.stringify(report.metadata || report, null, 2).slice(0, 2000));
+                lines.push('```');
               } catch (e) {}
             }
 
-            const allSuccess = Object.values(phaseResults).every(r => r === 'success');
+            const allSuccess = Object.values(phaseResults).every(r => r.a === 'success' && r.b === 'success');
             const jobUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const icon = allSuccess ? '✅' : '❌';
             const status = allSuccess ? 'complete' : 'finished with failures';
