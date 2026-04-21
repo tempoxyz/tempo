@@ -4658,7 +4658,7 @@ mod tests {
 
         assert_eq!(
             gas.initial_state_gas, expected_state_gas,
-            "AA CREATE tx should have initial_state_gas = new_account_state_gas + create_state_gas"
+            "AA CREATE tx should have initial_state_gas = create_state_gas"
         );
     }
 
@@ -4709,6 +4709,11 @@ mod tests {
 
         let initcode = Bytes::from(vec![0x60, 0x80]);
 
+        // create_state_gas (from upstream initial_tx_gas for CREATE) +
+        // new_account_state_gas (from Tempo's nonce==0 check for the caller)
+        let expected_state_gas =
+            cfg.gas_params.create_state_gas() + cfg.gas_params.new_account_state_gas();
+
         let journal = Journal::new(CacheDB::new(EmptyDB::default()));
         let tx_env = TempoTxEnv {
             inner: revm::context::TxEnv {
@@ -4723,18 +4728,13 @@ mod tests {
         let ctx = Context::mainnet()
             .with_db(CacheDB::new(EmptyDB::default()))
             .with_block(TempoBlockEnv::default())
-            .with_cfg(cfg.clone())
+            .with_cfg(cfg)
             .with_tx(tx_env)
             .with_new_journal(journal);
         let mut evm = TempoEvm::<_, ()>::new(ctx, ());
         let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
 
         let init_gas = handler.validate_initial_tx_gas(&mut evm).unwrap();
-
-        // create_state_gas (from upstream initial_tx_gas for CREATE) +
-        // new_account_state_gas (from Tempo's nonce==0 check for the caller)
-        let expected_state_gas =
-            cfg.gas_params.create_state_gas() + cfg.gas_params.new_account_state_gas();
 
         assert_eq!(
             init_gas.initial_state_gas, expected_state_gas,
@@ -5165,6 +5165,7 @@ mod tests {
         cfg.enable_amsterdam_eip8037 = true;
 
         let calldata = Bytes::from(vec![1, 2, 3]);
+        let expected_state_gas = cfg.gas_params.new_account_state_gas();
 
         let journal = Journal::new(CacheDB::new(EmptyDB::default()));
         let tx_env = TempoTxEnv {
@@ -5181,7 +5182,7 @@ mod tests {
         let ctx = Context::mainnet()
             .with_db(CacheDB::new(EmptyDB::default()))
             .with_block(TempoBlockEnv::default())
-            .with_cfg(cfg.clone())
+            .with_cfg(cfg)
             .with_tx(tx_env)
             .with_new_journal(journal);
         let mut evm = TempoEvm::<_, ()>::new(ctx, ());
@@ -5190,8 +5191,7 @@ mod tests {
         let init_gas = handler.validate_initial_tx_gas(&mut evm).unwrap();
 
         assert_eq!(
-            init_gas.initial_state_gas,
-            cfg.gas_params.new_account_state_gas(),
+            init_gas.initial_state_gas, expected_state_gas,
             "T4 standard tx with nonce==0 should track new_account_state_gas"
         );
     }
