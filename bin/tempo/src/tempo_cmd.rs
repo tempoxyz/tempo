@@ -1207,37 +1207,51 @@ impl ValidatorsInfo {
         )
         .wrap_err("failed to decode getActiveValidators response")?;
 
-        let active_validator_by_pubkey = ordered::Map::from_iter_dedup(
+        let active_validators_by_public_key = std::collections::BTreeMap::from_iter(
             active_validators.iter().map(|v| (v.publicKey, v.clone())),
         );
 
         let players = dkg_outcome.players();
         let next_players = dkg_outcome.next_players();
+        let dkg_players = ordered::Set::from_iter_dedup(players.iter().chain(next_players));
+
+        // Add validators that are active onchain
+        let mut validators_by_public_key =
+            std::collections::BTreeMap::from(active_validators_by_public_key.clone());
+
+        // Add validators that are in the dkg outcome but no longer active onchain
+        for public_key in dkg_players {
+            let key = B256::from_slice(public_key.as_ref());
+            if !validators_by_public_key.contains_key(&key) {
+                let id = ValidatorId::PublicKey(key);
+                let validator = read_validator_from_contract(&provider, id).await?;
+                validators_by_public_key.insert(key, validator);
+            }
+        }
 
         let mut validator_entries: Vec<ValidatorEntry> = Vec::new();
-        for public_key in ordered::Set::from_iter_dedup(players.iter().chain(next_players)) {
-            let pubkey_bytes = B256::from_slice(public_key.as_ref());
-            let (validator, active) = match active_validator_by_pubkey.get_value(&pubkey_bytes) {
-                Some(validator) => (validator.clone(), true),
-                None => {
-                    // Must be available in contract state
-                    let id = ValidatorId::PublicKey(pubkey_bytes);
-                    let validator = read_validator_from_contract(&provider, id).await?;
-                    (validator, false)
+        for (key, validator) in validators_by_public_key {
+            let active = active_validators_by_public_key.contains_key(&key);
+            let public_key = match PublicKey::decode(key.as_ref()) {
+                Ok(key) => key,
+                Err(e) => {
+                    let index = validator.index;
+                    eprintln!("invalid ed25519 public key found on validator index {index}: {e}",);
+                    continue;
                 }
             };
 
             validator_entries.push(ValidatorEntry {
                 active,
                 onchain_address: validator.validatorAddress,
-                public_key: public_key.encode_hex(),
+                public_key: key.encode_hex(),
                 inbound_address: validator.ingress.clone(),
                 outbound_address: validator.egress.clone(),
                 fee_recipient: Some(validator.feeRecipient),
                 index: Some(validator.index),
-                is_dkg_dealer: Some(players.position(public_key).is_some()),
-                is_dkg_player: Some(next_players.position(public_key).is_some()),
-                in_committee: Some(players.position(public_key).is_some()),
+                is_dkg_dealer: Some(players.position(&public_key).is_some()),
+                is_dkg_player: Some(next_players.position(&public_key).is_some()),
+                in_committee: Some(players.position(&public_key).is_some()),
             })
         }
 
