@@ -11,14 +11,6 @@ use alloy_json_abi::{
 };
 use eyre::{Context, bail, eyre};
 use itertools::Itertools;
-use tempo_contracts::precompiles as pc;
-
-#[derive(Debug, clap::Args)]
-pub(crate) struct CheckAbi {
-    /// Only check a specific interface (by Solidity name, e.g. "ITIP20").
-    #[arg(long)]
-    only: Option<String>,
-}
 
 #[derive(Clone, Copy)]
 struct InterfaceSpec {
@@ -27,6 +19,43 @@ struct InterfaceSpec {
     inherits: &'static [&'static str],
 }
 
+impl InterfaceSpec {
+    const fn inherits(mut self, inherits: &'static [&'static str]) -> Self {
+        self.inherits = inherits;
+        self
+    }
+
+    const fn with_name(mut self, name: &'static str) -> Self {
+        self.solidity_name = name;
+        self
+    }
+}
+
+macro_rules! interface_spec {
+    ($ty:ident) => {
+        InterfaceSpec {
+            solidity_name: stringify!($ty),
+            abi: tempo_contracts::precompiles::$ty::abi::contract,
+            inherits: &[],
+        }
+    };
+}
+
+// `tempo-std` is the published Solidity interface surface for Tempo precompiles.
+static INTERFACE_SPECS: &[InterfaceSpec] = &[
+    interface_spec!(IAccountKeychain),
+    interface_spec!(ITIPFeeAMM).with_name("IFeeAMM"),
+    interface_spec!(IFeeManager).inherits(&["IFeeAMM"]),
+    interface_spec!(INonce),
+    interface_spec!(IStablecoinDEX),
+    interface_spec!(ITIP20),
+    interface_spec!(ITIP20Internal),
+    interface_spec!(ITIP20Factory),
+    interface_spec!(IRolesAuth).with_name("ITIP20RolesAuth"),
+    interface_spec!(ITIP403Registry),
+    interface_spec!(IValidatorConfig),
+];
+
 #[derive(Default)]
 struct AbiSurface {
     functions: BTreeSet<String>,
@@ -34,9 +63,11 @@ struct AbiSurface {
     events: BTreeSet<String>,
 }
 
-struct CheckResult {
-    rust_only: Vec<(String, String)>,
-    solidity_only: Vec<(String, String)>,
+#[derive(Debug, clap::Args)]
+pub(crate) struct CheckAbi {
+    /// Only check a specific interface (by Solidity name, e.g. "ITIP20").
+    #[arg(long)]
+    only: Option<String>,
 }
 
 impl CheckAbi {
@@ -51,18 +82,13 @@ impl CheckAbi {
             );
         }
 
-        let specs = interface_specs();
-        let specs_by_name: HashMap<&str, &InterfaceSpec> = specs
+        let specs_by_name: HashMap<&str, &InterfaceSpec> = INTERFACE_SPECS
             .iter()
             .map(|spec| (spec.solidity_name, spec))
             .collect();
 
-        let mut passed = 0;
-        let mut checked = 0;
-        let mut missing_artifacts = Vec::new();
-        let mut prev_ok = false;
-
-        for spec in specs {
+        let (mut passed, mut checked, mut missing, mut prev_ok) = (0, 0, Vec::new(), false);
+        for spec in INTERFACE_SPECS {
             if let Some(ref only) = self.only
                 && spec.solidity_name != only.as_str()
             {
@@ -78,15 +104,15 @@ impl CheckAbi {
                     eprintln!();
                 }
                 eprintln!("  ⊘  {} — no Foundry artifact", spec.solidity_name);
-                missing_artifacts.push(spec.solidity_name);
+                missing.push(spec.solidity_name);
                 prev_ok = false;
                 continue;
             }
 
-            let result = check_interface(spec, &artifact_path, &specs_by_name)?;
+            let (rust_only, sol_only) = check_interface(spec, &artifact_path, &specs_by_name)?;
             checked += 1;
 
-            let current_ok = result.rust_only.is_empty() && result.solidity_only.is_empty();
+            let current_ok = rust_only.is_empty() && sol_only.is_empty();
             if current_ok {
                 passed += 1;
             }
@@ -102,13 +128,13 @@ impl CheckAbi {
             };
             eprintln!("{status}  {}{suffix}", spec.solidity_name);
 
-            print_grouped_diffs(&result.rust_only, "Solidity");
-            print_grouped_diffs(&result.solidity_only, "Rust");
+            print_grouped_diffs(&rust_only, "Solidity");
+            print_grouped_diffs(&sol_only, "Rust");
 
             prev_ok = current_ok;
         }
 
-        if checked == 0 && missing_artifacts.is_empty() {
+        if checked == 0 && missing.is_empty() {
             if let Some(ref only) = self.only {
                 bail!("No ABI interface found matching --only {only}");
             }
@@ -116,12 +142,12 @@ impl CheckAbi {
         }
 
         eprintln!();
-        if !missing_artifacts.is_empty() || passed < checked {
+        if !missing.is_empty() || passed < checked {
             eprintln!("Summary: {passed}/{checked} interfaces are ABI-compatible.");
-            if !missing_artifacts.is_empty() {
+            if !missing.is_empty() {
                 eprintln!(
                     "Missing Foundry artifacts: {}",
-                    missing_artifacts.iter().copied().join(", ")
+                    missing.iter().copied().join(", ")
                 );
             }
             bail!("ABI compatibility check found differences or missing artifacts (see above)");
@@ -132,108 +158,18 @@ impl CheckAbi {
     }
 }
 
-fn interface_specs() -> &'static [InterfaceSpec] {
-    &[
-        // tempo-std is the published Solidity interface surface for Tempo precompiles.
-        // Interfaces not exported there are intentionally not checked here.
-        InterfaceSpec {
-            solidity_name: "IAccountKeychain",
-            abi: pc::IAccountKeychain::abi::contract,
-            inherits: &[],
-        },
-        InterfaceSpec {
-            solidity_name: "IFeeAMM",
-            abi: pc::ITIPFeeAMM::abi::contract,
-            inherits: &[],
-        },
-        InterfaceSpec {
-            solidity_name: "IFeeManager",
-            abi: pc::IFeeManager::abi::contract,
-            inherits: &["IFeeAMM"],
-        },
-        InterfaceSpec {
-            solidity_name: "INonce",
-            abi: pc::INonce::abi::contract,
-            inherits: &[],
-        },
-        InterfaceSpec {
-            solidity_name: "IStablecoinDEX",
-            abi: pc::IStablecoinDEX::abi::contract,
-            inherits: &[],
-        },
-        InterfaceSpec {
-            solidity_name: "ITIP20",
-            abi: pc::ITIP20::abi::contract,
-            inherits: &[],
-        },
-        InterfaceSpec {
-            solidity_name: "ITIP20Internal",
-            abi: pc::ITIP20Internal::abi::contract,
-            inherits: &[],
-        },
-        InterfaceSpec {
-            solidity_name: "ITIP20Factory",
-            abi: pc::ITIP20Factory::abi::contract,
-            inherits: &[],
-        },
-        InterfaceSpec {
-            solidity_name: "ITIP20RolesAuth",
-            abi: pc::IRolesAuth::abi::contract,
-            inherits: &[],
-        },
-        InterfaceSpec {
-            solidity_name: "ITIP403Registry",
-            abi: pc::ITIP403Registry::abi::contract,
-            inherits: &[],
-        },
-        InterfaceSpec {
-            solidity_name: "IValidatorConfig",
-            abi: pc::IValidatorConfig::abi::contract,
-            inherits: &[],
-        },
-    ]
-}
-
 fn check_interface(
     spec: &InterfaceSpec,
     artifact_path: &Path,
     all_specs: &HashMap<&str, &InterfaceSpec>,
-) -> eyre::Result<CheckResult> {
+) -> eyre::Result<(Vec<(String, String)>, Vec<(String, String)>)> {
     let rust_surface = surface_for_spec(spec, all_specs, &mut Vec::new())?;
 
     let solidity_abi = load_foundry_abi(artifact_path)
         .with_context(|| format!("parsing {}", artifact_path.display()))?;
     let solidity_surface = surface_from_abi(&solidity_abi);
 
-    let mut rust_only = Vec::new();
-    let mut solidity_only = Vec::new();
-
-    diff_sets(
-        "function",
-        &rust_surface.functions,
-        &solidity_surface.functions,
-        &mut rust_only,
-        &mut solidity_only,
-    );
-    diff_sets(
-        "error",
-        &rust_surface.errors,
-        &solidity_surface.errors,
-        &mut rust_only,
-        &mut solidity_only,
-    );
-    diff_sets(
-        "event",
-        &rust_surface.events,
-        &solidity_surface.events,
-        &mut rust_only,
-        &mut solidity_only,
-    );
-
-    Ok(CheckResult {
-        rust_only,
-        solidity_only,
-    })
+    Ok(rust_surface.diff(&solidity_surface))
 }
 
 fn surface_for_spec(
@@ -289,20 +225,24 @@ impl AbiSurface {
         self.errors.extend(other.errors);
         self.events.extend(other.events);
     }
-}
 
-fn diff_sets(
-    kind: &str,
-    rust: &BTreeSet<String>,
-    solidity: &BTreeSet<String>,
-    rust_only: &mut Vec<(String, String)>,
-    solidity_only: &mut Vec<(String, String)>,
-) {
-    for sig in rust.difference(solidity) {
-        rust_only.push((kind.to_string(), sig.clone()));
-    }
-    for sig in solidity.difference(rust) {
-        solidity_only.push((kind.to_string(), sig.clone()));
+    /// Returns `(only_in_self, only_in_other)` diffs grouped by kind.
+    fn diff(&self, other: &Self) -> (Vec<(String, String)>, Vec<(String, String)>) {
+        let mut only_self = Vec::new();
+        let mut only_other = Vec::new();
+        for (kind, a, b) in [
+            ("function", &self.functions, &other.functions),
+            ("error", &self.errors, &other.errors),
+            ("event", &self.events, &other.events),
+        ] {
+            for sig in a.difference(b) {
+                only_self.push((kind.to_string(), sig.clone()));
+            }
+            for sig in b.difference(a) {
+                only_other.push((kind.to_string(), sig.clone()));
+            }
+        }
+        (only_self, only_other)
     }
 }
 
@@ -337,7 +277,7 @@ fn event_signature(event: &Event) -> String {
 }
 
 fn event_param_signature(param: &EventParam) -> String {
-    let ty = event_param_type(param);
+    let ty = canonical_param_type(&param.ty, &param.components);
     if param.indexed {
         format!("indexed {ty}")
     } else {
@@ -349,10 +289,7 @@ fn param_type(param: &Param) -> String {
     canonical_param_type(&param.ty, &param.components)
 }
 
-fn event_param_type(param: &EventParam) -> String {
-    canonical_param_type(&param.ty, &param.components)
-}
-
+/// Flattens a single bare-tuples so that if they share the same abi encoding they are equivalent.
 fn canonical_output_types(outputs: &[Param]) -> String {
     match outputs {
         [output] if output.ty == "tuple" => output.components.iter().map(param_type).join(","),
@@ -407,6 +344,13 @@ fn find_workspace_root() -> eyre::Result<PathBuf> {
         .args(["metadata", "--no-deps", "--format-version=1"])
         .output()
         .context("failed to run cargo metadata")?;
+
+    if !output.status.success() {
+        bail!(
+            "cargo metadata failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
 
     let metadata: serde_json::Value =
         serde_json::from_slice(&output.stdout).context("failed to parse cargo metadata")?;
@@ -493,19 +437,17 @@ mod tests {
     }
 
     #[test]
-    fn diff_sets_reports_symmetric_differences() {
-        let rust = BTreeSet::from(["foo(uint256) [nonpayable]".to_string()]);
-        let solidity = BTreeSet::from(["bar(uint256) [nonpayable]".to_string()]);
+    fn diff_reports_symmetric_differences() {
+        let rust = AbiSurface {
+            functions: BTreeSet::from(["foo(uint256) [nonpayable]".to_string()]),
+            ..Default::default()
+        };
+        let solidity = AbiSurface {
+            functions: BTreeSet::from(["bar(uint256) [nonpayable]".to_string()]),
+            ..Default::default()
+        };
 
-        let mut rust_only = Vec::new();
-        let mut solidity_only = Vec::new();
-        diff_sets(
-            "function",
-            &rust,
-            &solidity,
-            &mut rust_only,
-            &mut solidity_only,
-        );
+        let (rust_only, sol_only) = rust.diff(&solidity);
 
         assert_eq!(
             rust_only,
@@ -515,7 +457,7 @@ mod tests {
             )]
         );
         assert_eq!(
-            solidity_only,
+            sol_only,
             [(
                 "function".to_string(),
                 "bar(uint256) [nonpayable]".to_string()
