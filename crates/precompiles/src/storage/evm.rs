@@ -104,7 +104,6 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
         let code_len = code.len();
         self.deduct_gas(self.gas_params.code_deposit_cost(code_len))?;
-        self.deduct_gas(self.gas_params.keccak256_cost(code_len))?;
 
         // Track state gas for code deposit
         self.deduct_state_gas(self.gas_params.code_deposit_state_gas(code_len))?;
@@ -116,10 +115,15 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             was_empty
         };
 
-        // T4: charge TIP20 creations as CREATE
-        if self.spec.is_t4() && was_empty {
-            self.deduct_gas(self.gas_params.create_cost())?;
-            self.deduct_state_gas(self.gas_params.create_state_gas())?;
+        if self.spec.is_t4() {
+            // T4: charge cost per word
+            self.deduct_gas(self.gas_params.keccak256_cost(code_len))?;
+
+            // T4: charge TIP20 creations as CREATE
+            if was_empty {
+                self.deduct_gas(self.gas_params.create_cost())?;
+                self.deduct_state_gas(self.gas_params.create_state_gas())?;
+            }
         }
 
         Ok(())
