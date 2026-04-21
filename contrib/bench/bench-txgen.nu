@@ -2,7 +2,7 @@
 
 source ../../tempo.nu
 
-const TXGEN_ACCOUNT_MNEMONIC = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+const TXGEN_ACCOUNT_MNEMONIC = "test test test test test test test test test test test junk"
 const TXGEN_DEFAULT_SEED = 99
 const TXGEN_SCRAPE_INTERVAL_MS = 500
 const TXGEN_DRAIN_TIMEOUT_SECS = 300
@@ -116,7 +116,12 @@ def rpc-call [rpc_url: string, payload: string] {
     if $result.exit_code != 0 {
         error make { msg: $"RPC call failed: ($payload)" }
     }
-    $result.stdout | from json
+    let response = ($result.stdout | from json)
+    if (($response | get -o error) != null) {
+        let rpc_error = ($response | get error)
+        error make { msg: $"RPC error: ($rpc_error | to json -r)" }
+    }
+    $response
 }
 
 def fetch-chain-id [rpc_url: string] {
@@ -174,6 +179,7 @@ def write-tip20-spec [spec_path: string, txgen_repo_dir: string, chain_id: int, 
         "    gas_limit: 300000"
         "    max_fee_per_gas: 100000000000"
         "    max_priority_fee_per_gas: 100000000000"
+        $"    fee_token: \"($TXGEN_TIP20_TOKEN)\""
         "    expiring_nonce: true"
         $"    valid_for_secs: ($TXGEN_EXPIRING_VALID_FOR_SECS)"
         "    call:"
@@ -205,7 +211,7 @@ def fund-txgen-accounts [txgen_bin: string, spec_path: string, rpc_url: string] 
 
     print $"  Funding (($addresses | length)) txgen account\(s\)..."
     $addresses | par-each { |address|
-        ^curl -sf -X POST -H "Content-Type: application/json" -d $"{\"jsonrpc\":\"2.0\",\"method\":\"tempo_fundAddress\",\"params\":[\"($address)\"],\"id\":1}" $rpc_url | ignore
+        rpc-call $rpc_url $"{\"jsonrpc\":\"2.0\",\"method\":\"tempo_fundAddress\",\"params\":[\"($address)\"],\"id\":1}" | ignore
     } | ignore
 
     print "  Waiting for faucet transactions to drain..."
@@ -597,6 +603,7 @@ def "main run" [
     let meta_dir = $"($datadir)/($BENCH_META_SUBDIR)"
     let genesis_accounts = ([$accounts 3] | math max) + 1
     let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
+    let txgen_genesis_args = ["--mnemonic" $TXGEN_ACCOUNT_MNEMONIC]
 
     bench-mount
 
@@ -616,6 +623,7 @@ def "main run" [
             and $marker != null
             and ($marker.bloat_mib | into int) == $bloat
             and ($marker.accounts | into int) == $genesis_accounts
+            and ($marker | get -o txgen_mnemonic | default "") == $TXGEN_ACCOUNT_MNEMONIC
             and ($marker | get -o baseline_hardfork | default "") == ($baseline_hardfork | str upcase)
             and ($marker | get -o feature_hardfork | default "") == ($feature_hardfork | str upcase)
             and ($marker | get -o gas_limit | default "") == $gas_limit
@@ -634,11 +642,11 @@ def "main run" [
             if ($baseline_genesis_dir | path exists) { rm -rf $baseline_genesis_dir }
             mkdir $baseline_genesis_dir
             if $baseline == "local" {
-                cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $baseline_genesis_dir -a $genesis_accounts --no-dkg-in-genesis ...$baseline_genesis_args ...$gas_limit_args
+                cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $baseline_genesis_dir -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$baseline_genesis_args ...$gas_limit_args
             } else {
                 do {
                     cd $baseline_wt
-                    cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $baseline_genesis_dir -a $genesis_accounts --no-dkg-in-genesis ...$baseline_genesis_args ...$gas_limit_args
+                    cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $baseline_genesis_dir -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$baseline_genesis_args ...$gas_limit_args
                 }
             }
             cp $"($baseline_genesis_dir)/genesis.json" $baseline_genesis_path
@@ -648,11 +656,11 @@ def "main run" [
             if ($feature_genesis_dir | path exists) { rm -rf $feature_genesis_dir }
             mkdir $feature_genesis_dir
             if $feature == "local" {
-                cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $feature_genesis_dir -a $genesis_accounts --no-dkg-in-genesis ...$feature_genesis_args ...$gas_limit_args
+                cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $feature_genesis_dir -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$feature_genesis_args ...$gas_limit_args
             } else {
                 do {
                     cd $feature_wt
-                    cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $feature_genesis_dir -a $genesis_accounts --no-dkg-in-genesis ...$feature_genesis_args ...$gas_limit_args
+                    cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $feature_genesis_dir -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$feature_genesis_args ...$gas_limit_args
                 }
             }
             cp $"($feature_genesis_dir)/genesis.json" $feature_genesis_path
@@ -683,6 +691,7 @@ def "main run" [
                 bloat_mib: $bloat
                 accounts: $genesis_accounts
                 bench_datadir: $datadir
+                txgen_mnemonic: $TXGEN_ACCOUNT_MNEMONIC
                 baseline_hardfork: ($baseline_hardfork | str upcase)
                 feature_hardfork: ($feature_hardfork | str upcase)
                 gas_limit: $gas_limit
@@ -696,6 +705,7 @@ def "main run" [
             and $marker != null
             and ($marker.bloat_mib | into int) == $bloat
             and ($marker.accounts | into int) == $genesis_accounts
+            and ($marker | get -o txgen_mnemonic | default "") == $TXGEN_ACCOUNT_MNEMONIC
             and ($marker | get -o gas_limit | default "") == $gas_limit
             and ($"($datadir)/db" | path exists)
             and ($"($meta_dir)/genesis.json" | path exists)
@@ -706,15 +716,14 @@ def "main run" [
             cp $"($meta_dir)/genesis.json" $genesis_path_std
             print $"Using cached virgin snapshot \(initialized ($marker.initialized_at)\)"
         } else {
-            if not ($genesis_path_std | path exists) {
-                if not ($abs_localnet | path exists) { mkdir $abs_localnet }
-                if $baseline == "local" {
-                    cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts --no-dkg-in-genesis ...$gas_limit_args
-                } else {
-                    do {
-                        cd $baseline_wt
-                        cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts --no-dkg-in-genesis ...$gas_limit_args
-                    }
+            if not ($abs_localnet | path exists) { mkdir $abs_localnet }
+            if ($genesis_path_std | path exists) { rm -f $genesis_path_std }
+            if $baseline == "local" {
+                cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$gas_limit_args
+            } else {
+                do {
+                    cd $baseline_wt
+                    cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$gas_limit_args
                 }
             }
 
@@ -736,6 +745,7 @@ def "main run" [
                 bloat_mib: $bloat
                 accounts: $genesis_accounts
                 bench_datadir: $datadir
+                txgen_mnemonic: $TXGEN_ACCOUNT_MNEMONIC
                 gas_limit: $gas_limit
             } [[$genesis_path_std "genesis.json"]] $bloat $bloat_file
         }
