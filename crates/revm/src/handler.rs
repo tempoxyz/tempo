@@ -172,6 +172,23 @@ fn call_scope_storage_slots(auth: &tempo_primitives::transaction::KeyAuthorizati
     }
 }
 
+/// Counts how many set length-slot writes are warm resets rather than fresh sets.
+///
+/// `SetHandler::insert()` always writes the shared vec length slot. The first insertion into a set
+/// grows length `0 -> 1` and pays `SSTORE_SET`; every later insertion into that same set grows a
+/// nonzero length and therefore pays `WARM_SSTORE_RESET` instead.
+fn call_scope_length_reset_rows(auth: &tempo_primitives::transaction::KeyAuthorization) -> u64 {
+    let Some(scopes) = auth.allowed_calls.as_ref() else {
+        return 0;
+    };
+
+    scopes.len().saturating_sub(1) as u64
+        + scopes
+            .iter()
+            .map(|scope| scope.selector_rules.len().saturating_sub(1) as u64)
+            .sum::<u64>()
+}
+
 /// Charges the unpriced scope-helper bookkeeping for T4 key authorizations.
 ///
 /// The dynamic SSTORE rows are already counted by `call_scope_storage_slots()`. What remains is the
@@ -321,14 +338,24 @@ fn calculate_key_authorization_gas(
         };
 
         let mut num_sstores = 1 + limit_slots;
+        let mut num_reset_sstores = 0;
 
         // T3+: include scoped-call storage rows in intrinsic gas.
         if spec.is_t3() {
-            num_sstores += call_scope_storage_slots(&key_auth.authorization);
+            let scope_slots = call_scope_storage_slots(&key_auth.authorization);
+            let scope_reset_rows = call_scope_length_reset_rows(&key_auth.authorization);
+            num_sstores += scope_slots.saturating_sub(scope_reset_rows);
+            num_reset_sstores += scope_reset_rows;
         }
 
         let sstore_cost = gas_params.get(GasId::sstore_set_without_load_cost());
-        let mut total_gas = sig_gas + sload_cost + sstore_cost * num_sstores + BUFFER;
+        let sstore_reset_cost =
+            gas_params.sstore_static_gas() + gas_params.sstore_reset_without_cold_load_cost();
+        let mut total_gas = sig_gas
+            + sload_cost
+            + sstore_cost * num_sstores
+            + sstore_reset_cost * num_reset_sstores
+            + BUFFER;
 
         // T4+: include extra gas for call scopes configuration
         if spec.is_t4() {
@@ -2983,6 +3010,65 @@ mod tests {
         let expected =
             ECRECOVER_GAS + t4_sload + t4_sstore * num_sstores + BUFFER + 29_000 + expected_state;
         assert_eq!(gas, expected, "T4 scope writes should be fully charged");
+        assert_eq!(state_gas, expected_state, "T4 scope state gas");
+        let multi_scope = SignedKeyAuthorization {
+            authorization: KeyAuthorization::unrestricted(
+                1,
+                SignatureType::Secp256k1,
+                Address::random(),
+            )
+            .with_allowed_calls(vec![
+                tempo_primitives::transaction::CallScope {
+                    target: Address::random(),
+                    selector_rules: vec![
+                        tempo_primitives::transaction::SelectorRule {
+                            selector: [0xa9, 0x05, 0x9c, 0xbb],
+                            recipients: vec![],
+                        },
+                        tempo_primitives::transaction::SelectorRule {
+                            selector: [0x09, 0x5e, 0xa7, 0xb3],
+                            recipients: vec![],
+                        },
+                    ],
+                },
+                tempo_primitives::transaction::CallScope {
+                    target: Address::random(),
+                    selector_rules: vec![],
+                },
+            ]),
+            signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+        };
+
+        let (gas, state_gas) =
+            calculate_key_authorization_gas(&multi_scope, &t1b_gas_params, TempoHardfork::T3);
+        let warm_reset = t1b_gas_params.sstore_static_gas()
+            + t1b_gas_params.sstore_reset_without_cold_load_cost();
+        // 11 fresh scope rows:
+        // - is_scoped(1)
+        // - top-level targets set with 2 entries: positions(2) + values(2) + first len write(1)
+        // - first target selector set with 2 entries: positions(2) + values(2) + first len write(1)
+        // plus 2 repeated vec length-slot writes charged at warm reset instead of SSTORE_SET.
+        let expected = ECRECOVER_GAS + sload + sstore * 12 + warm_reset * 2 + BUFFER;
+        assert_eq!(
+            gas, expected,
+            "T3 scope writes should charge repeated set length updates at warm reset cost"
+        );
+        assert_eq!(state_gas, 0, "T3 has no state gas");
+
+        let (gas, state_gas) =
+            calculate_key_authorization_gas(&multi_scope, &t4_gas_params, TempoHardfork::T4);
+        let expected_state = t4_sstore_state * 12;
+        let expected = ECRECOVER_GAS
+            + t4_sload
+            + t4_sstore * 12
+            + warm_reset * 2
+            + BUFFER
+            + 33_000
+            + expected_state;
+        assert_eq!(
+            gas, expected,
+            "T4 scope writes should charge repeated set length updates at warm reset cost"
+        );
         assert_eq!(state_gas, expected_state, "T4 scope state gas");
     }
 
