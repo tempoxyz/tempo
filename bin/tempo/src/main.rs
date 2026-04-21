@@ -74,15 +74,20 @@ type TempoCli =
 // TODO: migrate this to tempo_node eventually.
 #[derive(Debug, Clone, clap::Args)]
 struct TempoArgs {
-    /// Run in follow mode, syncing consensus and execution state from an upstream node.
+    /// Run in follow mode from an upstream node.
     /// If provided without a value, defaults to the RPC URL for the selected chain.
     #[arg(long, value_name = "WS_URL", default_missing_value = "auto", num_args(0..=1), env = "TEMPO_FOLLOW")]
     pub follow: Option<String>,
 
-    /// Run in follow mode, without validating any execution state. Do not use in any
-    /// full node production settings.
-    #[arg(long, value_name = "WS_URL", default_missing_value = "auto", conflicts_with = "follow", num_args(0..=1), env = "TEMPO_FOLLOW_UNCERTIFIED")]
-    pub follow_uncertified: Option<String>,
+    /// Disable consensus certification in follow mode. The follower syncs execution
+    /// state from the upstream node without validating consensus state.
+    /// DO NOT USE IN PRODUCTION.
+    #[arg(
+        long = "follow.uncertified",
+        requires = "follow",
+        default_missing_value = "true",
+    )]
+    pub follow_uncertified: Option<bool>,
 
     #[command(flatten)]
     pub telemetry: defaults::TelemetryArgs,
@@ -318,7 +323,7 @@ fn main() -> eyre::Result<()> {
                 and a handle to the execution node could be received",
         )?;
 
-        if node.config.dev.dev || args.follow_uncertified.is_some() {
+        if node.config.dev.dev || args.follow_uncertified.unwrap_or(false) {
             return futures::executor::block_on(async move {
                 shutdown_token_clone.cancelled().await;
                 let _ = consensus_dead_tx.send(());
@@ -515,25 +520,25 @@ fn main() -> eyre::Result<()> {
                     .discovery
                     .enable_discv5_discovery = true;
 
-                // Debug follower mode (--follow-uncertified):
-                if let Some(url) = &args.follow_uncertified {
-                    let default_follow_url = builder
-                        .config()
-                        .chain
-                        .default_follow_url()
-                        .map(|s| s.to_string());
-
-                    let follow_url = if url == "auto" {
-                        default_follow_url
-                    } else {
-                        Some(url.clone())
-                    };
+                // Uncertified follower mode: set debug RPC when certification is off
+                if args.follow_uncertified.unwrap_or(false) {
+                    let follow_url = args.follow.clone().and_then(|v| {
+                        if v != "auto" {
+                            Some(v)
+                        } else {
+                            builder
+                                .config()
+                                .chain
+                                .default_follow_url()
+                                .map(|s| s.to_string())
+                        }
+                    });
 
                     builder.config_mut().debug.rpc_consensus_url = follow_url;
                 }
 
                 let has_consensus_engine =
-                    !builder.config().dev.dev && args.follow_uncertified.is_none();
+                    !builder.config().dev.dev && !args.follow_uncertified.unwrap_or(false);
 
                 // Additional RPC Modules
                 builder.extend_rpc_modules(move |ctx| {
