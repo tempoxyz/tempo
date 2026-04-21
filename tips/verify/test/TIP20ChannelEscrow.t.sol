@@ -129,6 +129,10 @@ contract TIP20ChannelEscrowTest is BaseTest {
         });
     }
 
+    function _channelStateSlot(bytes32 channelId) internal pure returns (bytes32) {
+        return keccak256(abi.encode(channelId, uint256(0)));
+    }
+
     function _signVoucher(bytes32 channelId, uint96 amount) internal view returns (bytes memory) {
         return _signVoucher(channelId, amount, payerKey);
     }
@@ -155,15 +159,14 @@ contract TIP20ChannelEscrowTest is BaseTest {
             channel.open(payee, address(token), DEPOSIT, SALT, address(0), expiresAt);
 
         ITIP20ChannelEscrow.Channel memory ch = channel.getChannel(_descriptor());
-        assertFalse(ch.state.finalized);
-        assertEq(ch.state.closeRequestedAt, 0);
         assertEq(ch.descriptor.payer, payer);
         assertEq(ch.descriptor.payee, payee);
-        assertEq(ch.state.expiresAt, expiresAt);
         assertEq(ch.descriptor.token, address(token));
         assertEq(ch.descriptor.authorizedSigner, address(0));
-        assertEq(ch.state.deposit, DEPOSIT);
         assertEq(ch.state.settled, 0);
+        assertEq(ch.state.deposit, DEPOSIT);
+        assertEq(ch.state.expiresAt, expiresAt);
+        assertEq(ch.state.closeData, 0);
         assertEq(channel.getChannelState(channelId).deposit, DEPOSIT);
     }
 
@@ -283,7 +286,21 @@ contract TIP20ChannelEscrowTest is BaseTest {
         vm.prank(payer);
         channel.topUp(_descriptor(), 100_000, 0);
 
-        assertEq(channel.getChannelState(channelId).closeRequestedAt, 0);
+        assertEq(channel.getChannelState(channelId).closeData, 0);
+    }
+
+    function test_requestClose_storesTimestampInCloseData() public {
+        bytes32 channelId = _openChannel();
+        uint32 closeRequestedAt = uint32(block.timestamp);
+
+        vm.prank(payer);
+        channel.requestClose(_descriptor());
+
+        ITIP20ChannelEscrow.ChannelState memory ch = channel.getChannelState(channelId);
+        assertEq(ch.closeData, closeRequestedAt);
+
+        uint256 raw = uint256(vm.load(address(channel), _channelStateSlot(channelId)));
+        assertEq(uint32(raw >> 224), closeRequestedAt);
     }
 
     function test_close_partialCapture_success() public {
@@ -297,8 +314,8 @@ contract TIP20ChannelEscrowTest is BaseTest {
         channel.close(_descriptor(), 900_000, 600_000, sig);
 
         ITIP20ChannelEscrow.ChannelState memory ch = channel.getChannelState(channelId);
-        assertTrue(ch.finalized);
         assertEq(ch.settled, 600_000);
+        assertEq(ch.closeData, 1);
         assertEq(token.balanceOf(payee), payeeBalanceBefore + 600_000);
         assertEq(token.balanceOf(payer), payerBalanceBefore + 400_000);
     }
@@ -330,8 +347,8 @@ contract TIP20ChannelEscrowTest is BaseTest {
         channel.close(_descriptor(), DEPOSIT + 250_000, DEPOSIT, sig);
 
         ITIP20ChannelEscrow.ChannelState memory ch = channel.getChannelState(channelId);
-        assertTrue(ch.finalized);
         assertEq(ch.settled, DEPOSIT);
+        assertEq(ch.closeData, 1);
         assertEq(token.balanceOf(payee), payeeBalanceBefore + DEPOSIT);
     }
 
@@ -360,7 +377,7 @@ contract TIP20ChannelEscrowTest is BaseTest {
         vm.prank(payee);
         channel.close(_descriptor(), 300_000, 300_000, "");
 
-        assertTrue(channel.getChannelState(channelId).finalized);
+        assertEq(channel.getChannelState(channelId).closeData, 1);
         assertEq(token.balanceOf(payer), payerBalanceBefore + (DEPOSIT - 300_000));
     }
 
@@ -370,6 +387,8 @@ contract TIP20ChannelEscrowTest is BaseTest {
 
         vm.prank(payee);
         channel.close(_descriptor(), 600_000, 600_000, sig);
+
+        assertEq(channel.getChannelState(channelId).closeData, 1);
 
         vm.prank(payer);
         vm.expectRevert(ITIP20ChannelEscrow.ChannelAlreadyExists.selector);
@@ -388,7 +407,7 @@ contract TIP20ChannelEscrowTest is BaseTest {
         vm.prank(payer);
         channel.withdraw(_descriptor());
 
-        assertTrue(channel.getChannelState(channelId).finalized);
+        assertEq(channel.getChannelState(channelId).closeData, 1);
         assertEq(token.balanceOf(payer), payerBalanceBefore + DEPOSIT);
     }
 
@@ -401,7 +420,7 @@ contract TIP20ChannelEscrowTest is BaseTest {
         vm.prank(payer);
         channel.withdraw(_descriptor());
 
-        assertTrue(channel.getChannelState(channelId).finalized);
+        assertEq(channel.getChannelState(channelId).closeData, 1);
         assertEq(token.balanceOf(payer), payerBalanceBefore + DEPOSIT);
     }
 
