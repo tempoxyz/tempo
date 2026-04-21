@@ -43,17 +43,17 @@ macro_rules! interface_spec {
 
 // `tempo-std` is the published Solidity interface surface for Tempo precompiles.
 static INTERFACE_SPECS: &[InterfaceSpec] = &[
-    interface_spec!(IAccountKeychain),
-    interface_spec!(ITIPFeeAMM).with_name("IFeeAMM"),
-    interface_spec!(IFeeManager).inherits(&["IFeeAMM"]),
     interface_spec!(INonce),
-    interface_spec!(IStablecoinDEX),
+    interface_spec!(IAccountKeychain),
     interface_spec!(ITIP20),
-    interface_spec!(ITIP20Internal),
     interface_spec!(ITIP20Factory),
     interface_spec!(IRolesAuth).with_name("ITIP20RolesAuth"),
     interface_spec!(ITIP403Registry),
+    interface_spec!(ITIPFeeAMM).with_name("IFeeAMM"),
+    interface_spec!(IFeeManager).inherits(&["IFeeAMM"]),
+    interface_spec!(IStablecoinDEX),
     interface_spec!(IValidatorConfig),
+    interface_spec!(IValidatorConfigV2),
 ];
 
 /// List of `(kind, signature)` pairs, e.g. `("function", "foo(uint256) [view]")`.
