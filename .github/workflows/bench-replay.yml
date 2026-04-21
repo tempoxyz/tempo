@@ -1,17 +1,268 @@
 # Replay benchmark job.
 #
-# Called by bench.yml when mode=replay. Replays real Tempo blocks through the Engine API.
-
-on:
-  workflow_dispatch:
+# Called by bench.yml when mode=replay. Replays real Tempo moderato blocks
+# through the Engine API for an interleaved B-F-F-B comparison.
 
 name: bench-replay
 
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      pr:
+        type: string
+        required: false
+      actor:
+        type: string
+        required: true
+      baseline:
+        type: string
+        required: false
+      feature:
+        type: string
+        required: false
+      baseline-name:
+        type: string
+        required: true
+      feature-name:
+        type: string
+        required: true
+      samply:
+        type: string
+        required: true
+      baseline-args:
+        type: string
+        required: false
+      feature-args:
+        type: string
+        required: false
+      blocks:
+        type: string
+        required: true
+      warmup:
+        type: string
+        required: true
+      comment-id:
+        type: string
+        required: false
+    secrets:
+      DEREK_PAT:
+        required: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTC_WRAPPER: "sccache"
+
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
-  stub:
-    runs-on: ubuntu-latest
+  bench-replay:
+    name: bench-replay
+    runs-on: [self-hosted, Linux, X64, bare-metal]
+    timeout-minutes: 300
+    env:
+      BENCH_PR: ${{ inputs.pr }}
+      BENCH_ACTOR: ${{ inputs.actor }}
+      BENCH_SAMPLY: ${{ inputs.samply }}
+      BENCH_BASELINE_ARGS: ${{ inputs.baseline-args }}
+      BENCH_FEATURE_ARGS: ${{ inputs.feature-args }}
+      BENCH_BLOCKS: ${{ inputs.blocks }}
+      BENCH_WARMUP_BLOCKS: ${{ inputs.warmup }}
+      BENCH_COMMENT_ID: ${{ inputs.comment-id }}
     steps:
-      - run: echo "bench-replay stub"
+      - name: Resolve checkout ref
+        id: checkout-ref
+        uses: actions/github-script@v8
+        with:
+          script: |
+            if (context.eventName === 'workflow_dispatch') {
+              core.setOutput('ref', '${{ github.ref }}');
+              return;
+            }
+            if (!process.env.BENCH_PR) {
+              core.setOutput('ref', '${{ github.ref }}');
+              return;
+            }
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: parseInt(process.env.BENCH_PR),
+            });
+            if (pr.state !== 'open' || !pr.mergeable) {
+              core.setOutput('ref', pr.head.sha);
+            } else {
+              core.setOutput('ref', `refs/pull/${process.env.BENCH_PR}/merge`);
+            }
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.checkout-ref.outputs.ref }}
+
+      - name: Resolve job URL and update status
+        if: env.BENCH_COMMENT_ID
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.DEREK_PAT }}
+          script: |
+            const { data: jobs } = await github.rest.actions.listJobsForWorkflowRun({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: context.runId,
+            });
+            const job = jobs.jobs.find(j => j.name === 'bench-replay');
+            const jobUrl = job ? job.html_url : `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            core.exportVariable('BENCH_JOB_URL', jobUrl);
+
+            const blocks = process.env.BENCH_BLOCKS;
+            const warmup = process.env.BENCH_WARMUP_BLOCKS;
+            const baseline = '${{ inputs.baseline-name }}';
+            const feature = '${{ inputs.feature-name }}';
+            const samply = process.env.BENCH_SAMPLY === 'true';
+            const samplyNote = samply ? ', samply: `enabled`' : '';
+            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`replay\`, blocks: \`${blocks}\`, warmup: \`${warmup}\`, baseline: \`${baseline}\`, feature: \`${feature}\`${samplyNote}`);
+
+            const { buildBody } = require('./.github/scripts/bench-update-status.js');
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: parseInt(process.env.BENCH_COMMENT_ID),
+              body: buildBody('Resolving refs...'),
+            });
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.9
+        continue-on-error: true
+
+      - name: Resolve PR head branch
+        id: pr-info
+        uses: actions/github-script@v8
+        with:
+          script: |
+            if (process.env.BENCH_PR) {
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: parseInt(process.env.BENCH_PR),
+              });
+              core.setOutput('head-ref', pr.head.ref);
+              core.setOutput('head-sha', pr.head.sha);
+            } else {
+              core.setOutput('head-ref', '${{ github.ref_name }}');
+              core.setOutput('head-sha', '${{ github.sha }}');
+            }
+
+      - name: Resolve baseline and feature refs
+        id: refs
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { execSync } = require('child_process');
+            const run = (cmd) => execSync(cmd, { encoding: 'utf8' }).trim();
+
+            const baselineArg = '${{ inputs.baseline }}';
+            const featureArg = '${{ inputs.feature }}';
+
+            let baselineRef, baselineName, featureRef, featureName;
+
+            if (baselineArg) {
+              try { run(`git fetch origin "${baselineArg}" --quiet`); } catch {}
+              try {
+                baselineRef = run(`git rev-parse "${baselineArg}"`);
+              } catch {
+                baselineRef = run(`git rev-parse "origin/${baselineArg}"`);
+              }
+              baselineName = baselineArg;
+            } else {
+              try {
+                baselineRef = run('git merge-base HEAD origin/main');
+              } catch {
+                baselineRef = '${{ github.sha }}';
+              }
+              baselineName = 'main';
+            }
+
+            if (featureArg) {
+              try { run(`git fetch origin "${featureArg}" --quiet`); } catch {}
+              try {
+                featureRef = run(`git rev-parse "${featureArg}"`);
+              } catch {
+                featureRef = run(`git rev-parse "origin/${featureArg}"`);
+              }
+              featureName = featureArg;
+            } else {
+              featureRef = '${{ steps.pr-info.outputs.head-sha }}';
+              featureName = '${{ steps.pr-info.outputs.head-ref }}';
+            }
+
+            core.setOutput('baseline-ref', baselineRef);
+            core.setOutput('baseline-name', baselineName);
+            core.setOutput('feature-ref', featureRef);
+            core.setOutput('feature-name', featureName);
+
+      - name: Update status (running benchmark)
+        if: success() && env.BENCH_COMMENT_ID
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.DEREK_PAT }}
+          script: |
+            const s = require('./.github/scripts/bench-update-status.js');
+            await s({github, context, status: 'Running replay benchmark...'});
+
+      - name: Run replay benchmark
+        id: bench
+        env:
+          BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
+          FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
+        run: bash .github/scripts/bench-tempo-replay.sh
+
+      - name: Upload results
+        if: "!cancelled()"
+        uses: actions/upload-artifact@v4
+        with:
+          name: tempo-bench-replay-results
+          path: bench-results/
+
+      - name: Update status (complete)
+        if: success() && env.BENCH_COMMENT_ID
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.DEREK_PAT }}
+          script: |
+            const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: parseInt(process.env.BENCH_COMMENT_ID),
+              body: `cc @${process.env.BENCH_ACTOR}\n\n✅ Replay benchmark complete! [View job](${jobUrl})\n\nResults uploaded as artifacts.`,
+            });
+
+      - name: Update status (failed)
+        if: failure() && env.BENCH_COMMENT_ID
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.DEREK_PAT }}
+          script: |
+            const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: parseInt(process.env.BENCH_COMMENT_ID),
+              body: `cc @${process.env.BENCH_ACTOR}\n\n❌ Replay benchmark failed. [View logs](${jobUrl})`,
+            });
+
+      - name: Update status (cancelled)
+        if: cancelled() && env.BENCH_COMMENT_ID
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.DEREK_PAT }}
+          script: |
+            const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: parseInt(process.env.BENCH_COMMENT_ID),
+              body: `cc @${process.env.BENCH_ACTOR}\n\n⚠️ Replay benchmark cancelled. [View logs](${jobUrl})`,
+            });
