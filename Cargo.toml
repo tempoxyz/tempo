@@ -291,13 +291,12 @@ vergen-git2 = "9.1.0"
 # reth-cli-commands = { path = "../reth/crates/cli/commands" }
 # reth-cli-runner = { path = "../reth/crates/cli/runner" }
 # reth-cli-util = { path = "../reth/crates/cli/util" }
-# reth-codecs = { path = "../reth/crates/storage/codecs" }
-# reth-codecs-derive = { path = "../reth/crates/storage/codecs/derive" }
 # reth-config = { path = "../reth/crates/config" }
 # reth-consensus = { path = "../reth/crates/consensus/consensus" }
 # reth-consensus-common = { path = "../reth/crates/consensus/common" }
 # reth-db = { path = "../reth/crates/storage/db" }
 # reth-db-api = { path = "../reth/crates/storage/db-api" }
+# reth-discv5 = { path = "../reth/crates/net/discv5" }
 # reth-e2e-test-utils = { path = "../reth/crates/e2e-test-utils" }
 # reth-engine-local = { path = "../reth/crates/engine/local" }
 # reth-engine-primitives = { path = "../reth/crates/engine/primitives" }
@@ -310,6 +309,7 @@ vergen-git2 = "9.1.0"
 # reth-ethereum-engine-primitives = { path = "../reth/crates/ethereum/engine-primitives" }
 # reth-ethereum-forks = { path = "../reth/crates/ethereum/hardforks" }
 # reth-ethereum-primitives = { path = "../reth/crates/ethereum/primitives" }
+# reth-etl = { path = "../reth/crates/etl" }
 # reth-evm = { path = "../reth/crates/evm/evm" }
 # reth-evm-ethereum = { path = "../reth/crates/ethereum/evm" }
 # reth-execution-errors = { path = "../reth/crates/evm/execution-errors" }
@@ -318,6 +318,7 @@ vergen-git2 = "9.1.0"
 # reth-metrics = { path = "../reth/crates/metrics" }
 # reth-net-banlist = { path = "../reth/crates/net/banlist" }
 # reth-network = { path = "../reth/crates/net/network" }
+# reth-network-api = { path = "../reth/crates/net/network-api" }
 # reth-network-p2p = { path = "../reth/crates/net/p2p" }
 # reth-network-peers = { path = "../reth/crates/net/peers" }
 # reth-network-types = { path = "../reth/crates/net/network-types" }
@@ -328,7 +329,6 @@ vergen-git2 = "9.1.0"
 # reth-node-metrics = { path = "../reth/crates/node/metrics" }
 # reth-payload-builder = { path = "../reth/crates/payload/builder" }
 # reth-payload-primitives = { path = "../reth/crates/payload/primitives" }
-# reth-primitives-traits = { path = "../reth/crates/primitives-traits" }
 # reth-provider = { path = "../reth/crates/storage/provider" }
 # reth-prune = { path = "../reth/crates/prune/prune" }
 # reth-prune-types = { path = "../reth/crates/prune/types" }
@@ -355,7 +355,6 @@ vergen-git2 = "9.1.0"
 # reth-trie-db = { path = "../reth/crates/trie/db" }
 # reth-trie-parallel = { path = "../reth/crates/trie/parallel" }
 # reth-trie-sparse = { path = "../reth/crates/trie/sparse" }
-# reth-trie-sparse-parallel = { path = "../reth/crates/trie/sparse-parallel" }
 
 # [patch.crates-io]
 # # Commonware at HEAD after PR #3594 was merged
