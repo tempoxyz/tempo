@@ -274,10 +274,10 @@ jobs:
         if: env.BENCH_BACKEND == 'txgen'
         working-directory: txgen
         run: |
-          cargo build --release --bin txgen-tempo --bin bench-cli
+          cargo build --release --bin txgen-tempo --bin bench
           echo "TXGEN_REPO_DIR=$GITHUB_WORKSPACE/txgen" >> "$GITHUB_ENV"
           echo "TXGEN_TEMPO_BIN=$GITHUB_WORKSPACE/txgen/target/release/txgen-tempo" >> "$GITHUB_ENV"
-          echo "TXGEN_BENCH_BIN=$GITHUB_WORKSPACE/txgen/target/release/bench-cli" >> "$GITHUB_ENV"
+          echo "TXGEN_BENCH_BIN=$GITHUB_WORKSPACE/txgen/target/release/bench" >> "$GITHUB_ENV"
 
       - name: Resolve PR head branch
         id: pr-info
