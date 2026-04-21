@@ -89,9 +89,6 @@ permissions:
   pull-requests: write
 
 jobs:
-  # ----------------------------------------------------------------
-  # Prepare: resolve refs to SHAs, emit shared metadata
-  # ----------------------------------------------------------------
   prepare:
     name: prepare
     runs-on: ubuntu-latest
@@ -171,13 +168,9 @@ jobs:
               body: `cc @${{ inputs.actor }}\n\n🚀 E2E Benchmark running! [View run](${runUrl})\n\n⏳ **Status:** Running baseline-1...\n\n${config}`,
             });
 
-  # ----------------------------------------------------------------
-  # Phase pairs: B-F-F-B interleaved
-  # Each pair runs both runners concurrently, next pair waits for both.
+  # B-F-F-B phase pairs. Each pair runs both runners concurrently.
   # Runner A runs tempo-bench (txgen), runner B runs node only.
-  # ----------------------------------------------------------------
 
-  # --- Baseline 1 ---
   baseline-1-a:
     needs: [prepare]
     name: baseline-1-a
@@ -185,31 +178,19 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v6
+        with: { fetch-depth: 0, ref: "${{ needs.prepare.outputs.checkout-ref }}" }
+      - uses: ./.github/actions/bench-e2e-phase
         with:
-          fetch-depth: 0
-          ref: ${{ needs.prepare.outputs.checkout-ref }}
-      - name: Run phase
-        env:
-          BENCH_REF: ${{ needs.prepare.outputs.baseline-sha }}
-          BENCH_BENCHMARK_ID: ${{ needs.prepare.outputs.benchmark-id }}
-          BENCH_REFERENCE_EPOCH: ${{ needs.prepare.outputs.reference-epoch }}
-        run: |
-          nu tempo.nu bench-consensus-phase \
-            --role a --phase baseline-1 --ref "$BENCH_REF" \
-            --peer-url "$BENCH_E2E_PEER_URL" \
-            --preset "${{ inputs.preset }}" --tps "${{ inputs.tps }}" \
-            --duration "${{ inputs.duration }}" --bloat "${{ inputs.bloat }}" \
-            --bench-datadir "$BENCH_E2E_NODE_DIR" --node-dir "$BENCH_E2E_NODE_DIR" \
-            --genesis "$BENCH_E2E_GENESIS" --trusted-peers "$BENCH_E2E_TRUSTED_PEERS" \
-            --consensus-port "$BENCH_E2E_CONSENSUS_PORT" \
-            --benchmark-id "$BENCH_BENCHMARK_ID" --reference-epoch "$BENCH_REFERENCE_EPOCH" \
-            --tune ${{ inputs.bench-args && format('--bench-args="{0}"', inputs.bench-args) || '' }}
-      - name: Upload results
-        if: "!cancelled()"
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-baseline-1-a
-          path: bench-results/
+          role: a
+          phase: baseline-1
+          ref: ${{ needs.prepare.outputs.baseline-sha }}
+          preset: ${{ inputs.preset }}
+          tps: ${{ inputs.tps }}
+          duration: ${{ inputs.duration }}
+          bloat: ${{ inputs.bloat }}
+          benchmark-id: ${{ needs.prepare.outputs.benchmark-id }}
+          reference-epoch: ${{ needs.prepare.outputs.reference-epoch }}
+          bench-args: ${{ inputs.bench-args }}
 
   baseline-1-b:
     needs: [prepare]
@@ -218,27 +199,19 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v6
+        with: { fetch-depth: 0, ref: "${{ needs.prepare.outputs.checkout-ref }}" }
+      - uses: ./.github/actions/bench-e2e-phase
         with:
-          fetch-depth: 0
-          ref: ${{ needs.prepare.outputs.checkout-ref }}
-      - name: Run phase
-        env:
-          BENCH_REF: ${{ needs.prepare.outputs.baseline-sha }}
-          BENCH_BENCHMARK_ID: ${{ needs.prepare.outputs.benchmark-id }}
-          BENCH_REFERENCE_EPOCH: ${{ needs.prepare.outputs.reference-epoch }}
-        run: |
-          nu tempo.nu bench-consensus-phase \
-            --role b --phase baseline-1 --ref "$BENCH_REF" \
-            --peer-url "$BENCH_E2E_PEER_URL" \
-            --preset "${{ inputs.preset }}" --tps "${{ inputs.tps }}" \
-            --duration "${{ inputs.duration }}" --bloat "${{ inputs.bloat }}" \
-            --bench-datadir "$BENCH_E2E_NODE_DIR" --node-dir "$BENCH_E2E_NODE_DIR" \
-            --genesis "$BENCH_E2E_GENESIS" --trusted-peers "$BENCH_E2E_TRUSTED_PEERS" \
-            --consensus-port "$BENCH_E2E_CONSENSUS_PORT" \
-            --benchmark-id "$BENCH_BENCHMARK_ID" --reference-epoch "$BENCH_REFERENCE_EPOCH" \
-            --tune
+          role: b
+          phase: baseline-1
+          ref: ${{ needs.prepare.outputs.baseline-sha }}
+          preset: ${{ inputs.preset }}
+          tps: ${{ inputs.tps }}
+          duration: ${{ inputs.duration }}
+          bloat: ${{ inputs.bloat }}
+          benchmark-id: ${{ needs.prepare.outputs.benchmark-id }}
+          reference-epoch: ${{ needs.prepare.outputs.reference-epoch }}
 
-  # --- Feature 1 ---
   feature-1-a:
     needs: [prepare, baseline-1-a, baseline-1-b]
     name: feature-1-a
@@ -246,31 +219,19 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v6
+        with: { fetch-depth: 0, ref: "${{ needs.prepare.outputs.checkout-ref }}" }
+      - uses: ./.github/actions/bench-e2e-phase
         with:
-          fetch-depth: 0
-          ref: ${{ needs.prepare.outputs.checkout-ref }}
-      - name: Run phase
-        env:
-          BENCH_REF: ${{ needs.prepare.outputs.feature-sha }}
-          BENCH_BENCHMARK_ID: ${{ needs.prepare.outputs.benchmark-id }}
-          BENCH_REFERENCE_EPOCH: ${{ needs.prepare.outputs.reference-epoch }}
-        run: |
-          nu tempo.nu bench-consensus-phase \
-            --role a --phase feature-1 --ref "$BENCH_REF" \
-            --peer-url "$BENCH_E2E_PEER_URL" \
-            --preset "${{ inputs.preset }}" --tps "${{ inputs.tps }}" \
-            --duration "${{ inputs.duration }}" --bloat "${{ inputs.bloat }}" \
-            --bench-datadir "$BENCH_E2E_NODE_DIR" --node-dir "$BENCH_E2E_NODE_DIR" \
-            --genesis "$BENCH_E2E_GENESIS" --trusted-peers "$BENCH_E2E_TRUSTED_PEERS" \
-            --consensus-port "$BENCH_E2E_CONSENSUS_PORT" \
-            --benchmark-id "$BENCH_BENCHMARK_ID" --reference-epoch "$BENCH_REFERENCE_EPOCH" \
-            --tune ${{ inputs.bench-args && format('--bench-args="{0}"', inputs.bench-args) || '' }}
-      - name: Upload results
-        if: "!cancelled()"
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-feature-1-a
-          path: bench-results/
+          role: a
+          phase: feature-1
+          ref: ${{ needs.prepare.outputs.feature-sha }}
+          preset: ${{ inputs.preset }}
+          tps: ${{ inputs.tps }}
+          duration: ${{ inputs.duration }}
+          bloat: ${{ inputs.bloat }}
+          benchmark-id: ${{ needs.prepare.outputs.benchmark-id }}
+          reference-epoch: ${{ needs.prepare.outputs.reference-epoch }}
+          bench-args: ${{ inputs.bench-args }}
 
   feature-1-b:
     needs: [prepare, baseline-1-a, baseline-1-b]
@@ -279,27 +240,19 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v6
+        with: { fetch-depth: 0, ref: "${{ needs.prepare.outputs.checkout-ref }}" }
+      - uses: ./.github/actions/bench-e2e-phase
         with:
-          fetch-depth: 0
-          ref: ${{ needs.prepare.outputs.checkout-ref }}
-      - name: Run phase
-        env:
-          BENCH_REF: ${{ needs.prepare.outputs.feature-sha }}
-          BENCH_BENCHMARK_ID: ${{ needs.prepare.outputs.benchmark-id }}
-          BENCH_REFERENCE_EPOCH: ${{ needs.prepare.outputs.reference-epoch }}
-        run: |
-          nu tempo.nu bench-consensus-phase \
-            --role b --phase feature-1 --ref "$BENCH_REF" \
-            --peer-url "$BENCH_E2E_PEER_URL" \
-            --preset "${{ inputs.preset }}" --tps "${{ inputs.tps }}" \
-            --duration "${{ inputs.duration }}" --bloat "${{ inputs.bloat }}" \
-            --bench-datadir "$BENCH_E2E_NODE_DIR" --node-dir "$BENCH_E2E_NODE_DIR" \
-            --genesis "$BENCH_E2E_GENESIS" --trusted-peers "$BENCH_E2E_TRUSTED_PEERS" \
-            --consensus-port "$BENCH_E2E_CONSENSUS_PORT" \
-            --benchmark-id "$BENCH_BENCHMARK_ID" --reference-epoch "$BENCH_REFERENCE_EPOCH" \
-            --tune
+          role: b
+          phase: feature-1
+          ref: ${{ needs.prepare.outputs.feature-sha }}
+          preset: ${{ inputs.preset }}
+          tps: ${{ inputs.tps }}
+          duration: ${{ inputs.duration }}
+          bloat: ${{ inputs.bloat }}
+          benchmark-id: ${{ needs.prepare.outputs.benchmark-id }}
+          reference-epoch: ${{ needs.prepare.outputs.reference-epoch }}
 
-  # --- Feature 2 ---
   feature-2-a:
     needs: [prepare, feature-1-a, feature-1-b]
     name: feature-2-a
@@ -307,31 +260,19 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v6
+        with: { fetch-depth: 0, ref: "${{ needs.prepare.outputs.checkout-ref }}" }
+      - uses: ./.github/actions/bench-e2e-phase
         with:
-          fetch-depth: 0
-          ref: ${{ needs.prepare.outputs.checkout-ref }}
-      - name: Run phase
-        env:
-          BENCH_REF: ${{ needs.prepare.outputs.feature-sha }}
-          BENCH_BENCHMARK_ID: ${{ needs.prepare.outputs.benchmark-id }}
-          BENCH_REFERENCE_EPOCH: ${{ needs.prepare.outputs.reference-epoch }}
-        run: |
-          nu tempo.nu bench-consensus-phase \
-            --role a --phase feature-2 --ref "$BENCH_REF" \
-            --peer-url "$BENCH_E2E_PEER_URL" \
-            --preset "${{ inputs.preset }}" --tps "${{ inputs.tps }}" \
-            --duration "${{ inputs.duration }}" --bloat "${{ inputs.bloat }}" \
-            --bench-datadir "$BENCH_E2E_NODE_DIR" --node-dir "$BENCH_E2E_NODE_DIR" \
-            --genesis "$BENCH_E2E_GENESIS" --trusted-peers "$BENCH_E2E_TRUSTED_PEERS" \
-            --consensus-port "$BENCH_E2E_CONSENSUS_PORT" \
-            --benchmark-id "$BENCH_BENCHMARK_ID" --reference-epoch "$BENCH_REFERENCE_EPOCH" \
-            --tune ${{ inputs.bench-args && format('--bench-args="{0}"', inputs.bench-args) || '' }}
-      - name: Upload results
-        if: "!cancelled()"
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-feature-2-a
-          path: bench-results/
+          role: a
+          phase: feature-2
+          ref: ${{ needs.prepare.outputs.feature-sha }}
+          preset: ${{ inputs.preset }}
+          tps: ${{ inputs.tps }}
+          duration: ${{ inputs.duration }}
+          bloat: ${{ inputs.bloat }}
+          benchmark-id: ${{ needs.prepare.outputs.benchmark-id }}
+          reference-epoch: ${{ needs.prepare.outputs.reference-epoch }}
+          bench-args: ${{ inputs.bench-args }}
 
   feature-2-b:
     needs: [prepare, feature-1-a, feature-1-b]
@@ -340,27 +281,19 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v6
+        with: { fetch-depth: 0, ref: "${{ needs.prepare.outputs.checkout-ref }}" }
+      - uses: ./.github/actions/bench-e2e-phase
         with:
-          fetch-depth: 0
-          ref: ${{ needs.prepare.outputs.checkout-ref }}
-      - name: Run phase
-        env:
-          BENCH_REF: ${{ needs.prepare.outputs.feature-sha }}
-          BENCH_BENCHMARK_ID: ${{ needs.prepare.outputs.benchmark-id }}
-          BENCH_REFERENCE_EPOCH: ${{ needs.prepare.outputs.reference-epoch }}
-        run: |
-          nu tempo.nu bench-consensus-phase \
-            --role b --phase feature-2 --ref "$BENCH_REF" \
-            --peer-url "$BENCH_E2E_PEER_URL" \
-            --preset "${{ inputs.preset }}" --tps "${{ inputs.tps }}" \
-            --duration "${{ inputs.duration }}" --bloat "${{ inputs.bloat }}" \
-            --bench-datadir "$BENCH_E2E_NODE_DIR" --node-dir "$BENCH_E2E_NODE_DIR" \
-            --genesis "$BENCH_E2E_GENESIS" --trusted-peers "$BENCH_E2E_TRUSTED_PEERS" \
-            --consensus-port "$BENCH_E2E_CONSENSUS_PORT" \
-            --benchmark-id "$BENCH_BENCHMARK_ID" --reference-epoch "$BENCH_REFERENCE_EPOCH" \
-            --tune
+          role: b
+          phase: feature-2
+          ref: ${{ needs.prepare.outputs.feature-sha }}
+          preset: ${{ inputs.preset }}
+          tps: ${{ inputs.tps }}
+          duration: ${{ inputs.duration }}
+          bloat: ${{ inputs.bloat }}
+          benchmark-id: ${{ needs.prepare.outputs.benchmark-id }}
+          reference-epoch: ${{ needs.prepare.outputs.reference-epoch }}
 
-  # --- Baseline 2 ---
   baseline-2-a:
     needs: [prepare, feature-2-a, feature-2-b]
     name: baseline-2-a
@@ -368,31 +301,19 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v6
+        with: { fetch-depth: 0, ref: "${{ needs.prepare.outputs.checkout-ref }}" }
+      - uses: ./.github/actions/bench-e2e-phase
         with:
-          fetch-depth: 0
-          ref: ${{ needs.prepare.outputs.checkout-ref }}
-      - name: Run phase
-        env:
-          BENCH_REF: ${{ needs.prepare.outputs.baseline-sha }}
-          BENCH_BENCHMARK_ID: ${{ needs.prepare.outputs.benchmark-id }}
-          BENCH_REFERENCE_EPOCH: ${{ needs.prepare.outputs.reference-epoch }}
-        run: |
-          nu tempo.nu bench-consensus-phase \
-            --role a --phase baseline-2 --ref "$BENCH_REF" \
-            --peer-url "$BENCH_E2E_PEER_URL" \
-            --preset "${{ inputs.preset }}" --tps "${{ inputs.tps }}" \
-            --duration "${{ inputs.duration }}" --bloat "${{ inputs.bloat }}" \
-            --bench-datadir "$BENCH_E2E_NODE_DIR" --node-dir "$BENCH_E2E_NODE_DIR" \
-            --genesis "$BENCH_E2E_GENESIS" --trusted-peers "$BENCH_E2E_TRUSTED_PEERS" \
-            --consensus-port "$BENCH_E2E_CONSENSUS_PORT" \
-            --benchmark-id "$BENCH_BENCHMARK_ID" --reference-epoch "$BENCH_REFERENCE_EPOCH" \
-            --tune ${{ inputs.bench-args && format('--bench-args="{0}"', inputs.bench-args) || '' }}
-      - name: Upload results
-        if: "!cancelled()"
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-baseline-2-a
-          path: bench-results/
+          role: a
+          phase: baseline-2
+          ref: ${{ needs.prepare.outputs.baseline-sha }}
+          preset: ${{ inputs.preset }}
+          tps: ${{ inputs.tps }}
+          duration: ${{ inputs.duration }}
+          bloat: ${{ inputs.bloat }}
+          benchmark-id: ${{ needs.prepare.outputs.benchmark-id }}
+          reference-epoch: ${{ needs.prepare.outputs.reference-epoch }}
+          bench-args: ${{ inputs.bench-args }}
 
   baseline-2-b:
     needs: [prepare, feature-2-a, feature-2-b]
@@ -401,29 +322,20 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v6
+        with: { fetch-depth: 0, ref: "${{ needs.prepare.outputs.checkout-ref }}" }
+      - uses: ./.github/actions/bench-e2e-phase
         with:
-          fetch-depth: 0
-          ref: ${{ needs.prepare.outputs.checkout-ref }}
-      - name: Run phase
-        env:
-          BENCH_REF: ${{ needs.prepare.outputs.baseline-sha }}
-          BENCH_BENCHMARK_ID: ${{ needs.prepare.outputs.benchmark-id }}
-          BENCH_REFERENCE_EPOCH: ${{ needs.prepare.outputs.reference-epoch }}
-        run: |
-          nu tempo.nu bench-consensus-phase \
-            --role b --phase baseline-2 --ref "$BENCH_REF" \
-            --peer-url "$BENCH_E2E_PEER_URL" \
-            --preset "${{ inputs.preset }}" --tps "${{ inputs.tps }}" \
-            --duration "${{ inputs.duration }}" --bloat "${{ inputs.bloat }}" \
-            --bench-datadir "$BENCH_E2E_NODE_DIR" --node-dir "$BENCH_E2E_NODE_DIR" \
-            --genesis "$BENCH_E2E_GENESIS" --trusted-peers "$BENCH_E2E_TRUSTED_PEERS" \
-            --consensus-port "$BENCH_E2E_CONSENSUS_PORT" \
-            --benchmark-id "$BENCH_BENCHMARK_ID" --reference-epoch "$BENCH_REFERENCE_EPOCH" \
-            --tune
+          role: b
+          phase: baseline-2
+          ref: ${{ needs.prepare.outputs.baseline-sha }}
+          preset: ${{ inputs.preset }}
+          tps: ${{ inputs.tps }}
+          duration: ${{ inputs.duration }}
+          bloat: ${{ inputs.bloat }}
+          benchmark-id: ${{ needs.prepare.outputs.benchmark-id }}
+          reference-epoch: ${{ needs.prepare.outputs.reference-epoch }}
 
-  # ----------------------------------------------------------------
   # Aggregate: download phase artifacts, post results to PR
-  # ----------------------------------------------------------------
   aggregate:
     needs: [prepare, baseline-1-a, baseline-1-b, feature-1-a, feature-1-b, feature-2-a, feature-2-b, baseline-2-a, baseline-2-b]
     name: aggregate
@@ -463,7 +375,6 @@ jobs:
               lines.push(`| ${phase} | ${icon} ${result} |`);
             }
 
-            // Try to read report files
             for (const phase of phases) {
               const reportPath = `bench-results/${phase}/report-${phase}.json`;
               try {

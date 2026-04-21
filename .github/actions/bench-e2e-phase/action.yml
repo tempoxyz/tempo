@@ -1,0 +1,55 @@
+# Composite action for a single e2e benchmark phase.
+# Shared by all 8 phase jobs in bench-e2e.yml.
+
+name: bench-e2e-phase
+description: Run a single phase of the 2-validator e2e benchmark
+
+inputs:
+  role:
+    required: true
+    description: "a (txgen owner) or b (node only)"
+  phase:
+    required: true
+    description: "Phase label: baseline-1, feature-1, feature-2, baseline-2"
+  ref:
+    required: true
+    description: "Git SHA to build and run"
+  preset:
+    required: true
+  tps:
+    required: true
+  duration:
+    required: true
+  bloat:
+    required: true
+  benchmark-id:
+    required: true
+  reference-epoch:
+    required: true
+  bench-args:
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Run phase
+      shell: bash
+      run: |
+        nu tempo.nu bench-consensus-phase \
+          --role "${{ inputs.role }}" --phase "${{ inputs.phase }}" --ref "${{ inputs.ref }}" \
+          --peer-url "$BENCH_E2E_PEER_URL" \
+          --preset "${{ inputs.preset }}" --tps "${{ inputs.tps }}" \
+          --duration "${{ inputs.duration }}" --bloat "${{ inputs.bloat }}" \
+          --bench-datadir "$BENCH_E2E_NODE_DIR" --node-dir "$BENCH_E2E_NODE_DIR" \
+          --genesis "$BENCH_E2E_GENESIS" --trusted-peers "$BENCH_E2E_TRUSTED_PEERS" \
+          --consensus-port "$BENCH_E2E_CONSENSUS_PORT" \
+          --benchmark-id "${{ inputs.benchmark-id }}" --reference-epoch "${{ inputs.reference-epoch }}" \
+          --tune ${{ inputs.bench-args && format('--bench-args="{0}"', inputs.bench-args) || '' }}
+
+    - name: Upload results
+      if: "!cancelled()"
+      uses: actions/upload-artifact@v4
+      with:
+        name: e2e-${{ inputs.phase }}-${{ inputs.role }}
+        path: bench-results/
