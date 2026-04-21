@@ -61,6 +61,7 @@ sol! {
     /// When FeeManager is deployed, it effectively "is" a TIPFeeAMM with additional fee management
     /// capabilities layered on top. Both contracts operate on the same storage slots.
     #[derive(Debug, PartialEq, Eq)]
+    #[sol(abi)]
     #[allow(clippy::too_many_arguments)]
     interface ITIPFeeAMM {
         // Structs

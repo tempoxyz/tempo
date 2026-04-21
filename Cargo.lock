@@ -12947,6 +12947,7 @@ name = "tempo-xtask"
 version = "1.6.0"
 dependencies = [
  "alloy",
+ "alloy-json-abi",
  "alloy-primitives",
  "clap",
  "coins-bip32",

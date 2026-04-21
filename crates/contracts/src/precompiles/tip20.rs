@@ -68,7 +68,7 @@ crate::sol! {
         // Standard token functions
         function name() external view returns (string memory);
         function symbol() external view returns (string memory);
-        function decimals() external view returns (uint8);
+        function decimals() external pure returns (uint8);
         function totalSupply() external view returns (uint256);
         function quoteToken() external view returns (address);
         function nextQuoteToken() external view returns (address);
@@ -172,6 +172,21 @@ crate::sol! {
         error InvalidTransferPolicyId();
         error PermitExpired();
         error InvalidSignature();
+    }
+}
+
+crate::sol! {
+    /// Protocol-internal TIP20 entrypoints invoked by other precompiles.
+    ///
+    /// These methods are not part of the public `tempo-std` interface surface. Thus, calldata with
+    /// these function selectors will not be dispatched by the precompiles. The internal interface
+    /// is only created cause they are needed to run the precompile invariant tests.
+    #[derive(Debug, PartialEq, Eq)]
+    #[sol(abi)]
+    interface ITIP20Internal {
+        function systemTransferFrom(address from, address to, uint256 amount) external returns (bool);
+        function transferFeePreTx(address from, uint256 amount) external;
+        function transferFeePostTx(address to, uint256 refund, uint256 actualUsed) external;
     }
 }
 
