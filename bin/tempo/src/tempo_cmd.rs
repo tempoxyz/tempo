@@ -152,8 +152,8 @@ pub(crate) enum ConsensusSubcommand {
     TransferValidatorOwnership(TransferValidatorOwnership),
     /// Look up a validator by etheruem address, e25519 public key, or index.
     Validator(ValidatorInfo),
-    /// Query validator info from the previous epoch's DKG outcome and current contract state.
-    ValidatorsInfo(ValidatorsInfo),
+    /// Query current committee information from the previous epoch's DKG outcome and current contract state.
+    ValidatorCommittee(ValidatorCommittee),
 }
 
 impl ConsensusSubcommand {
@@ -170,7 +170,7 @@ impl ConsensusSubcommand {
             Self::GeneratePrivateKey(args) => args.run(),
             Self::CalculatePublicKey(args) => args.run(),
             Self::Validator(args) => args.run().await,
-            Self::ValidatorsInfo(args) => args.run().await,
+            Self::ValidatorCommittee(args) => args.run().await,
         }
     }
 }
@@ -1081,7 +1081,7 @@ struct ValidatorEntry {
 }
 
 #[derive(Debug, clap::Args)]
-pub(crate) struct ValidatorsInfo {
+pub(crate) struct ValidatorCommittee {
     /// RPC URL to query. Defaults to <https://rpc.presto.tempo.xyz>
     #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
     rpc_url: String,
@@ -1092,7 +1092,7 @@ pub(crate) struct ValidatorsInfo {
     chain: Option<Arc<TempoChainSpec>>,
 }
 
-impl ValidatorsInfo {
+impl ValidatorCommittee {
     async fn run(self) -> eyre::Result<()> {
         use alloy_consensus::BlockHeader;
         use alloy_provider::ProviderBuilder;
