@@ -196,6 +196,8 @@ jobs:
 
       - name: Run txgen benchmark
         run: |
+          tracy_mode='${{ inputs.tracy }}'
+
           cmd=(
             nu contrib/bench/bench-txgen.nu run
             --mode e2e
@@ -216,7 +218,20 @@ jobs:
           [ "${{ inputs.samply }}" = 'true' ] && cmd+=(--samply)
           [ "${{ inputs.no-cache }}" = 'true' ] && cmd+=(--no-cache)
           [ "${{ inputs.force }}" = 'true' ] && cmd+=(--force)
-          [ "${{ inputs.tracy }}" != 'off' ] && cmd+=(--tracy "${{ inputs.tracy }}" --tracy-seconds "${{ inputs.tracy-seconds }}" --tracy-offset "${{ inputs.tracy-offset }}")
+          case "$tracy_mode" in
+            ''|off|false)
+              ;;
+            true)
+              cmd+=(--tracy on --tracy-seconds "${{ inputs.tracy-seconds }}" --tracy-offset "${{ inputs.tracy-offset }}")
+              ;;
+            on|full)
+              cmd+=(--tracy "$tracy_mode" --tracy-seconds "${{ inputs.tracy-seconds }}" --tracy-offset "${{ inputs.tracy-offset }}")
+              ;;
+            *)
+              echo "::error::Unsupported tracy input value: $tracy_mode"
+              exit 1
+              ;;
+          esac
           [ -n "${{ inputs.node-args }}" ] && cmd+=(--node-args="${{ inputs.node-args }}")
           [ -n "${{ inputs.baseline-args }}" ] && cmd+=(--baseline-args="${{ inputs.baseline-args }}")
           [ -n "${{ inputs.feature-args }}" ] && cmd+=(--feature-args="${{ inputs.feature-args }}")

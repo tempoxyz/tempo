@@ -97,6 +97,20 @@ def resolve-txgen-paths [repo_dir: string, txgen_tempo_bin: string, txgen_bench_
     }
 }
 
+def normalize-tracy-mode [value: any] {
+    let mode = ($value | into string | str trim | str downcase)
+
+    if $mode in ["" "off" "false"] {
+        "off"
+    } else if $mode in ["on" "true"] {
+        "on"
+    } else if $mode == "full" {
+        "full"
+    } else {
+        error make { msg: $"--tracy must be one of: off, on, full \(got ($value)\)" }
+    }
+}
+
 def rpc-call [rpc_url: string, payload: string] {
     let result = (^curl -sf -X POST -H "Content-Type: application/json" -d $payload $rpc_url | complete)
     if $result.exit_code != 0 {
@@ -229,7 +243,7 @@ def run-txgen-bench-single [
     --reference-epoch: int = 0
     --samply
     --samply-args: list<string> = []
-    --tracy: string = "off"
+    --tracy: any = "off"
     --tracy-filter: string = "debug"
     --tracy-seconds: int = 0
     --tracy-offset: int = 0
@@ -501,9 +515,7 @@ def "main run" [
     main kill
     let tuning_state = if $tune { apply-system-tuning } else { { tuned: false } }
 
-    if $tracy not-in ["off" "on" "full"] {
-        error make { msg: $"--tracy must be one of: off, on, full \(got ($tracy)\)" }
-    }
+    let tracy = (normalize-tracy-mode $tracy)
     if $samply and $tracy != "off" {
         error make { msg: "--samply and --tracy are mutually exclusive" }
     }
