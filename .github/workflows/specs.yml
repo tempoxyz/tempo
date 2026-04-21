@@ -121,6 +121,8 @@ jobs:
       - name: Build tempo-std interfaces
         working-directory: tips/ref-impls/lib/tempo-std
         run: forge build --sizes
+        env:
+          FOUNDRY_PROFILE: default
 
       - name: Run ABI alignment check
         run: cargo run -p tempo-xtask -- check-abi
