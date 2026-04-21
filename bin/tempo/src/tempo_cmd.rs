@@ -1216,16 +1216,17 @@ impl ValidatorsInfo {
         let dkg_players = ordered::Set::from_iter_dedup(players.iter().chain(next_players));
 
         // Add validators that are active onchain
-        let mut validators_by_public_key =
-            std::collections::BTreeMap::from(active_validators_by_public_key.clone());
+        let mut validators_by_public_key = active_validators_by_public_key.clone();
 
         // Add validators that are in the dkg outcome but no longer active onchain
         for public_key in dkg_players {
             let key = B256::from_slice(public_key.as_ref());
-            if !validators_by_public_key.contains_key(&key) {
+            if let std::collections::btree_map::Entry::Vacant(e) =
+                validators_by_public_key.entry(key)
+            {
                 let id = ValidatorId::PublicKey(key);
                 let validator = read_validator_from_contract(&provider, id).await?;
-                validators_by_public_key.insert(key, validator);
+                e.insert(validator);
             }
         }
 
