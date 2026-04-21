@@ -1207,27 +1207,21 @@ impl ValidatorsInfo {
         )
         .wrap_err("failed to decode getActiveValidators response")?;
 
-        let active_validator_by_pubkey =
-            ordered::Map::from_iter_dedup(active_validators.iter().map(|v| {
-                let pubkey_bytes = v.publicKey.0;
-                let key = PublicKey::decode(&mut &pubkey_bytes[..]).expect(&format!(
-                    "failed decoding onchain validator ed25519 key: {}",
-                    pubkey_bytes.encode_hex()
-                ));
-
-                (key, v.clone())
-            }));
+        let active_validator_by_pubkey = ordered::Map::from_iter_dedup(
+            active_validators.iter().map(|v| (v.publicKey, v.clone())),
+        );
 
         let players = dkg_outcome.players();
         let next_players = dkg_outcome.next_players();
 
         let mut validator_entries: Vec<ValidatorEntry> = Vec::new();
         for public_key in ordered::Set::from_iter_dedup(players.iter().chain(next_players)) {
-            let (validator, active) = match active_validator_by_pubkey.get_value(public_key) {
+            let pubkey_bytes = B256::from_slice(public_key.as_ref());
+            let (validator, active) = match active_validator_by_pubkey.get_value(&pubkey_bytes) {
                 Some(validator) => (validator.clone(), true),
                 None => {
                     // Must be available in contract state
-                    let id = ValidatorId::PublicKey(B256::from_slice(public_key.as_ref()));
+                    let id = ValidatorId::PublicKey(pubkey_bytes);
                     let validator = read_validator_from_contract(&provider, id).await?;
                     (validator, false)
                 }
