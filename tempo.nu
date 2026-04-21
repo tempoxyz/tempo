@@ -1553,6 +1553,179 @@ def "main bench-init" [
 }
 
 # ============================================================================
+# Bench consensus phase (single-runner e2e)
+# ============================================================================
+
+# Run a single phase of a 2-validator e2e benchmark on one runner.
+# Called by the bench-e2e GitHub Actions workflow for each phase job.
+def "main bench-consensus-phase" [
+    --role: string                                      # "a" (txgen owner) or "b" (node only)
+    --phase: string                                     # Phase label: baseline-1, feature-1, feature-2, baseline-2
+    --ref: string                                       # Git SHA to build and run
+    --peer-url: string                                  # Peer node's RPC URL (e.g. http://10.0.0.2:8545)
+    --preset: string = ""                               # Preset: tip20, erc20, swap, order, tempo-mix
+    --tps: int = 10000                                  # Target TPS
+    --duration: int = 300                               # Duration in seconds
+    --accounts: int = 1000                              # Number of accounts
+    --max-concurrent-requests: int = 100                # Max concurrent requests
+    --bench-datadir: string = ""                        # Schelk datadir (default: /reth-bench)
+    --bloat: int = 0                                    # Bloat size (for snapshot marker matching)
+    --profile: string = $DEFAULT_PROFILE                # Cargo build profile
+    --features: string = $DEFAULT_FEATURES              # Cargo features
+    --bench-args: string = ""                           # Additional tempo-bench arguments
+    --benchmark-id: string = ""                         # Shared benchmark ID
+    --reference-epoch: int = 0                          # Shared reference epoch
+    --tune                                              # Apply system tuning
+    --loud                                              # Show all node logs
+    --node-args: string = ""                            # Additional node arguments
+    --node-dir: string                                  # This node's validator dir (contains signing.key, db/, etc.)
+    --genesis: string                                   # Path to genesis.json
+    --trusted-peers: string                             # Trusted peers enode string
+    --consensus-port: int = 8000                        # Consensus listen port
+    --results-dir: string = ""                          # Where to write results
+    --gas-limit: string = ""                            # Block gas limit for genesis
+] {
+    if $role != "a" and $role != "b" {
+        print $"Error: --role must be 'a' or 'b', got '($role)'"
+        exit 1
+    }
+    if $preset != "" and not ($preset in $PRESETS) {
+        print $"Unknown preset: ($preset). Available: ($PRESETS | columns | str join ', ')"
+        exit 1
+    }
+
+    let weights = if $preset != "" { $PRESETS | get $preset } else { [0.0, 0.0, 0.0, 0.0] }
+    let run_type = if ($phase | str starts-with "baseline") { "baseline" } else { "feature" }
+    let short_ref = ($ref | str substring 0..8)
+
+    print $"=== E2E phase: ($phase) | role: ($role) | ref: ($short_ref) ==="
+
+    main kill
+
+    let tuning_state = if $tune { apply-system-tuning } else { { tuned: false } }
+
+    let datadir = if $bench_datadir != "" { $bench_datadir } else { "/reth-bench" }
+    bench-recover $datadir
+
+    let worktree = $"($BENCH_WORKTREES_DIR)/e2e"
+    git worktree prune
+    if ($worktree | path exists) {
+        try { git worktree remove --force $worktree } catch { rm -rf $worktree }
+    }
+    git worktree add $worktree $ref
+    build-in-worktree $worktree $ref $profile $features $ref
+    let tempo_bin = (worktree-bin $worktree $profile "tempo")
+    let bench_bin = (worktree-bin $worktree $profile "tempo-bench")
+
+    let results_dir = if $results_dir == "" {
+        $"($BENCH_RESULTS_DIR)/($phase)"
+    } else {
+        $results_dir
+    }
+    mkdir $results_dir
+
+    let log_dir = $"($LOCALNET_DIR)/logs-($phase)"
+    mkdir $log_dir
+
+    let extra_args = if $node_args == "" { [] } else { $node_args | split row " " }
+    let node_index = (port-to-node-index $consensus_port)
+    let http_port = 8545 + $node_index
+    let reth_metrics_port = 9001 + $node_index
+
+    let base_args = (build-base-args $genesis $node_dir $log_dir "0.0.0.0" $http_port $reth_metrics_port)
+        | append (build-consensus-args $node_dir $trusted_peers $consensus_port)
+        | append (log-filter-args $loud)
+        | append (if $gas_limit != "" { ["--builder.gaslimit" $gas_limit] } else { [] })
+    let args = (dedup-args $base_args $extra_args)
+
+    let node_cmd = [$tempo_bin ...$args]
+    let node_cmd_str = ($node_cmd | str join " ")
+    print $"  Starting consensus node..."
+    job spawn { sh -c $"($node_cmd_str) 2>&1" | lines | each { |line| print $"[($phase)] ($line)" } }
+
+    sleep 2sec
+    let rpc_url = $"http://localhost:($http_port)"
+    let rpc_timeout = if $bloat > 0 { 600 } else { 120 }
+    wait-for-rpc $rpc_url $rpc_timeout
+    print "  Waiting for peer connectivity..."
+    wait-for-peers $rpc_url 1 300
+
+    if $role == "a" {
+        let target_urls = $"($rpc_url),($peer_url)"
+        let bench_cmd = [
+            $bench_bin
+            "run-max-tps"
+            "--tps" $"($tps)"
+            "--duration" $"($duration)"
+            "--accounts" $"($accounts)"
+            "--max-concurrent-requests" $"($max_concurrent_requests)"
+            "--target-urls" $target_urls
+            "--faucet"
+            "--clear-txpool"
+        ]
+        | append (if $preset != "" {
+            [
+                "--tip20-weight" $"($weights | get 0)"
+                "--erc20-weight" $"($weights | get 1)"
+                "--swap-weight" $"($weights | get 2)"
+                "--place-order-weight" $"($weights | get 3)"
+            ]
+        } else { [] })
+        | append (if $bloat > 0 { ["--mnemonic" $"'($BLOAT_MNEMONIC)'"] } else { [] })
+        | append (if $bench_args != "" { $bench_args | split row " " } else { [] })
+        | append ["--node-commit-sha" $ref "--build-profile" $profile "--benchmark-mode" "e2e"]
+        | append (if $benchmark_id != "" { ["--benchmark-id" $benchmark_id] } else { [] })
+
+        print $"  Running benchmark \(targets: ($target_urls)\)..."
+        try {
+            bash -c $"ulimit -Sn unlimited && ($bench_cmd | str join ' ')"
+        } catch { |e|
+            print $"  Benchmark failed: ($e.msg)"
+        }
+
+        if ("report.json" | path exists) {
+            cp report.json $"($results_dir)/report-($phase).json"
+            rm report.json
+            print $"  Report saved: report-($phase).json"
+        } else {
+            print $"  WARNING: no report.json produced"
+        }
+    } else {
+        let wait_secs = $duration + 60
+        print $"  Role B: running node for ($wait_secs)s..."
+        sleep ($"($wait_secs)sec" | into duration)
+    }
+
+    print "  Stopping node..."
+    let pids = (find-tempo-pids)
+    for pid in $pids {
+        kill -s 2 $pid
+    }
+    for pid in $pids {
+        mut wait = 0
+        while $wait < 30 {
+            if (ps | where pid == $pid | length) == 0 { break }
+            sleep 1sec
+            $wait = $wait + 1
+        }
+        if $wait >= 30 {
+            print $"  Warning: PID ($pid) did not exit, sending SIGKILL"
+            kill -s 9 $pid
+            sleep 1sec
+        }
+    }
+
+    if ("/tmp/reth.ipc" | path exists) {
+        rm --force /tmp/reth.ipc
+    }
+
+    try { git worktree remove --force $worktree } catch { }
+
+    restore-system-tuning $tuning_state
+    print $"=== Phase ($phase) complete ==="
+}
+
+# ============================================================================
 # Bench command
 # ============================================================================
 
@@ -2228,6 +2401,35 @@ def wait-for-rpc [url: string, max_attempts: int = 120] {
                 if ($attempt mod 10) == 0 {
                     print $"  ($url) still at block ($block)... \(($attempt)s\)"
                 }
+            }
+        } else {
+            if ($attempt mod 10) == 0 {
+                print $"  Still waiting for ($url)... \(($attempt)s\)"
+            }
+        }
+        sleep 1sec
+    }
+}
+
+# Wait for a node to have at least min_peers connected peers
+def wait-for-peers [url: string, min_peers: int = 1, max_attempts: int = 120] {
+    mut attempt = 0
+    loop {
+        $attempt = $attempt + 1
+        if $attempt > $max_attempts {
+            print $"  Timeout waiting for ($min_peers) peer\(s\) at ($url)"
+            exit 1
+        }
+        let result = (do { curl -sf $url -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"net_peerCount","params":[],"id":1}' } | complete)
+        if $result.exit_code == 0 {
+            let hex = ($result.stdout | from json | get result)
+            let count = ($hex | str replace "0x" "" | into int --radix 16)
+            if $count >= $min_peers {
+                print $"  ($url) has ($count) peer\(s\)"
+                break
+            }
+            if ($attempt mod 10) == 0 {
+                print $"  Waiting for peers at ($url)... ($count)/($min_peers) \(($attempt)s\)"
             }
         } else {
             if ($attempt mod 10) == 0 {
