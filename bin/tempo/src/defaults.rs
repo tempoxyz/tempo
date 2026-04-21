@@ -26,7 +26,7 @@ pub(crate) struct TelemetryArgs {
     #[arg(
         long,
         value_name = "URL",
-        conflicts_with = "logs_otlp",
+        conflicts_with_all = ["logs_otlp", "tracing_otlp"],
         env = "TEMPO_TELEMETRY_URL"
     )]
     pub(crate) telemetry_url: Option<UrlWithAuth>,
@@ -73,6 +73,11 @@ impl TelemetryArgs {
             .join("opentelemetry/v1/logs")
             .wrap_err("failed to construct logs OTLP URL")?;
 
+        // Build traces OTLP URL (Victoria Metrics OTLP path)
+        let traces_otlp_url = base_url_no_creds
+            .join("opentelemetry/v1/traces")
+            .wrap_err("failed to construct traces OTLP URL")?;
+
         // Build metrics prometheus URL (Victoria Metrics Prometheus import path)
         let metrics_prometheus_url = base_url_no_creds
             .join("api/v1/import/prometheus")
@@ -80,6 +85,7 @@ impl TelemetryArgs {
 
         Ok(Some(TelemetryConfig {
             logs_otlp_url,
+            traces_otlp_url,
             logs_otlp_filter: DEFAULT_LOGS_OTLP_FILTER.to_string(),
             metrics_prometheus_url,
             metrics_prometheus_interval: self.telemetry_metrics_interval,
@@ -137,6 +143,8 @@ impl From<UrlWithAuth> for Url {
 pub(crate) struct TelemetryConfig {
     /// OTLP logs endpoint (without credentials).
     pub(crate) logs_otlp_url: Url,
+    /// OTLP traces/spans endpoint (without credentials).
+    pub(crate) traces_otlp_url: Url,
     /// OTLP logs filter level.
     pub(crate) logs_otlp_filter: String,
     /// Prometheus metrics push endpoint (without credentials).

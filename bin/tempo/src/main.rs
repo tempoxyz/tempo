@@ -370,12 +370,13 @@ fn main() -> eyre::Result<()> {
             }
         }
 
-        // Set Reth logs OTLP. Consensus logs are exported as well via the same tracing system.
+        // Set Reth OTLP for both logs and traces (spans).
         cli.traces.logs_otlp = Some(config.logs_otlp_url.clone());
         cli.traces.logs_otlp_filter = config
             .logs_otlp_filter
             .parse()
             .wrap_err("invalid default logs filter")?;
+        cli.traces.otlp = Some(config.traces_otlp_url.clone());
 
         telemetry_config.replace(config);
     }
