@@ -190,7 +190,6 @@ fn call_scope_length_reset_rows(auth: &tempo_primitives::transaction::KeyAuthori
 }
 
 /// Charges the unpriced scope-helper bookkeeping for T4 key authorizations.
-///
 /// The dynamic SSTORE rows are already counted by `call_scope_storage_slots()`. What remains is the
 /// helper work around them: clearing the empty scope tree for fresh keys, target/set maintenance,
 /// selector/set maintenance, and recipient-set writes. We use rounded constants here because the
