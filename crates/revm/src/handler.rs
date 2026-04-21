@@ -319,7 +319,7 @@ fn calculate_key_authorization_gas(
             );
         }
 
-        // T4+: add the rounded scope-helper surcharge introduced in PR 3595.
+        // T4+: add the rounded scope-helper surcharge.
         if spec.is_t4() {
             total = total.saturating_add(call_scope_extra_gas(&key_auth.authorization));
         }
