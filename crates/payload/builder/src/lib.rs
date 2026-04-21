@@ -46,11 +46,9 @@ use std::{
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_consensus::TEMPO_SHARED_GAS_DIVISOR;
-use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, evm::TempoEvm};
+use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, evm::TempoEvm};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
-use tempo_precompiles::{
-    storage::StorageCtx, tip_fee_manager::TipFeeManager, validator_config_v2::ValidatorConfigV2,
-};
+use tempo_precompiles::{tip_fee_manager::TipFeeManager, validator_config_v2::ValidatorConfigV2};
 use tempo_primitives::{
     RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoTxEnvelope,
     subblock::PartialValidatorKey,
@@ -863,27 +861,34 @@ fn maybe_override_fee_recipient<DB: Database>(
     if !ctx.cfg.spec.is_t2() {
         return;
     }
-    let parent_number = ctx.block.number.saturating_to::<u64>() - 1;
-    match StorageCtx::enter_ctx(ctx, || -> Result<Option<Address>, PayloadBuilderError> {
-        let config = ValidatorConfigV2::default();
-        if !config
-            .is_initialized()
-            .map_err(PayloadBuilderError::other)?
-        {
-            return Ok(None);
-        }
-        let init_height = config
-            .get_initialized_at_height()
-            .map_err(PayloadBuilderError::other)?;
-        if init_height > parent_number {
-            return Ok(None);
-        }
-        let on_chain = config
-            .validator_by_public_key(*public_key)
-            .map(|v| v.feeRecipient)
-            .map_err(PayloadBuilderError::other)?;
-        Ok((!on_chain.is_zero()).then_some(on_chain))
-    }) {
+
+    // We are using the database as a read-only storage context to avoid modifying the journal state.
+    // Reading slots here might be dangerous because they would end up being warmed and might affect gas accounting.
+    match ctx.journaled_state.database.with_read_only_storage_ctx(
+        ctx.cfg.spec,
+        || -> Result<Option<Address>, PayloadBuilderError> {
+            let parent_number = ctx.block.number.saturating_to::<u64>() - 1;
+
+            let config = ValidatorConfigV2::default();
+            if !config
+                .is_initialized()
+                .map_err(PayloadBuilderError::other)?
+            {
+                return Ok(None);
+            }
+            let init_height = config
+                .get_initialized_at_height()
+                .map_err(PayloadBuilderError::other)?;
+            if init_height > parent_number {
+                return Ok(None);
+            }
+            let on_chain = config
+                .validator_by_public_key(*public_key)
+                .map(|v| v.feeRecipient)
+                .map_err(PayloadBuilderError::other)?;
+            Ok((!on_chain.is_zero()).then_some(on_chain))
+        },
+    ) {
         Ok(Some(fee_recipient)) => {
             debug!(%fee_recipient, "resolved fee recipient from contract");
             builder.evm_mut().ctx_mut().block.beneficiary = fee_recipient;
@@ -900,12 +905,15 @@ fn resolve_validator_fee_token(
     builder: &mut impl BlockBuilder<Executor: BlockExecutor<Evm = TempoEvm<impl Database>>>,
 ) -> Result<Address, PayloadBuilderError> {
     let ctx = builder.evm_mut().ctx_mut();
-    let beneficiary = ctx.block.beneficiary;
-    StorageCtx::enter_ctx(ctx, || {
-        TipFeeManager::new()
-            .get_validator_token(beneficiary)
-            .map_err(PayloadBuilderError::other)
-    })
+    // We are using the database as a read-only storage context to avoid modifying the journal state.
+    // Reading slots here might be dangerous because they would end up being warmed and might affect gas accounting.
+    ctx.journaled_state
+        .database
+        .with_read_only_storage_ctx(ctx.cfg.spec, || {
+            TipFeeManager::new()
+                .get_validator_token(ctx.block.beneficiary)
+                .map_err(PayloadBuilderError::other)
+        })
 }
 
 #[cfg(test)]
