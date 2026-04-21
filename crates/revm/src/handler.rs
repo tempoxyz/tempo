@@ -2928,6 +2928,34 @@ mod tests {
     }
 
     #[test]
+    fn test_t4_key_authorization_matches_tip1016_sstore_regular_cost() {
+        use tempo_primitives::transaction::{
+            KeyAuthorization, SignatureType, SignedKeyAuthorization,
+        };
+
+        let key_auth = SignedKeyAuthorization {
+            authorization: KeyAuthorization::unrestricted(
+                1,
+                SignatureType::Secp256k1,
+                Address::random(),
+            ),
+            signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+        };
+
+        let gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T4);
+
+        let sig_gas = ECRECOVER_GAS + primitive_signature_verification_gas(&key_auth.signature);
+        let sload = gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
+        let scope_extra_gas = call_scope_extra_gas(&key_auth.authorization);
+        let (gas, state_gas) =
+            calculate_key_authorization_gas(&key_auth, &gas_params, TempoHardfork::T4);
+        let helper_sstore_regular = gas - state_gas - sig_gas - sload - 2_000 - scope_extra_gas;
+
+        assert_eq!(helper_sstore_regular, 20_000);
+        assert_eq!(state_gas, 230_000);
+    }
+
+    #[test]
     fn test_translate_allowed_calls_for_precompile_preserves_empty_nested_allow_all_lists() {
         use tempo_primitives::transaction::{
             CallScope, KeyAuthorization, SelectorRule, SignatureType, SignedKeyAuthorization,
@@ -3143,7 +3171,7 @@ mod tests {
                     // Pre-T1: charges gas_new_nonce_key for new 2D key
                     BASE_INTRINSIC_GAS + spec.gas_new_nonce_key()
                 };
-                let mut evm = make_evm(0, U256::from(42));
+                let mut evm = make_evm(0, U256::ONE);
                 let gas = handler.validate_initial_tx_gas(&mut evm).unwrap();
                 assert_eq!(
                     gas.initial_total_gas, expected,
@@ -3153,7 +3181,7 @@ mod tests {
 
             // Case 3: Existing 2D nonce key (nonce_key != 0, nonce > 0)
             {
-                let mut evm = make_evm(5, U256::from(42));
+                let mut evm = make_evm(5, U256::ONE);
                 let gas = handler.validate_initial_tx_gas(&mut evm).unwrap();
                 assert_eq!(
                     gas.initial_total_gas,
@@ -3227,7 +3255,7 @@ mod tests {
                                 value: U256::ZERO,
                                 input: Bytes::new(),
                             }],
-                            nonce_key: U256::from(1), // Non-zero to trigger 2D nonce gas
+                            nonce_key: U256::ONE,
                             ..Default::default()
                         })),
                         ..Default::default()
@@ -5027,7 +5055,7 @@ mod tests {
             tempo_authorization_list: vec![RecoveredTempoAuthorization::new(
                 TempoSignedAuthorization::new_unchecked(
                     alloy_eips::eip7702::Authorization {
-                        chain_id: U256::from(1),
+                        chain_id: U256::ONE,
                         address: Address::random(),
                         nonce: 0,
                     },
@@ -5070,7 +5098,7 @@ mod tests {
                 value: U256::ZERO,
                 input: Bytes::from(vec![1, 2, 3]),
             }],
-            nonce_key: U256::from(1),
+            nonce_key: U256::ONE,
             ..Default::default()
         };
 
@@ -5130,7 +5158,7 @@ mod tests {
             tempo_authorization_list: vec![RecoveredTempoAuthorization::new(
                 TempoSignedAuthorization::new_unchecked(
                     alloy_eips::eip7702::Authorization {
-                        chain_id: U256::from(1),
+                        chain_id: U256::ONE,
                         address: Address::random(),
                         nonce: 0,
                     },
@@ -5293,7 +5321,7 @@ mod tests {
             tempo_authorization_list: vec![RecoveredTempoAuthorization::new(
                 TempoSignedAuthorization::new_unchecked(
                     alloy_eips::eip7702::Authorization {
-                        chain_id: U256::from(1),
+                        chain_id: U256::ONE,
                         address: Address::random(),
                         nonce: 0,
                     },
