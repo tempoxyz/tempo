@@ -3704,7 +3704,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ab67060fc6b8ef687992d439ca0fa36e7ed17e9a0b16b25b601e8757df720de"
 dependencies = [
  "data-encoding",
- "syn 2.0.117",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -12975,6 +12975,7 @@ name = "tempo-xtask"
 version = "1.6.0"
 dependencies = [
  "alloy",
+ "alloy-json-abi",
  "alloy-primitives",
  "clap",
  "coins-bip32",
