@@ -430,15 +430,6 @@ def generate_comparison_table(
         f"| Persist Wait | {fmt_ms(run1['mean_persist_ms'])} | {fmt_ms(run2['mean_persist_ms'])} | {change_str(persist_pct, persist_ci_pct, lower_is_better=True)} |",
         "",
     ]
-    meta_parts = [f"{n} {'big blocks' if big_blocks else 'blocks'}"]
-    if warmup_blocks:
-        meta_parts.append(f"{warmup_blocks} warmup")
-    if wait_time:
-        meta_parts.append(f"wait time: {wait_time}")
-    display_mode = display_bal_mode(bal_mode)
-    if big_blocks and display_mode:
-        meta_parts.append(f"BAL: {display_mode}")
-    lines.append(f"*{', '.join(meta_parts)}*")
     return "\n".join(lines)
 
 

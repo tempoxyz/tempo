@@ -132,7 +132,7 @@ jobs:
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: pr.number,
-                  body: `cc @${'${{ github.actor }}'}\n\n🚀 Replay benchmark started! [View run](${runUrl})\n\n⏳ **Status:** Running...`,
+                  body: `cc @${'${{ github.actor }}'}\n\n🚀 Replay benchmark started! [View run](${runUrl})\n\n⏳ **Status:** Running...\n\n**Config:** chain: \`${'${{ inputs.chain || 'mainnet' }}'}\`, blocks: \`${'${{ inputs.blocks || '5000' }}'}\`, warmup: \`${'${{ inputs.warmup || '1000' }}'}\``,
                 });
                 core.exportVariable('BENCH_COMMENT_ID', String(comment.id));
                 if (pr.mergeable) {
@@ -190,7 +190,8 @@ jobs:
             const feature = '${{ inputs.feature-name }}';
             const samply = process.env.BENCH_SAMPLY === 'true';
             const samplyNote = samply ? ', samply: `enabled`' : '';
-            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`replay\`, blocks: \`${blocks}\`, warmup: \`${warmup}\`, baseline: \`${baseline}\`, feature: \`${feature}\`${samplyNote}`);
+            const chain = process.env.BENCH_CHAIN || 'mainnet';
+            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`replay\`, chain: \`${chain}\`, blocks: \`${blocks}\`, warmup: \`${warmup}\`, baseline: \`${baseline}\`, feature: \`${feature}\`${samplyNote}`);
 
             const { buildBody } = require('./.github/scripts/bench-update-status.js');
             await github.rest.issues.updateComment({
@@ -355,7 +356,10 @@ jobs:
             }
 
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const body = `cc @${process.env.BENCH_ACTOR}\n\n✅ Replay benchmark complete! [View job](${jobUrl})\n\n${comment}`;
+            const chain = process.env.BENCH_CHAIN || 'mainnet';
+            const blocks = process.env.BENCH_BLOCKS || '5000';
+            const warmup = process.env.BENCH_WARMUP_BLOCKS || '1000';
+            const body = `cc @${process.env.BENCH_ACTOR}\n\n✅ Replay benchmark complete! [View job](${jobUrl})\n\nChain: \`${chain}\`\nWarmup: \`${warmup}\`\nBlocks: \`${blocks}\`\n\n${comment}`;
 
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
