@@ -5355,7 +5355,7 @@ mod tests {
         let expected_spent =
             init_gas.initial_total_gas + call_results.iter().map(|(_, spent)| spent).sum::<u64>();
 
-        // Pays CREATE state gas + both call costs. CREATE is charged upfront via intrisic gas, and NOT refunded.
+        // Pays CREATE state gas + both call costs. CREATE is charged upfront via intrinsic gas, and NOT refunded.
         assert_eq!(result.instruction_result(), InstructionResult::Revert);
         assert_eq!(result.gas().total_gas_spent(), expected_spent);
         assert_eq!(result.gas().remaining(), tx_gas_limit - expected_spent);
