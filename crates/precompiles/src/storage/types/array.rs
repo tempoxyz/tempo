@@ -12,7 +12,7 @@
 //! - **Unpacked**: When `T::BYTES > 16` or doesn't divide 32, each element uses full slot(s)
 
 use alloy::primitives::{Address, U256};
-use std::ops::{Index, IndexMut};
+use core::ops::{Index, IndexMut};
 use tempo_precompiles_macros;
 
 use crate::{

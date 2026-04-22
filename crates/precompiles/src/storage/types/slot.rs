@@ -1,5 +1,5 @@
 use alloy::primitives::{Address, U256};
-use std::marker::PhantomData;
+use core::marker::PhantomData;
 
 use crate::{
     error::Result,

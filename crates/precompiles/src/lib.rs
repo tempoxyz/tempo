@@ -1,6 +1,10 @@
 //! Tempo precompile implementations.
+#![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+
+#[macro_use]
+extern crate alloc;
 
 pub mod error;
 pub use error::{IntoPrecompileResult, Result};
@@ -419,7 +423,7 @@ pub(crate) fn dispatch_call<T>(
 #[cfg(test)]
 pub fn expect_precompile_revert<E>(result: &PrecompileResult, expected_error: E)
 where
-    E: SolInterface + PartialEq + std::fmt::Debug,
+    E: SolInterface + PartialEq + core::fmt::Debug,
 {
     match result {
         Ok(result) => {

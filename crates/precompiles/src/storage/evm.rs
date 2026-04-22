@@ -1,3 +1,4 @@
+use alloc::vec::Vec;
 use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::EvmInternals;
 use revm::{
@@ -632,7 +633,7 @@ mod tests {
         // 2 words: 30 + 6*2 = 42, cumulative = 78
         provider.keccak256(&[0u8; 64])?;
         assert_eq!(provider.gas_used(), 78);
-        std::mem::drop(provider);
+        core::mem::drop(provider);
 
         // OOG: 30 gas is not enough (needs 36 for 1 word)
         let evm_internals =
@@ -676,7 +677,7 @@ mod tests {
             Some(signer.address())
         );
         assert_eq!(provider.gas_used(), crate::ECRECOVER_GAS * 2);
-        std::mem::drop(provider);
+        core::mem::drop(provider);
 
         // OOG: 100 gas is not enough (needs 3000)
         let evm_internals =

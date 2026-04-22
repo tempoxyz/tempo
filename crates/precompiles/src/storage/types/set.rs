@@ -41,13 +41,15 @@
 //! handler.write(vec.into())?;  // `Set::from(vec)` deduplicates
 //! ```
 
+use alloc::vec::{IntoIter, Vec};
 use alloy::primitives::{Address, U256};
-use std::{
-    collections::HashSet,
+use core::{
     fmt,
     hash::Hash,
     ops::{Deref, Index},
+    slice::Iter,
 };
+use hashbrown::HashSet;
 
 use crate::{
     error::{Result, TempoPrecompileError},
@@ -133,7 +135,7 @@ impl<T: Eq + Hash + Clone> FromIterator<T> for Set<T> {
 
 impl<T> IntoIterator for Set<T> {
     type Item = T;
-    type IntoIter = std::vec::IntoIter<T>;
+    type IntoIter = IntoIter<T>;
 
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
@@ -143,7 +145,7 @@ impl<T> IntoIterator for Set<T> {
 
 impl<'a, T> IntoIterator for &'a Set<T> {
     type Item = &'a T;
-    type IntoIter = std::slice::Iter<'a, T>;
+    type IntoIter = Iter<'a, T>;
 
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
