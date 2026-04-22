@@ -179,17 +179,19 @@ jobs:
 
       - name: Resolve checkout ref
         id: checkout-ref
-        uses: actions/github-script@v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          INPUT_GITHUB_REF: ${{ github.ref }}
         with:
           script: |
             // workflow_dispatch: always use the branch ref directly
             if (context.eventName === 'workflow_dispatch') {
-              core.setOutput('ref', '${{ github.ref }}');
+              core.setOutput('ref', process.env.INPUT_GITHUB_REF);
               return;
             }
             // issue_comment: use PR merge ref (with head SHA fallback)
             if (!process.env.BENCH_PR) {
-              core.setOutput('ref', '${{ github.ref }}');
+              core.setOutput('ref', process.env.INPUT_GITHUB_REF);
               return;
             }
             const { data: pr } = await github.rest.pulls.get({
@@ -204,17 +206,19 @@ jobs:
               core.setOutput('ref', `refs/pull/${process.env.BENCH_PR}/merge`);
             }
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          persist-credentials: false
           fetch-depth: 0
           ref: ${{ steps.checkout-ref.outputs.ref }}
 
       - name: Checkout txgen repository
         if: env.BENCH_BACKEND == 'txgen'
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: tempoxyz/txgen
           token: ${{ secrets.DEREK_PAT || github.token }}
+          persist-credentials: false
           path: txgen
           fetch-depth: 0
 
@@ -227,7 +231,10 @@ jobs:
 
       - name: Resolve job URL and update status
         if: env.BENCH_COMMENT_ID
-        uses: actions/github-script@v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          INPUT_BASELINE_NAME: ${{ inputs.baseline-name }}
+          INPUT_FEATURE_NAME: ${{ inputs.feature-name }}
         with:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |
@@ -245,13 +252,13 @@ jobs:
             const duration = process.env.BENCH_DURATION;
             const bloat = process.env.BENCH_BLOAT;
             const tps = process.env.BENCH_TPS;
-            const baseline = '${{ inputs.baseline-name }}';
-            const feature = '${{ inputs.feature-name }}';
+            const baseline = process.env.INPUT_BASELINE_NAME;
+            const feature = process.env.INPUT_FEATURE_NAME;
             const backend = process.env.BENCH_BACKEND;
             const txgenRef = process.env.BENCH_TXGEN_REF || 'default';
-            const samply = '${{ inputs.samply }}' === 'true';
+            const samply = process.env.BENCH_SAMPLY === 'true';
             const samplyNote = samply ? ', samply: `enabled`' : '';
-            const tracy = '${{ inputs.tracy }}';
+            const tracy = process.env.BENCH_TRACY;
             const tracyNote = tracy !== 'off' ? `, tracy: \`${tracy}\`` : '';
             const bHf2 = process.env.BENCH_BASELINE_HARDFORK || '';
             const fHf2 = process.env.BENCH_FEATURE_HARDFORK || '';
@@ -267,7 +274,7 @@ jobs:
             });
 
       - uses: dtolnay/rust-toolchain@stable
-      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
         continue-on-error: true
 
       - name: Build txgen backend
@@ -281,7 +288,10 @@ jobs:
 
       - name: Resolve PR head branch
         id: pr-info
-        uses: actions/github-script@v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          INPUT_REF_NAME: ${{ github.ref_name }}
+          INPUT_SHA: ${{ github.sha }}
         with:
           script: |
             if (process.env.BENCH_PR) {
@@ -293,20 +303,26 @@ jobs:
               core.setOutput('head-ref', pr.head.ref);
               core.setOutput('head-sha', pr.head.sha);
             } else {
-              core.setOutput('head-ref', '${{ github.ref_name }}');
-              core.setOutput('head-sha', '${{ github.sha }}');
+              core.setOutput('head-ref', process.env.INPUT_REF_NAME);
+              core.setOutput('head-sha', process.env.INPUT_SHA);
             }
 
       - name: Resolve baseline and feature refs
         id: refs
-        uses: actions/github-script@v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          INPUT_BASELINE: ${{ inputs.baseline }}
+          INPUT_FEATURE: ${{ inputs.feature }}
+          INPUT_SHA: ${{ github.sha }}
+          INPUT_PR_HEAD_SHA: ${{ steps.pr-info.outputs.head-sha }}
+          INPUT_PR_HEAD_REF: ${{ steps.pr-info.outputs.head-ref }}
         with:
           script: |
             const { execSync } = require('child_process');
             const run = (cmd) => execSync(cmd, { encoding: 'utf8' }).trim();
 
-            const baselineArg = '${{ inputs.baseline }}';
-            const featureArg = '${{ inputs.feature }}';
+            const baselineArg = process.env.INPUT_BASELINE;
+            const featureArg = process.env.INPUT_FEATURE;
 
             let baselineRef, baselineName, featureRef, featureName;
 
@@ -322,7 +338,7 @@ jobs:
               try {
                 baselineRef = run('git merge-base HEAD origin/main');
               } catch {
-                baselineRef = '${{ github.sha }}';
+                baselineRef = process.env.INPUT_SHA;
               }
               baselineName = 'main';
             }
@@ -336,8 +352,8 @@ jobs:
               }
               featureName = featureArg;
             } else {
-              featureRef = '${{ steps.pr-info.outputs.head-sha }}';
-              featureName = '${{ steps.pr-info.outputs.head-ref }}';
+              featureRef = process.env.INPUT_PR_HEAD_SHA;
+              featureName = process.env.INPUT_PR_HEAD_REF;
             }
 
             core.setOutput('baseline-ref', baselineRef);
@@ -346,12 +362,14 @@ jobs:
             core.setOutput('feature-name', featureName);
 
       - name: Resolve PR attribution
-        uses: actions/github-script@v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          INPUT_FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
         with:
           script: |
             let pr = process.env.BENCH_PR || '';
             if (!pr) {
-              const featureRef = '${{ steps.refs.outputs.feature-ref }}';
+              const featureRef = process.env.INPUT_FEATURE_REF;
               try {
                 const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
                   owner: context.repo.owner,
@@ -371,7 +389,7 @@ jobs:
 
       - name: Update status (running benchmark)
         if: success() && env.BENCH_COMMENT_ID
-        uses: actions/github-script@v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |
@@ -428,7 +446,7 @@ jobs:
 
       - name: Upload results
         if: "!cancelled()"
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: tempo-bench-results
           path: bench-results/
@@ -440,16 +458,19 @@ jobs:
           BENCH_FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
           BENCH_RUN_TYPE: ${{ env.BENCH_RUN_TYPE }}
           BENCH_JOB_URL: ${{ env.BENCH_JOB_URL }}
-        run: bash contrib/bench/upload-clickhouse.sh "${{ steps.results-dir.outputs.path }}"
+          BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
+        run: bash contrib/bench/upload-clickhouse.sh "$BENCH_RESULTS_DIR"
 
       - name: Post results to PR
         if: success()
-        uses: actions/github-script@v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
         with:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |
             const fs = require('fs');
-            const resultsDir = '${{ steps.results-dir.outputs.path }}';
+            const resultsDir = process.env.BENCH_RESULTS_DIR;
 
             let summary = '';
             try {
@@ -558,7 +579,7 @@ jobs:
 
       - name: Send Slack notification (success)
         if: success() && steps.results-dir.outputs.path && env.BENCH_NO_SLACK != 'true'
-        uses: actions/github-script@v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           BENCH_WORK_DIR: ${{ steps.results-dir.outputs.path }}
           BENCH_BASELINE_NAME: ${{ steps.refs.outputs.baseline-name }}
@@ -570,7 +591,7 @@ jobs:
 
       - name: Send Slack notification (failure)
         if: failure() && env.BENCH_NO_SLACK != 'true'
-        uses: actions/github-script@v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const notify = require('./.github/scripts/bench-slack-notify.js');
@@ -578,7 +599,7 @@ jobs:
 
       - name: Update status (failed)
         if: failure() && env.BENCH_COMMENT_ID
-        uses: actions/github-script@v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |
@@ -592,7 +613,7 @@ jobs:
 
       - name: Update status (cancelled)
         if: cancelled() && env.BENCH_COMMENT_ID
-        uses: actions/github-script@v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |

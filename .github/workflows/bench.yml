@@ -57,7 +57,7 @@ jobs:
     steps:
       - name: Check org membership
         if: github.event_name == 'issue_comment'
-        uses: actions/github-script@v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -76,7 +76,9 @@ jobs:
 
       - name: Parse arguments
         id: args
-        uses: actions/github-script@v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          INPUT_REF_NAME: ${{ github.ref_name }}
         with:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |
@@ -277,7 +279,7 @@ jobs:
                 });
                 featureName = prData.head.ref;
               } else {
-                featureName = '${{ github.ref_name }}';
+                featureName = process.env.INPUT_REF_NAME;
               }
             }
 
@@ -312,7 +314,25 @@ jobs:
 
       - name: Acknowledge request
         id: ack
-        uses: actions/github-script@v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          ACK_PR: ${{ steps.args.outputs.pr }}
+          ACK_ACTOR: ${{ steps.args.outputs.actor }}
+          ACK_MODE: ${{ steps.args.outputs.mode }}
+          ACK_PRESET: ${{ steps.args.outputs.preset }}
+          ACK_DURATION: ${{ steps.args.outputs.duration }}
+          ACK_BLOAT: ${{ steps.args.outputs.bloat }}
+          ACK_TPS: ${{ steps.args.outputs.tps }}
+          ACK_BASELINE_NAME: ${{ steps.args.outputs.baseline-name }}
+          ACK_FEATURE_NAME: ${{ steps.args.outputs.feature-name }}
+          ACK_BACKEND: ${{ steps.args.outputs.backend }}
+          ACK_TXGEN_REF: ${{ steps.args.outputs.txgen-ref }}
+          ACK_SAMPLY: ${{ steps.args.outputs.samply }}
+          ACK_TRACY: ${{ steps.args.outputs.tracy }}
+          ACK_BASELINE_ARGS: ${{ steps.args.outputs.baseline-args }}
+          ACK_FEATURE_ARGS: ${{ steps.args.outputs.feature-args }}
+          ACK_BASELINE_HARDFORK: ${{ steps.args.outputs.baseline-hardfork }}
+          ACK_FEATURE_HARDFORK: ${{ steps.args.outputs.feature-hardfork }}
         with:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |
@@ -325,30 +345,30 @@ jobs:
               });
             }
 
-            const pr = '${{ steps.args.outputs.pr }}';
+            const pr = process.env.ACK_PR;
             if (!pr) return;
 
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
 
-            const actor = '${{ steps.args.outputs.actor }}';
-            const mode = '${{ steps.args.outputs.mode }}';
-            const preset = '${{ steps.args.outputs.preset }}';
-            const duration = '${{ steps.args.outputs.duration }}';
-            const bloat = '${{ steps.args.outputs.bloat }}';
-            const tps = '${{ steps.args.outputs.tps }}';
-            const baseline = '${{ steps.args.outputs.baseline-name }}';
-            const feature = '${{ steps.args.outputs.feature-name }}';
-            const backend = '${{ steps.args.outputs.backend }}';
-            const txgenRef = '${{ steps.args.outputs.txgen-ref }}' || 'default';
-            const samply = '${{ steps.args.outputs.samply }}' === 'true';
+            const actor = process.env.ACK_ACTOR;
+            const mode = process.env.ACK_MODE;
+            const preset = process.env.ACK_PRESET;
+            const duration = process.env.ACK_DURATION;
+            const bloat = process.env.ACK_BLOAT;
+            const tps = process.env.ACK_TPS;
+            const baseline = process.env.ACK_BASELINE_NAME;
+            const feature = process.env.ACK_FEATURE_NAME;
+            const backend = process.env.ACK_BACKEND;
+            const txgenRef = process.env.ACK_TXGEN_REF || 'default';
+            const samply = process.env.ACK_SAMPLY === 'true';
             const samplyNote = samply ? ', samply: `enabled`' : '';
-            const tracy = '${{ steps.args.outputs.tracy }}';
+            const tracy = process.env.ACK_TRACY;
             const tracyNote = tracy !== 'off' ? `, tracy: \`${tracy}\`` : '';
-            const bNa = '${{ steps.args.outputs.baseline-args }}';
-            const fNa = '${{ steps.args.outputs.feature-args }}';
+            const bNa = process.env.ACK_BASELINE_ARGS || '';
+            const fNa = process.env.ACK_FEATURE_ARGS || '';
             const naNote = (bNa || fNa) ? `${bNa ? `, baseline-args: \`${bNa}\`` : ''}${fNa ? `, feature-args: \`${fNa}\`` : ''}` : '';
-            const bHf = '${{ steps.args.outputs.baseline-hardfork }}';
-            const fHf = '${{ steps.args.outputs.feature-hardfork }}';
+            const bHf = process.env.ACK_BASELINE_HARDFORK || '';
+            const fHf = process.env.ACK_FEATURE_HARDFORK || '';
             const hfNote = bHf ? `, baseline-hardfork: \`${bHf}\`, feature-hardfork: \`${fHf}\`` : '';
             const config = `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} MiB\`, tps: \`${tps}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, backend: \`${backend}\`, txgen-ref: \`${txgenRef}\`${samplyNote}${tracyNote}${naNote}${hfNote}`;
 

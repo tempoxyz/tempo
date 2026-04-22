@@ -20,7 +20,7 @@ use reth_engine_tree::tree::instrumented_state::InstrumentedStateProvider;
 use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
     ConfigureEvm, Database, Evm, NextBlockEnvAttributes,
-    block::{BlockExecutionError, BlockExecutor, BlockValidationError},
+    block::{BlockExecutionError, BlockExecutor, BlockValidationError, TxResult},
     execute::{BlockBuilder, BlockBuilderOutcome},
 };
 use reth_execution_types::BlockExecutionOutput;
@@ -310,6 +310,7 @@ where
         );
 
         let mut cumulative_gas_used = 0;
+        let mut cumulative_state_gas_used = 0u64;
         let mut non_payment_gas_used = 0;
         // initial block size usage - size of withdrawals plus 1Kb of overhead for the block header
         let mut block_size_used = attributes
@@ -432,6 +433,8 @@ where
             .pool_fetch_duration_seconds
             .record(pool_fetch_start.elapsed());
 
+        let is_t4 = builder.evm().cfg.spec.is_t4();
+
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
         loop {
@@ -449,10 +452,15 @@ where
                 break;
             };
 
+            let max_regular_gas_used = core::cmp::min(
+                pool_tx.gas_limit(),
+                builder.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
+            );
+
             // Ensure we still have capacity for this transaction within the non-shared gas limit.
             // The remaining `shared_gas_limit` is reserved for validator subblocks and must not
             // be consumed by proposer's pool transactions.
-            if cumulative_gas_used + pool_tx.gas_limit() > non_shared_gas_limit {
+            if cumulative_gas_used + max_regular_gas_used > non_shared_gas_limit {
                 // Mark this transaction as invalid since it doesn't fit
                 // The iterator will handle lane switching internally when appropriate
                 best_txs.mark_invalid(
@@ -470,7 +478,7 @@ where
             // If the tx is not a payment and will exceed the general gas limit
             // mark the tx as invalid and continue
             if !pool_tx.transaction.is_payment()
-                && non_payment_gas_used + pool_tx.gas_limit() > general_gas_limit
+                && non_payment_gas_used + max_regular_gas_used > general_gas_limit
             {
                 best_txs.mark_invalid(
                     &pool_tx,
@@ -517,12 +525,49 @@ where
 
             let tx_with_env = pool_tx.transaction.clone().into_with_tx_env();
             let tx_execution_start = Instant::now();
-            let gas_used = match builder.execute_transaction(tx_with_env) {
-                Ok(gas_used) => gas_used,
-                Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
+            if let Err(err) =
+                builder.execute_transaction_with_result_closure(tx_with_env, |result| {
+                    // Compute gas usage as either regular-only gas spending (T4+) or total gas spending (pre-T4)
+                    let gas_used = if is_t4 {
+                        result.result().result.gas().block_regular_gas_used()
+                    } else {
+                        result.result().result.tx_gas_used()
+                    };
+
+                    cumulative_gas_used += gas_used;
+                    cumulative_state_gas_used += result.result().result.gas().state_gas_spent();
+                    if !is_payment {
+                        non_payment_gas_used += gas_used;
+                    }
+
+                    // Score payload value by actual validator payout, applying the AMM
+                    // haircut when the transaction's fee token differs from the validator's.
+                    let nominal_spending = calc_gas_balance_spending(
+                        result.result().result.tx_gas_used(),
+                        effective_gas_price,
+                    );
+                    if let Some(fee_token) = pool_tx.transaction.resolved_fee_token() {
+                        if fee_token == validator_fee_token {
+                            total_fees += nominal_spending;
+                        } else {
+                            total_fees +=
+                                tempo_precompiles::tip_fee_manager::amm::compute_amount_out(
+                                    nominal_spending,
+                                )
+                                .expect(
+                                    "execution succeeded, so compute_amount_out should not fail",
+                                );
+                        }
+                    } else {
+                        warn!("no resolved fee token for a pool transaction")
+                    }
+                })
+            {
+                if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
                     error,
                     ..
-                })) => {
+                }) = &err
+                {
                     if error.is_nonce_too_low() {
                         // if the nonce is too low, we can skip this transaction
                         trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
@@ -540,9 +585,9 @@ where
                         self.metrics.inc_pool_tx_skipped("invalid_tx");
                     }
                     continue;
+                } else {
+                    return Err(PayloadBuilderError::evm(err));
                 }
-                // this is an error that we should treat as fatal for this attempt
-                Err(err) => return Err(PayloadBuilderError::evm(err)),
             };
             let elapsed = tx_execution_start.elapsed();
             self.metrics
@@ -550,25 +595,6 @@ where
                 .record(elapsed);
             trace!(?elapsed, "Transaction executed");
 
-            // Score payload value by actual validator payout, applying the AMM
-            // haircut when the transaction's fee token differs from the validator's.
-            let nominal_spending = calc_gas_balance_spending(gas_used, effective_gas_price);
-            if let Some(fee_token) = pool_tx.transaction.resolved_fee_token() {
-                if fee_token == validator_fee_token {
-                    total_fees += nominal_spending;
-                } else {
-                    total_fees += tempo_precompiles::tip_fee_manager::amm::compute_amount_out(
-                        nominal_spending,
-                    )
-                    .map_err(PayloadBuilderError::other)?;
-                }
-            } else {
-                warn!("no resolved fee token for a pool transaction")
-            }
-            cumulative_gas_used += gas_used;
-            if !is_payment {
-                non_payment_gas_used += gas_used;
-            }
             block_size_used += tx_rlp_length;
         }
         drop(_block_fill_span);
@@ -739,6 +765,12 @@ where
         self.metrics.gas_used.record(gas_used as f64);
         self.metrics.gas_used_last.set(gas_used as f64);
         self.metrics
+            .state_gas_used
+            .record(cumulative_state_gas_used as f64);
+        self.metrics
+            .state_gas_used_last
+            .set(cumulative_state_gas_used as f64);
+        self.metrics
             .general_gas_used_last
             .set(non_payment_gas_used as f64);
         self.metrics
@@ -785,6 +817,7 @@ where
             timestamp = sealed_block.timestamp_millis(),
             gas_limit = sealed_block.gas_limit(),
             gas_used,
+            cumulative_state_gas_used,
             extra_data = %sealed_block.extra_data(),
             subblocks_count,
             payment_transactions,

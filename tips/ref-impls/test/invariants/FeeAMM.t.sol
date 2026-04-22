@@ -1014,16 +1014,13 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     )
         internal
     {
-        // Storage layout differs between Rust and Solidity implementations:
-        // Rust (isTempo=true):
+        // Storage layout in Rust implementation:
         //   slot 0: validator_tokens
         //   slot 1: user_tokens
         //   slot 2: collected_fees
         //   slot 3: pools
         //   slot 4: total_supply
         //   slot 5: liquidity_balances
-        // Solidity (isTempo=false):
-        //   slot 0: pools
         uint256 poolsSlot = 3;
         bytes32 poolSlot = keccak256(abi.encode(poolId, poolsSlot));
 
@@ -1034,21 +1031,13 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
 
     /// @dev Stores/increments collected fees using vm.store
     function _storeCollectedFees(address validator, address token, uint256 amount) internal {
-        // Storage layout differs between Rust and Solidity implementations:
-        // Rust (isTempo=true):
+        // Storage layout in Rust implementation:
         //   slot 0: validator_tokens
         //   slot 1: user_tokens
         //   slot 2: collected_fees
         //   slot 3: pools
         //   slot 4: total_supply
         //   slot 5: liquidity_balances
-        // Solidity (isTempo=false) - FeeManager inherits FeeAMM:
-        //   slot 0: pools (from FeeAMM)
-        //   slot 1: totalSupply (from FeeAMM)
-        //   slot 2: liquidityBalances (from FeeAMM)
-        //   slot 3: validatorTokens (from FeeManager)
-        //   slot 4: userTokens (from FeeManager)
-        //   slot 5: collectedFees (from FeeManager)
         // collected_fees is mapping(address => mapping(address => uint256))
         // slot = keccak256(token, keccak256(validator, collectedFeesSlot))
         uint256 collectedFeesSlot = 2;

@@ -4,8 +4,12 @@ on:
   issue_comment:
     types: [created]
 
+permissions: {}
+
 jobs:
   publish:
+    permissions:
+      pull-requests: read
     runs-on: ubuntu-latest
     if: >-
       github.event.issue.pull_request &&
@@ -14,42 +18,42 @@ jobs:
     steps:
       - name: Get PR details
         id: pr
-        run: |
-          PR_DATA=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.issue.number }})
-          echo "branch=$(echo "$PR_DATA" | jq -r .head.ref)" >> "$GITHUB_OUTPUT"
-          echo "sha=$(echo "$PR_DATA" | jq -r .head.sha)" >> "$GITHUB_OUTPUT"
+
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          PR_DATA=$(gh api "repos/${GH_REPO}/pulls/${PR_NUMBER}")
+          echo "sha=$(echo "$PR_DATA" | jq -r .head.sha)" >> "$GITHUB_OUTPUT"
+          echo "branch=$(echo "$PR_DATA" | jq -r .head.ref)" >> "$GITHUB_OUTPUT"
 
       - name: Publish event
+        env:
+          EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
+          EVENTS_CERT: ${{ secrets.EVENTS_CERT }}
+          EVENTS_ARGS: ${{ secrets.EVENTS_ARGS }}
+          RUNNER_TEMP: ${{ runner.temp }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          REQUESTED_BY: ${{ github.event.comment.user.login }}
+          PR_BRANCH: ${{ steps.pr.outputs.branch }}
         run: |
           set -euo pipefail
 
-          echo "${{ secrets.EVENTS_KEY }}" > ${{ runner.temp }}/key
-          echo "${{ secrets.EVENTS_CERT }}" > ${{ runner.temp }}/cert
+          echo "$EVENTS_KEY" > "${RUNNER_TEMP}/key"
+          echo "$EVENTS_CERT" > "${RUNNER_TEMP}/cert"
 
-          payload=$(jq -n \
-            --arg repository "${{ github.repository }}" \
-            --arg event "build_devnet" \
-            --arg name "devnet-pr-${{ github.event.issue.number }}" \
-            --arg branch "${{ steps.pr.outputs.branch }}" \
-            --arg sha "${{ steps.pr.outputs.sha }}" \
-            --arg requested_by "${{ github.event.comment.user.login }}" \
-            --argjson pr_number "${{ github.event.issue.number }}" \
-            '{
-              repository: $repository,
-              event: $event,
-              data: {
-                name: $name,
-                pr_number: $pr_number,
-                branch: $branch,
-                sha: $sha,
-                requested_by: $requested_by
-              }
-            }')
-
-          curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }} \
+          curl -sf -o /dev/null -X POST ${EVENTS_ARGS} \
             -H "Content-Type: application/json" \
-            --key "${{ runner.temp }}/key" \
-            --cert "${{ runner.temp }}/cert" \
-            -d "$payload"
+            --key "${RUNNER_TEMP}/key" \
+            --cert "${RUNNER_TEMP}/cert" \
+            -d "{
+              \"repository\": \"${GH_REPO}\",
+              \"event\": \"build_devnet\",
+              \"data\": {
+                \"name\": \"devnet-pr-${PR_NUMBER}\",
+                \"branch\": \"${PR_BRANCH}\",
+                \"requested_by\": \"${REQUESTED_BY}\"
+              }
+            }"
