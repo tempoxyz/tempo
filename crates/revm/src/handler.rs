@@ -324,25 +324,14 @@ fn calculate_key_authorization_gas(
 
         // T3+: include scoped-call storage rows in intrinsic gas.
         if spec.is_t3() {
-<<<<<<< HEAD
             num_sstores += call_scope_storage_slots(&key_auth.authorization);
-=======
-            total = total.saturating_add(
-                sstore_cost.saturating_mul(call_scope_storage_slots(&key_auth.authorization)),
-            );
-        }
-
-        // T4+: add the rounded scope-helper surcharge.
-        if spec.is_t4() {
-            total = total.saturating_add(call_scope_extra_gas(&key_auth.authorization));
->>>>>>> origin/main
         }
 
         let sstore_cost = gas_params.get(GasId::sstore_set_without_load_cost());
         let mut total_gas = sig_gas + sload_cost + sstore_cost * num_sstores + BUFFER;
 
-        // T3+: include extra gas for call scopes configuration
-        if spec.is_t3() {
+        // T4+: include extra gas for call scopes configuration
+        if spec.is_t4() {
             total_gas += call_scope_extra_gas(&key_auth.authorization);
         }
 
@@ -2964,22 +2953,6 @@ mod tests {
                 state_gas, expected_state,
                 "T4 state gas with {num_limits} limits"
             );
-<<<<<<< HEAD
-=======
-            let expected = ECRECOVER_GAS + sload + sstore * (1 + 2 * num_limits as u64) + BUFFER;
-            assert_eq!(gas, expected, "T3 with {num_limits} limits");
-        }
-
-        for num_limits in 0..=3 {
-            let gas = calculate_key_authorization_gas(
-                &create_key_auth(num_limits),
-                &t1b_gas_params,
-                TempoHardfork::T4,
-            );
-            let expected =
-                ECRECOVER_GAS + sload + sstore * (1 + 2 * num_limits as u64) + BUFFER + 5_000;
-            assert_eq!(gas, expected, "T4 with {num_limits} limits");
->>>>>>> origin/main
         }
 
         let scoped = SignedKeyAuthorization {
@@ -3003,16 +2976,8 @@ mod tests {
         // 1 key write + 12 scope slots = 13 SSTOREs:
         // account mode(1) + target insertion rows(3) + selector insertion rows(3)
         // + constrained selector recipient-length(1) + recipients values+positions(2*2).
-        let expected = ECRECOVER_GAS + sload + sstore * (1 + 12) + BUFFER;
-        assert_eq!(gas, expected, "T3 scope writes should charge storage rows");
-
-        let gas = calculate_key_authorization_gas(&scoped, &t1b_gas_params, TempoHardfork::T4);
-        // 1 key write + 12 scope slots:
-        // account mode(1) + target insertion rows(3) + selector insertion rows(3)
-        // + constrained selector recipient-length(1) + recipients values+positions(2*2).
         // The rounded surcharge adds 5k base + 7k per target + 7k per selector + 5k per
         // recipient, which keeps larger scope trees from being materially underpriced.
-<<<<<<< HEAD
         let num_sstores = 1 + 12;
         let expected_state = t4_sstore_state * num_sstores;
         let expected =
@@ -3047,13 +3012,6 @@ mod tests {
 
         assert_eq!(helper_sstore_regular, 20_000);
         assert_eq!(state_gas, 230_000);
-=======
-        let expected = ECRECOVER_GAS + sload + sstore * (1 + 12) + BUFFER + 29_000;
-        assert_eq!(
-            gas, expected,
-            "T4 scope writes should include the rounded surcharge"
-        );
->>>>>>> origin/main
     }
 
     #[test]
