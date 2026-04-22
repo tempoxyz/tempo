@@ -222,6 +222,9 @@ fn call_scope_extra_gas(auth: &tempo_primitives::transaction::KeyAuthorization) 
 /// one top-level transaction result instead, so the gas field must be normalized to the full tx
 /// budget. Reverts preserve the exact gas spent across prior successful steps plus the failed step,
 /// while halts such as OOG consume the entire remaining transaction budget.
+///
+/// NOTE: in AA batches, non-refundable state-gas charges that are known upfront, are already
+/// included in `initial_state_gas`, so this only refunds per-step execution state gas on failure.
 fn normalize_failed_batch_result_gas(
     frame_result: &mut FrameResult,
     final_gas_limit: u64,
@@ -2149,7 +2152,8 @@ mod tests {
         database::{CacheDB, EmptyDB},
         handler::Handler,
         interpreter::{
-            InstructionResult, gas::COLD_ACCOUNT_ACCESS_COST, instructions::utility::IntoU256,
+            InstructionResult, InterpreterResult, gas::COLD_ACCOUNT_ACCESS_COST,
+            instructions::utility::IntoU256,
         },
         primitives::hardfork::SpecId,
     };
@@ -2166,6 +2170,92 @@ mod tests {
         Journal::new(db)
     }
 
+    type TestHandlerEvmResult<T> =
+        Result<T, EVMError<<CacheDB<EmptyDB> as revm::Database>::Error, TempoInvalidTransaction>>;
+
+    struct TestHandlerEvm {
+        evm: TempoEvm<CacheDB<EmptyDB>, ()>,
+        handler: TempoEvmHandler<CacheDB<EmptyDB>, ()>,
+    }
+
+    impl TestHandlerEvm {
+        fn tx(spec: TempoHardfork, configure_tx_env: impl FnOnce(&mut TempoTxEnv)) -> Self {
+            let mut tx_env = TempoTxEnv::default();
+            configure_tx_env(&mut tx_env);
+            Self::new(spec, tx_env)
+        }
+
+        fn aa(
+            spec: TempoHardfork,
+            aa_env: TempoBatchCallEnv,
+            configure_tx_env: impl FnOnce(&mut TempoTxEnv),
+        ) -> Self {
+            let mut tx_env = TempoTxEnv {
+                tempo_tx_env: Some(Box::new(aa_env)),
+                ..Default::default()
+            };
+            configure_tx_env(&mut tx_env);
+            Self::new(spec, tx_env)
+        }
+
+        fn new(spec: TempoHardfork, tx_env: TempoTxEnv) -> Self {
+            Self::with_cfg(spec, tx_env, |_| {})
+        }
+
+        fn with_cfg(
+            spec: TempoHardfork,
+            tx_env: TempoTxEnv,
+            configure: impl FnOnce(&mut CfgEnv<TempoHardfork>),
+        ) -> Self {
+            let mut cfg = CfgEnv::<TempoHardfork>::default();
+            cfg.spec = spec;
+            cfg.gas_params = tempo_gas_params(spec);
+            cfg.enable_amsterdam_eip8037 = spec.is_t4();
+            configure(&mut cfg);
+
+            let ctx = Context::mainnet()
+                .with_db(CacheDB::new(EmptyDB::default()))
+                .with_block(TempoBlockEnv::default())
+                .with_cfg(cfg)
+                .with_tx(tx_env)
+                .with_new_journal(create_test_journal());
+
+            Self {
+                evm: TempoEvm::new(ctx, ()),
+                handler: TempoEvmHandler::new(),
+            }
+        }
+
+        fn cfg(&mut self) -> &CfgEnv<TempoHardfork> {
+            &self.evm.ctx().cfg
+        }
+
+        fn gas_params(&mut self) -> &GasParams {
+            &self.cfg().gas_params
+        }
+
+        fn validate_env(&mut self) -> TestHandlerEvmResult<()> {
+            self.handler.validate_env(&mut self.evm)
+        }
+
+        fn validate_initial_tx_gas(&mut self) -> InitialAndFloorGas {
+            self.handler
+                .validate_initial_tx_gas(&mut self.evm)
+                .expect("initial gas validation should succeed")
+        }
+
+        fn validate_against_state_and_deduct_caller(&mut self) -> TestHandlerEvmResult<()> {
+            self.handler
+                .validate_against_state_and_deduct_caller(&mut self.evm, &mut Default::default())
+        }
+
+        fn execute(&mut self, init_gas: &InitialAndFloorGas) -> FrameResult {
+            self.handler
+                .execution(&mut self.evm, init_gas)
+                .expect("execution should return a frame result")
+        }
+    }
+
     #[test]
     fn test_invalid_fee_token_rejected() {
         // Test that an invalid fee token (non-TIP20 address) is rejected with InvalidFeeToken error
@@ -2177,25 +2267,11 @@ mod tests {
             "Test requires a non-TIP20 address"
         );
 
-        let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::default();
+        let mut test = TestHandlerEvm::tx(TempoHardfork::default(), |tx_env| {
+            tx_env.fee_token = Some(invalid_token);
+        });
 
-        // Set up tx with the invalid token as fee_token
-        let tx_env = TempoTxEnv {
-            fee_token: Some(invalid_token),
-            ..Default::default()
-        };
-
-        let mut evm: TempoEvm<CacheDB<EmptyDB>, ()> = TempoEvm::new(
-            Context::mainnet()
-                .with_db(CacheDB::new(EmptyDB::default()))
-                .with_block(TempoBlockEnv::default())
-                .with_cfg(Default::default())
-                .with_tx(tx_env),
-            (),
-        );
-
-        let result =
-            handler.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
+        let result = test.validate_against_state_and_deduct_caller();
 
         assert!(
             matches!(
@@ -2211,30 +2287,13 @@ mod tests {
         let caller = Address::random();
         let invalid_token = Address::random();
 
-        let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::default();
-        let mut cfg = CfgEnv::<TempoHardfork>::default();
-        cfg.spec = TempoHardfork::T2;
+        let mut test = TestHandlerEvm::tx(TempoHardfork::T2, |tx_env| {
+            tx_env.inner.caller = caller;
+            tx_env.fee_token = Some(invalid_token);
+            tx_env.fee_payer = Some(Some(caller));
+        });
 
-        let tx_env = TempoTxEnv {
-            inner: revm::context::TxEnv {
-                caller,
-                ..Default::default()
-            },
-            fee_token: Some(invalid_token),
-            fee_payer: Some(Some(caller)),
-            ..Default::default()
-        };
-
-        let mut evm: TempoEvm<CacheDB<EmptyDB>, ()> = TempoEvm::new(
-            Context::mainnet()
-                .with_db(CacheDB::new(EmptyDB::default()))
-                .with_block(TempoBlockEnv::default())
-                .with_cfg(cfg)
-                .with_tx(tx_env),
-            (),
-        );
-
-        let result = handler.validate_env(&mut evm);
+        let result = test.validate_env();
         assert!(matches!(
             result,
             Err(EVMError::Transaction(
@@ -3330,17 +3389,11 @@ mod tests {
             ..Default::default()
         };
 
-        let ctx = Context::mainnet()
-            .with_db(CacheDB::new(EmptyDB::default()))
-            .with_block(TempoBlockEnv::default())
-            .with_cfg(cfg)
-            .with_tx(tx_env)
-            .with_new_journal(create_test_journal());
+        let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T3, tx_env, |cfg_override| {
+            *cfg_override = cfg;
+        });
 
-        let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
-        let mut handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
-
-        StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+        StorageCtx::enter_ctx(&mut test.evm.inner.ctx, || {
             let mut keychain = AccountKeychain::new();
 
             keychain.initialize().expect("keychain initialized");
@@ -3374,23 +3427,18 @@ mod tests {
                 .expect("access key authorization succeeds");
         });
 
-        let init_gas = handler
-            .validate_initial_tx_gas(&mut evm)
-            .expect("initial gas validation should succeed");
+        let init_gas = test.validate_initial_tx_gas();
         assert!(
             init_gas.floor_gas <= init_gas.initial_total_gas,
             "test requires floor gas to not exceed intrinsic gas"
         );
 
-        evm.inner.ctx.tx.inner.gas_limit = init_gas.initial_total_gas;
+        test.evm.inner.ctx.tx.inner.gas_limit = init_gas.initial_total_gas;
 
-        handler
-            .validate_against_state_and_deduct_caller(&mut evm, &mut Default::default())
+        test.validate_against_state_and_deduct_caller()
             .expect("scope validation no longer runs during state validation");
 
-        let result = handler
-            .execution(&mut evm, &init_gas)
-            .expect("execution should return a frame result");
+        let result = test.execute(&init_gas);
 
         assert!(
             matches!(
@@ -4730,39 +4778,18 @@ mod tests {
     /// initial_state_gas when T4 is active and state gas is enabled.
     #[test]
     fn test_state_gas_validate_initial_tx_gas_create_t4() {
-        let mut cfg = CfgEnv::<TempoHardfork>::default();
-        cfg.spec = TempoHardfork::T4;
-        cfg.gas_params = tempo_gas_params(TempoHardfork::T4);
-        cfg.enable_amsterdam_eip8037 = true;
-
         let initcode = Bytes::from(vec![0x60, 0x80]);
+        let mut test = TestHandlerEvm::tx(TempoHardfork::T4, |tx_env| {
+            tx_env.inner.gas_limit = 60_000_000;
+            tx_env.inner.kind = TxKind::Create;
+            tx_env.inner.data = initcode;
+        });
+        let init_gas = test.validate_initial_tx_gas();
 
         // create_state_gas (from upstream initial_tx_gas for CREATE) +
         // new_account_state_gas (from Tempo's nonce==0 check for the caller)
         let expected_state_gas =
-            cfg.gas_params.create_state_gas() + cfg.gas_params.new_account_state_gas();
-
-        let journal = Journal::new(CacheDB::new(EmptyDB::default()));
-        let tx_env = TempoTxEnv {
-            inner: revm::context::TxEnv {
-                gas_limit: 60_000_000, // Above cap to test cap bypass
-                kind: TxKind::Create,
-                data: initcode,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        let ctx = Context::mainnet()
-            .with_db(CacheDB::new(EmptyDB::default()))
-            .with_block(TempoBlockEnv::default())
-            .with_cfg(cfg)
-            .with_tx(tx_env)
-            .with_new_journal(journal);
-        let mut evm = TempoEvm::<_, ()>::new(ctx, ());
-        let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
-
-        let init_gas = handler.validate_initial_tx_gas(&mut evm).unwrap();
+            test.gas_params().create_state_gas() + test.gas_params().new_account_state_gas();
 
         assert_eq!(
             init_gas.initial_state_gas, expected_state_gas,
@@ -4774,18 +4801,11 @@ mod tests {
     /// (upstream revm validation skips the cap check).
     #[test]
     fn test_state_gas_tx_gas_limit_above_cap_allowed() {
-        let mut cfg = CfgEnv::<TempoHardfork>::default();
-        cfg.spec = TempoHardfork::T4;
-        cfg.gas_params = tempo_gas_params(TempoHardfork::T4);
-        cfg.enable_amsterdam_eip8037 = true;
-        cfg.tx_gas_limit_cap = Some(30_000_000);
-
         let calldata = Bytes::from(vec![1, 2, 3]);
 
-        let journal = Journal::new(CacheDB::new(EmptyDB::default()));
         let tx_env = TempoTxEnv {
             inner: revm::context::TxEnv {
-                gas_limit: 60_000_000, // Double the cap
+                gas_limit: 60_000_000,
                 kind: TxKind::Call(Address::random()),
                 data: calldata,
                 ..Default::default()
@@ -4793,17 +4813,12 @@ mod tests {
             ..Default::default()
         };
 
-        let ctx = Context::mainnet()
-            .with_db(CacheDB::new(EmptyDB::default()))
-            .with_block(TempoBlockEnv::default())
-            .with_cfg(cfg)
-            .with_tx(tx_env)
-            .with_new_journal(journal);
-        let mut evm = TempoEvm::<_, ()>::new(ctx, ());
-        let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+        let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T4, tx_env, |cfg| {
+            cfg.tx_gas_limit_cap = Some(30_000_000);
+        });
 
         // validate_env should pass even though gas_limit > cap
-        let result = handler.validate_env(&mut evm);
+        let result = test.validate_env();
         assert!(
             result.is_ok(),
             "With enable_amsterdam_eip8037=true, tx gas limit above cap should be allowed, got: {:?}",
@@ -4814,15 +4829,8 @@ mod tests {
     /// TIP-1016: When enable_amsterdam_eip8037 is false (pre-T4), tx gas limit above cap is rejected.
     #[test]
     fn test_state_gas_tx_gas_limit_above_cap_rejected_pre_t4() {
-        let mut cfg = CfgEnv::<TempoHardfork>::default();
-        cfg.spec = TempoHardfork::T1;
-        cfg.gas_params = tempo_gas_params(TempoHardfork::T1);
-        cfg.enable_amsterdam_eip8037 = false;
-        cfg.tx_gas_limit_cap = Some(30_000_000);
-
         let calldata = Bytes::from(vec![1, 2, 3]);
 
-        let journal = Journal::new(CacheDB::new(EmptyDB::default()));
         let tx_env = TempoTxEnv {
             inner: revm::context::TxEnv {
                 gas_limit: 60_000_000, // Double the cap
@@ -4833,17 +4841,12 @@ mod tests {
             ..Default::default()
         };
 
-        let ctx = Context::mainnet()
-            .with_db(CacheDB::new(EmptyDB::default()))
-            .with_block(TempoBlockEnv::default())
-            .with_cfg(cfg)
-            .with_tx(tx_env)
-            .with_new_journal(journal);
-        let mut evm = TempoEvm::<_, ()>::new(ctx, ());
-        let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+        let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T1, tx_env, |cfg| {
+            cfg.tx_gas_limit_cap = Some(30_000_000);
+        });
 
         // validate_env should reject: gas_limit > cap with state gas disabled
-        let result = handler.validate_env(&mut evm);
+        let result = test.validate_env();
         assert!(
             result.is_err(),
             "With enable_amsterdam_eip8037=false, tx gas limit above cap should be rejected"
@@ -5087,8 +5090,6 @@ mod tests {
     /// TIP-1016: AA nonce==0 new account should track state gas in T4.
     #[test]
     fn test_state_gas_aa_nonce_zero_new_account() {
-        let gas_params = tempo_gas_params(TempoHardfork::T4);
-
         let aa_env = TempoBatchCallEnv {
             signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
                 alloy_primitives::Signature::test_signature(),
@@ -5102,36 +5103,15 @@ mod tests {
             ..Default::default()
         };
 
-        let tx_env = TempoTxEnv {
-            inner: revm::context::TxEnv {
-                gas_limit: 60_000_000,
-                nonce: 0,
-                ..Default::default()
-            },
-            tempo_tx_env: Some(Box::new(aa_env)),
-            ..Default::default()
-        };
-
-        let mut cfg = CfgEnv::<TempoHardfork>::default();
-        cfg.spec = TempoHardfork::T4;
-        cfg.gas_params = gas_params.clone();
-        cfg.enable_amsterdam_eip8037 = true;
-
-        let journal = Journal::new(CacheDB::new(EmptyDB::default()));
-        let ctx = Context::mainnet()
-            .with_db(CacheDB::new(EmptyDB::default()))
-            .with_block(TempoBlockEnv::default())
-            .with_cfg(cfg)
-            .with_tx(tx_env)
-            .with_new_journal(journal);
-        let mut evm = TempoEvm::<_, ()>::new(ctx, ());
-        let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
-
-        let init_gas = handler.validate_initial_tx_gas(&mut evm).unwrap();
+        let mut test = TestHandlerEvm::aa(TempoHardfork::T4, aa_env, |tx_env| {
+            tx_env.inner.gas_limit = 60_000_000;
+            tx_env.inner.nonce = 0;
+        });
+        let init_gas = test.validate_initial_tx_gas();
 
         assert_eq!(
             init_gas.initial_state_gas,
-            gas_params.new_account_state_gas(),
+            test.gas_params().new_account_state_gas(),
             "AA tx with nonce==0 should track new_account_state_gas in T4"
         );
     }
@@ -5187,39 +5167,18 @@ mod tests {
     /// TIP-1016: Standard tx with nonce==0 should track state gas on T4 only.
     #[test]
     fn test_state_gas_standard_tx_nonce_zero_t4() {
-        let mut cfg = CfgEnv::<TempoHardfork>::default();
-        cfg.spec = TempoHardfork::T4;
-        cfg.gas_params = tempo_gas_params(TempoHardfork::T4);
-        cfg.enable_amsterdam_eip8037 = true;
-
         let calldata = Bytes::from(vec![1, 2, 3]);
-        let expected_state_gas = cfg.gas_params.new_account_state_gas();
-
-        let journal = Journal::new(CacheDB::new(EmptyDB::default()));
-        let tx_env = TempoTxEnv {
-            inner: revm::context::TxEnv {
-                gas_limit: 60_000_000,
-                kind: TxKind::Call(Address::random()),
-                nonce: 0,
-                data: calldata,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        let ctx = Context::mainnet()
-            .with_db(CacheDB::new(EmptyDB::default()))
-            .with_block(TempoBlockEnv::default())
-            .with_cfg(cfg)
-            .with_tx(tx_env)
-            .with_new_journal(journal);
-        let mut evm = TempoEvm::<_, ()>::new(ctx, ());
-        let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
-
-        let init_gas = handler.validate_initial_tx_gas(&mut evm).unwrap();
+        let mut test = TestHandlerEvm::tx(TempoHardfork::T4, |tx_env| {
+            tx_env.inner.gas_limit = 60_000_000;
+            tx_env.inner.kind = TxKind::Call(Address::random());
+            tx_env.inner.nonce = 0;
+            tx_env.inner.data = calldata;
+        });
+        let init_gas = test.validate_initial_tx_gas();
 
         assert_eq!(
-            init_gas.initial_state_gas, expected_state_gas,
+            init_gas.initial_state_gas,
+            test.gas_params().new_account_state_gas(),
             "T4 standard tx with nonce==0 should track new_account_state_gas"
         );
     }
@@ -5227,34 +5186,15 @@ mod tests {
     /// TIP-1016: Standard tx with nonce==0 should NOT track state gas on T1.
     #[test]
     fn test_state_gas_standard_tx_nonce_zero_t1_no_state_gas() {
-        let mut cfg = CfgEnv::<TempoHardfork>::default();
-        cfg.spec = TempoHardfork::T1;
-        cfg.gas_params = tempo_gas_params(TempoHardfork::T1);
-
         let calldata = Bytes::from(vec![1, 2, 3]);
 
-        let journal = Journal::new(CacheDB::new(EmptyDB::default()));
-        let tx_env = TempoTxEnv {
-            inner: revm::context::TxEnv {
-                gas_limit: 60_000_000,
-                kind: TxKind::Call(Address::random()),
-                nonce: 0,
-                data: calldata,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        let ctx = Context::mainnet()
-            .with_db(CacheDB::new(EmptyDB::default()))
-            .with_block(TempoBlockEnv::default())
-            .with_cfg(cfg)
-            .with_tx(tx_env)
-            .with_new_journal(journal);
-        let mut evm = TempoEvm::<_, ()>::new(ctx, ());
-        let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
-
-        let init_gas = handler.validate_initial_tx_gas(&mut evm).unwrap();
+        let mut test = TestHandlerEvm::tx(TempoHardfork::T1, |tx_env| {
+            tx_env.inner.gas_limit = 60_000_000;
+            tx_env.inner.kind = TxKind::Call(Address::random());
+            tx_env.inner.nonce = 0;
+            tx_env.inner.data = calldata;
+        });
+        let init_gas = test.validate_initial_tx_gas();
 
         assert_eq!(
             init_gas.initial_state_gas, 0,
@@ -5347,5 +5287,79 @@ mod tests {
             gas.initial_total_gas,
             gas.initial_state_gas,
         );
+    }
+
+    /// TIP-1016: CREATE state gas is charged upfront and must be spent even if a later AA step reverts.
+    #[test]
+    fn test_state_gas_failed_batch_preserves_upfront_create_intrinsic_gas() {
+        let tx_gas_limit = 1_000_000u64;
+        let (calls, call_results) = (
+            vec![
+                Call {
+                    to: TxKind::Create,
+                    value: U256::ZERO,
+                    input: Bytes::from(vec![0x60, 0x80]),
+                },
+                Call {
+                    to: TxKind::Call(Address::random()),
+                    value: U256::ZERO,
+                    input: Bytes::new(),
+                },
+            ],
+            [
+                (InstructionResult::Stop, 10_000u64),
+                (InstructionResult::Revert, 7_000u64),
+            ],
+        );
+
+        let aa_env = make_aa_env(calls.clone());
+        let mut test = TestHandlerEvm::aa(TempoHardfork::T4, aa_env, |tx_env| {
+            tx_env.inner.caller = Address::random();
+            tx_env.inner.gas_limit = tx_gas_limit;
+            // Keep nonce != 0 so this isolates CREATE state gas from caller account-creation gas.
+            tx_env.inner.nonce = 1;
+        });
+
+        let init_gas = test.validate_initial_tx_gas();
+        assert_eq!(
+            init_gas.initial_state_gas,
+            test.gas_params().create_state_gas(),
+            "first-call CREATE should contribute create_state_gas to AA intrinsic gas"
+        );
+        let (gas_limit, reservoir) = test.evm.initial_gas_and_reservoir(&init_gas);
+
+        let mut call_idx = 0usize;
+        let result = test
+            .handler
+            .execute_multi_call_with(
+                &mut test.evm,
+                gas_limit,
+                reservoir,
+                calls,
+                |_handler, _evm, gas, _reservoir| {
+                    // Feed the batch executor deterministic per-call outcomes without running real EVM code.
+                    let (instruction_result, spent) = call_results[call_idx];
+                    call_idx += 1;
+
+                    let mut gas = Gas::new(gas);
+                    gas.set_spent(spent);
+
+                    Ok(FrameResult::Call(CallOutcome::new(
+                        InterpreterResult::new(instruction_result, Bytes::new(), gas),
+                        0..0,
+                    )))
+                },
+            )
+            .expect("execute_multi_call_with should return a failed frame result");
+
+        let expected_spent =
+            init_gas.initial_total_gas + call_results.iter().map(|(_, spent)| spent).sum::<u64>();
+
+        // Pays CREATE state gas + both call costs. CREATE is charged upfront via intrinsic gas, and NOT refunded.
+        assert_eq!(result.instruction_result(), InstructionResult::Revert);
+        assert_eq!(result.gas().total_gas_spent(), expected_spent);
+        assert_eq!(result.gas().remaining(), tx_gas_limit - expected_spent);
+        assert_eq!(result.gas().state_gas_spent(), 0);
+        assert_eq!(result.gas().reservoir(), 0);
     }
 }
