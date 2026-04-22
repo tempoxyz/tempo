@@ -96,6 +96,9 @@ jobs:
               core.setOutput('ref', `refs/pull/${process.env.BENCH_PR}/merge`);
             }
 
+      - name: Clean up root-owned files from previous runs
+        run: sudo rm -rf bench-results/
+
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
