@@ -105,9 +105,6 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         let code_len = code.len();
         self.deduct_gas(self.gas_params.code_deposit_cost(code_len))?;
 
-        // Track state gas for code deposit
-        self.deduct_state_gas(self.gas_params.code_deposit_state_gas(code_len))?;
-
         let was_empty = {
             let mut account = self.internals.load_account_mut(address)?;
             let was_empty = account.data.account().info.is_empty();
@@ -116,8 +113,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         };
 
         if self.spec.is_t4() {
-            // T4: charge cost per word
-            self.deduct_gas(self.gas_params.keccak256_cost(code_len))?;
+            // Track state gas for code deposit
+            self.deduct_state_gas(self.gas_params.code_deposit_state_gas(code_len))?;
 
             // T4: charge TIP20 creations as CREATE
             if was_empty {
@@ -901,17 +898,12 @@ mod tests {
             gas_params.create_state_gas() + gas_params.code_deposit_state_gas(code.len());
         let expected_regular_gas =
             gas_params.create_cost() + gas_params.code_deposit_cost(code.len());
-        let expected_hash_cost = gas_params.keccak256_cost(code.len());
         let mut provider = evm.provider_with_reservoir(expected_state_gas);
 
         provider.set_code(Address::random(), code)?;
         assert_eq!(
-            expected_hash_cost, 6,
-            "TIP-1016/evm CREATE success path expects HASH_COST(len)=6*ceil(len/32)"
-        );
-        assert_eq!(
             provider.gas_used(),
-            expected_regular_gas + expected_hash_cost,
+            expected_regular_gas,
             "TIP-1016 CREATE success path should charge CREATE + code deposit + HASH_COST"
         );
         assert_eq!(
