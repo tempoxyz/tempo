@@ -188,6 +188,7 @@ run_single() {
     --http.port 8545
     --http.api all
     --authrpc.port 8551
+    --metrics 9001
     --disable-discovery
     --no-persist-peers
   )
@@ -255,7 +256,8 @@ run_single() {
     txgen-tempo extract --rpc "$REPLAY_RPC_URL" --from "$from_block" --to "$warmup_to" \
       | bench send-blocks \
         --engine http://127.0.0.1:8551 \
-        --jwt-secret "$DATADIR/jwt.hex" 2>&1 | sed -u "s/^/[bench] /"
+        --jwt-secret "$DATADIR/jwt.hex" \
+        --metrics-url http://localhost:9001 2>&1 | sed -u "s/^/[bench] /"
     from_block=$(( warmup_to + 1 ))
   fi
 
@@ -266,6 +268,7 @@ run_single() {
     | bench send-blocks \
       --engine http://127.0.0.1:8551 \
       --jwt-secret "$DATADIR/jwt.hex" \
+      --metrics-url http://localhost:9001 \
       --report "json:$output_dir/report.json" 2>&1 | sed -u "s/^/[bench] /"
 
   # Cleanup

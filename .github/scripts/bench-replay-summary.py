@@ -27,8 +27,8 @@ T_CRITICAL = 1.96  # two-tailed 95% confidence
 BOOTSTRAP_ITERATIONS = 10_000
 
 
-def parse_report_json(path: str) -> list[dict]:
-    """Parse bench-cli report.json into a list of per-block dicts."""
+def parse_report_json(path: str) -> tuple[list[dict], list[dict]]:
+    """Parse bench-cli report.json into per-block dicts and raw samples."""
     with open(path) as f:
         report = json.load(f)
 
@@ -50,7 +50,27 @@ def parse_report_json(path: str) -> list[dict]:
                 "sparse_trie_wait_us": block.get("sparse_trie_wait_us"),
             }
         )
-    return rows
+    return rows, report.get("samples", [])
+
+
+def extract_persistence_quantiles(samples: list[dict]) -> dict[str, float]:
+    """Extract final-scrape persistence duration quantiles from Prometheus samples.
+
+    Returns a dict like {"0.5": 0.123, "0.9": 0.456, "0.95": 0.789} (values in seconds).
+    """
+    metric_name = "reth_consensus_engine_beacon_persistence_duration"
+    # Keep only the last offset_ms for each quantile
+    latest: dict[str, tuple[int, float]] = {}
+    for s in samples:
+        if s["name"] != metric_name:
+            continue
+        q = s.get("labels", {}).get("quantile")
+        if q is None:
+            continue
+        offset = s.get("offset_ms", 0)
+        if q not in latest or offset >= latest[q][0]:
+            latest[q] = (offset, s["value"])
+    return {q: v for q, (_, v) in latest.items()}
 
 
 def stddev(values: list[float], mean: float) -> float:
@@ -496,19 +516,23 @@ def main():
         sys.exit(1)
 
     baseline_runs = []
+    baseline_samples = []
     feature_runs = []
+    feature_samples = []
     for path in args.baseline_json:
-        data = parse_report_json(path)
+        data, samples = parse_report_json(path)
         if not data:
             print(f"No results in {path}", file=sys.stderr)
             sys.exit(1)
         baseline_runs.append(data)
+        baseline_samples.extend(samples)
     for path in args.feature_json:
-        data = parse_report_json(path)
+        data, samples = parse_report_json(path)
         if not data:
             print(f"No results in {path}", file=sys.stderr)
             sys.exit(1)
         feature_runs.append(data)
+        feature_samples.extend(samples)
 
     all_baseline = [r for run in baseline_runs for r in run]
     all_feature = [r for run in feature_runs for r in run]
@@ -567,6 +591,24 @@ def main():
         table = generate_wait_time_table(title, b_stats, f_stats, baseline_label, feature_label)
         if table:
             wait_time_tables.append(table)
+
+    # Persistence duration from Prometheus metrics
+    b_persist_q = extract_persistence_quantiles(baseline_samples)
+    f_persist_q = extract_persistence_quantiles(feature_samples)
+    if b_persist_q and f_persist_q:
+        fmt_s_val = lambda v: f"{v * 1_000:.2f}ms" if v < 1 else f"{v:.3f}s"
+        lines = [
+            "### Persistence Duration (Prometheus)",
+            "",
+            f"| Quantile | {baseline_label} | {feature_label} |",
+            "|----------|------|--------|",
+        ]
+        for q in ["0.5", "0.9", "0.99"]:
+            if q in b_persist_q and q in f_persist_q:
+                label = f"P{int(float(q) * 100)}"
+                lines.append(f"| {label} | {fmt_s_val(b_persist_q[q])} | {fmt_s_val(f_persist_q[q])} |")
+        if len(lines) > 4:
+            wait_time_tables.append("\n".join(lines))
 
     summary = {
         "blocks": paired_stats["blocks"],
