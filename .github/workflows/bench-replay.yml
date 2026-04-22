@@ -98,9 +98,40 @@ jobs:
         id: checkout-ref
         uses: actions/github-script@v8
         with:
+          github-token: ${{ secrets.DEREK_PAT || secrets.GITHUB_TOKEN }}
           script: |
             if (context.eventName === 'workflow_dispatch') {
-              core.setOutput('ref', '${{ github.ref }}');
+              // Auto-discover PR for the current branch
+              const branch = '${{ github.ref_name }}';
+              const { data: prs } = await github.rest.pulls.list({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                head: `${context.repo.owner}:${branch}`,
+                state: 'open',
+                per_page: 1,
+              });
+              if (prs.length) {
+                const pr = prs[0];
+                core.exportVariable('BENCH_PR', String(pr.number));
+                core.exportVariable('BENCH_ACTOR', '${{ github.actor }}');
+                core.info(`Found PR #${pr.number} for branch '${branch}'`);
+                const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+                const { data: comment } = await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pr.number,
+                  body: `cc @${'${{ github.actor }}'}\n\n🚀 Replay benchmark started! [View run](${runUrl})\n\n⏳ **Status:** Running...`,
+                });
+                core.exportVariable('BENCH_COMMENT_ID', String(comment.id));
+                if (pr.mergeable) {
+                  core.setOutput('ref', `refs/pull/${pr.number}/merge`);
+                } else {
+                  core.setOutput('ref', pr.head.sha);
+                }
+              } else {
+                core.info(`No open PR found for branch '${branch}', results will be in job summary`);
+                core.setOutput('ref', '${{ github.ref }}');
+              }
               return;
             }
             if (!process.env.BENCH_PR) {
