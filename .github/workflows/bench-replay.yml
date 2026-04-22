@@ -1,0 +1,17 @@
+# Replay benchmark job.
+#
+# Called by bench.yml when mode=replay. Replays real Tempo blocks through the Engine API.
+
+on:
+  workflow_dispatch:
+
+name: bench-replay
+
+permissions:
+  contents: read
+
+jobs:
+  stub:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "bench-replay stub"

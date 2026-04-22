@@ -454,6 +454,11 @@ impl StorageCtx {
         self.as_hashmap().counter_sload()
     }
 
+    /// NOTE: assumes storage tests always use the `HashMapStorageProvider`
+    pub fn counter_sstore(&self) -> u64 {
+        self.as_hashmap().counter_sstore()
+    }
+
     /// Checks if a contract at the given address has bytecode deployed.
     pub fn has_bytecode(&self, address: Address) -> Result<bool> {
         self.with_account_info(address, |info| Ok(!info.is_empty_code_hash()))
