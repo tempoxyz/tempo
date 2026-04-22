@@ -186,9 +186,7 @@ impl Consensus<Block> for TempoConsensus {
         // Validate that the sequence of end-of-block system txs is correct
         for (tx, expected_to) in end_of_block_system_txs.into_iter().zip(SYSTEM_TX_ADDRESSES) {
             if tx.to().unwrap_or_default() != expected_to {
-                return Err(ConsensusError::msg(
-                    "Invalid end-of-block system tx order",
-                ));
+                return Err(ConsensusError::msg("Invalid end-of-block system tx order"));
             }
         }
 
