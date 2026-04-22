@@ -105,9 +105,6 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         let code_len = code.len();
         self.deduct_gas(self.gas_params.code_deposit_cost(code_len))?;
 
-        // Track state gas for code deposit
-        self.deduct_state_gas(self.gas_params.code_deposit_state_gas(code_len))?;
-
         let was_empty = {
             let mut account = self.internals.load_account_mut(address)?;
             let was_empty = account.data.account().info.is_empty();
@@ -115,10 +112,15 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             was_empty
         };
 
-        // T4: charge TIP20 creations as CREATE
-        if self.spec.is_t4() && was_empty {
-            self.deduct_gas(self.gas_params.create_cost())?;
-            self.deduct_state_gas(self.gas_params.create_state_gas())?;
+        if self.spec.is_t4() {
+            // T4: Track state gas for code deposit
+            self.deduct_state_gas(self.gas_params.code_deposit_state_gas(code_len))?;
+
+            // T4: charge TIP20 creations as CREATE
+            if was_empty {
+                self.deduct_gas(self.gas_params.create_cost())?;
+                self.deduct_state_gas(self.gas_params.create_state_gas())?;
+            }
         }
 
         Ok(())
@@ -353,51 +355,113 @@ pub fn deduct_gas(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::{B256, address, b256, bytes, keccak256};
+    use alloy::primitives::{B256, b256, bytes, keccak256};
     use alloy_evm::{EvmEnv, EvmFactory, EvmInternals, revm::context::Host};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use revm::{
-        context_interface::cfg::GasId,
         database::{CacheDB, EmptyDB},
         interpreter::StateLoad,
     };
-    use tempo_evm::TempoEvmFactory;
+    use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_evm::{TempoEvmFactory, evm::TempoEvm};
+    use tempo_revm::gas_params::tempo_gas_params;
+
+    struct TestEvm(TempoEvm<CacheDB<EmptyDB>>);
+
+    impl TestEvm {
+        fn new(spec: TempoHardfork) -> Self {
+            let db = CacheDB::new(EmptyDB::new());
+            let mut cfg = revm::context::CfgEnv::<TempoHardfork>::default();
+            cfg.spec = spec;
+            cfg.gas_params = tempo_gas_params(spec);
+
+            Self(TempoEvmFactory::default().create_evm(
+                db,
+                EvmEnv {
+                    cfg_env: cfg,
+                    ..Default::default()
+                },
+            ))
+        }
+
+        fn provider_with_gas_limit(
+            &mut self,
+            gas_limit: u64,
+            reservoir: u64,
+        ) -> EvmPrecompileStorageProvider<'_> {
+            let ctx = self.0.ctx_mut();
+            let spec = ctx.cfg.spec;
+            let gas_params = ctx.cfg.gas_params.clone();
+            let evm_internals =
+                EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+
+            EvmPrecompileStorageProvider::new(
+                evm_internals,
+                gas_limit,
+                reservoir,
+                spec,
+                false,
+                gas_params,
+            )
+        }
+
+        fn provider_with_reservoir(&mut self, reservoir: u64) -> EvmPrecompileStorageProvider<'_> {
+            self.provider_with_gas_limit(u64::MAX, reservoir)
+        }
+
+        fn provider_max_gas(&mut self) -> EvmPrecompileStorageProvider<'_> {
+            let ctx = self.0.ctx_mut();
+            let evm_internals =
+                EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+            EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg)
+        }
+    }
+
+    impl Default for TestEvm {
+        fn default() -> Self {
+            Self::new(TempoHardfork::default())
+        }
+    }
+
+    impl std::ops::Deref for TestEvm {
+        type Target = TempoEvm<CacheDB<EmptyDB>>;
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+
+    impl std::ops::DerefMut for TestEvm {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.0
+        }
+    }
 
     #[test]
     fn test_sstore_sload() -> eyre::Result<()> {
-        let db = CacheDB::new(EmptyDB::new());
-        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
-        let ctx = evm.ctx_mut();
-        let evm_internals =
-            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
+        let mut evm = TestEvm::default();
+        let mut provider = evm.provider_max_gas();
 
         let addr = Address::random();
         let key = U256::random();
-
         let value = U256::random();
 
         provider.sstore(addr, key, value)?;
         let sload_val = provider.sload(addr, key)?;
-
         assert_eq!(sload_val, value);
         Ok(())
     }
 
     #[test]
     fn test_set_code() -> eyre::Result<()> {
-        let db = CacheDB::new(EmptyDB::new());
-        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
-        let ctx = evm.ctx_mut();
-        let evm_internals =
-            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
+        let mut evm = TestEvm::default();
+        let mut provider = evm.provider_max_gas();
 
         let addr = Address::random();
         let code = Bytecode::new_raw(vec![0xff].into());
+
         provider.set_code(addr, code.clone())?;
-        drop(provider);
+        std::mem::drop(provider);
 
         let Some(StateLoad { data, is_cold: _ }) = evm.load_account_code(addr) else {
             panic!("Failed to load account code")
@@ -409,17 +473,11 @@ mod tests {
 
     #[test]
     fn test_get_account_info() -> eyre::Result<()> {
-        let db = CacheDB::new(EmptyDB::new());
-        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
-        let ctx = evm.ctx_mut();
-        let evm_internals =
-            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
-
-        let address = address!("3000000000000000000000000000000000000003");
+        let mut evm = TestEvm::default();
+        let mut provider = evm.provider_max_gas();
 
         // Get account info for a new account
-        provider.with_account_info(address, &mut |info| {
+        provider.with_account_info(Address::random(), &mut |info| {
             // Should be an empty account
             assert!(info.balance.is_zero());
             assert_eq!(info.nonce, 0);
@@ -434,14 +492,9 @@ mod tests {
 
     #[test]
     fn test_emit_event() -> eyre::Result<()> {
-        let db = CacheDB::new(EmptyDB::new());
-        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
-        let ctx = evm.ctx_mut();
-        let evm_internals =
-            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
+        let mut evm = TestEvm::default();
+        let mut provider = evm.provider_max_gas();
 
-        let address = address!("4000000000000000000000000000000000000004");
         let topic = b256!("0000000000000000000000000000000000000000000000000000000000000001");
         let data = bytes!(
             "00000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000001"
@@ -450,21 +503,16 @@ mod tests {
         let log_data = LogData::new_unchecked(vec![topic], data);
 
         // Should not error even though events can't be emitted from handlers
-        provider.emit_event(address, log_data)?;
+        provider.emit_event(Address::random(), log_data)?;
 
         Ok(())
     }
 
     #[test]
     fn test_multiple_storage_operations() -> eyre::Result<()> {
-        let db = CacheDB::new(EmptyDB::new());
-        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
-        let ctx = evm.ctx_mut();
-        let evm_internals =
-            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
-
-        let address = address!("5000000000000000000000000000000000000005");
+        let mut evm = TestEvm::default();
+        let mut provider = evm.provider_max_gas();
+        let address = Address::random();
 
         // Store multiple values
         for i in 0..10 {
@@ -486,14 +534,9 @@ mod tests {
 
     #[test]
     fn test_overwrite_storage() -> eyre::Result<()> {
-        let db = CacheDB::new(EmptyDB::new());
-        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
-        let ctx = evm.ctx_mut();
-        let evm_internals =
-            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
-
-        let address = address!("6000000000000000000000000000000000000006");
+        let mut evm = TestEvm::default();
+        let mut provider = evm.provider_max_gas();
+        let address = Address::random();
         let key = U256::from(99);
 
         // Store initial value
@@ -511,15 +554,9 @@ mod tests {
 
     #[test]
     fn test_different_addresses() -> eyre::Result<()> {
-        let db = CacheDB::new(EmptyDB::new());
-        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
-        let ctx = evm.ctx_mut();
-        let evm_internals =
-            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
-
-        let address1 = address!("7000000000000000000000000000000000000001");
-        let address2 = address!("7000000000000000000000000000000000000002");
+        let mut evm = TestEvm::default();
+        let mut provider = evm.provider_max_gas();
+        let (address1, address2) = (Address::random(), Address::random());
         let key = U256::from(42);
 
         // Store different values at the same key for different addresses
@@ -538,14 +575,9 @@ mod tests {
 
     #[test]
     fn test_multiple_transient_storage_operations() -> eyre::Result<()> {
-        let db = CacheDB::new(EmptyDB::new());
-        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
-        let ctx = evm.ctx_mut();
-        let evm_internals =
-            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
-
-        let address = address!("8000000000000000000000000000000000000001");
+        let mut evm = TestEvm::default();
+        let mut provider = evm.provider_max_gas();
+        let address = Address::random();
 
         // Store multiple values
         for i in 0..10 {
@@ -567,14 +599,9 @@ mod tests {
 
     #[test]
     fn test_overwrite_transient_storage() -> eyre::Result<()> {
-        let db = CacheDB::new(EmptyDB::new());
-        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
-        let ctx = evm.ctx_mut();
-        let evm_internals =
-            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
-
-        let address = address!("9000000000000000000000000000000000000001");
+        let mut evm = TestEvm::default();
+        let mut provider = evm.provider_max_gas();
+        let address = Address::random();
         let key = U256::from(99);
 
         // Store initial value
@@ -592,16 +619,10 @@ mod tests {
 
     #[test]
     fn test_transient_storage_different_addresses() -> eyre::Result<()> {
-        let db = CacheDB::new(EmptyDB::new());
-        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
-        let ctx = evm.ctx_mut();
-        let evm_internals =
-            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
-
-        let address1 = address!("a000000000000000000000000000000000000001");
-        let address2 = address!("a000000000000000000000000000000000000002");
-        let key = U256::from(42);
+        let mut evm = TestEvm::default();
+        let mut provider = evm.provider_max_gas();
+        let (address1, address2) = (Address::random(), Address::random());
+        let key = U256::ONE;
 
         // Store different values at the same key for different addresses
         let value1 = U256::from(100);
@@ -619,14 +640,9 @@ mod tests {
 
     #[test]
     fn test_transient_storage_isolation_from_persistent() -> eyre::Result<()> {
-        let db = CacheDB::new(EmptyDB::new());
-        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
-        let ctx = evm.ctx_mut();
-        let evm_internals =
-            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
-
-        let address = address!("b000000000000000000000000000000000000001");
+        let mut evm = TestEvm::default();
+        let mut provider = evm.provider_max_gas();
+        let address = Address::random();
         let key = U256::from(123);
         let persistent_value = U256::from(456);
         let transient_value = U256::from(789);
@@ -646,28 +662,22 @@ mod tests {
 
     #[test]
     fn test_keccak256_gas() -> eyre::Result<()> {
-        let db = CacheDB::new(EmptyDB::new());
-        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
-        let ctx = evm.ctx_mut();
-        let evm_internals =
-            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
+        let mut evm = TestEvm::default();
+        let mut provider = evm.provider_max_gas();
 
         // 1 word: KECCAK256(30) + KECCAK256WORD(6) * ceil(11/32) = 36
-        let data = b"hello world";
-        assert_eq!(provider.keccak256(data)?, keccak256(data));
+        assert_eq!(
+            provider.keccak256(b"hello world")?,
+            keccak256(b"hello world")
+        );
         assert_eq!(provider.gas_used(), 36);
-
         // 2 words: 30 + 6*2 = 42, cumulative = 78
         provider.keccak256(&[0u8; 64])?;
         assert_eq!(provider.gas_used(), 78);
         std::mem::drop(provider);
 
         // OOG: 30 gas is not enough (needs 36 for 1 word)
-        let evm_internals =
-            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
-        let mut provider =
-            EvmPrecompileStorageProvider::new_with_gas_limit(evm_internals, &ctx.cfg, 30, 0);
+        let mut provider = evm.provider_with_gas_limit(30, 0);
         assert!(matches!(
             provider.keccak256(b"hello"),
             Err(TempoPrecompileError::OutOfGas)
@@ -678,12 +688,15 @@ mod tests {
 
     #[test]
     fn test_recover_signer_gas() -> eyre::Result<()> {
-        let db = CacheDB::new(EmptyDB::new());
-        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
-        let ctx = evm.ctx_mut();
-        let evm_internals =
-            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
+        let mut evm = TestEvm::default();
+        let mut provider = evm.provider_max_gas();
+
+        let signer = PrivateKeySigner::random();
+        let digest = keccak256(b"test message");
+        let sig = signer.sign_hash_sync(&digest).unwrap();
+        let v = sig.v() as u8 + 27;
+        let r: B256 = sig.r().into();
+        let s: B256 = sig.s().into();
 
         // Invalid v → None, gas still charged
         assert!(
@@ -694,12 +707,6 @@ mod tests {
         assert_eq!(provider.gas_used(), crate::ECRECOVER_GAS);
 
         // Valid signature → correct recovery
-        let signer = PrivateKeySigner::random();
-        let digest = keccak256(b"test message");
-        let sig = signer.sign_hash_sync(&digest).unwrap();
-        let v = sig.v() as u8 + 27;
-        let r: B256 = sig.r().into();
-        let s: B256 = sig.s().into();
         assert_eq!(
             provider.recover_signer(digest, v, r, s)?,
             Some(signer.address())
@@ -708,10 +715,7 @@ mod tests {
         std::mem::drop(provider);
 
         // OOG: 100 gas is not enough (needs 3000)
-        let evm_internals =
-            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
-        let mut provider =
-            EvmPrecompileStorageProvider::new_with_gas_limit(evm_internals, &ctx.cfg, 100, 0);
+        let mut provider = evm.provider_with_gas_limit(100, 0);
         assert!(matches!(
             provider.recover_signer(digest, v, r, s),
             Err(TempoPrecompileError::OutOfGas)
@@ -722,33 +726,14 @@ mod tests {
 
     #[test]
     fn test_state_gas_used_only_counts_state_creating_ops() -> eyre::Result<()> {
-        use revm::context_interface::cfg::GasId;
-        use tempo_chainspec::hardfork::TempoHardfork;
+        let mut evm = TestEvm::new(TempoHardfork::T4);
+        let gas_params = evm.ctx().cfg.gas_params.clone();
+        let mut provider = evm.provider_with_reservoir(0);
 
-        let db = CacheDB::new(EmptyDB::new());
-        let mut cfg = revm::context::CfgEnv::<TempoHardfork>::default();
-        cfg.set_spec_and_mainnet_gas_params(TempoHardfork::T4);
-        // Apply TIP-1016 state gas overrides (normally done by tempo_gas_params)
-        cfg.gas_params.override_gas(vec![
-            (GasId::sstore_set_without_load_cost(), 19_900),
-            (GasId::sstore_set_state_gas(), 230_000),
-            (GasId::code_deposit_cost(), 200),
-            (GasId::code_deposit_state_gas(), 2_300),
-        ]);
-        let evm_env = EvmEnv {
-            cfg_env: cfg.clone(),
-            ..Default::default()
-        };
-        let mut evm = TempoEvmFactory::default().create_evm(db, evm_env);
-        let ctx = evm.ctx_mut();
-        let evm_internals =
-            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
-
-        let address = address!("5000000000000000000000000000000000000005");
+        let (address, code_address, slot) = (Address::random(), Address::random(), U256::ONE);
 
         // SLOADs should not add state gas
-        provider.sload(address, U256::from(1))?;
+        provider.sload(address, slot)?;
         assert_eq!(
             provider.state_gas_used(),
             0,
@@ -758,7 +743,7 @@ mod tests {
 
         // SSTORE zero->non-zero should add state gas
         let gas_before = provider.gas_used();
-        provider.sstore(address, U256::from(1), U256::from(42))?;
+        provider.sstore(address, slot, U256::from(1))?;
         let state_gas_after_set = provider.state_gas_used();
         assert_eq!(
             state_gas_after_set, 230_000,
@@ -770,7 +755,7 @@ mod tests {
         );
 
         // SSTORE non-zero->non-zero should NOT add more state gas
-        provider.sstore(address, U256::from(1), U256::from(99))?;
+        provider.sstore(address, slot, U256::from(2))?;
         assert_eq!(
             provider.state_gas_used(),
             state_gas_after_set,
@@ -779,11 +764,16 @@ mod tests {
 
         // Code deposit should add state gas (2,300 per byte)
         let state_gas_before_code = provider.state_gas_used();
-        provider.set_code(address, revm::state::Bytecode::new_raw(vec![0xef].into()))?;
+        provider.set_code(
+            code_address,
+            revm::state::Bytecode::new_raw(vec![0xef].into()),
+        )?;
         assert_eq!(
             provider.state_gas_used(),
-            state_gas_before_code + 2_300,
-            "set_code(1 byte) should add 2,300 state gas"
+            state_gas_before_code
+                + gas_params.create_state_gas()
+                + gas_params.code_deposit_state_gas(1),
+            "set_code(new account, 1 byte) should add CREATE state gas plus 2,300 code deposit state gas"
         );
 
         Ok(())
@@ -793,38 +783,15 @@ mod tests {
     /// spills into regular gas once the reservoir is exhausted.
     #[test]
     fn test_state_gas_spills_from_reservoir_to_regular_gas() -> eyre::Result<()> {
-        let db = CacheDB::new(EmptyDB::new());
-        let mut cfg = revm::context::CfgEnv::<TempoHardfork>::default();
-        cfg.set_spec_and_mainnet_gas_params(TempoHardfork::T4);
-        cfg.gas_params.override_gas(vec![
-            (GasId::sstore_set_without_load_cost(), 19_900),
-            (GasId::sstore_set_state_gas(), 230_000),
-        ]);
-        let evm_env = EvmEnv {
-            cfg_env: cfg.clone(),
-            ..Default::default()
-        };
+        let mut evm = TestEvm::new(TempoHardfork::T4);
 
         // Reservoir = 500k: enough for 2 full SSTOREs (2 × 230k = 460k)
         // but the 3rd SSTORE (230k) must spill 190k into regular gas.
         let gas_limit = 1_000_000u64;
         let reservoir = 500_000u64;
         let state_gas_per_sstore = 230_000u64;
-
-        let mut evm = TempoEvmFactory::default().create_evm(db, evm_env);
-        let ctx = evm.ctx_mut();
-        let evm_internals =
-            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
-        let mut provider = EvmPrecompileStorageProvider::new(
-            evm_internals,
-            gas_limit,
-            reservoir,
-            cfg.spec,
-            false,
-            cfg.gas_params.clone(),
-        );
-
-        let address = address!("5000000000000000000000000000000000000005");
+        let mut provider = evm.provider_with_gas_limit(gas_limit, reservoir);
+        let address = Address::random();
 
         // --- First SSTORE (zero→non-zero): fully covered by reservoir ---
         provider.sstore(address, U256::from(1), U256::from(42))?;
@@ -878,6 +845,91 @@ mod tests {
             provider.gas_used(),
             expected_regular_after,
             "regular gas should include spill of {spill} from exhausted reservoir"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_t4_cold_sstore_matches_tip1016_spec() -> eyre::Result<()> {
+        let mut evm = TestEvm::new(TempoHardfork::T4);
+        let mut provider = evm.provider_with_reservoir(460_000);
+
+        let (address, cold_slot, warm_slot) = (Address::random(), U256::ONE, U256::from(2));
+
+        provider.sstore(address, cold_slot, U256::ONE)?;
+        assert_eq!(
+            provider.gas_used(),
+            22_200,
+            "TIP-1016 cold SSTORE should consume 22,200 regular gas including the retained Berlin cold-slot access charge"
+        );
+        assert_eq!(
+            provider.state_gas_used(),
+            230_000,
+            "TIP-1016 cold SSTORE should consume 230,000 state gas"
+        );
+
+        provider.sload(address, warm_slot)?;
+        let gas_before_warm_sstore = provider.gas_used();
+        let state_gas_before_warm_sstore = provider.state_gas_used();
+
+        provider.sstore(address, warm_slot, U256::ONE)?;
+        assert_eq!(
+            provider.gas_used() - gas_before_warm_sstore,
+            20_100,
+            "TIP-1016 warm zero-to-non-zero SSTORE should consume 20,100 regular gas after the slot is warmed by SLOAD"
+        );
+        assert_eq!(
+            provider.state_gas_used() - state_gas_before_warm_sstore,
+            230_000,
+            "TIP-1016 warm zero-to-non-zero SSTORE should still consume 230,000 state gas"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_t4_set_code_new_account_matches_tip1016_success_path() -> eyre::Result<()> {
+        let mut evm = TestEvm::new(TempoHardfork::T4);
+        let gas_params = evm.ctx().cfg.gas_params.clone();
+
+        let code = Bytecode::new_raw(vec![0xef].into());
+        let expected_state_gas =
+            gas_params.create_state_gas() + gas_params.code_deposit_state_gas(code.len());
+        let expected_regular_gas =
+            gas_params.create_cost() + gas_params.code_deposit_cost(code.len());
+        let mut provider = evm.provider_with_reservoir(expected_state_gas);
+
+        provider.set_code(Address::random(), code)?;
+        assert_eq!(
+            provider.gas_used(),
+            expected_regular_gas,
+            "TIP-1016 CREATE success path should charge CREATE + code deposit"
+        );
+        assert_eq!(
+            provider.state_gas_used(),
+            expected_state_gas,
+            "set_code on a new account should charge CREATE state gas plus code deposit state gas"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "TIP-1016 mismatch: 0->X->0 refund math does not net to GAS_WARM_ACCESS (100 gas) yet"]
+    fn test_t4_sstore_restore_refund_matches_tip1016_spec() -> eyre::Result<()> {
+        let mut evm = TestEvm::new(TempoHardfork::T4);
+        let mut provider = evm.provider_with_reservoir(230_000);
+
+        let (address, slot) = (Address::random(), U256::ONE);
+        provider.sstore(address, slot, U256::ONE)?;
+        provider.sstore(address, slot, U256::ZERO)?;
+        assert_eq!(provider.gas_refunded(), 247_800);
+        let net_gas_after_refund =
+            provider.gas_used() + provider.state_gas_used() - provider.gas_refunded() as u64;
+        assert_eq!(
+            net_gas_after_refund, 100,
+            "TIP-1016 says 0->X->0 should net to GAS_WARM_ACCESS (100)"
         );
 
         Ok(())

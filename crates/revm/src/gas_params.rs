@@ -34,7 +34,7 @@ const EIP7702_PER_EMPTY_ACCOUNT_COST_T1: u64 = 12_500;
 // These values are "at least the pre-TIP-1000 (standard EVM) cost" per spec invariant 15.
 //
 // For SSTORE: revm decomposes the cost as sstore_static(WARM_STORAGE_READ=100) +
-// sstore_set_without_load_cost. So the GasId value = 20,000 - 100 = 19,900.
+// sstore_set_without_load_cost(20,000), with the cold-slot surcharge applied separately.
 const T4_SSTORE_SET_REGULAR: u64 = 20_000;
 const T4_NEW_ACCOUNT_REGULAR: u64 = 25_000;
 const T4_CREATE_REGULAR: u64 = 32_000;
@@ -157,25 +157,26 @@ mod tests {
     ///
     /// | Operation                      | Execution Gas | Storage Gas | Total   |
     /// |--------------------------------|---------------|-------------|---------|
-    /// | Cold SSTORE (zero → non-zero)  | 20,000        | 230,000     | 250,000 |
+    /// | Cold SSTORE (zero → non-zero)  | 22,200        | 230,000     | 252,200 |
     /// | Account creation (nonce 0 → 1) | 25,000        | 225,000     | 250,000 |
     /// | Contract metadata (CREATE)     | 32,000        | 468,000     | 500,000 |
     /// | Contract code storage (/byte)  | 200           | 2,300       | 2,500   |
     /// | EIP-7702 delegation (per auth) | 25,000        | 225,000     | 250,000 |
     ///
-    /// Note: For SSTORE, `sstore_set_without_load_cost` excludes the warm storage
-    /// read cost (100) that revm charges as `sstore_static_gas`. So the GasId value
-    /// = spec_regular - WARM_STORAGE_READ_COST = 20,000 - 100 = 19,900.
+    /// Note: The cold SSTORE total keeps Berlin's access charging. In revm terms the
+    /// zero->non-zero write path is: warm read (100) + `sstore_set_without_load_cost` (20,000)
+    /// + cold slot surcharge (2,100) + state gas (230,000) = 252,200.
     #[test]
     fn test_t4_gas_params_splits_storage_costs() {
         let gas_params = tempo_gas_params(TempoHardfork::T4);
 
         // T4 execution gas (regular/computational overhead)
-        // SSTORE: spec says 20,000 regular; revm decomposes as static(100) + sstore_set_without_load
+        // SSTORE keeps revm's decomposed accounting: static(100) + sstore_set_without_load(20,000),
+        // with cold slot access (2,100) retained separately through `cold_storage_cost`.
         assert_eq!(
             gas_params.get(GasId::sstore_set_without_load_cost()),
             20_000,
-            "SSTORE set_without_load = spec 20,000"
+            "SSTORE set_without_load matches the retained zero->non-zero write component"
         );
         assert_eq!(
             gas_params.get(GasId::new_account_cost()),
@@ -260,21 +261,31 @@ mod tests {
         );
     }
 
-    /// TIP-1016: Verify totals (regular + state) match spec table.
-    /// Note: SSTORE total comparison needs to account for revm decomposition.
+    /// TIP-1016: Verify totals (regular + state) match the clarified spec table.
+    /// Note: SSTORE total comparison needs to account for revm decomposition and the cold-slot charge.
+    ///
     /// T1 sstore_set_without_load_cost = 250,000 (full TIP-1000 cost as override).
-    /// T4 total SSTORE = sstore_set_without_load_cost(19,900) + warm_read(100) + state(230,000) = 250,000.
+    /// T4 warm SSTORE = sstore_set_without_load_cost(20,000) + warm_read(100) + state(230,000) = 250,100.
+    /// T4 cold SSTORE = warm path + cold_slot_access(2,100) = 252,200.
     #[test]
     fn test_t4_totals_match_spec() {
         let t4 = tempo_gas_params(TempoHardfork::T4);
 
-        // SSTORE set total: regular(20,000) + state(230,000) = 250,000
-        // In revm terms: sstore_set_without_load_cost(19,900) + warm_read(100) + state(230,000)
-        let sstore_regular = t4.get(GasId::sstore_set_without_load_cost()) + 100; // add warm_storage_read
+        // Warm SSTORE total: write component(20,000) + warm read(100) + state(230,000)
+        let warm_sstore_regular =
+            t4.get(GasId::sstore_set_without_load_cost()) + t4.warm_storage_read_cost();
         assert_eq!(
-            sstore_regular + t4.get(GasId::sstore_set_state_gas()),
+            warm_sstore_regular + t4.get(GasId::sstore_set_state_gas()),
             250_100,
-            "SSTORE total must be 250,000 + storage read (100)"
+            "warm SSTORE total must be 250,100"
+        );
+
+        // Cold SSTORE total: warm path + Berlin cold slot access(2,100)
+        let cold_sstore_regular = warm_sstore_regular + t4.cold_storage_cost();
+        assert_eq!(
+            cold_sstore_regular + t4.get(GasId::sstore_set_state_gas()),
+            252_200,
+            "cold SSTORE total must include Berlin cold slot access charging"
         );
 
         // New account: 25,000 + 225,000 = 250,000

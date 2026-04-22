@@ -12798,6 +12798,7 @@ dependencies = [
  "tempo-evm",
  "tempo-precompiles-macros",
  "tempo-primitives",
+ "tempo-revm",
  "thiserror 2.0.18",
  "tracing",
 ]
