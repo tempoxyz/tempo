@@ -73,6 +73,9 @@ pub const INPUT_PER_WORD_COST: u64 = 6;
 /// Gas cost for `ecrecover` signature verification (used by KeyAuthorization and Permit).
 pub const ECRECOVER_GAS: u64 = 3_000;
 
+/// Gas cost for Ed25519 signature verification (used by ValidatorConfigV2).
+pub const ED25519_VERIFY_GAS: u64 = 3_000;
+
 /// Returns the gas cost for decoding calldata of the given length, rounded up to word boundaries.
 #[inline]
 pub fn input_cost(calldata_len: usize) -> u64 {
