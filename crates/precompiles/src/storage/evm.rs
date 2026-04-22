@@ -113,7 +113,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         };
 
         if self.spec.is_t4() {
-            // Track state gas for code deposit
+            // T4: Track state gas for code deposit
             self.deduct_state_gas(self.gas_params.code_deposit_state_gas(code_len))?;
 
             // T4: charge TIP20 creations as CREATE
@@ -904,7 +904,7 @@ mod tests {
         assert_eq!(
             provider.gas_used(),
             expected_regular_gas,
-            "TIP-1016 CREATE success path should charge CREATE + code deposit + HASH_COST"
+            "TIP-1016 CREATE success path should charge CREATE + code deposit"
         );
         assert_eq!(
             provider.state_gas_used(),
