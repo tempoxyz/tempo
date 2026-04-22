@@ -8,6 +8,13 @@ name: bench-replay
 on:
   workflow_dispatch:
     inputs:
+      chain:
+        description: "Chain to replay"
+        type: choice
+        options:
+          - mainnet
+          - testnet
+        default: "mainnet"
       blocks:
         description: "Number of blocks to benchmark"
         type: string
@@ -30,6 +37,10 @@ on:
         default: ""
   workflow_call:
     inputs:
+      chain:
+        type: string
+        required: false
+        default: "mainnet"
       pr:
         type: string
         required: false
@@ -84,6 +95,7 @@ jobs:
     runs-on: [self-hosted, Linux, X64, bare-metal]
     timeout-minutes: 300
     env:
+      BENCH_CHAIN: ${{ inputs.chain || 'mainnet' }}
       BENCH_PR: ${{ inputs.pr }}
       BENCH_ACTOR: ${{ inputs.actor }}
       BENCH_SAMPLY: ${{ inputs.samply }}

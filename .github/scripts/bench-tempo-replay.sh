@@ -16,13 +16,33 @@
 set -euxo pipefail
 
 SCHELK_MOUNT="/reth-bench"
-DATADIR="$SCHELK_MOUNT/tempo-replay"
 BENCH_WORK_DIR="${BENCH_WORK_DIR:-bench-results/replay}"
-REPLAY_RPC_URL="https://rpc.moderato.tempo.xyz"
 SNAPSHOT_BUCKET="r2-tempo-snapshots/tempo-node-snapshots"
-SNAPSHOT_PREFIX="tempo-42431-"
-SNAPSHOT_HASH_FILE="$HOME/.tempo-replay-snapshot-hash"
 TEMPO_SCOPE="tempo-replay.scope"
+
+# Chain-specific configuration
+CHAIN="${BENCH_CHAIN:-mainnet}"
+case "$CHAIN" in
+  mainnet)
+    CHAIN_ID=4217
+    CHAIN_NAME="mainnet"
+    REPLAY_RPC_URL="https://rpc.tempo.xyz"
+    ;;
+  testnet)
+    CHAIN_ID=42431
+    CHAIN_NAME="moderato"
+    REPLAY_RPC_URL="https://rpc.moderato.tempo.xyz"
+    ;;
+  *)
+    echo "::error::Unknown chain: $CHAIN (must be 'mainnet' or 'testnet')"
+    exit 1
+    ;;
+esac
+
+DATADIR="$SCHELK_MOUNT/tempo-replay-${CHAIN_NAME}"
+SNAPSHOT_PREFIX="tempo-${CHAIN_ID}-"
+SNAPSHOT_HASH_FILE="$HOME/.tempo-replay-snapshot-hash-${CHAIN_NAME}"
+echo "Chain: $CHAIN_NAME (id=$CHAIN_ID, rpc=$REPLAY_RPC_URL)"
 
 MC="mc"
 BLOCKS="${BENCH_BLOCKS:-5000}"
@@ -80,8 +100,8 @@ FEATURE_BIN="$(cd ../tempo-feature && pwd)/target/profiling/tempo"
 # Snapshot management
 # ============================================================================
 
-# Pick second-to-latest snapshot (filtered to moderato chain 42431)
-SNAPSHOTS=$($MC ls "$SNAPSHOT_BUCKET/" | awk '{print $NF}' | sed 's:/$::' | grep "^${SNAPSHOT_PREFIX}" | sort)
+# Pick second-to-latest snapshot directory (filter out .json/.tar.lz4 files)
+SNAPSHOTS=$($MC ls "$SNAPSHOT_BUCKET/" | awk '{print $NF}' | sed 's:/$::' | grep "^${SNAPSHOT_PREFIX}" | grep -v '\.' | sort)
 SNAPSHOT_COUNT=$(echo "$SNAPSHOTS" | wc -l)
 if [ "$SNAPSHOT_COUNT" -lt 2 ]; then
   echo "::error::Need at least 2 snapshots matching ${SNAPSHOT_PREFIX}*, found $SNAPSHOT_COUNT"
@@ -159,7 +179,7 @@ run_single() {
   local NODE_ARGS=(
     node
     --dev
-    --chain moderato
+    --chain "$CHAIN_NAME"
     --datadir "$DATADIR"
     --log.file.directory "$output_dir/tempo-logs"
     --http
