@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Parse reth-bench CSV output and generate a summary JSON + markdown comparison.
+"""Parse bench-cli report.json and generate a summary JSON + markdown comparison.
 
 Usage:
-    bench-reth-summary.py <combined_csv> <gas_csv> \
+    bench-replay-summary.py \
         --output-summary <summary.json> \
         --output-markdown <comment.md> \
-        --baseline-csv <baseline_combined.csv> \
+        --baseline-json <baseline_report.json> \
         [--repo <owner/repo>] \
         [--baseline-ref <sha>] \
         [--feature-name <name>] \
@@ -13,11 +13,10 @@ Usage:
 
 Generates a paired statistical comparison between baseline and feature.
 Matches blocks by number and computes per-block diffs to cancel out gas
-variance. Fails if baseline or feature CSV is missing or empty.
+variance. Fails if baseline or feature JSON is missing or empty.
 """
 
 import argparse
-import csv
 import json
 import math
 import random
@@ -28,50 +27,29 @@ T_CRITICAL = 1.96  # two-tailed 95% confidence
 BOOTSTRAP_ITERATIONS = 10_000
 
 
-def _opt_int(row: dict, key: str) -> int | None:
-    """Return int value for a CSV field, or None if missing/empty."""
-    v = row.get(key)
-    if v is None or v == "":
-        return None
-    return int(v)
-
-
-def parse_combined_csv(path: str) -> list[dict]:
-    """Parse combined_latency.csv into a list of per-block dicts."""
-    rows = []
+def parse_report_json(path: str) -> list[dict]:
+    """Parse bench-cli report.json into a list of per-block dicts."""
     with open(path) as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            rows.append(
-                {
-                    "block_number": int(row["block_number"]),
-                    "gas_used": int(row["gas_used"]),
-                    "gas_limit": int(row["gas_limit"]),
-                    "transaction_count": int(row["transaction_count"]),
-                    "new_payload_latency_us": int(row["new_payload_latency"]),
-                    "fcu_latency_us": int(row["fcu_latency"]),
-                    "total_latency_us": int(row["total_latency"]),
-                    "persistence_wait_us": _opt_int(row, "persistence_wait"),
-                    "execution_cache_wait_us": _opt_int(row, "execution_cache_wait"),
-                    "sparse_trie_wait_us": _opt_int(row, "sparse_trie_wait"),
-                }
-            )
-    return rows
+        report = json.load(f)
 
-
-def parse_gas_csv(path: str) -> list[dict]:
-    """Parse total_gas.csv into a list of per-block dicts."""
     rows = []
-    with open(path) as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            rows.append(
-                {
-                    "block_number": int(row["block_number"]),
-                    "gas_used": int(row["gas_used"]),
-                    "time_us": int(row["time"]),
-                }
-            )
+    for block in report["blocks"]:
+        new_payload_us = block.get("new_payload_server_latency_us") or block["new_payload_ms"] * 1_000
+        fcu_us = block["forkchoice_updated_ms"] * 1_000
+        rows.append(
+            {
+                "block_number": block["number"],
+                "gas_used": block["gas_used"],
+                "gas_limit": block["gas_limit"],
+                "transaction_count": block["tx_count"],
+                "new_payload_latency_us": new_payload_us,
+                "fcu_latency_us": fcu_us,
+                "total_latency_us": new_payload_us + fcu_us,
+                "persistence_wait_us": block.get("persistence_wait_us"),
+                "execution_cache_wait_us": block.get("execution_cache_wait_us"),
+                "sparse_trie_wait_us": block.get("sparse_trie_wait_us"),
+            }
+        )
     return rows
 
 
@@ -486,16 +464,15 @@ def generate_markdown(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Parse reth-bench ABBA results")
+    parser = argparse.ArgumentParser(description="Parse bench-cli ABBA results")
     parser.add_argument(
-        "--baseline-csv", nargs="+", required=True,
-        help="Baseline combined_latency.csv files (A1, A2)",
+        "--baseline-json", nargs="+", required=True,
+        help="Baseline report.json files (A1, A2)",
     )
     parser.add_argument(
-        "--feature-csv", "--branch-csv", nargs="+", required=True,
-        help="Feature combined_latency.csv files (B1, B2)",
+        "--feature-json", "--branch-json", nargs="+", required=True,
+        help="Feature report.json files (B1, B2)",
     )
-    parser.add_argument("--gas-csv", required=True, help="Path to total_gas.csv")
     parser.add_argument(
         "--output-summary", required=True, help="Output JSON summary path"
     )
@@ -509,32 +486,29 @@ def main():
     parser.add_argument("--feature-ref", "--branch-sha", "--feature-sha", default=None, help="Feature commit SHA")
     parser.add_argument("--behind-baseline", "--behind-main", type=int, default=0, help="Commits behind baseline")
     parser.add_argument("--big-blocks", action="store_true", default=False, help="Big blocks mode")
-    parser.add_argument("--warmup-blocks", default=None, help="Number of warmup blocks")
     parser.add_argument("--wait-time", default=None, help="Wait time interval used between blocks")
     parser.add_argument("--bal-mode", default=None, help="BAL mode (true, feature, baseline)")
     parser.add_argument("--grafana-url", default=None, help="Grafana dashboard URL for this benchmark run")
     args = parser.parse_args()
 
-    if len(args.baseline_csv) != len(args.feature_csv):
-        print("Must provide equal number of baseline and feature CSVs", file=sys.stderr)
+    if len(args.baseline_json) != len(args.feature_json):
+        print("Must provide equal number of baseline and feature JSONs", file=sys.stderr)
         sys.exit(1)
 
     baseline_runs = []
     feature_runs = []
-    for path in args.baseline_csv:
-        data = parse_combined_csv(path)
+    for path in args.baseline_json:
+        data = parse_report_json(path)
         if not data:
             print(f"No results in {path}", file=sys.stderr)
             sys.exit(1)
         baseline_runs.append(data)
-    for path in args.feature_csv:
-        data = parse_combined_csv(path)
+    for path in args.feature_json:
+        data = parse_report_json(path)
         if not data:
             print(f"No results in {path}", file=sys.stderr)
             sys.exit(1)
         feature_runs.append(data)
-
-    gas = parse_gas_csv(args.gas_csv)
 
     all_baseline = [r for run in baseline_runs for r in run]
     all_feature = [r for run in feature_runs for r in run]
@@ -563,7 +537,7 @@ def main():
         feature_name=feature_name,
         feature_sha=feature_sha,
         big_blocks=args.big_blocks,
-        warmup_blocks=args.warmup_blocks,
+        warmup_blocks=None,
         wait_time=args.wait_time,
         bal_mode=bal_mode,
     )
@@ -597,7 +571,7 @@ def main():
     summary = {
         "blocks": paired_stats["blocks"],
         "big_blocks": args.big_blocks,
-        "warmup_blocks": args.warmup_blocks,
+        "warmup_blocks": None,
         "wait_time": args.wait_time,
         "bal_mode": bal_mode,
         "baseline": {

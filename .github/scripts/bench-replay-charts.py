@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Generate benchmark charts from reth-bench CSV output.
+"""Generate benchmark charts from bench-cli report.json output.
 
 Usage:
-    bench-engine-charts.py <combined_csv> --output-dir <dir> [--baseline <baseline_csv>]
+    bench-replay-charts.py --feature <report.json> --output-dir <dir> [--baseline <report.json>]
 
 Generates three PNG charts:
   1. newPayload latency + Ggas/s per block (+ latency diff when baseline present)
@@ -13,7 +13,7 @@ When --baseline is provided, charts overlay both datasets for comparison.
 """
 
 import argparse
-import csv
+import json
 import sys
 from pathlib import Path
 
@@ -31,23 +31,23 @@ except ImportError:
 GIGAGAS = 1_000_000_000
 
 
-def parse_combined_csv(path: str) -> list[dict]:
-    rows = []
+def parse_report_json(path: str) -> list[dict]:
     with open(path) as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            rows.append(
-                {
-                    "block_number": int(row["block_number"]),
-                    "gas_used": int(row["gas_used"]),
-                    "new_payload_latency_us": int(row["new_payload_latency"]),
-                    "persistence_wait_us": int(row["persistence_wait"])
-                    if row.get("persistence_wait")
-                    else None,
-                    "execution_cache_wait_us": int(row.get("execution_cache_wait", 0)),
-                    "sparse_trie_wait_us": int(row.get("sparse_trie_wait", 0)),
-                }
-            )
+        report = json.load(f)
+
+    rows = []
+    for block in report["blocks"]:
+        new_payload_us = block.get("new_payload_server_latency_us") or block["new_payload_ms"] * 1_000
+        rows.append(
+            {
+                "block_number": block["number"],
+                "gas_used": block["gas_used"],
+                "new_payload_latency_us": new_payload_us,
+                "persistence_wait_us": block.get("persistence_wait_us"),
+                "execution_cache_wait_us": block.get("execution_cache_wait_us", 0),
+                "sparse_trie_wait_us": block.get("sparse_trie_wait_us", 0),
+            }
+        )
     return rows
 
 
@@ -190,11 +190,11 @@ def plot_gas_vs_latency(
     plt.close(fig)
 
 
-def merge_csvs(paths: list[str]) -> list[dict]:
-    """Parse and merge multiple CSVs, averaging values for duplicate blocks."""
+def merge_reports(paths: list[str]) -> list[dict]:
+    """Parse and merge multiple report JSONs, averaging values for duplicate blocks."""
     by_block: dict[int, list[dict]] = {}
     for path in paths:
-        for row in parse_combined_csv(path):
+        for row in parse_report_json(path):
             by_block.setdefault(row["block_number"], []).append(row)
 
     merged = []
@@ -217,29 +217,29 @@ def main():
     parser = argparse.ArgumentParser(description="Generate benchmark charts")
     parser.add_argument(
         "--feature", nargs="+", required=True,
-        help="Path(s) to feature combined_latency.csv",
+        help="Path(s) to feature report.json",
     )
     parser.add_argument(
         "--output-dir", required=True, help="Output directory for PNG charts"
     )
     parser.add_argument(
-        "--baseline", nargs="+", help="Path(s) to baseline combined_latency.csv"
+        "--baseline", nargs="+", help="Path(s) to baseline report.json"
     )
     parser.add_argument("--baseline-name", default="baseline", help="Label for baseline")
     parser.add_argument("--feature-name", "--branch-name", default="feature", help="Label for feature")
     args = parser.parse_args()
 
-    feature = merge_csvs(args.feature)
+    feature = merge_reports(args.feature)
     if not feature:
-        print("No results found in feature CSV(s)", file=sys.stderr)
+        print("No results found in feature JSON(s)", file=sys.stderr)
         sys.exit(1)
 
     baseline = None
     if args.baseline:
-        baseline = merge_csvs(args.baseline)
+        baseline = merge_reports(args.baseline)
         if not baseline:
             print(
-                "Warning: no results in baseline CSV(s), skipping comparison",
+                "Warning: no results in baseline JSON(s), skipping comparison",
                 file=sys.stderr,
             )
             baseline = None

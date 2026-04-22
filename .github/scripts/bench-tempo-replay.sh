@@ -51,13 +51,11 @@ WARMUP="${BENCH_WARMUP_BLOCKS:-1000}"
 mkdir -p "$BENCH_WORK_DIR"
 
 # ============================================================================
-# Install reth-bench
+# Install txgen-tempo and bench-cli
 # ============================================================================
 
-if ! command -v reth-bench &>/dev/null; then
-  echo "Installing reth-bench..."
-  cargo install --git https://github.com/paradigmxyz/reth reth-bench --locked
-fi
+echo "Installing txgen-tempo and bench-cli..."
+cargo install --git ssh://git@github.com/tempoxyz/txgen --locked txgen-tempo bench-cli
 
 # ============================================================================
 # Build baseline + feature binaries
@@ -109,6 +107,10 @@ if [ "$SNAPSHOT_COUNT" -lt 2 ]; then
 fi
 SNAPSHOT_NAME=$(echo "$SNAPSHOTS" | tail -2 | head -1)
 echo "Selected snapshot: $SNAPSHOT_NAME"
+
+# Extract snapshot block number from name: tempo-{chain_id}-{block_number}-{timestamp}
+SNAPSHOT_BLOCK=$(echo "$SNAPSHOT_NAME" | awk -F- '{print $3}')
+echo "Snapshot block: $SNAPSHOT_BLOCK"
 
 MANIFEST_REMOTE="${SNAPSHOT_BUCKET}/${SNAPSHOT_NAME}/manifest.json"
 REMOTE_HASH=$($MC cat "$MANIFEST_REMOTE" 2>/dev/null | sha256sum | awk '{print $1}')
@@ -244,31 +246,27 @@ run_single() {
     sleep 1
   done
 
-  local reth_bench_bin
-  reth_bench_bin="$(which reth-bench)"
+  local from_block=$(( SNAPSHOT_BLOCK + 1 ))
 
   # Warmup
   if [ "$WARMUP" -gt 0 ]; then
-    echo "Running warmup ($WARMUP blocks)..."
-    "$reth_bench_bin" new-payload-fcu \
-      --reth-new-payload \
-      --rlp-blocks \
-      --rpc-url "$REPLAY_RPC_URL" \
-      --engine-rpc-url http://127.0.0.1:8551 \
-      --jwt-secret "$DATADIR/jwt.hex" \
-      --advance "$WARMUP" 2>&1 | sed -u "s/^/[bench] /"
+    local warmup_to=$(( from_block + WARMUP - 1 ))
+    echo "Running warmup ($WARMUP blocks: $from_block..$warmup_to)..."
+    txgen-tempo extract --rpc "$REPLAY_RPC_URL" --from "$from_block" --to "$warmup_to" \
+      | bench send-blocks \
+        --engine http://127.0.0.1:8551 \
+        --jwt-secret "$DATADIR/jwt.hex" 2>&1 | sed -u "s/^/[bench] /"
+    from_block=$(( warmup_to + 1 ))
   fi
 
   # Benchmark
-  echo "Running benchmark ($BLOCKS blocks)..."
-  "$reth_bench_bin" new-payload-fcu \
-    --reth-new-payload \
-    --rlp-blocks \
-    --rpc-url "$REPLAY_RPC_URL" \
-    --engine-rpc-url http://127.0.0.1:8551 \
-    --jwt-secret "$DATADIR/jwt.hex" \
-    --advance "$BLOCKS" \
-    --output "$output_dir" 2>&1 | sed -u "s/^/[bench] /"
+  local bench_to=$(( from_block + BLOCKS - 1 ))
+  echo "Running benchmark ($BLOCKS blocks: $from_block..$bench_to)..."
+  txgen-tempo extract --rpc "$REPLAY_RPC_URL" --from "$from_block" --to "$bench_to" \
+    | bench send-blocks \
+      --engine http://127.0.0.1:8551 \
+      --jwt-secret "$DATADIR/jwt.hex" \
+      --report "json:$output_dir/report.json" 2>&1 | sed -u "s/^/[bench] /"
 
   # Cleanup
   kill "$tail_pid" 2>/dev/null || true
