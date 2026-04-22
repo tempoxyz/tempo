@@ -4,13 +4,12 @@ pragma solidity >=0.8.13 <0.9.0;
 import { Test, console } from "forge-std/Test.sol";
 import { Vm } from "forge-std/Vm.sol";
 
-import { TIP20 } from "../src/TIP20.sol";
-import { IAccountKeychain } from "../src/interfaces/IAccountKeychain.sol";
-import { INonce } from "../src/interfaces/INonce.sol";
-import { ITIP20 } from "../src/interfaces/ITIP20.sol";
 import { InvariantChecker } from "./helpers/InvariantChecker.sol";
 import { Counter, InitcodeHelper, SimpleStorage } from "./helpers/TestContracts.sol";
 import { TxBuilder } from "./helpers/TxBuilder.sol";
+import { IAccountKeychain } from "tempo-std/interfaces/IAccountKeychain.sol";
+import { INonce } from "tempo-std/interfaces/INonce.sol";
+import { ITIP20, ITIP20Token } from "tempo-std/interfaces/ITIP20.sol";
 
 import { VmExecuteTransaction, VmRlp } from "tempo-std/StdVm.sol";
 import { Eip1559Transaction, Eip1559TransactionLib } from "tempo-std/tx/Eip1559TransactionLib.sol";

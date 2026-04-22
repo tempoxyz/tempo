@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.13;
 
-import { TIP20 } from "../../src/TIP20.sol";
-import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
 import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
+import { ITIP20, ITIP20Token } from "tempo-std/interfaces/ITIP20.sol";
 
-/// @title TIP20 Invariant Tests
-/// @notice Fuzz-based invariant tests for the TIP20 token implementation
+/// @title ITIP20 Invariant Tests
+/// @notice Fuzz-based invariant tests for the ITIP20 token implementation
 /// @dev Tests invariants TEMPO-TIP1 through TEMPO-TIP36
 contract TIP20InvariantTest is InvariantBaseTest {
 
@@ -85,7 +84,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
 
         // One-time constant checks (immutable after deployment)
         for (uint256 i = 0; i < _tokens.length; i++) {
-            TIP20 token = _tokens[i];
+            ITIP20 token = _tokens[i];
 
             // TEMPO-TIP21: Decimals is always 6
             assertEq(token.decimals(), 6, "TEMPO-TIP21: Decimals should always be 6");
@@ -117,7 +116,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     )
         external
     {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20Token token = _selectBaseToken(tokenSeed);
         address actor = _selectAuthorizedActor(actorSeed, address(token));
         address recipient = _selectActorExcluding(recipientSeed, actor);
 
@@ -171,7 +170,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     )
         external
     {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20Token token = _selectBaseToken(tokenSeed);
         address actor = _selectAuthorizedActor(actorSeed, address(token));
         address recipient = _selectActorExcluding(recipientSeed, actor);
 
@@ -219,7 +218,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     )
         external
     {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20Token token = _selectBaseToken(tokenSeed);
         address owner = _selectAuthorizedActor(ownerSeed, address(token));
         address spender = _selectActorExcluding(actorSeed, owner);
         address recipient = _selectActorExcluding(recipientSeed, owner);
@@ -287,7 +286,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     {
         address actor = _selectActor(actorSeed);
         address spender = _selectActor(spenderSeed);
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20 token = _selectBaseToken(tokenSeed);
 
         amount = bound(amount, 0, type(uint128).max);
 
@@ -308,7 +307,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @notice Handler for minting tokens
     /// @dev Tests TEMPO-TIP6 (supply increase), TEMPO-TIP7 (supply cap)
     function mint(uint256 tokenSeed, uint256 recipientSeed, uint256 amount) external {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20 token = _selectBaseToken(tokenSeed);
         address recipient = _selectAuthorizedActor(recipientSeed, address(token));
 
         uint256 currentSupply = token.totalSupply();
@@ -352,7 +351,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @notice Handler for burning tokens
     /// @dev Tests TEMPO-TIP8 (supply decrease)
     function burn(uint256 tokenSeed, uint256 amount) external {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20 token = _selectBaseToken(tokenSeed);
 
         uint256 adminBalance = token.balanceOf(admin);
         vm.assume(adminBalance > 0);
@@ -396,7 +395,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     )
         external
     {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20 token = _selectBaseToken(tokenSeed);
         address actor = _selectAuthorizedActor(actorSeed, address(token));
         address recipient = _selectActorExcluding(recipientSeed, actor);
 
@@ -446,7 +445,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     )
         external
     {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20 token = _selectBaseToken(tokenSeed);
         address owner = _selectAuthorizedActor(ownerSeed, address(token));
         address spender = _selectActorExcluding(actorSeed, owner);
         address recipient = _selectActorExcluding(recipientSeed, owner);
@@ -514,7 +513,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     )
         external
     {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20 token = _selectBaseToken(tokenSeed);
         address actor = _selectAuthorizedActor(actorSeed, address(token));
 
         // 0 = opt-out, 1 = opt-in to self, 2+ = delegate to another actor
@@ -576,7 +575,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @notice Handler for distributing rewards
     /// @dev Tests TEMPO-TIP12, TEMPO-TIP13
     function distributeReward(uint256 actorSeed, uint256 tokenSeed, uint256 amount) external {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20 token = _selectBaseToken(tokenSeed);
         address actor = _selectAuthorizedActor(actorSeed, address(token));
 
         uint256 actorBalance = token.balanceOf(actor);
@@ -633,7 +632,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @notice Handler for distributing tiny rewards where delta == 0
     /// @dev Tests TEMPO-TIP12 edge case: when amount << optedInSupply, delta is 0
     function distributeRewardTiny(uint256 actorSeed, uint256 tokenSeed) external {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20 token = _selectBaseToken(tokenSeed);
         address actor = _selectAuthorizedActor(actorSeed, address(token));
 
         vm.assume(_isAuthorized(address(token), actor));
@@ -681,7 +680,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @notice Handler for attempting to distribute rewards when optedInSupply == 0
     /// @dev Tests TEMPO-TIP12 edge case: must revert with NoOptedInSupply when nobody is opted in
     function distributeRewardZeroOptedIn(uint256 actorSeed, uint256 tokenSeed) external {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20 token = _selectBaseToken(tokenSeed);
         address actor = _selectAuthorizedActor(actorSeed, address(token));
 
         vm.assume(_isAuthorized(address(token), actor));
@@ -711,7 +710,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @notice Handler for claiming rewards
     /// @dev Tests TEMPO-TIP14, TEMPO-TIP15
     function claimRewards(uint256 actorSeed, uint256 tokenSeed) external {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20 token = _selectBaseToken(tokenSeed);
         address actor = _selectAuthorizedActor(actorSeed, address(token));
 
         vm.assume(_isAuthorized(address(token), actor));
@@ -760,7 +759,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @notice Handler for reward claim with detailed verification
     /// @dev Tests TEMPO-TIP14/TIP15: verifies claim is bounded by contract balance and stored rewards
     function claimRewardsVerified(uint256 actorSeed, uint256 tokenSeed) external {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20 token = _selectBaseToken(tokenSeed);
         address actor = _selectAuthorizedActor(actorSeed, address(token));
 
         vm.assume(_isAuthorized(address(token), actor));
@@ -815,7 +814,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @notice Handler for burning tokens from blocked accounts
     /// @dev Tests TEMPO-TIP23 (burnBlocked functionality)
     function burnBlocked(uint256 tokenSeed, uint256 targetSeed, uint256 amount) external {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20Token token = _selectBaseToken(tokenSeed);
         address target = _selectActor(targetSeed);
 
         // Ensure target is blacklisted for this test
@@ -881,7 +880,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     ///      the token is paused it may revert with ContractPaused instead of
     ///      ProtectedAddress. Both are valid rejections of the burn attempt.
     function burnBlockedProtectedAddress(uint256 tokenSeed, uint256 amount) external {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20Token token = _selectBaseToken(tokenSeed);
 
         amount = bound(amount, 1, 1_000_000);
 
@@ -921,7 +920,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @dev Tests TEMPO-TIP26 (only ISSUER_ROLE can mint)
     function mintUnauthorized(uint256 actorSeed, uint256 tokenSeed, uint256 amount) external {
         address attacker = _selectActor(actorSeed);
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20Token token = _selectBaseToken(tokenSeed);
 
         // Ensure attacker doesn't have ISSUER_ROLE
         vm.assume(!token.hasRole(attacker, _ISSUER_ROLE));
@@ -942,7 +941,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @dev Tests TEMPO-TIP27 (only PAUSE_ROLE can pause)
     function pauseUnauthorized(uint256 actorSeed, uint256 tokenSeed) external {
         address attacker = _selectActor(actorSeed);
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20Token token = _selectBaseToken(tokenSeed);
 
         // Ensure attacker doesn't have PAUSE_ROLE
         vm.assume(!token.hasRole(attacker, _PAUSE_ROLE));
@@ -962,7 +961,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @dev Tests TEMPO-TIP28 (only UNPAUSE_ROLE can unpause)
     function unpauseUnauthorized(uint256 actorSeed, uint256 tokenSeed) external {
         address attacker = _selectActor(actorSeed);
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20Token token = _selectBaseToken(tokenSeed);
 
         // Ensure attacker doesn't have UNPAUSE_ROLE
         vm.assume(!token.hasRole(attacker, _UNPAUSE_ROLE));
@@ -990,7 +989,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     {
         address attacker = _selectActor(actorSeed);
         address target = _selectActor(targetSeed);
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20Token token = _selectBaseToken(tokenSeed);
 
         // Ensure attacker doesn't have BURN_BLOCKED_ROLE
         vm.assume(!token.hasRole(attacker, _BURN_BLOCKED_ROLE));
@@ -1012,7 +1011,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @notice Handler for changing transfer policy ID
     /// @dev Tests that only admin can change policy, and policy must exist
     function changeTransferPolicyId(uint256 tokenSeed, uint256 policySeed) external {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20 token = _selectBaseToken(tokenSeed);
 
         // Select from special policies (0, 1) or created policies
         uint64 newPolicyId;
@@ -1041,7 +1040,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @dev Tests that non-admin cannot change transfer policy
     function changeTransferPolicyIdUnauthorized(uint256 actorSeed, uint256 tokenSeed) external {
         address attacker = _selectActor(actorSeed);
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20Token token = _selectBaseToken(tokenSeed);
 
         // Ensure attacker is not admin
         vm.assume(!token.hasRole(attacker, bytes32(0))); // DEFAULT_ADMIN_ROLE
@@ -1059,13 +1058,13 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @notice Handler for quote token updates
     /// @dev Tests setNextQuoteToken and completeQuoteTokenUpdate
     function updateQuoteToken(uint256 tokenSeed, uint256 quoteTokenSeed) external {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20Token token = _selectBaseToken(tokenSeed);
 
         // Skip pathUSD - it cannot change quote token
         vm.assume(address(token) != address(pathUSD));
 
         // Select a different token as potential new quote
-        TIP20 newQuoteToken = _selectBaseToken(quoteTokenSeed);
+        ITIP20Token newQuoteToken = _selectBaseToken(quoteTokenSeed);
         vm.assume(address(newQuoteToken) != address(token));
 
         // For USD tokens, quote must also be USD
@@ -1109,7 +1108,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @dev Tests that non-admin cannot change quote token
     function updateQuoteTokenUnauthorized(uint256 actorSeed, uint256 tokenSeed) external {
         address attacker = _selectActor(actorSeed);
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20Token token = _selectBaseToken(tokenSeed);
 
         vm.assume(address(token) != address(pathUSD));
         vm.assume(!token.hasRole(attacker, bytes32(0))); // DEFAULT_ADMIN_ROLE
@@ -1127,7 +1126,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @notice Handler for setting supply cap
     /// @dev Tests TEMPO-TIP22 (supply cap enforcement)
     function setSupplyCap(uint256 tokenSeed, uint256 newCap) external {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20Token token = _selectBaseToken(tokenSeed);
 
         uint256 currentSupply = token.totalSupply();
 
@@ -1161,7 +1160,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
         external
     {
         address attacker = _selectActor(actorSeed);
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20Token token = _selectBaseToken(tokenSeed);
 
         vm.assume(!token.hasRole(attacker, bytes32(0))); // DEFAULT_ADMIN_ROLE
 
@@ -1178,7 +1177,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @notice Handler for attempting to set supply cap below current supply
     /// @dev Tests that supply cap cannot be set below current supply
     function setSupplyCapBelowSupply(uint256 tokenSeed) external {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20 token = _selectBaseToken(tokenSeed);
 
         uint256 currentSupply = token.totalSupply();
         vm.assume(currentSupply > 1);
@@ -1203,7 +1202,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @dev Tests TEMPO-TIP16 (blacklist enforcement)
     function toggleBlacklist(uint256 actorSeed, uint256 tokenSeed, bool blacklist) external {
         address actor = _selectActor(actorSeed);
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20 token = _selectBaseToken(tokenSeed);
 
         // Only toggle for actors 0-4
         vm.assume(actorSeed % _actors.length < 5);
@@ -1239,7 +1238,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @notice Handler for pause/unpause
     /// @dev Tests TEMPO-TIP17 (pause enforcement)
     function togglePause(uint256 tokenSeed, bool pause) external {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20Token token = _selectBaseToken(tokenSeed);
 
         vm.startPrank(admin);
         token.grantRole(_PAUSE_ROLE, admin);
@@ -1268,10 +1267,9 @@ contract TIP20InvariantTest is InvariantBaseTest {
     )
         external
     {
-        vm.assume(!isTempo); // TODO: skip for Tempo for now, reenable after tempo-foundry deps bumped
         address actor = _selectActor(actorSeed);
         address recipient = _selectActorExcluding(recipientSeed, actor);
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20 token = _selectBaseToken(tokenSeed);
         uint256 actorNonce = token.nonces(actor);
 
         // build permit digest
@@ -1346,7 +1344,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     {
         address actor = _selectActor(actorSeed);
         address recipient = _selectActorExcluding(recipientSeed, actor);
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20 token = _selectBaseToken(tokenSeed);
 
         // Only test when token is paused
         vm.assume(token.paused());
@@ -1373,7 +1371,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     ///      Decimals (TIP21) and quote token acyclic checks moved to setUp() as they're immutable
     function invariant_globalInvariants() public view {
         for (uint256 i = 0; i < _tokens.length; i++) {
-            TIP20 token = _tokens[i];
+            ITIP20 token = _tokens[i];
             address tokenAddr = address(token);
             uint256 totalSupply = token.totalSupply();
 

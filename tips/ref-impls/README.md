@@ -7,7 +7,7 @@ This directory contains Solidity specifications and fuzz tests for Tempo's preco
 
 ## How Tests Work
 
-The tests use an `isTempo` flag (defined in `BaseTest.t.sol`) to detect which implementation is being tested:
+The tests use an `isTempo` flag (defined in `TempoTest.t.sol`) to detect which implementation is being tested:
 
 - **`isTempo = false`**: Tests run against Solidity implementations deployed via `deployCodeTo()`. This is the default `forge` path.
 - **`isTempo = true`**: Tests run against Rust precompiles built into upstream Foundry's Tempo EVM. This is the Tempo profile path.

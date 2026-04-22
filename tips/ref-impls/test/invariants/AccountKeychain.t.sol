@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.13;
 
-import { IAccountKeychain } from "../../src/interfaces/IAccountKeychain.sol";
 import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
+import { IAccountKeychain } from "tempo-std/interfaces/IAccountKeychain.sol";
 
 /// @title AccountKeychain Invariant Tests
 /// @notice Fuzz-based invariant tests for the AccountKeychain precompile

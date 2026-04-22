@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.13;
 
-import { IValidatorConfig } from "../../src/interfaces/IValidatorConfig.sol";
-import { IValidatorConfigV2 } from "../../src/interfaces/IValidatorConfigV2.sol";
 import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 import { Vm } from "forge-std/Vm.sol";
+import { IValidatorConfig } from "tempo-std/interfaces/IValidatorConfig.sol";
+import { IValidatorConfigV2 } from "tempo-std/interfaces/IValidatorConfigV2.sol";
 
 /// @title ValidatorConfigV2 Invariant Tests
 /// @notice Fuzz-based invariant tests for the ValidatorConfigV2 precompile

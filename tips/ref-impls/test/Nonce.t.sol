@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 pragma solidity >=0.8.13 <0.9.0;
 
-import { INonce } from "../src/interfaces/INonce.sol";
-import { BaseTest } from "./BaseTest.t.sol";
+import "./TempoTest.t.sol";
 import { console } from "forge-std/Test.sol";
+import { INonce } from "tempo-std/interfaces/INonce.sol";
 
 /// @title NonceTest
 /// @notice Comprehensive test suite for the Nonce precompile
-contract NonceTest is BaseTest {
+contract NonceTest is TempoTest {
 
     address testAlice = address(0x1111111111111111111111111111111111111111);
     address testBob = address(0x2222222222222222222222222222222222222222);
@@ -39,7 +39,7 @@ contract NonceTest is BaseTest {
             keccak256(abi.encode(nonceKey, keccak256(abi.encode(account, NONCES_SLOT))));
 
         // Read current nonce value
-        uint64 currentNonce = uint64(uint256(vm.load(_NONCE, nonceSlot)));
+        uint64 currentNonce = uint64(uint256(vm.load(NONCE, nonceSlot)));
 
         // Check for overflow
         require(currentNonce < type(uint64).max, "Nonce overflow");
@@ -48,7 +48,7 @@ contract NonceTest is BaseTest {
         newNonce = currentNonce + 1;
 
         // Store new nonce value
-        vm.store(_NONCE, nonceSlot, bytes32(uint256(newNonce)));
+        vm.store(NONCE, nonceSlot, bytes32(uint256(newNonce)));
 
         return newNonce;
     }

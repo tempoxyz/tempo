@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.13;
 
-import { TIP20 } from "../../src/TIP20.sol";
-import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
-import { ITIP20RolesAuth } from "../../src/interfaces/ITIP20RolesAuth.sol";
-import { ITIP403Registry } from "../../src/interfaces/ITIP403Registry.sol";
-import { BaseTest } from "../BaseTest.t.sol";
+import "../TempoTest.t.sol";
+import { ITIP20, ITIP20Token } from "tempo-std/interfaces/ITIP20.sol";
+import { ITIP20RolesAuth, ITIP20RolesAuthErr } from "tempo-std/interfaces/ITIP20RolesAuth.sol";
+import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";
 
 /// @title Invariant Base Test
 /// @notice Shared test infrastructure for invariant testing of Tempo precompiles
 /// @dev Provides common actor management, token selection, funding, and policy utilities
-abstract contract InvariantBaseTest is BaseTest {
+abstract contract InvariantBaseTest is TempoTest {
 
     /*//////////////////////////////////////////////////////////////
                               STATE
@@ -20,7 +19,7 @@ abstract contract InvariantBaseTest is BaseTest {
     address[] internal _actors;
 
     /// @dev Array of test tokens (token1, token2, token3, token4)
-    TIP20[] internal _tokens;
+    ITIP20Token[] internal _tokens;
 
     /// @dev Blacklist policy IDs for each token
     mapping(address => uint64) internal _tokenPolicyIds;
@@ -28,9 +27,9 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @dev Blacklist policy ID for pathUSD
     uint64 internal _pathUsdPolicyId;
 
-    /// @dev Additional tokens (token3, token4) - token1/token2 from BaseTest
-    TIP20 public token3;
-    TIP20 public token4;
+    /// @dev Additional tokens (token3, token4) - token1/token2 from TempoTest
+    ITIP20Token public token3;
+    ITIP20Token public token4;
 
     /// @dev All addresses that may hold token balances (for invariant checks)
     address[] internal _balanceHolders;
@@ -42,21 +41,23 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @notice Common setup for invariant tests
     /// @dev Creates tokens, sets up roles, creates blacklist policies
     function _setupInvariantBase() internal {
-        // Create additional tokens (token1, token2 already created in BaseTest)
-        token3 =
-            TIP20(factory.createToken("TOKEN3", "T3", "USD", pathUSD, admin, bytes32("token3")));
-        token4 =
-            TIP20(factory.createToken("TOKEN4", "T4", "USD", pathUSD, admin, bytes32("token4")));
+        // Create additional tokens (token1, token2 already created in TempoTest)
+        token3 = ITIP20Token(
+            factory.createToken("TOKEN3", "T3", "USD", pathUSD, admin, bytes32("token3"))
+        );
+        token4 = ITIP20Token(
+            factory.createToken("TOKEN4", "T4", "USD", pathUSD, admin, bytes32("token4"))
+        );
 
-        // Setup pathUSD with issuer role (pathUSDAdmin is the pathUSD admin from BaseTest)
+        // Setup pathUSD with issuer role (pathUSDAdmin is the pathUSD admin from TempoTest)
         vm.startPrank(pathUSDAdmin);
-        pathUSD.grantRole(_ISSUER_ROLE, pathUSDAdmin);
-        pathUSD.grantRole(_ISSUER_ROLE, admin);
+        ITIP20Token(address(pathUSD)).grantRole(_ISSUER_ROLE, pathUSDAdmin);
+        ITIP20Token(address(pathUSD)).grantRole(_ISSUER_ROLE, admin);
         vm.stopPrank();
 
         // Setup all tokens with issuer role
         vm.startPrank(admin);
-        TIP20[4] memory tokens = [token1, token2, token3, token4];
+        ITIP20Token[4] memory tokens = [token1, token2, token3, token4];
         for (uint256 i = 0; i < tokens.length; i++) {
             tokens[i].grantRole(_ISSUER_ROLE, admin);
             _tokens.push(tokens[i]);
@@ -212,7 +213,7 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @dev Selects a base token only (excludes pathUSD)
     /// @param rnd Random seed for selection
     /// @return The selected token
-    function _selectBaseToken(uint256 rnd) internal view returns (TIP20) {
+    function _selectBaseToken(uint256 rnd) internal view returns (ITIP20Token) {
         return _tokens[rnd % _tokens.length];
     }
 
@@ -243,7 +244,7 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @param actor The actor address to fund
     /// @param token The token to mint
     /// @param amount The minimum balance required
-    function _ensureFunds(address actor, TIP20 token, uint256 amount) internal {
+    function _ensureFunds(address actor, ITIP20 token, uint256 amount) internal {
         if (token.balanceOf(actor) < amount) {
             vm.startPrank(admin);
             token.mint(actor, amount + 100_000_000);
@@ -275,7 +276,7 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @param token Token address
     /// @return policyId The policy ID
     function _getPolicyId(address token) internal view returns (uint64) {
-        return TIP20(token).transferPolicyId();
+        return ITIP20(token).transferPolicyId();
     }
 
     /// @dev Gets the policy admin for a token by querying the registry
@@ -299,9 +300,9 @@ abstract contract InvariantBaseTest is BaseTest {
                           ERROR HANDLING
     //////////////////////////////////////////////////////////////*/
 
-    /// @dev Checks if an error is a known TIP20 error
+    /// @dev Checks if an error is a known ITIP20 error
     /// @param selector Error selector
-    /// @return True if known TIP20 error
+    /// @return True if known ITIP20 error
     function _isKnownTIP20Error(bytes4 selector) internal pure returns (bool) {
         return selector == ITIP20.ContractPaused.selector
             || selector == ITIP20.InsufficientAllowance.selector
@@ -316,7 +317,7 @@ abstract contract InvariantBaseTest is BaseTest {
             || selector == ITIP20.InvalidCurrency.selector
             || selector == ITIP20.InvalidSupplyCap.selector
             || selector == ITIP20.ProtectedAddress.selector
-            || selector == ITIP20RolesAuth.Unauthorized.selector;
+            || selector == ITIP20RolesAuthErr.Unauthorized.selector;
     }
 
     /*//////////////////////////////////////////////////////////////
