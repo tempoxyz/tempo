@@ -497,6 +497,7 @@ where
 
                     Ok(AddedTransactionOutcome { hash, state })
                 } else {
+                    let tx_hash = *transaction.hash();
                     self.protocol_pool
                         .inner()
                         .add_transactions(
@@ -511,16 +512,35 @@ where
                             }),
                         )
                         .pop()
-                        .unwrap()
+                        .map_or(
+                            Err(PoolError::other(
+                                tx_hash,
+                                std::io::Error::new(
+                                    std::io::ErrorKind::Other,
+                                    "protocol add_transactions returned no result for a single valid transaction (reth pool invariant)",
+                                ),
+                            )),
+                            |r| r,
+                        )
                 }
             }
             invalid => {
+                let tx_hash = invalid.tx_hash();
                 // this forwards for event listener updates
                 self.protocol_pool
                     .inner()
                     .add_transactions(origin, Some(invalid))
                     .pop()
-                    .unwrap()
+                    .map_or(
+                        Err(PoolError::other(
+                            tx_hash,
+                            std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                "protocol add_transactions returned no result for a single invalid outcome (reth pool invariant)",
+                            ),
+                        )),
+                        |r| r,
+                    )
             }
         }
     }
