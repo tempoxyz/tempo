@@ -288,6 +288,7 @@ jobs:
         env:
           BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
           FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
+          DEREK_PAT: ${{ secrets.DEREK_PAT }}
         run: bash .github/scripts/bench-tempo-replay.sh
 
       - name: Parse results
