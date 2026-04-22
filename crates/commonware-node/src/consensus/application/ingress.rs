@@ -1,6 +1,6 @@
 use commonware_consensus::{
     Automaton, CertifiableAutomaton, Relay,
-    simplex::types::Context,
+    simplex::{Plan, types::Context},
     types::{Epoch, Round, View},
 };
 
@@ -55,7 +55,8 @@ impl From<Propose> for Message {
 }
 
 pub(super) struct Broadcast {
-    pub(super) payload: Digest,
+    pub(super) digest: Digest,
+    pub(super) plan: Plan<PublicKey>,
 }
 
 impl From<Broadcast> for Message {
@@ -160,10 +161,10 @@ impl Relay for Mailbox {
     type PublicKey = PublicKey;
     type Plan = commonware_consensus::simplex::Plan<PublicKey>;
 
-    async fn broadcast(&mut self, digest: Self::Digest, _plan: Self::Plan) {
+    async fn broadcast(&mut self, digest: Self::Digest, plan: Self::Plan) {
         // TODO: panicking here is really not necessary. Just log at the ERROR or WARN levels instead?
         self.inner
-            .send(Broadcast { payload: digest }.into())
+            .send(Broadcast { digest, plan }.into())
             .await
             .expect("application is present and ready to receive broadcasts");
     }
