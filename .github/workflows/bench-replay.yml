@@ -161,6 +161,9 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.9
         continue-on-error: true
 
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$HOME/.local/bin" sh
+
       - name: Resolve PR head branch
         id: pr-info
         uses: actions/github-script@v8

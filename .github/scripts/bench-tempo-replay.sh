@@ -100,7 +100,11 @@ sudo schelk recover -y --kill 2>/dev/null || true
 sudo schelk mount -y
 
 if [ "$REMOTE_HASH" != "$LOCAL_HASH" ] || [ ! -d "$DATADIR/db" ]; then
-  echo "Snapshot needs update (local: ${LOCAL_HASH:+${LOCAL_HASH:0:16}…}${LOCAL_HASH:-<none>}, remote: ${REMOTE_HASH:0:16}…)"
+  if [ -n "$LOCAL_HASH" ]; then
+    echo "Snapshot needs update (local: ${LOCAL_HASH:0:16}…, remote: ${REMOTE_HASH:0:16}…)"
+  else
+    echo "Snapshot needs update (local: <none>, remote: ${REMOTE_HASH:0:16}…)"
+  fi
 
   MANIFEST_URL="https://tempo-node-snapshots.tempoxyz.dev/${SNAPSHOT_NAME}/manifest.json"
 
