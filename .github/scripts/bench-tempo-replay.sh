@@ -95,14 +95,16 @@ REMOTE_HASH=$($MC cat "$MANIFEST_REMOTE" 2>/dev/null | sha256sum | awk '{print $
 LOCAL_HASH=""
 [ -f "$SNAPSHOT_HASH_FILE" ] && LOCAL_HASH=$(cat "$SNAPSHOT_HASH_FILE")
 
+# Mount schelk before checking $DATADIR/db existence
+sudo schelk recover -y --kill 2>/dev/null || true
+sudo schelk mount -y
+
 if [ "$REMOTE_HASH" != "$LOCAL_HASH" ] || [ ! -d "$DATADIR/db" ]; then
   echo "Snapshot needs update (local: ${LOCAL_HASH:+${LOCAL_HASH:0:16}…}${LOCAL_HASH:-<none>}, remote: ${REMOTE_HASH:0:16}…)"
 
   MANIFEST_URL="https://tempo-node-snapshots.tempoxyz.dev/${SNAPSHOT_NAME}/manifest.json"
 
-  # Prepare schelk volume
-  sudo schelk recover -y --kill 2>/dev/null || true
-  sudo schelk mount -y
+  # Prepare schelk volume for fresh download
   sudo rm -rf "$DATADIR"
   sudo mkdir -p "$DATADIR"
   sudo chown -R "$(id -u):$(id -g)" "$DATADIR"
