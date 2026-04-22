@@ -373,10 +373,6 @@ mod tests {
     struct TestEvm(TempoEvm<CacheDB<EmptyDB>>);
 
     impl TestEvm {
-        fn default() -> Self {
-            Self::new(TempoHardfork::default())
-        }
-
         fn new(spec: TempoHardfork) -> Self {
             let db = CacheDB::new(EmptyDB::new());
             let mut cfg = revm::context::CfgEnv::<TempoHardfork>::default();
@@ -425,6 +421,12 @@ mod tests {
         }
     }
 
+    impl Default for TestEvm {
+        fn default() -> Self {
+            Self::new(TempoHardfork::default())
+        }
+    }
+
     impl std::ops::Deref for TestEvm {
         type Target = TempoEvm<CacheDB<EmptyDB>>;
         fn deref(&self) -> &Self::Target {
@@ -456,12 +458,13 @@ mod tests {
     #[test]
     fn test_set_code() -> eyre::Result<()> {
         let mut evm = TestEvm::default();
+        let mut provider = evm.provider_max_gas();
+
         let addr = Address::random();
         let code = Bytecode::new_raw(vec![0xff].into());
-        {
-            let mut provider = evm.provider_max_gas();
-            provider.set_code(addr, code.clone())?;
-        }
+
+        provider.set_code(addr, code.clone())?;
+        std::mem::drop(provider);
 
         let Some(StateLoad { data, is_cold: _ }) = evm.load_account_code(addr) else {
             panic!("Failed to load account code")
@@ -475,10 +478,9 @@ mod tests {
     fn test_get_account_info() -> eyre::Result<()> {
         let mut evm = TestEvm::default();
         let mut provider = evm.provider_max_gas();
-        let address = Address::random();
 
         // Get account info for a new account
-        provider.with_account_info(address, &mut |info| {
+        provider.with_account_info(Address::random(), &mut |info| {
             // Should be an empty account
             assert!(info.balance.is_zero());
             assert_eq!(info.nonce, 0);
@@ -495,7 +497,7 @@ mod tests {
     fn test_emit_event() -> eyre::Result<()> {
         let mut evm = TestEvm::default();
         let mut provider = evm.provider_max_gas();
-        let address = Address::random();
+
         let topic = b256!("0000000000000000000000000000000000000000000000000000000000000001");
         let data = bytes!(
             "00000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000001"
@@ -504,7 +506,7 @@ mod tests {
         let log_data = LogData::new_unchecked(vec![topic], data);
 
         // Should not error even though events can't be emitted from handlers
-        provider.emit_event(address, log_data)?;
+        provider.emit_event(Address::random(), log_data)?;
 
         Ok(())
     }
@@ -664,18 +666,18 @@ mod tests {
     #[test]
     fn test_keccak256_gas() -> eyre::Result<()> {
         let mut evm = TestEvm::default();
-        {
-            let mut provider = evm.provider_max_gas();
-            // 1 word: KECCAK256(30) + KECCAK256WORD(6) * ceil(11/32) = 36
-            assert_eq!(
-                provider.keccak256(b"hello world")?,
-                keccak256(b"hello world")
-            );
-            assert_eq!(provider.gas_used(), 36);
-            // 2 words: 30 + 6*2 = 42, cumulative = 78
-            provider.keccak256(&[0u8; 64])?;
-            assert_eq!(provider.gas_used(), 78);
-        }
+        let mut provider = evm.provider_max_gas();
+
+        // 1 word: KECCAK256(30) + KECCAK256WORD(6) * ceil(11/32) = 36
+        assert_eq!(
+            provider.keccak256(b"hello world")?,
+            keccak256(b"hello world")
+        );
+        assert_eq!(provider.gas_used(), 36);
+        // 2 words: 30 + 6*2 = 42, cumulative = 78
+        provider.keccak256(&[0u8; 64])?;
+        assert_eq!(provider.gas_used(), 78);
+        std::mem::drop(provider);
 
         // OOG: 30 gas is not enough (needs 36 for 1 word)
         let mut provider = evm.provider_with_gas_limit(30, 0);
