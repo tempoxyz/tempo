@@ -92,6 +92,7 @@ jobs:
       BENCH_BLOCKS: ${{ inputs.blocks }}
       BENCH_WARMUP_BLOCKS: ${{ inputs.warmup }}
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
+      BENCH_WORK_DIR: bench-results/replay
     steps:
       - name: Resolve checkout ref
         id: checkout-ref
@@ -242,6 +243,49 @@ jobs:
           FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
         run: bash .github/scripts/bench-tempo-replay.sh
 
+      - name: Parse results
+        id: results
+        if: success()
+        env:
+          BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
+          BASELINE_NAME: ${{ steps.refs.outputs.baseline-name }}
+          FEATURE_NAME: ${{ steps.refs.outputs.feature-name }}
+          FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
+        run: |
+          SUMMARY_ARGS="--output-summary $BENCH_WORK_DIR/summary.json"
+          SUMMARY_ARGS="$SUMMARY_ARGS --output-markdown $BENCH_WORK_DIR/comment.md"
+          SUMMARY_ARGS="$SUMMARY_ARGS --repo ${{ github.repository }}"
+          SUMMARY_ARGS="$SUMMARY_ARGS --baseline-ref ${BASELINE_REF}"
+          SUMMARY_ARGS="$SUMMARY_ARGS --baseline-name ${BASELINE_NAME}"
+          SUMMARY_ARGS="$SUMMARY_ARGS --feature-name ${FEATURE_NAME}"
+          SUMMARY_ARGS="$SUMMARY_ARGS --feature-ref ${FEATURE_REF}"
+          BASELINE_CSVS="$BENCH_WORK_DIR/baseline-1/combined_latency.csv $BENCH_WORK_DIR/baseline-2/combined_latency.csv"
+          FEATURE_CSVS="$BENCH_WORK_DIR/feature-1/combined_latency.csv $BENCH_WORK_DIR/feature-2/combined_latency.csv"
+          SUMMARY_ARGS="$SUMMARY_ARGS --baseline-csv $BASELINE_CSVS"
+          SUMMARY_ARGS="$SUMMARY_ARGS --feature-csv $FEATURE_CSVS"
+          SUMMARY_ARGS="$SUMMARY_ARGS --gas-csv $BENCH_WORK_DIR/feature-1/total_gas.csv"
+          if [ -n "${BENCH_WARMUP_BLOCKS:-}" ]; then
+            SUMMARY_ARGS="$SUMMARY_ARGS --warmup-blocks $BENCH_WARMUP_BLOCKS"
+          fi
+          # shellcheck disable=SC2086
+          python3 .github/scripts/bench-replay-summary.py $SUMMARY_ARGS
+
+      - name: Generate charts
+        if: success()
+        env:
+          BASELINE_NAME: ${{ steps.refs.outputs.baseline-name }}
+          FEATURE_NAME: ${{ steps.refs.outputs.feature-name }}
+        run: |
+          CHART_ARGS="--output-dir $BENCH_WORK_DIR/charts"
+          FEATURE_CSVS="$BENCH_WORK_DIR/feature-1/combined_latency.csv $BENCH_WORK_DIR/feature-2/combined_latency.csv"
+          BASELINE_CSVS="$BENCH_WORK_DIR/baseline-1/combined_latency.csv $BENCH_WORK_DIR/baseline-2/combined_latency.csv"
+          CHART_ARGS="$CHART_ARGS --feature $FEATURE_CSVS"
+          CHART_ARGS="$CHART_ARGS --baseline $BASELINE_CSVS"
+          CHART_ARGS="$CHART_ARGS --baseline-name ${BASELINE_NAME}"
+          CHART_ARGS="$CHART_ARGS --feature-name ${FEATURE_NAME}"
+          # shellcheck disable=SC2086
+          uv run --with matplotlib python3 .github/scripts/bench-replay-charts.py $CHART_ARGS
+
       - name: Upload results
         if: "!cancelled()"
         uses: actions/upload-artifact@v4
@@ -249,19 +293,37 @@ jobs:
           name: tempo-bench-replay-results
           path: bench-results/
 
-      - name: Update status (complete)
+      - name: Compare & comment
         if: success() && env.BENCH_COMMENT_ID
         uses: actions/github-script@v8
         with:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |
+            const fs = require('fs');
+
+            let comment = '';
+            try {
+              comment = fs.readFileSync(process.env.BENCH_WORK_DIR + '/comment.md', 'utf8');
+            } catch (e) {
+              comment = '⚠️ Replay benchmark completed but failed to generate comparison.';
+            }
+
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `cc @${process.env.BENCH_ACTOR}\n\n✅ Replay benchmark complete! [View job](${jobUrl})\n\n${comment}`;
+
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               comment_id: parseInt(process.env.BENCH_COMMENT_ID),
-              body: `cc @${process.env.BENCH_ACTOR}\n\n✅ Replay benchmark complete! [View job](${jobUrl})\n\nResults uploaded as artifacts.`,
+              body,
             });
+
+      - name: Write job summary
+        if: success()
+        run: |
+          if [ -f "$BENCH_WORK_DIR/comment.md" ]; then
+            cat "$BENCH_WORK_DIR/comment.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Update status (failed)
         if: failure() && env.BENCH_COMMENT_ID
