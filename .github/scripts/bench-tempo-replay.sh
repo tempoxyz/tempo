@@ -158,6 +158,7 @@ run_single() {
     --log.file.directory "$output_dir/tempo-logs"
     --http
     --http.port 8545
+    --http.api all
     --authrpc.port 8551
     --disable-discovery
     --no-persist-peers
