@@ -170,7 +170,7 @@ where
             Message::Broadcast(broadcast) => {
                 self.context.with_label("broadcast").spawn({
                     let inner = self.inner.clone();
-                    move |_| inner.handle_broadcast(broadcast)
+                    move |_| inner.handle_broadcast(*broadcast)
                 });
             }
             Message::Genesis(genesis) => {
@@ -425,7 +425,7 @@ impl Inner<Init> {
     ) -> eyre::Result<Digest> {
         let propose_start = Instant::now();
 
-        // Follow the commonware marshal::standarad::inline application:
+        // Follow the commonware marshal::standard::inline application:
         //
         // >On leader recovery, marshal may already hold a verified block
         // >for this round (persisted by a pre-crash propose whose

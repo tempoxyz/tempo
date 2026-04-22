@@ -24,7 +24,7 @@ impl Mailbox {
 /// Messages forwarded from consensus to application.
 // TODO: add trace spans into all of these messages.
 pub(super) enum Message {
-    Broadcast(Broadcast),
+    Broadcast(Box<Broadcast>),
     Genesis(Genesis),
     Propose(Box<Propose>),
     Verify(Box<Verify>),
@@ -61,7 +61,7 @@ pub(super) struct Broadcast {
 
 impl From<Broadcast> for Message {
     fn from(value: Broadcast) -> Self {
-        Self::Broadcast(value)
+        Self::Broadcast(Box::new(value))
     }
 }
 
