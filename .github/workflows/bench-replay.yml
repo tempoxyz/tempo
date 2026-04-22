@@ -7,6 +7,27 @@ name: bench-replay
 
 on:
   workflow_dispatch:
+    inputs:
+      blocks:
+        description: "Number of blocks to benchmark"
+        type: string
+        default: "5000"
+      warmup:
+        description: "Number of warmup blocks"
+        type: string
+        default: "1000"
+      samply:
+        description: "Enable samply profiling"
+        type: string
+        default: "false"
+      baseline-args:
+        description: "Extra node args for baseline"
+        type: string
+        default: ""
+      feature-args:
+        description: "Extra node args for feature"
+        type: string
+        default: ""
   workflow_call:
     inputs:
       pr:
