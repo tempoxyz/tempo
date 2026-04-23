@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.13;
 
-import { IValidatorConfig } from "../../src/interfaces/IValidatorConfig.sol";
-import { IValidatorConfigV2 } from "../../src/interfaces/IValidatorConfigV2.sol";
 import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 import { Vm } from "forge-std/Vm.sol";
+import { IValidatorConfig } from "tempo-std/interfaces/IValidatorConfig.sol";
+import { IValidatorConfigV2 } from "tempo-std/interfaces/IValidatorConfigV2.sol";
 
 /// @title ValidatorConfigV2 Invariant Tests
 /// @notice Fuzz-based invariant tests for the ValidatorConfigV2 precompile
@@ -12,6 +12,7 @@ import { Vm } from "forge-std/Vm.sol";
 ///      - Per-handler assertions (VALV2-1 to VALV2-7): auth enforcement, count changes, height tracking, init gates
 ///      - Global invariants (VALV2-8 to VALV2-25): append-only, uniqueness, lookups, migration correctness
 /// forge-config: default.hardfork = "tempo:T2"
+/// forge-config: fuzz500.hardfork = "tempo:T2"
 contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
     /// @dev Starting offset for validator address pool

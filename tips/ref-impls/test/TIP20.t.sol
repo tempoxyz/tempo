@@ -1,20 +1,25 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 pragma solidity >=0.8.13 <0.9.0;
 
-import { TIP20 } from "../src/TIP20.sol";
-import { TIP20Factory } from "../src/TIP20Factory.sol";
-import { TIP403Registry } from "../src/TIP403Registry.sol";
-import { ITIP20 } from "../src/interfaces/ITIP20.sol";
-import { ITIP20RolesAuth } from "../src/interfaces/ITIP20RolesAuth.sol";
-import { ITIP403Registry } from "../src/interfaces/ITIP403Registry.sol";
-import { BaseTest } from "./BaseTest.t.sol";
+import "./TempoTest.t.sol";
+import { ITIP20, ITIP20Token } from "tempo-std/interfaces/ITIP20.sol";
+import { ITIP20RolesAuth, ITIP20RolesAuthErr } from "tempo-std/interfaces/ITIP20RolesAuth.sol";
+import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";
+
+interface ITIP20Protocol is ITIP20 {
+
+    function systemTransferFrom(address from, address to, uint256 amount) external;
+    function transferFeePreTx(address from, uint256 amount) external;
+
+}
 
 /// forge-config: default.hardfork = "tempo:T2"
-contract TIP20Test is BaseTest {
+/// forge-config: fuzz500.hardfork = "tempo:T2"
+contract TIP20Test is TempoTest {
 
-    TIP20 token;
-    TIP20 linkedToken;
-    TIP20 anotherToken;
+    ITIP20Token token;
+    ITIP20Token linkedToken;
+    ITIP20Token anotherToken;
 
     bytes32 constant TEST_MEMO = bytes32(uint256(0x1234567890abcdef));
     bytes32 constant ANOTHER_MEMO = bytes32("Hello World");
@@ -30,25 +35,21 @@ contract TIP20Test is BaseTest {
     event Approval(address indexed owner, address indexed spender, uint256 amount);
     event Mint(address indexed to, uint256 amount);
     event Burn(address indexed from, uint256 amount);
-    event NextQuoteTokenSet(address indexed updater, TIP20 indexed nextQuoteToken);
-    event QuoteTokenUpdate(address indexed updater, TIP20 indexed newQuoteToken);
+    event NextQuoteTokenSet(address indexed updater, ITIP20Token indexed nextQuoteToken);
+    event QuoteTokenUpdate(address indexed updater, ITIP20Token indexed newQuoteToken);
     event RewardDistributed(address indexed funder, uint256 amount);
     event RewardRecipientSet(address indexed holder, address indexed recipient);
 
     function setUp() public override {
         super.setUp();
 
-        linkedToken = TIP20(
-            factory.createToken(
-                "Linked Token", "LINK", "USD", TIP20(_PATH_USD), admin, bytes32("linked")
-            )
+        linkedToken = ITIP20Token(
+            factory.createToken("Linked Token", "LINK", "USD", pathUSD, admin, bytes32("linked"))
         );
-        anotherToken = TIP20(
-            factory.createToken(
-                "Another Token", "OTHER", "USD", TIP20(_PATH_USD), admin, bytes32("another")
-            )
+        anotherToken = ITIP20Token(
+            factory.createToken("Another Token", "OTHER", "USD", pathUSD, admin, bytes32("another"))
         );
-        token = TIP20(
+        token = ITIP20Token(
             factory.createToken("Test Token", "TST", "USD", linkedToken, admin, bytes32("token"))
         );
 
@@ -475,7 +476,7 @@ contract TIP20Test is BaseTest {
         try token.mintWithMemo(charlie, 100e18, TEST_MEMO) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuth.Unauthorized.selector));
+            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuthErr.Unauthorized.selector));
         }
         vm.stopPrank();
     }
@@ -536,17 +537,8 @@ contract TIP20Test is BaseTest {
         }
 
         // 6. systemTransferFrom - blocked from
-        // We skip this test on Tempo, as the systemTransferFrom function is not exposed via the TIP20 interface
+        // We skip this test on Tempo, as the systemTransferFrom function is not exposed via the ITIP20 interface
         // it is just an internal function that is called by the fee manager precompile directly.
-        if (!isTempo) {
-            address feeManager = 0xfeEC000000000000000000000000000000000000;
-            vm.prank(feeManager);
-            try token.systemTransferFrom(alice, bob, 100e18) {
-                revert CallShouldHaveReverted();
-            } catch (bytes memory err) {
-                assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
-            }
-        }
 
         // 7. distributeReward - blocked sender
         vm.prank(alice);
@@ -598,7 +590,7 @@ contract TIP20Test is BaseTest {
         try token.burnWithMemo(100e18, TEST_MEMO) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuth.Unauthorized.selector));
+            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuthErr.Unauthorized.selector));
         }
         vm.stopPrank();
     }
@@ -668,7 +660,7 @@ contract TIP20Test is BaseTest {
         try token.changeTransferPolicyId(policyId) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuth.Unauthorized.selector));
+            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuthErr.Unauthorized.selector));
         }
     }
 
@@ -712,7 +704,7 @@ contract TIP20Test is BaseTest {
         try token.setNextQuoteToken(anotherToken) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuth.Unauthorized.selector));
+            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuthErr.Unauthorized.selector));
         }
 
         vm.stopPrank();
@@ -727,7 +719,7 @@ contract TIP20Test is BaseTest {
         try token.completeQuoteTokenUpdate() {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuth.Unauthorized.selector));
+            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuthErr.Unauthorized.selector));
         }
 
         vm.stopPrank();
@@ -737,7 +729,7 @@ contract TIP20Test is BaseTest {
         vm.startPrank(admin);
 
         // Should revert when trying to set to zero address (not registered in factory)
-        try token.setNextQuoteToken(TIP20(address(0))) {
+        try token.setNextQuoteToken(ITIP20(address(0))) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(ITIP20.InvalidQuoteToken.selector));
@@ -747,16 +739,12 @@ contract TIP20Test is BaseTest {
     }
 
     function testSetNextQuoteTokenUsdRequiresUsdQuote() public {
-        TIP20 usdToken = TIP20(
-            factory.createToken(
-                "USD Token", "USD", "USD", TIP20(_PATH_USD), admin, bytes32("usdtoken")
-            )
+        ITIP20 usdToken = ITIP20(
+            factory.createToken("USD Token", "USD", "USD", pathUSD, admin, bytes32("usdtoken"))
         );
 
-        TIP20 nonUsdToken = TIP20(
-            factory.createToken(
-                "Euro Token", "EUR", "EUR", TIP20(_PATH_USD), admin, bytes32("eurotok")
-            )
+        ITIP20 nonUsdToken = ITIP20(
+            factory.createToken("Euro Token", "EUR", "EUR", pathUSD, admin, bytes32("eurotok"))
         );
 
         vm.prank(admin);
@@ -772,7 +760,7 @@ contract TIP20Test is BaseTest {
         try token.setSupplyCap(2000e18) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuth.Unauthorized.selector));
+            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuthErr.Unauthorized.selector));
         }
     }
 
@@ -799,7 +787,7 @@ contract TIP20Test is BaseTest {
         try token.unpause() {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuth.Unauthorized.selector));
+            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuthErr.Unauthorized.selector));
         }
     }
 
@@ -808,7 +796,7 @@ contract TIP20Test is BaseTest {
         try token.mint(bob, 100e18) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuth.Unauthorized.selector));
+            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuthErr.Unauthorized.selector));
         }
     }
 
@@ -817,7 +805,7 @@ contract TIP20Test is BaseTest {
         try token.burn(100e18) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuth.Unauthorized.selector));
+            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuthErr.Unauthorized.selector));
         }
     }
 
@@ -840,7 +828,7 @@ contract TIP20Test is BaseTest {
         try token.burnBlocked(bob, 100e18) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuth.Unauthorized.selector));
+            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuthErr.Unauthorized.selector));
         }
     }
 
@@ -935,108 +923,6 @@ contract TIP20Test is BaseTest {
         }
     }
 
-    function testSystemTransferFrom() public {
-        // Unauthorized caller should fail
-        vm.prank(alice);
-        try token.systemTransferFrom(alice, bob, 100e18) {
-            revert CallShouldHaveReverted();
-        } catch (bytes memory err) {
-            if (isTempo) {
-                // On Tempo, this function doesnt exist so expect invalid function selector error
-                bytes4 errorSelector = bytes4(err);
-                assertEq(uint32(errorSelector), uint32(0xaa4bc69a));
-            }
-        }
-
-        if (!isTempo) {
-            // Success case - called by FEE_MANAGER
-            address feeManager = 0xfeEC000000000000000000000000000000000000;
-            uint256 aliceBefore = token.balanceOf(alice);
-            uint256 bobBefore = token.balanceOf(bob);
-
-            vm.prank(feeManager);
-            bool success = token.systemTransferFrom(alice, bob, 100e18);
-
-            assertTrue(success);
-            assertEq(token.balanceOf(alice), aliceBefore - 100e18);
-            assertEq(token.balanceOf(bob), bobBefore + 100e18);
-        }
-    }
-
-    function testTransferFeePreTx() public {
-        address feeManager = 0xfeEC000000000000000000000000000000000000;
-
-        // Unauthorized
-        vm.prank(alice);
-        try token.transferFeePreTx(alice, 100e18) {
-            revert CallShouldHaveReverted();
-        } catch (bytes memory err) {
-            if (isTempo) {
-                // On Tempo, this function doesnt exist so expect invalid function selector error
-                bytes4 errorSelector = bytes4(err);
-                assertEq(uint32(errorSelector), uint32(0xaa4bc69a));
-            }
-        }
-
-        if (!isTempo) {
-            // from == address(0)
-            vm.prank(feeManager);
-            try token.transferFeePreTx(address(0), 100e18) {
-                revert CallShouldHaveReverted();
-            } catch {
-                // Expected revert
-            }
-
-            // Success
-            uint256 aliceBefore = token.balanceOf(alice);
-            vm.prank(feeManager);
-            token.transferFeePreTx(alice, 100e18);
-            assertEq(token.balanceOf(alice), aliceBefore - 100e18);
-            assertEq(token.balanceOf(feeManager), 100e18);
-        }
-    }
-
-    function testTransferFeePostTx() public {
-        address feeManager = 0xfeEC000000000000000000000000000000000000;
-
-        if (!isTempo) {
-            // Setup: pre-transfer to fee manager
-            vm.prank(feeManager);
-            token.transferFeePreTx(alice, 100e18);
-
-            // Unauthorized
-            vm.prank(alice);
-            try token.transferFeePostTx(alice, 50e18, 50e18) {
-                revert CallShouldHaveReverted();
-            } catch {
-                // Expected revert
-            }
-
-            // to == address(0)
-            vm.prank(feeManager);
-            try token.transferFeePostTx(address(0), 50e18, 50e18) {
-                revert CallShouldHaveReverted();
-            } catch {
-                // Expected revert
-            }
-
-            // Success - refund 50, used 50
-            uint256 aliceBefore = token.balanceOf(alice);
-            vm.prank(feeManager);
-            token.transferFeePostTx(alice, 50e18, 50e18);
-            assertEq(token.balanceOf(alice), aliceBefore + 50e18);
-        } else {
-            vm.prank(alice);
-            try token.transferFeePostTx(alice, 50e18, 50e18) {
-                revert CallShouldHaveReverted();
-            } catch (bytes memory err) {
-                // On Tempo, this function doesnt exist so expect invalid function selector error
-                bytes4 errorSelector = bytes4(err);
-                assertEq(uint32(errorSelector), uint32(0xaa4bc69a));
-            }
-        }
-    }
-
     /*//////////////////////////////////////////////////////////////
                         LOOP PREVENTION TESTS
     //////////////////////////////////////////////////////////////*/
@@ -1059,7 +945,7 @@ contract TIP20Test is BaseTest {
     }
 
     function testCompleteQuoteTokenUpdateCannotCreateIndirectLoop() public {
-        TIP20 newToken = TIP20(
+        ITIP20 newToken = ITIP20(
             factory.createToken("New Token", "NEW", "USD", token, admin, bytes32("newtoken"))
         );
 
@@ -1082,8 +968,8 @@ contract TIP20Test is BaseTest {
     function testCompleteQuoteTokenUpdateCannotCreateLongerLoop() public {
         // Create a longer chain: pathUSD -> linkedToken -> token -> token2 -> token3
 
-        TIP20 token3 =
-            TIP20(factory.createToken("Token 3", "TK2", "USD", token, admin, bytes32("token3")));
+        ITIP20 token3 =
+            ITIP20(factory.createToken("Token 3", "TK2", "USD", token, admin, bytes32("token3")));
 
         // Try to set linkedToken's quote token to token3 (would create loop)
         vm.startPrank(admin);
@@ -1123,11 +1009,6 @@ contract TIP20Test is BaseTest {
     function testSetRewardRecipientOptIn() public {
         vm.startPrank(alice);
 
-        if (!isTempo) {
-            vm.expectEmit(true, true, false, false);
-            emit RewardRecipientSet(alice, alice);
-        }
-
         token.setRewardRecipient(alice);
 
         (address delegatedRecipient,,) = token.userRewardInfo(alice);
@@ -1143,11 +1024,6 @@ contract TIP20Test is BaseTest {
         token.setRewardRecipient(alice);
 
         // Then opt out
-        if (!isTempo) {
-            vm.expectEmit(true, true, false, false);
-            emit RewardRecipientSet(alice, address(0));
-        }
-
         token.setRewardRecipient(address(0));
 
         (address delegatedRecipient,,) = token.userRewardInfo(alice);
@@ -1159,11 +1035,6 @@ contract TIP20Test is BaseTest {
 
     function testSetRewardRecipientToDifferentAddress() public {
         vm.startPrank(alice);
-
-        if (!isTempo) {
-            vm.expectEmit(true, true, false, false);
-            emit RewardRecipientSet(alice, bob);
-        }
 
         token.setRewardRecipient(bob);
 
@@ -1198,14 +1069,6 @@ contract TIP20Test is BaseTest {
 
         uint256 rewardAmount = 100e18;
 
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit Transfer(admin, address(token), rewardAmount);
-
-            vm.expectEmit(true, true, true, false);
-            emit RewardDistributed(admin, rewardAmount);
-        }
-
         token.distributeReward(rewardAmount);
 
         vm.stopPrank();
@@ -1214,11 +1077,6 @@ contract TIP20Test is BaseTest {
 
         // Claim the rewards
         uint256 balanceBeforeClaim = token.balanceOf(alice);
-
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit Transfer(address(token), alice, 100e18);
-        }
 
         vm.prank(alice);
         uint256 rewardBalance = token.claimRewards();
@@ -2303,7 +2161,7 @@ contract TIP20Test is BaseTest {
         uint64 compound =
             registry.createCompoundPolicy(senderWhitelist, recipientWhitelist, mintWhitelist);
 
-        TIP20 compoundToken = TIP20(
+        ITIP20Token compoundToken = ITIP20Token(
             factory.createToken("COMPOUND", "CMP", "USD", pathUSD, admin, bytes32("compound"))
         );
         compoundToken.grantRole(_ISSUER_ROLE, admin);
@@ -2328,7 +2186,7 @@ contract TIP20Test is BaseTest {
         uint64 compound =
             registry.createCompoundPolicy(senderWhitelist, recipientWhitelist, mintWhitelist);
 
-        TIP20 compoundToken = TIP20(
+        ITIP20Token compoundToken = ITIP20Token(
             factory.createToken("COMPOUND2", "CMP2", "USD", pathUSD, admin, bytes32("compound2"))
         );
         compoundToken.grantRole(_ISSUER_ROLE, admin);
@@ -2356,7 +2214,7 @@ contract TIP20Test is BaseTest {
 
         uint64 compound = registry.createCompoundPolicy(senderWhitelist, recipientWhitelist, 1);
 
-        TIP20 compoundToken = TIP20(
+        ITIP20Token compoundToken = ITIP20Token(
             factory.createToken("COMPOUND3", "CMP3", "USD", pathUSD, admin, bytes32("compound3"))
         );
         compoundToken.grantRole(_ISSUER_ROLE, admin);
@@ -2381,7 +2239,7 @@ contract TIP20Test is BaseTest {
 
         uint64 compound = registry.createCompoundPolicy(senderWhitelist, 1, 1);
 
-        TIP20 compoundToken = TIP20(
+        ITIP20Token compoundToken = ITIP20Token(
             factory.createToken("COMPOUND4", "CMP4", "USD", pathUSD, admin, bytes32("compound4"))
         );
         compoundToken.grantRole(_ISSUER_ROLE, admin);
@@ -2409,7 +2267,7 @@ contract TIP20Test is BaseTest {
 
         uint64 compound = registry.createCompoundPolicy(1, recipientWhitelist, 1);
 
-        TIP20 compoundToken = TIP20(
+        ITIP20Token compoundToken = ITIP20Token(
             factory.createToken("COMPOUND5", "CMP5", "USD", pathUSD, admin, bytes32("compound5"))
         );
         compoundToken.grantRole(_ISSUER_ROLE, admin);
@@ -2437,8 +2295,9 @@ contract TIP20Test is BaseTest {
         // charlie blocked from sending, but anyone can receive
         uint64 asymmetricCompound = registry.createCompoundPolicy(senderBlacklist, 1, 1);
 
-        TIP20 compoundToken =
-            TIP20(factory.createToken("ASYM", "ASY", "USD", pathUSD, admin, bytes32("asym")));
+        ITIP20Token compoundToken = ITIP20Token(
+            factory.createToken("ASYM", "ASY", "USD", pathUSD, admin, bytes32("asym"))
+        );
         compoundToken.grantRole(_ISSUER_ROLE, admin);
         compoundToken.changeTransferPolicyId(1);
         compoundToken.mint(alice, 1000);
@@ -2470,8 +2329,9 @@ contract TIP20Test is BaseTest {
 
         uint64 asymmetricCompound = registry.createCompoundPolicy(senderBlacklist, 1, 1);
 
-        TIP20 compoundToken =
-            TIP20(factory.createToken("BURN1", "BRN1", "USD", pathUSD, admin, bytes32("burn1")));
+        ITIP20Token compoundToken = ITIP20Token(
+            factory.createToken("BURN1", "BRN1", "USD", pathUSD, admin, bytes32("burn1"))
+        );
         compoundToken.grantRole(_ISSUER_ROLE, admin);
         compoundToken.grantRole(_BURN_BLOCKED_ROLE, admin);
         compoundToken.changeTransferPolicyId(1);
@@ -2492,8 +2352,9 @@ contract TIP20Test is BaseTest {
 
         uint64 asymmetricCompound = registry.createCompoundPolicy(senderBlacklist, 1, 1);
 
-        TIP20 compoundToken =
-            TIP20(factory.createToken("BURN2", "BRN2", "USD", pathUSD, admin, bytes32("burn2")));
+        ITIP20Token compoundToken = ITIP20Token(
+            factory.createToken("BURN2", "BRN2", "USD", pathUSD, admin, bytes32("burn2"))
+        );
         compoundToken.grantRole(_ISSUER_ROLE, admin);
         compoundToken.grantRole(_BURN_BLOCKED_ROLE, admin);
         compoundToken.changeTransferPolicyId(1);
@@ -2520,8 +2381,9 @@ contract TIP20Test is BaseTest {
 
         uint64 recipientBlockedCompound = registry.createCompoundPolicy(1, recipientBlacklist, 1);
 
-        TIP20 compoundToken =
-            TIP20(factory.createToken("BURN3", "BRN3", "USD", pathUSD, admin, bytes32("burn3")));
+        ITIP20Token compoundToken = ITIP20Token(
+            factory.createToken("BURN3", "BRN3", "USD", pathUSD, admin, bytes32("burn3"))
+        );
         compoundToken.grantRole(_ISSUER_ROLE, admin);
         compoundToken.grantRole(_BURN_BLOCKED_ROLE, admin);
         compoundToken.changeTransferPolicyId(1);
@@ -2555,14 +2417,16 @@ contract TIP20Test is BaseTest {
         view
         returns (bytes32)
     {
-        bytes32 structHash = keccak256(
-            abi.encode(token.PERMIT_TYPEHASH(), owner_, spender_, value_, nonce_, deadline_)
+        bytes32 permitTypeHash = keccak256(
+            "Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"
         );
+        bytes32 structHash =
+            keccak256(abi.encode(permitTypeHash, owner_, spender_, value_, nonce_, deadline_));
         return keccak256(abi.encodePacked("\x19\x01", token.DOMAIN_SEPARATOR(), structHash));
     }
 
     function test_Permit() public {
-        vm.skip(isTempo); // TODO: skip for Tempo for now, reenable after tempo-foundry deps bumped
+        vm.skip(true); // TODO: skip for Tempo for now, reenable after tempo-foundry deps bumped
         address signer = vm.addr(SIGNER_KEY);
         uint256 value = 500e18;
         uint256 deadline = block.timestamp + 1 hours;
@@ -2589,7 +2453,7 @@ contract TIP20Test is BaseTest {
     }
 
     function test_Permit_OverridesExistingAllowance() public {
-        vm.skip(isTempo); // TODO: skip for Tempo for now, reenable after tempo-foundry deps bumped
+        vm.skip(true); // TODO: skip for Tempo for now, reenable after tempo-foundry deps bumped
         address signer = vm.addr(SIGNER_KEY);
         uint256 deadline = block.timestamp + 1 hours;
 
@@ -2608,7 +2472,7 @@ contract TIP20Test is BaseTest {
     }
 
     function test_Permit_Replay() public {
-        vm.skip(isTempo); // TODO: skip for Tempo for now, reenable after tempo-foundry deps bumped
+        vm.skip(true); // TODO: skip for Tempo for now, reenable after tempo-foundry deps bumped
         address signer = vm.addr(SIGNER_KEY);
         uint256 value = 500e18;
         uint256 deadline = block.timestamp + 1 hours;
@@ -2632,7 +2496,7 @@ contract TIP20Test is BaseTest {
     }
 
     function test_Permit_Fail() public {
-        vm.skip(isTempo); // TODO: skip for Tempo for now, reenable after tempo-foundry deps bumped
+        vm.skip(true); // TODO: skip for Tempo for now, reenable after tempo-foundry deps bumped
         address signer = vm.addr(SIGNER_KEY);
         uint256 value = 500e18;
 
@@ -2678,7 +2542,7 @@ contract TIP20Test is BaseTest {
     }
 
     function test_Nonces() public {
-        vm.skip(isTempo); // TODO: skip for Tempo for now, reenable after tempo-foundry deps bumped
+        vm.skip(true); // TODO: skip for Tempo for now, reenable after tempo-foundry deps bumped
         address signer = vm.addr(SIGNER_KEY);
         uint256 deadline = block.timestamp + 1 hours;
 
@@ -2698,7 +2562,7 @@ contract TIP20Test is BaseTest {
     }
 
     function test_DomainSeparator() public {
-        vm.skip(isTempo); // TODO: skip for Tempo for now, reenable after tempo-foundry deps bumped
+        vm.skip(true); // TODO: skip for Tempo for now, reenable after tempo-foundry deps bumped
         bytes32 expected = keccak256(
             abi.encode(
                 keccak256(

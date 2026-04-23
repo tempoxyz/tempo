@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.13;
 
-import { INonce } from "../../src/interfaces/INonce.sol";
 import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
+import { INonce } from "tempo-std/interfaces/INonce.sol";
 
 /// @title Nonce Invariant Tests
 /// @notice Fuzz-based invariant tests for the Nonce precompile
@@ -143,12 +143,12 @@ contract NonceInvariantTest is InvariantBaseTest {
         if (nonceKey == 0) revert INonce.InvalidNonceKey();
 
         bytes32 slot = _getNonceSlot(account, nonceKey);
-        uint64 current = uint64(uint256(vm.load(_NONCE, slot)));
+        uint64 current = uint64(uint256(vm.load(address(nonce), slot)));
 
         if (current == type(uint64).max) revert INonce.NonceOverflow();
 
         newNonce = current + 1;
-        vm.store(_NONCE, slot, bytes32(uint256(newNonce)));
+        vm.store(address(nonce), slot, bytes32(uint256(newNonce)));
 
         return newNonce;
     }
@@ -347,7 +347,7 @@ contract NonceInvariantTest is InvariantBaseTest {
 
         // Set nonce to max value via direct storage manipulation
         bytes32 slot = _getNonceSlot(actor, nonceKey);
-        vm.store(_NONCE, slot, bytes32(uint256(type(uint64).max)));
+        vm.store(address(nonce), slot, bytes32(uint256(type(uint64).max)));
 
         // Verify the nonce is at max
         uint64 currentNonce = nonce.getNonce(actor, nonceKey);

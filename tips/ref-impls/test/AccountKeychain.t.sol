@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 pragma solidity >=0.8.13 <0.9.0;
 
-import { IAccountKeychain } from "../src/interfaces/IAccountKeychain.sol";
-import { BaseTest } from "./BaseTest.t.sol";
+import { TempoTest } from "./TempoTest.t.sol";
+import { IAccountKeychain } from "tempo-std/interfaces/IAccountKeychain.sol";
 
 /**
  * @title Account Keychain Tests
  * @notice Tests for the Account Keychain precompile
- * @dev These tests run against both the Solidity implementation (when !isTempo)
- *      and the Rust precompile (when isTempo).
+ * @dev These tests run against the native Tempo precompile.
  */
 /// forge-config: default.isolate = true
-contract AccountKeychainTest is BaseTest {
+/// forge-config: fuzz500.isolate = true
+contract AccountKeychainTest is TempoTest {
 
     // Using addresses for keyIds (derived from public keys)
     address aliceAccessKey = address(0x1001);
@@ -788,17 +788,6 @@ contract AccountKeychainTest is BaseTest {
 
     function test_Event_KeyAuthorized() public {
         vm.startPrank(alice, alice);
-
-        if (!isTempo) {
-            vm.expectEmit(true, true, false, true);
-            emit IAccountKeychain.KeyAuthorized(
-                alice,
-                aliceAccessKey,
-                1, // P256
-                uint64(block.timestamp + 1 days)
-            );
-        }
-
         keychain.authorizeKey(
             aliceAccessKey,
             IAccountKeychain.SignatureType.P256,
@@ -810,7 +799,6 @@ contract AccountKeychainTest is BaseTest {
                 allowedCalls: new IAccountKeychain.CallScope[](0)
             })
         );
-
         vm.stopPrank();
     }
 
@@ -829,11 +817,6 @@ contract AccountKeychainTest is BaseTest {
                 allowedCalls: new IAccountKeychain.CallScope[](0)
             })
         );
-
-        if (!isTempo) {
-            vm.expectEmit(true, true, false, false);
-            emit IAccountKeychain.KeyRevoked(alice, aliceAccessKey);
-        }
 
         keychain.revokeKey(aliceAccessKey);
 
@@ -857,11 +840,6 @@ contract AccountKeychainTest is BaseTest {
                 allowedCalls: new IAccountKeychain.CallScope[](0)
             })
         );
-
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit IAccountKeychain.SpendingLimitUpdated(alice, aliceAccessKey, USDC, 2000e6);
-        }
 
         keychain.updateSpendingLimit(aliceAccessKey, USDC, 2000e6);
 

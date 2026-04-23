@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 pragma solidity >=0.8.13 <0.9.0;
 
-import { TIP20 } from "../../src/TIP20.sol";
-import { IStablecoinDEX } from "../../src/interfaces/IStablecoinDEX.sol";
-import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
 import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 import { Vm } from "forge-std/Vm.sol";
+import { IStablecoinDEX } from "tempo-std/interfaces/IStablecoinDEX.sol";
+import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 
 /// @title StablecoinDEX Invariant Tests
 /// @notice Fuzz-based invariant tests for the StablecoinDEX orderbook exchange
@@ -37,7 +36,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
     uint256 private _ghostDivisibleEscrowCorrect;
 
     /// @notice Sets up the test environment
-    /// @dev Initializes BaseTest, creates trading pair, builds actors, and sets initial state
+    /// @dev Initializes TempoTest, creates trading pair, builds actors, and sets initial state
     function setUp() public override {
         super.setUp();
 
@@ -95,11 +94,11 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         }
 
         // Ensure funds for the token being escrowed (pathUSD for bids, base token for asks)
-        _ensureFunds(actor, TIP20(isBid ? address(pathUSD) : token), escrowAmount);
+        _ensureFunds(actor, ITIP20(isBid ? address(pathUSD) : token), escrowAmount);
 
         // Capture actor's token balance before placing order (for cancel verification)
         uint256 actorBalanceBeforePlace =
-            isBid ? pathUSD.balanceOf(actor) : TIP20(token).balanceOf(actor);
+            isBid ? pathUSD.balanceOf(actor) : ITIP20(token).balanceOf(actor);
 
         vm.startPrank(actor);
         uint128 orderId = exchange.place(token, amount, isBid, tick);
@@ -379,8 +378,8 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         internal
     {
         uint128 balanceBefore = exchange.balanceOf(actor, token);
-        uint256 dexBalanceBefore = TIP20(token).balanceOf(address(exchange));
-        uint256 actorExternalBefore = TIP20(token).balanceOf(actor);
+        uint256 dexBalanceBefore = ITIP20(token).balanceOf(address(exchange));
+        uint256 actorExternalBefore = ITIP20(token).balanceOf(actor);
 
         vm.startPrank(actor);
         exchange.cancel(orderId);
@@ -392,19 +391,19 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         exchange.withdraw(token, withdrawAmount);
         vm.stopPrank();
 
-        uint256 dexBalanceAfter = TIP20(token).balanceOf(address(exchange));
+        uint256 dexBalanceAfter = ITIP20(token).balanceOf(address(exchange));
         assertEq(
             dexBalanceBefore - dexBalanceAfter,
             withdrawAmount,
             "TEMPO-DEX3: DEX token balance did not decrease correctly"
         );
         assertEq(
-            TIP20(token).balanceOf(actor),
+            ITIP20(token).balanceOf(actor),
             actorExternalBefore + withdrawAmount,
             "TEMPO-DEX3: actor token balance did not increase correctly"
         );
         assertGe(
-            TIP20(token).balanceOf(actor),
+            ITIP20(token).balanceOf(actor),
             actorBalanceBeforePlace,
             "TEMPO-DEX3: actor token balance less than before place"
         );
@@ -430,7 +429,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
     {
         int16 tick = _ticks[tickRnd % _ticks.length];
         address actor = _actors[actorRnd % _actors.length];
-        TIP20 token = _tokens[tokenRnd % _tokens.length];
+        ITIP20 token = _tokens[tokenRnd % _tokens.length];
         amount = uint128(bound(amount, 100_000_000, 10_000_000_000));
 
         // DEX-09: Select flip tick from _ticks on the correct side of tick
@@ -508,7 +507,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         vm.assume(tokenIn != tokenOut);
 
         // Ensure swapper has enough of tokenIn
-        _ensureFunds(swapper, TIP20(tokenIn), amount);
+        _ensureFunds(swapper, ITIP20(tokenIn), amount);
 
         // Check if swapper has active orders - if so, skip TEMPO-DEX6 balance checks
         // because self-trade makes the accounting complex (maker proceeds returned to swapper)
@@ -518,8 +517,8 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         SwapBalanceSnapshot memory before = SwapBalanceSnapshot({
             tokenIn: tokenIn,
             tokenOut: tokenOut,
-            tokenInExternal: TIP20(tokenIn).balanceOf(swapper),
-            tokenOutExternal: TIP20(tokenOut).balanceOf(swapper),
+            tokenInExternal: ITIP20(tokenIn).balanceOf(swapper),
+            tokenOutExternal: ITIP20(tokenOut).balanceOf(swapper),
             tokenInInternal: exchange.balanceOf(swapper, tokenIn),
             tokenOutInternal: exchange.balanceOf(swapper, tokenOut)
         });
@@ -1022,8 +1021,8 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         uint256 tokenOutTotalBefore = before.tokenOutExternal + before.tokenOutInternal;
 
         uint256 tokenInTotalAfter =
-            TIP20(before.tokenIn).balanceOf(swapper) + exchange.balanceOf(swapper, before.tokenIn);
-        uint256 tokenOutTotalAfter = TIP20(before.tokenOut).balanceOf(swapper)
+            ITIP20(before.tokenIn).balanceOf(swapper) + exchange.balanceOf(swapper, before.tokenIn);
+        uint256 tokenOutTotalAfter = ITIP20(before.tokenOut).balanceOf(swapper)
             + exchange.balanceOf(swapper, before.tokenOut);
 
         // Swapper's total tokenIn should decrease by tokenInSpent

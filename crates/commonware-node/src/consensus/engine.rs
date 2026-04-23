@@ -544,7 +544,6 @@ where
                 dkg_channel,
                 subblocks_channel,
             )
-            .await
         )
     }
 

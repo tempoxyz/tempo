@@ -1,37 +1,24 @@
 [profile.default]
+hardfork = "tempo:T3"
+
+# layout and file system
 src = "src"
 out = "out"
 libs = ["lib"]
-optimizer = true
-optimizer_runs = 200
 extra_output = ["storageLayout"]
-invariant = { fail_on_revert = true, show_solidity = true }
 fs_permissions = [{ access = "read-write", path = "./"}]
-via_ir = true
 remappings = [
     "tempo-std/=lib/tempo-std/src/",
     "forge-std/=lib/forge-std/src/",
     "solady/=lib/solady/src/"
 ]
 
-[profile.tempo]
-hardfork = "tempo:T3"
-
-[profile.ci]
+# optimizer and invariants
+via-ir = true
 optimizer = true
-optimizer_runs = 1
-invariant = { runs = 10, depth = 50, fail_on_revert = true, show_solidity = true }
-
-[profile.tempo_ci]
-hardfork = "tempo:T3"
-optimizer = true
-optimizer_runs = 1
 invariant = { runs = 10, depth = 50, fail_on_revert = true, show_solidity = true }
 
 [profile.fuzz500]
-optimizer = true
-optimizer_runs = 200
-via_ir = true
 invariant = { runs = 500, depth = 500, fail_on_revert = true, show_solidity = true }
 
 [fmt]

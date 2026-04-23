@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 pragma solidity >=0.8.13 <0.9.0;
 
-import { FeeAMM } from "../../src/FeeAMM.sol";
-import { FeeManager } from "../../src/FeeManager.sol";
-import { TIP20 } from "../../src/TIP20.sol";
-import { IFeeAMM } from "../../src/interfaces/IFeeAMM.sol";
-import { IFeeManager } from "../../src/interfaces/IFeeManager.sol";
-import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
 import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
+import { IFeeAMM } from "tempo-std/interfaces/IFeeAMM.sol";
+import { IFeeManager } from "tempo-std/interfaces/IFeeManager.sol";
+import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 
 /// @title FeeAMM Invariant Test
 /// @notice Invariant tests for the FeeAMM/FeeManager implementation
@@ -210,7 +207,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         for (uint256 i = 0; i < BLACKLISTABLE_ACTOR_COUNT; i++) {
             address a = _actors[i];
             if (!registry.isAuthorized(policyId, a)) {
-                uint256 bal = TIP20(token).balanceOf(a);
+                uint256 bal = ITIP20(token).balanceOf(a);
                 if (bal >= MIN_LIQUIDITY) {
                     blacklisted[count] = a;
                     balances[count] = bal;
@@ -225,7 +222,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     }
 
     /// @notice Sets up the test environment
-    /// @dev Initializes BaseTest, creates trading pair, builds actors, and sets initial state
+    /// @dev Initializes TempoTest, creates trading pair, builds actors, and sets initial state
     function setUp() public override {
         super.setUp();
 
@@ -264,7 +261,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         amount = bound(amount, totalSupplyBefore == 0 ? MIN_LIQUIDITY : 1, 10_000_000_000);
 
         // Ensure actor has funds
-        _ensureFunds(actor, TIP20(validatorToken), amount);
+        _ensureFunds(actor, ITIP20(validatorToken), amount);
         IFeeAMM.Pool memory poolBefore = amm.getPool(userToken, validatorToken);
         uint256 actorLiquidityBefore = amm.liquidityBalances(poolId, actor);
 
@@ -327,7 +324,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         uint256 amount = bound(amountSeed, MIN_LIQUIDITY, balance);
 
         vm.prank(actor);
-        TIP20(validatorToken).approve(address(amm), amount);
+        ITIP20(validatorToken).approve(address(amm), amount);
 
         // TEMPO-AMM33: Blacklisted actors cannot deposit tokens
         // The mint should revert with PolicyForbids when trying to transfer tokens
@@ -375,8 +372,8 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         ctx.totalSupplyBefore = amm.totalSupply(ctx.poolId);
         ctx.reserveUserBefore = poolBefore.reserveUserToken;
         ctx.reserveValidatorBefore = poolBefore.reserveValidatorToken;
-        ctx.actorUserBalanceBefore = TIP20(ctx.userToken).balanceOf(ctx.actor);
-        ctx.actorValidatorBalanceBefore = TIP20(ctx.validatorToken).balanceOf(ctx.actor);
+        ctx.actorUserBalanceBefore = ITIP20(ctx.userToken).balanceOf(ctx.actor);
+        ctx.actorValidatorBalanceBefore = ITIP20(ctx.validatorToken).balanceOf(ctx.actor);
 
         vm.startPrank(ctx.actor);
         try amm.burn(ctx.userToken, ctx.validatorToken, ctx.liquidityToBurn, ctx.actor) returns (
@@ -441,12 +438,12 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
 
         // TEMPO-AMM8: Actor receives the exact calculated token amounts
         assertEq(
-            TIP20(ctx.userToken).balanceOf(ctx.actor),
+            ITIP20(ctx.userToken).balanceOf(ctx.actor),
             ctx.actorUserBalanceBefore + amountUserToken,
             "TEMPO-AMM8: Actor user token balance mismatch"
         );
         assertEq(
-            TIP20(ctx.validatorToken).balanceOf(ctx.actor),
+            ITIP20(ctx.validatorToken).balanceOf(ctx.actor),
             ctx.actorValidatorBalanceBefore + amountValidatorToken,
             "TEMPO-AMM8: Actor validator token balance mismatch"
         );
@@ -485,10 +482,10 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         ctx.reserveValidatorBefore = poolBefore.reserveValidatorToken;
 
         // Ensure actor has enough validator tokens
-        _ensureFunds(ctx.actor, TIP20(ctx.validatorToken), ctx.expectedAmountIn * 2);
+        _ensureFunds(ctx.actor, ITIP20(ctx.validatorToken), ctx.expectedAmountIn * 2);
 
-        ctx.actorValidatorBefore = TIP20(ctx.validatorToken).balanceOf(ctx.actor);
-        ctx.actorUserBefore = TIP20(ctx.userToken).balanceOf(ctx.actor);
+        ctx.actorValidatorBefore = ITIP20(ctx.validatorToken).balanceOf(ctx.actor);
+        ctx.actorUserBefore = ITIP20(ctx.userToken).balanceOf(ctx.actor);
 
         vm.startPrank(ctx.actor);
         try amm.rebalanceSwap(ctx.userToken, ctx.validatorToken, ctx.amountOut, ctx.actor) returns (
@@ -548,12 +545,12 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
 
         // TEMPO-AMM12: Actor balances should update correctly
         assertEq(
-            TIP20(ctx.validatorToken).balanceOf(ctx.actor),
+            ITIP20(ctx.validatorToken).balanceOf(ctx.actor),
             ctx.actorValidatorBefore - amountIn,
             "TEMPO-AMM12: Actor validator balance mismatch"
         );
         assertEq(
-            TIP20(ctx.userToken).balanceOf(ctx.actor),
+            ITIP20(ctx.userToken).balanceOf(ctx.actor),
             ctx.actorUserBefore + ctx.amountOut,
             "TEMPO-AMM12: Actor user balance mismatch"
         );
@@ -617,9 +614,9 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         address actor = _selectAuthorizedActor(actorSeed, validatorToken);
 
         amount = bound(amount, 1, 100_000);
-        _ensureFunds(actor, TIP20(validatorToken), amount);
+        _ensureFunds(actor, ITIP20(validatorToken), amount);
 
-        uint256 actorBalBefore = TIP20(validatorToken).balanceOf(actor);
+        uint256 actorBalBefore = ITIP20(validatorToken).balanceOf(actor);
 
         vm.startPrank(actor);
         try amm.mint(userToken, validatorToken, amount, actor) returns (uint256 liquidity) {
@@ -629,7 +626,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                 ) {
                     _totalMintBurnCycles++;
 
-                    uint256 actorBalAfter = TIP20(validatorToken).balanceOf(actor);
+                    uint256 actorBalAfter = ITIP20(validatorToken).balanceOf(actor);
                     // TEMPO-AMM17: Mint/burn cycle should not profit the actor
                     assertTrue(
                         actorBalAfter <= actorBalBefore,
@@ -658,7 +655,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         uint256 amountOut = bound(pool.reserveUserToken, 1, 100);
 
         uint256 expectedIn = (amountOut * N) / SCALE + 1;
-        _ensureFunds(actor, TIP20(validatorToken), expectedIn * 2);
+        _ensureFunds(actor, ITIP20(validatorToken), expectedIn * 2);
 
         vm.startPrank(actor);
         try amm.rebalanceSwap(userToken, validatorToken, amountOut, actor) returns (
@@ -698,7 +695,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         // half_amount = 1000 = MIN_LIQUIDITY, which should FAIL per Rust (half_amount <= MIN_LIQUIDITY)
         uint256 boundaryAmount = 2 * MIN_LIQUIDITY;
 
-        _ensureFunds(actor, TIP20(validatorToken), boundaryAmount);
+        _ensureFunds(actor, ITIP20(validatorToken), boundaryAmount);
 
         vm.startPrank(actor);
         try amm.mint(userToken, validatorToken, boundaryAmount, actor) returns (uint256) {
@@ -716,7 +713,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         // Also test just above boundary: 2 * MIN_LIQUIDITY + 2 = 2002
         // half_amount = 1001 > MIN_LIQUIDITY, which should SUCCEED
         uint256 aboveBoundary = 2 * MIN_LIQUIDITY + 2;
-        _ensureFunds(actor, TIP20(validatorToken), aboveBoundary);
+        _ensureFunds(actor, ITIP20(validatorToken), aboveBoundary);
 
         vm.startPrank(actor);
         try amm.mint(userToken, validatorToken, aboveBoundary, actor) returns (uint256 liquidity) {
@@ -751,7 +748,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         vm.assume((amountOut * N) % SCALE == 0);
 
         uint256 expectedIn = (amountOut * N) / SCALE + 1; // Should still be +1 even with exact division
-        _ensureFunds(actor, TIP20(validatorToken), expectedIn * 2);
+        _ensureFunds(actor, ITIP20(validatorToken), expectedIn * 2);
 
         vm.startPrank(actor);
         try amm.rebalanceSwap(userToken, validatorToken, amountOut, actor) returns (
@@ -843,7 +840,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         (address validator, address token) = _selectPendingFee(seed);
 
         uint256 collectedBefore = amm.collectedFees(validator, token);
-        uint256 validatorBalanceBefore = TIP20(token).balanceOf(validator);
+        uint256 validatorBalanceBefore = ITIP20(token).balanceOf(validator);
 
         try amm.distributeFees(validator, token) {
             _removePendingFee(validator, token);
@@ -865,7 +862,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
 
             // TEMPO-FEE4: Validator should receive the collected fees
             if (collectedBefore > 0) {
-                uint256 validatorBalanceAfter = TIP20(token).balanceOf(validator);
+                uint256 validatorBalanceAfter = ITIP20(token).balanceOf(validator);
                 assertEq(
                     validatorBalanceAfter,
                     validatorBalanceBefore + collectedBefore,
@@ -885,8 +882,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     ///      2. If userToken != validatorToken, execute fee swap at rate M
     ///      3. Accumulate fees for validator in their preferred token
     ///
-    ///      Uses vm.store to directly modify precompile storage. Works on both foundry
-    ///      (Solidity reference impl) and tempo-foundry (Rust precompile).
+    ///      Uses vm.store to directly modify precompile storage in tempo-foundry.
     /// @param userSeed Seed for selecting user (fee payer)
     /// @param validatorSeed Seed for selecting validator (fee recipient)
     /// @param feeAmountRaw Amount of fees to simulate
@@ -949,9 +945,9 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             vm.assume(uint256(pool.reserveUserToken) + feeAmount <= type(uint128).max);
 
             // Transfer userToken to AMM first
-            _ensureFunds(user, TIP20(userToken), feeAmount);
+            _ensureFunds(user, ITIP20(userToken), feeAmount);
             vm.prank(user);
-            try TIP20(userToken).transfer(address(amm), feeAmount) returns (bool success) {
+            try ITIP20(userToken).transfer(address(amm), feeAmount) returns (bool success) {
                 assertTrue(success);
 
                 // Simulate fee swap: update pool reserves
@@ -986,9 +982,9 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             }
         } else {
             // Same token: no swap needed, just accumulate
-            _ensureFunds(user, TIP20(userToken), feeAmount);
+            _ensureFunds(user, ITIP20(userToken), feeAmount);
             vm.prank(user);
-            try TIP20(userToken).transfer(address(amm), feeAmount) returns (bool success) {
+            try ITIP20(userToken).transfer(address(amm), feeAmount) returns (bool success) {
                 assertTrue(success);
 
                 _storeCollectedFees(validator, validatorToken, feeAmount);
@@ -1017,17 +1013,14 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     )
         internal
     {
-        // Storage layout differs between Rust and Solidity implementations:
-        // Rust (isTempo=true):
+        // Storage layout in Rust implementation:
         //   slot 0: validator_tokens
         //   slot 1: user_tokens
         //   slot 2: collected_fees
         //   slot 3: pools
         //   slot 4: total_supply
         //   slot 5: liquidity_balances
-        // Solidity (isTempo=false):
-        //   slot 0: pools
-        uint256 poolsSlot = isTempo ? 3 : 0;
+        uint256 poolsSlot = 3;
         bytes32 poolSlot = keccak256(abi.encode(poolId, poolsSlot));
 
         // Pack: lower 128 bits = reserveUserToken, upper 128 bits = reserveValidatorToken
@@ -1037,24 +1030,16 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
 
     /// @dev Stores/increments collected fees using vm.store
     function _storeCollectedFees(address validator, address token, uint256 amount) internal {
-        // Storage layout differs between Rust and Solidity implementations:
-        // Rust (isTempo=true):
+        // Storage layout in Rust implementation:
         //   slot 0: validator_tokens
         //   slot 1: user_tokens
         //   slot 2: collected_fees
         //   slot 3: pools
         //   slot 4: total_supply
         //   slot 5: liquidity_balances
-        // Solidity (isTempo=false) - FeeManager inherits FeeAMM:
-        //   slot 0: pools (from FeeAMM)
-        //   slot 1: totalSupply (from FeeAMM)
-        //   slot 2: liquidityBalances (from FeeAMM)
-        //   slot 3: validatorTokens (from FeeManager)
-        //   slot 4: userTokens (from FeeManager)
-        //   slot 5: collectedFees (from FeeManager)
         // collected_fees is mapping(address => mapping(address => uint256))
         // slot = keccak256(token, keccak256(validator, collectedFeesSlot))
-        uint256 collectedFeesSlot = isTempo ? 2 : 5;
+        uint256 collectedFeesSlot = 2;
         bytes32 innerSlot = keccak256(abi.encode(validator, collectedFeesSlot));
         bytes32 feeSlot = keccak256(abi.encode(token, innerSlot));
 
@@ -1892,7 +1877,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             || selector == IFeeAMM.InvalidAmount.selector
             || selector == IFeeAMM.DivisionByZero.selector
             || selector == IFeeAMM.InvalidSwapCalculation.selector
-            || selector == IFeeAMM.InvalidCurrency.selector || _isKnownTIP20Error(selector);
+            || selector == ITIP20.InvalidCurrency.selector || _isKnownTIP20Error(selector);
         assertTrue(isKnownError, "Failed with unknown error");
     }
 
@@ -1903,7 +1888,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         bool isKnownError = selector == IFeeAMM.IdenticalAddresses.selector
             || selector == IFeeAMM.InvalidToken.selector
             || selector == IFeeAMM.InsufficientLiquidity.selector
-            || selector == IFeeAMM.InvalidCurrency.selector || _isKnownTIP20Error(selector)
+            || selector == ITIP20.InvalidCurrency.selector || _isKnownTIP20Error(selector)
             // FeeManager specific (string reverts)
             || keccak256(reason)
                 == keccak256(abi.encodeWithSignature("Error(string)", "ONLY_DIRECT_CALL"))

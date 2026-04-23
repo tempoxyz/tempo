@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.13;
 
-import { TIP20 } from "../../src/TIP20.sol";
-import { TempoUtilities as Tempo } from "../../src/TempoUtilities.sol";
-import { IAddressRegistry } from "../../src/interfaces/IAddressRegistry.sol";
-import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
-import { ITIP403Registry } from "../../src/interfaces/ITIP403Registry.sol";
 import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 import { Vm } from "forge-std/Vm.sol";
+import { IAddressRegistry } from "tempo-std/interfaces/IAddressRegistry.sol";
+import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
+import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";
 
 /// @title TIP-1022 Virtual Address Invariant Tests
 /// @notice Stateful invariant coverage for deterministic virtual-address forwarding fixtures
@@ -112,7 +110,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
     )
         external
     {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20 token = _selectBaseToken(tokenSeed);
         address sender = _selectActor(actorSeed);
         address virtualAddr = _selectVirtual(virtualSeed);
         address master = _virtualToMaster[virtualAddr];
@@ -150,7 +148,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
     )
         external
     {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20 token = _selectBaseToken(tokenSeed);
         address owner = _selectActor(ownerSeed);
         address spender = _selectActorExcluding(spenderSeed, owner);
         address virtualAddr = _selectVirtual(virtualSeed);
@@ -212,7 +210,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
     )
         external
     {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20 token = _selectBaseToken(tokenSeed);
         address sender = _selectActor(actorSeed);
         address virtualAddr = _selectVirtual(virtualSeed);
         address master = _virtualToMaster[virtualAddr];
@@ -250,7 +248,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
     )
         external
     {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20 token = _selectBaseToken(tokenSeed);
         address owner = _selectActor(ownerSeed);
         address spender = _selectActorExcluding(spenderSeed, owner);
         address virtualAddr = _selectVirtual(virtualSeed);
@@ -306,7 +304,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
     }
 
     function mintToVirtual(uint256 tokenSeed, uint256 virtualSeed, uint256 amount) external {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20 token = _selectBaseToken(tokenSeed);
         address virtualAddr = _selectVirtual(virtualSeed);
         address master = _virtualToMaster[virtualAddr];
 
@@ -337,7 +335,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
     )
         external
     {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20 token = _selectBaseToken(tokenSeed);
         address virtualAddr = _selectVirtual(virtualSeed);
         address master = _virtualToMaster[virtualAddr];
 
@@ -371,7 +369,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
     )
         external
     {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20 token = _selectBaseToken(tokenSeed);
         address sender = _selectActor(actorSeed);
         (address virtualAddr,) = _selectUnregisteredVirtual(masterSeed, tagSeed);
 
@@ -427,7 +425,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
     )
         external
     {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20 token = _selectBaseToken(tokenSeed);
         address owner = _selectActor(ownerSeed);
         address spender = _selectActorExcluding(spenderSeed, owner);
         (address virtualAddr,) = _selectUnregisteredVirtual(masterSeed, tagSeed);
@@ -492,7 +490,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
     )
         external
     {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20 token = _selectBaseToken(tokenSeed);
         (address virtualAddr,) = _selectUnregisteredVirtual(masterSeed, tagSeed);
 
         uint256 virtualBalanceBefore = token.balanceOf(virtualAddr);
@@ -537,7 +535,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
     )
         external
     {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20 token = _selectBaseToken(tokenSeed);
         uint256 masterIndex = masterSeed % MASTER_COUNT;
         MasterFixture memory fixture = _masters[masterIndex];
         address virtualAddr = _virtualForMaster(masterIndex, tagSeed);
@@ -573,7 +571,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
     )
         external
     {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20 token = _selectBaseToken(tokenSeed);
         address sender = _selectActor(actorSeed);
         address virtualAddr = _selectVirtual(virtualSeed);
         address master = _virtualToMaster[virtualAddr];
@@ -634,7 +632,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
     )
         external
     {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20 token = _selectBaseToken(tokenSeed);
         address virtualAddr = _selectVirtual(virtualSeed);
         address master = _virtualToMaster[virtualAddr];
 
@@ -761,7 +759,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
     )
         external
     {
-        TIP20 token = _selectBaseToken(tokenSeed);
+        ITIP20 token = _selectBaseToken(tokenSeed);
         address actor = _selectActor(actorSeed);
         address virtualAddr = _selectVirtual(virtualSeed);
 
@@ -806,7 +804,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
 
         vm.recordLogs();
         vm.prank(caller);
-        try tip20Registry.registerVirtualMaster(salt) returns (bytes4) {
+        try addrRegistry.registerVirtualMaster(salt) returns (bytes4) {
             // Extremely unlikely for a random salt to pass PoW (~1 in 2^32),
             // but if it does and the caller is valid, that's fine — not an error.
             // For invalid callers (type 0/1/2) this should never happen.
@@ -842,7 +840,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
             assertEq(bytes4(registrationHash), bytes4(0), "TEMPO-VA1: fixture PoW invalid");
             assertEq(derivedMasterId, fixture.masterId, "TEMPO-VA1: masterId derivation mismatch");
             assertEq(
-                tip20Registry.getMaster(fixture.masterId),
+                addrRegistry.getMaster(fixture.masterId),
                 fixture.master,
                 "TEMPO-VA1: registry mismatch"
             );
@@ -858,18 +856,18 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         for (uint256 i = 0; i < _virtualPool.length; i++) {
             address virtualAddr = _virtualPool[i];
             (bool isVirtual, bytes4 masterId, bytes6 userTag) =
-                tip20Registry.decodeVirtualAddress(virtualAddr);
+                addrRegistry.decodeVirtualAddress(virtualAddr);
 
             assertTrue(isVirtual, "TEMPO-VA3: tracked alias not virtual");
             assertEq(masterId, _masterIdByVirtual[virtualAddr], "TEMPO-VA3: masterId mismatch");
             assertEq(userTag, _virtualToTag[virtualAddr], "TEMPO-VA3: userTag mismatch");
             assertEq(
-                tip20Registry.resolveRecipient(virtualAddr),
+                addrRegistry.resolveRecipient(virtualAddr),
                 _virtualToMaster[virtualAddr],
                 "TEMPO-VA4: resolveRecipient mismatch"
             );
             assertEq(
-                tip20Registry.resolveVirtualAddress(virtualAddr),
+                addrRegistry.resolveVirtualAddress(virtualAddr),
                 _virtualToMaster[virtualAddr],
                 "TEMPO-VA4: resolveVirtualAddress mismatch"
             );
@@ -886,10 +884,10 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         for (uint256 i = 0; i < _nonVirtualPool.length; i++) {
             address account = _nonVirtualPool[i];
             assertFalse(
-                tip20Registry.isVirtualAddress(account), "TEMPO-VA5: non-virtual pool polluted"
+                addrRegistry.isVirtualAddress(account), "TEMPO-VA5: non-virtual pool polluted"
             );
             assertEq(
-                tip20Registry.resolveRecipient(account),
+                addrRegistry.resolveRecipient(account),
                 account,
                 "TEMPO-VA5: non-virtual address changed"
             );
@@ -903,7 +901,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
     function _configureVirtualPolicies() internal {
         vm.startPrank(admin);
         for (uint256 i = 0; i < _tokens.length; i++) {
-            TIP20 token = _tokens[i];
+            ITIP20 token = _tokens[i];
             uint64 recipientPolicyId =
                 registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
             uint64 mintPolicyId = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
@@ -937,11 +935,11 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
             assertEq(_masterById[masterId], address(0), "TEMPO-VA2: duplicate setup masterId");
 
             vm.prank(master);
-            bytes4 registeredId = tip20Registry.registerVirtualMaster(salt);
+            bytes4 registeredId = addrRegistry.registerVirtualMaster(salt);
 
             assertEq(registeredId, masterId, "TEMPO-VA1: registration returned wrong masterId");
             assertEq(
-                tip20Registry.getMaster(masterId), master, "TEMPO-VA1: registry stored wrong master"
+                addrRegistry.getMaster(masterId), master, "TEMPO-VA1: registry stored wrong master"
             );
 
             _masters.push(MasterFixture({ master: master, pk: pk, salt: salt, masterId: masterId }));
@@ -969,7 +967,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
     function _seedMasterBalances() internal {
         vm.startPrank(admin);
         for (uint256 i = 0; i < _tokens.length; i++) {
-            TIP20 token = _tokens[i];
+            ITIP20 token = _tokens[i];
             for (uint256 j = 0; j < _masters.length; j++) {
                 token.mint(_masters[j].master, INITIAL_MASTER_BALANCE);
             }
@@ -993,7 +991,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
     }
 
     function _pushNonVirtual(address account) internal {
-        if (!tip20Registry.isVirtualAddress(account)) {
+        if (!addrRegistry.isVirtualAddress(account)) {
             _nonVirtualPool.push(account);
         }
     }
@@ -1027,7 +1025,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
     {
         for (uint256 i = 0;; i++) {
             masterId = bytes4(keccak256(abi.encodePacked(masterSeed, i)));
-            if (tip20Registry.getMaster(masterId) == address(0)) {
+            if (addrRegistry.getMaster(masterId) == address(0)) {
                 return (_makeVirtualAddress(masterId, USER_TAGS[tagSeed % TAG_COUNT]), masterId);
             }
         }
@@ -1039,7 +1037,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         return address(raw);
     }
 
-    function _setTransferAllowed(TIP20 token, address master, bool allowed) internal {
+    function _setTransferAllowed(ITIP20 token, address master, bool allowed) internal {
         uint64 policyId = _recipientPolicyIds[address(token)];
         bool current = registry.isAuthorized(policyId, master);
         if (current == allowed) {
@@ -1050,7 +1048,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         registry.modifyPolicyBlacklist(policyId, master, !allowed);
     }
 
-    function _setMintAllowed(TIP20 token, address master, bool allowed) internal {
+    function _setMintAllowed(ITIP20 token, address master, bool allowed) internal {
         uint64 policyId = _mintPolicyIds[address(token)];
         bool current = registry.isAuthorized(policyId, master);
         if (current == allowed) {
@@ -1061,13 +1059,13 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         registry.modifyPolicyBlacklist(policyId, master, !allowed);
     }
 
-    function _mintableAmount(TIP20 token) internal view returns (uint256) {
+    function _mintableAmount(ITIP20 token) internal view returns (uint256) {
         uint256 remaining = token.supplyCap() - token.totalSupply();
         return remaining > MAX_HANDLER_AMOUNT ? MAX_HANDLER_AMOUNT : remaining;
     }
 
     function _snapshot(
-        TIP20 token,
+        ITIP20 token,
         address from,
         address master,
         address virtualAddr
@@ -1101,7 +1099,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
     }
 
     function _assertTransferSequence(
-        TIP20 token,
+        ITIP20 token,
         address from,
         address virtualAddr,
         address master,
@@ -1116,7 +1114,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
     }
 
     function _assertTransferWithMemoSequence(
-        TIP20 token,
+        ITIP20 token,
         address from,
         address virtualAddr,
         address master,
@@ -1133,7 +1131,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
     }
 
     function _assertMintSequence(
-        TIP20 token,
+        ITIP20 token,
         address virtualAddr,
         address master,
         uint256 amount
@@ -1148,7 +1146,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
     }
 
     function _assertMintWithMemoSequence(
-        TIP20 token,
+        ITIP20 token,
         address virtualAddr,
         address master,
         uint256 amount,
@@ -1164,11 +1162,11 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         _assertTransferLog(logs[3], token, virtualAddr, master, amount);
     }
 
-    function _assertNoRelevantTokenLogs(TIP20 token, string memory message) internal {
+    function _assertNoRelevantTokenLogs(ITIP20 token, string memory message) internal {
         assertEq(_relevantTokenLogs(token).length, 0, message);
     }
 
-    function _relevantTokenLogs(TIP20 token) internal returns (Vm.Log[] memory relevant) {
+    function _relevantTokenLogs(ITIP20 token) internal returns (Vm.Log[] memory relevant) {
         Vm.Log[] memory logs = vm.getRecordedLogs();
         uint256 count;
 
@@ -1188,13 +1186,14 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
     }
 
     function _isRelevantTokenEvent(bytes32 topic0) internal pure returns (bool) {
-        return topic0 == Tempo.TRANSFER_EVENT || topic0 == Tempo.TRANSFER_WITH_MEMO_EVENT
-            || topic0 == Tempo.MINT_EVENT;
+        return topic0 == keccak256("Transfer(address,address,uint256)")
+            || topic0 == keccak256("TransferWithMemo(address,address,uint256,bytes32)")
+            || topic0 == keccak256("Mint(address,uint256)");
     }
 
     function _assertTransferLog(
         Vm.Log memory log,
-        TIP20 token,
+        ITIP20 token,
         address from,
         address to,
         uint256 amount
@@ -1204,7 +1203,11 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
     {
         assertEq(log.emitter, address(token), "TEMPO-VA11: wrong transfer emitter");
         assertEq(log.topics.length, 3, "TEMPO-VA11: wrong transfer topic count");
-        assertEq(log.topics[0], Tempo.TRANSFER_EVENT, "TEMPO-VA11: wrong transfer selector");
+        assertEq(
+            log.topics[0],
+            keccak256("Transfer(address,address,uint256)"),
+            "TEMPO-VA11: wrong transfer selector"
+        );
         assertEq(address(uint160(uint256(log.topics[1]))), from, "TEMPO-VA11: wrong transfer from");
         assertEq(address(uint160(uint256(log.topics[2]))), to, "TEMPO-VA11: wrong transfer to");
         assertEq(abi.decode(log.data, (uint256)), amount, "TEMPO-VA11: wrong transfer amount");
@@ -1212,7 +1215,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
 
     function _assertTransferWithMemoLog(
         Vm.Log memory log,
-        TIP20 token,
+        ITIP20 token,
         address from,
         address to,
         uint256 amount,
@@ -1223,7 +1226,11 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
     {
         assertEq(log.emitter, address(token), "TEMPO-VA12: wrong memo emitter");
         assertEq(log.topics.length, 4, "TEMPO-VA12: wrong memo topic count");
-        assertEq(log.topics[0], Tempo.TRANSFER_WITH_MEMO_EVENT, "TEMPO-VA12: wrong memo selector");
+        assertEq(
+            log.topics[0],
+            keccak256("TransferWithMemo(address,address,uint256,bytes32)"),
+            "TEMPO-VA12: wrong memo selector"
+        );
         assertEq(address(uint160(uint256(log.topics[1]))), from, "TEMPO-VA12: wrong memo from");
         assertEq(address(uint160(uint256(log.topics[2]))), to, "TEMPO-VA12: wrong memo to");
         assertEq(log.topics[3], memo, "TEMPO-VA12: wrong memo topic");
@@ -1232,7 +1239,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
 
     function _assertMintLog(
         Vm.Log memory log,
-        TIP20 token,
+        ITIP20 token,
         address to,
         uint256 amount
     )
@@ -1241,7 +1248,9 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
     {
         assertEq(log.emitter, address(token), "TEMPO-VA12: wrong mint emitter");
         assertEq(log.topics.length, 2, "TEMPO-VA12: wrong mint topic count");
-        assertEq(log.topics[0], Tempo.MINT_EVENT, "TEMPO-VA12: wrong mint selector");
+        assertEq(
+            log.topics[0], keccak256("Mint(address,uint256)"), "TEMPO-VA12: wrong mint selector"
+        );
         assertEq(address(uint160(uint256(log.topics[1]))), to, "TEMPO-VA12: wrong mint recipient");
         assertEq(abi.decode(log.data, (uint256)), amount, "TEMPO-VA12: wrong mint amount");
     }

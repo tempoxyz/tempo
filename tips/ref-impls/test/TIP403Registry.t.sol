@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 pragma solidity >=0.8.13 <0.9.0;
 
-import { TIP403Registry } from "../src/TIP403Registry.sol";
-import { ITIP403Registry } from "../src/interfaces/ITIP403Registry.sol";
-import { BaseTest } from "./BaseTest.t.sol";
+import "./TempoTest.t.sol";
+import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";
 
 /// forge-config: default.hardfork = "tempo:T2"
-contract TIP403RegistryTest is BaseTest {
+/// forge-config: fuzz500.hardfork = "tempo:T2"
+contract TIP403RegistryTest is TempoTest {
 
     address public david = address(0x500);
     address public eve = address(0x600);
@@ -21,14 +21,14 @@ contract TIP403RegistryTest is BaseTest {
 
     function test_CreatePolicy_Basic() public {
         address admin = alice;
-        TIP403Registry.PolicyType policyType = ITIP403Registry.PolicyType.WHITELIST;
+        ITIP403Registry.PolicyType policyType = ITIP403Registry.PolicyType.WHITELIST;
 
         uint64 newPolicyId = registry.createPolicy(admin, policyType);
 
         assertEq(newPolicyId, FIRST_USER_POLICY);
         assertEq(registry.policyIdCounter(), FIRST_USER_POLICY + 1);
 
-        (TIP403Registry.PolicyType storedType, address storedAdmin) =
+        (ITIP403Registry.PolicyType storedType, address storedAdmin) =
             registry.policyData(newPolicyId);
         assertEq(uint8(storedType), uint8(policyType));
         assertEq(storedAdmin, admin);
@@ -36,7 +36,7 @@ contract TIP403RegistryTest is BaseTest {
 
     function test_CreatePolicy_WithInitialAccounts_Whitelist() public {
         address admin = alice;
-        TIP403Registry.PolicyType policyType = ITIP403Registry.PolicyType.WHITELIST;
+        ITIP403Registry.PolicyType policyType = ITIP403Registry.PolicyType.WHITELIST;
         address[] memory accounts = new address[](2);
         accounts[0] = alice;
         accounts[1] = bob;
@@ -55,7 +55,7 @@ contract TIP403RegistryTest is BaseTest {
 
     function test_CreatePolicy_WithInitialAccounts_Blacklist() public {
         address admin = alice;
-        TIP403Registry.PolicyType policyType = ITIP403Registry.PolicyType.BLACKLIST;
+        ITIP403Registry.PolicyType policyType = ITIP403Registry.PolicyType.BLACKLIST;
         address[] memory accounts = new address[](2);
         accounts[0] = alice;
         accounts[1] = bob;
@@ -73,7 +73,7 @@ contract TIP403RegistryTest is BaseTest {
     }
 
     function test_CreatePolicy_WithAdmin() public {
-        TIP403Registry.PolicyType policyType = ITIP403Registry.PolicyType.WHITELIST;
+        ITIP403Registry.PolicyType policyType = ITIP403Registry.PolicyType.WHITELIST;
         address[] memory accounts = new address[](1);
         accounts[0] = alice;
 
@@ -85,7 +85,7 @@ contract TIP403RegistryTest is BaseTest {
     }
 
     function test_CreatePolicy_FixedPolicy() public {
-        TIP403Registry.PolicyType policyType = ITIP403Registry.PolicyType.WHITELIST;
+        ITIP403Registry.PolicyType policyType = ITIP403Registry.PolicyType.WHITELIST;
 
         uint64 newPolicyId = registry.createPolicy(address(0), policyType);
 

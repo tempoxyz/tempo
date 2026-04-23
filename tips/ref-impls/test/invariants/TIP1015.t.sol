@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.13;
 
-import { TIP20 } from "../../src/TIP20.sol";
-import { IStablecoinDEX } from "../../src/interfaces/IStablecoinDEX.sol";
-import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
-import { ITIP403Registry } from "../../src/interfaces/ITIP403Registry.sol";
 import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
+import { IStablecoinDEX } from "tempo-std/interfaces/IStablecoinDEX.sol";
+import { ITIP20, ITIP20Token } from "tempo-std/interfaces/ITIP20.sol";
+import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";
 
 /// @title TIP-1015 Compound Policy Invariant Tests
 /// @notice Handler-based invariant tests for compound transfer policies as specified in TIP-1015
@@ -19,6 +18,7 @@ import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 ///      TEMPO-1015-7: distributeReward requires both sender AND recipient authorization
 ///      TEMPO-1015-8: claimRewards uses correct directional authorization
 /// forge-config: default.hardfork = "tempo:T2"
+/// forge-config: fuzz500.hardfork = "tempo:T2"
 contract TIP1015InvariantTest is InvariantBaseTest {
 
     /*//////////////////////////////////////////////////////////////
@@ -46,7 +46,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
     mapping(uint64 => address[]) private _policyAccounts;
     mapping(uint64 => mapping(address => bool)) private _policyAccountTracked;
 
-    TIP20[] private _compoundTokens;
+    ITIP20Token[] private _compoundTokens;
     mapping(address => uint64) private _tokenPolicy;
 
     uint256 private _totalCompoundPoliciesCreated;
@@ -91,7 +91,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         _totalCompoundPoliciesCreated++;
 
         // Pre-create one compound token so token-dependent handlers are productive immediately
-        TIP20 initialToken = TIP20(
+        ITIP20Token initialToken = ITIP20Token(
             factory.createToken(
                 "CMPTKN",
                 "CT",
@@ -430,7 +430,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
         vm.startPrank(admin);
 
-        TIP20 token = TIP20(
+        ITIP20Token token = ITIP20Token(
             factory.createToken(
                 "CMPTKN",
                 "CT",
@@ -454,7 +454,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
     function optIntoRewards(uint256 tokenSeed, uint256 actorSeed) external {
         if (_compoundTokens.length == 0) return;
 
-        TIP20 token = _compoundTokens[tokenSeed % _compoundTokens.length];
+        ITIP20Token token = _compoundTokens[tokenSeed % _compoundTokens.length];
         uint64 pid = _tokenPolicy[address(token)];
         address actor = _selectActor(actorSeed);
 
@@ -486,7 +486,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
     {
         if (_compoundTokens.length == 0) return;
 
-        TIP20 token = _compoundTokens[tokenSeed % _compoundTokens.length];
+        ITIP20Token token = _compoundTokens[tokenSeed % _compoundTokens.length];
         uint64 pid = _tokenPolicy[address(token)];
         address recipient = _selectActor(recipientSeed);
 
@@ -527,7 +527,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
     {
         if (_compoundTokens.length == 0) return;
 
-        TIP20 token = _compoundTokens[tokenSeed % _compoundTokens.length];
+        ITIP20Token token = _compoundTokens[tokenSeed % _compoundTokens.length];
         uint64 pid = _tokenPolicy[address(token)];
         address sender = _selectActor(senderSeed);
         address recipient = _selectActorExcluding(recipientSeed, sender);
@@ -565,7 +565,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
     {
         if (_compoundTokens.length == 0) return;
 
-        TIP20 token = _compoundTokens[tokenSeed % _compoundTokens.length];
+        ITIP20Token token = _compoundTokens[tokenSeed % _compoundTokens.length];
         uint64 pid = _tokenPolicy[address(token)];
         address target = _selectActor(targetSeed);
 
@@ -609,7 +609,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
     {
         if (_compoundTokens.length == 0) return;
 
-        TIP20 token = _compoundTokens[tokenSeed % _compoundTokens.length];
+        ITIP20Token token = _compoundTokens[tokenSeed % _compoundTokens.length];
         uint64 pid = _tokenPolicy[address(token)];
         address sender = _selectActor(senderSeed);
 
@@ -696,7 +696,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
     function claimRewardsWithCompoundPolicy(uint256 tokenSeed, uint256 claimerSeed) external {
         if (_compoundTokens.length == 0) return;
 
-        TIP20 token = _compoundTokens[tokenSeed % _compoundTokens.length];
+        ITIP20Token token = _compoundTokens[tokenSeed % _compoundTokens.length];
         uint64 pid = _tokenPolicy[address(token)];
         address claimer = _selectActor(claimerSeed);
 
@@ -782,7 +782,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
     {
         if (_compoundTokens.length == 0) return;
 
-        TIP20 token = _compoundTokens[tokenSeed % _compoundTokens.length];
+        ITIP20Token token = _compoundTokens[tokenSeed % _compoundTokens.length];
         uint64 pid = token.transferPolicyId();
         (uint64 senderPid, uint64 recipientPid, uint64 mintPid) = registry.compoundPolicyData(pid);
 

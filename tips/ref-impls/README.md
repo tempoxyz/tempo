@@ -1,42 +1,28 @@
 # Tempo Specs
 
-This directory contains Solidity specifications and fuzz tests for Tempo's precompile contracts. The tests are designed to run against both:
+This directory contains Solidity spec tests and fuzz harnesses for Tempo's native precompile contracts.
 
-1. **Solidity reference implementations** - Using standard Foundry
-2. **Rust precompile implementations** - Using Foundry with the Tempo profile
+`TempoTest.t.sol` assumes the Tempo precompiles already exist in the EVM and fails fast if they are missing.
 
-## How Tests Work
+## Profiles
 
-The tests use an `isTempo` flag (defined in `BaseTest.t.sol`) to detect which implementation is being tested:
+The checked-in `foundry.toml` uses two profiles, which always run against a Tempo-native EVM with enabled Rust precompiles:
 
-- **`isTempo = false`**: Tests run against Solidity implementations deployed via `deployCodeTo()`. This is the default `forge` path.
-- **`isTempo = true`**: Tests run against Rust precompiles built into upstream Foundry's Tempo EVM. This is the Tempo profile path.
-
-This allows the same test suite to verify both implementations are in sync.
-
-The checked-in `foundry.toml` keeps these two modes separate with profiles:
-
-- `default` / `ci`: Solidity reference implementations (`isTempo = false`)
-- `tempo` / `tempo_ci`: Native Rust precompiles (`isTempo = true`)
+- `default`: config for standard Foundry build/fmt/ABI tasks. Lighter optimizer and fuzz/invariant settings, for quicker output.
+- `fuzz500`: config for extended invariant runs.
 
 ## Running Tests
 
-**Prerequisite:** Use an upstream Foundry nightly build.
+Tests require a Tempo-capable `forge` binary.
 
-```bash
-foundryup -i nightly
-```
-
-### Option 1: Solidity-Only Reference Implementations (Standard Foundry)
-
-Run tests against the Solidity reference implementations:
+Run the full suite:
 
 ```bash
 cd tips/ref-impls
 forge test
 ```
 
-With verbose output:
+Run with verbose output:
 
 ```bash
 forge test -vvv
@@ -48,59 +34,16 @@ Run a specific test:
 forge test --match-test test_mint
 ```
 
-This path is what CI uses for the Solidity-only `forge test` job.
-
-### Option 2: Rust Precompiles (Tempo Profile)
-
-Run tests against the actual Rust precompile implementations:
+Use the lighter CI profile when you want to match CI settings locally:
 
 ```bash
 cd tips/ref-impls
-FOUNDRY_PROFILE=tempo forge test
+FOUNDRY_PROFILE=fuzz500 forge test -vvv
 ```
 
-Equivalent wrapper command:
+If you frequently want the extended invariant profile by default, set it in your shell:
 
 ```bash
-./tempo-forge test
-```
-
-With verbose output:
-
-```bash
-FOUNDRY_PROFILE=tempo forge test -vvv
-```
-
-Equivalent wrapper command:
-
-```bash
-./tempo-forge test -vvv
-```
-
-Run a specific test:
-
-```bash
-FOUNDRY_PROFILE=tempo forge test --match-test test_mint
-```
-
-Equivalent wrapper command:
-
-```bash
-./tempo-forge test --match-test test_mint
-```
-
-Foundry selects profiles via `FOUNDRY_PROFILE`, so if you run Tempo-mode commands frequently you can also set it in your shell:
-
-```bash
-export FOUNDRY_PROFILE=tempo
+export FOUNDRY_PROFILE=fuzz500
 forge test
 ```
-
-## CI Integration
-
-The CI runs both test modes:
-
-1. `forge test` - Validates Solidity implementations
-2. `FOUNDRY_PROFILE=tempo_ci forge test` - Validates Rust precompiles match Solidity specs
-
-This ensures the Rust and Solidity implementations stay in sync.

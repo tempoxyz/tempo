@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 pragma solidity >=0.8.13 <0.9.0;
 
-import { IValidatorConfig } from "../src/interfaces/IValidatorConfig.sol";
-import { BaseTest } from "./BaseTest.t.sol";
+import "./TempoTest.t.sol";
+import { IValidatorConfig } from "tempo-std/interfaces/IValidatorConfig.sol";
 
-contract ValidatorConfigTest is BaseTest {
+contract ValidatorConfigTest is TempoTest {
 
     address public validator1 = address(0x2000);
     address public validator2 = address(0x3000);

@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.13;
 
-import { TIP20 } from "../src/TIP20.sol";
-import { IStablecoinDEX } from "../src/interfaces/IStablecoinDEX.sol";
-import { ITIP20 } from "../src/interfaces/ITIP20.sol";
-import { ITIP403Registry } from "../src/interfaces/ITIP403Registry.sol";
-import { BaseTest } from "./BaseTest.t.sol";
+import "./TempoTest.t.sol";
+import { IStablecoinDEX } from "tempo-std/interfaces/IStablecoinDEX.sol";
+import { ITIP20, ITIP20Token } from "tempo-std/interfaces/ITIP20.sol";
+import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";
 
 /// @title TIP-1015 Compound Policy Tests
 /// @notice Unit tests and stateless fuzz tests for compound transfer policies as specified in TIP-1015
 /// @dev Tests both TIP403Registry compound policy functions and TIP-20 integration
 /// forge-config: default.hardfork = "tempo:T2"
-contract TIP1015Test is BaseTest {
+/// forge-config: fuzz500.hardfork = "tempo:T2"
+contract TIP1015Test is TempoTest {
 
     /*//////////////////////////////////////////////////////////////
                               STATE
@@ -35,7 +35,7 @@ contract TIP1015Test is BaseTest {
     address internal whitelistedUser;
     address internal neutralUser;
 
-    TIP20 internal compoundToken;
+    ITIP20Token internal compoundToken;
 
     /*//////////////////////////////////////////////////////////////
                               SETUP
@@ -77,7 +77,7 @@ contract TIP1015Test is BaseTest {
 
         vendorCreditsPolicy = registry.createCompoundPolicy(1, recipientOnlyPolicy, 1);
 
-        compoundToken = TIP20(
+        compoundToken = ITIP20Token(
             factory.createToken("COMPOUND", "CMP", "USD", pathUSD, admin, bytes32("compound"))
         );
         compoundToken.grantRole(_ISSUER_ROLE, admin);
@@ -361,8 +361,9 @@ contract TIP1015Test is BaseTest {
     function test_mint_succeeds_authorizedMintRecipient_simplePolicy() public {
         vm.startPrank(admin);
 
-        TIP20 simpleToken =
-            TIP20(factory.createToken("SIMPLE", "SMP", "USD", pathUSD, admin, bytes32("simple")));
+        ITIP20Token simpleToken = ITIP20Token(
+            factory.createToken("SIMPLE", "SMP", "USD", pathUSD, admin, bytes32("simple"))
+        );
         simpleToken.grantRole(_ISSUER_ROLE, admin);
         simpleToken.changeTransferPolicyId(mintRecipientWhitelist);
 
@@ -375,7 +376,7 @@ contract TIP1015Test is BaseTest {
     function test_mint_fails_unauthorizedMintRecipient_simplePolicy() public {
         vm.startPrank(admin);
 
-        TIP20 simpleToken = TIP20(
+        ITIP20Token simpleToken = ITIP20Token(
             factory.createToken("SIMPLE2", "SMP2", "USD", pathUSD, admin, bytes32("simple2"))
         );
         simpleToken.grantRole(_ISSUER_ROLE, admin);
@@ -415,8 +416,9 @@ contract TIP1015Test is BaseTest {
     function test_transfer_succeeds_bothAuthorized_simplePolicy() public {
         vm.startPrank(admin);
 
-        TIP20 simpleToken =
-            TIP20(factory.createToken("XFER1", "XF1", "USD", pathUSD, admin, bytes32("xfer1")));
+        ITIP20Token simpleToken = ITIP20Token(
+            factory.createToken("XFER1", "XF1", "USD", pathUSD, admin, bytes32("xfer1"))
+        );
         simpleToken.grantRole(_ISSUER_ROLE, admin);
         simpleToken.changeTransferPolicyId(1);
         simpleToken.mint(sender, 1000);
@@ -433,8 +435,9 @@ contract TIP1015Test is BaseTest {
     function test_transfer_fails_senderBlacklisted_simplePolicy() public {
         vm.startPrank(admin);
 
-        TIP20 simpleToken =
-            TIP20(factory.createToken("XFER2", "XF2", "USD", pathUSD, admin, bytes32("xfer2")));
+        ITIP20Token simpleToken = ITIP20Token(
+            factory.createToken("XFER2", "XF2", "USD", pathUSD, admin, bytes32("xfer2"))
+        );
         simpleToken.grantRole(_ISSUER_ROLE, admin);
         simpleToken.changeTransferPolicyId(1);
         simpleToken.mint(blockedUser, 1000);
@@ -467,8 +470,9 @@ contract TIP1015Test is BaseTest {
     function test_transfer_fails_senderUnauthorized_compoundPolicy() public {
         vm.startPrank(admin);
 
-        TIP20 testToken =
-            TIP20(factory.createToken("XFER3", "XF3", "USD", pathUSD, admin, bytes32("xfer3")));
+        ITIP20Token testToken = ITIP20Token(
+            factory.createToken("XFER3", "XF3", "USD", pathUSD, admin, bytes32("xfer3"))
+        );
         testToken.grantRole(_ISSUER_ROLE, admin);
 
         uint64 testCompound = registry.createCompoundPolicy(senderOnlyPolicy, 1, 1);
@@ -489,8 +493,9 @@ contract TIP1015Test is BaseTest {
     function test_transfer_fails_recipientUnauthorized_compoundPolicy() public {
         vm.startPrank(admin);
 
-        TIP20 testToken =
-            TIP20(factory.createToken("XFER4", "XF4", "USD", pathUSD, admin, bytes32("xfer4")));
+        ITIP20Token testToken = ITIP20Token(
+            factory.createToken("XFER4", "XF4", "USD", pathUSD, admin, bytes32("xfer4"))
+        );
         testToken.grantRole(_ISSUER_ROLE, admin);
         testToken.changeTransferPolicyId(1);
         testToken.mint(sender, 1000);
@@ -508,8 +513,9 @@ contract TIP1015Test is BaseTest {
     function test_transfer_asymmetricCompound_blockedCanReceiveNotSend() public {
         vm.startPrank(admin);
 
-        TIP20 testToken =
-            TIP20(factory.createToken("ASYM1", "ASY1", "USD", pathUSD, admin, bytes32("asym1")));
+        ITIP20Token testToken = ITIP20Token(
+            factory.createToken("ASYM1", "ASY1", "USD", pathUSD, admin, bytes32("asym1"))
+        );
         testToken.grantRole(_ISSUER_ROLE, admin);
         testToken.changeTransferPolicyId(1);
         testToken.mint(sender, 1000);
@@ -536,8 +542,9 @@ contract TIP1015Test is BaseTest {
     function test_burnBlocked_succeeds_blockedSender_simplePolicy() public {
         vm.startPrank(admin);
 
-        TIP20 testToken =
-            TIP20(factory.createToken("BURN1", "BRN1", "USD", pathUSD, admin, bytes32("burn1")));
+        ITIP20Token testToken = ITIP20Token(
+            factory.createToken("BURN1", "BRN1", "USD", pathUSD, admin, bytes32("burn1"))
+        );
         testToken.grantRole(_ISSUER_ROLE, admin);
         testToken.grantRole(_BURN_BLOCKED_ROLE, admin);
 
@@ -554,8 +561,9 @@ contract TIP1015Test is BaseTest {
     function test_burnBlocked_fails_authorizedSender_simplePolicy() public {
         vm.startPrank(admin);
 
-        TIP20 testToken =
-            TIP20(factory.createToken("BURN2", "BRN2", "USD", pathUSD, admin, bytes32("burn2")));
+        ITIP20Token testToken = ITIP20Token(
+            factory.createToken("BURN2", "BRN2", "USD", pathUSD, admin, bytes32("burn2"))
+        );
         testToken.grantRole(_ISSUER_ROLE, admin);
         testToken.grantRole(_BURN_BLOCKED_ROLE, admin);
         testToken.grantRole(_BURN_BLOCKED_ROLE, address(this));
@@ -571,8 +579,9 @@ contract TIP1015Test is BaseTest {
     function test_burnBlocked_succeeds_blockedSender_compoundPolicy() public {
         vm.startPrank(admin);
 
-        TIP20 testToken =
-            TIP20(factory.createToken("BURN3", "BRN3", "USD", pathUSD, admin, bytes32("burn3")));
+        ITIP20Token testToken = ITIP20Token(
+            factory.createToken("BURN3", "BRN3", "USD", pathUSD, admin, bytes32("burn3"))
+        );
         testToken.grantRole(_ISSUER_ROLE, admin);
         testToken.grantRole(_BURN_BLOCKED_ROLE, admin);
 
@@ -589,8 +598,9 @@ contract TIP1015Test is BaseTest {
     function test_burnBlocked_fails_authorizedSender_compoundPolicy() public {
         vm.startPrank(admin);
 
-        TIP20 testToken =
-            TIP20(factory.createToken("BURN4", "BRN4", "USD", pathUSD, admin, bytes32("burn4")));
+        ITIP20Token testToken = ITIP20Token(
+            factory.createToken("BURN4", "BRN4", "USD", pathUSD, admin, bytes32("burn4"))
+        );
         testToken.grantRole(_ISSUER_ROLE, admin);
         testToken.grantRole(_BURN_BLOCKED_ROLE, admin);
         testToken.grantRole(_BURN_BLOCKED_ROLE, address(this));
@@ -614,8 +624,9 @@ contract TIP1015Test is BaseTest {
 
         uint64 recipientBlockedCompound = registry.createCompoundPolicy(1, recipientBlacklist, 1);
 
-        TIP20 testToken =
-            TIP20(factory.createToken("BURN5", "BRN5", "USD", pathUSD, admin, bytes32("burn5")));
+        ITIP20Token testToken = ITIP20Token(
+            factory.createToken("BURN5", "BRN5", "USD", pathUSD, admin, bytes32("burn5"))
+        );
         testToken.grantRole(_ISSUER_ROLE, admin);
         testToken.grantRole(_BURN_BLOCKED_ROLE, admin);
         testToken.grantRole(_BURN_BLOCKED_ROLE, address(this));
@@ -639,8 +650,9 @@ contract TIP1015Test is BaseTest {
 
         vm.startPrank(admin);
 
-        TIP20 baseToken =
-            TIP20(factory.createToken("BASE1", "BS1", "USD", pathUSD, admin, bytes32("base1")));
+        ITIP20Token baseToken = ITIP20Token(
+            factory.createToken("BASE1", "BS1", "USD", pathUSD, admin, bytes32("base1"))
+        );
         baseToken.grantRole(_ISSUER_ROLE, admin);
         baseToken.changeTransferPolicyId(1);
         baseToken.mint(sender, MIN_ORDER * 10);
@@ -650,7 +662,7 @@ contract TIP1015Test is BaseTest {
         vm.stopPrank();
 
         vm.startPrank(pathUSDAdmin);
-        pathUSD.grantRole(_ISSUER_ROLE, pathUSDAdmin);
+        ITIP20Token(address(pathUSD)).grantRole(_ISSUER_ROLE, pathUSDAdmin);
         pathUSD.mint(sender, MIN_ORDER * 10);
         vm.stopPrank();
 
@@ -677,8 +689,9 @@ contract TIP1015Test is BaseTest {
 
         vm.startPrank(admin);
 
-        TIP20 baseToken =
-            TIP20(factory.createToken("BASE2", "BS2", "USD", pathUSD, admin, bytes32("base2")));
+        ITIP20Token baseToken = ITIP20Token(
+            factory.createToken("BASE2", "BS2", "USD", pathUSD, admin, bytes32("base2"))
+        );
         baseToken.grantRole(_ISSUER_ROLE, admin);
         baseToken.changeTransferPolicyId(1);
         baseToken.mint(sender, MIN_ORDER * 10);
@@ -688,7 +701,7 @@ contract TIP1015Test is BaseTest {
         vm.stopPrank();
 
         vm.startPrank(pathUSDAdmin);
-        pathUSD.grantRole(_ISSUER_ROLE, pathUSDAdmin);
+        ITIP20Token(address(pathUSD)).grantRole(_ISSUER_ROLE, pathUSDAdmin);
         pathUSD.mint(sender, MIN_ORDER * 10);
         vm.stopPrank();
 
@@ -708,8 +721,9 @@ contract TIP1015Test is BaseTest {
 
         vm.startPrank(admin);
 
-        TIP20 baseToken =
-            TIP20(factory.createToken("BASE3", "BS3", "USD", pathUSD, admin, bytes32("base3")));
+        ITIP20Token baseToken = ITIP20Token(
+            factory.createToken("BASE3", "BS3", "USD", pathUSD, admin, bytes32("base3"))
+        );
         baseToken.grantRole(_ISSUER_ROLE, admin);
         baseToken.changeTransferPolicyId(1);
         baseToken.mint(sender, MIN_ORDER * 10);
@@ -719,7 +733,7 @@ contract TIP1015Test is BaseTest {
         vm.stopPrank();
 
         vm.startPrank(pathUSDAdmin);
-        pathUSD.grantRole(_ISSUER_ROLE, pathUSDAdmin);
+        ITIP20Token(address(pathUSD)).grantRole(_ISSUER_ROLE, pathUSDAdmin);
         pathUSD.mint(sender, MIN_ORDER * 10);
         vm.stopPrank();
 
@@ -773,7 +787,7 @@ contract TIP1015Test is BaseTest {
 
         uint64 fuzzCompound = registry.createCompoundPolicy(sPolicy, rPolicy, 1);
 
-        TIP20 fuzzToken = TIP20(
+        ITIP20Token fuzzToken = ITIP20Token(
             factory.createToken(
                 "FUZZ",
                 "FZZ",
@@ -833,7 +847,7 @@ contract TIP1015Test is BaseTest {
 
         uint64 fuzzCompound = registry.createCompoundPolicy(sPolicy, rPolicy, mPolicy);
 
-        TIP20 fuzzToken = TIP20(
+        ITIP20Token fuzzToken = ITIP20Token(
             factory.createToken(
                 "FUZZ2",
                 "FZ2",
@@ -866,7 +880,7 @@ contract TIP1015Test is BaseTest {
     function test_invariant7_distributeRewardRequiresBothAuth() public {
         vm.startPrank(admin);
 
-        TIP20 rewardToken = TIP20(
+        ITIP20Token rewardToken = ITIP20Token(
             factory.createToken("REWARD1", "RWD1", "USD", pathUSD, admin, bytes32("reward1"))
         );
         rewardToken.grantRole(_ISSUER_ROLE, admin);
@@ -933,7 +947,7 @@ contract TIP1015Test is BaseTest {
     function test_invariant8_claimRewardsDirectionalAuth() public {
         vm.startPrank(admin);
 
-        TIP20 rewardToken = TIP20(
+        ITIP20Token rewardToken = ITIP20Token(
             factory.createToken("CLAIM1", "CLM1", "USD", pathUSD, admin, bytes32("claim1"))
         );
         rewardToken.grantRole(_ISSUER_ROLE, admin);
@@ -1025,7 +1039,7 @@ contract TIP1015Test is BaseTest {
 
         vm.startPrank(admin);
 
-        TIP20 fuzzToken = TIP20(
+        ITIP20Token fuzzToken = ITIP20Token(
             factory.createToken(
                 "FUZZD",
                 "FZD",
@@ -1085,7 +1099,7 @@ contract TIP1015Test is BaseTest {
 
         vm.startPrank(admin);
 
-        TIP20 fuzzToken = TIP20(
+        ITIP20Token fuzzToken = ITIP20Token(
             factory.createToken(
                 "FUZZC",
                 "FZC",
@@ -1142,36 +1156,36 @@ contract TIP1015Test is BaseTest {
                         EXTERNAL CALL HELPERS
     //////////////////////////////////////////////////////////////*/
 
-    function mintExternal(TIP20 token, address to, uint256 amount) external {
+    function mintExternal(ITIP20 token, address to, uint256 amount) external {
         token.mint(to, amount);
     }
 
-    function transferExternal(TIP20 token, address to, uint256 amount) external {
+    function transferExternal(ITIP20 token, address to, uint256 amount) external {
         token.transfer(to, amount);
     }
 
-    function transferFromExternal(TIP20 token, address from, address to, uint256 amount) external {
+    function transferFromExternal(ITIP20 token, address from, address to, uint256 amount) external {
         token.transferFrom(from, to, amount);
     }
 
-    function burnBlockedExternal(TIP20 token, address from, uint256 amount) external {
+    function burnBlockedExternal(ITIP20 token, address from, uint256 amount) external {
         token.burnBlocked(from, amount);
     }
 
-    function distributeRewardExternal(TIP20 token, uint256 amount) external {
+    function distributeRewardExternal(ITIP20 token, uint256 amount) external {
         token.distributeReward(amount);
     }
 
-    function distributeRewardAsExternal(TIP20 token, address caller, uint256 amount) external {
+    function distributeRewardAsExternal(ITIP20 token, address caller, uint256 amount) external {
         vm.prank(caller);
         token.distributeReward(amount);
     }
 
-    function claimRewardsExternal(TIP20 token) external returns (uint256) {
+    function claimRewardsExternal(ITIP20 token) external returns (uint256) {
         return token.claimRewards();
     }
 
-    function claimRewardsAsExternal(TIP20 token, address caller) external returns (uint256) {
+    function claimRewardsAsExternal(ITIP20 token, address caller) external returns (uint256) {
         vm.prank(caller);
         return token.claimRewards();
     }
