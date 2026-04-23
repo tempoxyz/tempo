@@ -172,12 +172,12 @@ fn call_scope_storage_slots(auth: &tempo_primitives::transaction::KeyAuthorizati
     }
 }
 
-/// Counts how many set length-slot writes are warm resets rather than fresh sets.
+/// Counts how many set length-slot writes become same-tx dirty rewrites.
 ///
 /// `SetHandler::insert()` always writes the shared vec length slot. The first insertion into a set
-/// grows length `0 -> 1` and pays `SSTORE_SET`; every later insertion into that same set grows a
-/// nonzero length and therefore pays `WARM_SSTORE_RESET` instead.
-fn call_scope_length_reset_rows(auth: &tempo_primitives::transaction::KeyAuthorization) -> u64 {
+/// grows length `0 -> 1` and pays `SSTORE_SET`; every later insertion into that same set rewrites
+/// an already-dirty slot in the same transaction and only pays `sstore_static_gas()`.
+fn call_scope_dirty_length_rows(auth: &tempo_primitives::transaction::KeyAuthorization) -> u64 {
     let Some(scopes) = auth.allowed_calls.as_ref() else {
         return 0;
     };
@@ -337,26 +337,24 @@ fn calculate_key_authorization_gas(
         };
 
         let mut num_sstores = 1 + limit_slots;
-        let mut num_reset_sstores = 0;
+        let mut num_dirty_length_sstores = 0;
 
         // T4+ splits repeated set length-slot writes out so T3 reexecution keeps the existing
         // all-rows-as-SSTORE_SET accounting from current main.
         if spec.is_t4() {
             let scope_slots = call_scope_storage_slots(&key_auth.authorization);
-            let scope_reset_rows = call_scope_length_reset_rows(&key_auth.authorization);
-            num_sstores += scope_slots.saturating_sub(scope_reset_rows);
-            num_reset_sstores += scope_reset_rows;
+            let scope_dirty_rows = call_scope_dirty_length_rows(&key_auth.authorization);
+            num_sstores += scope_slots.saturating_sub(scope_dirty_rows);
+            num_dirty_length_sstores += scope_dirty_rows;
         } else if spec.is_t3() {
             num_sstores += call_scope_storage_slots(&key_auth.authorization);
         }
 
         let sstore_cost = gas_params.get(GasId::sstore_set_without_load_cost());
-        let sstore_reset_cost =
-            gas_params.sstore_static_gas() + gas_params.sstore_reset_without_cold_load_cost();
         let mut total_gas = sig_gas
             + sload_cost
             + sstore_cost * num_sstores
-            + sstore_reset_cost * num_reset_sstores
+            + gas_params.sstore_static_gas() * num_dirty_length_sstores
             + BUFFER;
 
         // T4+: include extra gas for call scopes configuration
@@ -3079,19 +3077,18 @@ mod tests {
 
         let (gas, state_gas) =
             calculate_key_authorization_gas(&multi_scope, &t4_gas_params, TempoHardfork::T4);
-        let warm_reset =
-            t4_gas_params.sstore_static_gas() + t4_gas_params.sstore_reset_without_cold_load_cost();
+        let dirty_length_write = t4_gas_params.sstore_static_gas();
         let expected_state = t4_sstore_state * 12;
         let expected = ECRECOVER_GAS
             + t4_sload
             + t4_sstore * 12
-            + warm_reset * 2
+            + dirty_length_write * 2
             + BUFFER
             + 33_000
             + expected_state;
         assert_eq!(
             gas, expected,
-            "T4 scope writes should charge repeated set length updates at warm reset cost"
+            "T4 scope writes should charge repeated set length updates as dirty rewrites"
         );
         assert_eq!(state_gas, expected_state, "T4 scope state gas");
     }
