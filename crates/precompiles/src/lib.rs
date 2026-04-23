@@ -15,6 +15,7 @@ pub mod nonce;
 pub mod signature_verifier;
 pub mod stablecoin_dex;
 pub mod tip20;
+pub mod tip20_channel_escrow;
 pub mod tip20_factory;
 pub mod tip403_registry;
 pub mod tip_fee_manager;
@@ -25,10 +26,18 @@ pub mod validator_config_v2;
 pub mod test_util;
 
 use crate::{
-    account_keychain::AccountKeychain, address_registry::AddressRegistry, nonce::NonceManager,
-    signature_verifier::SignatureVerifier, stablecoin_dex::StablecoinDEX, storage::StorageCtx,
-    tip_fee_manager::TipFeeManager, tip20::TIP20Token, tip20_factory::TIP20Factory,
-    tip403_registry::TIP403Registry, validator_config::ValidatorConfig,
+    account_keychain::AccountKeychain,
+    address_registry::AddressRegistry,
+    nonce::NonceManager,
+    signature_verifier::SignatureVerifier,
+    stablecoin_dex::StablecoinDEX,
+    storage::StorageCtx,
+    tip_fee_manager::TipFeeManager,
+    tip20::{TIP20Token, is_tip20_prefix},
+    tip20_channel_escrow::TIP20ChannelEscrow,
+    tip20_factory::TIP20Factory,
+    tip403_registry::TIP403Registry,
+    validator_config::ValidatorConfig,
     validator_config_v2::ValidatorConfigV2,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -52,7 +61,8 @@ use revm::{
 pub use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, DEFAULT_FEE_TOKEN,
     NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS,
-    TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_ESCROW_ADDRESS, TIP20_FACTORY_ADDRESS,
+    TIP403_REGISTRY_ADDRESS,
     VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
 
@@ -120,6 +130,8 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
             Some(TIP20Token::create_precompile(*address, &cfg))
         } else if *address == TIP20_FACTORY_ADDRESS {
             Some(TIP20Factory::create_precompile(&cfg))
+        } else if *address == TIP20_CHANNEL_ESCROW_ADDRESS && cfg.spec.is_t4() {
+            Some(TIP20ChannelEscrow::create_precompile(&cfg))
         } else if *address == ADDRESS_REGISTRY_ADDRESS && cfg.spec.is_t3() {
             Some(AddressRegistry::create_precompile(&cfg))
         } else if *address == TIP403_REGISTRY_ADDRESS {
@@ -252,6 +264,13 @@ impl SignatureVerifier {
     /// Creates the EVM precompile for this type.
     pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
         tempo_precompile!("SignatureVerifier", cfg, |input| { Self::new() })
+    }
+}
+
+impl TIP20ChannelEscrow {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
+        tempo_precompile!("TIP20ChannelEscrow", cfg, |input| { Self::new() })
     }
 }
 
@@ -1130,6 +1149,13 @@ mod tests {
             "SignatureVerifier should be registered at T3"
         );
 
+        // Channel escrow should be registered at T4
+        let channel_escrow_precompile = precompiles.get(&TIP20_CHANNEL_ESCROW_ADDRESS);
+        assert!(
+            channel_escrow_precompile.is_none(),
+            "TIP20 channel escrow should not be registered before T4"
+        );
+
         // TIP20 tokens with prefix should be registered
         let tip20_precompile = precompiles.get(&PATH_USD_ADDRESS);
         assert!(
@@ -1154,6 +1180,26 @@ mod tests {
         assert!(
             precompiles.get(&SIGNATURE_VERIFIER_ADDRESS).is_none(),
             "SignatureVerifier should NOT be registered before T3"
+        );
+    }
+
+    #[test]
+    fn test_channel_escrow_registered_at_t4_only() {
+        let pre_t4 = CfgEnv::<TempoHardfork>::default();
+        assert!(
+            tempo_precompiles(&pre_t4)
+                .get(&TIP20_CHANNEL_ESCROW_ADDRESS)
+                .is_none(),
+            "TIP20 channel escrow should NOT be registered before T4"
+        );
+
+        let mut t4 = CfgEnv::<TempoHardfork>::default();
+        t4.set_spec(TempoHardfork::T4);
+        assert!(
+            tempo_precompiles(&t4)
+                .get(&TIP20_CHANNEL_ESCROW_ADDRESS)
+                .is_some(),
+            "TIP20 channel escrow should be registered at T4"
         );
     }
 
