@@ -6,6 +6,125 @@
 name: bench-e2e
 
 on:
+  workflow_dispatch:
+    inputs:
+      baseline:
+        description: Git ref for the baseline run. Empty = merge-base with main.
+        type: string
+        required: false
+        default: ""
+      feature:
+        description: Git ref for the feature run. Empty = current branch HEAD.
+        type: string
+        required: false
+        default: ""
+      preset:
+        description: Benchmark preset.
+        type: string
+        required: true
+        default: tip20
+      duration:
+        description: Benchmark duration in seconds.
+        type: string
+        required: true
+        default: "300"
+      bloat:
+        description: State bloat size in MiB.
+        type: string
+        required: true
+        default: "100000"
+      tps:
+        description: Target transactions per second.
+        type: string
+        required: true
+        default: "10000"
+      backend:
+        description: Benchmark backend.
+        type: choice
+        required: true
+        default: tempo-bench
+        options:
+          - tempo-bench
+          - txgen
+      txgen-ref:
+        description: Optional ref to pin in tempoxyz/txgen.
+        type: string
+        required: false
+        default: ""
+      samply:
+        description: Capture samply profiles.
+        type: boolean
+        required: true
+        default: false
+      tracy:
+        description: Tracy mode.
+        type: choice
+        required: true
+        default: "off"
+        options:
+          - "off"
+          - "on"
+          - full
+      tracy-seconds:
+        description: Tracy capture duration in seconds.
+        type: string
+        required: true
+        default: "30"
+      tracy-offset:
+        description: Tracy capture start offset in seconds.
+        type: string
+        required: true
+        default: "120"
+      baseline-args:
+        description: Extra args passed only to the baseline node.
+        type: string
+        required: false
+        default: ""
+      feature-args:
+        description: Extra args passed only to the feature node.
+        type: string
+        required: false
+        default: ""
+      baseline-hardfork:
+        description: Optional baseline hardfork.
+        type: string
+        required: false
+        default: ""
+      feature-hardfork:
+        description: Optional feature hardfork.
+        type: string
+        required: false
+        default: ""
+      force-bloat:
+        description: Force regeneration of local benchmark state.
+        type: boolean
+        required: true
+        default: false
+      no-slack:
+        description: Skip Slack notification.
+        type: boolean
+        required: true
+        default: true
+      bench-args:
+        description: Extra bench args.
+        type: string
+        required: false
+        default: ""
+      bench-env:
+        description: Extra env vars for the bench sender process.
+        type: string
+        required: false
+        default: ""
+      baseline-env:
+        description: Extra env vars for the baseline node process.
+        type: string
+        required: false
+        default: ""
+      feature-env:
+        description: Extra env vars for the feature node process.
+        type: string
+        required: false
+        default: ""
   workflow_call:
     inputs:
       pr:
@@ -128,8 +247,7 @@ jobs:
     timeout-minutes: 300
     env:
       BENCH_PR: ${{ inputs.pr }}
-      BENCH_ACTOR: ${{ inputs.actor }}
-      BENCH_MODE: ${{ inputs.mode }}
+      BENCH_ACTOR: ${{ inputs.actor || github.actor }}
       BENCH_PRESET: ${{ inputs.preset }}
       BENCH_DURATION: ${{ inputs.duration }}
       BENCH_BLOAT: ${{ inputs.bloat }}
@@ -144,7 +262,7 @@ jobs:
       BENCH_FEATURE_ARGS: ${{ inputs.feature-args }}
       BENCH_BASELINE_HARDFORK: ${{ inputs.baseline-hardfork }}
       BENCH_FEATURE_HARDFORK: ${{ inputs.feature-hardfork }}
-      BENCH_RUN_TYPE: ${{ inputs.run-type }}
+      BENCH_RUN_TYPE: ${{ inputs.run-type || 'dispatch' }}
       BENCH_FORCE_BLOAT: ${{ inputs.force-bloat }}
       BENCH_NO_SLACK: ${{ inputs.no-slack }}
       BENCH_BENCH_ARGS: ${{ inputs.bench-args }}
@@ -409,7 +527,7 @@ jobs:
           fi
           cmd+=(
             --preset "$BENCH_PRESET"
-            --mode "$BENCH_MODE"
+            --mode dev
             --bloat "$BENCH_BLOAT"
             --duration "$BENCH_DURATION"
             --tps "$BENCH_TPS"

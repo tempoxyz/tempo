@@ -1,17 +1,457 @@
 # Replay benchmark job.
 #
-# Called by bench.yml when mode=replay. Replays real Tempo blocks through the Engine API.
-
-on:
-  workflow_dispatch:
+# Called by bench.yml when mode=replay. Replays real Tempo moderato blocks
+# through the Engine API for an interleaved B-F-F-B comparison.
 
 name: bench-replay
 
+on:
+  workflow_dispatch:
+    inputs:
+      chain:
+        description: "Chain to replay"
+        type: choice
+        options:
+          - mainnet
+          - testnet
+        default: "mainnet"
+      blocks:
+        description: "Number of blocks to benchmark"
+        type: string
+        default: "5000"
+      warmup:
+        description: "Number of warmup blocks"
+        type: string
+        default: "1000"
+      samply:
+        description: "Enable samply profiling"
+        type: string
+        default: "false"
+      baseline:
+        description: "Baseline git ref (default: merge-base)"
+        type: string
+        default: ""
+      feature:
+        description: "Feature git ref (default: branch head)"
+        type: string
+        default: ""
+      baseline-args:
+        description: "Extra node args for baseline"
+        type: string
+        default: ""
+      feature-args:
+        description: "Extra node args for feature"
+        type: string
+        default: ""
+  workflow_call:
+    inputs:
+      chain:
+        type: string
+        required: false
+        default: "mainnet"
+      pr:
+        type: string
+        required: false
+      actor:
+        type: string
+        required: true
+      baseline:
+        type: string
+        required: false
+      feature:
+        type: string
+        required: false
+      baseline-name:
+        type: string
+        required: true
+      feature-name:
+        type: string
+        required: true
+      samply:
+        type: string
+        required: true
+      baseline-args:
+        type: string
+        required: false
+      feature-args:
+        type: string
+        required: false
+      blocks:
+        type: string
+        required: true
+      warmup:
+        type: string
+        required: true
+      comment-id:
+        type: string
+        required: false
+    secrets:
+      DEREK_PAT:
+        required: false
+      DEREK_TOKEN:
+        required: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTC_WRAPPER: "sccache"
+
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
-  stub:
-    runs-on: ubuntu-latest
+  bench-replay:
+    name: bench-replay
+    runs-on: [self-hosted, Linux, X64, bare-metal]
+    timeout-minutes: 300
+    env:
+      BENCH_CHAIN: ${{ inputs.chain || 'mainnet' }}
+      BENCH_PR: ${{ inputs.pr }}
+      BENCH_ACTOR: ${{ inputs.actor }}
+      BENCH_SAMPLY: ${{ inputs.samply }}
+      BENCH_BASELINE_ARGS: "--dev.block-time 999999s ${{ inputs.baseline-args }}"
+      BENCH_FEATURE_ARGS: "--dev.block-time 999999s ${{ inputs.feature-args }}"
+      BENCH_BLOCKS: ${{ inputs.blocks }}
+      BENCH_WARMUP_BLOCKS: ${{ inputs.warmup }}
+      BENCH_COMMENT_ID: ${{ inputs.comment-id }}
+      BENCH_WORK_DIR: bench-results/replay
     steps:
-      - run: echo "bench-replay stub"
+      - name: Resolve checkout ref
+        id: checkout-ref
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.DEREK_PAT || secrets.GITHUB_TOKEN }}
+          script: |
+            if (context.eventName === 'workflow_dispatch') {
+              // Auto-discover PR for the current branch
+              const branch = '${{ github.ref_name }}';
+              const { data: prs } = await github.rest.pulls.list({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                head: `${context.repo.owner}:${branch}`,
+                state: 'open',
+                per_page: 1,
+              });
+              if (prs.length) {
+                const pr = prs[0];
+                core.exportVariable('BENCH_PR', String(pr.number));
+                core.exportVariable('BENCH_ACTOR', '${{ github.actor }}');
+                core.info(`Found PR #${pr.number} for branch '${branch}'`);
+                const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+                const { data: comment } = await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pr.number,
+                  body: `cc @${'${{ github.actor }}'}\n\n🚀 Replay benchmark started! [View run](${runUrl})\n\n⏳ **Status:** Running...\n\n**Config:** chain: \`${'${{ inputs.chain || 'mainnet' }}'}\`, blocks: \`${'${{ inputs.blocks || '5000' }}'}\`, warmup: \`${'${{ inputs.warmup || '1000' }}'}\``,
+                });
+                core.exportVariable('BENCH_COMMENT_ID', String(comment.id));
+                if (pr.mergeable) {
+                  core.setOutput('ref', `refs/pull/${pr.number}/merge`);
+                } else {
+                  core.setOutput('ref', pr.head.sha);
+                }
+              } else {
+                core.info(`No open PR found for branch '${branch}', results will be in job summary`);
+                core.setOutput('ref', '${{ github.ref }}');
+              }
+              return;
+            }
+            if (!process.env.BENCH_PR) {
+              core.setOutput('ref', '${{ github.ref }}');
+              return;
+            }
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: parseInt(process.env.BENCH_PR),
+            });
+            if (pr.state !== 'open' || !pr.mergeable) {
+              core.setOutput('ref', pr.head.sha);
+            } else {
+              core.setOutput('ref', `refs/pull/${process.env.BENCH_PR}/merge`);
+            }
+
+      - name: Clean up root-owned files from previous runs
+        run: sudo rm -rf bench-results/
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.checkout-ref.outputs.ref }}
+
+      - name: Resolve job URL and update status
+        if: env.BENCH_COMMENT_ID
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.DEREK_PAT }}
+          script: |
+            const { data: jobs } = await github.rest.actions.listJobsForWorkflowRun({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: context.runId,
+            });
+            const job = jobs.jobs.find(j => j.name === 'bench-replay');
+            const jobUrl = job ? job.html_url : `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            core.exportVariable('BENCH_JOB_URL', jobUrl);
+
+            const blocks = process.env.BENCH_BLOCKS;
+            const warmup = process.env.BENCH_WARMUP_BLOCKS;
+            const baseline = '${{ inputs.baseline-name }}';
+            const feature = '${{ inputs.feature-name }}';
+            const samply = process.env.BENCH_SAMPLY === 'true';
+            const samplyNote = samply ? ', samply: `enabled`' : '';
+            const chain = process.env.BENCH_CHAIN || 'mainnet';
+            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`replay\`, chain: \`${chain}\`, blocks: \`${blocks}\`, warmup: \`${warmup}\`, baseline: \`${baseline}\`, feature: \`${feature}\`${samplyNote}`);
+
+            const { buildBody } = require('./.github/scripts/bench-update-status.js');
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: parseInt(process.env.BENCH_COMMENT_ID),
+              body: buildBody('Resolving refs...'),
+            });
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.9
+        continue-on-error: true
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$HOME/.local/bin" sh
+
+      - name: Resolve PR head branch
+        id: pr-info
+        uses: actions/github-script@v8
+        with:
+          script: |
+            if (process.env.BENCH_PR) {
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: parseInt(process.env.BENCH_PR),
+              });
+              core.setOutput('head-ref', pr.head.ref);
+              core.setOutput('head-sha', pr.head.sha);
+            } else {
+              core.setOutput('head-ref', '${{ github.ref_name }}');
+              core.setOutput('head-sha', '${{ github.sha }}');
+            }
+
+      - name: Resolve baseline and feature refs
+        id: refs
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { execSync } = require('child_process');
+            const run = (cmd) => execSync(cmd, { encoding: 'utf8' }).trim();
+
+            const baselineArg = '${{ inputs.baseline }}';
+            const featureArg = '${{ inputs.feature }}';
+
+            let baselineRef, baselineName, featureRef, featureName;
+
+            if (baselineArg) {
+              try { run(`git fetch origin "${baselineArg}" --quiet`); } catch {}
+              try {
+                baselineRef = run(`git rev-parse "${baselineArg}"`);
+              } catch {
+                baselineRef = run(`git rev-parse "origin/${baselineArg}"`);
+              }
+              baselineName = baselineArg;
+            } else {
+              try {
+                baselineRef = run('git merge-base HEAD origin/main');
+              } catch {
+                baselineRef = '${{ github.sha }}';
+              }
+              baselineName = 'main';
+            }
+
+            if (featureArg) {
+              try { run(`git fetch origin "${featureArg}" --quiet`); } catch {}
+              try {
+                featureRef = run(`git rev-parse "${featureArg}"`);
+              } catch {
+                featureRef = run(`git rev-parse "origin/${featureArg}"`);
+              }
+              featureName = featureArg;
+            } else {
+              featureRef = '${{ steps.pr-info.outputs.head-sha }}';
+              featureName = '${{ steps.pr-info.outputs.head-ref }}';
+            }
+
+            core.setOutput('baseline-ref', baselineRef);
+            core.setOutput('baseline-name', baselineName);
+            core.setOutput('feature-ref', featureRef);
+            core.setOutput('feature-name', featureName);
+
+      - name: Update status (running benchmark)
+        if: success() && env.BENCH_COMMENT_ID
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.DEREK_PAT }}
+          script: |
+            const s = require('./.github/scripts/bench-update-status.js');
+            await s({github, context, status: 'Running replay benchmark...'});
+
+      - name: Run replay benchmark
+        id: bench
+        env:
+          BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
+          FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
+          DEREK_PAT: ${{ secrets.DEREK_PAT }}
+        run: bash .github/scripts/bench-tempo-replay.sh
+
+      - name: Parse results
+        id: results
+        if: success()
+        env:
+          BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
+          BASELINE_NAME: ${{ steps.refs.outputs.baseline-name }}
+          FEATURE_NAME: ${{ steps.refs.outputs.feature-name }}
+          FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
+        run: |
+          SUMMARY_ARGS="--output-summary $BENCH_WORK_DIR/summary.json"
+          SUMMARY_ARGS="$SUMMARY_ARGS --output-markdown $BENCH_WORK_DIR/comment.md"
+          SUMMARY_ARGS="$SUMMARY_ARGS --repo ${{ github.repository }}"
+          SUMMARY_ARGS="$SUMMARY_ARGS --baseline-ref ${BASELINE_REF}"
+          SUMMARY_ARGS="$SUMMARY_ARGS --baseline-name ${BASELINE_NAME}"
+          SUMMARY_ARGS="$SUMMARY_ARGS --feature-name ${FEATURE_NAME}"
+          SUMMARY_ARGS="$SUMMARY_ARGS --feature-ref ${FEATURE_REF}"
+          BASELINE_JSONS="$BENCH_WORK_DIR/baseline-1/report.json $BENCH_WORK_DIR/baseline-2/report.json"
+          FEATURE_JSONS="$BENCH_WORK_DIR/feature-1/report.json $BENCH_WORK_DIR/feature-2/report.json"
+          SUMMARY_ARGS="$SUMMARY_ARGS --baseline-json $BASELINE_JSONS"
+          SUMMARY_ARGS="$SUMMARY_ARGS --feature-json $FEATURE_JSONS"
+          # shellcheck disable=SC2086
+          python3 .github/scripts/bench-replay-summary.py $SUMMARY_ARGS
+
+      - name: Generate charts
+        if: success()
+        env:
+          BASELINE_NAME: ${{ steps.refs.outputs.baseline-name }}
+          FEATURE_NAME: ${{ steps.refs.outputs.feature-name }}
+        run: |
+          CHART_ARGS="--output-dir $BENCH_WORK_DIR/charts"
+          FEATURE_JSONS="$BENCH_WORK_DIR/feature-1/report.json $BENCH_WORK_DIR/feature-2/report.json"
+          BASELINE_JSONS="$BENCH_WORK_DIR/baseline-1/report.json $BENCH_WORK_DIR/baseline-2/report.json"
+          CHART_ARGS="$CHART_ARGS --feature $FEATURE_JSONS"
+          CHART_ARGS="$CHART_ARGS --baseline $BASELINE_JSONS"
+          CHART_ARGS="$CHART_ARGS --baseline-name ${BASELINE_NAME}"
+          CHART_ARGS="$CHART_ARGS --feature-name ${FEATURE_NAME}"
+          # shellcheck disable=SC2086
+          uv run --with matplotlib python3 .github/scripts/bench-replay-charts.py $CHART_ARGS
+
+      - name: Upload results
+        if: "!cancelled()"
+        uses: actions/upload-artifact@v4
+        with:
+          name: tempo-bench-replay-results
+          path: bench-results/
+
+      - name: Push charts
+        id: push-charts
+        if: success()
+        run: |
+          PR_NUMBER="${BENCH_PR:-0}"
+          RUN_ID=${{ github.run_id }}
+          CHART_DIR="pr/${PR_NUMBER}/${RUN_ID}"
+          CHARTS_REPO="https://x-access-token:${{ secrets.DEREK_TOKEN }}@github.com/decofe/tempo-bench-charts.git"
+
+          TMP_DIR=$(mktemp -d)
+          if git clone --depth 1 "${CHARTS_REPO}" "${TMP_DIR}" 2>/dev/null; then
+            true
+          else
+            git init "${TMP_DIR}"
+            git -C "${TMP_DIR}" remote add origin "${CHARTS_REPO}"
+          fi
+
+          mkdir -p "${TMP_DIR}/${CHART_DIR}"
+          cp "$BENCH_WORK_DIR"/charts/*.png "${TMP_DIR}/${CHART_DIR}/"
+          git -C "${TMP_DIR}" add "${CHART_DIR}"
+          git -C "${TMP_DIR}" -c user.name="github-actions" -c user.email="github-actions@github.com" \
+            commit -m "bench charts for PR #${PR_NUMBER} run ${RUN_ID}"
+          git -C "${TMP_DIR}" push origin HEAD:main
+          echo "sha=$(git -C "${TMP_DIR}" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          rm -rf "${TMP_DIR}"
+
+      - name: Compare & comment
+        if: success() && env.BENCH_COMMENT_ID
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.DEREK_PAT }}
+          script: |
+            const fs = require('fs');
+
+            let comment = '';
+            try {
+              comment = fs.readFileSync(process.env.BENCH_WORK_DIR + '/comment.md', 'utf8');
+            } catch (e) {
+              comment = '⚠️ Replay benchmark completed but failed to generate comparison.';
+            }
+
+            const sha = '${{ steps.push-charts.outputs.sha }}';
+            const prNumber = process.env.BENCH_PR || '0';
+            const runId = '${{ github.run_id }}';
+
+            if (sha) {
+              const baseUrl = `https://raw.githubusercontent.com/decofe/tempo-bench-charts/${sha}/pr/${prNumber}/${runId}`;
+              const charts = [
+                { file: 'latency_throughput.png', label: 'Latency, Throughput & Diff' },
+                { file: 'wait_breakdown.png', label: 'Wait Time Breakdown' },
+                { file: 'gas_vs_latency.png', label: 'Gas vs Latency' },
+              ];
+              let chartMarkdown = '\n\n### Charts\n\n';
+              for (const chart of charts) {
+                chartMarkdown += `<details><summary>${chart.label}</summary>\n\n`;
+                chartMarkdown += `![${chart.label}](${baseUrl}/${chart.file})\n\n`;
+                chartMarkdown += `</details>\n\n`;
+              }
+              comment += chartMarkdown;
+            }
+
+            const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const chain = process.env.BENCH_CHAIN || 'mainnet';
+            const blocks = process.env.BENCH_BLOCKS || '5000';
+            const warmup = process.env.BENCH_WARMUP_BLOCKS || '1000';
+            const body = `cc @${process.env.BENCH_ACTOR}\n\n✅ Replay benchmark complete! [View job](${jobUrl})\n\nChain: \`${chain}\`\nWarmup: \`${warmup}\`\nBlocks: \`${blocks}\`\n\n${comment}`;
+
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: parseInt(process.env.BENCH_COMMENT_ID),
+              body,
+            });
+
+      - name: Write job summary
+        if: success()
+        run: |
+          if [ -f "$BENCH_WORK_DIR/comment.md" ]; then
+            cat "$BENCH_WORK_DIR/comment.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Update status (failed)
+        if: failure() && env.BENCH_COMMENT_ID
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.DEREK_PAT }}
+          script: |
+            const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: parseInt(process.env.BENCH_COMMENT_ID),
+              body: `cc @${process.env.BENCH_ACTOR}\n\n❌ Replay benchmark failed. [View logs](${jobUrl})`,
+            });
+
+      - name: Update status (cancelled)
+        if: cancelled() && env.BENCH_COMMENT_ID
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.DEREK_PAT }}
+          script: |
+            const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: parseInt(process.env.BENCH_COMMENT_ID),
+              body: `cc @${process.env.BENCH_ACTOR}\n\n⚠️ Replay benchmark cancelled. [View logs](${jobUrl})`,
+            });

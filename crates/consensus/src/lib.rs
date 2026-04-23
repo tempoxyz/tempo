@@ -63,8 +63,8 @@ impl TempoConsensus {
 
         // Validate the timestamp milliseconds part
         if header.timestamp_millis_part >= 1000 {
-            return Err(ConsensusError::Other(
-                "Timestamp milliseconds part must be less than 1000".to_string(),
+            return Err(ConsensusError::msg(
+                "Timestamp milliseconds part must be less than 1000",
             ));
         }
 
@@ -76,8 +76,8 @@ impl TempoConsensus {
         }
 
         if header.shared_gas_limit != header.gas_limit() / TEMPO_SHARED_GAS_DIVISOR {
-            return Err(ConsensusError::Other(
-                "Shared gas limit does not match header gas limit".to_string(),
+            return Err(ConsensusError::msg(
+                "Shared gas limit does not match header gas limit",
             ));
         }
 
@@ -89,7 +89,7 @@ impl TempoConsensus {
         );
 
         if header.general_gas_limit != expected_general_gas_limit {
-            return Err(ConsensusError::Other(format!(
+            return Err(ConsensusError::msg(format!(
                 "General gas limit {} does not match expected {}",
                 header.general_gas_limit, expected_general_gas_limit
             )));
@@ -160,7 +160,7 @@ impl Consensus<Block> for TempoConsensus {
         if let Some(tx) = transactions.iter().find(|&tx| {
             tx.is_system_tx() && !tx.is_valid_system_tx(self.inner.chain_spec().chain().id())
         }) {
-            return Err(ConsensusError::Other(format!(
+            return Err(ConsensusError::msg(format!(
                 "Invalid system transaction: {}",
                 tx.tx_hash()
             )));
@@ -178,17 +178,15 @@ impl Consensus<Block> for TempoConsensus {
             .unwrap_or_default();
 
         if end_of_block_system_txs.len() != SYSTEM_TX_COUNT {
-            return Err(ConsensusError::Other(
-                "Block must contain end-of-block system txs".to_string(),
+            return Err(ConsensusError::msg(
+                "Block must contain end-of-block system txs",
             ));
         }
 
         // Validate that the sequence of end-of-block system txs is correct
         for (tx, expected_to) in end_of_block_system_txs.into_iter().zip(SYSTEM_TX_ADDRESSES) {
             if tx.to().unwrap_or_default() != expected_to {
-                return Err(ConsensusError::Other(
-                    "Invalid end-of-block system tx order".to_string(),
-                ));
+                return Err(ConsensusError::msg("Invalid end-of-block system tx order"));
             }
         }
 
