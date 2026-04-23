@@ -199,7 +199,6 @@ jobs:
         env:
           EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
           EVENTS_CERT: ${{ secrets.EVENTS_CERT }}
-          EVENTS_ARGS: ${{ secrets.EVENTS_ARGS }}
           RUNNER_TEMP: ${{ runner.temp }}
           GH_REPO: ${{ github.repository }}
           SHORT_SHA: ${{ steps.shortsha.outputs.shortsha }}
@@ -211,7 +210,8 @@ jobs:
           echo "$EVENTS_KEY" > "${RUNNER_TEMP}/key"
           echo "$EVENTS_CERT" > "${RUNNER_TEMP}/cert"
 
-          curl -sf -o /dev/null -X POST ${EVENTS_ARGS} \
+          # EVENTS_ARGS may contain additional curl arguments, not just a URL.
+          curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }} \
             --key "${RUNNER_TEMP}/key" \
             --cert "${RUNNER_TEMP}/cert" \
             -H "Content-Type: application/json" \
@@ -231,7 +231,6 @@ jobs:
         env:
           EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
           EVENTS_CERT: ${{ secrets.EVENTS_CERT }}
-          EVENTS_ARGS: ${{ secrets.EVENTS_ARGS }}
           RUNNER_TEMP: ${{ runner.temp }}
           GH_REPO: ${{ github.repository }}
           COMMIT_SHA: ${{ github.sha }}
@@ -242,7 +241,8 @@ jobs:
           echo "$EVENTS_KEY" > "${RUNNER_TEMP}/key"
           echo "$EVENTS_CERT" > "${RUNNER_TEMP}/cert"
 
-          curl -sf -o /dev/null -X POST ${EVENTS_ARGS} \
+          # EVENTS_ARGS may contain additional curl arguments, not just a URL.
+          curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }} \
             --key "${RUNNER_TEMP}/key" \
             --cert "${RUNNER_TEMP}/cert" \
             -H "Content-Type: application/json" \
