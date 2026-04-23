@@ -758,13 +758,13 @@ impl Inner<Init> {
         let block_height = block.height();
         let block_digest = block.digest();
 
-        // Persist the block in the marshal actor and execution layer.
-        if !self.marshal.verified(round, block).await {
-            bail!("marshal actor refused to persist verified block");
-        }
-
-        // FIXME: move this into the certification step.
         if is_good {
+            // Persist the block in the marshal actor and execution layer.
+            if !self.marshal.verified(round, block).await {
+                bail!("marshal actor refused to persist verified block");
+            }
+
+            // FIXME: move this into the certification step?
             self.state
                 .executor
                 .canonicalize_head(block_height, block_digest)
