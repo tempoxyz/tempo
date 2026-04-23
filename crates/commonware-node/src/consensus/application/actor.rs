@@ -926,7 +926,7 @@ async fn verify_header(
         let ctx = block
             .header()
             .consensus_context
-            .ok_or_eyre("missing consensus context")?;
+            .ok_or_eyre("missing consensus context after t4 activation")?;
 
         let expected_ctx = TempoConsensusContext {
             epoch: round.epoch().get(),
