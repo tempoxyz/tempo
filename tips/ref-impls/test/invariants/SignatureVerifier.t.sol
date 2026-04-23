@@ -9,7 +9,7 @@ import { ISignatureVerifier } from "tempo-std/interfaces/ISignatureVerifier.sol"
 /// @dev Tests invariants SV1-SV4, SV6, SV7 from the TIP-1020 spec. The precompile is
 ///      stateless, so each handler tests a specific property via direct calls.
 ///      SV5 (gas schedule) requires dedicated low-level gas tests and is NOT covered here.
-/// forge-config: tempo.invariant.depth = 300
+/// forge-config: default.invariant.depth = 300
 /// forge-config: ci.invariant.depth = 300
 contract SignatureVerifierInvariantTest is TempoTest {
 
