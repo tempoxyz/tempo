@@ -640,7 +640,7 @@ mod tests {
 
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         StorageCtx::enter(&mut storage, || {
             let mut escrow = TIP20ChannelEscrow::new();
             let unsupported = check_selector_coverage(
@@ -656,7 +656,7 @@ mod tests {
 
     #[test]
     fn test_open_settle_close_flow_and_tombstone() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         let payer_signer = PrivateKeySigner::random();
         let payer = payer_signer.address();
         let payee = Address::random();
@@ -739,7 +739,7 @@ mod tests {
 
     #[test]
     fn test_top_up_cancels_close_request() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         let payer = Address::random();
         let payee = Address::random();
         let salt = B256::random();
@@ -792,7 +792,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_rejects_static_mutation() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         StorageCtx::enter(&mut storage, || {
             let mut escrow = TIP20ChannelEscrow::new();
             let result = escrow.call(
@@ -814,7 +814,7 @@ mod tests {
 
     #[test]
     fn test_settle_rejects_invalid_signature() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         let payer = Address::random();
         let payee = Address::random();
         let salt = B256::random();
