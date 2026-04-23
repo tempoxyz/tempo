@@ -332,63 +332,21 @@ pub(crate) struct WalletArgs {
     gcp: bool,
 }
 
-/// Shared arguments for commands that update the validator config contract.
-#[derive(Debug, clap::Args)]
-pub(crate) struct ValidatorTransactionArgs {
-    #[command(flatten)]
-    wallet: WalletArgs,
-
-    /// The RPC URL to submit the transaction to.
-    #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
-    rpc_url: String,
-
-    /// Skip the interactive confirmation prompt.
-    #[arg(long, short = 'y')]
-    yes: bool,
-}
-
-impl ValidatorTransactionArgs {
-    fn confirm<T: SolCall + Serialize>(&self, call: &T) -> eyre::Result<()> {
-        eprintln!(
-            "{}",
-            &serde_json::json!({
-                "to": VALIDATOR_CONFIG_V2_ADDRESS,
-                "signature": T::SIGNATURE,
-                "call": call,
-            })
-        );
-
-        if self.yes {
-            return Ok(());
-        }
-
-        eprint!("\nSubmit this transaction? [y/N] ");
-        std::io::stderr().flush()?;
-
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
-
-        if !matches!(input.trim(), "y" | "Y" | "yes" | "YES") {
-            Err(eyre!("transaction cancelled by user"))
-        } else {
-            Ok(())
-        }
-    }
-
-    async fn wallet(&self) -> eyre::Result<EthereumWallet> {
-        if self.wallet.ledger {
+impl WalletArgs {
+    async fn build(&self) -> eyre::Result<EthereumWallet> {
+        if self.ledger {
             let signer = LedgerSigner::new(LedgerHDPath::LedgerLive(0), None)
                 .await
                 .wrap_err("failed to connect to Ledger device")?;
 
             Ok(EthereumWallet::new(signer))
-        } else if self.wallet.trezor {
+        } else if self.trezor {
             let signer = TrezorSigner::new(TrezorHDPath::TrezorLive(0), None)
                 .await
                 .wrap_err("failed to connect to Trezor device")?;
 
             Ok(EthereumWallet::new(signer))
-        } else if self.wallet.aws {
+        } else if self.aws {
             let key_id = get_env("AWS_KMS_KEY_ID")?;
             let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
             let client = aws_sdk_kms::Client::new(&config);
@@ -397,7 +355,7 @@ impl ValidatorTransactionArgs {
                 .wrap_err("failed to create AWS KMS signer")?;
 
             Ok(EthereumWallet::new(signer))
-        } else if self.wallet.gcp {
+        } else if self.gcp {
             let project = get_env("GCP_PROJECT_ID")?;
             let location = get_env("GCP_LOCATION")?;
             let keyring = get_env("GCP_KEY_RING")?;
@@ -422,7 +380,7 @@ impl ValidatorTransactionArgs {
                 .wrap_err("failed to create GCP KMS signer")?;
 
             Ok(EthereumWallet::new(signer))
-        } else if let Some(path) = &self.wallet.wallet_key {
+        } else if let Some(path) = &self.wallet_key {
             let signer = key_from_file(path).wrap_err_with(|| {
                 format!("failed reading private key from file `{}`", path.display())
             })?;
@@ -432,13 +390,72 @@ impl ValidatorTransactionArgs {
             bail!("a wallet option must be set")
         }
     }
+}
 
-    async fn provider(&self) -> eyre::Result<impl Provider<TempoNetwork>> {
-        let wallet = self.wallet().await?;
+/// Shared arguments for commands that update the validator config contract.
+#[derive(Debug, clap::Args)]
+pub(crate) struct ValidatorTransactionArgs {
+    #[command(flatten)]
+    wallet: WalletArgs,
+
+    /// The RPC URL to submit the transaction to.
+    #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
+    rpc_url: String,
+
+    /// Output transaction details
+    #[arg(long)]
+    create_only: bool,
+
+    /// Skip the interactive confirmation prompt.
+    #[arg(long, short = 'y')]
+    yes: bool,
+}
+
+impl ValidatorTransactionArgs {
+    async fn call<T: SolCall + Serialize>(&self, call: &T) -> eyre::Result<()> {
+        let tx = TransactionRequest::default()
+            .to(VALIDATOR_CONFIG_V2_ADDRESS)
+            .input(call.abi_encode().into());
+
+        if self.create_only {
+            println!("{}", &serde_json::json!(tx));
+            return Ok(());
+        }
+
+        if !self.yes {
+            eprintln!("{}", &serde_json::json!(tx));
+            eprint!("\nSubmit this transaction? [y/N] ");
+            std::io::stderr().flush()?;
+
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input)?;
+
+            if !matches!(input.trim(), "y" | "Y" | "yes" | "YES") {
+                bail!("transaction cancelled by user")
+            }
+        }
+
+        let wallet = self.wallet.build().await?;
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-            .fetch_chain_id()
             .with_gas_estimation()
             .wallet(wallet)
+            .connect(&self.rpc_url)
+            .await
+            .wrap_err("failed to connect to RPC")?;
+
+        let pending = provider
+            .send_transaction(tx.into())
+            .await
+            .wrap_err("failed to send transaction")?;
+
+        let tx_hash = pending.tx_hash();
+        println!("{tx_hash}");
+        Ok(())
+    }
+
+    async fn provider(&self) -> eyre::Result<impl Provider<TempoNetwork>> {
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .fetch_chain_id()
             .connect(&self.rpc_url)
             .await
             .wrap_err("failed to connect to RPC")?;
@@ -453,11 +470,13 @@ pub(crate) struct AddValidator {
     identity: ValidatorIdentityArgs,
     #[command(flatten)]
     sig: ValidatorSignatureArgs,
-    #[command(flatten)]
-    submit: ValidatorTransactionArgs,
+
     /// The fee recipient address
     #[arg(long, value_name = "ETHEREUM_ADDRESS")]
     fee_recipient: Address,
+
+    #[command(flatten)]
+    submit: ValidatorTransactionArgs,
 }
 
 impl AddValidator {
@@ -488,20 +507,7 @@ impl AddValidator {
             feeRecipient: self.fee_recipient,
         };
 
-        self.submit.confirm(&call)?;
-
-        let tx = TransactionRequest::default()
-            .to(VALIDATOR_CONFIG_V2_ADDRESS)
-            .input(call.abi_encode().into());
-
-        let pending = provider
-            .send_transaction(tx.into())
-            .await
-            .wrap_err("failed to send transaction")?;
-
-        let tx_hash = pending.tx_hash();
-        println!("transaction submitted: {tx_hash}");
-
+        self.submit.call(&call).await?;
         Ok(())
     }
 }
@@ -511,13 +517,12 @@ pub(crate) struct TransferValidatorOwnership {
     /// Validator ethereum address, ed25519 public key, or index
     #[arg()]
     id: ValidatorId,
-
-    #[command(flatten)]
-    submit: ValidatorTransactionArgs,
-
     /// Path to the file holding the private key of the new validator address
     #[arg(long, value_name = "FILE")]
     new_private_key: PathBuf,
+
+    #[command(flatten)]
+    submit: ValidatorTransactionArgs,
 }
 
 impl TransferValidatorOwnership {
@@ -540,20 +545,7 @@ impl TransferValidatorOwnership {
             newAddress: new_validator_address,
         };
 
-        self.submit.confirm(&call)?;
-
-        let tx = TransactionRequest::default()
-            .to(VALIDATOR_CONFIG_V2_ADDRESS)
-            .input(call.abi_encode().into());
-
-        let pending = provider
-            .send_transaction(tx.into())
-            .await
-            .wrap_err("failed to send transaction")?;
-
-        let tx_hash = pending.tx_hash();
-        println!("transaction submitted: {tx_hash}");
-
+        self.submit.call(&call).await?;
         Ok(())
     }
 }
@@ -598,20 +590,7 @@ impl RotateValidator {
             signature,
         };
 
-        self.submit.confirm(&call)?;
-
-        let tx = TransactionRequest::default()
-            .to(VALIDATOR_CONFIG_V2_ADDRESS)
-            .input(call.abi_encode().into());
-
-        let pending = provider
-            .send_transaction(tx.into())
-            .await
-            .wrap_err("failed to send transaction")?;
-
-        let tx_hash = pending.tx_hash();
-        println!("transaction submitted: {tx_hash}");
-
+        self.submit.call(&call).await?;
         Ok(())
     }
 }
@@ -735,20 +714,7 @@ impl SetValidatorIpAddress {
             egress: self.egress.map_or(validator.egress, |v| v.to_string()),
         };
 
-        self.submit.confirm(&call)?;
-
-        let tx = TransactionRequest::default()
-            .to(VALIDATOR_CONFIG_V2_ADDRESS)
-            .input(call.abi_encode().into());
-
-        let pending = provider
-            .send_transaction(tx.into())
-            .await
-            .wrap_err("failed to send transaction")?;
-
-        let tx_hash = pending.tx_hash();
-        println!("transaction submitted: {tx_hash}");
-
+        self.submit.call(&call).await?;
         Ok(())
     }
 }
@@ -773,20 +739,7 @@ impl DeactivateValidator {
             idx: validator.index,
         };
 
-        self.submit.confirm(&call)?;
-
-        let tx = TransactionRequest::default()
-            .to(VALIDATOR_CONFIG_V2_ADDRESS)
-            .input(call.abi_encode().into());
-
-        let pending = provider
-            .send_transaction(tx.into())
-            .await
-            .wrap_err("failed to send transaction")?;
-
-        let tx_hash = pending.tx_hash();
-        println!("transaction submitted: {tx_hash}");
-
+        self.submit.call(&call).await?;
         Ok(())
     }
 }
@@ -807,7 +760,6 @@ pub(crate) struct SetValidatorFeeRecipient {
 impl SetValidatorFeeRecipient {
     async fn run(self) -> eyre::Result<()> {
         let provider = self.submit.provider().await?;
-
         let validator = read_validator_from_contract(&provider, self.id).await?;
 
         let call = IValidatorConfigV2::setFeeRecipientCall {
@@ -815,20 +767,7 @@ impl SetValidatorFeeRecipient {
             feeRecipient: self.fee_recipient,
         };
 
-        self.submit.confirm(&call)?;
-
-        let tx = TransactionRequest::default()
-            .to(VALIDATOR_CONFIG_V2_ADDRESS)
-            .input(call.abi_encode().into());
-
-        let pending = provider
-            .send_transaction(tx.into())
-            .await
-            .wrap_err("failed to send transaction")?;
-
-        let tx_hash = pending.tx_hash();
-        println!("transaction submitted: {tx_hash}");
-
+        self.submit.call(&call).await?;
         Ok(())
     }
 }
