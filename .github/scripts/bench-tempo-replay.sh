@@ -256,8 +256,7 @@ run_single() {
     txgen-tempo extract --rpc "$REPLAY_RPC_URL" --from "$from_block" --to "$warmup_to" \
       | bench send-blocks \
         --engine http://127.0.0.1:8551 \
-        --jwt-secret "$DATADIR/jwt.hex" \
-        --metrics-url http://localhost:9001 2>&1 | sed -u "s/^/[bench] /"
+        --jwt-secret "$DATADIR/jwt.hex" 2>&1 | sed -u "s/^/[bench] /"
     from_block=$(( warmup_to + 1 ))
   fi
 
