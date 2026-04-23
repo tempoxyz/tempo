@@ -53,24 +53,31 @@ def parse_report_json(path: str) -> tuple[list[dict], list[dict]]:
     return rows, report.get("samples", [])
 
 
-def extract_persistence_quantiles(samples: list[dict]) -> dict[str, float]:
-    """Extract final-scrape persistence duration quantiles from Prometheus samples.
+def extract_persistence_metrics(samples: list[dict]) -> dict:
+    """Extract final-scrape persistence duration quantiles and count from Prometheus samples.
 
-    Returns a dict like {"0.5": 0.123, "0.9": 0.456, "0.95": 0.789} (values in seconds).
+    Returns {"quantiles": {"0.5": 0.123, ...}, "count": 42}.
     """
-    metric_name = "reth_consensus_engine_beacon_persistence_duration"
+    duration_name = "reth_consensus_engine_beacon_persistence_duration"
+    count_name = "reth_consensus_engine_beacon_persistence_duration_count"
     # Keep only the last offset_ms for each quantile
-    latest: dict[str, tuple[int, float]] = {}
+    latest_q: dict[str, tuple[int, float]] = {}
+    latest_count: tuple[int, float] = (0, 0.0)
     for s in samples:
-        if s["name"] != metric_name:
-            continue
-        q = s.get("labels", {}).get("quantile")
-        if q is None:
-            continue
         offset = s.get("offset_ms", 0)
-        if q not in latest or offset >= latest[q][0]:
-            latest[q] = (offset, s["value"])
-    return {q: v for q, (_, v) in latest.items()}
+        if s["name"] == duration_name:
+            q = s.get("labels", {}).get("quantile")
+            if q is None:
+                continue
+            if q not in latest_q or offset >= latest_q[q][0]:
+                latest_q[q] = (offset, s["value"])
+        elif s["name"] == count_name:
+            if offset >= latest_count[0]:
+                latest_count = (offset, s["value"])
+    return {
+        "quantiles": {q: v for q, (_, v) in latest_q.items()},
+        "count": latest_count[1],
+    }
 
 
 def stddev(values: list[float], mean: float) -> float:
@@ -601,23 +608,24 @@ def main():
         if table:
             wait_time_tables.append(table)
 
-    # Persistence duration from Prometheus metrics
+    # Persistence metrics from Prometheus
     metrics_tables = []
-    b_persist_q = extract_persistence_quantiles(baseline_samples)
-    f_persist_q = extract_persistence_quantiles(feature_samples)
-    if b_persist_q and f_persist_q:
+    b_persist = extract_persistence_metrics(baseline_samples)
+    f_persist = extract_persistence_metrics(feature_samples)
+    if b_persist["quantiles"] and f_persist["quantiles"]:
         fmt_s_val = lambda v: f"{v * 1_000:.2f}ms" if v < 1 else f"{v:.3f}s"
         lines = [
-            "### Persistence Duration",
+            "### Persistence",
             "",
-            f"| Quantile | {baseline_label} | {feature_label} |",
-            "|----------|------|--------|",
+            f"| Metric | {baseline_label} | {feature_label} |",
+            "|--------|------|--------|",
+            f"| Count | {int(b_persist['count'])} | {int(f_persist['count'])} |",
         ]
         for q in ["0.5", "0.9", "0.99"]:
-            if q in b_persist_q and q in f_persist_q:
-                label = f"P{int(float(q) * 100)}"
-                lines.append(f"| {label} | {fmt_s_val(b_persist_q[q])} | {fmt_s_val(f_persist_q[q])} |")
-        if len(lines) > 4:
+            if q in b_persist["quantiles"] and q in f_persist["quantiles"]:
+                label = f"Duration P{int(float(q) * 100)}"
+                lines.append(f"| {label} | {fmt_s_val(b_persist['quantiles'][q])} | {fmt_s_val(f_persist['quantiles'][q])} |")
+        if len(lines) > 5:
             metrics_tables.append("\n".join(lines))
 
     summary = {
