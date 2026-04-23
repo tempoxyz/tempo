@@ -3,8 +3,11 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+mod error;
+
 use alloy_consensus::{BlockHeader, Transaction, transaction::TxHashRef};
 use alloy_evm::block::BlockExecutionResult;
+pub use error::TempoConsensusError;
 use reth_chainspec::EthChainSpec;
 use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator, ReceiptRootBloom};
 use reth_consensus_common::validation::{
@@ -63,9 +66,10 @@ impl TempoConsensus {
 
         // Validate the timestamp milliseconds part
         if header.timestamp_millis_part >= 1000 {
-            return Err(ConsensusError::msg(
-                "Timestamp milliseconds part must be less than 1000",
-            ));
+            return Err(TempoConsensusError::InvalidTimestampMillisPart {
+                millis_part: header.timestamp_millis_part,
+            }
+            .into());
         }
 
         if header.timestamp_millis() > present_timestamp_millis + ALLOWED_FUTURE_BLOCK_TIME_MILLIS {
@@ -75,10 +79,13 @@ impl TempoConsensus {
             });
         }
 
-        if header.shared_gas_limit != header.gas_limit() / TEMPO_SHARED_GAS_DIVISOR {
-            return Err(ConsensusError::msg(
-                "Shared gas limit does not match header gas limit",
-            ));
+        let expected_shared = header.gas_limit() / TEMPO_SHARED_GAS_DIVISOR;
+        if header.shared_gas_limit != expected_shared {
+            return Err(TempoConsensusError::SharedGasLimitMismatch {
+                expected: expected_shared,
+                actual: header.shared_gas_limit,
+            }
+            .into());
         }
 
         // Validate the general (non-payment) gas limit
@@ -89,10 +96,11 @@ impl TempoConsensus {
         );
 
         if header.general_gas_limit != expected_general_gas_limit {
-            return Err(ConsensusError::msg(format!(
-                "General gas limit {} does not match expected {}",
-                header.general_gas_limit, expected_general_gas_limit
-            )));
+            return Err(TempoConsensusError::GeneralGasLimitMismatch {
+                expected: expected_general_gas_limit,
+                actual: header.general_gas_limit,
+            }
+            .into());
         }
 
         Ok(())
@@ -160,10 +168,10 @@ impl Consensus<Block> for TempoConsensus {
         if let Some(tx) = transactions.iter().find(|&tx| {
             tx.is_system_tx() && !tx.is_valid_system_tx(self.inner.chain_spec().chain().id())
         }) {
-            return Err(ConsensusError::msg(format!(
-                "Invalid system transaction: {}",
-                tx.tx_hash()
-            )));
+            return Err(TempoConsensusError::InvalidSystemTransaction {
+                tx_hash: *tx.tx_hash(),
+            }
+            .into());
         }
 
         // Get the last END_OF_BLOCK_SYSTEM_TX_COUNT transactions and validate they are end-of-block system txs
@@ -178,15 +186,22 @@ impl Consensus<Block> for TempoConsensus {
             .unwrap_or_default();
 
         if end_of_block_system_txs.len() != SYSTEM_TX_COUNT {
-            return Err(ConsensusError::msg(
-                "Block must contain end-of-block system txs",
-            ));
+            return Err(TempoConsensusError::MissingEndOfBlockSystemTxs {
+                expected: SYSTEM_TX_COUNT,
+                actual: end_of_block_system_txs.len(),
+            }
+            .into());
         }
 
         // Validate that the sequence of end-of-block system txs is correct
         for (tx, expected_to) in end_of_block_system_txs.into_iter().zip(SYSTEM_TX_ADDRESSES) {
-            if tx.to().unwrap_or_default() != expected_to {
-                return Err(ConsensusError::msg("Invalid end-of-block system tx order"));
+            let actual_to = tx.to().unwrap_or_default();
+            if actual_to != expected_to {
+                return Err(TempoConsensusError::InvalidEndOfBlockSystemTxOrder {
+                    expected: expected_to,
+                    actual: actual_to,
+                }
+                .into());
             }
         }
 
@@ -392,10 +407,10 @@ mod tests {
 
         let result = consensus.validate_header(&sealed);
         let err = result.unwrap_err();
-        assert!(matches!(err, ConsensusError::Other(_)));
         assert!(
-            err.to_string()
-                .contains("Shared gas limit does not match header gas limit")
+            err.downcast_other_ref::<TempoConsensusError>()
+                .is_some_and(|e| matches!(e, TempoConsensusError::SharedGasLimitMismatch { .. })),
+            "Expected SharedGasLimitMismatch, got: {err:?}"
         );
     }
 
@@ -415,10 +430,10 @@ mod tests {
 
         let result = consensus.validate_header(&sealed);
         let err = result.unwrap_err();
-        assert!(matches!(err, ConsensusError::Other(_)));
         assert!(
-            err.to_string().contains("General gas limit"),
-            "Expected error about general gas limit, got: {err}",
+            err.downcast_other_ref::<TempoConsensusError>()
+                .is_some_and(|e| matches!(e, TempoConsensusError::GeneralGasLimitMismatch { .. })),
+            "Expected GeneralGasLimitMismatch, got: {err:?}",
         );
 
         // Now verify the correct pre-T1 value works
@@ -529,10 +544,10 @@ mod tests {
 
         let result = consensus.validate_header(&sealed);
         let err = result.unwrap_err();
-        assert!(matches!(err, ConsensusError::Other(_)));
         assert!(
-            err.to_string().contains("General gas limit"),
-            "Expected error about general gas limit, got: {err}",
+            err.downcast_other_ref::<TempoConsensusError>()
+                .is_some_and(|e| matches!(e, TempoConsensusError::GeneralGasLimitMismatch { .. })),
+            "Expected GeneralGasLimitMismatch, got: {err:?}",
         );
 
         // Now verify the correct T1 value works (fixed 30M)
@@ -562,10 +577,13 @@ mod tests {
         let result =
             consensus.validate_header_with_timestamp_millis(&sealed, current_timestamp_millis);
         let err = result.unwrap_err();
-        assert!(matches!(err, ConsensusError::Other(_)));
         assert!(
-            err.to_string()
-                .contains("Timestamp milliseconds part must be less than 1000")
+            err.downcast_other_ref::<TempoConsensusError>()
+                .is_some_and(|e| matches!(
+                    e,
+                    TempoConsensusError::InvalidTimestampMillisPart { millis_part: 1000 }
+                )),
+            "Expected InvalidTimestampMillisPart, got: {err:?}"
         );
 
         // Test timestamp > 1000
@@ -578,10 +596,13 @@ mod tests {
         let result =
             consensus.validate_header_with_timestamp_millis(&sealed, current_timestamp_millis);
         let err = result.unwrap_err();
-        assert!(matches!(err, ConsensusError::Other(_)));
         assert!(
-            err.to_string()
-                .contains("Timestamp milliseconds part must be less than 1000")
+            err.downcast_other_ref::<TempoConsensusError>()
+                .is_some_and(|e| matches!(
+                    e,
+                    TempoConsensusError::InvalidTimestampMillisPart { millis_part: 1001 }
+                )),
+            "Expected InvalidTimestampMillisPart, got: {err:?}"
         );
     }
 
@@ -780,8 +801,13 @@ mod tests {
 
         let result = consensus.validate_block_pre_execution(&sealed);
         let err = result.unwrap_err();
-        assert!(matches!(err, ConsensusError::Other(_)));
-        assert!(err.to_string().contains(&tx_hash.to_string()));
+        assert!(
+            err.downcast_other_ref::<TempoConsensusError>()
+                .is_some_and(
+                    |e| matches!(e, TempoConsensusError::InvalidSystemTransaction { tx_hash: h } if *h == tx_hash)
+                ),
+            "Expected InvalidSystemTransaction, got: {err:?}"
+        );
     }
 
     #[test]
@@ -800,10 +826,13 @@ mod tests {
 
         let result = consensus.validate_block_pre_execution(&sealed);
         let err = result.unwrap_err();
-        assert!(matches!(err, ConsensusError::Other(_)));
         assert!(
-            err.to_string()
-                .contains("Block must contain end-of-block system txs")
+            err.downcast_other_ref::<TempoConsensusError>()
+                .is_some_and(|e| matches!(
+                    e,
+                    TempoConsensusError::MissingEndOfBlockSystemTxs { .. }
+                )),
+            "Expected MissingEndOfBlockSystemTxs, got: {err:?}"
         );
     }
 
@@ -902,10 +931,13 @@ mod tests {
 
         let result = consensus.validate_block_pre_execution(&sealed);
         let err = result.unwrap_err();
-        assert!(matches!(err, ConsensusError::Other(_)));
         assert!(
-            err.to_string()
-                .contains("Invalid end-of-block system tx order")
+            err.downcast_other_ref::<TempoConsensusError>()
+                .is_some_and(|e| matches!(
+                    e,
+                    TempoConsensusError::InvalidEndOfBlockSystemTxOrder { .. }
+                )),
+            "Expected InvalidEndOfBlockSystemTxOrder, got: {err:?}"
         );
     }
 }

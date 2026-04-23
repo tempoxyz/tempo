@@ -12541,6 +12541,7 @@ dependencies = [
  "serde_json",
  "tempo-chainspec",
  "tempo-primitives",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
