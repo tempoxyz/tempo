@@ -18,7 +18,7 @@ Tests require a Tempo-capable `forge` binary.
 Run the full suite:
 
 ```bash
-cd tips/verification
+cd tips/verify
 forge test
 ```
 
@@ -37,7 +37,7 @@ forge test --match-test test_mint
 Use the lighter CI profile when you want to match CI settings locally:
 
 ```bash
-cd tips/verification
+cd tips/verify
 FOUNDRY_PROFILE=fuzz500 forge test -vvv
 ```
 
