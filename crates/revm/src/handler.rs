@@ -339,12 +339,15 @@ fn calculate_key_authorization_gas(
         let mut num_sstores = 1 + limit_slots;
         let mut num_reset_sstores = 0;
 
-        // T3+: include scoped-call storage rows in intrinsic gas.
-        if spec.is_t3() {
+        // T4+ splits repeated set length-slot writes out so T3 reexecution keeps the existing
+        // all-rows-as-SSTORE_SET accounting from current main.
+        if spec.is_t4() {
             let scope_slots = call_scope_storage_slots(&key_auth.authorization);
             let scope_reset_rows = call_scope_length_reset_rows(&key_auth.authorization);
             num_sstores += scope_slots.saturating_sub(scope_reset_rows);
             num_reset_sstores += scope_reset_rows;
+        } else if spec.is_t3() {
+            num_sstores += call_scope_storage_slots(&key_auth.authorization);
         }
 
         let sstore_cost = gas_params.get(GasId::sstore_set_without_load_cost());
@@ -2951,6 +2954,24 @@ mod tests {
             assert_eq!(state_gas, 0, "T1B has no state gas");
         }
 
+        let t3_gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T3);
+        let t3_sstore =
+            t3_gas_params.get(revm::context_interface::cfg::GasId::sstore_set_without_load_cost());
+        let t3_sload =
+            t3_gas_params.warm_storage_read_cost() + t3_gas_params.cold_storage_additional_cost();
+
+        for num_limits in 0..=3 {
+            let num_sstores = 1 + 2 * num_limits as u64;
+            let (gas, state_gas) = calculate_key_authorization_gas(
+                &create_key_auth(num_limits),
+                &t3_gas_params,
+                TempoHardfork::T3,
+            );
+            let expected = ECRECOVER_GAS + t3_sload + t3_sstore * num_sstores + BUFFER;
+            assert_eq!(gas, expected, "T3 with {num_limits} limits");
+            assert_eq!(state_gas, 0, "T3 has no state gas");
+        }
+
         // T4 with T4 gas params: regular sstore = 19,900, state gas = 230,000 per SSTORE
         let t4_gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T4);
         let t4_sstore =
@@ -2998,6 +3019,15 @@ mod tests {
         };
 
         let (gas, state_gas) =
+            calculate_key_authorization_gas(&scoped, &t3_gas_params, TempoHardfork::T3);
+        let expected = ECRECOVER_GAS + t3_sload + t3_sstore * (1 + 12) + BUFFER;
+        assert_eq!(
+            gas, expected,
+            "T3 scope writes should keep current main accounting"
+        );
+        assert_eq!(state_gas, 0, "T3 has no state gas");
+
+        let (gas, state_gas) =
             calculate_key_authorization_gas(&scoped, &t4_gas_params, TempoHardfork::T4);
         // 1 key write + 12 scope slots = 13 SSTOREs:
         // account mode(1) + target insertion rows(3) + selector insertion rows(3)
@@ -3039,23 +3069,18 @@ mod tests {
         };
 
         let (gas, state_gas) =
-            calculate_key_authorization_gas(&multi_scope, &t1b_gas_params, TempoHardfork::T3);
-        let warm_reset = t1b_gas_params.sstore_static_gas()
-            + t1b_gas_params.sstore_reset_without_cold_load_cost();
-        // 11 fresh scope rows:
-        // - is_scoped(1)
-        // - top-level targets set with 2 entries: positions(2) + values(2) + first len write(1)
-        // - first target selector set with 2 entries: positions(2) + values(2) + first len write(1)
-        // plus 2 repeated vec length-slot writes charged at warm reset instead of SSTORE_SET.
-        let expected = ECRECOVER_GAS + sload + sstore * 12 + warm_reset * 2 + BUFFER;
+            calculate_key_authorization_gas(&multi_scope, &t3_gas_params, TempoHardfork::T3);
+        let expected = ECRECOVER_GAS + t3_sload + t3_sstore * 14 + BUFFER;
         assert_eq!(
             gas, expected,
-            "T3 scope writes should charge repeated set length updates at warm reset cost"
+            "T3 scope writes should keep current main accounting"
         );
         assert_eq!(state_gas, 0, "T3 has no state gas");
 
         let (gas, state_gas) =
             calculate_key_authorization_gas(&multi_scope, &t4_gas_params, TempoHardfork::T4);
+        let warm_reset =
+            t4_gas_params.sstore_static_gas() + t4_gas_params.sstore_reset_without_cold_load_cost();
         let expected_state = t4_sstore_state * 12;
         let expected = ECRECOVER_GAS
             + t4_sload
