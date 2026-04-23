@@ -1069,7 +1069,7 @@ impl AccountKeychain {
         }
 
         let period_end = self.spending_limits[limit_key][token].period_end.read()?;
-        if current_timestamp < period_end {
+        if current_timestamp <= period_end {
             return Ok((remaining, period_end));
         }
 
@@ -1129,7 +1129,7 @@ impl AccountKeychain {
         let mut remaining = limit_state.remaining;
         let is_periodic = limit_state.period != 0;
 
-        if is_periodic && current_timestamp >= limit_state.period_end {
+        if is_periodic && current_timestamp > limit_state.period_end {
             let next_end = limit_state.compute_next_period_end(current_timestamp);
 
             remaining = U256::from(limit_state.max);
@@ -3663,6 +3663,123 @@ mod tests {
                 token,
             })?;
             assert_eq!(remaining, U256::from(90));
+            Ok(())
+        })
+    }
+
+    /// `period_end` is the last in-period timestamp. `getRemainingLimitWithPeriod`
+    /// at that exact timestamp must still report the stored `period_end`, not an
+    /// advanced one — rollover happens strictly after `period_end`.
+    #[test]
+    fn test_t3_periodic_limit_read_holds_at_exact_period_end() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        storage.set_timestamp(U256::from(1_000u64));
+
+        let account = Address::random();
+        let key_id = Address::random();
+        let token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
+
+            keychain.authorize_key(
+                account,
+                authorizeKeyCall {
+                    keyId: key_id,
+                    signatureType: SignatureType::Secp256k1,
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: true,
+                        limits: vec![TokenLimit {
+                            token,
+                            amount: U256::from(100),
+                            period: 60,
+                        }],
+                        allowAnyCalls: true,
+                        allowedCalls: vec![],
+                    },
+                },
+            )?;
+            Ok::<_, eyre::Report>(())
+        })?;
+
+        // period_end is `1_000 + 60 = 1_060`.
+        storage.set_timestamp(U256::from(1_060u64));
+        StorageCtx::enter(&mut storage, || {
+            let keychain = AccountKeychain::new();
+            let r = keychain.get_remaining_limit_with_period(getRemainingLimitWithPeriodCall {
+                account,
+                keyId: key_id,
+                token,
+            })?;
+            assert_eq!(r.periodEnd, 1_060, "period_end must not advance at boundary");
+            assert_eq!(r.remaining, U256::from(100));
+            Ok(())
+        })
+    }
+
+    /// `period_end` is the last in-period timestamp: spends at `period_end` must
+    /// consume the current period's remaining, not trigger a rollover.
+    #[test]
+    fn test_t3_periodic_limit_no_rollover_at_exact_period_end() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        storage.set_timestamp(U256::from(1_000u64));
+
+        let account = Address::random();
+        let key_id = Address::random();
+        let token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
+
+            keychain.authorize_key(
+                account,
+                authorizeKeyCall {
+                    keyId: key_id,
+                    signatureType: SignatureType::Secp256k1,
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: true,
+                        limits: vec![TokenLimit {
+                            token,
+                            amount: U256::from(100),
+                            period: 60,
+                        }],
+                        allowAnyCalls: true,
+                        allowedCalls: vec![],
+                    },
+                },
+            )?;
+
+            keychain.set_transaction_key(key_id)?;
+            keychain.authorize_transfer(account, token, U256::from(100))?;
+            Ok::<_, eyre::Report>(())
+        })?;
+
+        // period_end is `1_000 + 60 = 1_060`. A spend at that exact timestamp
+        // still belongs to the first period; the rollover must happen strictly
+        // after `period_end`.
+        storage.set_timestamp(U256::from(1_060u64));
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.set_transaction_key(key_id)?;
+            keychain.set_tx_origin(account)?;
+
+            let err = keychain
+                .authorize_transfer(account, token, U256::from(1))
+                .expect_err("must reject when limit is exhausted in the current period");
+            assert!(matches!(
+                err,
+                TempoPrecompileError::AccountKeychainError(
+                    AccountKeychainError::SpendingLimitExceeded(_)
+                )
+            ));
             Ok(())
         })
     }
