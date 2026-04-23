@@ -20,6 +20,7 @@ members = [
   "crates/eyre",
   "crates/ext",
   "crates/evm",
+  "crates/genesis",
   "crates/e2e",
   "crates/faucet",
   "crates/node",
@@ -106,6 +107,7 @@ tempo-consensus = { path = "crates/consensus", default-features = false }
 tempo-dkg-onchain-artifacts = { path = "crates/dkg-onchain-artifacts", default-features = false }
 tempo-e2e = { path = "crates/e2e" }
 tempo-faucet = { path = "crates/faucet", default-features = false }
+tempo-genesis = { path = "crates/genesis" }
 tempo-evm = { path = "crates/evm", default-features = false }
 tempo-eyre = { path = "crates/eyre", default-features = false }
 tempo-ext = { path = "crates/ext" }
