@@ -7,6 +7,7 @@ use std::{
     sync::Arc,
 };
 
+use alloy::hex::ToHexExt;
 use alloy_network::EthereumWallet;
 use alloy_primitives::{Address, B256, Bytes};
 use alloy_provider::{Provider, ProviderBuilder};
@@ -25,7 +26,7 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_math::algebra::Random as _;
-use commonware_utils::NZU64;
+use commonware_utils::{NZU64, ordered};
 use eyre::{OptionExt as _, Report, WrapErr as _, bail, eyre};
 use reth_chainspec::EthChainSpec;
 use reth_cli_runner::CliRunner;
@@ -151,8 +152,9 @@ pub(crate) enum ConsensusSubcommand {
     TransferValidatorOwnership(TransferValidatorOwnership),
     /// Look up a validator by etheruem address, e25519 public key, or index.
     Validator(ValidatorInfo),
-    /// Query validator info from the previous epoch's DKG outcome and current contract state.
-    ValidatorsInfo(ValidatorsInfo),
+    /// Query current committee information from the previous epoch's DKG outcome and current contract state.
+    #[command(alias = "validators-info")]
+    Info(Info),
 }
 
 impl ConsensusSubcommand {
@@ -169,7 +171,7 @@ impl ConsensusSubcommand {
             Self::GeneratePrivateKey(args) => args.run(),
             Self::CalculatePublicKey(args) => args.run(),
             Self::Validator(args) => args.run().await,
-            Self::ValidatorsInfo(args) => args.run().await,
+            Self::Info(args) => args.run().await,
         }
     }
 }
@@ -909,13 +911,26 @@ pub(crate) struct ValidatorInfo {
     no_dkg_information: bool,
 }
 
+#[derive(Debug, Serialize)]
+struct ValidatorOutput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_dkg_player: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_dkg_dealer: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    in_committee: Option<bool>,
+
+    #[serde(flatten)]
+    validator: Validator,
+}
+
 /// Output for the single-validator lookup enriched with DKG role and epoch context.
 #[derive(Debug, Serialize)]
-struct SingleValidatorOutput {
+struct ValidatorInfoOutput {
     current_epoch: u64,
     current_height: u64,
     #[serde(flatten)]
-    validator: ValidatorEntry,
+    validator: ValidatorOutput,
 }
 
 impl ValidatorInfo {
@@ -1008,17 +1023,11 @@ impl ValidatorInfo {
             in_committee = Some(committee);
         }
 
-        let output = SingleValidatorOutput {
+        let output = ValidatorInfoOutput {
             current_epoch: current_epoch.get(),
             current_height: current_height.get(),
-            validator: ValidatorEntry {
-                onchain_address: validator.validatorAddress,
-                public_key: alloy_primitives::hex::encode(pubkey_bytes),
-                inbound_address: validator.ingress,
-                outbound_address: validator.egress,
-                fee_recipient: Some(validator.feeRecipient),
-                index: Some(validator.index),
-                active: validator.deactivatedAtHeight == 0,
+            validator: ValidatorOutput {
+                validator,
                 is_dkg_dealer,
                 is_dkg_player,
                 in_committee,
@@ -1032,7 +1041,7 @@ impl ValidatorInfo {
 
 /// Validator info output structure
 #[derive(Debug, Serialize)]
-struct ValidatorInfoOutput {
+struct InfoOutput {
     /// The current epoch (at the time of query)
     current_epoch: u64,
     /// The current height (at the time of query)
@@ -1046,41 +1055,11 @@ struct ValidatorInfoOutput {
     /// The epoch at which the next full DKG ceremony will be triggered (from contract)
     next_full_dkg_epoch: u64,
     /// List of validators participating in the DKG
-    validators: Vec<ValidatorEntry>,
-}
-
-/// Individual validator entry
-#[derive(Debug, Serialize)]
-struct ValidatorEntry {
-    /// onchain address of the validator
-    onchain_address: Address,
-    /// ed25519 public key (hex)
-    public_key: String,
-    /// Inbound IP address for p2p connections
-    inbound_address: String,
-    /// Outbound IP address
-    outbound_address: String,
-    /// Fee recipient address
-    #[serde(skip_serializing_if = "Option::is_none")]
-    fee_recipient: Option<Address>,
-    /// Validator index
-    #[serde(skip_serializing_if = "Option::is_none")]
-    index: Option<u64>,
-    /// Whether the validator is active in the current contract state
-    active: bool,
-    // Whether the validator is a dealer in the current epoch.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    is_dkg_dealer: Option<bool>,
-    /// Whether the validator is a player in the current epoch.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    is_dkg_player: Option<bool>,
-    /// Whether the validator is in the committee for the given epoch.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    in_committee: Option<bool>,
+    validators: Vec<ValidatorOutput>,
 }
 
 #[derive(Debug, clap::Args)]
-pub(crate) struct ValidatorsInfo {
+pub(crate) struct Info {
     /// RPC URL to query. Defaults to <https://rpc.presto.tempo.xyz>
     #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
     rpc_url: String,
@@ -1091,7 +1070,7 @@ pub(crate) struct ValidatorsInfo {
     chain: Option<Arc<TempoChainSpec>>,
 }
 
-impl ValidatorsInfo {
+impl Info {
     async fn run(self) -> eyre::Result<()> {
         use alloy_consensus::BlockHeader;
         use alloy_provider::ProviderBuilder;
@@ -1165,22 +1144,6 @@ impl ValidatorsInfo {
         let dkg_outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref())
             .wrap_err("failed to decode DKG outcome from extra_data")?;
 
-        let tx = TransactionRequest::default()
-            .to(VALIDATOR_CONFIG_V2_ADDRESS)
-            .input(
-                IValidatorConfigV2::getActiveValidatorsCall {}
-                    .abi_encode()
-                    .into(),
-            );
-
-        let resp = provider
-            .call(tx.into())
-            .await
-            .wrap_err("failed to call getActiveValidators")?;
-
-        let validators = IValidatorConfigV2::getActiveValidatorsCall::abi_decode_returns(&resp)
-            .wrap_err("failed to decode getActiveValidators response")?;
-
         let next_dkg_result = provider
             .call(
                 TransactionRequest::default()
@@ -1192,6 +1155,7 @@ impl ValidatorsInfo {
                     )
                     .into(),
             )
+            .number(latest_block_number)
             .await
             .wrap_err("failed to call getNextNetworkIdentityRotationEpoch")?;
 
@@ -1201,36 +1165,79 @@ impl ValidatorsInfo {
             )
             .wrap_err("failed to decode getNextNetworkIdentityRotationEpoch response")?;
 
-        let validator_entries = validators
+        let active_validators_result = provider
+            .call(
+                TransactionRequest::default()
+                    .to(VALIDATOR_CONFIG_V2_ADDRESS)
+                    .input(
+                        IValidatorConfigV2::getActiveValidatorsCall {}
+                            .abi_encode()
+                            .into(),
+                    )
+                    .into(),
+            )
+            .number(latest_block_number)
+            .await
+            .wrap_err("failed to call getActiveValidators")?;
+
+        let active_validators = IValidatorConfigV2::getActiveValidatorsCall::abi_decode_returns(
+            &active_validators_result,
+        )
+        .wrap_err("failed to decode getActiveValidators response")?;
+
+        let active_validators_by_public_key = active_validators
             .into_iter()
-            .map(|validator| {
-                let pubkey_bytes = validator.publicKey.0;
-                let key = PublicKey::decode(&mut &pubkey_bytes[..])
-                    .wrap_err("failed decoding on-chain ed25519 key")?;
+            .map(|v| (v.publicKey, v))
+            .collect::<std::collections::BTreeMap<_, _>>();
 
-                Ok(ValidatorEntry {
-                    onchain_address: validator.validatorAddress,
-                    public_key: alloy_primitives::hex::encode(pubkey_bytes),
-                    inbound_address: validator.ingress,
-                    outbound_address: validator.egress,
-                    fee_recipient: None,
-                    index: None,
-                    active: true,
-                    is_dkg_dealer: Some(dkg_outcome.players().position(&key).is_some()),
-                    is_dkg_player: Some(dkg_outcome.next_players().position(&key).is_some()),
-                    in_committee: Some(dkg_outcome.players().position(&key).is_some()),
-                })
+        let players = dkg_outcome.players();
+        let next_players = dkg_outcome.next_players();
+        let dkg_players = ordered::Set::from_iter_dedup(players.iter().chain(next_players));
+
+        // Add validators that are active onchain
+        let mut validators_by_public_key = active_validators_by_public_key.clone();
+
+        // Add validators that are in the dkg outcome but no longer active onchain
+        for public_key in dkg_players {
+            let key = B256::from_slice(public_key.as_ref());
+            if let std::collections::btree_map::Entry::Vacant(e) =
+                validators_by_public_key.entry(key)
+            {
+                let id = ValidatorId::PublicKey(key);
+                match read_validator_from_contract(&provider, id).await {
+                    Ok(v) => _ = e.insert(v),
+                    Err(e) => eprintln!("failed to lookup validator {}: {e}", key.encode_hex()),
+                }
+            }
+        }
+
+        let mut validators: Vec<ValidatorOutput> = Vec::new();
+        for (key, validator) in validators_by_public_key {
+            let public_key = match PublicKey::decode(key.as_ref()) {
+                Ok(key) => key,
+                Err(e) => {
+                    let index = validator.index;
+                    eprintln!("invalid ed25519 public key found on validator index {index}: {e}",);
+                    continue;
+                }
+            };
+
+            validators.push(ValidatorOutput {
+                validator,
+                is_dkg_dealer: Some(players.position(&public_key).is_some()),
+                is_dkg_player: Some(next_players.position(&public_key).is_some()),
+                in_committee: Some(players.position(&public_key).is_some()),
             })
-            .collect::<eyre::Result<Vec<_>>>()?;
+        }
 
-        let output = ValidatorInfoOutput {
+        let output = InfoOutput {
+            validators,
             current_epoch: current_epoch.get(),
             current_height: current_height.get(),
             last_boundary: boundary_height.get(),
             epoch_length,
             is_next_full_dkg: dkg_outcome.is_next_full_dkg,
             next_full_dkg_epoch,
-            validators: validator_entries,
         };
 
         println!("{}", serde_json::to_string_pretty(&output)?);
