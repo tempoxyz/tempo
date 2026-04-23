@@ -911,13 +911,26 @@ pub(crate) struct ValidatorInfo {
     no_dkg_information: bool,
 }
 
+#[derive(Debug, Serialize)]
+struct ValidatorOutput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_dkg_player: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_dkg_dealer: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    in_committee: Option<bool>,
+
+    #[serde(flatten)]
+    validator: Validator,
+}
+
 /// Output for the single-validator lookup enriched with DKG role and epoch context.
 #[derive(Debug, Serialize)]
-struct SingleValidatorOutput {
+struct ValidatorInfoOutput {
     current_epoch: u64,
     current_height: u64,
     #[serde(flatten)]
-    validator: ValidatorEntry,
+    validator: ValidatorOutput,
 }
 
 impl ValidatorInfo {
@@ -1010,17 +1023,11 @@ impl ValidatorInfo {
             in_committee = Some(committee);
         }
 
-        let output = SingleValidatorOutput {
+        let output = ValidatorInfoOutput {
             current_epoch: current_epoch.get(),
             current_height: current_height.get(),
-            validator: ValidatorEntry {
-                onchain_address: validator.validatorAddress,
-                public_key: alloy_primitives::hex::encode(pubkey_bytes),
-                inbound_address: validator.ingress,
-                outbound_address: validator.egress,
-                fee_recipient: Some(validator.feeRecipient),
-                index: Some(validator.index),
-                active: validator.deactivatedAtHeight == 0,
+            validator: ValidatorOutput {
+                validator,
                 is_dkg_dealer,
                 is_dkg_player,
                 in_committee,
@@ -1034,7 +1041,7 @@ impl ValidatorInfo {
 
 /// Validator info output structure
 #[derive(Debug, Serialize)]
-struct ValidatorInfoOutput {
+struct InfoOutput {
     /// The current epoch (at the time of query)
     current_epoch: u64,
     /// The current height (at the time of query)
@@ -1048,37 +1055,7 @@ struct ValidatorInfoOutput {
     /// The epoch at which the next full DKG ceremony will be triggered (from contract)
     next_full_dkg_epoch: u64,
     /// List of validators participating in the DKG
-    validators: Vec<ValidatorEntry>,
-}
-
-/// Individual validator entry
-#[derive(Debug, Serialize)]
-struct ValidatorEntry {
-    /// onchain address of the validator
-    onchain_address: Address,
-    /// ed25519 public key (hex)
-    public_key: String,
-    /// Inbound IP address for p2p connections
-    inbound_address: String,
-    /// Outbound IP address
-    outbound_address: String,
-    /// Fee recipient address
-    #[serde(skip_serializing_if = "Option::is_none")]
-    fee_recipient: Option<Address>,
-    /// Validator index
-    #[serde(skip_serializing_if = "Option::is_none")]
-    index: Option<u64>,
-    /// Whether the validator is active in the current contract state
-    active: bool,
-    // Whether the validator is a dealer in the current epoch.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    is_dkg_dealer: Option<bool>,
-    /// Whether the validator is a player in the current epoch.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    is_dkg_player: Option<bool>,
-    /// Whether the validator is in the committee for the given epoch.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    in_committee: Option<bool>,
+    validators: Vec<ValidatorOutput>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -1208,9 +1185,10 @@ impl Info {
         )
         .wrap_err("failed to decode getActiveValidators response")?;
 
-        let active_validators_by_public_key = std::collections::BTreeMap::from_iter(
-            active_validators.iter().map(|v| (v.publicKey, v.clone())),
-        );
+        let active_validators_by_public_key = active_validators
+            .into_iter()
+            .map(|v| (v.publicKey, v))
+            .collect::<std::collections::BTreeMap<_, _>>();
 
         let players = dkg_outcome.players();
         let next_players = dkg_outcome.next_players();
@@ -1226,14 +1204,15 @@ impl Info {
                 validators_by_public_key.entry(key)
             {
                 let id = ValidatorId::PublicKey(key);
-                let validator = read_validator_from_contract(&provider, id).await?;
-                e.insert(validator);
+                match read_validator_from_contract(&provider, id).await {
+                    Ok(v) => _ = e.insert(v),
+                    Err(e) => eprintln!("failed to lookup validator {}: {e}", key.encode_hex()),
+                }
             }
         }
 
-        let mut validator_entries: Vec<ValidatorEntry> = Vec::new();
+        let mut validators: Vec<ValidatorOutput> = Vec::new();
         for (key, validator) in validators_by_public_key {
-            let active = active_validators_by_public_key.contains_key(&key);
             let public_key = match PublicKey::decode(key.as_ref()) {
                 Ok(key) => key,
                 Err(e) => {
@@ -1243,28 +1222,22 @@ impl Info {
                 }
             };
 
-            validator_entries.push(ValidatorEntry {
-                active,
-                onchain_address: validator.validatorAddress,
-                public_key: key.encode_hex(),
-                inbound_address: validator.ingress.clone(),
-                outbound_address: validator.egress.clone(),
-                fee_recipient: Some(validator.feeRecipient),
-                index: Some(validator.index),
+            validators.push(ValidatorOutput {
+                validator,
                 is_dkg_dealer: Some(players.position(&public_key).is_some()),
                 is_dkg_player: Some(next_players.position(&public_key).is_some()),
                 in_committee: Some(players.position(&public_key).is_some()),
             })
         }
 
-        let output = ValidatorInfoOutput {
+        let output = InfoOutput {
+            validators,
             current_epoch: current_epoch.get(),
             current_height: current_height.get(),
             last_boundary: boundary_height.get(),
             epoch_length,
             is_next_full_dkg: dkg_outcome.is_next_full_dkg,
             next_full_dkg_epoch,
-            validators: validator_entries,
         };
 
         println!("{}", serde_json::to_string_pretty(&output)?);
