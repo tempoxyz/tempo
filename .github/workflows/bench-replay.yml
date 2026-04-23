@@ -43,6 +43,14 @@ on:
         description: "Extra node args for feature"
         type: string
         default: ""
+      cores:
+        description: "Limit node to N CPU cores (0=all)"
+        type: string
+        default: "0"
+      abba:
+        description: "Run B-F-F-B interleaved (true) or single A/B (false)"
+        type: string
+        default: "true"
   workflow_call:
     inputs:
       chain:
@@ -82,6 +90,18 @@ on:
       warmup:
         type: string
         required: true
+      cores:
+        type: string
+        required: false
+        default: "0"
+      abba:
+        type: string
+        required: false
+        default: "true"
+      no-slack:
+        type: string
+        required: false
+        default: "false"
       comment-id:
         type: string
         required: false
@@ -89,6 +109,10 @@ on:
       DEREK_PAT:
         required: false
       DEREK_TOKEN:
+        required: false
+      SLACK_BENCH_BOT_TOKEN:
+        required: false
+      SLACK_BENCH_CHANNEL:
         required: false
 
 env:
@@ -113,8 +137,13 @@ jobs:
       BENCH_FEATURE_ARGS: "--dev.block-time 999999s ${{ inputs.feature-args }}"
       BENCH_BLOCKS: ${{ inputs.blocks }}
       BENCH_WARMUP_BLOCKS: ${{ inputs.warmup }}
+      BENCH_CORES: ${{ inputs.cores || '0' }}
+      BENCH_ABBA: ${{ inputs.abba || 'true' }}
+      BENCH_NO_SLACK: ${{ inputs.no-slack || 'false' }}
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
       BENCH_WORK_DIR: bench-results/replay
+      SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
+      SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
     steps:
       - name: Resolve checkout ref
         id: checkout-ref
@@ -201,7 +230,11 @@ jobs:
             const samply = process.env.BENCH_SAMPLY === 'true';
             const samplyNote = samply ? ', samply: `enabled`' : '';
             const chain = process.env.BENCH_CHAIN || 'mainnet';
-            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`replay\`, chain: \`${chain}\`, blocks: \`${blocks}\`, warmup: \`${warmup}\`, baseline: \`${baseline}\`, feature: \`${feature}\`${samplyNote}`);
+            const cores = process.env.BENCH_CORES || '0';
+            const coresNote = cores !== '0' ? `, cores: \`${cores}\`` : '';
+            const abba = process.env.BENCH_ABBA || 'true';
+            const abbaNote = abba === 'false' ? ', abba: `off`' : '';
+            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`replay\`, chain: \`${chain}\`, blocks: \`${blocks}\`, warmup: \`${warmup}\`, baseline: \`${baseline}\`, feature: \`${feature}\`${samplyNote}${coresNote}${abbaNote}`);
 
             const { buildBody } = require('./.github/scripts/bench-update-status.js');
             await github.rest.issues.updateComment({
@@ -284,6 +317,56 @@ jobs:
             core.setOutput('feature-ref', featureRef);
             core.setOutput('feature-name', featureName);
 
+      - name: System setup
+        run: |
+          echo passive | sudo tee /sys/devices/system/cpu/amd_pstate/status 2>/dev/null || true
+          sudo cpupower frequency-set -g performance || true
+          NOMINAL_KHZ=""
+          if [ -f /sys/devices/system/cpu/cpu0/acpi_cppc/nominal_freq ]; then
+            NOMINAL_MHZ=$(cat /sys/devices/system/cpu/cpu0/acpi_cppc/nominal_freq)
+            NOMINAL_KHZ=$((NOMINAL_MHZ * 1000))
+          elif [ -f /sys/devices/system/cpu/cpu0/cpufreq/base_frequency ]; then
+            NOMINAL_KHZ=$(cat /sys/devices/system/cpu/cpu0/cpufreq/base_frequency)
+          fi
+          if [ -n "$NOMINAL_KHZ" ] && [ "$NOMINAL_KHZ" -gt 0 ] 2>/dev/null; then
+            echo "Pinning all cores to nominal frequency: $((NOMINAL_KHZ / 1000)) MHz"
+            for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_max_freq; do
+              echo "$NOMINAL_KHZ" | sudo tee "$f" > /dev/null
+            done
+            for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_min_freq; do
+              echo "$NOMINAL_KHZ" | sudo tee "$f" > /dev/null
+            done
+          fi
+          sudo swapoff -a || true
+          echo 0 | sudo tee /proc/sys/kernel/randomize_va_space || true
+          for cpu in /sys/devices/system/cpu/cpu*/topology/thread_siblings_list; do
+            first=$(cut -d, -f1 < "$cpu" | cut -d- -f1)
+            current=$(echo "$cpu" | grep -o 'cpu[0-9]*' | grep -o '[0-9]*')
+            if [ "$current" != "$first" ]; then
+              echo 0 | sudo tee "/sys/devices/system/cpu/cpu${current}/online" || true
+            fi
+          done
+          echo "Online CPUs: $(nproc)"
+          for p in /sys/kernel/mm/transparent_hugepage /sys/kernel/mm/transparent_hugepages; do
+            [ -d "$p" ] && echo never | sudo tee "$p/enabled" && echo never | sudo tee "$p/defrag" && break
+          done || true
+          sudo pkill -f '^bench-cpu-dma-latency' 2>/dev/null || true
+          sudo bash -c 'exec 3<>/dev/cpu_dma_latency; printf "\0\0\0\0" >&3; exec -a bench-cpu-dma-latency sleep infinity' &
+          echo "BENCH_CPU_DMA_LATENCY_PID=$!" >> "$GITHUB_ENV"
+          for irq in /proc/irq/*/smp_affinity_list; do
+            echo 0 | sudo tee "$irq" 2>/dev/null || true
+          done
+          sudo systemctl stop irqbalance cron atd unattended-upgrades snapd 2>/dev/null || true
+          echo "=== Benchmark environment ==="
+          uname -r
+          lscpu | grep -E 'Model name|CPU\(s\)|MHz|NUMA'
+          cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
+          cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq
+          echo "scaling_min_freq: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq)"
+          echo "scaling_max_freq: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq)"
+          cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || cat /sys/kernel/mm/transparent_hugepages/enabled 2>/dev/null || echo "THP: unknown"
+          free -h
+
       - name: Update status (running benchmark)
         if: success() && env.BENCH_COMMENT_ID
         uses: actions/github-script@v8
@@ -317,8 +400,12 @@ jobs:
           SUMMARY_ARGS="$SUMMARY_ARGS --baseline-name ${BASELINE_NAME}"
           SUMMARY_ARGS="$SUMMARY_ARGS --feature-name ${FEATURE_NAME}"
           SUMMARY_ARGS="$SUMMARY_ARGS --feature-ref ${FEATURE_REF}"
-          BASELINE_JSONS="$BENCH_WORK_DIR/baseline-1/report.json $BENCH_WORK_DIR/baseline-2/report.json"
-          FEATURE_JSONS="$BENCH_WORK_DIR/feature-1/report.json $BENCH_WORK_DIR/feature-2/report.json"
+          BASELINE_JSONS="$BENCH_WORK_DIR/baseline-1/report.json"
+          FEATURE_JSONS="$BENCH_WORK_DIR/feature-1/report.json"
+          if [ "${BENCH_ABBA}" != "false" ]; then
+            BASELINE_JSONS="$BASELINE_JSONS $BENCH_WORK_DIR/baseline-2/report.json"
+            FEATURE_JSONS="$FEATURE_JSONS $BENCH_WORK_DIR/feature-2/report.json"
+          fi
           SUMMARY_ARGS="$SUMMARY_ARGS --baseline-json $BASELINE_JSONS"
           SUMMARY_ARGS="$SUMMARY_ARGS --feature-json $FEATURE_JSONS"
           # shellcheck disable=SC2086
@@ -331,8 +418,12 @@ jobs:
           FEATURE_NAME: ${{ steps.refs.outputs.feature-name }}
         run: |
           CHART_ARGS="--output-dir $BENCH_WORK_DIR/charts"
-          FEATURE_JSONS="$BENCH_WORK_DIR/feature-1/report.json $BENCH_WORK_DIR/feature-2/report.json"
-          BASELINE_JSONS="$BENCH_WORK_DIR/baseline-1/report.json $BENCH_WORK_DIR/baseline-2/report.json"
+          FEATURE_JSONS="$BENCH_WORK_DIR/feature-1/report.json"
+          BASELINE_JSONS="$BENCH_WORK_DIR/baseline-1/report.json"
+          if [ "${BENCH_ABBA}" != "false" ]; then
+            FEATURE_JSONS="$FEATURE_JSONS $BENCH_WORK_DIR/feature-2/report.json"
+            BASELINE_JSONS="$BASELINE_JSONS $BENCH_WORK_DIR/baseline-2/report.json"
+          fi
           CHART_ARGS="$CHART_ARGS --feature $FEATURE_JSONS"
           CHART_ARGS="$CHART_ARGS --baseline $BASELINE_JSONS"
           CHART_ARGS="$CHART_ARGS --baseline-name ${BASELINE_NAME}"
@@ -346,6 +437,25 @@ jobs:
         with:
           name: tempo-bench-replay-results
           path: bench-results/
+
+      - name: Upload samply profiles
+        if: success() && env.BENCH_SAMPLY == 'true'
+        run: |
+          RUNS="baseline-1 feature-1"
+          if [ "${BENCH_ABBA}" != "false" ]; then
+            RUNS="baseline-1 feature-1 feature-2 baseline-2"
+          fi
+          for run in $RUNS; do
+            PROFILE="$BENCH_WORK_DIR/$run/samply-profile.json.gz"
+            if [ -f "$PROFILE" ]; then
+              echo "Uploading samply profile for $run..."
+              URL=$(bash contrib/bench/upload-samply-profile.sh "$PROFILE") || true
+              if [ -n "$URL" ]; then
+                echo "$URL" > "$BENCH_WORK_DIR/$run/samply-profile-url.txt"
+                echo "$run: $URL"
+              fi
+            fi
+          done
 
       - name: Push charts
         id: push-charts
@@ -373,17 +483,18 @@ jobs:
           echo "sha=$(git -C "${TMP_DIR}" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           rm -rf "${TMP_DIR}"
 
-      - name: Compare & comment
-        if: success() && env.BENCH_COMMENT_ID
+      - name: Build final comment
+        id: final-comment
+        if: success()
         uses: actions/github-script@v8
         with:
-          github-token: ${{ secrets.DEREK_PAT }}
           script: |
             const fs = require('fs');
+            const workDir = process.env.BENCH_WORK_DIR;
 
             let comment = '';
             try {
-              comment = fs.readFileSync(process.env.BENCH_WORK_DIR + '/comment.md', 'utf8');
+              comment = fs.readFileSync(workDir + '/comment.md', 'utf8');
             } catch (e) {
               comment = '⚠️ Replay benchmark completed but failed to generate comparison.';
             }
@@ -408,11 +519,44 @@ jobs:
               comment += chartMarkdown;
             }
 
+            // Samply profile links
+            if (process.env.BENCH_SAMPLY === 'true') {
+              const abba = process.env.BENCH_ABBA !== 'false';
+              const runs = abba
+                ? ['baseline-1', 'feature-1', 'feature-2', 'baseline-2']
+                : ['baseline-1', 'feature-1'];
+              const links = [];
+              for (const run of runs) {
+                try {
+                  const url = fs.readFileSync(`${workDir}/${run}/samply-profile-url.txt`, 'utf8').trim();
+                  if (url) links.push(`- **${run}**: [Firefox Profiler](${url})`);
+                } catch (e) {}
+              }
+              if (links.length > 0) {
+                comment += `\n\n### Samply Profiles\n\n${links.join('\n')}\n`;
+              }
+            }
+
+            fs.writeFileSync(workDir + '/final-comment.md', comment);
+
+      - name: Compare & comment
+        if: success() && env.BENCH_COMMENT_ID
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.DEREK_PAT }}
+          script: |
+            const fs = require('fs');
+            const workDir = process.env.BENCH_WORK_DIR;
+
+            let comment = '';
+            try {
+              comment = fs.readFileSync(workDir + '/final-comment.md', 'utf8');
+            } catch (e) {
+              comment = '⚠️ Replay benchmark completed but failed to generate comparison.';
+            }
+
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const chain = process.env.BENCH_CHAIN || 'mainnet';
-            const blocks = process.env.BENCH_BLOCKS || '5000';
-            const warmup = process.env.BENCH_WARMUP_BLOCKS || '1000';
-            const body = `cc @${process.env.BENCH_ACTOR}\n\n✅ Replay benchmark complete! [View job](${jobUrl})\n\nChain: \`${chain}\`\nWarmup: \`${warmup}\`\nBlocks: \`${blocks}\`\n\n${comment}`;
+            const body = `cc @${process.env.BENCH_ACTOR}\n\n✅ Replay benchmark complete! [View job](${jobUrl})\n\n${process.env.BENCH_CONFIG}\n\n${comment}`;
 
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
@@ -424,9 +568,34 @@ jobs:
       - name: Write job summary
         if: success()
         run: |
-          if [ -f "$BENCH_WORK_DIR/comment.md" ]; then
+          if [ -f "$BENCH_WORK_DIR/final-comment.md" ]; then
+            echo "## Replay Benchmark" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "${BENCH_CONFIG}" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            cat "$BENCH_WORK_DIR/final-comment.md" >> "$GITHUB_STEP_SUMMARY"
+          elif [ -f "$BENCH_WORK_DIR/comment.md" ]; then
             cat "$BENCH_WORK_DIR/comment.md" >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      - name: Send Slack notification (success)
+        if: success() && env.BENCH_NO_SLACK != 'true'
+        uses: actions/github-script@v8
+        env:
+          BENCH_BASELINE_NAME: ${{ steps.refs.outputs.baseline-name }}
+          BENCH_FEATURE_NAME: ${{ steps.refs.outputs.feature-name }}
+        with:
+          script: |
+            const notify = require('./.github/scripts/bench-slack-notify.js');
+            await notify.success({ core, context });
+
+      - name: Send Slack notification (failure)
+        if: failure() && env.BENCH_NO_SLACK != 'true'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const notify = require('./.github/scripts/bench-slack-notify.js');
+            await notify.failure({ core, context, failedStep: 'running replay benchmark' });
 
       - name: Update status (failed)
         if: failure() && env.BENCH_COMMENT_ID
@@ -455,3 +624,25 @@ jobs:
               comment_id: parseInt(process.env.BENCH_COMMENT_ID),
               body: `cc @${process.env.BENCH_ACTOR}\n\n⚠️ Replay benchmark cancelled. [View logs](${jobUrl})`,
             });
+
+      - name: Clean build outputs
+        if: always()
+        run: |
+          sudo rm -rf ../tempo-baseline/target ../tempo-feature/target 2>/dev/null || true
+
+      - name: Restore system settings
+        if: always()
+        run: |
+          for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_min_freq; do
+            cat "$(dirname "$f")/cpuinfo_min_freq" | sudo tee "$f" > /dev/null 2>&1 || true
+          done
+          for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_max_freq; do
+            cat "$(dirname "$f")/cpuinfo_max_freq" | sudo tee "$f" > /dev/null 2>&1 || true
+          done
+          echo active | sudo tee /sys/devices/system/cpu/amd_pstate/status 2>/dev/null || true
+          if [ -n "${BENCH_CPU_DMA_LATENCY_PID:-}" ]; then
+            sudo kill "$BENCH_CPU_DMA_LATENCY_PID" 2>/dev/null || true
+          fi
+          sudo pkill -f '^bench-cpu-dma-latency' 2>/dev/null || true
+          sudo cpupower frequency-set -g powersave 2>/dev/null || true
+          sudo systemctl start irqbalance cron atd 2>/dev/null || true
