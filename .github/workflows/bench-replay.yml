@@ -88,6 +88,8 @@ on:
     secrets:
       DEREK_PAT:
         required: false
+      DEREK_TOKEN:
+        required: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -352,7 +354,7 @@ jobs:
           PR_NUMBER="${BENCH_PR:-0}"
           RUN_ID=${{ github.run_id }}
           CHART_DIR="pr/${PR_NUMBER}/${RUN_ID}"
-          CHARTS_REPO="https://x-access-token:${{ secrets.DEREK_PAT }}@github.com/decofe/tempo-bench-charts.git"
+          CHARTS_REPO="https://x-access-token:${{ secrets.DEREK_TOKEN }}@github.com/decofe/tempo-bench-charts.git"
 
           TMP_DIR=$(mktemp -d)
           if git clone --depth 1 "${CHARTS_REPO}" "${TMP_DIR}" 2>/dev/null; then

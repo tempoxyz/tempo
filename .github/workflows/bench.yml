@@ -466,3 +466,4 @@ jobs:
       comment-id: ${{ needs.tempo-bench-ack.outputs.comment-id }}
     secrets:
       DEREK_PAT: ${{ secrets.DEREK_PAT }}
+      DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
