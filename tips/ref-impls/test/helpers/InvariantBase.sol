@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 pragma solidity >=0.8.13 <0.9.0;
 
-import { TIP20 } from "../../src/TIP20.sol";
-import { BaseTest } from "../BaseTest.t.sol";
+import "../TempoTest.t.sol";
 import { ActorManager } from "./ActorManager.sol";
 import { GhostState } from "./GhostState.sol";
 import { TxBuilder } from "./TxBuilder.sol";
+import { StdPrecompiles as PC } from "tempo-std/StdPrecompiles.sol";
 import { VmExecuteTransaction, VmRlp } from "tempo-std/StdVm.sol";
+import { ITIP20, ITIP20Token } from "tempo-std/interfaces/ITIP20.sol";
 
 /// @title InvariantBase - Combined Base Contract for Invariant Tests
 /// @notice Combines all helper functionality into a single base contract
 /// @dev Inherit from this contract to write invariant tests
-abstract contract InvariantBase is BaseTest, ActorManager, GhostState {
+abstract contract InvariantBase is TempoTest, ActorManager, GhostState {
 
     using TxBuilder for *;
 
@@ -23,7 +24,7 @@ abstract contract InvariantBase is BaseTest, ActorManager, GhostState {
     // ============ Test State ============
 
     /// @dev Fee token for testing
-    TIP20 public feeToken;
+    ITIP20Token public feeToken;
 
     /// @dev Validator address for fee collection
     address public validator;
@@ -37,7 +38,7 @@ abstract contract InvariantBase is BaseTest, ActorManager, GhostState {
         super.setUp();
 
         // Initialize fee token
-        feeToken = TIP20(
+        feeToken = ITIP20Token(
             factory.createToken("Fee Token", "FEE", "USD", pathUSD, admin, bytes32("feetoken"))
         );
 
@@ -62,7 +63,7 @@ abstract contract InvariantBase is BaseTest, ActorManager, GhostState {
     function _setupAmmLiquidity() internal {
         // Grant ISSUER_ROLE to admin on pathUSD (requires pathUSDAdmin)
         vm.prank(pathUSDAdmin);
-        pathUSD.grantRole(_ISSUER_ROLE, admin);
+        ITIP20Token(address(pathUSD)).grantRole(_ISSUER_ROLE, admin);
 
         vm.startPrank(admin);
         // Mint tokens to admin first, then provide liquidity
@@ -133,11 +134,11 @@ abstract contract InvariantBase is BaseTest, ActorManager, GhostState {
         bytes32 nonceSlot =
             keccak256(abi.encode(nonceKey, keccak256(abi.encode(account, NONCES_SLOT))));
 
-        uint64 currentNonce = uint64(uint256(vm.load(_NONCE, nonceSlot)));
+        uint64 currentNonce = uint64(uint256(vm.load(PC.NONCE_ADDRESS, nonceSlot)));
         require(currentNonce < type(uint64).max, "Nonce overflow");
 
         newNonce = currentNonce + 1;
-        vm.store(_NONCE, nonceSlot, bytes32(uint256(newNonce)));
+        vm.store(PC.NONCE_ADDRESS, nonceSlot, bytes32(uint256(newNonce)));
 
         _update2dNonce(account, nonceKey);
 
@@ -156,7 +157,7 @@ abstract contract InvariantBase is BaseTest, ActorManager, GhostState {
 
         bytes32 nonceSlot =
             keccak256(abi.encode(nonceKey, keccak256(abi.encode(account, NONCES_SLOT))));
-        return uint64(uint256(vm.load(_NONCE, nonceSlot)));
+        return uint64(uint256(vm.load(PC.NONCE_ADDRESS, nonceSlot)));
     }
 
     // ============ Access Key Helpers ============
@@ -168,7 +169,7 @@ abstract contract InvariantBase is BaseTest, ActorManager, GhostState {
         // Since it's a transient variable, we need to use vm.store with the proper slot
         // The transient storage is at the end of regular storage
         bytes32 slot = bytes32(uint256(2)); // After keys (slot 0) and spendingLimits (slot 1)
-        vm.store(_ACCOUNT_KEYCHAIN, slot, bytes32(uint256(uint160(keyId))));
+        vm.store(PC.ACCOUNT_KEYCHAIN_ADDRESS, slot, bytes32(uint256(uint160(keyId))));
     }
 
     // ============ Revert Reason Helpers ============

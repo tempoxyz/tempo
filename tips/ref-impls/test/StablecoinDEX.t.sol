@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 pragma solidity >=0.8.13 <0.9.0;
 
-import { IStablecoinDEX } from "../src/interfaces/IStablecoinDEX.sol";
-import { ITIP20 } from "../src/interfaces/ITIP20.sol";
-import { ITIP403Registry } from "../src/interfaces/ITIP403Registry.sol";
-import { BaseTest } from "./BaseTest.t.sol";
+import "./TempoTest.t.sol";
 import { MockTIP20 } from "./mocks/MockTIP20.sol";
+import { IStablecoinDEX } from "tempo-std/interfaces/IStablecoinDEX.sol";
+import { ITIP20, ITIP20Token } from "tempo-std/interfaces/ITIP20.sol";
+import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";
 
-contract StablecoinDEXTest is BaseTest {
+contract StablecoinDEXTest is TempoTest {
 
     bytes32 pairKey;
     uint128 constant INITIAL_BALANCE = 10_000e18;
@@ -45,7 +45,7 @@ contract StablecoinDEXTest is BaseTest {
         vm.stopPrank();
 
         vm.startPrank(pathUSDAdmin);
-        pathUSD.grantRole(_ISSUER_ROLE, pathUSDAdmin);
+        ITIP20Token(address(pathUSD)).grantRole(_ISSUER_ROLE, pathUSDAdmin);
         pathUSD.mint(alice, INITIAL_BALANCE);
         pathUSD.mint(bob, INITIAL_BALANCE);
         vm.stopPrank();
@@ -1827,13 +1827,6 @@ contract StablecoinDEXTest is BaseTest {
         internal
         returns (uint128 orderId)
     {
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit OrderPlaced(
-                exchange.nextOrderId(), user, address(token1), amount, true, tick, false, 0
-            );
-        }
-
         vm.prank(user);
         orderId = exchange.place(address(token1), amount, true, tick);
     }
@@ -1846,13 +1839,6 @@ contract StablecoinDEXTest is BaseTest {
         internal
         returns (uint128 orderId)
     {
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit OrderPlaced(
-                exchange.nextOrderId(), user, address(token1), amount, false, tick, false, 0
-            );
-        }
-
         vm.prank(user);
         orderId = exchange.place(address(token1), amount, false, tick);
     }
@@ -2058,6 +2044,7 @@ contract StablecoinDEXTest is BaseTest {
 
     /// @notice Test cancelStaleOrder with compound policy - maker blocked as sender
     /// forge-config: default.hardfork = "tempo:T2"
+    /// forge-config: fuzz500.hardfork = "tempo:T2"
     function test_CancelStaleOrder_Succeeds_BlockedMaker_CompoundPolicy() public {
         // Create compound policy: sender blacklist, recipient always-allow, mint always-allow
         uint64 senderBlacklist = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
@@ -2088,6 +2075,7 @@ contract StablecoinDEXTest is BaseTest {
 
     /// @notice Test cancelStaleOrder fails with compound policy when maker only blocked as recipient
     /// forge-config: default.hardfork = "tempo:T2"
+    /// forge-config: fuzz500.hardfork = "tempo:T2"
     function test_CancelStaleOrder_Fails_MakerOnlyBlockedAsRecipient_CompoundPolicy() public {
         // Create compound policy: sender always-allow, recipient blacklist, mint always-allow
         uint64 recipientBlacklist =

@@ -1,21 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 pragma solidity >=0.8.13 <0.9.0;
 
-import { TIP20 } from "../src/TIP20.sol";
-import { TIP20Factory } from "../src/TIP20Factory.sol";
-import { ITIP20RolesAuth } from "../src/interfaces/ITIP20RolesAuth.sol";
-import { BaseTest } from "./BaseTest.t.sol";
+import "./TempoTest.t.sol";
+import { ITIP20RolesAuth, ITIP20RolesAuthErr } from "tempo-std/interfaces/ITIP20RolesAuth.sol";
 
-contract TIP20RolesAuthTest is BaseTest {
+contract TIP20RolesAuthTest is TempoTest {
 
-    TIP20 token;
+    ITIP20RolesAuth token;
 
     function setUp() public override {
         super.setUp();
-        token = TIP20(
-            factory.createToken(
-                "Test Token", "TST", "USD", TIP20(_PATH_USD), admin, bytes32("test")
-            )
+        token = ITIP20RolesAuth(
+            factory.createToken("Test Token", "TST", "USD", pathUSD, admin, bytes32("test"))
         );
     }
 
@@ -24,7 +20,7 @@ contract TIP20RolesAuthTest is BaseTest {
         try token.grantRole(_ISSUER_ROLE, bob) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuth.Unauthorized.selector));
+            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuthErr.Unauthorized.selector));
         }
     }
 
@@ -38,7 +34,7 @@ contract TIP20RolesAuthTest is BaseTest {
         try token.revokeRole(_ISSUER_ROLE, bob) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuth.Unauthorized.selector));
+            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuthErr.Unauthorized.selector));
         }
         assertTrue(token.hasRole(bob, _ISSUER_ROLE));
 
@@ -59,7 +55,7 @@ contract TIP20RolesAuthTest is BaseTest {
         try token.renounceRole(_ISSUER_ROLE) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuth.Unauthorized.selector));
+            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuthErr.Unauthorized.selector));
         }
 
         // Holder succeeds
@@ -76,7 +72,7 @@ contract TIP20RolesAuthTest is BaseTest {
         try token.setRoleAdmin(_ISSUER_ROLE, NEW_ADMIN_ROLE) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuth.Unauthorized.selector));
+            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuthErr.Unauthorized.selector));
         }
 
         // Admin succeeds
@@ -88,7 +84,7 @@ contract TIP20RolesAuthTest is BaseTest {
         try token.grantRole(_ISSUER_ROLE, bob) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuth.Unauthorized.selector));
+            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuthErr.Unauthorized.selector));
         }
     }
 

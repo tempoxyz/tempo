@@ -170,7 +170,7 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) -> Handle<()> {
-        spawn_cell!(self.context, self.run(votes, certificates, resolver).await)
+        spawn_cell!(self.context, self.run(votes, certificates, resolver))
     }
 
     async fn run(

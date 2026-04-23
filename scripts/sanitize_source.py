@@ -5,7 +5,7 @@ Every edit asserts an expected match count. If a pattern matches 0 times,
 the source has drifted and the script fails — preventing silent breakage.
 
 Usage:
-    sanitize_source.py <primitives_dir> <alloy_dir>
+    sanitize_source.py <primitives_dir> <alloy_dir> <chainspec_dir>
 """
 import os
 import re
@@ -273,6 +273,22 @@ def _strip_rust_strings(line):
     return ''.join(result)
 
 
+def sanitize_chainspec(chainspec_dir):
+    """Strip reth-gated code from tempo-chainspec source files."""
+    lib_rs = f"{chainspec_dir}/src/lib.rs"
+
+    # Delete #![cfg_attr(all(not(test), feature = "reth"), warn(unused_crate_dependencies))]
+    delete_lines(lib_rs, r'^#!\[cfg_attr\(all\(not\(test\), feature = "reth"\), warn\(unused_crate_dependencies\)\)\]\n', expected=1)
+
+    # Delete #[cfg(feature = "reth")] extern crate alloc;
+    delete_lines(lib_rs, r'^#\[cfg\(feature = "reth"\)\]\nextern crate alloc;\n', expected=1)
+
+    # Delete #[cfg(feature = "reth")] gated mod/pub declarations (bootnodes, spec)
+    _delete_cfg_gated_block(lib_rs, '#[cfg(feature = "reth")]', expected=3)
+
+    print(f"  chainspec/src/lib.rs: stripped reth-gated code", file=sys.stderr)
+
+
 def sanitize_alloy(alloy_dir):
     """Strip node-internal code from tempo-alloy source files.
 
@@ -288,12 +304,14 @@ def sanitize_alloy(alloy_dir):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) != 3:
-        print("Usage: sanitize_source.py <primitives_dir> <alloy_dir>", file=sys.stderr)
+    if len(sys.argv) != 4:
+        print("Usage: sanitize_source.py <primitives_dir> <alloy_dir> <chainspec_dir>", file=sys.stderr)
         sys.exit(1)
 
     prim_dir = sys.argv[1]
     alloy_dir = sys.argv[2]
+    chainspec_dir = sys.argv[3]
 
     sanitize_primitives(prim_dir)
     sanitize_alloy(alloy_dir)
+    sanitize_chainspec(chainspec_dir)

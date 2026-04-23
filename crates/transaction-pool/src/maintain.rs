@@ -26,9 +26,8 @@ use tempo_chainspec::TempoChainSpec;
 use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
-    tip20::is_tip20_prefix,
 };
-use tempo_primitives::{TempoHeader, TempoPrimitives};
+use tempo_primitives::{TempoAddressExt, TempoHeader, TempoPrimitives};
 use tracing::{debug, error};
 
 /// Evict transactions this many seconds before they expire to reduce propagation
@@ -162,7 +161,7 @@ impl TempoPoolUpdates {
                 }
             }
             // Fee token pause events and balance changes
-            else if is_tip20_prefix(log.address) {
+            else if log.address.is_tip20() {
                 if let Ok(event) = ITIP20::PauseStateUpdate::decode_log(log) {
                     updates.pause_events.push((log.address, event.isPaused));
                 } else if ITIP20::TransferPolicyUpdate::decode_log(log).is_ok() {

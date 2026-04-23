@@ -31,30 +31,19 @@ use crate::{
     tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
 };
 use alloy::{
-    hex,
     primitives::{Address, B256, U256, keccak256, uint},
     sol_types::SolValue,
 };
 use std::sync::LazyLock;
 use tempo_precompiles_macros::contract;
+use tempo_primitives::TempoAddressExt;
+pub use tempo_primitives::is_tip20_prefix;
 use tracing::trace;
 
 /// u128::MAX as U256
 pub const U128_MAX: U256 = uint!(0xffffffffffffffffffffffffffffffff_U256);
 
 use tempo_contracts::precompiles::DECIMALS as TIP20_DECIMALS;
-
-/// TIP20 token address prefix (12 bytes)
-/// The full address is: TIP20_TOKEN_PREFIX (12 bytes) || derived_bytes (8 bytes)
-const TIP20_TOKEN_PREFIX: [u8; 12] = hex!("20C000000000000000000000");
-
-/// Returns true if the address has the TIP20 prefix.
-///
-/// NOTE: This only checks the prefix, not whether the token was actually created.
-/// Use `TIP20Factory::is_tip20()` for full validation.
-pub fn is_tip20_prefix(token: Address) -> bool {
-    token.as_slice().starts_with(&TIP20_TOKEN_PREFIX)
-}
 
 /// Validates that the given token's currency is `"USD"`.
 ///
@@ -846,7 +835,7 @@ impl TIP20Token {
     /// # Errors
     /// - `InvalidToken` — address does not carry the `0x20C0` TIP-20 prefix
     pub fn from_address(address: Address) -> Result<Self> {
-        if !is_tip20_prefix(address) {
+        if !address.is_tip20() {
             return Err(TIP20Error::invalid_token().into());
         }
         Ok(Self::__new(address))
@@ -858,7 +847,7 @@ impl TIP20Token {
     /// Caller must ensure `is_tip20_prefix(address)` returns true.
     #[inline]
     pub fn from_address_unchecked(address: Address) -> Self {
-        debug_assert!(is_tip20_prefix(address), "address must have TIP20 prefix");
+        debug_assert!(address.is_tip20(), "address must have TIP20 prefix");
         Self::__new(address)
     }
 
@@ -1179,7 +1168,7 @@ impl Recipient {
     /// - the zero address (preventing accidental burns)
     /// - an address with the TIP-20 prefix (preventing transfers to token contracts)
     pub(crate) fn validate(&self) -> Result<()> {
-        if self.target.is_zero() || is_tip20_prefix(self.target) {
+        if self.target.is_zero() || self.target.is_tip20() {
             return Err(TIP20Error::invalid_recipient().into());
         }
         Ok(())
@@ -1217,7 +1206,7 @@ mod recipient_tests {
         address_registry::{AddressRegistry, MasterId, UserTag},
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{VIRTUAL_MASTER, make_virtual_address, register_virtual_master},
+        test_util::{VIRTUAL_MASTER, register_virtual_master},
     };
     use alloy::primitives::{Address, U256};
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -1259,7 +1248,7 @@ mod recipient_tests {
             );
 
             // T3: unregistered virtual → error
-            let unregistered = make_virtual_address(MasterId::ZERO, UserTag::ZERO);
+            let unregistered = Address::new_virtual(MasterId::ZERO, UserTag::ZERO);
             assert!(Recipient::resolve(unregistered).is_err());
 
             Ok::<_, TempoPrecompileError>(())
@@ -1268,7 +1257,7 @@ mod recipient_tests {
         // Pre-T3: virtual address passed through as literal
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
         StorageCtx::enter(&mut storage, || {
-            let virtual_addr = make_virtual_address(MasterId::ZERO, UserTag::ZERO);
+            let virtual_addr = Address::new_virtual(MasterId::ZERO, UserTag::ZERO);
             let r = Recipient::resolve(virtual_addr)?;
             assert_eq!(
                 r,
@@ -1327,8 +1316,8 @@ mod recipient_tests {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use alloy::primitives::{Address, FixedBytes, IntoLogData, U256};
-    use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIP20Factory};
+    use alloy::primitives::{Address, FixedBytes, IntoLogData, U256, hex};
+    use tempo_contracts::precompiles::ITIP20Factory;
 
     use super::*;
     use crate::{
@@ -1340,10 +1329,7 @@ pub(crate) mod tests {
         address_registry::{AddressRegistry, MasterId, UserTag},
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{
-            TIP20Setup, VIRTUAL_MASTER, make_virtual_address, register_virtual_master,
-            setup_storage,
-        },
+        test_util::{TIP20Setup, VIRTUAL_MASTER, register_virtual_master, setup_storage},
     };
     use rand_08::{Rng, distributions::Alphanumeric, thread_rng};
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -2103,17 +2089,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_tip20_token_prefix() {
-        assert_eq!(
-            TIP20_TOKEN_PREFIX,
-            [
-                0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-            ]
-        );
-        assert_eq!(&DEFAULT_FEE_TOKEN.as_slice()[..12], &TIP20_TOKEN_PREFIX);
-    }
-
-    #[test]
     fn test_arbitrary_currency() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
@@ -2292,9 +2267,9 @@ pub(crate) mod tests {
             )?;
             let non_tip20 = Address::random();
 
-            assert!(is_tip20_prefix(PATH_USD_ADDRESS));
-            assert!(is_tip20_prefix(created_tip20));
-            assert!(!is_tip20_prefix(non_tip20));
+            assert!(PATH_USD_ADDRESS.is_tip20());
+            assert!(created_tip20.is_tip20());
+            assert!(!non_tip20.is_tip20());
             Ok(())
         })
     }
@@ -2919,7 +2894,7 @@ pub(crate) mod tests {
         let admin = Address::random();
         let sender = Address::random();
         let spender = Address::random();
-        let to = make_virtual_address(MasterId::ZERO, UserTag::ZERO);
+        let to = Address::new_virtual(MasterId::ZERO, UserTag::ZERO);
         let amount = U256::from(100);
         let memo = FixedBytes::ZERO;
 

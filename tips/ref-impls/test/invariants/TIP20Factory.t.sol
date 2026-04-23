@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.13;
 
-import { TIP20 } from "../../src/TIP20.sol";
-import { TIP20Factory } from "../../src/TIP20Factory.sol";
-import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
-import { ITIP20Factory } from "../../src/interfaces/ITIP20Factory.sol";
 import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
+import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
+import { ITIP20Factory } from "tempo-std/interfaces/ITIP20Factory.sol";
 
 /// @title TIP20Factory Invariant Tests
 /// @notice Fuzz-based invariant tests for the TIP20Factory implementation
@@ -43,9 +41,9 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
 
         // One-time constant checks (immutable after deployment)
         // TEMPO-FAC8: isTIP20 consistency for system contracts
-        assertTrue(factory.isTIP20(address(pathUSD)), "TEMPO-FAC8: pathUSD should be TIP20");
-        assertFalse(factory.isTIP20(address(factory)), "TEMPO-FAC8: Factory should not be TIP20");
-        assertFalse(factory.isTIP20(address(amm)), "TEMPO-FAC8: AMM should not be TIP20");
+        assertTrue(factory.isTIP20(address(pathUSD)), "TEMPO-FAC8: pathUSD should be ITIP20");
+        assertFalse(factory.isTIP20(address(factory)), "TEMPO-FAC8: Factory should not be ITIP20");
+        assertFalse(factory.isTIP20(address(amm)), "TEMPO-FAC8: AMM should not be ITIP20");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -114,13 +112,13 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                 "TEMPO-FAC1: Created address does not match predicted address"
             );
 
-            // TEMPO-FAC2: Token is recognized as TIP20
+            // TEMPO-FAC2: Token is recognized as ITIP20
             assertTrue(
-                factory.isTIP20(tokenAddr), "TEMPO-FAC2: Created token not recognized as TIP20"
+                factory.isTIP20(tokenAddr), "TEMPO-FAC2: Created token not recognized as ITIP20"
             );
 
             // TEMPO-FAC6: Token has correct properties
-            TIP20 newToken = TIP20(tokenAddr);
+            ITIP20 newToken = ITIP20(tokenAddr);
             assertEq(
                 keccak256(bytes(newToken.name())),
                 keccak256(bytes(name)),
@@ -213,7 +211,7 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                 _totalNonUsdCurrencyCreated++;
                 _recordCreatedToken(actor, salt, tokenAddr);
 
-                TIP20 newToken = TIP20(tokenAddr);
+                ITIP20 newToken = ITIP20(tokenAddr);
                 assertEq(
                     keccak256(bytes(newToken.currency())),
                     keccak256(bytes(currency)),
@@ -239,8 +237,9 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
             if (predictedEurAddr.code.length != 0) {
                 // Verify the existing token is actually a EUR token (not some other token
                 // that happened to be created at this address by another handler)
-                if (keccak256(bytes(TIP20(predictedEurAddr).currency())) != keccak256(bytes("EUR")))
-                {
+                if (
+                    keccak256(bytes(ITIP20(predictedEurAddr).currency())) != keccak256(bytes("EUR"))
+                ) {
                     // Token exists but is not EUR - skip this test case
                     return;
                 }
@@ -335,19 +334,19 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
         _totalIsTIP20Checks++;
 
         if (addrSeed % 4 == 0 && _createdTokens.length > 0) {
-            // Check a created token - must be TIP20
+            // Check a created token - must be ITIP20
             address checkAddr = _createdTokens[addrSeed % _createdTokens.length];
-            assertTrue(factory.isTIP20(checkAddr), "TEMPO-FAC8: Created token should be TIP20");
+            assertTrue(factory.isTIP20(checkAddr), "TEMPO-FAC8: Created token should be ITIP20");
         } else if (addrSeed % 4 == 1) {
-            // Check pathUSD (known TIP20)
-            assertTrue(factory.isTIP20(address(pathUSD)), "TEMPO-FAC8: pathUSD should be TIP20");
+            // Check pathUSD (known ITIP20)
+            assertTrue(factory.isTIP20(address(pathUSD)), "TEMPO-FAC8: pathUSD should be ITIP20");
         } else if (addrSeed % 4 == 2) {
-            // Check factory address - should NOT be TIP20
+            // Check factory address - should NOT be ITIP20
             assertFalse(
-                factory.isTIP20(address(factory)), "TEMPO-FAC8: Factory should not be TIP20"
+                factory.isTIP20(address(factory)), "TEMPO-FAC8: Factory should not be ITIP20"
             );
-            // Check AMM address - should NOT be TIP20
-            assertFalse(factory.isTIP20(address(amm)), "TEMPO-FAC8: AMM should not be TIP20");
+            // Check AMM address - should NOT be ITIP20
+            assertFalse(factory.isTIP20(address(amm)), "TEMPO-FAC8: AMM should not be ITIP20");
         } else {
             // Check a random address - exclude known TIP20s and reserved range
             address checkAddr = address(uint160(addrSeed));
@@ -364,7 +363,7 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                     && checkAddr != address(token3) && checkAddr != address(token4) && !isReserved
             ) {
                 assertFalse(
-                    factory.isTIP20(checkAddr), "TEMPO-FAC8: Random address should not be TIP20"
+                    factory.isTIP20(checkAddr), "TEMPO-FAC8: Random address should not be ITIP20"
                 );
             }
         }
@@ -420,11 +419,11 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
         for (uint256 i = 0; i < sampleCount; i++) {
             uint256 idx = (block.number + i) % _createdTokens.length;
             address tokenAddr = _createdTokens[idx];
-            TIP20 token = TIP20(tokenAddr);
+            ITIP20 token = ITIP20(tokenAddr);
 
-            // TEMPO-FAC2: Created token is recognized as TIP20
+            // TEMPO-FAC2: Created token is recognized as ITIP20
             assertTrue(
-                factory.isTIP20(tokenAddr), "TEMPO-FAC2: Created token not recognized as TIP20"
+                factory.isTIP20(tokenAddr), "TEMPO-FAC2: Created token not recognized as ITIP20"
             );
 
             // TEMPO-FAC11: Token address has correct prefix
@@ -459,7 +458,7 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                 ITIP20 quote = token.quoteToken();
                 if (address(quote) != address(0)) {
                     assertEq(
-                        keccak256(bytes(TIP20(address(quote)).currency())),
+                        keccak256(bytes(ITIP20(address(quote)).currency())),
                         usdHash,
                         "TEMPO-FAC12: USD token has non-USD quote token"
                     );

@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.13;
 
-import { IAccountKeychain } from "../../src/interfaces/IAccountKeychain.sol";
 import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
+import { IAccountKeychain } from "tempo-std/interfaces/IAccountKeychain.sol";
 
 /// @title AccountKeychain Invariant Tests
 /// @notice Fuzz-based invariant tests for the AccountKeychain precompile
 /// @dev Tests invariants TEMPO-KEY1 through TEMPO-KEY19 for access key management
 ///      Note: TEMPO-KEY20/21 require integration tests (transient storage for transaction_key)
 /// forge-config: default.isolate = true
+/// forge-config: fuzz500.isolate = true
 contract AccountKeychainInvariantTest is InvariantBaseTest {
 
     /// @dev Starting offset for key ID address pool (distinct from zero address)

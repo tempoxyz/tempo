@@ -1,27 +1,27 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 pragma solidity >=0.8.13 <0.9.0;
 
-import { FeeAMM } from "../src/FeeAMM.sol";
-import { TIP20 } from "../src/TIP20.sol";
-import { IFeeAMM } from "../src/interfaces/IFeeAMM.sol";
-import { BaseTest } from "./BaseTest.t.sol";
+import "./TempoTest.t.sol";
 import { StdStorage, stdStorage } from "forge-std/Test.sol";
+import { IFeeAMM } from "tempo-std/interfaces/IFeeAMM.sol";
+import { ITIP20, ITIP20Token } from "tempo-std/interfaces/ITIP20.sol";
 
 /// @notice FeeAMM tests
-contract FeeAMMTest is BaseTest {
+contract FeeAMMTest is TempoTest {
 
     using stdStorage for StdStorage;
 
-    TIP20 userToken;
-    TIP20 validatorToken;
+    ITIP20Token userToken;
+    ITIP20Token validatorToken;
 
     function setUp() public override {
         super.setUp();
 
         // Create tokens using TIP20Factory
-        userToken =
-            TIP20(factory.createToken("User", "USR", "USD", pathUSD, admin, bytes32("user")));
-        validatorToken = TIP20(
+        userToken = ITIP20Token(
+            factory.createToken("User", "USR", "USD", pathUSD, admin, bytes32("user"))
+        );
+        validatorToken = ITIP20Token(
             factory.createToken("Validator", "VAL", "USD", pathUSD, admin, bytes32("validator"))
         );
 
@@ -114,19 +114,19 @@ contract FeeAMMTest is BaseTest {
         }
 
         // ONLY_USD_TOKENS (valid TIP20 but non-USD currency)
-        TIP20 eurToken =
-            TIP20(factory.createToken("Euro", "EUR", "EUR", pathUSD, admin, bytes32("eur")));
+        ITIP20 eurToken =
+            ITIP20(factory.createToken("Euro", "EUR", "EUR", pathUSD, admin, bytes32("eur")));
 
         try amm.mint(address(eurToken), address(validatorToken), 1e18, alice) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(IFeeAMM.InvalidCurrency.selector));
+            assertEq(err, abi.encodeWithSelector(ITIP20.InvalidCurrency.selector));
         }
 
         try amm.mint(address(validatorToken), address(eurToken), 1e18, alice) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(IFeeAMM.InvalidCurrency.selector));
+            assertEq(err, abi.encodeWithSelector(ITIP20.InvalidCurrency.selector));
         }
 
         vm.stopPrank();
@@ -221,8 +221,8 @@ contract FeeAMMTest is BaseTest {
         // Seed userToken into pool - need to pack both reserves into single slot
         // Pool struct: reserveUserToken (uint128) | reserveValidatorToken (uint128)
         // reserveValidatorToken is 5000e18, reserveUserToken we set to 1000e18
-        // In TipFeeManager precompile, pools is at slot 3. In FeeAMM reference, it's at slot 0.
-        uint256 poolsSlot = isTempo ? 3 : 0;
+        // In TipFeeManager precompile, pools is at slot 3.
+        uint256 poolsSlot = 3;
         bytes32 slot = keccak256(abi.encode(poolId, poolsSlot));
         bytes32 packedValue = bytes32((reserveValidatorToken << 128) | reserveUserToken);
         vm.store(address(amm), slot, packedValue);
@@ -354,7 +354,7 @@ contract FeeAMMTest is BaseTest {
 
         // Seed userToken reserve so rebalance has tokens to give out
         bytes32 poolId = amm.getPoolId(address(userToken), address(validatorToken));
-        uint256 poolsSlot = isTempo ? 3 : 0;
+        uint256 poolsSlot = 3;
         bytes32 slot = keccak256(abi.encode(poolId, poolsSlot));
         bytes32 packedValue = bytes32((uint256(5000e18) << 128) | uint256(5000e18));
         vm.store(address(amm), slot, packedValue);
