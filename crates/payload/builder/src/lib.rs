@@ -308,6 +308,7 @@ where
             block_gas_limit,
             shared_gas_limit,
         );
+        let t5_active = chain_spec.is_t5_active_at_timestamp(attributes.timestamp);
 
         let mut cumulative_gas_used = 0;
         let mut cumulative_state_gas_used = 0u64;
@@ -477,7 +478,7 @@ where
 
             // If the tx is not a payment and will exceed the general gas limit
             // mark the tx as invalid and continue
-            if !pool_tx.transaction.is_payment()
+            if !pool_tx.transaction.is_payment(t5_active)
                 && non_payment_gas_used + max_regular_gas_used > general_gas_limit
             {
                 best_txs.mark_invalid(
@@ -497,7 +498,7 @@ where
             }
 
             check_cancel!();
-            let is_payment = pool_tx.transaction.is_payment();
+            let is_payment = pool_tx.transaction.is_payment(t5_active);
             if is_payment {
                 payment_transactions += 1;
             }
