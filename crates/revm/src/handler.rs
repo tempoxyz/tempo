@@ -138,20 +138,31 @@ fn tempo_signature_verification_gas(signature: &TempoSignature) -> u64 {
     }
 }
 
-/// Counts the storage rows written by T3 call-scope configuration.
+/// Counts the scope storage rows that pay the dynamic SSTORE-set path for the active spec.
 ///
-/// This only covers the rows that already pay the dynamic SSTORE set cost. The helper
-/// bookkeeping around scope persistence is charged separately via a rounded surcharge.
-fn call_scope_storage_slots(auth: &tempo_primitives::transaction::KeyAuthorization) -> u64 {
+/// T3 keeps the broader all-persisted-rows accounting from current main. T4 narrows this to rows
+/// that actually create storage, so repeated same-tx set length rewrites no longer count as fresh
+/// SSTORE-set rows. The helper bookkeeping around scope persistence is charged separately via a
+/// rounded surcharge.
+fn call_scope_storage_slots(
+    auth: &tempo_primitives::transaction::KeyAuthorization,
+    spec: tempo_chainspec::hardfork::TempoHardfork,
+) -> u64 {
     match auth.allowed_calls.as_ref() {
         None => 0,
         Some(scopes) if scopes.is_empty() => 1,
         Some(scopes) => {
+            let is_t4 = spec.is_t4();
+            let mut selector_sets = 0u64;
             let mut selectors = 0u64;
             let mut constrained_selectors = 0u64;
             let mut recipients = 0u64;
 
             for scope in scopes {
+                if is_t4 && !scope.selector_rules.is_empty() {
+                    selector_sets += 1;
+                }
+
                 selectors += scope.selector_rules.len() as u64;
                 for rule in &scope.selector_rules {
                     if !rule.recipients.is_empty() {
@@ -161,19 +172,35 @@ fn call_scope_storage_slots(auth: &tempo_primitives::transaction::KeyAuthorizati
                 }
             }
 
-            // Storage write accounting:
-            // - account mode write: 1
-            // - each target insertion: 3
-            // - each selector insertion: 3
-            // - recipient-constrained selectors also write recipient set length: +1 per selector
-            // - recipient set values+positions: +2 per recipient
-            1 + scopes.len() as u64 * 3 + selectors * 3 + constrained_selectors + recipients * 2
+            if is_t4 {
+                // Storage-creating rows only:
+                // - account mode write: 1
+                // - target set values+positions: +2 per target, plus one length slot for the set
+                // - selector set values+positions: +2 per selector, plus one length slot per
+                //   target that persists selectors
+                // - recipient-constrained selectors persist one recipient set length slot each
+                // - recipient set values+positions: +2 per recipient
+                1 + scopes.len() as u64 * 2
+                    + 1
+                    + selectors * 2
+                    + selector_sets
+                    + constrained_selectors
+                    + recipients * 2
+            } else {
+                // All persisted rows:
+                // - account mode write: 1
+                // - each target insertion: 3
+                // - each selector insertion: 3
+                // - recipient-constrained selectors also write recipient set length: +1 per
+                //   selector
+                // - recipient set values+positions: +2 per recipient
+                1 + scopes.len() as u64 * 3 + selectors * 3 + constrained_selectors + recipients * 2
+            }
         }
     }
 }
 
 /// Charges the unpriced scope-helper bookkeeping for T4 key authorizations.
-///
 /// The dynamic SSTORE rows are already counted by `call_scope_storage_slots()`. What remains is the
 /// helper work around them: clearing the empty scope tree for fresh keys, target/set maintenance,
 /// selector/set maintenance, and recipient-set writes. We use rounded constants here because the
@@ -322,9 +349,8 @@ fn calculate_key_authorization_gas(
 
         let mut num_sstores = 1 + limit_slots;
 
-        // T3+: include scoped-call storage rows in intrinsic gas.
         if spec.is_t3() {
-            num_sstores += call_scope_storage_slots(&key_auth.authorization);
+            num_sstores += call_scope_storage_slots(&key_auth.authorization, spec);
         }
 
         let sstore_cost = gas_params.get(GasId::sstore_set_without_load_cost());
@@ -2925,6 +2951,24 @@ mod tests {
             assert_eq!(state_gas, 0, "T1B has no state gas");
         }
 
+        let t3_gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T3);
+        let t3_sstore =
+            t3_gas_params.get(revm::context_interface::cfg::GasId::sstore_set_without_load_cost());
+        let t3_sload =
+            t3_gas_params.warm_storage_read_cost() + t3_gas_params.cold_storage_additional_cost();
+
+        for num_limits in 0..=3 {
+            let num_sstores = 1 + 2 * num_limits as u64;
+            let (gas, state_gas) = calculate_key_authorization_gas(
+                &create_key_auth(num_limits),
+                &t3_gas_params,
+                TempoHardfork::T3,
+            );
+            let expected = ECRECOVER_GAS + t3_sload + t3_sstore * num_sstores + BUFFER;
+            assert_eq!(gas, expected, "T3 with {num_limits} limits");
+            assert_eq!(state_gas, 0, "T3 has no state gas");
+        }
+
         // T4 with T4 gas params: regular sstore = 19,900, state gas = 230,000 per SSTORE
         let t4_gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T4);
         let t4_sstore =
@@ -2972,6 +3016,15 @@ mod tests {
         };
 
         let (gas, state_gas) =
+            calculate_key_authorization_gas(&scoped, &t3_gas_params, TempoHardfork::T3);
+        let expected = ECRECOVER_GAS + t3_sload + t3_sstore * (1 + 12) + BUFFER;
+        assert_eq!(
+            gas, expected,
+            "T3 scope writes should keep current main accounting"
+        );
+        assert_eq!(state_gas, 0, "T3 has no state gas");
+
+        let (gas, state_gas) =
             calculate_key_authorization_gas(&scoped, &t4_gas_params, TempoHardfork::T4);
         // 1 key write + 12 scope slots = 13 SSTOREs:
         // account mode(1) + target insertion rows(3) + selector insertion rows(3)
@@ -2983,6 +3036,52 @@ mod tests {
         let expected =
             ECRECOVER_GAS + t4_sload + t4_sstore * num_sstores + BUFFER + 29_000 + expected_state;
         assert_eq!(gas, expected, "T4 scope writes should be fully charged");
+        assert_eq!(state_gas, expected_state, "T4 scope state gas");
+        let multi_scope = SignedKeyAuthorization {
+            authorization: KeyAuthorization::unrestricted(
+                1,
+                SignatureType::Secp256k1,
+                Address::random(),
+            )
+            .with_allowed_calls(vec![
+                tempo_primitives::transaction::CallScope {
+                    target: Address::random(),
+                    selector_rules: vec![
+                        tempo_primitives::transaction::SelectorRule {
+                            selector: [0xa9, 0x05, 0x9c, 0xbb],
+                            recipients: vec![],
+                        },
+                        tempo_primitives::transaction::SelectorRule {
+                            selector: [0x09, 0x5e, 0xa7, 0xb3],
+                            recipients: vec![],
+                        },
+                    ],
+                },
+                tempo_primitives::transaction::CallScope {
+                    target: Address::random(),
+                    selector_rules: vec![],
+                },
+            ]),
+            signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+        };
+
+        let (gas, state_gas) =
+            calculate_key_authorization_gas(&multi_scope, &t3_gas_params, TempoHardfork::T3);
+        let expected = ECRECOVER_GAS + t3_sload + t3_sstore * 14 + BUFFER;
+        assert_eq!(
+            gas, expected,
+            "T3 scope writes should keep current main accounting"
+        );
+        assert_eq!(state_gas, 0, "T3 has no state gas");
+
+        let (gas, state_gas) =
+            calculate_key_authorization_gas(&multi_scope, &t4_gas_params, TempoHardfork::T4);
+        let expected_state = t4_sstore_state * 12;
+        let expected = ECRECOVER_GAS + t4_sload + t4_sstore * 12 + BUFFER + 33_000 + expected_state;
+        assert_eq!(
+            gas, expected,
+            "T4 scope writes should only charge storage-creating rows"
+        );
         assert_eq!(state_gas, expected_state, "T4 scope state gas");
     }
 
