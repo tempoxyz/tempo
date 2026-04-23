@@ -62,8 +62,7 @@ pub use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, DEFAULT_FEE_TOKEN,
     NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS,
     TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_ESCROW_ADDRESS, TIP20_FACTORY_ADDRESS,
-    TIP403_REGISTRY_ADDRESS,
-    VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
@@ -130,7 +129,7 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
             Some(TIP20Token::create_precompile(*address, &cfg))
         } else if *address == TIP20_FACTORY_ADDRESS {
             Some(TIP20Factory::create_precompile(&cfg))
-        } else if *address == TIP20_CHANNEL_ESCROW_ADDRESS && cfg.spec.is_t4() {
+        } else if *address == TIP20_CHANNEL_ESCROW_ADDRESS && cfg.spec.is_t5() {
             Some(TIP20ChannelEscrow::create_precompile(&cfg))
         } else if *address == ADDRESS_REGISTRY_ADDRESS && cfg.spec.is_t3() {
             Some(AddressRegistry::create_precompile(&cfg))
@@ -1149,11 +1148,11 @@ mod tests {
             "SignatureVerifier should be registered at T3"
         );
 
-        // Channel escrow should be registered at T4
+        // Channel escrow should be registered at T5
         let channel_escrow_precompile = precompiles.get(&TIP20_CHANNEL_ESCROW_ADDRESS);
         assert!(
             channel_escrow_precompile.is_none(),
-            "TIP20 channel escrow should not be registered before T4"
+            "TIP20 channel escrow should not be registered before T5"
         );
 
         // TIP20 tokens with prefix should be registered
@@ -1184,22 +1183,22 @@ mod tests {
     }
 
     #[test]
-    fn test_channel_escrow_registered_at_t4_only() {
-        let pre_t4 = CfgEnv::<TempoHardfork>::default();
+    fn test_channel_escrow_registered_at_t5_only() {
+        let pre_t5 = CfgEnv::<TempoHardfork>::default();
         assert!(
-            tempo_precompiles(&pre_t4)
+            tempo_precompiles(&pre_t5)
                 .get(&TIP20_CHANNEL_ESCROW_ADDRESS)
                 .is_none(),
-            "TIP20 channel escrow should NOT be registered before T4"
+            "TIP20 channel escrow should NOT be registered before T5"
         );
 
-        let mut t4 = CfgEnv::<TempoHardfork>::default();
-        t4.set_spec(TempoHardfork::T4);
+        let mut t5 = CfgEnv::<TempoHardfork>::default();
+        t5.set_spec(TempoHardfork::T5);
         assert!(
-            tempo_precompiles(&t4)
+            tempo_precompiles(&t5)
                 .get(&TIP20_CHANNEL_ESCROW_ADDRESS)
                 .is_some(),
-            "TIP20 channel escrow should be registered at T4"
+            "TIP20 channel escrow should be registered at T5"
         );
     }
 
