@@ -27,6 +27,14 @@ on:
         description: "Enable samply profiling"
         type: string
         default: "false"
+      baseline:
+        description: "Baseline git ref (default: merge-base)"
+        type: string
+        default: ""
+      feature:
+        description: "Feature git ref (default: branch head)"
+        type: string
+        default: ""
       baseline-args:
         description: "Extra node args for baseline"
         type: string
