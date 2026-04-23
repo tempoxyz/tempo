@@ -32,8 +32,8 @@ import { LegacyTransaction, LegacyTransactionLib } from "tempo-std/tx/LegacyTran
 ///
 /// Block-level lane enforcement (BLOCK7, BLOCK12) and shared gas limit
 /// (BLOCK10) are tested in Rust (crates/consensus/src/lib.rs).
-/// forge-config: tempo.hardfork = "tempo:T4"
-/// forge-config: tempo_ci.hardfork = "tempo:T4"
+/// forge-config: default.hardfork = "tempo:T4"
+/// forge-config: ci.hardfork = "tempo:T4"
 contract BlockGasLimitsInvariantTest is InvariantBase {
 
     using TxBuilder for *;

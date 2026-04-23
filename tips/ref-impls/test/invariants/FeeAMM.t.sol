@@ -882,8 +882,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     ///      2. If userToken != validatorToken, execute fee swap at rate M
     ///      3. Accumulate fees for validator in their preferred token
     ///
-    ///      Uses vm.store to directly modify precompile storage. Works on both foundry
-    ///      (Solidity reference impl) and tempo-foundry (Rust precompile).
+    ///      Uses vm.store to directly modify precompile storage in tempo-foundry.
     /// @param userSeed Seed for selecting user (fee payer)
     /// @param validatorSeed Seed for selecting validator (fee recipient)
     /// @param feeAmountRaw Amount of fees to simulate

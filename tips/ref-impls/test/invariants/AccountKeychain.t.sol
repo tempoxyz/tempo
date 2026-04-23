@@ -9,6 +9,7 @@ import { IAccountKeychain } from "tempo-std/interfaces/IAccountKeychain.sol";
 /// @dev Tests invariants TEMPO-KEY1 through TEMPO-KEY19 for access key management
 ///      Note: TEMPO-KEY20/21 require integration tests (transient storage for transaction_key)
 /// forge-config: default.isolate = true
+/// forge-config: ci.isolate = true
 contract AccountKeychainInvariantTest is InvariantBaseTest {
 
     /// @dev Starting offset for key ID address pool (distinct from zero address)

@@ -10,6 +10,7 @@ import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";
 /// @notice Unit tests and stateless fuzz tests for compound transfer policies as specified in TIP-1015
 /// @dev Tests both TIP403Registry compound policy functions and TIP-20 integration
 /// forge-config: default.hardfork = "tempo:T2"
+/// forge-config: ci.hardfork = "tempo:T2"
 contract TIP1015Test is TempoTest {
 
     /*//////////////////////////////////////////////////////////////

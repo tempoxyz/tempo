@@ -2245,7 +2245,7 @@ def wait-for-rpc [url: string, max_attempts: int = 120] {
 const COV_DIR = "coverage"
 const INVARIANT_DIR = "tips/ref-impls"
 
-# Find tempo-foundry checkout (same search as tempo-forge script)
+# Find a local tempo-foundry checkout for coverage runs.
 def find-tempo-foundry [] {
     let env_path = (if "TEMPO_FOUNDRY_PATH" in $env { $env.TEMPO_FOUNDRY_PATH } else { "" })
     if $env_path != "" and ($env_path | path exists) {

@@ -7,10 +7,10 @@ import { IAccountKeychain } from "tempo-std/interfaces/IAccountKeychain.sol";
 /**
  * @title Account Keychain Tests
  * @notice Tests for the Account Keychain precompile
- * @dev These tests run against both the Solidity implementation (when !isTempo)
- *      and the Rust precompile (when isTempo).
+ * @dev These tests run against the native Tempo precompile.
  */
 /// forge-config: default.isolate = true
+/// forge-config: ci.isolate = true
 contract AccountKeychainTest is TempoTest {
 
     // Using addresses for keyIds (derived from public keys)
