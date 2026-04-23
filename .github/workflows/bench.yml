@@ -53,6 +53,9 @@ jobs:
       bench-env: ${{ steps.args.outputs.bench-env }}
       baseline-env: ${{ steps.args.outputs.baseline-env }}
       feature-env: ${{ steps.args.outputs.feature-env }}
+      blocks: ${{ steps.args.outputs.blocks }}
+      warmup: ${{ steps.args.outputs.warmup }}
+      chain: ${{ steps.args.outputs.chain }}
       comment-id: ${{ steps.ack.outputs.comment-id }}
     steps:
       - name: Check org membership
@@ -82,17 +85,17 @@ jobs:
         with:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |
-            let pr, actor, mode, preset, duration, bloat, tps, baseline, feature, backend, txgenRef, samply, tracy, tracySeconds, tracyOffset, baselineArgs, featureArgs, baselineHardfork, featureHardfork, runType, forceBloat, noSlack, benchArgs, benchEnv, baselineEnv, featureEnv;
+            let pr, actor, mode, preset, duration, bloat, tps, baseline, feature, backend, txgenRef, samply, tracy, tracySeconds, tracyOffset, baselineArgs, featureArgs, baselineHardfork, featureHardfork, runType, forceBloat, noSlack, benchArgs, benchEnv, baselineEnv, featureEnv, blocks, warmup;
 
             pr = String(context.issue.number);
             actor = context.payload.comment.user.login;
 
             const body = context.payload.comment.body.trim();
-            const intArgs = new Set(['duration', 'bloat', 'tps', 'tracy-seconds', 'tracy-offset']);
+            const intArgs = new Set(['duration', 'bloat', 'tps', 'tracy-seconds', 'tracy-offset', 'blocks', 'warmup']);
             const refArgs = new Set(['baseline', 'feature', 'txgen-ref']);
-            const stringArgs = new Set(['mode', 'preset', 'backend', 'tracy', 'baseline-args', 'feature-args', 'baseline-hardfork', 'feature-hardfork', 'bench-args', 'bench-env', 'baseline-env', 'feature-env']);
+            const stringArgs = new Set(['mode', 'preset', 'backend', 'tracy', 'baseline-args', 'feature-args', 'baseline-hardfork', 'feature-hardfork', 'bench-args', 'bench-env', 'baseline-env', 'feature-env', 'chain']);
             const boolArgs = new Set(['samply', 'force-bloat', 'no-slack', 'no-existing-recipients']);
-            const defaults = { mode: 'e2e', preset: 'tip20', duration: '300', bloat: '100', tps: '10000', baseline: '', feature: '', backend: 'tempo-bench', 'txgen-ref': '', samply: 'false', tracy: 'off', 'tracy-seconds': '30', 'tracy-offset': '120', 'baseline-args': '', 'feature-args': '', 'baseline-hardfork': '', 'feature-hardfork': '', 'force-bloat': 'false', 'no-slack': 'false', 'no-existing-recipients': 'false', 'bench-args': '', 'bench-env': '', 'baseline-env': '', 'feature-env': '' };
+            const defaults = { mode: 'e2e', preset: 'tip20', duration: '300', bloat: '100', tps: '10000', baseline: '', feature: '', backend: 'tempo-bench', 'txgen-ref': '', samply: 'false', tracy: 'off', 'tracy-seconds': '30', 'tracy-offset': '120', 'baseline-args': '', 'feature-args': '', 'baseline-hardfork': '', 'feature-hardfork': '', 'force-bloat': 'false', 'no-slack': 'false', 'no-existing-recipients': 'false', 'bench-args': '', 'bench-env': '', 'baseline-env': '', 'feature-env': '', blocks: '5000', warmup: '1000', chain: 'mainnet' };
             const unknown = [];
             const invalid = [];
             const args = body.replace(/^(?:@decofe|derek) bench\s*/, '');
@@ -151,7 +154,7 @@ jobs:
             if (unknown.length) errors.push(`Unknown argument(s): \`${unknown.join('`, `')}\``);
             if (invalid.length) errors.push(`Invalid value(s): ${invalid.join(', ')}`);
             if (errors.length) {
-              const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [mode=MODE] [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [backend=NAME] [txgen-ref=REF] [samply] [force-bloat] [no-slack] [existing-recipients=BOOL] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [baseline-hardfork=FORK] [feature-hardfork=FORK] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]\``;
+              const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [backend=NAME] [txgen-ref=REF] [samply] [force-bloat] [no-slack] [existing-recipients=BOOL] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [baseline-hardfork=FORK] [feature-hardfork=FORK] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]\``;
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -185,12 +188,28 @@ jobs:
             benchEnv = defaults['bench-env'];
             baselineEnv = defaults['baseline-env'];
             featureEnv = defaults['feature-env'];
+            blocks = defaults.blocks;
+            warmup = defaults.warmup;
+            var chain = defaults.chain;
 
             const existingRecipients = defaults['no-existing-recipients'] !== 'true';
             const erFlag = `--existing-recipients=${existingRecipients}`;
             benchArgs = benchArgs ? `${benchArgs} ${erFlag}` : erFlag;
 
-            const usageStr = '**Usage:** `@decofe bench [mode=MODE] [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [backend=NAME] [txgen-ref=REF] [samply] [force-bloat] [no-slack] [existing-recipients=BOOL] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [baseline-hardfork=FORK] [feature-hardfork=FORK] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]`';
+            const usageStr = '**Usage:** `@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [backend=NAME] [txgen-ref=REF] [samply] [force-bloat] [no-slack] [existing-recipients=BOOL] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [baseline-hardfork=FORK] [feature-hardfork=FORK] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]`';
+
+            // Validate chain value
+            if (!['mainnet', 'testnet'].includes(chain)) {
+              const msg = `❌ **Invalid bench command**\n\n\`chain=${chain}\` is not valid. Must be \`mainnet\` or \`testnet\`.\n\n${usageStr}`;
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: msg,
+              });
+              core.setFailed(msg);
+              return;
+            }
 
             // Validate mode value
             if (!['e2e', 'replay'].includes(mode)) {
@@ -311,6 +330,9 @@ jobs:
             core.setOutput('bench-env', benchEnv || '');
             core.setOutput('baseline-env', baselineEnv || '');
             core.setOutput('feature-env', featureEnv || '');
+            core.setOutput('blocks', blocks);
+            core.setOutput('warmup', warmup);
+            core.setOutput('chain', chain);
 
       - name: Acknowledge request
         id: ack
@@ -423,3 +445,25 @@ jobs:
       CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
       SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
       SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
+
+  bench-replay:
+    needs: tempo-bench-ack
+    if: needs.tempo-bench-ack.outputs.mode == 'replay'
+    uses: ./.github/workflows/bench-replay.yml
+    with:
+      chain: ${{ needs.tempo-bench-ack.outputs.chain }}
+      pr: ${{ needs.tempo-bench-ack.outputs.pr }}
+      actor: ${{ needs.tempo-bench-ack.outputs.actor }}
+      baseline: ${{ needs.tempo-bench-ack.outputs.baseline }}
+      feature: ${{ needs.tempo-bench-ack.outputs.feature }}
+      baseline-name: ${{ needs.tempo-bench-ack.outputs.baseline-name }}
+      feature-name: ${{ needs.tempo-bench-ack.outputs.feature-name }}
+      samply: ${{ needs.tempo-bench-ack.outputs.samply }}
+      baseline-args: ${{ needs.tempo-bench-ack.outputs.baseline-args }}
+      feature-args: ${{ needs.tempo-bench-ack.outputs.feature-args }}
+      blocks: ${{ needs.tempo-bench-ack.outputs.blocks }}
+      warmup: ${{ needs.tempo-bench-ack.outputs.warmup }}
+      comment-id: ${{ needs.tempo-bench-ack.outputs.comment-id }}
+    secrets:
+      DEREK_PAT: ${{ secrets.DEREK_PAT }}
+      DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
