@@ -416,7 +416,7 @@ def generate_comparison_table(
     feature_label = f"[`{feature_name}`]({base_url}/{feature_sha})"
 
     lines = [
-        f"| Metric | {baseline_label} | {feature_label} | Change |",
+        f"| Metric (newPayload) | {baseline_label} | {feature_label} | Change |",
         "|--------|------|--------|--------|",
         f"| Mean | {fmt_ms(run1['mean_ms'])} | {fmt_ms(run2['mean_ms'])} | {change_str(mean_pct, lat_ci_pct, lower_is_better=True)} |",
         f"| StdDev | {fmt_ms(run1['stddev_ms'])} | {fmt_ms(run2['stddev_ms'])} | |",
@@ -456,6 +456,7 @@ def generate_wait_time_table(
 def generate_markdown(
     summary: dict, comparison_table: str,
     wait_time_tables: list[str] | None = None,
+    metrics_tables: list[str] | None = None,
     behind_baseline: int = 0, repo: str = "", baseline_ref: str = "", baseline_name: str = "",
     grafana_url: str | None = None,
 ) -> str:
@@ -473,6 +474,16 @@ def generate_markdown(
         lines.append("<summary>Wait Time Breakdown</summary>")
         lines.append("")
         for table in wait_time_tables:
+            if table:
+                lines.append(table)
+                lines.append("")
+        lines.append("</details>")
+    if metrics_tables:
+        lines.append("")
+        lines.append("<details>")
+        lines.append("<summary>Metrics Breakdown</summary>")
+        lines.append("")
+        for table in metrics_tables:
             if table:
                 lines.append(table)
                 lines.append("")
@@ -593,12 +604,13 @@ def main():
             wait_time_tables.append(table)
 
     # Persistence duration from Prometheus metrics
+    metrics_tables = []
     b_persist_q = extract_persistence_quantiles(baseline_samples)
     f_persist_q = extract_persistence_quantiles(feature_samples)
     if b_persist_q and f_persist_q:
         fmt_s_val = lambda v: f"{v * 1_000:.2f}ms" if v < 1 else f"{v:.3f}s"
         lines = [
-            "### Persistence Duration (Prometheus)",
+            "### Persistence Duration",
             "",
             f"| Quantile | {baseline_label} | {feature_label} |",
             "|----------|------|--------|",
@@ -608,7 +620,7 @@ def main():
                 label = f"P{int(float(q) * 100)}"
                 lines.append(f"| {label} | {fmt_s_val(b_persist_q[q])} | {fmt_s_val(f_persist_q[q])} |")
         if len(lines) > 4:
-            wait_time_tables.append("\n".join(lines))
+            metrics_tables.append("\n".join(lines))
 
     summary = {
         "blocks": paired_stats["blocks"],
@@ -637,6 +649,7 @@ def main():
     markdown = generate_markdown(
         summary, comparison_table,
         wait_time_tables=wait_time_tables,
+        metrics_tables=metrics_tables,
         behind_baseline=args.behind_baseline,
         repo=args.repo,
         baseline_ref=baseline_ref,
