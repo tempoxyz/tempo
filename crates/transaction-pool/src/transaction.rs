@@ -31,8 +31,10 @@ use thiserror::Error;
 #[derive(Debug, Clone)]
 pub struct TempoPooledTransaction {
     inner: EthPooledTransaction<TempoTxEnvelope>,
-    /// Cached payment classification for efficient block building
-    is_payment: bool,
+    /// Cached strict payment classification before T5 activates.
+    is_payment_pre_t5: bool,
+    /// Cached strict payment classification once T5 is active.
+    is_payment_t5: bool,
     /// Cached expiring nonce classification
     is_expiring_nonce: bool,
     /// Cached slot of the 2D nonce, if any.
@@ -61,7 +63,8 @@ pub struct TempoPooledTransaction {
 impl TempoPooledTransaction {
     /// Create new instance of [Self] from the given consensus transactions and the encoded size.
     pub fn new(transaction: Recovered<TempoTxEnvelope>) -> Self {
-        let is_payment = transaction.is_payment_v2();
+        let is_payment_pre_t5 = transaction.is_payment_v2(false);
+        let is_payment_t5 = transaction.is_payment_v2(true);
         let is_expiring_nonce = transaction
             .as_aa()
             .map(|tx| tx.tx().is_expiring_nonce_tx())
@@ -77,7 +80,8 @@ impl TempoPooledTransaction {
                 blob_sidecar: EthBlobTransactionSidecar::None,
                 transaction,
             },
-            is_payment,
+            is_payment_pre_t5,
+            is_payment_t5,
             is_expiring_nonce,
             nonce_key_slot: OnceLock::new(),
             expiring_nonce_slot: OnceLock::new(),
@@ -121,8 +125,12 @@ impl TempoPooledTransaction {
     /// Returns whether this is a payment transaction.
     ///
     /// Uses strict classification: TIP-20 prefix AND recognized calldata.
-    pub fn is_payment(&self) -> bool {
-        self.is_payment
+    pub fn is_payment(&self, t5_active: bool) -> bool {
+        if t5_active {
+            self.is_payment_t5
+        } else {
+            self.is_payment_pre_t5
+        }
     }
 
     /// Returns true if this transaction belongs into the 2D nonce pool:
@@ -661,7 +669,7 @@ mod tests {
     use alloy_consensus::TxEip1559;
     use alloy_primitives::{Address, Signature, TxKind, address};
     use alloy_sol_types::SolCall;
-    use tempo_contracts::precompiles::ITIP20;
+    use tempo_contracts::precompiles::{ITIP20, ITIP20ChannelEscrow, TIP20_CHANNEL_ESCROW_ADDRESS};
     use tempo_precompiles::{PATH_USD_ADDRESS, nonce::NonceManager};
     use tempo_primitives::transaction::{
         TempoTransaction,
@@ -698,7 +706,7 @@ mod tests {
         );
 
         let pooled_tx = TempoPooledTransaction::new(recovered);
-        assert!(pooled_tx.is_payment());
+        assert!(pooled_tx.is_payment(false));
     }
 
     #[test]
@@ -723,7 +731,7 @@ mod tests {
         );
 
         let pooled_tx = TempoPooledTransaction::new(recovered);
-        assert!(!pooled_tx.is_payment());
+        assert!(!pooled_tx.is_payment(false));
     }
 
     #[test]
@@ -733,7 +741,43 @@ mod tests {
         let pooled_tx = TxBuilder::eip1559(non_payment_addr)
             .gas_limit(21000)
             .build_eip1559();
-        assert!(!pooled_tx.is_payment());
+        assert!(!pooled_tx.is_payment(false));
+    }
+
+    #[test]
+    fn test_channel_escrow_payment_classification_activates_at_t5() {
+        let calldata = ITIP20ChannelEscrow::requestCloseCall {
+            descriptor: ITIP20ChannelEscrow::ChannelDescriptor {
+                payer: Address::random(),
+                payee: Address::random(),
+                token: PATH_USD_ADDRESS,
+                salt: B256::random(),
+                authorizedSigner: Address::ZERO,
+            },
+        }
+        .abi_encode();
+
+        let tx = TxEip1559 {
+            to: TxKind::Call(TIP20_CHANNEL_ESCROW_ADDRESS),
+            gas_limit: 21_000,
+            input: Bytes::from(calldata),
+            ..Default::default()
+        };
+
+        let envelope = TempoTxEnvelope::Eip1559(alloy_consensus::Signed::new_unchecked(
+            tx,
+            Signature::test_signature(),
+            B256::ZERO,
+        ));
+
+        let recovered = Recovered::new_unchecked(
+            envelope,
+            address!("0000000000000000000000000000000000000001"),
+        );
+
+        let pooled_tx = TempoPooledTransaction::new(recovered);
+        assert!(!pooled_tx.is_payment(false));
+        assert!(pooled_tx.is_payment(true));
     }
 
     #[test]
