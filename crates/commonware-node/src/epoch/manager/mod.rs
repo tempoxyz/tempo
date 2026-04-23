@@ -14,7 +14,7 @@ use commonware_runtime::{
 };
 use rand_08::{CryptoRng, Rng};
 
-use crate::{epoch::scheme_provider::SchemeProvider, feed, subblocks};
+use crate::epoch::scheme_provider::SchemeProvider;
 
 pub(crate) struct Config<TBlocker> {
     pub(crate) application: crate::consensus::application::Mailbox,
@@ -24,9 +24,7 @@ pub(crate) struct Config<TBlocker> {
     pub(crate) time_for_peer_response: Duration,
     pub(crate) time_to_propose: Duration,
     pub(crate) mailbox_size: usize,
-    pub(crate) subblocks: Option<subblocks::Mailbox>,
     pub(crate) marshal: crate::alias::marshal::Mailbox,
-    pub(crate) feed: feed::Mailbox,
     pub(crate) scheme_provider: SchemeProvider,
     pub(crate) time_to_collect_notarizations: Duration,
     pub(crate) time_to_retry_nullify_broadcast: Duration,

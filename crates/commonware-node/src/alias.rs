@@ -1,5 +1,15 @@
 //! A collection of aliases for frequently used (primarily commonware) types.
 
+pub(crate) mod simplex {
+    use commonware_consensus::{simplex, simplex::scheme::bls12381_threshold::vrf::Scheme};
+    use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
+
+    use crate::consensus::Digest;
+
+    pub(crate) type Activity = simplex::types::Activity<Scheme<PublicKey, MinSig>, Digest>;
+    pub(crate) type Notarization = simplex::types::Notarization<Scheme<PublicKey, MinSig>, Digest>;
+}
+
 pub(crate) mod marshal {
     use commonware_consensus::{
         marshal::{core, standard::Standard},

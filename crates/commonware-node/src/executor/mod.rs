@@ -1,5 +1,7 @@
 //! The executor is sending fork-choice-updates to the execution layer.
-use commonware_consensus::types::Height;
+use std::sync::Arc;
+
+use commonware_consensus::types::{FixedEpocher, Height};
 use commonware_runtime::{Clock, Metrics, Pacer, Spawner};
 
 mod actor;
@@ -27,7 +29,11 @@ where
 pub(crate) struct Config {
     /// A handle to the execution node layer. Used to forward finalized blocks
     /// and to update the canonical chain by sending forkchoice updates.
-    pub(crate) execution_node: TempoFullNode,
+    pub(crate) execution_node: Arc<TempoFullNode>,
+
+    /// The epoch strategy for the actor to determine when it should stop
+    /// fetching backfilling block.
+    pub(crate) epoch_strategy: FixedEpocher,
 
     /// The last finalized height according to the consensus layer.
     /// If on startup there is a mismatch between the execution layer and the

@@ -11,6 +11,8 @@ mod actor;
 mod ingress;
 mod state;
 
+use std::sync::Arc;
+
 use commonware_consensus::types::FixedEpocher;
 use commonware_runtime::Spawner;
 use futures::channel::mpsc;
@@ -26,7 +28,7 @@ pub(crate) fn init<TContext: Spawner>(
     context: TContext,
     marshal: marshal::Mailbox,
     epocher: FixedEpocher,
-    execution_node: TempoFullNode,
+    execution_node: Arc<TempoFullNode>,
     state: FeedStateHandle,
 ) -> (Actor<TContext>, Mailbox) {
     let (tx, rx) = mpsc::unbounded();
