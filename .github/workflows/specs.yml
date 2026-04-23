@@ -14,7 +14,6 @@ on:
   pull_request:
 
 env:
-  FOUNDRY_PROFILE: ci
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: "sccache"
 
@@ -122,8 +121,6 @@ jobs:
       - name: Build tempo-std interfaces
         working-directory: tips/ref-impls/lib/tempo-std
         run: forge build --sizes
-        env:
-          FOUNDRY_PROFILE: default
 
       - name: Run ABI alignment check
         run: cargo run -p tempo-xtask -- check-abi
@@ -202,7 +199,7 @@ jobs:
         working-directory: tempo/tips/ref-impls
         run: |
           echo "Running forge test with Rust precompiles"
-          FOUNDRY_PROFILE=ci LLVM_PROFILE_FILE="$(pwd)/forge-coverage-%p.profraw" ../../../foundry/target/release/forge test -vvv
+          LLVM_PROFILE_FILE="$(pwd)/forge-coverage-%p.profraw" ../../../foundry/target/release/forge test -vvv
 
       # Build and run WITHOUT coverage (main/merge_group or no precompiles changes)
       - name: Build foundry forge
@@ -215,7 +212,7 @@ jobs:
         working-directory: tempo/tips/ref-impls
         run: |
           echo "Running forge test with Rust precompiles"
-          FOUNDRY_PROFILE=ci ../../../foundry/target/release/forge test -vvv
+          ../../../foundry/target/release/forge test -vvv
 
       - name: Generate coverage profdata
         if: needs.check-precompiles.outputs.coverage == 'true'

@@ -27,7 +27,7 @@ import { LegacyTransaction, LegacyTransactionLib } from "tempo-std/tx/LegacyTran
 /// - BLK1-BLK3: Block accounting (gasUsed, receipts, mixed workload)
 /// - REF1-REF2: Refund semantics (SSTORE restoration, refund cap)
 /// forge-config: default.hardfork = "tempo:T4"
-/// forge-config: ci.hardfork = "tempo:T4"
+/// forge-config: fuzz500.hardfork = "tempo:T4"
 contract TIP1016InvariantTest is InvariantBase {
 
     using TxBuilder for *;

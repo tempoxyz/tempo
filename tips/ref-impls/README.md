@@ -8,8 +8,8 @@ This directory contains Solidity spec tests and fuzz harnesses for Tempo's nativ
 
 The checked-in `foundry.toml` uses two profiles, which always run against a Tempo-native EVM with enabled Rust precompiles:
 
-- `default`: standard Foundry build/fmt/ABI tasks and local test runs.
-- `ci`: lighter optimizer and fuzz/invariant settings, for quicker CI output.
+- `default`: config for standard Foundry build/fmt/ABI tasks. Lighter optimizer and fuzz/invariant settings, for quicker output.
+- `fuzz500`: config for extended invariant runs.
 
 ## Running Tests
 
@@ -38,12 +38,12 @@ Use the lighter CI profile when you want to match CI settings locally:
 
 ```bash
 cd tips/ref-impls
-FOUNDRY_PROFILE=ci forge test -vvv
+FOUNDRY_PROFILE=fuzz500 forge test -vvv
 ```
 
-If you frequently want the CI profile by default, set it in your shell:
+If you frequently want the extended invariant profile by default, set it in your shell:
 
 ```bash
-export FOUNDRY_PROFILE=ci
+export FOUNDRY_PROFILE=fuzz500
 forge test
 ```

@@ -12,7 +12,7 @@ import { IValidatorConfigV2 } from "tempo-std/interfaces/IValidatorConfigV2.sol"
 ///      - Per-handler assertions (VALV2-1 to VALV2-7): auth enforcement, count changes, height tracking, init gates
 ///      - Global invariants (VALV2-8 to VALV2-25): append-only, uniqueness, lookups, migration correctness
 /// forge-config: default.hardfork = "tempo:T2"
-/// forge-config: ci.hardfork = "tempo:T2"
+/// forge-config: fuzz500.hardfork = "tempo:T2"
 contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
     /// @dev Starting offset for validator address pool

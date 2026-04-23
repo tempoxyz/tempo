@@ -18,7 +18,7 @@ import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";
 ///      TEMPO-1015-7: distributeReward requires both sender AND recipient authorization
 ///      TEMPO-1015-8: claimRewards uses correct directional authorization
 /// forge-config: default.hardfork = "tempo:T2"
-/// forge-config: ci.hardfork = "tempo:T2"
+/// forge-config: fuzz500.hardfork = "tempo:T2"
 contract TIP1015InvariantTest is InvariantBaseTest {
 
     /*//////////////////////////////////////////////////////////////

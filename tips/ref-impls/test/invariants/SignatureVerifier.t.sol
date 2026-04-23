@@ -10,7 +10,6 @@ import { ISignatureVerifier } from "tempo-std/interfaces/ISignatureVerifier.sol"
 ///      stateless, so each handler tests a specific property via direct calls.
 ///      SV5 (gas schedule) requires dedicated low-level gas tests and is NOT covered here.
 /// forge-config: default.invariant.depth = 300
-/// forge-config: ci.invariant.depth = 300
 contract SignatureVerifierInvariantTest is TempoTest {
 
     address internal constant SIG_VERIFIER = 0x5165300000000000000000000000000000000000;

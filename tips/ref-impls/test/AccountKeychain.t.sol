@@ -10,7 +10,7 @@ import { IAccountKeychain } from "tempo-std/interfaces/IAccountKeychain.sol";
  * @dev These tests run against the native Tempo precompile.
  */
 /// forge-config: default.isolate = true
-/// forge-config: ci.isolate = true
+/// forge-config: fuzz500.isolate = true
 contract AccountKeychainTest is TempoTest {
 
     // Using addresses for keyIds (derived from public keys)
