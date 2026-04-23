@@ -330,6 +330,10 @@ pub(crate) struct WalletArgs {
     /// GCP_KEY_VERSION env vars
     #[arg(long, help_heading = "Wallet options - remote")]
     gcp: bool,
+
+    /// Output the unsigned transaction and exit without signing or sending.
+    #[arg(long, help_heading = "Wallet options")]
+    unsigned: bool,
 }
 
 impl WalletArgs {
@@ -402,10 +406,6 @@ pub(crate) struct ValidatorTransactionArgs {
     #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
     rpc_url: String,
 
-    /// Output transaction details
-    #[arg(long)]
-    create_only: bool,
-
     /// Skip the interactive confirmation prompt.
     #[arg(long, short = 'y')]
     yes: bool,
@@ -417,7 +417,7 @@ impl ValidatorTransactionArgs {
             .to(VALIDATOR_CONFIG_V2_ADDRESS)
             .input(call.abi_encode().into());
 
-        if self.create_only {
+        if self.wallet.unsigned {
             println!("{}", &serde_json::json!(tx));
             return Ok(());
         }
