@@ -4,7 +4,7 @@
 //! - Marshal for storage and verification
 //! - Executor for driving Reth
 //! - FeedState for RPC serving
-//! - FollowResolver for marshal's gap-repair
+//! - Resolver for marshal's gap-repair
 //! - Tip tracker for push-based finalization events
 //!
 //! The archive format is shared with the consensus engine running in validator mode
@@ -36,7 +36,7 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{TempoFullNode, rpc::consensus::Query};
 use tracing::{info, info_span};
 
-use super::{driver, resolver::FollowResolver, stubs, upstream::UpstreamNode};
+use super::{driver, resolver::Resolver, stubs, upstream::UpstreamNode};
 use crate::{
     config::NAMESPACE,
     consensus::{Digest, block::Block},
@@ -148,7 +148,7 @@ impl<U: UpstreamNode> Config<U> {
         });
 
         let (resolver_tx, resolver_rx) = mpsc::channel(self.mailbox_size);
-        let resolver = FollowResolver::new(
+        let resolver = Resolver::new(
             context.with_label("resolver"),
             self.upstream.clone(),
             resolver_tx,
@@ -212,7 +212,7 @@ where
 {
     context: TContext,
     upstream: Arc<U>,
-    resolver: FollowResolver<TContext, U>,
+    resolver: Resolver<TContext, U>,
     resolver_rx: mpsc::Receiver<commonware_consensus::marshal::resolver::handler::Message<Digest>>,
     scheme_provider: SchemeProvider,
     epoch_strategy: FixedEpocher,

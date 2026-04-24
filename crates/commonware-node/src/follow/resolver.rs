@@ -12,7 +12,6 @@ use commonware_consensus::{
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization},
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
-use commonware_resolver::Resolver;
 use commonware_runtime::Spawner;
 use commonware_utils::{
     channel::{mpsc, oneshot},
@@ -29,7 +28,7 @@ use super::upstream::UpstreamNode;
 use crate::consensus::{Digest, block::Block};
 
 #[derive(Clone)]
-pub(crate) struct FollowResolver<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> {
+pub(crate) struct Resolver<TContext, U: UpstreamNode> {
     context: TContext,
     upstream: Arc<U>,
     sender: mpsc::Sender<Message<Digest>>,
@@ -37,7 +36,7 @@ pub(crate) struct FollowResolver<TContext: Spawner + Clone + Send + 'static, U: 
     execution_node: TempoFullNode,
 }
 
-impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> FollowResolver<TContext, U> {
+impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> Resolver<TContext, U> {
     pub(crate) fn new(
         context: TContext,
         upstream: Arc<U>,
@@ -146,8 +145,8 @@ impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> FollowResolver
 
 // ── Resolver trait impl ─────────────────────────────────────────────────────
 
-impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> Resolver
-    for FollowResolver<TContext, U>
+impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> commonware_resolver::Resolver
+    for Resolver<TContext, U>
 {
     type Key = Request<Digest>;
     type PublicKey = PublicKey;
