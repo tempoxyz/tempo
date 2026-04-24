@@ -29,13 +29,11 @@ impl TIP20Token {
     pub fn grant_default_admin(&mut self, msg_sender: Address, admin: Address) -> Result<()> {
         self.grant_role_internal(admin, DEFAULT_ADMIN_ROLE)?;
 
-        self.emit_event(RolesAuthEvent::RoleMembershipUpdated(
-            IRolesAuth::RoleMembershipUpdated {
-                role: DEFAULT_ADMIN_ROLE,
-                account: admin,
-                sender: msg_sender,
-                hasRole: true,
-            },
+        self.emit_event(RolesAuthEvent::role_membership_updated(
+            DEFAULT_ADMIN_ROLE,
+            admin,
+            msg_sender,
+            true,
         ))
     }
 
@@ -62,13 +60,11 @@ impl TIP20Token {
         self.check_role_internal(msg_sender, admin_role)?;
         self.grant_role_internal(call.account, call.role)?;
 
-        self.emit_event(RolesAuthEvent::RoleMembershipUpdated(
-            IRolesAuth::RoleMembershipUpdated {
-                role: call.role,
-                account: call.account,
-                sender: msg_sender,
-                hasRole: true,
-            },
+        self.emit_event(RolesAuthEvent::role_membership_updated(
+            call.role,
+            call.account,
+            msg_sender,
+            true,
         ))
     }
 
@@ -85,13 +81,11 @@ impl TIP20Token {
         self.check_role_internal(msg_sender, admin_role)?;
         self.revoke_role_internal(call.account, call.role)?;
 
-        self.emit_event(RolesAuthEvent::RoleMembershipUpdated(
-            IRolesAuth::RoleMembershipUpdated {
-                role: call.role,
-                account: call.account,
-                sender: msg_sender,
-                hasRole: false,
-            },
+        self.emit_event(RolesAuthEvent::role_membership_updated(
+            call.role,
+            call.account,
+            msg_sender,
+            false,
         ))
     }
 
@@ -107,13 +101,8 @@ impl TIP20Token {
         self.check_role_internal(msg_sender, call.role)?;
         self.revoke_role_internal(msg_sender, call.role)?;
 
-        self.emit_event(RolesAuthEvent::RoleMembershipUpdated(
-            IRolesAuth::RoleMembershipUpdated {
-                role: call.role,
-                account: msg_sender,
-                sender: msg_sender,
-                hasRole: false,
-            },
+        self.emit_event(RolesAuthEvent::role_membership_updated(
+            call.role, msg_sender, msg_sender, false,
         ))
     }
 
@@ -131,12 +120,10 @@ impl TIP20Token {
 
         self.set_role_admin_internal(call.role, call.adminRole)?;
 
-        self.emit_event(RolesAuthEvent::RoleAdminUpdated(
-            IRolesAuth::RoleAdminUpdated {
-                role: call.role,
-                newAdminRole: call.adminRole,
-                sender: msg_sender,
-            },
+        self.emit_event(RolesAuthEvent::role_admin_updated(
+            call.role,
+            call.adminRole,
+            msg_sender,
         ))
     }
 
@@ -222,19 +209,9 @@ mod tests {
             // Verify events were emitted
             token.assert_emitted_events(vec![
                 // Event from grant_default_admin during token initialization
-                RolesAuthEvent::RoleMembershipUpdated(IRolesAuth::RoleMembershipUpdated {
-                    role: DEFAULT_ADMIN_ROLE,
-                    account: admin,
-                    sender: admin,
-                    hasRole: true,
-                }),
+                RolesAuthEvent::role_membership_updated(DEFAULT_ADMIN_ROLE, admin, admin, true),
                 // Event from grant_role call above
-                RolesAuthEvent::RoleMembershipUpdated(IRolesAuth::RoleMembershipUpdated {
-                    role: custom_role,
-                    account: user,
-                    sender: admin,
-                    hasRole: true,
-                }),
+                RolesAuthEvent::role_membership_updated(custom_role, user, admin, true),
             ]);
 
             Ok(())

@@ -39,7 +39,7 @@ impl Precompile for AccountKeychain {
                     if self.storage.spec().is_t3() {
                         return self.storage.error_result(
                             AccountKeychainError::legacy_authorize_key_selector_changed(
-                                authorizeKeyCall::SELECTOR,
+                                authorizeKeyCall::SELECTOR.into(),
                             ),
                         );
                     }

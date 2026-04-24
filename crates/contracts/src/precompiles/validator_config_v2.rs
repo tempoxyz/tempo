@@ -1,5 +1,3 @@
-use alloc::string::String;
-
 pub use IValidatorConfigV2::{
     IValidatorConfigV2Errors as ValidatorConfigV2Error,
     IValidatorConfigV2Events as ValidatorConfigV2Event,
@@ -171,75 +169,7 @@ crate::sol! {
 }
 
 impl ValidatorConfigV2Error {
-    pub const fn unauthorized() -> Self {
-        Self::Unauthorized(IValidatorConfigV2::Unauthorized {})
-    }
-
-    pub const fn address_already_has_validator() -> Self {
-        Self::AddressAlreadyHasValidator(IValidatorConfigV2::AddressAlreadyHasValidator {})
-    }
-
-    pub const fn public_key_already_exists() -> Self {
-        Self::PublicKeyAlreadyExists(IValidatorConfigV2::PublicKeyAlreadyExists {})
-    }
-
-    pub const fn validator_not_found() -> Self {
-        Self::ValidatorNotFound(IValidatorConfigV2::ValidatorNotFound {})
-    }
-
-    pub const fn validator_already_deactivated() -> Self {
-        Self::ValidatorAlreadyDeactivated(IValidatorConfigV2::ValidatorAlreadyDeactivated {})
-    }
-
-    pub const fn invalid_public_key() -> Self {
-        Self::InvalidPublicKey(IValidatorConfigV2::InvalidPublicKey {})
-    }
-
-    pub const fn invalid_signature() -> Self {
-        Self::InvalidSignature(IValidatorConfigV2::InvalidSignature {})
-    }
-
-    pub const fn invalid_signature_format() -> Self {
-        Self::InvalidSignatureFormat(IValidatorConfigV2::InvalidSignatureFormat {})
-    }
-
-    pub const fn invalid_validator_address() -> Self {
-        Self::InvalidValidatorAddress(IValidatorConfigV2::InvalidValidatorAddress {})
-    }
-
-    pub const fn not_initialized() -> Self {
-        Self::NotInitialized(IValidatorConfigV2::NotInitialized {})
-    }
-
-    pub const fn already_initialized() -> Self {
-        Self::AlreadyInitialized(IValidatorConfigV2::AlreadyInitialized {})
-    }
-
-    pub const fn migration_not_complete() -> Self {
-        Self::MigrationNotComplete(IValidatorConfigV2::MigrationNotComplete {})
-    }
-
-    pub const fn empty_v1_validator_set() -> Self {
-        Self::EmptyV1ValidatorSet(IValidatorConfigV2::EmptyV1ValidatorSet {})
-    }
-
-    pub const fn invalid_migration_index() -> Self {
-        Self::InvalidMigrationIndex(IValidatorConfigV2::InvalidMigrationIndex {})
-    }
-
-    pub const fn invalid_owner() -> Self {
-        Self::InvalidOwner(IValidatorConfigV2::InvalidOwner {})
-    }
-
-    pub fn not_ip(input: String, backtrace: String) -> Self {
-        Self::NotIp(IValidatorConfigV2::NotIp { input, backtrace })
-    }
-
-    pub fn not_ip_port(input: String, backtrace: String) -> Self {
-        Self::NotIpPort(IValidatorConfigV2::NotIpPort { input, backtrace })
-    }
-
-    pub fn ingress_already_exists(ingress: String) -> Self {
-        Self::IngressAlreadyExists(IValidatorConfigV2::IngressAlreadyExists { ingress })
+    pub fn empty_v1_validator_set() -> Self {
+        Self::empty_v_1_validator_set()
     }
 }

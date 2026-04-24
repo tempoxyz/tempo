@@ -1,7 +1,6 @@
 pub use IAddressRegistry::{
     IAddressRegistryErrors as AddrRegistryError, IAddressRegistryEvents as AddrRegistryEvent,
 };
-use alloy_primitives::Address;
 
 crate::sol! {
     /// [TIP-1022] virtual address registry interface.
@@ -34,27 +33,5 @@ crate::sol! {
         error InvalidMasterAddress();
         error ProofOfWorkFailed();
         error VirtualAddressUnregistered();
-    }
-}
-
-impl AddrRegistryError {
-    /// The computed `masterId` is already registered to the given `master` address.
-    pub const fn master_id_collision(master: Address) -> Self {
-        Self::MasterIdCollision(IAddressRegistry::MasterIdCollision { master })
-    }
-
-    /// The caller address is not eligible to be a virtual-address master.
-    pub const fn invalid_master_address() -> Self {
-        Self::InvalidMasterAddress(IAddressRegistry::InvalidMasterAddress {})
-    }
-
-    /// The registration hash does not satisfy the 32-bit proof-of-work requirement.
-    pub const fn proof_of_work_failed() -> Self {
-        Self::ProofOfWorkFailed(IAddressRegistry::ProofOfWorkFailed {})
-    }
-
-    /// The virtual address has a valid format but its `masterId` is not registered.
-    pub const fn virtual_address_unregistered() -> Self {
-        Self::VirtualAddressUnregistered(IAddressRegistry::VirtualAddressUnregistered {})
     }
 }

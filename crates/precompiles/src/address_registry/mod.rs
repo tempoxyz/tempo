@@ -107,12 +107,7 @@ impl AddressRegistry {
         })?;
 
         // Emit event
-        self.emit_event(AddrRegistryEvent::MasterRegistered(
-            IAddressRegistry::MasterRegistered {
-                masterId: master_id,
-                masterAddress: msg_sender,
-            },
-        ))?;
+        self.emit_event(AddrRegistryEvent::master_registered(master_id, msg_sender))?;
 
         Ok(master_id)
     }
