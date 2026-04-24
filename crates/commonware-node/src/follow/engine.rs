@@ -29,7 +29,7 @@ use commonware_runtime::{
     BufferPooler, Clock, Metrics, Pacer, Spawner, Storage, buffer::paged::CacheRef,
 };
 use commonware_utils::{NZUsize, channel::mpsc};
-use eyre::{OptionExt as _, WrapErr as _};
+use eyre::{OptionExt as _, WrapErr as _, eyre};
 use rand_08::{CryptoRng, Rng};
 use reth_node_core::primitives::SealedBlock;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -287,43 +287,40 @@ where
                     boundary_height.get()
                 ))?;
 
-            // The genesis block just needs the outcome registered. No need to process it with the
-            // marshal as there is no finalization certificate. `last_finalized_height` will remain zero.
+            // Process the boundary with the marshal so that the starting scheme has it's corresponding
+            // block available. The genesis block is an exception as there is no finalization certificate.
             if boundary_height > Height::zero() {
-                let certified = self
+                let boundary_block = self
                     .upstream
                     .get_finalization(Query::Height(boundary_height.get()))
                     .await?
-                    .ok_or_eyre(format!(
-                        "finalization at height {} not found on upstream",
-                        boundary_height.get()
-                    ))?;
+                    .ok_or_else(|| {
+                        eyre!(
+                            "finalization at height {} not found on upstream",
+                            boundary_height.get()
+                        )
+                    })?;
 
                 let sealed = SealedBlock::seal_slow(block.clone());
                 let consensus_block = Block::from_execution_block(sealed);
-                eyre::ensure!(certified.digest == consensus_block.block_hash());
+                eyre::ensure!(boundary_block.digest == consensus_block.block_hash());
 
-                let cert_bytes = alloy_primitives::hex::decode(&certified.certificate)?;
+                let cert_bytes = alloy_primitives::hex::decode(&boundary_block.certificate)?;
                 let finalization: Finalization<Scheme<PublicKey, MinSig>, Digest> =
                     Finalization::read(&mut &cert_bytes[..])?;
 
                 // Process the boundary block & finalization
-                let round = Round::new(Epoch::new(certified.epoch), View::new(certified.view));
+                let epoch = Epoch::new(boundary_block.epoch);
+                let round = Round::new(epoch, View::new(boundary_block.view));
                 let activity = Activity::Finalization(finalization);
                 self.marshal_mailbox.verified(round, consensus_block).await;
                 self.marshal_mailbox.report(activity.clone()).await;
                 self.feed_mailbox.report(activity).await;
 
-                // Set floor -- no historical data will be processed by the driver.
                 self.last_finalized_height = boundary_height;
                 self.marshal_mailbox.set_floor(boundary_height).await;
-                info_span!("follow_engine").in_scope(|| {
-                    info!(
-                        height = boundary_height.get(),
-                        epoch = epoch_info.epoch().get(),
-                        "bootstrapped marshal floor"
-                    )
-                });
+                info_span!("follow_engine")
+                    .in_scope(|| info!(?boundary_height, ?epoch, "bootstrapped marshal floor"));
             }
 
             block
@@ -349,17 +346,19 @@ where
             self.marshal_mailbox
                 .get_block(boundary_height)
                 .await
-                .ok_or_eyre(format!(
-                    "block at height {} not found in local archive",
-                    boundary_height.get()
-                ))?
+                .ok_or_else(|| {
+                    eyre!(
+                        "block at height {} not found in local archive",
+                        boundary_height.get()
+                    )
+                })?
                 .into_inner()
                 .into_block()
         };
 
         let extra_data = boundary_block.extra_data();
         let outcome = OnchainDkgOutcome::read(&mut &extra_data[..])
-            .wrap_err("block did not contain a DKG outcome")?;
+            .wrap_err("could not read DKG outcome from block")?;
 
         let outcome_scheme: Scheme<PublicKey, MinSig> = Scheme::verifier(
             NAMESPACE,
@@ -372,7 +371,7 @@ where
         info_span!("follow_engine").in_scope(|| {
             info!(
                 height = boundary_block.header.number(),
-                epoch = outcome.epoch.get(),
+                epoch = ?outcome.epoch,
                 source = if bootstrap { "upstream" } else { "archive" },
                 "registered starting identity scheme"
             )
