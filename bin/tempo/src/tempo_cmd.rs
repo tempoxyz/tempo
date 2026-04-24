@@ -308,7 +308,6 @@ impl ValidatorSignatureArgs {
 }
 
 #[derive(Debug, clap::Args)]
-#[group(required = true, multiple = false)]
 pub(crate) struct WalletArgs {
     /// Path to the file holding the validator's Ethereum private key.
     #[arg(long, value_name = "FILE", help_heading = "Wallet options - raw")]
