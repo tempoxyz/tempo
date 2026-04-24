@@ -5,6 +5,10 @@
 
 pub mod dispatch;
 
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
 use tempo_contracts::precompiles::VALIDATOR_CONFIG_ADDRESS;
 pub use tempo_contracts::precompiles::{IValidatorConfig, ValidatorConfigError};
 use tempo_precompiles_macros::{Storable, contract};

@@ -18,7 +18,7 @@ tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-consensus.workspace = true
 tempo-payload-builder.workspace = true
 tempo-payload-types.workspace = true
-tempo-precompiles.workspace = true
+tempo-precompiles = { workspace = true, features = ["std"] }
 tempo-primitives = { workspace = true, features = ["default"] }
 
 thiserror.workspace = true
@@ -66,7 +66,7 @@ jsonrpsee.workspace = true
 tempo-e2e.workspace = true
 tempo-transaction-pool = { workspace = true, features = ["test-utils"] }
 alloy-network.workspace = true
-tempo-precompiles.workspace = true
+tempo-precompiles = { workspace = true, features = ["std"] }
 alloy-rpc-types-engine.workspace = true
 reth-ethereum = { workspace = true, features = ["node", "test-utils", "pool"] }
 reth-e2e-test-utils.workspace = true

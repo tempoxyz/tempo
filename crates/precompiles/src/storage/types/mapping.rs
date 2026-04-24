@@ -1,7 +1,7 @@
 //! Type-safe wrapper for EVM storage mappings (hash-based key-value storage).
 
 use alloy::primitives::{Address, U256};
-use std::{
+use core::{
     hash::Hash,
     ops::{Index, IndexMut},
 };

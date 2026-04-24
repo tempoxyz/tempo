@@ -174,8 +174,7 @@ mod tests {
 
     #[test]
     fn test_add_validator_dispatch() -> eyre::Result<()> {
-        use commonware_codec::Encode;
-        use commonware_cryptography::{Signer, ed25519::PrivateKey};
+        use ed25519_consensus::SigningKey;
 
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
         let owner = Address::random();
@@ -184,33 +183,23 @@ mod tests {
             let mut vc = ValidatorConfigV2::new();
             vc.initialize(owner)?;
 
-            // Generate real Ed25519 key pair
-            let seed = rand_08::random::<u64>();
-            let private_key = PrivateKey::from_seed(seed);
-            let public_key_obj = private_key.public_key();
-
-            // Build message (remove lines with "TEMPO" prefix)
-            let mut msg_data = Vec::new();
-            msg_data.extend_from_slice(&1u64.to_be_bytes());
-            msg_data.extend_from_slice(
-                tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS.as_slice(),
+            let mut seed = [0u8; 32];
+            seed[..8].copy_from_slice(&rand_08::random::<u64>().to_le_bytes());
+            let private_key = SigningKey::from(seed);
+            let public_key =
+                FixedBytes::<32>::from(<[u8; 32]>::from(private_key.verification_key()));
+            let (namespace, message) = ValidatorConfigV2::validator_message(
+                SignatureKind::Add {
+                    fee_recipient: validator_addr,
+                },
+                1,
+                validator_addr,
+                "192.168.1.1:8000",
+                "192.168.1.1",
             );
-            msg_data.extend_from_slice(validator_addr.as_slice());
-            msg_data.push(u8::try_from("192.168.1.1:8000".len()).unwrap());
-            msg_data.extend_from_slice(b"192.168.1.1:8000");
-            msg_data.push(u8::try_from("192.168.1.1".len()).unwrap());
-            msg_data.extend_from_slice(b"192.168.1.1");
-            msg_data.extend_from_slice(validator_addr.as_slice());
-            let message = alloy::primitives::keccak256(&msg_data);
-
-            // Sign with namespace
-            let signature = private_key.sign(VALIDATOR_NS_ADD, message.as_slice());
-
-            // Encode public key
-            let pubkey_bytes = public_key_obj.encode();
-            let mut pubkey_array = [0u8; 32];
-            pubkey_array.copy_from_slice(&pubkey_bytes);
-            let public_key = FixedBytes::<32>::from(pubkey_array);
+            let signature = private_key.sign(
+                ValidatorConfigV2::namespaced_message(namespace, message.as_slice()).as_slice(),
+            );
 
             let add_call = IValidatorConfigV2::addValidatorCall {
                 validatorAddress: validator_addr,
@@ -218,7 +207,7 @@ mod tests {
                 ingress: "192.168.1.1:8000".to_string(),
                 egress: "192.168.1.1".to_string(),
                 feeRecipient: validator_addr,
-                signature: signature.encode().to_vec().into(),
+                signature: signature.to_bytes().to_vec().into(),
             };
             let calldata = add_call.abi_encode();
 

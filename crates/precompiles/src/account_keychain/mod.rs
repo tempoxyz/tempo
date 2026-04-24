@@ -8,9 +8,9 @@
 
 pub mod dispatch;
 
-use std::collections::HashSet;
-
+use alloc::vec::Vec;
 use alloy::sol_types::SolCall;
+use hashbrown::HashSet;
 use tempo_contracts::precompiles::{AccountKeychainError, AccountKeychainEvent, ITIP20};
 pub use tempo_contracts::precompiles::{
     IAccountKeychain,

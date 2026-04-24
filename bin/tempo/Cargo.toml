@@ -20,7 +20,7 @@ tempo-eyre.workspace = true
 tempo-node = { workspace = true, features = ["default"] }
 tempo-commonware-node.workspace = true
 tempo-commonware-node-config.workspace = true
-tempo-precompiles.workspace = true
+tempo-precompiles = { workspace = true, features = ["std"] }
 tempo-validator-config.workspace = true
 tempo-chainspec = { workspace = true, features = ["default"] }
 tempo-consensus.workspace = true

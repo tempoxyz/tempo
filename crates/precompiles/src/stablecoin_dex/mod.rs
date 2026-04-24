@@ -27,7 +27,9 @@ use crate::{
     tip20_factory::TIP20Factory,
     tip403_registry::{AuthRole, TIP403Registry, is_policy_lookup_error},
 };
+use alloc::vec::Vec;
 use alloy::primitives::{Address, B256, U256};
+use hashbrown::HashSet;
 use tempo_precompiles_macros::contract;
 use tempo_primitives::TempoAddressExt;
 
@@ -1358,7 +1360,7 @@ impl StablecoinDEX {
 
         // Find the lowest common ancestor (LCA) using O(n+m) algorithm:
         // Build a HashSet from path_out for O(1) lookups, then iterate path_in
-        let path_out_set: std::collections::HashSet<Address> = path_out.iter().copied().collect();
+        let path_out_set: HashSet<Address> = path_out.iter().copied().collect();
         let mut lca = None;
         for token_a in &path_in {
             if path_out_set.contains(token_a) {

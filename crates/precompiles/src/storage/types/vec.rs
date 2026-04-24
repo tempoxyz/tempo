@@ -11,8 +11,9 @@
 //! - Supports both single-slot primitives and multi-slot types (structs, arrays)
 //! - Element at index `i` starts at slot `data_start + i * T::SLOTS`
 
+use alloc::vec::Vec;
 use alloy::primitives::{Address, U256};
-use std::ops::{Index, IndexMut};
+use core::ops::{Index, IndexMut};
 
 use crate::{
     error::{Result, TempoPrecompileError},

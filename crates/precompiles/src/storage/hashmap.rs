@@ -1,9 +1,10 @@
+use alloc::vec::Vec;
 use alloy::primitives::{Address, LogData, U256};
+use hashbrown::HashMap;
 use revm::{
     context::journaled_state::JournalCheckpoint,
     state::{AccountInfo, Bytecode},
 };
-use std::collections::HashMap;
 use tempo_chainspec::hardfork::TempoHardfork;
 
 use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
@@ -46,6 +47,21 @@ impl HashMapStorageProvider {
 
     /// Creates a new provider with the given chain ID and hardfork spec.
     pub fn new_with_spec(chain_id: u64, spec: TempoHardfork) -> Self {
+        #[cfg(feature = "std")]
+        let timestamp = {
+            #[expect(clippy::disallowed_methods)]
+            {
+                U256::from(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                )
+            }
+        };
+        #[cfg(not(feature = "std"))]
+        let timestamp = U256::ZERO;
+
         Self {
             internals: HashMap::new(),
             transient: HashMap::new(),
@@ -54,13 +70,7 @@ impl HashMapStorageProvider {
             events: HashMap::new(),
             snapshots: Vec::new(),
             chain_id,
-            #[expect(clippy::disallowed_methods)]
-            timestamp: U256::from(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs(),
-            ),
+            timestamp,
             beneficiary: Address::ZERO,
             block_number: 0,
             spec,

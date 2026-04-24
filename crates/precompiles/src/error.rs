@@ -4,10 +4,13 @@
 //! ABI-selector-based decoder registry for mapping raw revert bytes back to
 //! typed error variants.
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, LazyLock},
+use alloc::{
+    boxed::Box,
+    string::{String, ToString},
+    sync::Arc,
 };
+use hashbrown::HashMap;
+use once_cell::sync::Lazy as LazyLock;
 
 use crate::tip20::TIP20Error;
 use alloy::{
@@ -127,7 +130,7 @@ impl From<JournalLoadError<revm::context::ErasedError>> for TempoPrecompileError
 }
 
 /// Result type alias for Tempo precompile operations
-pub type Result<T> = std::result::Result<T, TempoPrecompileError>;
+pub type Result<T> = core::result::Result<T, TempoPrecompileError>;
 
 impl TempoPrecompileError {
     /// Returns true if this error represents a system-level failure that must be propagated

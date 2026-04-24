@@ -1,8 +1,14 @@
+use alloc::string::ToString;
 use alloy::{
     primitives::{Address, B256, Bytes, LogData, U256},
     sol_types::SolInterface,
 };
 use alloy_evm::{Database, EvmInternals};
+#[cfg(feature = "std")]
+use core::cell::RefCell;
+use core::fmt::Debug;
+#[cfg(not(feature = "std"))]
+use core::{cell::UnsafeCell, ptr::NonNull};
 use revm::{
     context::{
         Block, CfgEnv, ContextTr, JournalTr, Transaction, journaled_state::JournalCheckpoint,
@@ -10,8 +16,8 @@ use revm::{
     precompile::{PrecompileHalt, PrecompileOutput, PrecompileResult},
     state::{AccountInfo, Bytecode},
 };
+#[cfg(feature = "std")]
 use scoped_tls::scoped_thread_local;
-use std::{cell::RefCell, fmt::Debug};
 use tempo_chainspec::hardfork::TempoHardfork;
 
 use crate::{
@@ -20,7 +26,82 @@ use crate::{
     storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider},
 };
 
+#[cfg(feature = "std")]
 scoped_thread_local!(static STORAGE: RefCell<&mut dyn PrecompileStorageProvider>);
+
+// ── no_std storage context ──────────────────────────────────────────────
+//
+// The types below replace `scoped_tls` + `RefCell` with a bare global for
+// environments where `std` is unavailable (e.g. zkVM provers).
+//
+// # Safety
+//
+// This implementation assumes a **single-threaded** runtime. There is no
+// mutex, atomic, or critical-section guard — the `borrowed` flag is a
+// plain `bool`. Using this in a multi-threaded no_std environment is
+// **unsound** and will produce data races.
+//
+// The intended targets are bare-metal prover VMs (riscv32imac-unknown-none-elf)
+// which execute a single thread of EVM block re-execution.
+
+#[cfg(not(feature = "std"))]
+struct NoStdStorageState {
+    storage: Option<NonNull<dyn PrecompileStorageProvider>>,
+    borrowed: bool,
+}
+
+#[cfg(not(feature = "std"))]
+impl NoStdStorageState {
+    const fn new() -> Self {
+        Self {
+            storage: None,
+            borrowed: false,
+        }
+    }
+}
+
+#[cfg(not(feature = "std"))]
+struct NoStdStorageCell(UnsafeCell<NoStdStorageState>);
+
+#[cfg(not(feature = "std"))]
+// SAFETY: access is serialized manually through `StorageCtx::{enter,with_storage,try_with_storage}`.
+// This is only sound on single-threaded runtimes (see module-level safety note above).
+unsafe impl Sync for NoStdStorageCell {}
+
+#[cfg(not(feature = "std"))]
+static STORAGE: NoStdStorageCell = NoStdStorageCell(UnsafeCell::new(NoStdStorageState::new()));
+
+#[cfg(not(feature = "std"))]
+struct NoStdEnterGuard {
+    previous_storage: Option<NonNull<dyn PrecompileStorageProvider>>,
+    previous_borrowed: bool,
+}
+
+#[cfg(not(feature = "std"))]
+impl Drop for NoStdEnterGuard {
+    fn drop(&mut self) {
+        // SAFETY: `StorageCtx::enter` is the only constructor for this guard.
+        unsafe {
+            let state = &mut *STORAGE.0.get();
+            state.storage = self.previous_storage;
+            state.borrowed = self.previous_borrowed;
+        }
+    }
+}
+
+#[cfg(not(feature = "std"))]
+struct NoStdBorrowGuard;
+
+#[cfg(not(feature = "std"))]
+impl Drop for NoStdBorrowGuard {
+    fn drop(&mut self) {
+        // SAFETY: `StorageCtx::{with_storage,try_with_storage}` set `borrowed = true`
+        // before constructing this guard.
+        unsafe {
+            (*STORAGE.0.get()).borrowed = false;
+        }
+    }
+}
 
 /// Thread-local storage accessor that implements `PrecompileStorageProvider` without the trait bound.
 ///
@@ -48,6 +129,7 @@ impl StorageCtx {
     /// 1. Only one `enter` call is active at a time, in the same thread.
     /// 2. If multiple storage providers are instantiated in parallel threads,
     ///    they CANNOT point to the same storage addresses.
+    #[cfg(feature = "std")]
     pub fn enter<S, R>(storage: &mut S, f: impl FnOnce() -> R) -> R
     where
         S: PrecompileStorageProvider,
@@ -55,15 +137,42 @@ impl StorageCtx {
         // SAFETY: `scoped_tls` ensures the pointer is only accessible within the closure scope.
         let storage: &mut dyn PrecompileStorageProvider = storage;
         let storage_static: &mut (dyn PrecompileStorageProvider + 'static) =
-            unsafe { std::mem::transmute(storage) };
+            unsafe { core::mem::transmute(storage) };
         let cell = RefCell::new(storage_static);
         STORAGE.set(&cell, f)
+    }
+
+    #[cfg(not(feature = "std"))]
+    pub fn enter<S, R>(storage: &mut S, f: impl FnOnce() -> R) -> R
+    where
+        S: PrecompileStorageProvider,
+    {
+        let storage: &mut dyn PrecompileStorageProvider = storage;
+        // SAFETY: the storage pointer lives for the duration of `f`, and the guard restores
+        // the previous context before returning.
+        let storage_static: &mut (dyn PrecompileStorageProvider + 'static) =
+            unsafe { core::mem::transmute(storage) };
+        // SAFETY: the storage pointer lives for the duration of `f`, and the guard restores
+        // the previous context before returning.
+        let _guard = unsafe {
+            let state = &mut *STORAGE.0.get();
+            assert!(
+                !state.borrowed,
+                "Storage context already borrowed; cannot enter a nested context"
+            );
+            NoStdEnterGuard {
+                previous_storage: state.storage.replace(NonNull::from(storage_static)),
+                previous_borrowed: core::mem::replace(&mut state.borrowed, false),
+            }
+        };
+        f()
     }
 
     /// Execute an infallible function with access to the current thread-local storage provider.
     ///
     /// # Panics
     /// Panics if no storage context is set.
+    #[cfg(feature = "std")]
     fn with_storage<F, R>(f: F) -> R
     where
         F: FnOnce(&mut dyn PrecompileStorageProvider) -> R,
@@ -80,7 +189,30 @@ impl StorageCtx {
         })
     }
 
+    #[cfg(not(feature = "std"))]
+    fn with_storage<F, R>(f: F) -> R
+    where
+        F: FnOnce(&mut dyn PrecompileStorageProvider) -> R,
+    {
+        // SAFETY: access is serialized through the `borrowed` flag, matching the std path's
+        // `RefCell` behavior. This supports single-threaded no_std runtimes used for proving.
+        let mut storage = unsafe {
+            let state = &mut *STORAGE.0.get();
+            assert!(
+                state.storage.is_some(),
+                "No storage context. 'StorageCtx::enter' must be called first"
+            );
+            assert!(!state.borrowed, "already borrowed");
+            state.borrowed = true;
+            state.storage.expect("storage context checked above")
+        };
+        let _guard = NoStdBorrowGuard;
+        // SAFETY: `storage` points at the active provider installed by `enter`.
+        unsafe { f(storage.as_mut()) }
+    }
+
     /// Execute a (fallible) function with access to the current thread-local storage provider.
+    #[cfg(feature = "std")]
     fn try_with_storage<F, R>(f: F) -> Result<R>
     where
         F: FnOnce(&mut dyn PrecompileStorageProvider) -> Result<R>,
@@ -96,6 +228,33 @@ impl StorageCtx {
             let mut guard = cell.borrow_mut();
             f(&mut **guard)
         })
+    }
+
+    #[cfg(not(feature = "std"))]
+    fn try_with_storage<F, R>(f: F) -> Result<R>
+    where
+        F: FnOnce(&mut dyn PrecompileStorageProvider) -> Result<R>,
+    {
+        // SAFETY: access is serialized through the `borrowed` flag, matching the std path's
+        // `RefCell` behavior. This supports single-threaded no_std runtimes used for proving.
+        let mut storage = unsafe {
+            let state = &mut *STORAGE.0.get();
+            let Some(storage) = state.storage else {
+                return Err(TempoPrecompileError::Fatal(
+                    "No storage context. 'StorageCtx::enter' must be called first".to_string(),
+                ));
+            };
+            if state.borrowed {
+                return Err(TempoPrecompileError::Fatal(
+                    "Storage context is already borrowed".to_string(),
+                ));
+            }
+            state.borrowed = true;
+            storage
+        };
+        let _guard = NoStdBorrowGuard;
+        // SAFETY: `storage` points at the active provider installed by `enter`.
+        unsafe { f(storage.as_mut()) }
     }
 
     // `PrecompileStorageProvider` methods (with modified mutability for read-only methods)

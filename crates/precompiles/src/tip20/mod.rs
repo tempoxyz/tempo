@@ -30,11 +30,12 @@ use crate::{
     tip20_factory::TIP20Factory,
     tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
 };
+use alloc::string::{String, ToString};
 use alloy::{
     primitives::{Address, B256, U256, keccak256, uint},
     sol_types::SolValue,
 };
-use std::sync::LazyLock;
+use once_cell::sync::Lazy as LazyLock;
 use tempo_precompiles_macros::contract;
 use tempo_primitives::TempoAddressExt;
 pub use tempo_primitives::is_tip20_prefix;
