@@ -13,6 +13,7 @@ use alloy_primitives::{
 };
 use alloy_sol_types::SolEvent;
 use futures::StreamExt;
+use itertools::{Either, Itertools};
 use reth_chainspec::ChainSpecProvider;
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain, HeaderProvider};
@@ -333,17 +334,14 @@ impl PendingStalenessTracker {
     /// Call `should_check` first to avoid collecting the pending set on every block.
     fn check_and_update(&mut self, current_pending: HashSet<TxHash>, now: u64) -> Vec<TxHash> {
         let previous_pending = std::mem::take(&mut self.previous_pending);
-        let mut next_pending: HashSet<TxHash> =
-            HashSet::with_capacity_and_hasher(current_pending.len(), Default::default());
-        let mut stale = Vec::new();
-
-        for hash in current_pending {
-            if previous_pending.contains(&hash) {
-                stale.push(hash);
-            } else {
-                next_pending.insert(hash);
-            }
-        }
+        let (stale, next_pending): (Vec<TxHash>, HashSet<TxHash>) =
+            current_pending.into_iter().partition_map(|hash| {
+                if previous_pending.contains(&hash) {
+                    Either::Left(hash)
+                } else {
+                    Either::Right(hash)
+                }
+            });
 
         self.previous_pending = next_pending;
         self.last_snapshot_time = Some(now);
