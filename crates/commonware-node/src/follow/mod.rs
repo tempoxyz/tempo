@@ -56,5 +56,5 @@ pub(crate) mod resolver;
 mod stubs;
 pub mod upstream;
 
-pub use engine::Builder;
+pub use engine::Config;
 pub use upstream::{LocalUpstream, UpstreamNode, WsUpstream};

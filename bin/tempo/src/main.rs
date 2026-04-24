@@ -85,7 +85,7 @@ struct TempoArgs {
     #[arg(
         long = "follow.uncertified",
         requires = "follow",
-        default_missing_value = "true",
+        default_missing_value = "true"
     )]
     pub follow_uncertified: Option<bool>,
 
@@ -381,8 +381,6 @@ fn main() -> eyre::Result<()> {
                     .wrap_err("failed to start Prometheus metrics exporter")?;
             }
 
-            let follow_ctx = ctx.with_label("follow");
-            let consensus_ctx = ctx.with_label("consensus");
             let stack = if let Some(follow) = args.follow {
                 let follow_url = if follow == "auto" {
                     node.chain_spec()
@@ -394,7 +392,7 @@ fn main() -> eyre::Result<()> {
                 };
 
                 Either::Left(run_follow_stack(
-                    &follow_ctx,
+                    ctx.with_label("follow"),
                     args.consensus,
                     follow_url,
                     node,
@@ -411,7 +409,7 @@ fn main() -> eyre::Result<()> {
                 }
 
                 Either::Right(run_consensus_stack(
-                    &consensus_ctx,
+                    ctx.with_label("consensus"),
                     args.consensus,
                     node,
                     cl_feed_state_clone,

@@ -48,7 +48,7 @@ use crate::{
 
 /// Builder for the follow engine.
 #[derive(Clone)]
-pub struct Builder<U: UpstreamNode> {
+pub struct Config<U: UpstreamNode> {
     /// The execution node to drive.
     pub execution_node: TempoFullNode,
 
@@ -71,7 +71,7 @@ pub struct Builder<U: UpstreamNode> {
     pub fcu_heartbeat_interval: Duration,
 }
 
-impl<U: UpstreamNode> Builder<U> {
+impl<U: UpstreamNode> Config<U> {
     /// Initialize all components and return an [`Engine`] ready to start.
     pub async fn try_init<TContext>(self, context: TContext) -> eyre::Result<Engine<TContext, U>>
     where

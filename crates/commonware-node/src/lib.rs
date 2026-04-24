@@ -43,7 +43,7 @@ pub use args::{Args, PositiveDuration};
 const PARTITION_PREFIX: &str = "engine";
 
 pub async fn run_consensus_stack(
-    context: &commonware_runtime::tokio::Context,
+    context: commonware_runtime::tokio::Context,
     config: Args,
     execution_node: TempoFullNode,
     feed_state: feed::FeedStateHandle,
@@ -69,7 +69,7 @@ pub async fn run_consensus_stack(
     let backfill_quota = commonware_runtime::Quota::per_second(config.backfill_frequency);
 
     let (mut network, oracle) =
-        instantiate_network(context, &config, signing_key.clone().into_inner())
+        instantiate_network(&context, &config, signing_key.clone().into_inner())
             .await
             .wrap_err("failed to start network")?;
 
@@ -158,7 +158,7 @@ pub async fn run_consensus_stack(
 /// Run the follower stack. This uses RPC to sync consensus state and drive
 /// the execution layer from the upstream node.
 pub async fn run_follow_stack(
-    context: &commonware_runtime::tokio::Context,
+    context: commonware_runtime::tokio::Context,
     config: Args,
     upstream_url: String,
     execution_node: TempoFullNode,
@@ -175,7 +175,7 @@ pub async fn run_follow_stack(
         upstream_url,
     ));
 
-    let engine = follow::Builder {
+    let config = follow::Config {
         execution_node,
         feed_state,
         partition_prefix: PARTITION_PREFIX.into(),
@@ -185,7 +185,7 @@ pub async fn run_follow_stack(
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
     };
 
-    let ret = engine
+    let ret = config
         .try_init(context.with_label("engine"))
         .await
         .wrap_err("failed initializing follow engine")?

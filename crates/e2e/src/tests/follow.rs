@@ -99,7 +99,7 @@ impl Follower {
             node.connect_peer(peer).await;
         }
 
-        let engine = follow::Builder {
+        let config = follow::Config {
             execution_node: node.node.clone(),
             feed_state: feed_state.clone(),
             partition_prefix: partition_prefix.into(),
@@ -109,7 +109,7 @@ impl Follower {
             fcu_heartbeat_interval: Duration::from_secs(300),
         };
 
-        let engine = engine
+        let engine = config
             .try_init(context.with_label(&name))
             .await
             .expect("failed to initialize follow engine");

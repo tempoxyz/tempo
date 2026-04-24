@@ -8,7 +8,7 @@ use std::{collections::HashSet, sync::Arc};
 use bytes::Bytes;
 use commonware_codec::{Encode, ReadExt as _};
 use commonware_consensus::{
-    marshal::resolver::handler,
+    marshal::resolver::handler::{Message, Request},
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization},
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
@@ -28,14 +28,11 @@ use tracing::{debug, warn, warn_span};
 use super::upstream::UpstreamNode;
 use crate::consensus::{Digest, block::Block};
 
-type Request = handler::Request<Digest>;
-type Message = handler::Message<Digest>;
-
 pub(crate) struct FollowResolver<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> {
     context: TContext,
     upstream: Arc<U>,
-    sender: mpsc::Sender<Message>,
-    pending: Arc<Mutex<HashSet<Request>>>,
+    sender: mpsc::Sender<Message<Digest>>,
+    pending: Arc<Mutex<HashSet<Request<Digest>>>>,
     execution_node: TempoFullNode,
 }
 
@@ -57,7 +54,7 @@ impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> FollowResolver
     pub(crate) fn new(
         context: TContext,
         upstream: Arc<U>,
-        sender: mpsc::Sender<Message>,
+        sender: mpsc::Sender<Message<Digest>>,
         execution_node: TempoFullNode,
     ) -> Self {
         Self {
@@ -71,7 +68,7 @@ impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> FollowResolver
 
     // ── Gap-repair internals ────────────────────────────────────────────
 
-    fn spawn_fetch(&self, key: Request) {
+    fn spawn_fetch(&self, key: Request<Digest>) {
         let resolver = self.clone();
         let key_clone = key;
 
@@ -84,10 +81,8 @@ impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> FollowResolver
             }
 
             let result = match &key_clone {
-                handler::Request::Finalized { height } => {
-                    resolver.resolve_finalized(height.get()).await
-                }
-                handler::Request::Block(commitment) => resolver.resolve_block(*commitment).await,
+                Request::Finalized { height } => resolver.resolve_finalized(height.get()).await,
+                Request::Block(commitment) => resolver.resolve_block(*commitment).await,
                 other => {
                     warn_span!("follow")
                         .in_scope(|| warn!(?other, "unexpected resolver request type"));
@@ -169,7 +164,7 @@ impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> FollowResolver
 impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> Resolver
     for FollowResolver<TContext, U>
 {
-    type Key = Request;
+    type Key = Request<Digest>;
     type PublicKey = PublicKey;
 
     async fn fetch(&mut self, key: Self::Key) {
