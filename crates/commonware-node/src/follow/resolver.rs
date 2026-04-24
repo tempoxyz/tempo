@@ -28,26 +28,13 @@ use tracing::{debug, warn, warn_span};
 use super::upstream::UpstreamNode;
 use crate::consensus::{Digest, block::Block};
 
+#[derive(Clone)]
 pub(crate) struct FollowResolver<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> {
     context: TContext,
     upstream: Arc<U>,
     sender: mpsc::Sender<Message<Digest>>,
     pending: Arc<Mutex<HashSet<Request<Digest>>>>,
     execution_node: TempoFullNode,
-}
-
-impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> Clone
-    for FollowResolver<TContext, U>
-{
-    fn clone(&self) -> Self {
-        Self {
-            context: self.context.clone(),
-            upstream: self.upstream.clone(),
-            sender: self.sender.clone(),
-            pending: self.pending.clone(),
-            execution_node: self.execution_node.clone(),
-        }
-    }
 }
 
 impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> FollowResolver<TContext, U> {
@@ -70,17 +57,16 @@ impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> FollowResolver
 
     fn spawn_fetch(&self, key: Request<Digest>) {
         let resolver = self.clone();
-        let key_clone = key;
 
         self.context.clone().spawn(move |_| async move {
             {
                 let p = resolver.pending.lock().await;
-                if !p.contains(&key_clone) {
+                if !p.contains(&key) {
                     return;
                 }
             }
 
-            let result = match &key_clone {
+            let result = match &key {
                 Request::Finalized { height } => resolver.resolve_finalized(height.get()).await,
                 Request::Block(commitment) => resolver.resolve_block(*commitment).await,
                 other => {
@@ -92,7 +78,7 @@ impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> FollowResolver
 
             {
                 let p = resolver.pending.lock().await;
-                if !p.contains(&key_clone) {
+                if !p.contains(&key) {
                     return;
                 }
             }
@@ -101,7 +87,7 @@ impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> FollowResolver
                 Ok(Some(value)) => {
                     let (response_tx, response_rx) = oneshot::channel();
                     let msg = Message::Deliver {
-                        key: key_clone.clone(),
+                        key: key.clone(),
                         value,
                         response: response_tx,
                     };
@@ -109,14 +95,14 @@ impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> FollowResolver
                     if resolver.sender.send(msg).await.is_ok()
                         && let Ok(true) = response_rx.await
                     {
-                        resolver.pending.lock().await.remove(&key_clone);
+                        resolver.pending.lock().await.remove(&key);
                     }
                 }
                 Ok(None) => {
-                    debug!(?key_clone, "data not yet available from upstream");
+                    debug!(?key, "data not yet available from upstream");
                 }
                 Err(e) => {
-                    warn!(?key_clone, error = %e, "failed to fetch from upstream");
+                    warn!(?key, error = %e, "failed to fetch from upstream");
                 }
             }
         });
@@ -135,8 +121,7 @@ impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> FollowResolver
             .wrap_err("failed to decode certificate hex")?;
 
         let finalization: Finalization<Scheme<PublicKey, MinSig>, Digest> =
-            Finalization::read(&mut &cert_bytes[..])
-                .map_err(|e| eyre::eyre!("failed to decode finalization: {e:?}"))?;
+            Finalization::read(&mut &cert_bytes[..]).wrap_err("failed to decode finalization")?;
 
         let consensus_block = Block::from_execution_block(SealedBlock::seal_slow(certified.block));
         Ok(Some((finalization, consensus_block).encode()))

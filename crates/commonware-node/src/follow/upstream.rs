@@ -40,7 +40,7 @@ const RECONNECT_MAX_MS: u64 = 30_000;
 /// In production this is backed by a WebSocket RPC connection ([`WsUpstream`]).
 /// In tests it can be backed by in-process direct access to another node's
 /// feed state and execution provider.
-pub trait UpstreamNode: Send + Sync + 'static {
+pub trait UpstreamNode: Clone + Send + Sync + 'static {
     fn subscribe_events(
         &self,
     ) -> impl std::future::Future<Output = eyre::Result<BoxStream<'static, eyre::Result<Event>>>> + Send;
@@ -65,10 +65,11 @@ pub trait UpstreamNode: Send + Sync + 'static {
 ///
 /// Owns a persistent WebSocket connection to the upstream node with
 /// transparent reconnection.
+#[derive(Clone)]
 pub struct WsUpstream<TContext> {
     context: TContext,
     url: String,
-    client: Mutex<Option<Arc<WsClient>>>,
+    client: Arc<Mutex<Option<Arc<WsClient>>>>,
 }
 
 impl<TContext: Clock> WsUpstream<TContext> {
@@ -76,7 +77,7 @@ impl<TContext: Clock> WsUpstream<TContext> {
         Self {
             context,
             url,
-            client: Mutex::new(None),
+            client: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -170,6 +171,7 @@ impl<C: Clock> UpstreamNode for WsUpstream<C> {
 ///
 /// Avoids WebSocket I/O, allowing the follow engine to run in a
 /// deterministic runtime for testing.
+#[derive(Clone)]
 pub struct LocalUpstream {
     feed: FeedStateHandle,
     execution_node: TempoFullNode,
