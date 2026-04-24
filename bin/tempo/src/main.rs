@@ -82,11 +82,7 @@ struct TempoArgs {
     /// Disable consensus certification in follow mode. The follower syncs execution
     /// state from the upstream node without validating consensus state.
     /// DO NOT USE IN PRODUCTION.
-    #[arg(
-        long = "follow.uncertified",
-        requires = "follow",
-        default_missing_value = "true"
-    )]
+    #[arg(long = "follow.uncertified", requires = "follow")]
     pub follow_uncertified: Option<bool>,
 
     #[command(flatten)]
@@ -104,6 +100,13 @@ struct TempoArgs {
     #[command(flatten)]
     #[cfg(feature = "pyroscope")]
     pub pyroscope_args: PyroscopeArgs,
+}
+
+impl TempoArgs {
+    // When unset, the default is to follow uncertified until the migration is complete
+    fn is_following_uncertified(&self) -> bool {
+        self.follow.is_some() && self.follow_uncertified.unwrap_or(true)
+    }
 }
 
 /// Command line arguments for configuring Pyroscope continuous profiling.
@@ -323,7 +326,7 @@ fn main() -> eyre::Result<()> {
                 and a handle to the execution node could be received",
         )?;
 
-        if node.config.dev.dev || args.follow_uncertified.unwrap_or(false) {
+        if node.config.dev.dev || args.is_following_uncertified() {
             return futures::executor::block_on(async move {
                 shutdown_token_clone.cancelled().await;
                 let _ = consensus_dead_tx.send(());
@@ -519,7 +522,17 @@ fn main() -> eyre::Result<()> {
                     .enable_discv5_discovery = true;
 
                 // Uncertified follower mode: set debug RPC when certification is off
-                if args.follow_uncertified.unwrap_or(false) {
+                if args.is_following_uncertified() {
+
+                    // Only emit a warning if explicitly configured. Until the migration
+                    // is complete, the default is to follow uncertified.
+                    if args.follow_uncertified.is_some() {
+                        warn!(
+                            "--follow.uncertified does not validate the peer's execution state against \
+                            consensus state. The upstream is fully trusted. DO NOT USE IN PRODUCTION!!!!"
+                        )
+                    }
+
                     let follow_url = args.follow.clone().and_then(|v| {
                         if v != "auto" {
                             Some(v)
@@ -536,7 +549,7 @@ fn main() -> eyre::Result<()> {
                 }
 
                 let has_consensus_engine =
-                    !builder.config().dev.dev && !args.follow_uncertified.unwrap_or(false);
+                    !builder.config().dev.dev && !args.is_following_uncertified();
 
                 // Additional RPC Modules
                 builder.extend_rpc_modules(move |ctx| {
