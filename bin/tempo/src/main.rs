@@ -57,12 +57,12 @@ use reth_rpc_server_types::{RethRpcModule, RpcModuleSelection, RpcModuleValidato
 use std::{sync::Arc, thread, time::Duration};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_commonware_node::{feed as consensus_feed, run_consensus_stack};
-use tempo_consensus::TempoConsensus;
 use tempo_evm::TempoEvmConfig;
 use tempo_faucet::{
     args::FaucetArgs,
     faucet::{TempoFaucetExt, TempoFaucetExtApiServer},
 };
+use tempo_header_validation::TempoConsensus;
 use tempo_node::{
     TempoFullNode, TempoNodeArgs,
     node::TempoNode,

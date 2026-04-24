@@ -13,7 +13,7 @@ workspace = true
 
 [dependencies]
 tempo-chainspec = { workspace = true, features = ["reth"] }
-tempo-consensus.workspace = true
+tempo-header-validation.workspace = true
 tempo-contracts.workspace = true
 tempo-payload-types = { workspace = true, optional = true }
 tempo-primitives = { workspace = true, features = ["reth"] }

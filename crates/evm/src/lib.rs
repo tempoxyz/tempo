@@ -241,7 +241,7 @@ impl ConfigureEvm for TempoEvmConfig {
             },
             general_gas_limit: block.header().general_gas_limit,
             shared_gas_limit: block.header().gas_limit()
-                / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
+                / tempo_header_validation::TEMPO_SHARED_GAS_DIVISOR,
             // Not available when we only have a block body.
             validator_set: None,
             consensus_context: block.header().consensus_context,
@@ -269,7 +269,7 @@ impl ConfigureEvm for TempoEvmConfig {
             },
             general_gas_limit: attributes.general_gas_limit,
             shared_gas_limit: attributes.inner.gas_limit
-                / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
+                / tempo_header_validation::TEMPO_SHARED_GAS_DIVISOR,
             // Fine to not validate during block building.
             validator_set: None,
             consensus_context: attributes.consensus_context,

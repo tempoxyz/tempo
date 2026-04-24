@@ -1,5 +1,5 @@
 [package]
-name = "tempo-consensus"
+name = "tempo-header-validation"
 
 version.workspace = true
 edition.workspace = true
