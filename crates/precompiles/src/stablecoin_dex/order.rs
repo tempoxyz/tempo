@@ -138,6 +138,33 @@ impl Order {
         ))
     }
 
+    /// TIP-1030: Creates a new flip order allowing `flip_tick == tick`.
+    ///
+    /// # Errors
+    /// - `InvalidBidFlipTick` - `is_bid` is true and `flip_tick < tick`
+    /// - `InvalidAskFlipTick` - `is_bid` is false and `flip_tick > tick`
+    pub fn new_flip_with_same_tick(
+        order_id: u128,
+        maker: Address,
+        book_key: B256,
+        amount: u128,
+        tick: i16,
+        is_bid: bool,
+        flip_tick: i16,
+    ) -> Result<Self, OrderError> {
+        if is_bid {
+            if flip_tick < tick {
+                return Err(OrderError::InvalidBidFlipTick { tick, flip_tick });
+            }
+        } else if flip_tick > tick {
+            return Err(OrderError::InvalidAskFlipTick { tick, flip_tick });
+        }
+
+        Ok(Self::new(
+            order_id, maker, book_key, amount, tick, is_bid, true, flip_tick,
+        ))
+    }
+
     /// Returns the order ID.
     pub fn order_id(&self) -> u128 {
         self.order_id
@@ -371,6 +398,54 @@ mod tests {
         let result = Order::new_flip(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, false, 7);
 
         assert!(matches!(result, Err(OrderError::InvalidAskFlipTick { .. })));
+    }
+
+    #[test]
+    fn test_new_flip_order_bid_same_tick_rejected() {
+        // TIP-1030 baseline: same-tick bid flip is currently rejected
+        let result = Order::new_flip(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 5);
+        assert!(matches!(result, Err(OrderError::InvalidBidFlipTick { .. })));
+    }
+
+    #[test]
+    fn test_new_flip_order_ask_same_tick_rejected() {
+        // TIP-1030 baseline: same-tick ask flip is currently rejected
+        let result = Order::new_flip(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, false, 5);
+        assert!(matches!(result, Err(OrderError::InvalidAskFlipTick { .. })));
+    }
+
+    #[test]
+    fn test_new_flip_order_bid_same_tick_accepted() {
+        // TIP-1030: same-tick bid flip should be accepted with allow_same_tick
+        let order =
+            Order::new_flip_with_same_tick(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 5).unwrap();
+        assert!(order.is_flip());
+        assert_eq!(order.tick(), 5);
+        assert_eq!(order.flip_tick(), 5);
+        assert!(order.is_bid());
+    }
+
+    #[test]
+    fn test_new_flip_with_same_tick_still_rejects_wrong_side() {
+        // TIP-1030: flip_tick < tick still rejected for bids
+        let result = Order::new_flip_with_same_tick(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 3);
+        assert!(matches!(result, Err(OrderError::InvalidBidFlipTick { .. })));
+
+        // TIP-1030: flip_tick > tick still rejected for asks
+        let result =
+            Order::new_flip_with_same_tick(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, false, 7);
+        assert!(matches!(result, Err(OrderError::InvalidAskFlipTick { .. })));
+    }
+
+    #[test]
+    fn test_new_flip_order_ask_same_tick_accepted() {
+        // TIP-1030: same-tick ask flip should be accepted with allow_same_tick
+        let order = Order::new_flip_with_same_tick(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, false, 5)
+            .unwrap();
+        assert!(order.is_flip());
+        assert_eq!(order.tick(), 5);
+        assert_eq!(order.flip_tick(), 5);
+        assert!(order.is_ask());
     }
 
     #[test]

@@ -633,8 +633,13 @@ impl StablecoinDEX {
             return Err(StablecoinDEXError::invalid_flip_tick().into());
         }
 
-        // Validate flip_tick relationship to tick based on order side
-        if (is_bid && flip_tick <= tick) || (!is_bid && flip_tick >= tick) {
+        // Validate flip_tick relationship to tick based on order side.
+        // TIP-1030 (T5): allow flip_tick == tick for same-tick flip orders.
+        if self.storage.spec().is_t5() {
+            if (is_bid && flip_tick < tick) || (!is_bid && flip_tick > tick) {
+                return Err(StablecoinDEXError::invalid_flip_tick().into());
+            }
+        } else if (is_bid && flip_tick <= tick) || (!is_bid && flip_tick >= tick) {
             return Err(StablecoinDEXError::invalid_flip_tick().into());
         }
 
@@ -675,8 +680,14 @@ impl StablecoinDEX {
 
         // Create the flip order
         let order_id = self.next_order_id()?;
-        let order = Order::new_flip(order_id, sender, book_key, amount, tick, is_bid, flip_tick)
-            .map_err(|_| StablecoinDEXError::invalid_flip_tick())?;
+        let order = if self.storage.spec().is_t5() {
+            Order::new_flip_with_same_tick(
+                order_id, sender, book_key, amount, tick, is_bid, flip_tick,
+            )
+        } else {
+            Order::new_flip(order_id, sender, book_key, amount, tick, is_bid, flip_tick)
+        }
+        .map_err(|_| StablecoinDEXError::invalid_flip_tick())?;
 
         // Commit the flip order
         if self.storage.spec().is_t1c() {
@@ -2147,6 +2158,62 @@ mod tests {
                 account: exchange.address,
             })?;
             assert_eq!(exchange_balance, U256::from(expected_escrow));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_place_flip_same_tick_rejected_pre_t5() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let admin = Address::random();
+            let tick = 100i16;
+
+            let price = orderbook::tick_to_price(tick);
+            let escrow = (MIN_ORDER_AMOUNT * price as u128) / orderbook::PRICE_SCALE as u128;
+
+            let (base_token, _) = setup_test_tokens(admin, alice, exchange.address, escrow)?;
+            exchange.create_pair(base_token)?;
+
+            let result =
+                exchange.place_flip(alice, base_token, MIN_ORDER_AMOUNT, true, tick, tick, false);
+            assert_eq!(result, Err(StablecoinDEXError::invalid_flip_tick().into()));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_place_flip_same_tick_accepted_t5() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let admin = Address::random();
+            let tick = 100i16;
+
+            let price = orderbook::tick_to_price(tick);
+            let escrow = (MIN_ORDER_AMOUNT * price as u128) / orderbook::PRICE_SCALE as u128;
+
+            let (base_token, _) = setup_test_tokens(admin, alice, exchange.address, escrow)?;
+            exchange.create_pair(base_token)?;
+
+            let order_id = exchange
+                .place_flip(alice, base_token, MIN_ORDER_AMOUNT, true, tick, tick, false)
+                .expect("same-tick flip should succeed on T5");
+
+            let stored = exchange.orders[order_id].read()?;
+            assert_eq!(stored.tick(), tick);
+            assert_eq!(stored.flip_tick(), tick);
+            assert!(stored.is_bid());
+            assert!(stored.is_flip());
 
             Ok(())
         })
