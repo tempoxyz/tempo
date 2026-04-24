@@ -275,10 +275,7 @@ where
             } else {
                 match epoch_info.epoch().previous() {
                     None => Height::zero(),
-                    Some(prev_epoch) => self
-                        .epoch_strategy
-                        .last(prev_epoch)
-                        .ok_or_eyre("failed to determine previous epoch boundary")?,
+                    Some(prev_epoch) => self.epoch_strategy.last(prev_epoch).unwrap(),
                 }
             };
 
@@ -340,10 +337,7 @@ where
             } else {
                 match epoch_info.epoch().previous() {
                     None => Height::zero(),
-                    Some(prev_epoch) => self
-                        .epoch_strategy
-                        .last(prev_epoch)
-                        .ok_or_eyre("failed to determine previous epoch boundary")?,
+                    Some(prev_epoch) => self.epoch_strategy.last(prev_epoch).unwrap(),
                 }
             };
 

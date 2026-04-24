@@ -101,7 +101,7 @@ impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> Resolver<TCont
                     debug!(?key, "data not yet available from upstream");
                 }
                 Err(e) => {
-                    warn!(?key, error = %e, "failed to fetch from upstream");
+                    warn!(?key, %e, "failed to fetch from upstream");
                 }
             }
         });
