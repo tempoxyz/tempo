@@ -7,7 +7,7 @@ use commonware_consensus::{
     types::{Epocher, FixedEpocher, Height},
 };
 use commonware_cryptography::ed25519::PublicKey;
-use commonware_p2p::{AddressableManager, Provider};
+use commonware_p2p::{Address, AddressableManager, AddressableTrackedPeers, Provider};
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, spawn_cell};
 use commonware_utils::{Acknowledgement, ordered};
 use eyre::{OptionExt as _, WrapErr as _};
@@ -215,12 +215,10 @@ where
                     )
                 })?;
 
+        let players = onchain_outcome.players();
+        let next_players = onchain_outcome.next_players();
         let peers_as_per_dkg = ordered::Set::from_iter_dedup(
-            onchain_outcome
-                .players()
-                .iter()
-                .cloned()
-                .chain(onchain_outcome.next_players().iter().cloned()),
+            players.iter().cloned().chain(next_players.iter().cloned()),
         );
         let peers = read_active_and_known_peers_at_block_hash(
             &self.execution_node,
@@ -228,6 +226,7 @@ where
             highest_finalized_header.hash_slow(),
         )
         .wrap_err("unable to read initial peer set from execution layer")?;
+        let peers = split_resolved_peers(peers, players, next_players);
 
         self.track_or_overwrite(highest_finalized_header.number(), peers)
             .await;
@@ -235,23 +234,24 @@ where
         Ok(())
     }
 
-    async fn track_or_overwrite(
-        &mut self,
-        height: u64,
-        peers: ordered::Map<PublicKey, commonware_p2p::Address>,
-    ) {
+    async fn track_or_overwrite(&mut self, height: u64, peers: GroupedPeers) {
         if let Some(tracked) = &self.last_tracked_peer_set {
-            // Overwrite the addresses if only the addresses are changed.
-            if peers.keys() == tracked.peers.keys() {
-                if peers.values() != tracked.peers.values() {
-                    self.oracle.overwrite(peers.clone()).await;
+            // Overwrite the addresses if only the addresses are changed within
+            // the same primary/secondary grouping.
+            if peers.same_groups(&tracked.peers) {
+                if !peers.same_addresses(&tracked.peers) {
+                    self.oracle.overwrite(peers.flatten()).await;
                 }
             // Otherwise track the new peers.
             } else {
-                self.oracle.track(height, peers.clone()).await;
+                self.oracle
+                    .track(height, peers.clone().into_addressable())
+                    .await;
             }
         } else {
-            self.oracle.track(height, peers.clone()).await;
+            self.oracle
+                .track(height, peers.clone().into_addressable())
+                .await;
         }
 
         // Always bump the last-tracked peer set. If the peers are unchanged
@@ -286,7 +286,77 @@ where
 #[derive(Debug)]
 struct LastTrackedPeerSet {
     height: u64,
-    peers: ordered::Map<PublicKey, commonware_p2p::Address>,
+    peers: GroupedPeers,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GroupedPeers {
+    primary: ordered::Map<PublicKey, Address>,
+    secondary: ordered::Map<PublicKey, Address>,
+}
+
+impl GroupedPeers {
+    const fn new(
+        primary: ordered::Map<PublicKey, Address>,
+        secondary: ordered::Map<PublicKey, Address>,
+    ) -> Self {
+        Self { primary, secondary }
+    }
+
+    fn into_addressable(self) -> AddressableTrackedPeers<PublicKey> {
+        AddressableTrackedPeers::new(self.primary, self.secondary)
+    }
+
+    fn flatten(&self) -> ordered::Map<PublicKey, Address> {
+        ordered::Map::from_iter_dedup(
+            self.primary
+                .iter_pairs()
+                .chain(self.secondary.iter_pairs())
+                .map(|(peer, address)| (peer.clone(), address.clone())),
+        )
+    }
+
+    fn len(&self) -> usize {
+        self.primary.len() + self.secondary.len()
+    }
+
+    fn same_groups(&self, other: &Self) -> bool {
+        self.primary.keys() == other.primary.keys()
+            && self.secondary.keys() == other.secondary.keys()
+    }
+
+    fn same_addresses(&self, other: &Self) -> bool {
+        self.primary.values() == other.primary.values()
+            && self.secondary.values() == other.secondary.values()
+    }
+}
+
+fn split_resolved_peers(
+    peers: ordered::Map<PublicKey, Address>,
+    players: &ordered::Set<PublicKey>,
+    next_players: &ordered::Set<PublicKey>,
+) -> GroupedPeers {
+    let incoming = ordered::Set::from_iter_dedup(
+        next_players
+            .iter()
+            .filter(|peer| players.position(*peer).is_none())
+            .cloned(),
+    );
+
+    let mut primary = Vec::new();
+    let mut secondary = Vec::new();
+    for (peer, address) in peers {
+        if incoming.position(&peer).is_some() {
+            secondary.push((peer, address));
+        } else {
+            primary.push((peer, address));
+        }
+    }
+
+    GroupedPeers::new(
+        ordered::Map::try_from(primary).expect("split preserves unique peer keys"),
+        ordered::Map::try_from(secondary).expect("split preserves unique peer keys"),
+    )
 }
 
 #[instrument(skip_all, fields(height), err)]
@@ -297,4 +367,65 @@ fn read_header_at_height(execution_node: &TempoFullNode, height: u64) -> eyre::R
         .map_err(eyre::Report::new)
         .and_then(|h| h.ok_or_eyre("execution layer did not have a header at the requested height"))
         .wrap_err_with(|| format!("failed reading header at height `{height}`"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::SocketAddr;
+
+    use commonware_cryptography::{Signer, ed25519::PrivateKey};
+
+    use super::*;
+
+    fn key(seed: u64) -> PublicKey {
+        PublicKey::from(PrivateKey::from_seed(seed))
+    }
+
+    fn addr(port: u16) -> Address {
+        SocketAddr::from(([127, 0, 0, 1], port)).into()
+    }
+
+    #[test]
+    fn split_resolved_peers_places_incoming_next_validators_in_secondary() {
+        let continuing = key(1);
+        let incoming = key(2);
+        let active_only = key(3);
+
+        let grouped = split_resolved_peers(
+            ordered::Map::try_from([
+                (continuing.clone(), addr(9001)),
+                (incoming.clone(), addr(9002)),
+                (active_only.clone(), addr(9003)),
+            ])
+            .unwrap(),
+            &ordered::Set::try_from([continuing.clone()]).unwrap(),
+            &ordered::Set::try_from([continuing.clone(), incoming.clone()]).unwrap(),
+        );
+
+        assert_eq!(
+            grouped.primary.keys(),
+            &ordered::Set::try_from([continuing, active_only]).unwrap()
+        );
+        assert_eq!(
+            grouped.secondary.keys(),
+            &ordered::Set::try_from([incoming]).unwrap()
+        );
+    }
+
+    #[test]
+    fn split_resolved_peers_keeps_continuing_validators_primary() {
+        let continuing = key(11);
+
+        let grouped = split_resolved_peers(
+            ordered::Map::try_from([(continuing.clone(), addr(9011))]).unwrap(),
+            &ordered::Set::try_from([continuing.clone()]).unwrap(),
+            &ordered::Set::try_from([continuing.clone()]).unwrap(),
+        );
+
+        assert_eq!(
+            grouped.primary.keys(),
+            &ordered::Set::try_from([continuing]).unwrap()
+        );
+        assert!(grouped.secondary.is_empty());
+    }
 }

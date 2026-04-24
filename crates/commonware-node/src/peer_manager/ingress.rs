@@ -40,7 +40,7 @@ impl MessageWithCause {
 pub(super) enum Message {
     Track {
         id: u64,
-        peers: Map<PublicKey, Address>,
+        peers: AddressableTrackedPeers<PublicKey>,
     },
     Overwrite {
         peers: Map<PublicKey, Address>,
@@ -117,7 +117,7 @@ impl AddressableManager for Mailbox {
             .inner
             .unbounded_send(MessageWithCause::in_current_span(Message::Track {
                 id,
-                peers: addressable.primary,
+                peers: addressable,
             }))
             .wrap_err("actor no longer running")
         {
@@ -147,6 +147,64 @@ impl Reporter for Mailbox {
             .unbounded_send(MessageWithCause::in_current_span(activity))
         {
             error!(%error, "failed to send message to peer_manager");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::SocketAddr;
+
+    use commonware_cryptography::{
+        Signer,
+        ed25519::{PrivateKey, PublicKey},
+    };
+    use futures::StreamExt as _;
+
+    use super::*;
+
+    fn key(seed: u64) -> PublicKey {
+        PublicKey::from(PrivateKey::from_seed(seed))
+    }
+
+    fn addr(port: u16) -> Address {
+        SocketAddr::from(([127, 0, 0, 1], port)).into()
+    }
+
+    #[tokio::test]
+    async fn track_preserves_secondary_peers_in_mailbox_message() {
+        let (tx, mut rx) = mpsc::unbounded();
+        let mut mailbox = Mailbox::new(tx);
+        let primary = key(1);
+        let secondary = key(2);
+
+        mailbox
+            .track(
+                7,
+                AddressableTrackedPeers::new(
+                    Map::try_from([(primary.clone(), addr(9101))]).unwrap(),
+                    Map::try_from([(secondary.clone(), addr(9102))]).unwrap(),
+                ),
+            )
+            .await;
+
+        let message = rx
+            .next()
+            .await
+            .expect("mailbox should emit a track message");
+        match message.message {
+            Message::Track { id, peers } => {
+                assert_eq!(id, 7);
+                assert_eq!(
+                    peers.primary.keys(),
+                    &commonware_utils::ordered::Set::try_from([primary]).unwrap()
+                );
+                assert_eq!(
+                    peers.secondary.keys(),
+                    &commonware_utils::ordered::Set::try_from([secondary]).unwrap()
+                );
+            }
+            _ => panic!("expected track message"),
         }
     }
 }
