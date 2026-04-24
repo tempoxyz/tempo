@@ -3,7 +3,7 @@ use tempo_alloy::primitives::{MasterId, TempoAddressExt, UserTag};
 
 /// Pre-mined TIP-1022 PoW salts for the first 7 anvil mnemonic accounts.
 ///
-/// These match the `POW_SALTS` in `tips/ref-impls/test/invariants/VirtualAddresses.t.sol`
+/// These match the `POW_SALTS` in `tips/verify/test/invariants/VirtualAddresses.t.sol`
 /// and the `VIRTUAL_SALT` in `crates/precompiles/src/test_util.rs`.
 ///
 /// Mnemonic: `"test test test test test test test test test test test junk"`

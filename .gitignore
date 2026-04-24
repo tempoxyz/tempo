@@ -26,10 +26,10 @@ research.md
 plan.md
 
 # Docs
-tips/ref-impls/cache/
-tips/ref-impls/out/
-tips/ref-impls/*.log
-tips/ref-impls/soljson-latest.js
+tips/verify/cache/
+tips/verify/out/
+tips/verify/*.log
+tips/verify/soljson-latest.js
 
 _
 .vercel
