@@ -4,13 +4,12 @@ pragma solidity >=0.8.13 <0.9.0;
 import { Test, console } from "forge-std/Test.sol";
 import { Vm } from "forge-std/Vm.sol";
 
-import { TIP20 } from "../src/TIP20.sol";
-import { IAccountKeychain } from "../src/interfaces/IAccountKeychain.sol";
-import { INonce } from "../src/interfaces/INonce.sol";
-import { ITIP20 } from "../src/interfaces/ITIP20.sol";
 import { InvariantChecker } from "./helpers/InvariantChecker.sol";
 import { Counter, InitcodeHelper, SimpleStorage } from "./helpers/TestContracts.sol";
 import { TxBuilder } from "./helpers/TxBuilder.sol";
+import { IAccountKeychain } from "tempo-std/interfaces/IAccountKeychain.sol";
+import { INonce } from "tempo-std/interfaces/INonce.sol";
+import { ITIP20, ITIP20Token } from "tempo-std/interfaces/ITIP20.sol";
 
 import { VmExecuteTransaction, VmRlp } from "tempo-std/StdVm.sol";
 import { Eip1559Transaction, Eip1559TransactionLib } from "tempo-std/tx/Eip1559TransactionLib.sol";
@@ -896,10 +895,21 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             : IAccountKeychain.SignatureType.Secp256k1;
 
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](1);
-        limits[0] = IAccountKeychain.TokenLimit({ token: address(feeToken), amount: limit });
+        limits[0] =
+            IAccountKeychain.TokenLimit({ token: address(feeToken), amount: limit, period: 0 });
 
         vm.prank(ctx.owner);
-        try keychain.authorizeKey(ctx.keyId, keyType, expiry, true, limits) {
+        try keychain.authorizeKey(
+            ctx.keyId,
+            keyType,
+            IAccountKeychain.KeyRestrictions({
+                expiry: expiry,
+                enforceLimits: true,
+                limits: limits,
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
+        ) {
             address[] memory tokens = new address[](1);
             tokens[0] = address(feeToken);
             uint256[] memory amounts = new uint256[](1);
@@ -1797,10 +1807,17 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         if (!ghost_keyAuthorized[owner][keyIdA]) {
             uint64 expiryA = uint64(block.timestamp + 1 days);
-            IAccountKeychain.TokenLimit[] memory limitsA = new IAccountKeychain.TokenLimit[](0);
             vm.prank(owner);
             try keychain.authorizeKey(
-                keyIdA, IAccountKeychain.SignatureType.Secp256k1, expiryA, false, limitsA
+                keyIdA,
+                IAccountKeychain.SignatureType.Secp256k1,
+                IAccountKeychain.KeyRestrictions({
+                    expiry: expiryA,
+                    enforceLimits: false,
+                    limits: new IAccountKeychain.TokenLimit[](0),
+                    allowAnyCalls: true,
+                    allowedCalls: new IAccountKeychain.CallScope[](0)
+                })
             ) {
                 address[] memory tokens = new address[](0);
                 uint256[] memory amounts = new uint256[](0);
@@ -1816,16 +1833,24 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         uint64 expiryB = uint64(block.timestamp + 1 days);
         IAccountKeychain.TokenLimit[] memory limitsB = new IAccountKeychain.TokenLimit[](1);
-        limitsB[0] = IAccountKeychain.TokenLimit({ token: address(feeToken), amount: 100e6 });
+        limitsB[0] =
+            IAccountKeychain.TokenLimit({ token: address(feeToken), amount: 100e6, period: 0 });
 
         uint64 currentNonce = uint64(ghost_protocolNonce[owner]);
         bytes memory signedTx = TxBuilder.buildTempoCallKeychain(
             vmRlp,
             vm,
             address(keychain),
-            abi.encodeCall(
-                IAccountKeychain.authorizeKey,
-                (keyIdB, IAccountKeychain.SignatureType.Secp256k1, expiryB, true, limitsB)
+            _encodeAuthorizeKey(
+                keyIdB,
+                IAccountKeychain.SignatureType.Secp256k1,
+                IAccountKeychain.KeyRestrictions({
+                    expiry: expiryB,
+                    enforceLimits: true,
+                    limits: limitsB,
+                    allowAnyCalls: true,
+                    allowedCalls: new IAccountKeychain.CallScope[](0)
+                })
             ),
             0, // nonceKey=0 uses protocol nonce
             currentNonce,
@@ -1939,7 +1964,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         uint64 expiry = uint64(block.timestamp + 1 days);
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](1);
-        limits[0] = IAccountKeychain.TokenLimit({ token: address(feeToken), amount: 100e6 });
+        limits[0] =
+            IAccountKeychain.TokenLimit({ token: address(feeToken), amount: 100e6, period: 0 });
 
         uint64 nonceKey = 5;
         uint64 currentNonce = uint64(ghost_2dNonce[owner][nonceKey]);
@@ -1948,9 +1974,16 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         calls[0] = TempoCall({
             to: address(keychain),
             value: 0,
-            data: abi.encodeCall(
-                IAccountKeychain.authorizeKey,
-                (keyId, IAccountKeychain.SignatureType.Secp256k1, expiry, true, limits)
+            data: _encodeAuthorizeKey(
+                keyId,
+                IAccountKeychain.SignatureType.Secp256k1,
+                IAccountKeychain.KeyRestrictions({
+                    expiry: expiry,
+                    enforceLimits: true,
+                    limits: limits,
+                    allowAnyCalls: true,
+                    allowedCalls: new IAccountKeychain.CallScope[](0)
+                })
             )
         });
         calls[1] = TempoCall({
@@ -2096,10 +2129,17 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         if (!ghost_keyAuthorized[owner][keyId]) {
             uint64 expiry = uint64(block.timestamp + 1 days);
-            IAccountKeychain.TokenLimit[] memory emptyLimits = new IAccountKeychain.TokenLimit[](0);
             vm.prank(owner);
             try keychain.authorizeKey(
-                keyId, IAccountKeychain.SignatureType.Secp256k1, expiry, false, emptyLimits
+                keyId,
+                IAccountKeychain.SignatureType.Secp256k1,
+                IAccountKeychain.KeyRestrictions({
+                    expiry: expiry,
+                    enforceLimits: false,
+                    limits: new IAccountKeychain.TokenLimit[](0),
+                    allowAnyCalls: true,
+                    allowedCalls: new IAccountKeychain.CallScope[](0)
+                })
             ) {
                 address[] memory tokens = new address[](0);
                 uint256[] memory amounts = new uint256[](0);
@@ -2161,10 +2201,17 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         if (!ghost_keyAuthorized[owner][keyId]) {
             uint64 expiry = uint64(block.timestamp + 1 days);
-            IAccountKeychain.TokenLimit[] memory emptyLimits = new IAccountKeychain.TokenLimit[](0);
             vm.prank(owner);
             try keychain.authorizeKey(
-                keyId, IAccountKeychain.SignatureType.Secp256k1, expiry, true, emptyLimits
+                keyId,
+                IAccountKeychain.SignatureType.Secp256k1,
+                IAccountKeychain.KeyRestrictions({
+                    expiry: expiry,
+                    enforceLimits: true,
+                    limits: new IAccountKeychain.TokenLimit[](0),
+                    allowAnyCalls: true,
+                    allowedCalls: new IAccountKeychain.CallScope[](0)
+                })
             ) {
                 address[] memory tokens = new address[](0);
                 uint256[] memory amounts = new uint256[](0);
@@ -2236,10 +2283,17 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         if (!ghost_keyAuthorized[owner][keyId]) {
             uint64 expiry = uint64(block.timestamp + 1 days);
-            IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
             vm.prank(owner);
             try keychain.authorizeKey(
-                keyId, IAccountKeychain.SignatureType.Secp256k1, expiry, false, limits
+                keyId,
+                IAccountKeychain.SignatureType.Secp256k1,
+                IAccountKeychain.KeyRestrictions({
+                    expiry: expiry,
+                    enforceLimits: false,
+                    limits: new IAccountKeychain.TokenLimit[](0),
+                    allowAnyCalls: true,
+                    allowedCalls: new IAccountKeychain.CallScope[](0)
+                })
             ) {
                 address[] memory tokens = new address[](0);
                 uint256[] memory amounts = new uint256[](0);
@@ -3855,8 +3909,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256[] memory amounts = new uint256[](numLimits);
 
         for (uint256 i = 0; i < numLimits; i++) {
-            limits[i] =
-                IAccountKeychain.TokenLimit({ token: address(feeToken), amount: (i + 1) * 100e6 });
+            limits[i] = IAccountKeychain.TokenLimit({
+                token: address(feeToken), amount: (i + 1) * 100e6, period: 0
+            });
             tokens[i] = address(feeToken);
             amounts[i] = (i + 1) * 100e6;
         }
@@ -3866,7 +3921,15 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 gasBefore = gasleft();
         vm.prank(owner);
         try keychain.authorizeKey(
-            keyId, IAccountKeychain.SignatureType.Secp256k1, expiry, numLimits > 0, limits
+            keyId,
+            IAccountKeychain.SignatureType.Secp256k1,
+            IAccountKeychain.KeyRestrictions({
+                expiry: expiry,
+                enforceLimits: numLimits > 0,
+                limits: limits,
+                allowAnyCalls: true,
+                allowedCalls: new IAccountKeychain.CallScope[](0)
+            })
         ) {
             uint256 gasUsed = gasBefore - gasleft();
             ghost_keyAuthGasUsed[owner] = gasUsed;
@@ -4446,8 +4509,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             })
         );
 
-        uint256 remainingBefore =
-            keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(feeToken));
+        (uint256 remainingBefore,) =
+            keychain.getRemainingLimitWithPeriod(ctx.owner, ctx.keyId, address(feeToken));
 
         ghost_previousProtocolNonce[ctx.owner] = ghost_protocolNonce[ctx.owner];
         vm.coinbase(validator);
@@ -4456,8 +4519,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             _recordProtocolNonceTxSuccess(ctx.owner);
             _recordKeySpending(ctx.owner, ctx.keyId, address(feeToken), amount);
 
-            uint256 remainingAfter =
-                keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(feeToken));
+            (uint256 remainingAfter,) =
+                keychain.getRemainingLimitWithPeriod(ctx.owner, ctx.keyId, address(feeToken));
 
             // K-REFUND1: After tx, the remaining limit should be greater than
             // (remainingBefore - amount - maxFee) because unused gas was refunded.
@@ -4548,8 +4611,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         }
 
         // Step 3: Snapshot remaining limit (should be unchanged after revocation)
-        uint256 remainingAfterRevoke =
-            keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(feeToken));
+        (uint256 remainingAfterRevoke,) =
+            keychain.getRemainingLimitWithPeriod(ctx.owner, ctx.keyId, address(feeToken));
 
         // Step 4: Execute another tx (with main key) that would have refunded the revoked key
         // The refund_spending_limit uses load_active_key which fails for revoked keys -> no-op
@@ -4565,8 +4628,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         try vmExec.executeTransaction(mainKeyTx) {
             _recordProtocolNonceTxSuccess(ctx.owner);
 
-            uint256 remainingAfterMainTx =
-                keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(feeToken));
+            (uint256 remainingAfterMainTx,) =
+                keychain.getRemainingLimitWithPeriod(ctx.owner, ctx.keyId, address(feeToken));
 
             // K-REFUND2: Remaining limit should not change since the key was revoked
             // (the refund should be a no-op for revoked keys)
@@ -4616,11 +4679,21 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         if (!ghost_keyAuthorized[ownerA][keyId]) {
             uint64 expiry = uint64(block.timestamp + 1 days);
             IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](1);
-            limits[0] = IAccountKeychain.TokenLimit({ token: address(feeToken), amount: 1000e6 });
+            limits[0] = IAccountKeychain.TokenLimit({
+                token: address(feeToken), amount: 1000e6, period: 0
+            });
 
             vm.prank(ownerA);
             try keychain.authorizeKey(
-                keyId, IAccountKeychain.SignatureType.Secp256k1, expiry, true, limits
+                keyId,
+                IAccountKeychain.SignatureType.Secp256k1,
+                IAccountKeychain.KeyRestrictions({
+                    expiry: expiry,
+                    enforceLimits: true,
+                    limits: limits,
+                    allowAnyCalls: true,
+                    allowedCalls: new IAccountKeychain.CallScope[](0)
+                })
             ) {
                 address[] memory tokens = new address[](1);
                 tokens[0] = address(feeToken);
@@ -4877,6 +4950,25 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         } catch {
             _handleExpectedReject(_noop);
         }
+    }
+
+    /// @dev Helper to encode the T3 authorizeKey(address,SignatureType,KeyRestrictions) call
+    ///      without ambiguity from the legacy 5-arg overload.
+    function _encodeAuthorizeKey(
+        address keyId,
+        IAccountKeychain.SignatureType sigType,
+        IAccountKeychain.KeyRestrictions memory config
+    )
+        internal
+        pure
+        returns (bytes memory)
+    {
+        return abi.encodeWithSignature(
+            "authorizeKey(address,uint8,(uint64,bool,(address,uint256,uint64)[],bool,(address,(bytes4,address[])[])[]))))",
+            keyId,
+            sigType,
+            config
+        );
     }
 
 }

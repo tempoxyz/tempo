@@ -17,10 +17,10 @@ use tempo_precompiles::{
     error::{Result as TempoResult, TempoPrecompileError},
     storage::{Handler, PrecompileStorageProvider, StorageCtx},
     tip_fee_manager::TipFeeManager,
-    tip20::{ITIP20, TIP20Token, is_tip20_prefix},
+    tip20::{ITIP20, TIP20Token},
     tip403_registry::{AuthRole, TIP403Registry},
 };
-use tempo_primitives::TempoTxEnvelope;
+use tempo_primitives::{TempoAddressExt, TempoTxEnvelope};
 
 /// Returns true if the calldata is for a TIP-20 function that should trigger fee token inference.
 /// Only `transfer`, `transferWithMemo`, and `distributeReward` qualify.
@@ -214,7 +214,7 @@ pub trait TempoStateAccess<M = ()> {
         Self: Sized,
     {
         // Must have TIP20 prefix to be a valid fee token
-        if !is_tip20_prefix(fee_token) {
+        if !fee_token.is_tip20() {
             return Ok(false);
         }
 
@@ -348,6 +348,10 @@ where
         self.spec
     }
 
+    fn gas_limit(&self) -> u64 {
+        0
+    }
+
     fn is_static(&self) -> bool {
         // read-only operations should always be static
         true
@@ -401,8 +405,16 @@ where
         unreachable!("'gas_used' not implemented in read-only context yet")
     }
 
+    fn state_gas_used(&self) -> u64 {
+        unreachable!("'state_gas_used' not implemented in read-only context yet")
+    }
+
     fn gas_refunded(&self) -> i64 {
         unreachable!("'gas_refunded' not implemented in read-only context yet")
+    }
+
+    fn reservoir(&self) -> u64 {
+        unreachable!("'reservoir' not implemented in read-only context yet")
     }
 
     // Write operations are not supported in read-only context

@@ -9,7 +9,8 @@ pub use request::{FeeToken, TempoCallBuilderExt, TempoTransactionRequest};
 mod receipt;
 pub use receipt::TempoTransactionReceipt;
 
-mod compat;
+#[cfg(feature = "reth")]
+mod reth_compat;
 
 /// Various helper types for paginated queries.
 pub mod pagination;

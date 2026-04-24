@@ -4,18 +4,20 @@
 use crate::error::TempoPrecompileError;
 use crate::{
     PATH_USD_ADDRESS, Precompile, Result,
+    address_registry::{AddressRegistry, IAddressRegistry},
     storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
     tip20::{self, ITIP20, TIP20Token},
     tip20_factory::{self, TIP20Factory},
 };
 use alloy::{
-    primitives::{Address, B256, U256},
+    primitives::{Address, B256, U256, address, hex_literal::hex},
     sol_types::SolError,
 };
 use revm::precompile::PrecompileError;
 #[cfg(any(test, feature = "test-utils"))]
 use tempo_contracts::precompiles::TIP20Error;
 use tempo_contracts::precompiles::{TIP20_FACTORY_ADDRESS, UnknownFunctionSelector};
+use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
 
 /// Checks that all selectors in an interface have dispatch handlers.
 ///
@@ -36,14 +38,14 @@ pub fn check_selector_coverage<P: Precompile>(
 
         let result = precompile.call(&calldata, Address::ZERO);
 
-        // Check if we got "Unknown function selector" error (old format)
+        // Check if we got "Unknown function selector" error (fatal format)
         let is_unsupported_old = matches!(&result,
-            Err(PrecompileError::Other(msg)) if msg.contains("Unknown function selector")
+            Err(PrecompileError::Fatal(msg)) if msg.contains("Unknown function selector")
         );
 
-        // Check if we got "Unknown function selector" error (new format - ABI-encoded)
+        // Check if we got "Unknown function selector" error (ABI-encoded revert)
         let is_unsupported_new = if let Ok(output) = &result {
-            output.reverted && UnknownFunctionSelector::abi_decode(&output.bytes).is_ok()
+            output.is_revert() && UnknownFunctionSelector::abi_decode(&output.bytes).is_ok()
         } else {
             false
         };
@@ -448,4 +450,24 @@ pub fn gen_word_from(values: &[&str]) -> U256 {
     slot_bytes[start_idx..].copy_from_slice(&bytes);
 
     U256::from_be_bytes(slot_bytes)
+}
+
+// ────────────────── TIP-1022 Virtual Address Helpers ──────────────────
+
+/// Pre-computed (address, salt) pair satisfying the 32-bit PoW.
+/// Uses the standard test mnemonic index-0 address so it works in both unit and integration tests.
+pub const VIRTUAL_MASTER: Address = address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
+pub const VIRTUAL_SALT: [u8; 32] =
+    hex!("00000000000000000000000000000000000000000000000000000000abf52baf");
+
+/// Registers [`VIRTUAL_MASTER`] and returns `(master_id, virtual_address)`.
+pub fn register_virtual_master(registry: &mut AddressRegistry) -> Result<(MasterId, Address)> {
+    let master_id = registry.register_virtual_master(
+        VIRTUAL_MASTER,
+        IAddressRegistry::registerVirtualMasterCall {
+            salt: VIRTUAL_SALT.into(),
+        },
+    )?;
+    let virtual_addr = Address::new_virtual(master_id, UserTag::new(hex!("010203040506")));
+    Ok((master_id, virtual_addr))
 }

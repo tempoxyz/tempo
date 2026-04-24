@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.13;
 
-import { ITIP403Registry } from "../../src/interfaces/ITIP403Registry.sol";
 import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
+import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";
 
 /// @title TIP403Registry Invariant Tests
 /// @notice Fuzz-based invariant tests for the TIP403Registry implementation

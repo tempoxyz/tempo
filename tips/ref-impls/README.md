@@ -1,36 +1,28 @@
 # Tempo Specs
 
-This directory contains Solidity specifications and fuzz tests for Tempo's precompile contracts. The tests are designed to run against both:
+This directory contains Solidity spec tests and fuzz harnesses for Tempo's native precompile contracts.
 
-1. **Solidity reference implementations** - Using standard Foundry
-2. **Rust precompile implementations** - Using tempo-foundry's custom forge
+`TempoTest.t.sol` assumes the Tempo precompiles already exist in the EVM and fails fast if they are missing.
 
-## How Tests Work
+## Profiles
 
-The tests use an `isTempo` flag (defined in `BaseTest.t.sol`) to detect which implementation is being tested:
+The checked-in `foundry.toml` uses two profiles, which always run against a Tempo-native EVM with enabled Rust precompiles:
 
-- **`isTempo = false`**: Tests run against Solidity implementations deployed via `deployCodeTo()`. This is the default when using standard `forge`.
-- **`isTempo = true`**: Tests run against Rust precompiles built into tempo-foundry's EVM. The flag is automatically true when native precompile code exists at addresses like `0x20Fc...` (TIP20Factory).
-
-This allows the same test suite to verify both implementations are in sync.
-
-This means running tests with normal foundry, will run them against the solidity implementation.
-Using tempo-foundry, will run tests against the rust precompiles.
+- `default`: config for standard Foundry build/fmt/ABI tasks. Lighter optimizer and fuzz/invariant settings, for quicker output.
+- `fuzz500`: config for extended invariant runs.
 
 ## Running Tests
 
-**Prerequisite:** Clone the `tempo-foundry` github repo, and update the tempo deps to your branch before running the tests.
+Tests require a Tempo-capable `forge` binary.
 
-### Option 1: Solidity Only (Standard Foundry)
-
-Run tests against the Solidity reference implementations:
+Run the full suite:
 
 ```bash
-cd docs/specs
+cd tips/ref-impls
 forge test
 ```
 
-With verbose output:
+Run with verbose output:
 
 ```bash
 forge test -vvv
@@ -42,93 +34,16 @@ Run a specific test:
 forge test --match-test test_mint
 ```
 
-### Option 2: Rust Precompiles (tempo-foundry)
-
-Run tests against the actual Rust precompile implementations:
+Use the lighter CI profile when you want to match CI settings locally:
 
 ```bash
-cd docs/specs
-./tempo-forge test
+cd tips/ref-impls
+FOUNDRY_PROFILE=fuzz500 forge test -vvv
 ```
 
-With verbose output:
+If you frequently want the extended invariant profile by default, set it in your shell:
 
 ```bash
-./tempo-forge test -vvv
+export FOUNDRY_PROFILE=fuzz500
+forge test
 ```
-
-Run a specific test:
-
-```bash
-./tempo-forge test --match-test test_mint
-```
-
-## Setting Up tempo-foundry
-
-The `tempo-forge` and `tempo-cast` scripts require the [tempo-foundry](https://github.com/tempoxyz/tempo-foundry) repository.
-
-### Option 1: Clone as Sibling Directory (Recommended)
-
-Clone tempo-foundry as a sibling to the tempo repository:
-
-```
-Tempo/
-├── tempo/              # This repository
-└── tempo-foundry/      # tempo-foundry repository
-```
-
-```bash
-cd ..  # From tempo repo root
-git clone git@github.com:tempoxyz/tempo-foundry.git
-```
-
-### Option 2: Set Environment Variable
-
-If tempo-foundry is in a different location, set the `TEMPO_FOUNDRY_PATH` environment variable:
-
-```bash
-export TEMPO_FOUNDRY_PATH=/path/to/tempo-foundry
-./tempo-forge test
-```
-
-### Building tempo-foundry
-
-The scripts will automatically build the forge/cast binaries on first run. To build manually:
-
-```bash
-cd /path/to/tempo-foundry
-cargo build -p forge --profile dev
-cargo build -p cast --profile dev
-```
-
-If you encounter build errors, try cleaning and rebuilding:
-
-```bash
-cargo clean
-cargo build -p forge --profile dev
-```
-
-## tempo-cast
-
-The `tempo-cast` script runs cast commands using tempo-foundry's custom cast binary:
-
-```bash
-# Get function signature
-./tempo-cast sig "transfer(address,uint256)"
-
-# Decode function selector
-./tempo-cast 4byte 0xa9059cbb
-
-# ABI encode
-./tempo-cast abi-encode "transfer(address,uint256)" 0x1234...5678 1000000
-```
-
-## CI Integration
-
-The CI runs both test modes:
-
-1. `forge test` - Validates Solidity implementations
-2. `tempo-forge test` - Validates Rust precompiles match Solidity specs
-
-This ensures the Rust and Solidity implementations stay in sync.
-

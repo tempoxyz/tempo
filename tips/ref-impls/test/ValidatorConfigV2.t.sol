@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 pragma solidity >=0.8.13 <0.9.0;
 
-import { IValidatorConfig } from "../src/interfaces/IValidatorConfig.sol";
-import { IValidatorConfigV2 } from "../src/interfaces/IValidatorConfigV2.sol";
-import { BaseTest } from "./BaseTest.t.sol";
+import "./TempoTest.t.sol";
+import { IValidatorConfig } from "tempo-std/interfaces/IValidatorConfig.sol";
+import { IValidatorConfigV2 } from "tempo-std/interfaces/IValidatorConfigV2.sol";
 
-contract ValidatorConfigV2Test is BaseTest {
+contract ValidatorConfigV2Test is TempoTest {
 
     error InvalidSignatureFormat();
 
@@ -235,30 +235,28 @@ contract ValidatorConfigV2Test is BaseTest {
             );
         }
 
-        if (isTempo) {
-            // 6. InvalidSignatureFormat (short — wrong length)
-            try validatorConfigV2.addValidator(
-                validator1, PUB_KEY_0, ingress1, egress1, validator1, hex"0000"
-            ) {
-                revert CallShouldHaveReverted();
-            } catch (bytes memory err) {
-                assertEq(err, abi.encodeWithSelector(InvalidSignatureFormat.selector));
-            }
+        // 6. InvalidSignatureFormat (short — wrong length)
+        try validatorConfigV2.addValidator(
+            validator1, PUB_KEY_0, ingress1, egress1, validator1, hex"0000"
+        ) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(InvalidSignatureFormat.selector));
+        }
 
-            // 7. InvalidSignature (valid length, wrong sig data)
-            try validatorConfigV2.addValidator(
-                validator1,
-                PUB_KEY_0,
-                ingress1,
-                egress1,
-                validator1,
-                hex"0000000000000000000000000000000000000000000000000000000000000000"
-                hex"0000000000000000000000000000000000000000000000000000000000000000"
-            ) {
-                revert CallShouldHaveReverted();
-            } catch (bytes memory err) {
-                assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.InvalidSignature.selector));
-            }
+        // 7. InvalidSignature (valid length, wrong sig data)
+        try validatorConfigV2.addValidator(
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            validator1,
+            hex"0000000000000000000000000000000000000000000000000000000000000000"
+            hex"0000000000000000000000000000000000000000000000000000000000000000"
+        ) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.InvalidSignature.selector));
         }
     }
 
@@ -467,22 +465,20 @@ contract ValidatorConfigV2Test is BaseTest {
             );
         }
 
-        if (isTempo) {
-            // 6. InvalidSignatureFormat (short — wrong length)
-            validatorConfigV2.addValidator(
-                validator3,
-                PUB_KEY_2,
-                ingress3,
-                egress3,
-                validator3,
-                _signAdd(PRIV_KEY_2, validator3, ingress3, egress3, validator3)
-            );
-            string memory uniqueIngress = "10.0.0.3:8000";
-            try validatorConfigV2.rotateValidator(4, PUB_KEY_3, uniqueIngress, egress3, hex"0000") {
-                revert CallShouldHaveReverted();
-            } catch (bytes memory err) {
-                assertEq(err, abi.encodeWithSelector(InvalidSignatureFormat.selector));
-            }
+        // 6. InvalidSignatureFormat (short — wrong length)
+        validatorConfigV2.addValidator(
+            validator3,
+            PUB_KEY_2,
+            ingress3,
+            egress3,
+            validator3,
+            _signAdd(PRIV_KEY_2, validator3, ingress3, egress3, validator3)
+        );
+        string memory uniqueIngress = "10.0.0.3:8000";
+        try validatorConfigV2.rotateValidator(4, PUB_KEY_3, uniqueIngress, egress3, hex"0000") {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(InvalidSignatureFormat.selector));
         }
     }
 

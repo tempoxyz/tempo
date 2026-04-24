@@ -43,6 +43,7 @@
 
 use alloy::primitives::{Address, U256};
 use std::{
+    collections::HashSet,
     fmt,
     hash::Hash,
     ops::{Deref, Index},
@@ -56,12 +57,17 @@ use crate::{
     },
 };
 
-/// An ordered set that preserves insertion order.
+/// Read-only snapshot of a set stored via [`SetHandler`].
 ///
-/// This is a read-only snapshot of set data. To mutate:
+/// Elements are ordered by their position in the underlying storage array.
+/// This order is **not** guaranteed to match insertion order: `SetHandler::remove`
+/// uses swap-and-pop semantics, so removing a non-tail element moves the last
+/// element into the vacated slot.
+///
+/// To mutate:
 /// 1. Convert to `Vec<T>` with `.into()`
 /// 2. Modify the Vec
-/// 3. Convert back with `Set::from(vec)` (deduplicates)
+/// 3. Convert back with `Set::from(vec)` (deduplicates, preserves first-occurrence order)
 /// 4. Write with `handler.write(set)`
 ///
 /// For single-element mutations, use `SetHandler` methods directly.
@@ -76,6 +82,18 @@ impl<T> Set<T> {
     #[inline]
     pub fn new() -> Self {
         Self(Vec::new())
+    }
+
+    /// Creates a set from a vector that is already known to contain no duplicates.
+    ///
+    /// # IMPORTANT
+    ///
+    /// The caller **must** guarantee that `vec` contains no duplicate elements.
+    /// Violating this breaks the position-mapping invariant in storage: two equal values would
+    /// share a single position slot, causing silent data corruption on subsequent `remove()` calls.
+    #[inline]
+    pub fn new_unchecked(vec: Vec<T>) -> Self {
+        Self(vec)
     }
 }
 
@@ -95,22 +113,22 @@ impl<T> From<Set<T>> for Vec<T> {
     }
 }
 
-impl<T: Eq + Clone> From<Vec<T>> for Set<T> {
+impl<T: Eq + Hash + Clone> From<Vec<T>> for Set<T> {
     /// Creates a set from a vector, removing duplicates.
     ///
     /// Preserves the order of first occurrences.
     fn from(vec: Vec<T>) -> Self {
-        let mut seen = Vec::new();
+        let (mut seen, mut deduped) = (HashSet::new(), Vec::new());
         for item in vec {
-            if !seen.contains(&item) {
-                seen.push(item);
+            if seen.insert(item.clone()) {
+                deduped.push(item);
             }
         }
-        Self(seen)
+        Self(deduped)
     }
 }
 
-impl<T: Eq + Clone> FromIterator<T> for Set<T> {
+impl<T: Eq + Hash + Clone> FromIterator<T> for Set<T> {
     /// Creates a set from an iterator, removing duplicates.
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
         let vec: Vec<T> = iter.into_iter().collect();
@@ -216,6 +234,18 @@ where
     }
 }
 
+/// Converts a 0-based index to a 1-based position for storage.
+///
+/// Returns an error if the result would overflow `u32`, which would corrupt the
+/// sentinel value (`0` means "not present") used by `contains()` and `remove()`.
+#[inline]
+fn checked_position(index: usize) -> Result<u32> {
+    u32::try_from(index)
+        .ok()
+        .and_then(|i| i.checked_add(1))
+        .ok_or_else(TempoPrecompileError::under_overflow)
+}
+
 impl<T> SetHandler<T>
 where
     T: Storable + StorageKey + Hash + Eq + Clone,
@@ -276,7 +306,9 @@ where
 
         // Store position (1-indexed: position N means index N-1)
         let length = self.values.len()?;
-        self.positions.at_mut(&value).write(length as u32 + 1)?;
+        self.positions
+            .at_mut(&value)
+            .write(checked_position(length)?)?;
 
         // Push value to the array
         self.values.push(value)?;
@@ -397,7 +429,9 @@ where
 
         // Write new values and positions (1-indexed)
         for (index, new_value) in value.0.into_iter().enumerate() {
-            self.positions.at_mut(&new_value).write(index as u32 + 1)?;
+            self.positions
+                .at_mut(&new_value)
+                .write(checked_position(index)?)?;
             self.values[index].write(new_value)?;
         }
 
@@ -798,6 +832,35 @@ mod tests {
             assert!(handler.t_read().is_err());
             assert!(handler.t_write(Set::new()).is_err());
             assert!(handler.t_delete().is_err());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_checked_position() {
+        // Happy path: index 0 → position 1, last valid index → u32::MAX
+        assert_eq!(checked_position(0).unwrap(), 1);
+        assert_eq!(checked_position(1).unwrap(), 2);
+        assert_eq!(checked_position(u32::MAX as usize - 1).unwrap(), u32::MAX);
+
+        // Overflow: u32::MAX would produce position u32::MAX + 1, which wraps to 0
+        assert!(checked_position(u32::MAX as usize).is_err());
+        // usize values beyond u32::MAX also overflow
+        assert!(checked_position(u32::MAX as usize + 1).is_err());
+    }
+
+    #[test]
+    fn test_handler_insert_overflow() -> eyre::Result<()> {
+        let (mut storage, address) = setup_storage();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut handler = SetHandler::<U256>::new(U256::ZERO, address);
+
+            // Simulate a full set by writing u32::MAX directly to the length slot.
+            // insert() must propagate an overflow error rather than wrapping position to 0.
+            Slot::<U256>::new(handler.base_slot(), address).write(U256::from(u32::MAX))?;
+            assert!(handler.insert(U256::ONE).is_err());
+
             Ok(())
         })
     }

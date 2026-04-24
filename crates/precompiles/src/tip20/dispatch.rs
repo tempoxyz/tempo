@@ -1,19 +1,24 @@
 //! ABI dispatch for the [`TIP20Token`] precompile.
 
 use crate::{
-    Precompile, dispatch_call,
-    error::TempoPrecompileError,
-    input_cost, metadata, mutate, mutate_void,
+    Precompile, SelectorSchedule, charge_input_cost, dispatch_call, metadata, mutate, mutate_void,
     storage::ContractStorage,
     tip20::{ITIP20, TIP20Token},
-    unknown_selector, view,
+    view,
 };
 use alloy::{
     primitives::Address,
     sol_types::{SolCall, SolInterface},
 };
-use revm::precompile::{PrecompileError, PrecompileResult};
+use revm::precompile::PrecompileResult;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls, TIP20Error};
+
+const T2_ADDED: &[[u8; 4]] = &[
+    ITIP20::permitCall::SELECTOR,
+    ITIP20::noncesCall::SELECTOR,
+    ITIP20::DOMAIN_SEPARATORCall::SELECTOR,
+];
 
 /// Decoded call variant — either a TIP-20 token call or a role-management call.
 enum TIP20Call {
@@ -36,181 +41,181 @@ impl TIP20Call {
 
 impl Precompile for TIP20Token {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
-        self.storage
-            .deduct_gas(input_cost(calldata.len()))
-            .map_err(|_| PrecompileError::OutOfGas)?;
-
-        // Ensure that the token is initialized (has bytecode)
-        // Note that if the initialization check fails, this is treated as uninitialized
-        if !self.is_initialized().unwrap_or(false) {
-            return TempoPrecompileError::TIP20(TIP20Error::uninitialized())
-                .into_precompile_result(self.storage.gas_used());
+        if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
+            return err;
         }
 
-        dispatch_call(calldata, TIP20Call::decode, |call| match call {
-            // Metadata functions (no calldata decoding needed)
-            TIP20Call::TIP20(ITIP20Calls::name(_)) => metadata::<ITIP20::nameCall>(|| self.name()),
-            TIP20Call::TIP20(ITIP20Calls::symbol(_)) => {
-                metadata::<ITIP20::symbolCall>(|| self.symbol())
-            }
-            TIP20Call::TIP20(ITIP20Calls::decimals(_)) => {
-                metadata::<ITIP20::decimalsCall>(|| self.decimals())
-            }
-            TIP20Call::TIP20(ITIP20Calls::currency(_)) => {
-                metadata::<ITIP20::currencyCall>(|| self.currency())
-            }
-            TIP20Call::TIP20(ITIP20Calls::totalSupply(_)) => {
-                metadata::<ITIP20::totalSupplyCall>(|| self.total_supply())
-            }
-            TIP20Call::TIP20(ITIP20Calls::supplyCap(_)) => {
-                metadata::<ITIP20::supplyCapCall>(|| self.supply_cap())
-            }
-            TIP20Call::TIP20(ITIP20Calls::transferPolicyId(_)) => {
-                metadata::<ITIP20::transferPolicyIdCall>(|| self.transfer_policy_id())
-            }
-            TIP20Call::TIP20(ITIP20Calls::paused(_)) => {
-                metadata::<ITIP20::pausedCall>(|| self.paused())
-            }
+        // Ensure that the token is initialized (has bytecode)
+        let initialized = match self.is_initialized() {
+            Ok(v) => v,
+            Err(_) if !self.storage.spec().is_t4() => false,
+            Err(e) => return self.storage.error_result(e),
+        };
+        if !initialized {
+            return self.storage.error_result(TIP20Error::uninitialized());
+        }
 
-            // View functions
-            TIP20Call::TIP20(ITIP20Calls::balanceOf(call)) => view(call, |c| self.balance_of(c)),
-            TIP20Call::TIP20(ITIP20Calls::allowance(call)) => view(call, |c| self.allowance(c)),
-            TIP20Call::TIP20(ITIP20Calls::quoteToken(call)) => view(call, |_| self.quote_token()),
-            TIP20Call::TIP20(ITIP20Calls::nextQuoteToken(call)) => {
-                view(call, |_| self.next_quote_token())
-            }
-            TIP20Call::TIP20(ITIP20Calls::PAUSE_ROLE(call)) => {
-                view(call, |_| Ok(Self::pause_role()))
-            }
-            TIP20Call::TIP20(ITIP20Calls::UNPAUSE_ROLE(call)) => {
-                view(call, |_| Ok(Self::unpause_role()))
-            }
-            TIP20Call::TIP20(ITIP20Calls::ISSUER_ROLE(call)) => {
-                view(call, |_| Ok(Self::issuer_role()))
-            }
-            TIP20Call::TIP20(ITIP20Calls::BURN_BLOCKED_ROLE(call)) => {
-                view(call, |_| Ok(Self::burn_blocked_role()))
-            }
-
-            // State changing functions
-            TIP20Call::TIP20(ITIP20Calls::transferFrom(call)) => {
-                mutate(call, msg_sender, |s, c| self.transfer_from(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::transfer(call)) => {
-                mutate(call, msg_sender, |s, c| self.transfer(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::approve(call)) => {
-                mutate(call, msg_sender, |s, c| self.approve(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::changeTransferPolicyId(call)) => {
-                mutate_void(call, msg_sender, |s, c| {
-                    self.change_transfer_policy_id(s, c)
-                })
-            }
-            TIP20Call::TIP20(ITIP20Calls::setSupplyCap(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.set_supply_cap(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::pause(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.pause(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::unpause(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.unpause(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::setNextQuoteToken(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.set_next_quote_token(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::completeQuoteTokenUpdate(call)) => {
-                mutate_void(call, msg_sender, |s, c| {
-                    self.complete_quote_token_update(s, c)
-                })
-            }
-            TIP20Call::TIP20(ITIP20Calls::mint(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.mint(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::mintWithMemo(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.mint_with_memo(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::burn(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.burn(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::burnWithMemo(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.burn_with_memo(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::burnBlocked(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.burn_blocked(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::transferWithMemo(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.transfer_with_memo(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::transferFromWithMemo(call)) => {
-                mutate(call, msg_sender, |sender, c| {
-                    self.transfer_from_with_memo(sender, c)
-                })
-            }
-            TIP20Call::TIP20(ITIP20Calls::distributeReward(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.distribute_reward(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::setRewardRecipient(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.set_reward_recipient(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::claimRewards(call)) => {
-                mutate(call, msg_sender, |_, _| self.claim_rewards(msg_sender))
-            }
-            TIP20Call::TIP20(ITIP20Calls::globalRewardPerToken(call)) => {
-                view(call, |_| self.get_global_reward_per_token())
-            }
-            TIP20Call::TIP20(ITIP20Calls::optedInSupply(call)) => {
-                view(call, |_| self.get_opted_in_supply())
-            }
-            TIP20Call::TIP20(ITIP20Calls::userRewardInfo(call)) => view(call, |c| {
-                self.get_user_reward_info(c.account).map(|info| info.into())
-            }),
-            TIP20Call::TIP20(ITIP20Calls::getPendingRewards(call)) => {
-                view(call, |c| self.get_pending_rewards(c.account))
-            }
-
-            TIP20Call::TIP20(ITIP20Calls::permit(call)) => {
-                if !self.storage.spec().is_t2() {
-                    return unknown_selector(ITIP20::permitCall::SELECTOR, self.storage.gas_used());
+        dispatch_call(
+            calldata,
+            &[SelectorSchedule::new(TempoHardfork::T2).with_added(T2_ADDED)],
+            TIP20Call::decode,
+            |call| match call {
+                // Metadata functions (no calldata decoding needed)
+                TIP20Call::TIP20(ITIP20Calls::name(_)) => {
+                    metadata::<ITIP20::nameCall>(|| self.name())
                 }
-                mutate_void(call, msg_sender, |_s, c| self.permit(c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::nonces(call)) => {
-                if !self.storage.spec().is_t2() {
-                    return unknown_selector(ITIP20::noncesCall::SELECTOR, self.storage.gas_used());
+                TIP20Call::TIP20(ITIP20Calls::symbol(_)) => {
+                    metadata::<ITIP20::symbolCall>(|| self.symbol())
                 }
-                view(call, |c| self.nonces(c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::DOMAIN_SEPARATOR(call)) => {
-                if !self.storage.spec().is_t2() {
-                    return unknown_selector(
-                        ITIP20::DOMAIN_SEPARATORCall::SELECTOR,
-                        self.storage.gas_used(),
-                    );
+                TIP20Call::TIP20(ITIP20Calls::decimals(_)) => {
+                    metadata::<ITIP20::decimalsCall>(|| self.decimals())
                 }
-                view(call, |_| self.domain_separator())
-            }
+                TIP20Call::TIP20(ITIP20Calls::currency(_)) => {
+                    metadata::<ITIP20::currencyCall>(|| self.currency())
+                }
+                TIP20Call::TIP20(ITIP20Calls::totalSupply(_)) => {
+                    metadata::<ITIP20::totalSupplyCall>(|| self.total_supply())
+                }
+                TIP20Call::TIP20(ITIP20Calls::supplyCap(_)) => {
+                    metadata::<ITIP20::supplyCapCall>(|| self.supply_cap())
+                }
+                TIP20Call::TIP20(ITIP20Calls::transferPolicyId(_)) => {
+                    metadata::<ITIP20::transferPolicyIdCall>(|| self.transfer_policy_id())
+                }
+                TIP20Call::TIP20(ITIP20Calls::paused(_)) => {
+                    metadata::<ITIP20::pausedCall>(|| self.paused())
+                }
 
-            // RolesAuth functions
-            TIP20Call::RolesAuth(IRolesAuthCalls::hasRole(call)) => {
-                view(call, |c| self.has_role(c))
-            }
-            TIP20Call::RolesAuth(IRolesAuthCalls::getRoleAdmin(call)) => {
-                view(call, |c| self.get_role_admin(c))
-            }
-            TIP20Call::RolesAuth(IRolesAuthCalls::grantRole(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.grant_role(s, c))
-            }
-            TIP20Call::RolesAuth(IRolesAuthCalls::revokeRole(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.revoke_role(s, c))
-            }
-            TIP20Call::RolesAuth(IRolesAuthCalls::renounceRole(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.renounce_role(s, c))
-            }
-            TIP20Call::RolesAuth(IRolesAuthCalls::setRoleAdmin(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.set_role_admin(s, c))
-            }
-        })
+                // View functions
+                TIP20Call::TIP20(ITIP20Calls::balanceOf(call)) => {
+                    view(call, |c| self.balance_of(c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::allowance(call)) => view(call, |c| self.allowance(c)),
+                TIP20Call::TIP20(ITIP20Calls::quoteToken(call)) => {
+                    view(call, |_| self.quote_token())
+                }
+                TIP20Call::TIP20(ITIP20Calls::nextQuoteToken(call)) => {
+                    view(call, |_| self.next_quote_token())
+                }
+                TIP20Call::TIP20(ITIP20Calls::PAUSE_ROLE(call)) => {
+                    view(call, |_| Ok(Self::pause_role()))
+                }
+                TIP20Call::TIP20(ITIP20Calls::UNPAUSE_ROLE(call)) => {
+                    view(call, |_| Ok(Self::unpause_role()))
+                }
+                TIP20Call::TIP20(ITIP20Calls::ISSUER_ROLE(call)) => {
+                    view(call, |_| Ok(Self::issuer_role()))
+                }
+                TIP20Call::TIP20(ITIP20Calls::BURN_BLOCKED_ROLE(call)) => {
+                    view(call, |_| Ok(Self::burn_blocked_role()))
+                }
+
+                // State changing functions
+                TIP20Call::TIP20(ITIP20Calls::transferFrom(call)) => {
+                    mutate(call, msg_sender, |s, c| self.transfer_from(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::transfer(call)) => {
+                    mutate(call, msg_sender, |s, c| self.transfer(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::approve(call)) => {
+                    mutate(call, msg_sender, |s, c| self.approve(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::changeTransferPolicyId(call)) => {
+                    mutate_void(call, msg_sender, |s, c| {
+                        self.change_transfer_policy_id(s, c)
+                    })
+                }
+                TIP20Call::TIP20(ITIP20Calls::setSupplyCap(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.set_supply_cap(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::pause(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.pause(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::unpause(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.unpause(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::setNextQuoteToken(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.set_next_quote_token(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::completeQuoteTokenUpdate(call)) => {
+                    mutate_void(call, msg_sender, |s, c| {
+                        self.complete_quote_token_update(s, c)
+                    })
+                }
+                TIP20Call::TIP20(ITIP20Calls::mint(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.mint(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::mintWithMemo(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.mint_with_memo(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::burn(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.burn(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::burnWithMemo(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.burn_with_memo(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::burnBlocked(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.burn_blocked(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::transferWithMemo(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.transfer_with_memo(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::transferFromWithMemo(call)) => {
+                    mutate(call, msg_sender, |sender, c| {
+                        self.transfer_from_with_memo(sender, c)
+                    })
+                }
+                TIP20Call::TIP20(ITIP20Calls::distributeReward(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.distribute_reward(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::setRewardRecipient(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.set_reward_recipient(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::claimRewards(call)) => {
+                    mutate(call, msg_sender, |_, _| self.claim_rewards(msg_sender))
+                }
+                TIP20Call::TIP20(ITIP20Calls::globalRewardPerToken(call)) => {
+                    view(call, |_| self.get_global_reward_per_token())
+                }
+                TIP20Call::TIP20(ITIP20Calls::optedInSupply(call)) => {
+                    view(call, |_| self.get_opted_in_supply())
+                }
+                TIP20Call::TIP20(ITIP20Calls::userRewardInfo(call)) => view(call, |c| {
+                    self.get_user_reward_info(c.account).map(|info| info.into())
+                }),
+                TIP20Call::TIP20(ITIP20Calls::getPendingRewards(call)) => {
+                    view(call, |c| self.get_pending_rewards(c.account))
+                }
+
+                TIP20Call::TIP20(ITIP20Calls::permit(call)) => {
+                    mutate_void(call, msg_sender, |_s, c| self.permit(c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::nonces(call)) => view(call, |c| self.nonces(c)),
+                TIP20Call::TIP20(ITIP20Calls::DOMAIN_SEPARATOR(call)) => {
+                    view(call, |_| self.domain_separator())
+                }
+
+                // RolesAuth functions
+                TIP20Call::RolesAuth(IRolesAuthCalls::hasRole(call)) => {
+                    view(call, |c| self.has_role(c))
+                }
+                TIP20Call::RolesAuth(IRolesAuthCalls::getRoleAdmin(call)) => {
+                    view(call, |c| self.get_role_admin(c))
+                }
+                TIP20Call::RolesAuth(IRolesAuthCalls::grantRole(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.grant_role(s, c))
+                }
+                TIP20Call::RolesAuth(IRolesAuthCalls::revokeRole(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.revoke_role(s, c))
+                }
+                TIP20Call::RolesAuth(IRolesAuthCalls::renounceRole(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.renounce_role(s, c))
+                }
+                TIP20Call::RolesAuth(IRolesAuthCalls::setRoleAdmin(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.set_role_admin(s, c))
+                }
+            },
+        )
     }
 }
 
@@ -227,6 +232,7 @@ mod tests {
         primitives::{Bytes, U256, address},
         sol_types::{SolCall, SolError, SolInterface, SolValue},
     };
+
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         IRolesAuth, RolesAuthError, TIP20Error, UnknownFunctionSelector,
@@ -242,22 +248,23 @@ mod tests {
             let mut token = TIP20Setup::create("Test", "TST", sender).apply()?;
 
             let result = token.call(&Bytes::from([0x12, 0x34, 0x56, 0x78]), sender)?;
-            assert!(result.reverted);
+            assert!(result.is_revert());
 
             // T1: insufficient calldata also returns reverted output
             let result = token.call(&Bytes::from([0x12, 0x34]), sender)?;
-            assert!(result.reverted);
+            assert!(result.is_revert());
 
             Ok(())
         })?;
 
-        // Pre-T1 (T0): insufficient calldata returns error
+        // Pre-T1 (T0): insufficient calldata returns halt
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", sender).apply()?;
 
             let result = token.call(&Bytes::from([0x12, 0x34]), sender);
-            assert!(matches!(result, Err(PrecompileError::Other(_))));
+            let output = result.expect("expected Ok(halt) for short calldata");
+            assert!(output.is_halt());
 
             Ok(())
         })
@@ -280,7 +287,7 @@ mod tests {
             let calldata = balance_of_call.abi_encode();
 
             let result = token.call(&calldata, sender)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
 
             let decoded = U256::abi_decode(&result.bytes)?;
             assert_eq!(decoded, test_balance);
@@ -292,7 +299,6 @@ mod tests {
     #[test]
     fn test_mint_updates_storage() -> eyre::Result<()> {
         let (mut storage, admin) = setup_storage();
-        let sender = Address::random();
         let recipient = Address::random();
 
         StorageCtx::enter(&mut storage, || {
@@ -310,8 +316,8 @@ mod tests {
             };
             let calldata = mint_call.abi_encode();
 
-            let result = token.call(&calldata, sender)?;
-            assert_eq!(result.gas_used, 0);
+            let result = token.call(&calldata, admin)?;
+            assert!(result.status.is_success());
 
             let final_balance = token.balance_of(ITIP20::balanceOfCall { account: recipient })?;
             assert_eq!(final_balance, mint_amount);
@@ -349,7 +355,7 @@ mod tests {
             };
             let calldata = transfer_call.abi_encode();
             let result = token.call(&calldata, sender)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
 
             let success = bool::abi_decode(&result.bytes)?;
             assert!(success);
@@ -391,7 +397,7 @@ mod tests {
             };
             let calldata = approve_call.abi_encode();
             let result = token.call(&calldata, owner)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
             let success = bool::abi_decode(&result.bytes)?;
             assert!(success);
 
@@ -405,7 +411,7 @@ mod tests {
             };
             let calldata = transfer_from_call.abi_encode();
             let result = token.call(&calldata, spender)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
             let success = bool::abi_decode(&result.bytes)?;
             assert!(success);
 
@@ -444,14 +450,14 @@ mod tests {
             let pause_call = ITIP20::pauseCall {};
             let calldata = pause_call.abi_encode();
             let result = token.call(&calldata, pauser)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
             assert!(token.paused()?);
 
             // Unpause the token
             let unpause_call = ITIP20::unpauseCall {};
             let calldata = unpause_call.abi_encode();
             let result = token.call(&calldata, unpauser)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
             assert!(!token.paused()?);
 
             Ok(())
@@ -485,7 +491,7 @@ mod tests {
             };
             let calldata = burn_call.abi_encode();
             let result = token.call(&calldata, burner)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
             assert_eq!(
                 token.balance_of(ITIP20::balanceOfCall { account: burner })?,
                 initial_balance - burn_amount
@@ -509,7 +515,7 @@ mod tests {
             let calldata = name_call.abi_encode();
             let result = token.call(&calldata, caller)?;
             // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
             let name = String::abi_decode(&result.bytes)?;
             assert_eq!(name, "Test Token");
 
@@ -517,7 +523,7 @@ mod tests {
             let symbol_call = ITIP20::symbolCall {};
             let calldata = symbol_call.abi_encode();
             let result = token.call(&calldata, caller)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
             let symbol = String::abi_decode(&result.bytes)?;
             assert_eq!(symbol, "TEST");
 
@@ -525,7 +531,7 @@ mod tests {
             let decimals_call = ITIP20::decimalsCall {};
             let calldata = decimals_call.abi_encode();
             let result = token.call(&calldata, caller)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
             let decimals = ITIP20::decimalsCall::abi_decode_returns(&result.bytes)?;
             assert_eq!(decimals, 6);
 
@@ -533,7 +539,7 @@ mod tests {
             let currency_call = ITIP20::currencyCall {};
             let calldata = currency_call.abi_encode();
             let result = token.call(&calldata, caller)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
             let currency = String::abi_decode(&result.bytes)?;
             assert_eq!(currency, "USD");
 
@@ -542,7 +548,7 @@ mod tests {
             let calldata = total_supply_call.abi_encode();
             let result = token.call(&calldata, caller)?;
             // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
             let total_supply = U256::abi_decode(&result.bytes)?;
             assert_eq!(total_supply, U256::ZERO);
 
@@ -567,7 +573,7 @@ mod tests {
             };
             let calldata = set_cap_call.abi_encode();
             let result = token.call(&calldata, admin)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
 
             let mint_call = ITIP20::mintCall {
                 to: recipient,
@@ -575,7 +581,7 @@ mod tests {
             };
             let calldata = mint_call.abi_encode();
             let output = token.call(&calldata, admin)?;
-            assert!(output.reverted);
+            assert!(output.is_revert());
 
             let expected: Bytes = TIP20Error::supply_cap_exceeded().selector().into();
             assert_eq!(output.bytes, expected);
@@ -603,7 +609,7 @@ mod tests {
             };
             let calldata = has_role_call.abi_encode();
             let result = token.call(&calldata, admin)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
             let has_role = bool::abi_decode(&result.bytes)?;
             assert!(has_role);
 
@@ -622,12 +628,12 @@ mod tests {
             };
             let calldata = mint_call.abi_encode();
             let output = token.call(&Bytes::from(calldata.clone()), unauthorized)?;
-            assert!(output.reverted);
+            assert!(output.is_revert());
             let expected: Bytes = RolesAuthError::unauthorized().selector().into();
             assert_eq!(output.bytes, expected);
 
             let result = token.call(&calldata, user1)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
 
             Ok(())
         })
@@ -655,7 +661,7 @@ mod tests {
             };
             let calldata = transfer_call.abi_encode();
             let result = token.call(&calldata, sender)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
             assert_eq!(
                 token.balance_of(ITIP20::balanceOfCall { account: sender })?,
                 initial_balance - transfer_amount
@@ -695,7 +701,7 @@ mod tests {
             };
             let calldata = change_policy_call.abi_encode();
             let result = token.call(&calldata, admin)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
             assert_eq!(token.transfer_policy_id()?, new_policy_id);
 
             // Create another valid policy for the unauthorized test
@@ -712,7 +718,7 @@ mod tests {
             };
             let calldata = change_policy_call.abi_encode();
             let output = token.call(&calldata, non_admin)?;
-            assert!(output.reverted);
+            assert!(output.is_revert());
             let expected: Bytes = RolesAuthError::unauthorized().selector().into();
             assert_eq!(output.bytes, expected);
 
@@ -736,7 +742,7 @@ mod tests {
             .abi_encode();
             let result = token.call(&calldata, caller)?;
 
-            assert!(result.reverted);
+            assert!(result.is_revert());
             let expected: Bytes = TIP20Error::uninitialized().selector().into();
             assert_eq!(result.bytes, expected);
 
@@ -794,7 +800,7 @@ mod tests {
             }
             .abi_encode();
             let result = token.call(&permit_calldata, admin)?;
-            assert!(result.reverted);
+            assert!(result.is_revert());
             assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
 
             // Test nonces selector is gated
@@ -803,13 +809,13 @@ mod tests {
             }
             .abi_encode();
             let result = token.call(&nonces_calldata, admin)?;
-            assert!(result.reverted);
+            assert!(result.is_revert());
             assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
 
             // Test DOMAIN_SEPARATOR selector is gated
             let ds_calldata = ITIP20::DOMAIN_SEPARATORCall {}.abi_encode();
             let result = token.call(&ds_calldata, admin)?;
-            assert!(result.reverted);
+            assert!(result.is_revert());
             assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
 
             Ok(())

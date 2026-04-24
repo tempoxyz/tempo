@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 pragma solidity >=0.8.13 <0.9.0;
 
-import { INonce } from "../../src/interfaces/INonce.sol";
-import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
 import { InvariantBase } from "./InvariantBase.sol";
 import { TxBuilder } from "./TxBuilder.sol";
+import { INonce } from "tempo-std/interfaces/INonce.sol";
+import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 import {
     TempoCall,
     TempoTransaction,

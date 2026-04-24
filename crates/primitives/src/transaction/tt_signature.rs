@@ -4,11 +4,10 @@ use super::tempo_transaction::{
 use alloc::vec::Vec;
 use alloy_primitives::{Address, B256, Bytes, Signature, U256, keccak256, uint};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use p256::{
-    EncodedPoint,
-    ecdsa::{Signature as P256Signature, VerifyingKey, signature::hazmat::PrehashVerifier},
-};
 use sha2::{Digest, Sha256};
+
+// Always mark `p256` as used to avoid `unused_crate_dependencies` warnings in `std` builds.
+use p256 as _;
 
 #[cfg(not(feature = "std"))]
 use once_cell::race::OnceBox as OnceLock;
@@ -33,12 +32,17 @@ pub const P256N_HALF: U256 =
 /// To prevent signature malleability, we require s <= n/2.
 /// If s > n/2, we replace it with n - s.
 ///
-/// This function should be called by all P256 signing code before creating
-/// a signature, as the p256 crate does not guarantee low-s signatures.
-pub fn normalize_p256_s(s_bytes: &[u8]) -> B256 {
+/// Returns an error if `s` is zero or `s >= P256_ORDER` (out of range for a
+/// valid scalar). This function should be called by all P256 signing code
+/// before creating a signature, as the p256 crate does not guarantee low-s
+/// signatures.
+pub fn normalize_p256_s(s_bytes: &[u8]) -> Result<B256, &'static str> {
     let s = U256::from_be_slice(s_bytes);
+    if s.is_zero() || s >= P256_ORDER {
+        return Err("P256 s value out of range");
+    }
     let normalized_s = if s > P256N_HALF { P256_ORDER - s } else { s };
-    B256::from(normalized_s.to_be_bytes::<32>())
+    Ok(B256::from(normalized_s.to_be_bytes::<32>()))
 }
 
 /// Signature type identifiers
@@ -753,6 +757,74 @@ pub fn derive_p256_address(pub_key_x: &B256, pub_key_y: &B256) -> Address {
     Address::from_slice(&hash[12..])
 }
 
+/// Concatenates byte slices into a fixed-size array without heap allocations.
+fn concat<const N: usize>(slices: &[&[u8]]) -> [u8; N] {
+    let mut out = [0u8; N];
+    let mut offset = 0;
+    for s in slices {
+        out[offset..offset + s.len()].copy_from_slice(s);
+        offset += s.len();
+    }
+    debug_assert_eq!(offset, N, "slices length doesn't match array size");
+    out
+}
+
+#[cfg(feature = "std")]
+fn verify_p256_signature_with_aws_lc(
+    r: &[u8],
+    s: &[u8],
+    pub_key_x: &[u8],
+    pub_key_y: &[u8],
+    message_hash: &B256,
+) -> Result<(), &'static str> {
+    use aws_lc_rs::{
+        digest::{Digest as AwsLcDigest, SHA256 as AwsLcSha256},
+        signature::{ECDSA_P256_SHA256_FIXED, ParsedPublicKey as AwsLcParsedPublicKey},
+    };
+
+    let encoded_point = concat::<65>(&[&[0x04], pub_key_x, pub_key_y]);
+    let verifying_key = AwsLcParsedPublicKey::new(&ECDSA_P256_SHA256_FIXED, encoded_point)
+        .map_err(|_| "Invalid P256 public key")?;
+
+    let signature = concat::<64>(&[r, s]);
+
+    // Tempo verifies already-computed 32-byte message digests.
+    // Switching to message-based aws-lc verifier would hash again and change consensus behavior.
+    let digest = AwsLcDigest::import_less_safe(message_hash.as_slice(), &AwsLcSha256)
+        .map_err(|_| "Invalid P256 message digest")?;
+
+    verifying_key
+        .verify_digest_sig(&digest, &signature)
+        .map_err(|_| "P256 signature verification failed")
+}
+
+#[cfg(any(test, not(feature = "std")))]
+fn verify_p256_signature_with_p256(
+    r: &[u8],
+    s: &[u8],
+    pub_key_x: &[u8],
+    pub_key_y: &[u8],
+    message_hash: &B256,
+) -> Result<(), &'static str> {
+    use p256::{
+        EncodedPoint,
+        ecdsa::{Signature as P256Signature, VerifyingKey, signature::hazmat::PrehashVerifier},
+    };
+
+    let encoded_point =
+        EncodedPoint::from_affine_coordinates(pub_key_x.into(), pub_key_y.into(), false);
+    let verifying_key =
+        VerifyingKey::from_encoded_point(&encoded_point).map_err(|_| "Invalid P256 public key")?;
+
+    let signature = P256Signature::from_slice(&concat::<64>(&[r, s]))
+        .map_err(|_| "Invalid P256 signature encoding")?;
+
+    // Tempo verifies already-computed 32-byte message digests.
+    verifying_key
+        .verify_prehash(message_hash.as_slice(), &signature)
+        .map_err(|_| "P256 signature verification failed")
+}
+
 /// Verifies a P256 signature using the provided components
 ///
 /// This performs actual cryptographic verification of the P256 signature
@@ -763,6 +835,11 @@ pub fn derive_p256_address(pub_key_x: &B256, pub_key_y: &B256) -> Address {
 /// ECDSA signature (r, s), a second valid signature (r, n-s) exists. By
 /// requiring s <= n/2 (the "low-s" requirement), we ensure only one canonical
 /// form is accepted, preventing transaction hash malleability attacks.
+///
+/// NOTE: this function conditionally compiles based on the cfg
+/// - !std → p256
+/// - std && !test → aws-lc-rs (best performance)
+/// - std && test → both (ensures verification backend alignment)
 fn verify_p256_signature_internal(
     r: &[u8],
     s: &[u8],
@@ -771,28 +848,36 @@ fn verify_p256_signature_internal(
     message_hash: &B256,
 ) -> Result<(), &'static str> {
     // High-s value check: reject signatures where s > n/2 to prevent malleability
-    let s_value = U256::from_be_slice(s);
-    if s_value > P256N_HALF {
+    if U256::from_be_slice(s) > P256N_HALF {
         return Err("P256 signature has high s value");
     }
 
-    // Parse public key from affine coordinates
-    let encoded_point = EncodedPoint::from_affine_coordinates(
-        pub_key_x.into(),
-        pub_key_y.into(),
-        false, // Not compressed
-    );
+    #[cfg(all(feature = "std", not(test)))]
+    {
+        // production `std` builds use the `aws-lc-rs` crate
+        verify_p256_signature_with_aws_lc(r, s, pub_key_x, pub_key_y, message_hash)
+    }
 
-    let verifying_key =
-        VerifyingKey::from_encoded_point(&encoded_point).map_err(|_| "Invalid P256 public key")?;
+    #[cfg(not(feature = "std"))]
+    {
+        // production `no-std` builds use the `p256` crate
+        verify_p256_signature_with_p256(r, s, pub_key_x, pub_key_y, message_hash)
+    }
 
-    let signature = P256Signature::from_slice(&[r, s].concat())
-        .map_err(|_| "Invalid P256 signature encoding")?;
+    #[cfg(all(feature = "std", test))]
+    {
+        // test builds use both crates to verify alignment
+        let aws_lc = verify_p256_signature_with_aws_lc(r, s, pub_key_x, pub_key_y, message_hash);
+        let p256 = verify_p256_signature_with_p256(r, s, pub_key_x, pub_key_y, message_hash);
 
-    // Verify signature
-    verifying_key
-        .verify_prehash(message_hash.as_slice(), &signature)
-        .map_err(|_| "P256 signature verification failed")
+        assert_eq!(
+            aws_lc.is_ok(),
+            p256.is_ok(),
+            "aws-lc and p256 verification backends disagreed"
+        );
+
+        aws_lc
+    }
 }
 
 /// Minimal struct to deserialize only the fields we need from clientDataJSON.
@@ -909,7 +994,7 @@ mod tests {
             signing_key.sign_prehash(message_hash.as_slice()).unwrap();
         let sig_bytes = signature.to_bytes();
         let r = B256::from_slice(&sig_bytes[0..32]);
-        let s = normalize_p256_s(&sig_bytes[32..64]);
+        let s = normalize_p256_s(&sig_bytes[32..64]).expect("p256 crate produces valid s");
         (r, s)
     }
 
@@ -934,7 +1019,7 @@ mod tests {
         let low_s = U256::from(1u64);
         let low_s_bytes: [u8; 32] = low_s.to_be_bytes();
         assert_eq!(
-            U256::from_be_slice(normalize_p256_s(&low_s_bytes).as_slice()),
+            U256::from_be_slice(normalize_p256_s(&low_s_bytes).unwrap().as_slice()),
             low_s,
             "s < P256N_HALF should remain unchanged"
         );
@@ -942,7 +1027,7 @@ mod tests {
         // s == P256N_HALF → unchanged
         let half_bytes: [u8; 32] = P256N_HALF.to_be_bytes();
         assert_eq!(
-            U256::from_be_slice(normalize_p256_s(&half_bytes).as_slice()),
+            U256::from_be_slice(normalize_p256_s(&half_bytes).unwrap().as_slice()),
             P256N_HALF,
             "s == P256N_HALF should remain unchanged"
         );
@@ -951,7 +1036,7 @@ mod tests {
         let high_s = P256N_HALF + U256::from(1u64);
         let high_s_bytes: [u8; 32] = high_s.to_be_bytes();
         assert_eq!(
-            U256::from_be_slice(normalize_p256_s(&high_s_bytes).as_slice()),
+            U256::from_be_slice(normalize_p256_s(&high_s_bytes).unwrap().as_slice()),
             P256_ORDER - high_s,
             "s > P256N_HALF should be normalized"
         );
@@ -960,9 +1045,37 @@ mod tests {
         let max_s = P256_ORDER - U256::from(1u64);
         let max_s_bytes: [u8; 32] = max_s.to_be_bytes();
         assert_eq!(
-            U256::from_be_slice(normalize_p256_s(&max_s_bytes).as_slice()),
+            U256::from_be_slice(normalize_p256_s(&max_s_bytes).unwrap().as_slice()),
             U256::from(1u64),
             "s == P256_ORDER - 1 should normalize to 1"
+        );
+
+        // s == 0 → rejected
+        let zero_bytes: [u8; 32] = U256::ZERO.to_be_bytes();
+        assert!(
+            normalize_p256_s(&zero_bytes).is_err(),
+            "s == 0 should be rejected"
+        );
+
+        // s == P256_ORDER → rejected
+        let order_bytes: [u8; 32] = P256_ORDER.to_be_bytes();
+        assert!(
+            normalize_p256_s(&order_bytes).is_err(),
+            "s == P256_ORDER should be rejected"
+        );
+
+        // s == P256_ORDER + 1 → rejected
+        let over_bytes: [u8; 32] = (P256_ORDER + U256::from(1u64)).to_be_bytes();
+        assert!(
+            normalize_p256_s(&over_bytes).is_err(),
+            "s > P256_ORDER should be rejected"
+        );
+
+        // s == U256::MAX → rejected
+        let max_bytes: [u8; 32] = U256::MAX.to_be_bytes();
+        assert!(
+            normalize_p256_s(&max_bytes).is_err(),
+            "s == U256::MAX should be rejected"
         );
     }
 
@@ -982,24 +1095,28 @@ mod tests {
     #[test]
     fn test_p256_signature_verification_invalid_signature() {
         let (_, pub_key_x, pub_key_y) = generate_p256_keypair();
+        let message_hash = B256::ZERO;
+
+        let assert_invalid = |r: &[u8], s: &[u8], context: &str| {
+            let result = verify_p256_signature_internal(
+                r,
+                s,
+                pub_key_x.as_slice(),
+                pub_key_y.as_slice(),
+                &message_hash,
+            );
+            assert!(result.is_err(), "{context} should fail verification");
+        };
 
         // Use invalid signature (all zeros)
         let r = [0u8; 32];
         let s = [0u8; 32];
-        let message_hash = B256::ZERO;
+        assert_invalid(&r, &s, "all-zero signature");
 
-        // Invalid signature (all zeros) should fail
-        let result = verify_p256_signature_internal(
-            &r,
-            &s,
-            pub_key_x.as_slice(),
-            pub_key_y.as_slice(),
-            &message_hash,
-        );
-        assert!(
-            result.is_err(),
-            "Invalid signature should fail verification"
-        );
+        let one = U256::from(1u64).to_be_bytes::<32>();
+        let order = P256_ORDER.to_be_bytes::<32>();
+        assert_invalid(&order, &one, "signature with r == P256_ORDER");
+        assert_invalid(&one, &order, "signature with s == P256_ORDER");
     }
 
     #[test]
@@ -1505,6 +1622,36 @@ mod tests {
     }
 
     #[test]
+    fn test_recover_signer_p256_high_s_rejected() {
+        let (signing_key, pub_key_x, pub_key_y) = generate_p256_keypair();
+        let sig_hash = B256::from([0xCD; 32]);
+        let signature: p256::ecdsa::Signature =
+            signing_key.sign_prehash(sig_hash.as_slice()).unwrap();
+        let sig_bytes = signature.to_bytes();
+        let r = B256::from_slice(&sig_bytes[..32]);
+        let s_value = U256::from_be_slice(&sig_bytes[32..64]);
+        let high_s = if s_value > P256N_HALF {
+            s_value
+        } else {
+            P256_ORDER - s_value
+        };
+
+        let p256_sig =
+            TempoSignature::Primitive(PrimitiveSignature::P256(P256SignatureWithPreHash {
+                r,
+                s: B256::from(high_s.to_be_bytes::<32>()),
+                pub_key_x,
+                pub_key_y,
+                pre_hash: false,
+            }));
+
+        assert!(
+            p256_sig.recover_signer(&sig_hash).is_err(),
+            "high-s P256 signatures must be rejected"
+        );
+    }
+
+    #[test]
     fn test_recover_signer_webauthn() {
         let (signing_key, pub_key_x, pub_key_y) = generate_p256_keypair();
         let expected_address = derive_p256_address(&pub_key_x, &pub_key_y);
@@ -1512,14 +1659,7 @@ mod tests {
         let tx_hash = B256::from([0xCC; 32]);
         let webauthn_data = build_webauthn_data(0x01, None, &tx_hash);
 
-        // Compute message hash: sha256(authData || sha256(clientDataJSON))
-        let auth_data = &webauthn_data[..37];
-        let client_data = &webauthn_data[37..];
-        let client_data_hash = Sha256::digest(client_data);
-        let mut hasher = Sha256::new();
-        hasher.update(auth_data);
-        hasher.update(client_data_hash);
-        let message_hash = B256::from_slice(&hasher.finalize());
+        let message_hash = verify_webauthn_data_internal(&webauthn_data, &tx_hash).unwrap();
 
         let (r, s) = sign_p256_normalized(&signing_key, &message_hash);
 
@@ -1536,6 +1676,27 @@ mod tests {
         assert_eq!(
             recovered, expected_address,
             "WebAuthn recovery should match derived address"
+        );
+    }
+
+    #[test]
+    fn test_recover_signer_webauthn_invalid_payload_rejected() {
+        let (signing_key, pub_key_x, pub_key_y) = generate_p256_keypair();
+        let tx_hash = B256::from([0xEF; 32]);
+        let (r, s) = sign_p256_normalized(&signing_key, &B256::ZERO);
+
+        let invalid_webauthn_sig =
+            TempoSignature::Primitive(PrimitiveSignature::WebAuthn(WebAuthnSignature {
+                r,
+                s,
+                pub_key_x,
+                pub_key_y,
+                webauthn_data: Bytes::from(build_webauthn_data(0x41, None, &tx_hash)),
+            }));
+
+        assert!(
+            invalid_webauthn_sig.recover_signer(&tx_hash).is_err(),
+            "invalid WebAuthn payloads must be rejected"
         );
     }
 
@@ -1630,10 +1791,7 @@ mod tests {
 
         // Sign for user_a with V2
         let sig_hash = B256::from([0x22; 32]);
-        let mut buf = [0u8; 52];
-        buf[..32].copy_from_slice(sig_hash.as_slice());
-        buf[32..].copy_from_slice(user_a.as_slice());
-        let effective_hash = keccak256(buf);
+        let effective_hash = KeychainSignature::signing_hash(sig_hash, user_a);
         let inner_sig = sign_hash(&signing_key, &effective_hash);
 
         let inner_primitive = match inner_sig {
@@ -1911,5 +2069,74 @@ mod tests {
             assert_eq!(sig, decoded);
             assert_eq!(decoded.is_legacy_keychain(), expect_legacy);
         }
+    }
+}
+
+#[cfg(all(test, feature = "reth-codec"))]
+mod compact_tests {
+    use super::*;
+    use alloy_primitives::{b256, bytes, hex};
+    use reth_codecs::Compact;
+
+    /// Ensures backwards compatibility of compact bitflags.
+    ///
+    /// See reth's `HeaderExt` pattern:
+    /// <https://github.com/paradigmxyz/reth-core/blob/0476d1bc4b71f3c3b080622be297edd91ee4e70c/crates/codecs/src/alloy/header.rs>
+    #[test]
+    fn compact_types_have_unused_bits() {
+        assert_ne!(
+            P256SignatureWithPreHash::bitflag_unused_bits(),
+            0,
+            "P256SignatureWithPreHash"
+        );
+    }
+
+    #[test]
+    fn p256_signature_compact_roundtrip() {
+        let sig = P256SignatureWithPreHash {
+            r: b256!("0x1111111111111111111111111111111111111111111111111111111111111111"),
+            s: b256!("0x2222222222222222222222222222222222222222222222222222222222222222"),
+            pub_key_x: b256!("0x3333333333333333333333333333333333333333333333333333333333333333"),
+            pub_key_y: b256!("0x4444444444444444444444444444444444444444444444444444444444444444"),
+            pre_hash: true,
+        };
+
+        let expected = hex!(
+            "011111111111111111111111111111111111111111111111111111111111111111222222222222222222222222222222222222222222222222222222222222222233333333333333333333333333333333333333333333333333333333333333334444444444444444444444444444444444444444444444444444444444444444"
+        );
+
+        let mut buf = vec![];
+        let len = sig.to_compact(&mut buf);
+        assert_eq!(
+            buf, expected,
+            "P256SignatureWithPreHash compact encoding changed"
+        );
+        assert_eq!(len, expected.len());
+
+        let (decoded, _) = P256SignatureWithPreHash::from_compact(&expected, expected.len());
+        assert_eq!(decoded, sig);
+    }
+
+    #[test]
+    fn webauthn_signature_compact_roundtrip() {
+        let sig = WebAuthnSignature {
+            r: b256!("0x1111111111111111111111111111111111111111111111111111111111111111"),
+            s: b256!("0x2222222222222222222222222222222222222222222222222222222222222222"),
+            pub_key_x: b256!("0x3333333333333333333333333333333333333333333333333333333333333333"),
+            pub_key_y: b256!("0x4444444444444444444444444444444444444444444444444444444444444444"),
+            webauthn_data: bytes!("aabbccdd"),
+        };
+
+        let expected = hex!(
+            "1111111111111111111111111111111111111111111111111111111111111111222222222222222222222222222222222222222222222222222222222222222233333333333333333333333333333333333333333333333333333333333333334444444444444444444444444444444444444444444444444444444444444444aabbccdd"
+        );
+
+        let mut buf = vec![];
+        let len = sig.to_compact(&mut buf);
+        assert_eq!(buf, expected, "WebAuthnSignature compact encoding changed");
+        assert_eq!(len, expected.len());
+
+        let (decoded, _) = WebAuthnSignature::from_compact(&expected, expected.len());
+        assert_eq!(decoded, sig);
     }
 }
