@@ -11185,7 +11185,6 @@ dependencies = [
 [[package]]
 name = "revmc"
 version = "0.1.0"
-source = "git+https://github.com/paradigmxyz/revmc?branch=dani%2Fruntime#78dbd6f44ec94679d4996d8a6ccc74117a4e3e42"
 dependencies = [
  "alloy-primitives",
  "bitflags 2.11.1",
@@ -11220,7 +11219,6 @@ dependencies = [
 [[package]]
 name = "revmc-backend"
 version = "0.1.0"
-source = "git+https://github.com/paradigmxyz/revmc?branch=dani%2Fruntime#78dbd6f44ec94679d4996d8a6ccc74117a4e3e42"
 dependencies = [
  "eyre",
  "ruint",
@@ -11229,12 +11227,10 @@ dependencies = [
 [[package]]
 name = "revmc-build"
 version = "0.1.0"
-source = "git+https://github.com/paradigmxyz/revmc?branch=dani%2Fruntime#78dbd6f44ec94679d4996d8a6ccc74117a4e3e42"
 
 [[package]]
 name = "revmc-builtins"
 version = "0.1.0"
-source = "git+https://github.com/paradigmxyz/revmc?branch=dani%2Fruntime#78dbd6f44ec94679d4996d8a6ccc74117a4e3e42"
 dependencies = [
  "paste",
  "revm-bytecode",
@@ -11249,7 +11245,6 @@ dependencies = [
 [[package]]
 name = "revmc-context"
 version = "0.1.0"
-source = "git+https://github.com/paradigmxyz/revmc?branch=dani%2Fruntime#78dbd6f44ec94679d4996d8a6ccc74117a4e3e42"
 dependencies = [
  "revm-interpreter",
  "revm-primitives",
@@ -11259,7 +11254,6 @@ dependencies = [
 [[package]]
 name = "revmc-llvm"
 version = "0.1.0"
-source = "git+https://github.com/paradigmxyz/revmc?branch=dani%2Fruntime#78dbd6f44ec94679d4996d8a6ccc74117a4e3e42"
 dependencies = [
  "alloy-primitives",
  "cc",

@@ -388,6 +388,7 @@ impl TempoExecutorBuilder {
         Node: FullNodeTypes<Types = TempoNode>,
     {
         use std::sync::Arc;
+        use tempo_chainspec::hardfork::TempoHardforks;
         use tempo_evm::jit::{JitBackend, RevmcMetrics, RuntimeConfig, RuntimeTuning};
 
         let jit = &self.jit;
@@ -403,12 +404,17 @@ impl TempoExecutorBuilder {
             ..default_tuning
         };
 
+        // Pass Tempo's custom gas params to the compiler for compile-time gas folding.
+        let latest_hardfork = ctx.chain_spec().tempo_hardfork_at(u64::MAX);
+        let gas_params = tempo_evm::tempo_gas_params(latest_hardfork);
+
         let default_config = RuntimeConfig::default();
         let mut config = RuntimeConfig {
             enabled: jit.enabled,
             tuning,
             debug_assertions: jit.debug,
             blocking: jit.blocking,
+            gas_params: Some(gas_params),
             ..default_config
         };
 

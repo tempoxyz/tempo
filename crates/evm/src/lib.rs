@@ -41,9 +41,11 @@ use tempo_primitives::{
 use crate::{block::TempoBlockExecutor, evm::TempoEvm};
 use reth_evm_ethereum::EthEvmConfig;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_revm::{evm::TempoContext, gas_params::tempo_gas_params};
+use tempo_revm::evm::TempoContext;
 
-pub use tempo_revm::{TempoBlockEnv, TempoHaltReason, TempoStateAccess};
+pub use tempo_revm::{
+    TempoBlockEnv, TempoHaltReason, TempoStateAccess, gas_params::tempo_gas_params,
+};
 
 #[cfg(test)]
 mod test_utils;
