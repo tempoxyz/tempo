@@ -332,18 +332,20 @@ impl PendingStalenessTracker {
     ///
     /// Call `should_check` first to avoid collecting the pending set on every block.
     fn check_and_update(&mut self, current_pending: HashSet<TxHash>, now: u64) -> Vec<TxHash> {
-        // Find transactions present in both snapshots (stale)
-        let stale: Vec<TxHash> = self
-            .previous_pending
-            .intersection(&current_pending)
-            .copied()
-            .collect();
+        let previous_pending = std::mem::take(&mut self.previous_pending);
+        let mut next_pending: HashSet<TxHash> =
+            HashSet::with_capacity_and_hasher(current_pending.len(), Default::default());
+        let mut stale = Vec::new();
 
-        // Update snapshot: store current pending (excluding stale ones we're about to evict)
-        self.previous_pending = current_pending
-            .difference(&self.previous_pending)
-            .copied()
-            .collect();
+        for hash in current_pending {
+            if previous_pending.contains(&hash) {
+                stale.push(hash);
+            } else {
+                next_pending.insert(hash);
+            }
+        }
+
+        self.previous_pending = next_pending;
         self.last_snapshot_time = Some(now);
 
         stale
