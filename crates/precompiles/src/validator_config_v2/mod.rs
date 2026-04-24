@@ -872,7 +872,7 @@ impl ValidatorConfigV2 {
             config.owner = v1.owner()?;
             let v1_count = v1.validator_count()?;
             if v1_count == 0 {
-                Err(ValidatorConfigV2Error::empty_v1_validator_set())?
+                Err(ValidatorConfigV2Error::empty_v_1_validator_set())?
             }
             config.v1_validator_count = v1_count as u8;
             self.config.write(Config {

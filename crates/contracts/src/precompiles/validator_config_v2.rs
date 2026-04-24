@@ -167,9 +167,3 @@ crate::sol! {
         error ValidatorNotFound();
     }
 }
-
-impl ValidatorConfigV2Error {
-    pub fn empty_v1_validator_set() -> Self {
-        Self::empty_v_1_validator_set()
-    }
-}
