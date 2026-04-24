@@ -391,7 +391,7 @@ impl WalletArgs {
 
             Ok(EthereumWallet::new(signer))
         } else {
-            bail!("a wallet option must be set")
+            bail!("a signing wallet option must be set")
         }
     }
 }
