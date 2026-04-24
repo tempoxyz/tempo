@@ -24,12 +24,14 @@ use commonware_consensus::{
     types::{Epoch, Epocher as _, FixedEpocher, Height, Round, View},
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
+use commonware_macros::select;
 use commonware_parallel::Sequential;
 use commonware_runtime::{
     BufferPooler, Clock, Metrics, Pacer, Spawner, Storage, buffer::paged::CacheRef,
 };
 use commonware_utils::{NZUsize, channel::mpsc};
-use eyre::{OptionExt as _, WrapErr as _, eyre};
+use eyre::{OptionExt as _, WrapErr as _, bail, eyre};
+use futures::future::join_all;
 use rand_08::{CryptoRng, Rng};
 use reth_node_core::primitives::SealedBlock;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -241,13 +243,15 @@ where
         + 'static,
 {
     pub async fn start(mut self) -> eyre::Result<()> {
-        let _executor_handle = self.executor_actor.start();
-        let _feed_handle = self.feed_actor.start();
-        let _marshal_handle = self.marshal_actor.start(
-            self.executor_mailbox.clone(),
-            self.broadcast,
-            (self.resolver_rx, self.resolver),
-        );
+        let mut actors = join_all([
+            self.executor_actor.start(),
+            self.feed_actor.start(),
+            self.marshal_actor.start(
+                self.executor_mailbox.clone(),
+                self.broadcast,
+                (self.resolver_rx, self.resolver),
+            ),
+        ]);
 
         let bootstrap = self.last_finalized_height == Height::zero();
         let boundary_block = if bootstrap {
@@ -387,6 +391,9 @@ where
             self.last_finalized_height,
         );
 
-        driver.run().await
+        select! {
+            result = driver.run() => result,
+            _ = &mut actors => bail!("actors exited unexpectedly"),
+        }
     }
 }
