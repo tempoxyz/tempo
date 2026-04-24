@@ -330,10 +330,6 @@ pub(crate) struct WalletArgs {
     /// GCP_KEY_VERSION env vars
     #[arg(long, help_heading = "Wallet options - remote")]
     gcp: bool,
-
-    /// Output the unsigned transaction and exit without signing or sending.
-    #[arg(long, help_heading = "Wallet options")]
-    unsigned: bool,
 }
 
 impl WalletArgs {
@@ -391,7 +387,7 @@ impl WalletArgs {
 
             Ok(EthereumWallet::new(signer))
         } else {
-            bail!("a signing wallet option must be set")
+            bail!("a wallet option must be set")
         }
     }
 }
@@ -409,6 +405,10 @@ pub(crate) struct ValidatorTransactionArgs {
     /// Skip the interactive confirmation prompt.
     #[arg(long, short = 'y')]
     yes: bool,
+
+    /// Skip signing and submitting the transaction. Only printing out the details
+    #[arg(long)]
+    dry_run: bool,
 }
 
 impl ValidatorTransactionArgs {
@@ -417,7 +417,7 @@ impl ValidatorTransactionArgs {
             .to(VALIDATOR_CONFIG_V2_ADDRESS)
             .input(call.abi_encode().into());
 
-        if self.wallet.unsigned {
+        if self.dry_run {
             println!("{}", &serde_json::json!(tx));
             return Ok(());
         }
