@@ -2243,7 +2243,7 @@ def wait-for-rpc [url: string, max_attempts: int = 120] {
 # ============================================================================
 
 const COV_DIR = "coverage"
-const INVARIANT_DIR = "tips/ref-impls"
+const INVARIANT_DIR = "tips/verify"
 
 # Find a local tempo-foundry checkout for coverage runs.
 def find-tempo-foundry [] {

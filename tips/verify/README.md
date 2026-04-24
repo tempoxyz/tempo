@@ -1,6 +1,6 @@
 # Tempo Specs
 
-This directory contains Solidity spec tests and fuzz harnesses for Tempo's native precompile contracts.
+This directory contains Solidity spec verification tests and fuzz harnesses for Tempo's native precompile contracts.
 
 `TempoTest.t.sol` assumes the Tempo precompiles already exist in the EVM and fails fast if they are missing.
 
@@ -18,7 +18,7 @@ Tests require a Tempo-capable `forge` binary.
 Run the full suite:
 
 ```bash
-cd tips/ref-impls
+cd tips/verify
 forge test
 ```
 
@@ -37,7 +37,7 @@ forge test --match-test test_mint
 Use the lighter CI profile when you want to match CI settings locally:
 
 ```bash
-cd tips/ref-impls
+cd tips/verify
 FOUNDRY_PROFILE=fuzz500 forge test -vvv
 ```
 
