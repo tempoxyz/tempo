@@ -334,6 +334,10 @@ impl PendingStalenessTracker {
     /// Call `should_check` first to avoid collecting the pending set on every block.
     fn check_and_update(&mut self, current_pending: HashSet<TxHash>, now: u64) -> Vec<TxHash> {
         let previous_pending = std::mem::take(&mut self.previous_pending);
+
+        // Split the current snapshot into stale transactions to evict and fresh
+        // transactions to track. A transaction is stale if it appears in both
+        // the previous and current pending snapshots.
         let (stale, next_pending): (Vec<TxHash>, HashSet<TxHash>) =
             current_pending.into_iter().partition_map(|hash| {
                 if previous_pending.contains(&hash) {
