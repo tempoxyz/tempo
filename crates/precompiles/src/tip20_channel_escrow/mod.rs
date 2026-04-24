@@ -178,7 +178,7 @@ impl TIP20ChannelEscrow {
         TIP20Token::from_address(call.descriptor.token)?.system_transfer_from(
             self.address,
             call.descriptor.payee,
-            U256::from(delta.as_u128()),
+            U256::from(u128::from(delta)),
         )?;
         self.emit_event(TIP20ChannelEscrowEvent::Settled(
             ITIP20ChannelEscrow::Settled {
@@ -353,14 +353,14 @@ impl TIP20ChannelEscrow {
             token.system_transfer_from(
                 self.address,
                 call.descriptor.payee,
-                U256::from(delta.as_u128()),
+                U256::from(u128::from(delta)),
             )?;
         }
         if !refund.is_zero() {
             token.system_transfer_from(
                 self.address,
                 call.descriptor.payer,
-                U256::from(refund.as_u128()),
+                U256::from(u128::from(refund)),
             )?;
         }
 
@@ -412,7 +412,7 @@ impl TIP20ChannelEscrow {
             TIP20Token::from_address(call.descriptor.token)?.system_transfer_from(
                 self.address,
                 call.descriptor.payer,
-                U256::from(refund.as_u128()),
+                U256::from(u128::from(refund)),
             )?;
         }
         self.emit_event(TIP20ChannelEscrowEvent::ChannelExpired(
@@ -847,6 +847,54 @@ mod tests {
                     signature: Bytes::copy_from_slice(
                         &Signature::test_signature().as_bytes()[..64],
                     ),
+                },
+            );
+            assert_eq!(
+                result.unwrap_err(),
+                TIP20ChannelEscrowError::invalid_signature().into()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_settle_rejects_keychain_signature_wrapper() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let payer = Address::random();
+        let payee = Address::random();
+        let salt = B256::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let token = TIP20Setup::path_usd(payer)
+                .with_issuer(payer)
+                .with_mint(payer, U256::from(100u128))
+                .apply()?;
+            let mut escrow = TIP20ChannelEscrow::new();
+            escrow.initialize()?;
+            let now = StorageCtx::default().timestamp().to::<u32>();
+            escrow.open(
+                payer,
+                ITIP20ChannelEscrow::openCall {
+                    payee,
+                    token: token.address(),
+                    deposit: abi_u96(100),
+                    salt,
+                    authorizedSigner: Address::ZERO,
+                    expiresAt: now + 1_000,
+                },
+            )?;
+
+            let mut keychain_signature = Vec::with_capacity(1 + 20 + 65);
+            keychain_signature.push(0x03);
+            keychain_signature.extend_from_slice(Address::random().as_slice());
+            keychain_signature.extend_from_slice(Signature::test_signature().as_bytes().as_slice());
+
+            let result = escrow.settle(
+                payee,
+                ITIP20ChannelEscrow::settleCall {
+                    descriptor: descriptor(payer, payee, token.address(), salt, Address::ZERO),
+                    cumulativeAmount: abi_u96(10),
+                    signature: keychain_signature.into(),
                 },
             );
             assert_eq!(
