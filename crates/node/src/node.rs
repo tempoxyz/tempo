@@ -52,7 +52,7 @@ use tempo_transaction_pool::{
 };
 
 /// Tempo node CLI arguments.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::Args)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, clap::Args)]
 pub struct TempoNodeArgs {
     /// Maximum allowed `valid_after` offset for AA txs.
     #[arg(long = "txpool.aa-valid-after-max-secs", default_value_t = DEFAULT_AA_VALID_AFTER_MAX_SECS)]
@@ -69,6 +69,11 @@ pub struct TempoNodeArgs {
     /// Disable state cache for the payload builder.
     #[arg(long = "builder.disable-state-cache", default_value_t = false)]
     pub builder_disable_state_cache: bool,
+
+    /// JIT compilation arguments.
+    #[cfg(feature = "jit")]
+    #[command(flatten)]
+    pub jit: crate::jit::JitArgs,
 }
 
 impl TempoNodeArgs {
@@ -97,6 +102,8 @@ pub struct TempoNode {
     pool_builder: TempoPoolBuilder,
     /// Payload builder builder.
     payload_builder_builder: TempoPayloadBuilderBuilder,
+    /// Executor builder.
+    executor_builder: TempoExecutorBuilder,
     /// Validator public key for `admin_validatorKey` RPC method.
     validator_key: Option<B256>,
 }
@@ -107,6 +114,15 @@ impl TempoNode {
         Self {
             pool_builder: args.pool_builder(),
             payload_builder_builder: args.payload_builder_builder(),
+            executor_builder: {
+                #[allow(unused_mut)]
+                let mut builder = TempoExecutorBuilder::default();
+                #[cfg(feature = "jit")]
+                {
+                    builder.jit = args.jit.clone();
+                }
+                builder
+            },
             validator_key,
         }
     }
@@ -115,6 +131,7 @@ impl TempoNode {
     pub fn components<Node>(
         pool_builder: TempoPoolBuilder,
         payload_builder_builder: TempoPayloadBuilderBuilder,
+        executor_builder: TempoExecutorBuilder,
     ) -> ComponentsBuilder<
         Node,
         TempoPoolBuilder,
@@ -129,7 +146,7 @@ impl TempoNode {
         ComponentsBuilder::default()
             .node_types::<Node>()
             .pool(pool_builder)
-            .executor(TempoExecutorBuilder::default())
+            .executor(executor_builder)
             .payload(BasicPayloadServiceBuilder::new(payload_builder_builder))
             .network(EthereumNetworkBuilder::default())
             .consensus(TempoConsensusBuilder::default())
@@ -271,7 +288,11 @@ where
     type AddOns = TempoAddOns<N>;
 
     fn components_builder(&self) -> Self::ComponentsBuilder {
-        Self::components(self.pool_builder, self.payload_builder_builder)
+        Self::components(
+            self.pool_builder,
+            self.payload_builder_builder,
+            self.executor_builder.clone(),
+        )
     }
 
     fn add_ons(&self) -> Self::AddOns {
@@ -332,9 +353,13 @@ impl PayloadAttributesBuilder<TempoPayloadAttributes, TempoHeader>
 }
 
 /// A regular ethereum evm and executor builder.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 #[non_exhaustive]
-pub struct TempoExecutorBuilder;
+pub struct TempoExecutorBuilder {
+    /// JIT compilation arguments.
+    #[cfg(feature = "jit")]
+    pub jit: crate::jit::JitArgs,
+}
 
 impl<Node> ExecutorBuilder<Node> for TempoExecutorBuilder
 where
@@ -343,7 +368,84 @@ where
     type EVM = TempoEvmConfig;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
-        let evm_config = TempoEvmConfig::new(ctx.chain_spec());
+        #[cfg(feature = "jit")]
+        #[allow(clippy::needless_return)]
+        {
+            return self.build_evm_with_jit(ctx);
+        }
+
+        #[cfg(not(feature = "jit"))]
+        {
+            Ok(TempoEvmConfig::new(ctx.chain_spec()))
+        }
+    }
+}
+
+#[cfg(feature = "jit")]
+impl TempoExecutorBuilder {
+    fn build_evm_with_jit<Node>(&self, ctx: &BuilderContext<Node>) -> eyre::Result<TempoEvmConfig>
+    where
+        Node: FullNodeTypes<Types = TempoNode>,
+    {
+        use std::sync::Arc;
+        use tempo_evm::jit::{JitBackend, RevmcMetrics, RuntimeConfig, RuntimeTuning};
+
+        let jit = &self.jit;
+        let default_tuning = RuntimeTuning::default();
+        let tuning = RuntimeTuning {
+            jit_hot_threshold: jit.hot_threshold,
+            jit_worker_count: jit.worker_count.unwrap_or(default_tuning.jit_worker_count),
+            lookup_event_channel_capacity: jit.channel_capacity,
+            max_pending_jit_jobs: jit.max_pending_jobs,
+            jit_max_bytecode_len: jit.max_bytecode_len,
+            resident_code_cache_bytes: jit.code_cache_bytes,
+            idle_evict_duration: Some(jit.idle_evict_duration),
+            ..default_tuning
+        };
+
+        let default_config = RuntimeConfig::default();
+        let mut config = RuntimeConfig {
+            enabled: jit.enabled,
+            tuning,
+            debug_assertions: jit.debug,
+            blocking: jit.blocking,
+            ..default_config
+        };
+
+        let revmc_metrics = Arc::new(RevmcMetrics::default());
+        let compilation_metrics = revmc_metrics.clone();
+        config.on_compilation = Some(Arc::new(move |event| {
+            compilation_metrics.record_compilation(&event);
+        }));
+
+        let backend = JitBackend::new(config)?;
+
+        if jit.enabled || jit.blocking {
+            info!(target: "tempo::cli",
+                hot_threshold = tuning.jit_hot_threshold,
+                workers = tuning.jit_worker_count,
+                blocking = jit.blocking,
+                "Started revmc JIT backend",
+            );
+        }
+
+        let factory = tempo_evm::evm::TempoEvmFactory::new(backend.clone());
+        let evm_config = TempoEvmConfig::new_with_evm_factory(ctx.chain_spec(), factory);
+
+        // Periodically record JIT metrics.
+        ctx.task_executor()
+            .spawn_with_graceful_shutdown_signal(|shutdown| async move {
+                let mut shutdown = std::pin::pin!(shutdown);
+                loop {
+                    tokio::select! {
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+                            revmc_metrics.record(&backend.stats());
+                        }
+                        _ = &mut shutdown => break,
+                    }
+                }
+            });
+
         Ok(evm_config)
     }
 }

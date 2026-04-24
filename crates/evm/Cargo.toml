@@ -37,6 +37,8 @@ alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 
 derive_more.workspace = true
+metrics = { workspace = true, optional = true }
+reth-metrics = { workspace = true, optional = true }
 thiserror.workspace = true
 tracing.workspace = true
 
@@ -49,3 +51,4 @@ tempo-primitives = { workspace = true, features = ["arbitrary"] }
 default = ["rpc", "engine"]
 rpc = ["dep:reth-rpc-eth-api", "tempo-revm/rpc", "tempo-primitives/serde", "tempo-primitives/reth-codec"]
 engine = ["dep:tempo-payload-types", "dep:rayon"]
+jit = ["tempo-revm/jit", "dep:metrics", "dep:reth-metrics"]

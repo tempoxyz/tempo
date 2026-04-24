@@ -21,9 +21,28 @@ use tempo_revm::{
 
 use crate::TempoBlockEnv;
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 #[non_exhaustive]
-pub struct TempoEvmFactory;
+pub struct TempoEvmFactory {
+    /// Optional JIT backend for compiled bytecode dispatch.
+    #[cfg(feature = "jit")]
+    jit_backend: Option<tempo_revm::JitBackend>,
+}
+
+#[cfg(feature = "jit")]
+impl TempoEvmFactory {
+    /// Creates a new factory with the given JIT backend.
+    pub fn new(backend: tempo_revm::JitBackend) -> Self {
+        Self {
+            jit_backend: Some(backend),
+        }
+    }
+
+    /// Returns a reference to the JIT backend, if set.
+    pub fn jit_backend(&self) -> Option<&tempo_revm::JitBackend> {
+        self.jit_backend.as_ref()
+    }
+}
 
 impl EvmFactory for TempoEvmFactory {
     type Evm<DB: Database, I: Inspector<Self::Context<DB>>> = TempoEvm<DB, I>;
@@ -41,7 +60,13 @@ impl EvmFactory for TempoEvmFactory {
         db: DB,
         input: EvmEnv<Self::Spec, Self::BlockEnv>,
     ) -> Self::Evm<DB, NoOpInspector> {
-        TempoEvm::new(db, input)
+        #[allow(unused_mut)]
+        let mut evm = TempoEvm::new(db, input);
+        #[cfg(feature = "jit")]
+        if let Some(backend) = &self.jit_backend {
+            evm.inner.set_jit_backend(backend.clone());
+        }
+        evm
     }
 
     fn create_evm_with_inspector<DB: Database, I: Inspector<Self::Context<DB>>>(
@@ -50,7 +75,13 @@ impl EvmFactory for TempoEvmFactory {
         input: EvmEnv<Self::Spec, Self::BlockEnv>,
         inspector: I,
     ) -> Self::Evm<DB, I> {
-        TempoEvm::new(db, input).with_inspector(inspector)
+        #[allow(unused_mut)]
+        let mut evm = TempoEvm::new(db, input);
+        #[cfg(feature = "jit")]
+        if let Some(backend) = &self.jit_backend {
+            evm.inner.set_jit_backend(backend.clone());
+        }
+        evm.with_inspector(inspector)
     }
 }
 

@@ -12,6 +12,15 @@ use revm::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 
+#[cfg(feature = "jit")]
+pub use revmc::runtime::{
+    CompilationEvent, JitBackend, LookupDecision, LookupRequest, RuntimeConfig,
+    RuntimeStatsSnapshot, RuntimeTuning,
+};
+
+#[cfg(feature = "jit")]
+type B256Map<V> = alloy_primitives::map::HashMap<alloy_primitives::B256, V>;
+
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;
 
@@ -46,6 +55,15 @@ pub struct TempoEvm<DB: Database, I> {
     /// The transaction pool sets this because it performs its own liquidity
     /// validation against a cached view of the AMM state.
     pub skip_liquidity_check: bool,
+    /// Optional JIT backend for compiled bytecode dispatch.
+    #[cfg(feature = "jit")]
+    jit_backend: Option<JitBackend>,
+    /// Per-tx lookup cache to avoid redundant backend lookups.
+    #[cfg(feature = "jit")]
+    jit_lookup_cache: B256Map<LookupDecision>,
+    /// The SpecId the cache was built for; cleared on mismatch.
+    #[cfg(feature = "jit")]
+    jit_lookup_cache_spec_id: revm::primitives::hardfork::SpecId,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -81,6 +99,12 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             key_expiry: None,
             skip_valid_after_check: false,
             skip_liquidity_check: false,
+            #[cfg(feature = "jit")]
+            jit_backend: None,
+            #[cfg(feature = "jit")]
+            jit_lookup_cache: B256Map::default(),
+            #[cfg(feature = "jit")]
+            jit_lookup_cache_spec_id: revm::primitives::hardfork::SpecId::default(),
         }
     }
 
@@ -107,12 +131,24 @@ impl<DB: Database, I> TempoEvm<DB, I> {
 impl<DB: Database, I> TempoEvm<DB, I> {
     /// Consumed self and returns a new Evm type with given Inspector.
     pub fn with_inspector<OINSP>(self, inspector: OINSP) -> TempoEvm<DB, OINSP> {
-        TempoEvm::new_inner(self.inner.with_inspector(inspector))
+        #[allow(unused_mut)]
+        let mut evm = TempoEvm::new_inner(self.inner.with_inspector(inspector));
+        #[cfg(feature = "jit")]
+        {
+            evm.jit_backend = self.jit_backend;
+        }
+        evm
     }
 
     /// Consumes self and returns a new Evm type with given Precompiles.
     pub fn with_precompiles(self, precompiles: PrecompilesMap) -> Self {
-        Self::new_inner(self.inner.with_precompiles(precompiles))
+        #[allow(unused_mut)]
+        let mut evm = Self::new_inner(self.inner.with_precompiles(precompiles));
+        #[cfg(feature = "jit")]
+        {
+            evm.jit_backend = self.jit_backend;
+        }
+        evm
     }
 
     /// Consumes self and returns the inner Inspector.
@@ -124,6 +160,18 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     pub fn clear(&mut self) {
         self.fee_token = None;
         self.key_expiry = None;
+    }
+
+    /// Sets the JIT backend for compiled bytecode dispatch.
+    #[cfg(feature = "jit")]
+    pub fn set_jit_backend(&mut self, backend: JitBackend) {
+        self.jit_backend = Some(backend);
+    }
+
+    /// Returns a reference to the JIT backend, if set.
+    #[cfg(feature = "jit")]
+    pub fn jit_backend(&self) -> Option<&JitBackend> {
+        self.jit_backend.as_ref()
     }
 }
 
@@ -173,6 +221,50 @@ where
     }
 
     fn frame_run(&mut self) -> Result<FrameInitOrResult<Self::Frame>, ContextError<DB::Error>> {
+        #[cfg(feature = "jit")]
+        if let Some(backend) = self.jit_backend.clone() {
+            use revm::primitives::hardfork::SpecId;
+
+            let spec_id: SpecId = self.inner.ctx.cfg.spec.into();
+
+            // Invalidate cache on spec change.
+            if spec_id != self.jit_lookup_cache_spec_id {
+                self.jit_lookup_cache.clear();
+                self.jit_lookup_cache_spec_id = spec_id;
+            }
+
+            let frame = self.inner.frame_stack.get();
+            let code_hash = frame.interpreter.bytecode.get_or_calculate_hash();
+
+            let decision = if let Some(cached) = self.jit_lookup_cache.get(&code_hash) {
+                cached.clone()
+            } else {
+                let code = frame.interpreter.bytecode.original_bytes();
+                let decision = backend.lookup(LookupRequest {
+                    code_hash,
+                    code,
+                    spec_id,
+                });
+                self.jit_lookup_cache.insert(code_hash, decision.clone());
+                decision
+            };
+
+            if let LookupDecision::Compiled(program) = decision {
+                let f = program.func;
+                let (ctx, _, _, frame_stack) = self.inner.all_mut();
+                let frame = frame_stack.get();
+                // SAFETY: The compiled function has the same ABI as the interpreter.
+                let action = unsafe { f.call_with_interpreter(&mut frame.interpreter, ctx) };
+                return frame
+                    .process_next_action::<_, ContextError<DB::Error>>(ctx, action)
+                    .inspect(|i| {
+                        if i.is_result() {
+                            frame.set_finished(true);
+                        }
+                    });
+            }
+        }
+
         self.inner.frame_run()
     }
 
