@@ -1,4 +1,4 @@
-//! Tempo consensus implementation.
+//! Static validation of tempo headers.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
