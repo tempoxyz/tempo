@@ -182,7 +182,7 @@ impl TempoTxEnvelope {
                     && is_payment_call_v1(Some(&tx.tx().to), &tx.tx().input, t5_active)
             }
             Self::AA(tx) => aa_is_payment(tx.tx(), |to, input| {
-                is_payment_call_v1(to, input, t5_active)
+                is_payment_call_v2(to, input, t5_active)
             }),
         }
     }
@@ -640,6 +640,14 @@ mod tests {
         Bytes::copy_from_slice(&Signature::test_signature().as_bytes())
     }
 
+    fn keychain_signature_bytes() -> Bytes {
+        let mut bytes = Vec::with_capacity(1 + 20 + 65);
+        bytes.push(0x03);
+        bytes.extend_from_slice(Address::random().as_slice());
+        bytes.extend_from_slice(Signature::test_signature().as_bytes().as_slice());
+        bytes.into()
+    }
+
     #[rustfmt::skip]
     fn channel_escrow_calldatas() -> [Bytes; 6] {
         let descriptor = channel_descriptor();
@@ -692,6 +700,28 @@ mod tests {
                 cumulativeAmount: abi_u96(10),
                 captureAmount: abi_u96(10),
                 signature: invalid_signature,
+            }
+            .abi_encode()
+            .into(),
+        ]
+    }
+
+    fn keychain_channel_signature_calldata() -> [Bytes; 2] {
+        let descriptor = channel_descriptor();
+        let keychain_signature = keychain_signature_bytes();
+        [
+            ITIP20ChannelEscrow::settleCall {
+                descriptor: descriptor.clone(),
+                cumulativeAmount: abi_u96(10),
+                signature: keychain_signature.clone(),
+            }
+            .abi_encode()
+            .into(),
+            ITIP20ChannelEscrow::closeCall {
+                descriptor,
+                cumulativeAmount: abi_u96(10),
+                captureAmount: abi_u96(10),
+                signature: keychain_signature,
             }
             .abi_encode()
             .into(),
@@ -769,10 +799,29 @@ mod tests {
         let call = Call {
             to: TxKind::Call(payment_addr),
             value: U256::ZERO,
-            input: Bytes::new(),
+            input: ITIP20::transferCall {
+                to: Address::random(),
+                amount: U256::from(1u64),
+            }
+            .abi_encode()
+            .into(),
         };
         let envelope = create_aa_envelope(call);
         assert!(envelope.is_payment_v1(PRE_T5));
+        assert!(envelope.is_payment_v2(PRE_T5));
+    }
+
+    #[test]
+    fn test_payment_classification_aa_requires_strict_tip20_calldata() {
+        let payment_addr = address!("20c0000000000000000000000000000000000001");
+        let call = Call {
+            to: TxKind::Call(payment_addr),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+        let envelope = create_aa_envelope(call);
+        assert!(!envelope.is_payment_v1(PRE_T5));
+        assert!(!envelope.is_payment_v2(PRE_T5));
     }
 
     #[test]
@@ -824,6 +873,24 @@ mod tests {
     }
 
     #[test]
+    fn test_channel_escrow_accepts_keychain_signature_encoding_for_classification() {
+        for calldata in keychain_channel_signature_calldata() {
+            let tx = TxLegacy {
+                to: TxKind::Call(CHANNEL_ESCROW),
+                gas_limit: 21_000,
+                input: calldata,
+                ..Default::default()
+            };
+            let envelope =
+                TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()));
+            assert!(!envelope.is_payment_v1(PRE_T5));
+            assert!(!envelope.is_payment_v2(PRE_T5));
+            assert!(envelope.is_payment_v1(T5_ACTIVE));
+            assert!(envelope.is_payment_v2(T5_ACTIVE));
+        }
+    }
+
+    #[test]
     fn test_payment_classification_aa_no_to_address() {
         let call = Call {
             to: TxKind::Create,
@@ -836,7 +903,8 @@ mod tests {
 
     #[test]
     fn test_payment_classification_aa_partial_match() {
-        // First 12 bytes match TIP20_PAYMENT_PREFIX, remaining 8 bytes differ
+        // AA classification still treats TIP-20 vanity addresses as payment targets, but only when
+        // the calldata is a recognized TIP-20 payment ABI.
         let payment_addr = address!("20c0000000000000000000001111111111111111");
         let call = Call {
             to: TxKind::Call(payment_addr),
@@ -844,7 +912,8 @@ mod tests {
             input: Bytes::new(),
         };
         let envelope = create_aa_envelope(call);
-        assert!(envelope.is_payment_v1(PRE_T5));
+        assert!(!envelope.is_payment_v1(PRE_T5));
+        assert!(!envelope.is_payment_v2(PRE_T5));
     }
 
     #[test]
