@@ -341,8 +341,8 @@ impl PendingStalenessTracker {
 
         // Update snapshot: store current pending (excluding stale ones we're about to evict)
         self.previous_pending = current_pending
-            .into_iter()
-            .filter(|hash| !stale.contains(hash))
+            .difference(&self.previous_pending)
+            .copied()
             .collect();
         self.last_snapshot_time = Some(now);
 
