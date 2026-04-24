@@ -37,7 +37,7 @@ use reth_tracing::tracing::{debug, info};
 use reth_transaction_pool::{TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore};
 use std::default::Default;
 use tempo_chainspec::spec::TempoChainSpec;
-use tempo_consensus::TempoConsensus;
+use tempo_header_validation::TempoConsensus;
 use tempo_evm::TempoEvmConfig;
 use tempo_payload_builder::TempoPayloadBuilder;
 use tempo_payload_types::TempoPayloadAttributes;

@@ -12357,13 +12357,13 @@ dependencies = [
  "tempo-chainspec",
  "tempo-commonware-node",
  "tempo-commonware-node-config",
- "tempo-consensus",
  "tempo-contracts",
  "tempo-dkg-onchain-artifacts",
  "tempo-evm",
  "tempo-ext",
  "tempo-eyre",
  "tempo-faucet",
+ "tempo-header-validation",
  "tempo-node",
  "tempo-precompiles",
  "tempo-primitives",
@@ -12526,25 +12526,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tempo-consensus"
-version = "1.6.0"
-dependencies = [
- "alloy-consensus",
- "alloy-evm",
- "alloy-genesis",
- "alloy-primitives",
- "reth-chainspec",
- "reth-consensus",
- "reth-consensus-common",
- "reth-ethereum-consensus",
- "reth-primitives-traits",
- "serde_json",
- "tempo-chainspec",
- "tempo-primitives",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "tempo-contracts"
 version = "1.6.0"
 dependencies = [
@@ -12636,8 +12617,8 @@ dependencies = [
  "reth-storage-api",
  "revm",
  "tempo-chainspec",
- "tempo-consensus",
  "tempo-contracts",
+ "tempo-header-validation",
  "tempo-payload-types",
  "tempo-primitives",
  "tempo-revm",
@@ -12683,6 +12664,25 @@ dependencies = [
  "reth-rpc-server-types",
  "tempo-alloy",
  "tempo-precompiles",
+]
+
+[[package]]
+name = "tempo-header-validation"
+version = "1.6.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-evm",
+ "alloy-genesis",
+ "alloy-primitives",
+ "reth-chainspec",
+ "reth-consensus",
+ "reth-consensus-common",
+ "reth-ethereum-consensus",
+ "reth-primitives-traits",
+ "serde_json",
+ "tempo-chainspec",
+ "tempo-primitives",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -12736,10 +12736,10 @@ dependencies = [
  "sha2 0.10.9",
  "tempo-alloy",
  "tempo-chainspec",
- "tempo-consensus",
  "tempo-contracts",
  "tempo-e2e",
  "tempo-evm",
+ "tempo-header-validation",
  "tempo-payload-builder",
  "tempo-payload-types",
  "tempo-precompiles",
@@ -12778,8 +12778,8 @@ dependencies = [
  "reth-transaction-pool",
  "reth-trie-common",
  "tempo-chainspec",
- "tempo-consensus",
  "tempo-evm",
+ "tempo-header-validation",
  "tempo-payload-types",
  "tempo-precompiles",
  "tempo-primitives",
