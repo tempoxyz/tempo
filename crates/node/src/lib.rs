@@ -16,8 +16,8 @@ pub mod engine;
 pub mod node;
 pub mod rpc;
 pub mod telemetry;
-pub use tempo_header_validation as consensus;
 pub use tempo_evm as evm;
+pub use tempo_header_validation as consensus;
 pub use tempo_primitives as primitives;
 
 mod version;
