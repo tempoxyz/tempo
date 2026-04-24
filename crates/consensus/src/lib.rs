@@ -209,6 +209,7 @@ impl Consensus<Block> for TempoConsensus {
     }
 
     fn is_transient_error(&self, error: &ConsensusError) -> bool {
+        // Future timestamps can happen briefly when clocks drift between nodes.
         Consensus::<Block>::is_transient_error(&self.inner, error)
             || matches!(error, ConsensusError::TimestampIsInFuture { .. })
     }
