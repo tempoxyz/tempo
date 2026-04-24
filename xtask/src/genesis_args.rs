@@ -179,7 +179,7 @@ pub(crate) struct GenesisArgs {
     t4_time: u64,
 
     /// T5 hardfork activation time.
-    #[arg(long, default_value = "9223372036854775807")]
+    #[arg(long, default_value = "0")]
     t5_time: u64,
 }
 
