@@ -56,7 +56,8 @@ impl reth_primitives_traits::header::HeaderMut for TempoHeader {
     }
 
     fn set_parent_beacon_block_root(&mut self, parent_beacon_block_root: Option<B256>) {
-        self.inner.set_parent_beacon_block_root(parent_beacon_block_root);
+        self.inner
+            .set_parent_beacon_block_root(parent_beacon_block_root);
     }
 }
 
