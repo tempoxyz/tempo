@@ -1,5 +1,5 @@
 use crate::{TempoConsensusContext, TempoHeader};
-use alloy_primitives::{B256, BlockNumber, U256};
+use alloy_primitives::{B256, BlockNumber, Bytes, U256};
 
 impl reth_primitives_traits::InMemorySize for TempoConsensusContext {
     fn size(&self) -> usize {
@@ -45,6 +45,18 @@ impl reth_primitives_traits::header::HeaderMut for TempoHeader {
 
     fn set_difficulty(&mut self, difficulty: U256) {
         self.inner.set_difficulty(difficulty);
+    }
+
+    fn set_mix_hash(&mut self, mix_hash: B256) {
+        self.inner.set_mix_hash(mix_hash);
+    }
+
+    fn set_extra_data(&mut self, extra_data: Bytes) {
+        self.inner.set_extra_data(extra_data);
+    }
+
+    fn set_parent_beacon_block_root(&mut self, parent_beacon_block_root: Option<B256>) {
+        self.inner.set_parent_beacon_block_root(parent_beacon_block_root);
     }
 }
 
