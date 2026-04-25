@@ -176,7 +176,7 @@ reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "7839f3d", feat
   "std",
   "optional-checks",
 ] }
-revm = { version = "38.0.0", features = ["optional_fee_charge", "p256-aws-lc-rs"], default-features = false }
+revm = { version = "38.0.0", features = ["optional_fee_charge"], default-features = false }
 
 alloy = { version = "2.0.1", default-features = false }
 alloy-consensus = { version = "2.0.1", default-features = false }
