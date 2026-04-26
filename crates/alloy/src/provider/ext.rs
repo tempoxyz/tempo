@@ -2,7 +2,7 @@ use alloy_contract::Result as ContractResult;
 use alloy_primitives::{Address, U256};
 use alloy_provider::{
     Identity, Provider, ProviderBuilder,
-    fillers::{JoinFill, RecommendedFillers},
+    fillers::{JoinFill, RecommendedFillers, WalletFiller},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
@@ -13,8 +13,9 @@ use tempo_contracts::precompiles::{
 use tempo_primitives::transaction::CallScope;
 
 use crate::{
-    TempoFillers, TempoNetwork,
-    fillers::{ExpiringNonceFiller, NonceKeyFiller, Random2DNonceFiller},
+    TempoFillers, TempoNetwork, TempoWallet,
+    account::AccessKeyAccount,
+    fillers::{AccessKeyFiller, ExpiringNonceFiller, NonceKeyFiller, Random2DNonceFiller},
 };
 
 /// Extension trait for [`Provider`] with Tempo-specific functionality.
@@ -124,8 +125,28 @@ pub trait TempoProviderExt: Provider<TempoNetwork> {
 #[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
 impl<P> TempoProviderExt for P where P: Provider<TempoNetwork> {}
 
+/// The filler stack used for access key providers.
+type AccessKeyFillers = JoinFill<
+    JoinFill<JoinFill<Identity, AccessKeyFiller>, TempoFillers<Random2DNonceFiller>>,
+    WalletFiller<TempoWallet>,
+>;
+
+#[allow(unnameable_types)]
+mod sealed {
+    pub trait Sealed {}
+
+    impl Sealed for alloy_provider::ProviderBuilder<
+        alloy_provider::Identity,
+        alloy_provider::fillers::JoinFill<
+            alloy_provider::Identity,
+            <crate::TempoNetwork as alloy_provider::fillers::RecommendedFillers>::RecommendedFillers,
+        >,
+        crate::TempoNetwork,
+    > {}
+}
+
 /// Extension trait for [`ProviderBuilder`] with Tempo-specific functionality.
-pub trait TempoProviderBuilderExt {
+pub trait TempoProviderBuilderExt: sealed::Sealed {
     /// Returns a provider builder with the recommended Tempo fillers and the random 2D nonce filler.
     ///
     /// See [`Random2DNonceFiller`] for more information on random 2D nonces.
@@ -159,6 +180,16 @@ pub trait TempoProviderBuilderExt {
     fn with_nonce_key_filler(
         self,
     ) -> ProviderBuilder<Identity, JoinFill<Identity, TempoFillers<NonceKeyFiller>>, TempoNetwork>;
+
+    /// Returns a provider builder configured for an [`AccessKeyAccount`].
+    ///
+    /// The returned builder has the [`AccessKeyFiller`], [`Random2DNonceFiller`],
+    /// gas filler, and chain ID filler pre-configured, along with a
+    /// [`TempoWallet`] that handles keychain signing.
+    fn with_access_key(
+        self,
+        account: AccessKeyAccount,
+    ) -> ProviderBuilder<Identity, AccessKeyFillers, TempoNetwork>;
 }
 
 impl TempoProviderBuilderExt
@@ -193,6 +224,18 @@ impl TempoProviderBuilderExt
     ) -> ProviderBuilder<Identity, JoinFill<Identity, TempoFillers<NonceKeyFiller>>, TempoNetwork>
     {
         ProviderBuilder::default().filler(TempoFillers::default())
+    }
+
+    fn with_access_key(
+        self,
+        account: AccessKeyAccount,
+    ) -> ProviderBuilder<Identity, AccessKeyFillers, TempoNetwork> {
+        let wallet = TempoWallet::with_access_key(account.clone());
+
+        ProviderBuilder::<_, _, TempoNetwork>::default()
+            .filler(AccessKeyFiller::new(account))
+            .filler(TempoFillers::<Random2DNonceFiller>::default())
+            .wallet(wallet)
     }
 }
 
