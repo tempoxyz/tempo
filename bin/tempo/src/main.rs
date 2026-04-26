@@ -116,12 +116,15 @@ struct TempoArgs {
     /// `{ "<chain_id>": ["enode://...", ...] }`
     ///
     /// Bootnodes for the current chain are added as peer hints to the discovery service.
+    ///
+    /// Set to "none" to disable.
     #[arg(
         long = "tempo.bootnodes-endpoint",
         value_name = "URL",
+        default_value = "https://peers.tempo.xyz",
         env = "TEMPO_BOOTNODES_ENDPOINT"
     )]
-    pub bootnodes_endpoint: Option<String>,
+    pub bootnodes_endpoint: String,
 
     #[command(flatten)]
     pub telemetry: defaults::TelemetryArgs,
@@ -545,6 +548,14 @@ fn main() -> eyre::Result<()> {
         };
         let chain_id = builder.config().chain.chain().id();
 
+        // Resolve the bootnodes endpoint:
+        // --tempo.bootnodes-endpoint=none -> disabled
+        // otherwise -> use the provided/default URL
+        let bootnodes_endpoint = match args.bootnodes_endpoint.trim() {
+            value if value.eq_ignore_ascii_case("none") => None,
+            url => Some(url.to_string()),
+        };
+
         let NodeHandle {
             node,
             node_exit_future,
@@ -600,7 +611,7 @@ fn main() -> eyre::Result<()> {
 
         // Fetch bootnodes from the endpoint in a background task and inject
         // them into the already-running discovery services.
-        if let Some(endpoint) = args.bootnodes_endpoint.clone() {
+        if let Some(endpoint) = bootnodes_endpoint {
             let network = node.network.clone();
             node.tasks().spawn_task(async move {
                 match fetch_bootnodes(&endpoint, chain_id).await {

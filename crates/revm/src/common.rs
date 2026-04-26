@@ -348,6 +348,10 @@ where
         self.spec
     }
 
+    fn gas_limit(&self) -> u64 {
+        0
+    }
+
     fn is_static(&self) -> bool {
         // read-only operations should always be static
         true
@@ -399,6 +403,10 @@ where
 
     fn gas_used(&self) -> u64 {
         unreachable!("'gas_used' not implemented in read-only context yet")
+    }
+
+    fn state_gas_used(&self) -> u64 {
+        unreachable!("'state_gas_used' not implemented in read-only context yet")
     }
 
     fn gas_refunded(&self) -> i64 {

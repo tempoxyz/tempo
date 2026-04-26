@@ -159,7 +159,7 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) -> Handle<()> {
-        spawn_cell!(self.context, self.run(dkg_channel).await)
+        spawn_cell!(self.context, self.run(dkg_channel))
     }
 
     async fn run(

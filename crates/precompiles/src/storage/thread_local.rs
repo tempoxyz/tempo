@@ -172,9 +172,19 @@ impl StorageCtx {
         Self::with_storage(|s| s.refund_gas(gas))
     }
 
+    /// Returns the gas limit for this precompile call.
+    pub fn gas_limit(&self) -> u64 {
+        Self::with_storage(|s| s.gas_limit())
+    }
+
     /// Returns the gas used so far.
     pub fn gas_used(&self) -> u64 {
         Self::with_storage(|s| s.gas_used())
+    }
+
+    /// Returns the state-creating gas used so far (cold SSTORE zero->non-zero, code deposit).
+    pub fn state_gas_used(&self) -> u64 {
+        Self::with_storage(|s| s.state_gas_used())
     }
 
     /// Returns the gas refunded so far.
@@ -452,6 +462,11 @@ impl StorageCtx {
     /// NOTE: assumes storage tests always use the `HashMapStorageProvider`
     pub fn counter_sload(&self) -> u64 {
         self.as_hashmap().counter_sload()
+    }
+
+    /// NOTE: assumes storage tests always use the `HashMapStorageProvider`
+    pub fn counter_sstore(&self) -> u64 {
+        self.as_hashmap().counter_sstore()
     }
 
     /// Checks if a contract at the given address has bytecode deployed.

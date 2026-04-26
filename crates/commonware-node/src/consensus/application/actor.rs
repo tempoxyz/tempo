@@ -21,10 +21,12 @@ use alloy_rpc_types_engine::PayloadId;
 use commonware_codec::{Encode as _, ReadExt as _};
 use commonware_consensus::{
     Heightable as _,
+    simplex::Plan,
     types::{Epoch, Epocher as _, FixedEpocher, Height, HeightDelta, Round, View},
 };
 use commonware_cryptography::{certificate::Provider as _, ed25519::PublicKey};
 use commonware_macros::select;
+use commonware_p2p::Recipients;
 use commonware_runtime::{
     ContextCell, FutureExt as _, Handle, Metrics as _, Pacer, Spawner, Storage, spawn_cell,
 };
@@ -46,8 +48,7 @@ use tempo_telemetry_util::display_duration;
 use reth_provider::{BlockHashReader as _, BlockReader as _};
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::TempoConsensusContext;
-use tokio::sync::RwLock;
-use tracing::{Level, debug, error, error_span, info, info_span, instrument, warn};
+use tracing::{Level, debug, info, info_span, instrument, warn};
 
 use super::{
     Mailbox,
@@ -144,7 +145,7 @@ where
         mut self,
         dkg_manager: crate::dkg::manager::Mailbox,
     ) -> Handle<()> {
-        spawn_cell!(self.context, self.run_until_stopped(dkg_manager).await)
+        spawn_cell!(self.context, self.run_until_stopped(dkg_manager))
     }
 }
 
@@ -160,24 +161,16 @@ where
 {
     async fn run_until_stopped(mut self) {
         while let Some(msg) = self.mailbox.next().await {
-            if let Err(error) = self.handle_message(msg) {
-                error_span!("handle message").in_scope(|| {
-                    error!(
-                        %error,
-                        "critical error occurred while handling message; exiting"
-                    )
-                });
-                break;
-            }
+            self.handle_message(msg);
         }
     }
 
-    fn handle_message(&mut self, msg: Message) -> eyre::Result<()> {
+    fn handle_message(&mut self, msg: Message) {
         match msg {
             Message::Broadcast(broadcast) => {
                 self.context.with_label("broadcast").spawn({
                     let inner = self.inner.clone();
-                    move |_| inner.handle_broadcast(broadcast)
+                    move |_| inner.handle_broadcast(*broadcast)
                 });
             }
             Message::Genesis(genesis) => {
@@ -199,7 +192,6 @@ where
                 });
             }
         }
-        Ok(())
     }
 }
 
@@ -228,23 +220,14 @@ struct Inner<TState> {
 impl Inner<Init> {
     #[instrument(
         skip_all,
-        fields(%broadcast.payload),
-        err(level = Level::ERROR),
+        fields(%digest),
     )]
-    async fn handle_broadcast(self, broadcast: Broadcast) -> eyre::Result<()> {
-        let Some((round, latest_proposed)) = self.state.latest_proposed_block.read().await.clone()
-        else {
-            return Err(eyre!("there was no latest block to broadcast"));
+    async fn handle_broadcast(self, Broadcast { digest, plan }: Broadcast) {
+        let (round, recipients) = match plan {
+            Plan::Propose { round } => (round, Recipients::All),
+            Plan::Forward { round, recipients } => (round, recipients),
         };
-        ensure!(
-            broadcast.payload == latest_proposed.digest(),
-            "broadcast of payload `{}` was requested, but digest of latest proposed block is `{}`",
-            broadcast.payload,
-            latest_proposed.digest(),
-        );
-
-        self.marshal.proposed(round, latest_proposed).await;
-        Ok(())
+        self.marshal.forward(round, digest, recipients).await;
     }
 
     #[instrument(
@@ -330,7 +313,7 @@ impl Inner<Init> {
 
         let (payload_id_tx, mut payload_id_rx) = oneshot::channel();
 
-        let proposal = select!(
+        let proposal_digest = select!(
             () = response.closed() => {
                 // If we got interrupted, fetch payload resolve future and drop it
                 // to make sure that payload building is canceled.
@@ -362,12 +345,8 @@ impl Inner<Init> {
             }
         )?;
 
-        let proposal_digest = proposal.digest();
-        let proposal_height = proposal.height();
-
         info!(
             proposal.digest = %proposal_digest,
-            proposal.height = %proposal_height,
             "constructed proposal",
         );
 
@@ -377,17 +356,6 @@ impl Inner<Init> {
                 channel was already closed"
             )
         })?;
-
-        // If re-proposing, then don't store the parent for broadcasting and
-        // don't touch the execution layer.
-        if proposal_digest == parent_digest {
-            return Ok(());
-        }
-
-        {
-            let mut lock = self.state.latest_proposed_block.write().await;
-            *lock = Some((round, proposal.clone()));
-        }
 
         Ok(())
     }
@@ -412,8 +380,13 @@ impl Inner<Init> {
             parent.digest = %verify.parent.1,
             proposer = %verify.proposer,
         ),
+        err,
     )]
-    async fn handle_verify<TContext: Pacer>(self, verify: Verify, context: TContext) {
+    async fn handle_verify<TContext: Pacer>(
+        self,
+        verify: Verify,
+        context: TContext,
+    ) -> eyre::Result<()> {
         let Verify {
             parent,
             payload,
@@ -432,30 +405,13 @@ impl Inner<Init> {
             res = self.clone().verify(context, parent, payload, proposer, round) => {
                 res.wrap_err("block verification failed")
             }
-        );
+        )?;
 
-        // Respond with the verification result ASAP. Also generates
-        // the event reporting the result of the verification.
-        let _ = report_verification_result(response, &result);
-
-        // 2. make the forkchoice state available && cache the block
-        if let Ok((block, true)) = result {
-            // Only make the verified block canonical when not doing a
-            // re-propose at the end of an epoch.
-            if parent.1 != payload
-                && let Err(error) = self
-                    .state
-                    .executor
-                    .canonicalize_head(block.height(), block.digest())
-                    .await
-            {
-                tracing::warn!(
-                    %error,
-                    "failed making the verified proposal the head of the canonical chain",
-                );
-            }
-            self.marshal.verified(round, block).await;
+        if response.send(result).is_err() {
+            warn!("received dropped channel before verification result could be returned");
         }
+
+        Ok(())
     }
 
     async fn propose<TContext: Pacer>(
@@ -466,8 +422,28 @@ impl Inner<Init> {
         round: Round,
         payload_id_tx: oneshot::Sender<PayloadId>,
         leader: PublicKey,
-    ) -> eyre::Result<Block> {
+    ) -> eyre::Result<Digest> {
         let propose_start = Instant::now();
+
+        // Follow the commonware marshal::standard::inline application:
+        //
+        // >On leader recovery, marshal may already hold a verified block
+        // >for this round (persisted by a pre-crash propose whose
+        // >notarize vote never reached the journal).
+        //
+        // >The parent context recovered by simplex may differ from the one
+        // >the cached block was built against, so the stored block is not safe to reuse
+        // >and building a fresh block would land on the same prunable
+        // >archive index and be silently dropped.
+        //
+        // >Skip this view and let the voter nullify it via timeout.
+        //
+        // TODO: we are diverging from commonware in that we return the digest
+        // here. Is that ok or can that cause problems?
+        if let Some(block) = self.marshal.get_verified(round).await {
+            debug!("skipping proposal: verified block already exists for round on restart");
+            return Ok(block.digest());
+        }
 
         let parent = get_parent(
             &self.execution_node,
@@ -490,18 +466,24 @@ impl Inner<Init> {
         // next epoch.
         if parent_epoch_info.last() == parent.height() && parent_epoch_info.epoch() == round.epoch()
         {
+            if !self.marshal.verified(round, parent.clone()).await {
+                bail!("marshal rejected re-proposed boundary block");
+            }
             info!("parent is last height of epoch; re-proposing parent");
-            return Ok(parent);
+            return Ok(parent_digest);
         }
 
         let is_genesis_parent = parent.height().is_zero()
             || parent_epoch_info.last() == parent.height()
                 && parent_epoch_info.epoch().next() == round.epoch();
 
-        // Send the proposal parent to execution layer to cover edge cases when we were not asked to
-        // to verify it (and hence are missing it in the EL).
+        // Send the proposal parent to execution layer to cover edge cases when
+        // we were not asked to to verify it (and hence are missing it in the
+        // EL).
         //
-        // If proposing the first block of an epoch, its parent (genesis/boundary block) must exist and be finalized, so we can skip it.
+        // If proposing the first block of an epoch, its parent
+        // (genesis/boundary block) must exist and be finalized, so we can skip
+        // it.
         if !is_genesis_parent
             && !verify_block(
                 context.clone(),
@@ -667,10 +649,16 @@ impl Inner<Init> {
             .and_then(|rsp| rsp.map_err(Into::<eyre::Report>::into))
             .wrap_err_with(|| format!("failed getting payload for payload ID `{payload_id}`"))?;
 
+        let proposal = Block::from_execution_block(payload.block().clone());
+        let digest = proposal.digest();
+        if !self.marshal.proposed(round, proposal).await {
+            bail!("marshal actor rejected persisting proposal");
+        }
+
         // Keep waiting for the remaining return time, if there's anything left after building the block.
         context.sleep_until(payload_return_time).await;
 
-        Ok(Block::from_execution_block(payload.block().clone()))
+        Ok(digest)
     }
 
     async fn verify<TContext: Pacer>(
@@ -680,12 +668,14 @@ impl Inner<Init> {
         payload: Digest,
         proposer: PublicKey,
         round: Round,
-    ) -> eyre::Result<(Block, bool)> {
+    ) -> eyre::Result<bool> {
         let block_request = self
             .marshal
             .subscribe_by_digest(None, payload)
             .await
-            .map_err(|_| eyre!("syncer dropped channel before the block-to-verified was sent"));
+            .map_err(|_| {
+                eyre!("marshal actor dropped channel before the block-to-verified was sent")
+            });
 
         let (block, parent) = try_join(
             block_request,
@@ -698,7 +688,7 @@ impl Inner<Init> {
             ),
         )
         .await
-        .wrap_err("failed getting required blocks from syncer")?;
+        .wrap_err("failed getting required blocks")?;
 
         // Can only repropose at the end of an epoch.
         //
@@ -712,9 +702,12 @@ impl Inner<Init> {
                 .containing(block.height())
                 .expect("epoch strategy is for all heights");
             if epoch_info.last() == block.height() && epoch_info.epoch() == round.epoch() {
-                return Ok((block, true));
+                if !self.marshal.verified(round, block).await {
+                    bail!("marshal actor refused to persist verified re-proposed block");
+                }
+                return Ok(true);
             } else {
-                return Ok((block, false));
+                return Ok(false);
             }
         }
 
@@ -730,7 +723,7 @@ impl Inner<Init> {
         .await
         {
             warn!(%reason, "header could not be verified; failing block");
-            return Ok((block, false));
+            return Ok(false);
         }
 
         if let Err(error) = self
@@ -743,7 +736,7 @@ impl Inner<Init> {
                 %error,
                 parent.height = %parent.height(),
                 parent.digest = %parent.digest(),
-                "failed updating canonical head to parent",
+                "failed updating canonical head to parent; trying to go on",
             );
         }
 
@@ -762,7 +755,23 @@ impl Inner<Init> {
         .await
         .wrap_err("failed verifying block against execution layer")?;
 
-        Ok((block, is_good))
+        let block_height = block.height();
+        let block_digest = block.digest();
+
+        if is_good {
+            // Persist the block in the marshal actor and execution layer.
+            if !self.marshal.verified(round, block).await {
+                bail!("marshal actor refused to persist verified block");
+            }
+
+            // FIXME: move this into the certification step?
+            self.state
+                .executor
+                .canonicalize_head(block_height, block_digest)
+                .await
+                .wrap_err("failed making the verified proposal the head of the canonical chain")?;
+        }
+        Ok(is_good)
     }
 }
 
@@ -789,7 +798,6 @@ impl Inner<Uninit> {
             execution_node: self.execution_node,
             executor: self.executor.clone(),
             state: Init {
-                latest_proposed_block: Arc::new(RwLock::new(None)),
                 dkg_manager,
                 executor: self.executor.clone(),
             },
@@ -809,7 +817,6 @@ pub(in crate::consensus) struct Uninit(());
 /// Carries the runtime initialized state of the application.
 #[derive(Clone, Debug)]
 struct Init {
-    latest_proposed_block: Arc<RwLock<Option<(Round, Block)>>>,
     dkg_manager: crate::dkg::manager::Mailbox,
     /// The communication channel to the executor agent.
     executor: crate::executor::Mailbox,
@@ -926,7 +933,7 @@ async fn verify_header(
         let ctx = block
             .header()
             .consensus_context
-            .ok_or_eyre("missing consensus context")?;
+            .ok_or_eyre("missing consensus context after t4 activation")?;
 
         let expected_ctx = TempoConsensusContext {
             epoch: round.epoch().get(),
@@ -994,38 +1001,6 @@ async fn verify_header(
         );
     }
 
-    Ok(())
-}
-
-/// Reports the verification result as a tracing event and consensus response.
-///
-/// This means either sending true/false if a decision could be rendered, or
-/// dropping the channel, if not.
-#[instrument(skip_all, err)]
-fn report_verification_result(
-    response: oneshot::Sender<bool>,
-    verification_result: &eyre::Result<(Block, bool)>,
-) -> eyre::Result<()> {
-    match &verification_result {
-        Ok((_, is_good)) => {
-            info!(
-                proposal_valid = is_good,
-                "returning proposal verification result to consensus",
-            );
-            response.send(*is_good).map_err(|_| {
-                eyre!(
-                    "attempted to send return verification result, but \
-                        receiver already dropped the channel"
-                )
-            })?;
-        }
-        Err(error) => {
-            info!(
-                %error,
-                "could not decide proposal, dropping response channel",
-            );
-        }
-    }
     Ok(())
 }
 
