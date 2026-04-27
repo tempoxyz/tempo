@@ -124,18 +124,9 @@ impl Order {
         is_bid: bool,
         flip_tick: i16,
     ) -> Result<Self, OrderError> {
-        // Validate flip tick constraint
-        if is_bid {
-            if flip_tick <= tick {
-                return Err(OrderError::InvalidBidFlipTick { tick, flip_tick });
-            }
-        } else if flip_tick >= tick {
-            return Err(OrderError::InvalidAskFlipTick { tick, flip_tick });
-        }
-
-        Ok(Self::new(
-            order_id, maker, book_key, amount, tick, is_bid, true, flip_tick,
-        ))
+        Self::new_flip_inner(
+            order_id, maker, book_key, amount, tick, is_bid, flip_tick, false,
+        )
     }
 
     /// TIP-1030: Creates a new flip order allowing `flip_tick == tick`.
@@ -152,11 +143,40 @@ impl Order {
         is_bid: bool,
         flip_tick: i16,
     ) -> Result<Self, OrderError> {
+        Self::new_flip_inner(
+            order_id, maker, book_key, amount, tick, is_bid, flip_tick, true,
+        )
+    }
+
+    /// Shared flip-order constructor. `allow_same_tick` toggles the TIP-1030
+    /// (T5+) relaxation: when true, `flip_tick == tick` is accepted.
+    #[allow(clippy::too_many_arguments)]
+    fn new_flip_inner(
+        order_id: u128,
+        maker: Address,
+        book_key: B256,
+        amount: u128,
+        tick: i16,
+        is_bid: bool,
+        flip_tick: i16,
+        allow_same_tick: bool,
+    ) -> Result<Self, OrderError> {
+        let bid_invalid = if allow_same_tick {
+            flip_tick < tick
+        } else {
+            flip_tick <= tick
+        };
+        let ask_invalid = if allow_same_tick {
+            flip_tick > tick
+        } else {
+            flip_tick >= tick
+        };
+
         if is_bid {
-            if flip_tick < tick {
+            if bid_invalid {
                 return Err(OrderError::InvalidBidFlipTick { tick, flip_tick });
             }
-        } else if flip_tick > tick {
+        } else if ask_invalid {
             return Err(OrderError::InvalidAskFlipTick { tick, flip_tick });
         }
 
