@@ -4,7 +4,7 @@
 //! blocks for DKG scheme extraction. Non-boundary blocks are synced by Reth
 //! via P2P and fetched by marshal's gap-repair resolver on demand.
 
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 use alloy_consensus::BlockHeader as _;
 use commonware_codec::ReadExt as _;
@@ -43,7 +43,7 @@ const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 
 pub(super) struct FollowDriver<C, U: UpstreamNode> {
     context: C,
-    upstream: Arc<U>,
+    upstream: U,
     scheme_provider: SchemeProvider,
     marshal_mailbox: marshal::Mailbox,
     feed_mailbox: feed::Mailbox,
@@ -54,7 +54,7 @@ pub(super) struct FollowDriver<C, U: UpstreamNode> {
 impl<C: Clock + Rng + CryptoRng, U: UpstreamNode> FollowDriver<C, U> {
     pub(super) fn new(
         context: C,
-        upstream: Arc<U>,
+        upstream: U,
         scheme_provider: SchemeProvider,
         marshal_mailbox: marshal::Mailbox,
         feed_mailbox: feed::Mailbox,
