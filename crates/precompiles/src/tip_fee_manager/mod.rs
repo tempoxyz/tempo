@@ -56,21 +56,12 @@ pub struct TipFeeManager {
     two_hop_intermediate: Address,
 }
 
-/// The AMM path the [`TipFeeManager`] will take to swap `user_token` into
-/// `validator_token` for fee collection.
-///
-/// Computed up-front by [`TipFeeManager::plan_fee_swap`] and consumed by
-/// [`TipFeeManager::collect_fee_pre_tx`] to drive liquidity reservations.
-/// The mempool's [`AmmLiquidityCache`] uses the same planner to pre-screen
-/// transactions, ensuring the pre-tx gate and the mempool pre-screen cannot
-/// drift.
-///
-/// [`AmmLiquidityCache`]: ../../tempo_transaction_pool/struct.AmmLiquidityCache.html
+/// AMM path [`TipFeeManager`] will take to swap `user_token` into `validator_token` for fee collection.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FeeSwapPlan {
-    /// `user_token == validator_token`; no swap needed.
+    /// User and validator share the same fee token; no swap is performed.
     SameToken,
-    /// Single-hop swap: pool(user_token, validator_token) has sufficient liquidity.
+    /// Direct pool `(user_token, validator_token)` has enough liquidity for a single-hop swap.
     Direct(SwapInfo),
     /// Two-hop swap (T5+): routes through `intermediate = userToken.quoteToken()`.
     /// Each hop applies the standard `M = 9970/10000` rate sequentially.
@@ -81,10 +72,14 @@ pub enum FeeSwapPlan {
     },
 }
 
+/// Output of a per-pool liquidity check used to build a [`FeeSwapPlan`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SwapInfo {
+    /// Identifier of the `(user_token, validator_token)` AMM pool inspected.
     pub pool_id: B256,
+    /// Validator-token reserve observed on this pool.
     pub reserves: u128,
+    /// Validator-token amount this hop must produce `floor(amount_in · 9970 / 10000)`.
     pub amount_out: u128,
 }
 
