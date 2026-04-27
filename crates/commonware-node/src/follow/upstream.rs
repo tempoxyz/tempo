@@ -232,3 +232,36 @@ impl UpstreamNode for LocalUpstream {
             .wrap_err("provider error")
     }
 }
+
+impl<U> UpstreamNode for Arc<U>
+where
+    U: UpstreamNode,
+{
+    fn subscribe_events(
+        &self,
+    ) -> impl std::future::Future<Output = eyre::Result<BoxStream<'static, eyre::Result<Event>>>> + Send
+    {
+        (**self).subscribe_events()
+    }
+
+    fn get_finalization(
+        &self,
+        query: Query,
+    ) -> impl std::future::Future<Output = eyre::Result<Option<CertifiedBlock>>> + Send {
+        (**self).get_finalization(query)
+    }
+
+    fn get_block_by_number(
+        &self,
+        height: u64,
+    ) -> impl std::future::Future<Output = eyre::Result<Option<Block>>> + Send {
+        (**self).get_block_by_number(height)
+    }
+
+    fn get_block_by_hash(
+        &self,
+        hash: alloy_primitives::B256,
+    ) -> impl std::future::Future<Output = eyre::Result<Option<Block>>> + Send {
+        (**self).get_block_by_hash(hash)
+    }
+}
