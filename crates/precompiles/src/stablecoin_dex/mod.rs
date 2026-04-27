@@ -2309,12 +2309,16 @@ mod tests {
             // Book invariants: bid level advanced to the resting bid; ask level
             // contains exactly the new flip ask; both bests point at `tick`.
             let book_key = compute_book_key(base_token, quote_token);
-            let bid_level = exchange.books[book_key].tick_level_handler(tick, true).read()?;
+            let bid_level = exchange.books[book_key]
+                .tick_level_handler(tick, true)
+                .read()?;
             assert_eq!(bid_level.head, resting_bid_id);
             assert_eq!(bid_level.tail, resting_bid_id);
             assert_eq!(bid_level.total_liquidity, amount);
 
-            let ask_level = exchange.books[book_key].tick_level_handler(tick, false).read()?;
+            let ask_level = exchange.books[book_key]
+                .tick_level_handler(tick, false)
+                .read()?;
             assert_eq!(ask_level.head, new_ask_id);
             assert_eq!(ask_level.tail, new_ask_id);
             assert_eq!(ask_level.total_liquidity, amount);
@@ -2322,14 +2326,17 @@ mod tests {
             let book = exchange.books[book_key].read()?;
             // TIP-1030 "locked book": best bid and best ask both at `tick`.
             assert_eq!(book.best_bid_tick, tick, "best bid should remain at tick");
-            assert_eq!(book.best_ask_tick, tick, "best ask should now equal best bid (locked)");
+            assert_eq!(
+                book.best_ask_tick, tick,
+                "best ask should now equal best bid (locked)"
+            );
 
             // Follow-up swap-buy at the locked tick consumes only the new ask
             // (not the resting bid on the other side) and the ask flips back
             // into a bid at the same tick. This is the backrunning shape the
             // TIP-1030 MEV implications section calls out.
-            let quote_in = base_to_quote(amount, tick, RoundingDirection::Up)
-                .expect("quote_in should fit");
+            let quote_in =
+                base_to_quote(amount, tick, RoundingDirection::Up).expect("quote_in should fit");
             exchange.swap_exact_amount_in(bob, quote_token, base_token, quote_in, 0)?;
 
             // Ask is gone.
