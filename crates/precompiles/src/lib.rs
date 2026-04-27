@@ -84,7 +84,9 @@ pub trait Precompile {
     ///
     /// Implementations should deduct calldata gas upfront via [`input_cost`], then decode the
     /// 4-byte function selector from `calldata` and route to the matching method using
-    /// `dispatch_call` combined with the `view`, `mutate`, or `mutate_void` helpers.
+    /// `dispatch_call` combined with the `route_metadata`, `route_view`, `route_mutate`,
+    /// `route_mutate_void`, or the lower-level `metadata`, `view`, `mutate`, and `mutate_void`
+    /// helpers.
     ///
     /// Business-logic errors are returned as reverted [`PrecompileOutput`]s with ABI-encoded
     /// error data, while fatal failures (e.g. out-of-gas) are returned as
@@ -303,6 +305,73 @@ fn mutate_void<T: SolCall>(
         ));
     }
     f(sender, call).into_precompile_result(0, 0, |()| Bytes::new())
+}
+
+macro_rules! define_route_helpers {
+    ($(
+        $(#[$meta:meta])*
+        $name:ident {
+            handler: $handler_ty:ty,
+            body: |$this:ident, $msg_sender:ident, $call:ident, $handler:ident| $body:expr,
+        }
+    )*) => {
+        $(
+            $(#[$meta])*
+            #[inline]
+            #[allow(dead_code, unused_variables)]
+            pub(crate) fn $name<P, T: SolCall>(
+                this: &mut P,
+                msg_sender: Address,
+                call: T,
+                handler: $handler_ty,
+            ) -> PrecompileResult {
+                let $this = this;
+                let $msg_sender = msg_sender;
+                let $call = call;
+                let $handler = handler;
+                $body
+            }
+        )*
+    };
+}
+
+define_route_helpers! {
+    /// Routes a decoded ABI call into a metadata-like precompile method.
+    ///
+    /// This preserves the exact result encoding semantics of [`metadata`] while still threading
+    /// `msg_sender` through the handler so dispatcher macros can use one uniform calling shape.
+    route_metadata {
+        handler: fn(&P, Address) -> Result<T::Return>,
+        body: |this, msg_sender, _call, handler| metadata::<T>(|| handler(this, msg_sender)),
+    }
+
+    /// Routes a decoded ABI call into a read-only precompile method taking `msg_sender` and the
+    /// decoded call.
+    ///
+    /// This preserves the exact result encoding semantics of [`view`].
+    route_view {
+        handler: fn(&P, Address, T) -> Result<T::Return>,
+        body: |this, msg_sender, call, handler| view(call, |call| handler(this, msg_sender, call)),
+    }
+
+    /// Routes a decoded ABI call into a mutating precompile method, threading `msg_sender` into
+    /// the handler.
+    ///
+    /// This preserves the exact static-call rejection and return encoding semantics of [`mutate`].
+    /// Handlers that do not care about `msg_sender` can ignore it.
+    route_mutate {
+        handler: fn(&mut P, Address, T) -> Result<T::Return>,
+        body: |this, msg_sender, call, handler| mutate(call, msg_sender, |msg_sender, call| handler(this, msg_sender, call)),
+    }
+
+    /// Routes a decoded ABI call into a mutating precompile method that threads `msg_sender` into
+    /// the handler and returns no data.
+    ///
+    /// This preserves the exact static-call rejection and empty-return semantics of [`mutate_void`].
+    route_mutate_void {
+        handler: fn(&mut P, Address, T) -> Result<()>,
+        body: |this, msg_sender, call, handler| mutate_void(call, msg_sender, |msg_sender, call| handler(this, msg_sender, call)),
+    }
 }
 
 /// Deducts the calldata input cost, returning an OOG halt result if insufficient gas.

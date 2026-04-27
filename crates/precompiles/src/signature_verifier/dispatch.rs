@@ -1,10 +1,11 @@
 use super::SignatureVerifier;
-use crate::{Precompile, charge_input_cost, dispatch_call, view};
+use crate::{Precompile, charge_input_cost, view};
 use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::{
     ISignatureVerifier::ISignatureVerifierCalls as ISVCalls, SignatureVerifierError,
 };
+use tempo_precompiles_macros::dispatch;
 use tempo_primitives::MAX_WEBAUTHN_SIGNATURE_LENGTH;
 
 /// Maximum valid calldata size: `verify(address,bytes32,bytes)` with a WebAuthn signature is the
@@ -25,12 +26,16 @@ impl Precompile for SignatureVerifier {
                 .abi_revert(SignatureVerifierError::invalid_format()));
         }
 
-        dispatch_call(calldata, &[], ISVCalls::abi_decode, |call| match call {
-            ISVCalls::recover(call) => view(call, |c| self.recover(c.hash, c.signature)),
-            ISVCalls::verify(call) => view(call, |c| {
+        dispatch!(
+            calldata,
+            ISVCalls::abi_decode,
+            {
+            recover(call) => view(call, |c| self.recover(c.hash, c.signature)),
+            verify(call) => view(call, |c| {
                 self.recover(c.hash, c.signature).map(|sig| sig == c.signer)
             }),
-        })
+            },
+        )
     }
 }
 

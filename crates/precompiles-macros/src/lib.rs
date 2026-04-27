@@ -3,10 +3,12 @@
 //! This crate provides:
 //! - `#[contract]` macro that transforms a storage schema into a fully-functional contract
 //! - `#[derive(Storable)]` macro for storage structs and `#[repr(u8)]` unit enums
+//! - `dispatch!` macro for concise precompile ABI dispatch with hardfork-gated selectors
 //! - `storable_alloy_ints!` macro for generating alloy integer storage implementations
 //! - `storable_alloy_bytes!` macro for generating alloy FixedBytes storage implementations
 //! - `storable_rust_ints!` macro for generating standard Rust integer storage implementations
 
+mod dispatch;
 mod layout;
 mod packing;
 mod storable;
@@ -250,6 +252,35 @@ pub fn derive_storage_block(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
     match storable::derive_impl(input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Generate a `crate::dispatch_call(...)` invocation from concise match-style syntax.
+///
+/// `#[since = T2]` adds selector gating starting at that hardfork. `#[to = T4]` drops the
+/// selector once `T4` activates. When `decode` is a generated `ICalls::abi_decode`, the macro
+/// derives the calls enum for shorthand arms like `mint(call) => ...` and infers selectors for
+/// hardfork-gated arms. Wrapper decoders can still use full patterns, and renamed variants can
+/// use `#[selector = SomeCallType]`.
+///
+/// ```ignore
+/// dispatch!(
+///     calldata,
+///     ITIP20Calls::abi_decode,
+///     {
+///         name(_) => metadata::<ITIP20::nameCall>(|| self.name()),
+///         #[since = T2, to = T4]
+///         mint(call) => mutate_void(call, msg_sender, |s, c| self.mint(s, c)),
+///     },
+/// )
+/// ```
+#[proc_macro]
+pub fn dispatch(input: TokenStream) -> TokenStream {
+    let input = proc_macro2::TokenStream::from(input);
+
+    match dispatch::expand(input) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }
