@@ -29,6 +29,7 @@ alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
+alloy-sol-types.workspace = true
 alloy-serde = { workspace = true, optional = true }
 alloy-rpc-types-eth = { workspace = true, optional = true }
 alloy-network = { workspace = true, optional = true }
