@@ -2,9 +2,9 @@
 use std::net::SocketAddr;
 
 use crate::{
-    check_abi::CheckAbi, generate_devnet::GenerateDevnet, generate_genesis::GenerateGenesis,
-    generate_localnet::GenerateLocalnet, generate_state_bloat::GenerateStateBloat,
-    get_dkg_outcome::GetDkgOutcome,
+    check_abi::CheckAbi, enode_from_secret::EnodeFromSecret, generate_devnet::GenerateDevnet,
+    generate_genesis::GenerateGenesis, generate_localnet::GenerateLocalnet,
+    generate_state_bloat::GenerateStateBloat, get_dkg_outcome::GetDkgOutcome,
 };
 
 use alloy::signers::{local::MnemonicBuilder, utils::secret_key_to_address};
@@ -13,6 +13,7 @@ use commonware_codec::DecodeExt;
 use eyre::Context;
 
 mod check_abi;
+mod enode_from_secret;
 mod generate_devnet;
 mod generate_genesis;
 mod generate_localnet;
@@ -36,6 +37,9 @@ async fn main() -> eyre::Result<()> {
             .await
             .wrap_err("failed to generate localnet configs"),
         Action::GenerateAddPeer(cfg) => generate_config_to_add_peer(cfg),
+        Action::EnodeFromSecret(args) => args
+            .run()
+            .wrap_err("failed to derive enode from secret key"),
         Action::GenerateStateBloat(args) => args
             .run()
             .await
@@ -61,6 +65,7 @@ enum Action {
     GenerateDevnet(GenerateDevnet),
     GenerateLocalnet(GenerateLocalnet),
     GenerateAddPeer(GenerateAddPeer),
+    EnodeFromSecret(EnodeFromSecret),
     GenerateStateBloat(GenerateStateBloat),
 }
 
