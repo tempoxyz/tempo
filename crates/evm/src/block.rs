@@ -27,8 +27,10 @@ use reth_revm::{
 };
 use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_contracts::precompiles::{
-    ADDRESS_REGISTRY_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+use tempo_contracts::{
+    ERC2470_SINGLETON_DEPLOYER_ADDRESS, NANO_UNIVERSAL_DEPLOYER_ADDRESS,
+    contracts::{ERC2470SingletonDeployer, NanoUniversalDeployer},
+    precompiles::{ADDRESS_REGISTRY_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS},
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
@@ -178,6 +180,40 @@ where
             let mut new_info = info;
             new_info.code_hash = code.hash_slow();
             new_info.code = Some(code);
+            let mut account: Account = new_info.into();
+            account.mark_touch();
+            let state = EvmState::from_iter([(address, account)]);
+            self.inner.system_caller.on_state(
+                StateChangeSource::PreBlock(StateChangePreBlockSource::BlockHashesContract),
+                &state,
+            );
+            self.inner.evm.db_mut().commit(state);
+        }
+        Ok(())
+    }
+
+    /// Deploys real EVM bytecode to an address if it doesn't already have code.
+    ///
+    /// Used to insert predeploys at hardfork boundaries for contracts that were not
+    /// present in the original genesis (unlike precompiles which use the 0xEF marker).
+    fn deploy_contract_at_boundary(
+        &mut self,
+        address: Address,
+        bytecode: &'static [u8],
+    ) -> Result<(), BlockExecutionError> {
+        let info = self
+            .inner
+            .evm
+            .db_mut()
+            .basic(address)
+            .map_err(BlockExecutionError::other)?
+            .unwrap_or_default();
+        if info.is_empty_code_hash() {
+            let code = Bytecode::new_legacy(bytecode.into());
+            let mut new_info = info;
+            new_info.code_hash = code.hash_slow();
+            new_info.code = Some(code);
+            new_info.nonce = 1;
             let mut account: Account = new_info.into();
             account.mark_touch();
             let state = EvmState::from_iter([(address, account)]);
@@ -439,6 +475,16 @@ where
         if self.inner.spec.is_t3_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(SIGNATURE_VERIFIER_ADDRESS)?;
             self.deploy_precompile_at_boundary(ADDRESS_REGISTRY_ADDRESS)?;
+        }
+        if self.inner.spec.is_t5_active_at_timestamp(timestamp) {
+            self.deploy_contract_at_boundary(
+                ERC2470_SINGLETON_DEPLOYER_ADDRESS,
+                &ERC2470SingletonDeployer::DEPLOYED_BYTECODE,
+            )?;
+            self.deploy_contract_at_boundary(
+                NANO_UNIVERSAL_DEPLOYER_ADDRESS,
+                &NanoUniversalDeployer::DEPLOYED_BYTECODE,
+            )?;
         }
 
         Ok(())
