@@ -1777,10 +1777,13 @@ where
             evm.ctx().local_mut().clear();
             evm.frame_stack().clear();
 
+            // On fee payment failure, treat the transaction as a halt that consumed entire regular gas limit.
+            let total_spent = core::cmp::min(evm.ctx.tx.gas_limit, evm.ctx.cfg.tx_gas_limit_cap());
+
             Ok(ExecutionResult::Halt {
                 reason: TempoHaltReason::SubblockTxFeePayment,
                 logs: Default::default(),
-                gas: ResultGas::new_with_state_gas(evm.ctx.tx.gas_limit, 0, 0, 0),
+                gas: ResultGas::new_with_state_gas(total_spent, 0, 0, 0),
             })
         } else {
             MainnetHandler::default()
