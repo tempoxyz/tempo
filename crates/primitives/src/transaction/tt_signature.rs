@@ -1362,6 +1362,23 @@ mod tests {
     }
 
     #[test]
+    fn test_exact_65_byte_signature_with_0x7f_prefix_is_still_unwrapped_secp256k1() {
+        use super::SECP256K1_SIGNATURE_LENGTH;
+
+        let mut sig_bytes = vec![0u8; SECP256K1_SIGNATURE_LENGTH];
+        sig_bytes[0] = 0x7f;
+
+        let primitive = PrimitiveSignature::from_bytes(&sig_bytes).unwrap();
+        assert!(matches!(primitive, PrimitiveSignature::Secp256k1(_)));
+
+        let tempo = TempoSignature::from_bytes(&sig_bytes).unwrap();
+        assert!(matches!(
+            tempo,
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(_))
+        ));
+    }
+
+    #[test]
     fn test_tempo_signature_from_bytes_p256() {
         use super::{P256_SIGNATURE_LENGTH, SIGNATURE_TYPE_P256};
 
