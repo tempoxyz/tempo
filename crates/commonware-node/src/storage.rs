@@ -1,13 +1,8 @@
-//! Shared storage configuration for consensus and follow engines.
-//!
-//! This module defines the archive formats used by both engines to ensure
-//! data compatibility. A node that starts as a follower can be promoted to
-//! a validator (or vice versa) without data migration.
-//!
+//! This module defines consensus archive formats
 
 use std::time::Instant;
 
-use commonware_consensus::simplex::scheme::bls12381_threshold::vrf::Scheme;
+use commonware_consensus::simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization};
 use commonware_cryptography::{
     bls12381::primitives::variant::MinSig, certificate::Scheme as _, ed25519::PublicKey,
 };
@@ -21,18 +16,15 @@ use crate::{
     consensus::{Digest, block::Block},
 };
 
-/// Archive partition names - shared between consensus and follow engines.
 const FINALIZATIONS_BY_HEIGHT: &str = "finalizations-by-height";
 const FINALIZED_BLOCKS: &str = "finalized_blocks";
 
-// Storage constants
 const IMMUTABLE_ITEMS_PER_SECTION: std::num::NonZeroU64 = NZU64!(262_144);
 const FREEZER_TABLE_RESIZE_FREQUENCY: u8 = 4;
 const FREEZER_TABLE_RESIZE_CHUNK_SIZE: u32 = 2u32.pow(16); // 64KB chunks
 const FREEZER_VALUE_TARGET_SIZE: u64 = 1024 * 1024 * 1024; // 1GB
 const FREEZER_VALUE_COMPRESSION: Option<u8> = Some(3);
 
-// Marshal configuration
 pub(crate) const REPLAY_BUFFER: std::num::NonZeroUsize = NZUsize!(8 * 1024 * 1024); // 8MB
 pub(crate) const WRITE_BUFFER: std::num::NonZeroUsize = NZUsize!(1024 * 1024); // 1MB
 pub(crate) const PRUNABLE_ITEMS_PER_SECTION: std::num::NonZeroU64 = NZU64!(4_096);
@@ -40,22 +32,14 @@ pub(crate) const MAX_REPAIR: std::num::NonZeroUsize = NZUsize!(20);
 pub(crate) const BUFFER_POOL_PAGE_SIZE: std::num::NonZeroU16 = NZU16!(4_096); // 4KB
 pub(crate) const BUFFER_POOL_CAPACITY: std::num::NonZeroUsize = NZUsize!(8_192); // 32MB
 
-/// Type alias for the finalizations archive.
-pub(crate) type FinalizationsArchive<TContext> = immutable::Archive<
-    TContext,
-    Digest,
-    commonware_consensus::simplex::types::Finalization<Scheme<PublicKey, MinSig>, Digest>,
->;
-
-/// Type alias for the finalized blocks archive.
-pub(crate) type FinalizedBlocksArchive<TContext> = immutable::Archive<TContext, Digest, Block>;
-
-/// Initialize the finalizations archive with the standard format.
 pub(crate) async fn init_finalizations_archive<TContext>(
     context: &TContext,
     partition_prefix: &str,
     page_cache: CacheRef,
-) -> Result<FinalizationsArchive<TContext>, commonware_storage::archive::Error>
+) -> Result<
+    immutable::Archive<TContext, Digest, Finalization<Scheme<PublicKey, MinSig>, Digest>>,
+    commonware_storage::archive::Error,
+>
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
 {
@@ -103,7 +87,7 @@ pub(crate) async fn init_finalized_blocks_archive<TContext>(
     context: &TContext,
     partition_prefix: &str,
     page_cache: CacheRef,
-) -> Result<FinalizedBlocksArchive<TContext>, commonware_storage::archive::Error>
+) -> Result<immutable::Archive<TContext, Digest, Block>, commonware_storage::archive::Error>
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
 {
