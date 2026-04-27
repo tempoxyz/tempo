@@ -207,6 +207,12 @@ impl Consensus<Block> for TempoConsensus {
 
         self.inner.validate_block_pre_execution(block)
     }
+
+    fn is_transient_error(&self, error: &ConsensusError) -> bool {
+        // Future timestamps can happen briefly when clocks drift between nodes.
+        Consensus::<Block>::is_transient_error(&self.inner, error)
+            || matches!(error, ConsensusError::TimestampIsInFuture { .. })
+    }
 }
 
 impl FullConsensus<TempoPrimitives> for TempoConsensus {
@@ -912,6 +918,24 @@ mod tests {
             result.is_ok(),
             "Timestamp exactly at boundary should be accepted, got: {result:?}"
         );
+    }
+
+    #[test]
+    fn test_timestamp_in_future_is_transient_error() {
+        let consensus = TempoConsensus::new(MODERATO.clone());
+        let err = ConsensusError::TimestampIsInFuture {
+            timestamp: 2,
+            present_timestamp: 1,
+        };
+
+        assert!(Consensus::<Block>::is_transient_error(&consensus, &err));
+
+        let err = ConsensusError::TimestampIsInPast {
+            parent_timestamp: 2,
+            timestamp: 1,
+        };
+
+        assert!(!Consensus::<Block>::is_transient_error(&consensus, &err));
     }
 
     #[test]
