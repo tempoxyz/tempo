@@ -248,6 +248,7 @@ jobs:
     env:
       BENCH_PR: ${{ inputs.pr }}
       BENCH_ACTOR: ${{ inputs.actor || github.actor }}
+      BENCH_MODE: ${{ inputs.mode }}
       BENCH_PRESET: ${{ inputs.preset }}
       BENCH_DURATION: ${{ inputs.duration }}
       BENCH_BLOAT: ${{ inputs.bloat }}
