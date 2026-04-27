@@ -3,12 +3,12 @@ use alloy_evm::{Database, precompiles::PrecompilesMap};
 use alloy_primitives::{Address, U256};
 use revm::{
     Context, Inspector,
-    context::{CfgEnv, ContextError, Evm, FrameStack},
+    context::{Cfg, CfgEnv, ContextError, Evm, FrameStack},
     handler::{
         EthFrame, EvmTr, FrameInitOrResult, FrameTr, ItemOrResult, instructions::EthInstructions,
     },
     inspector::InspectorEvmTr,
-    interpreter::interpreter::EthInterpreter,
+    interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 
@@ -31,10 +31,6 @@ pub struct TempoEvm<DB: Database, I> {
     >,
     /// The fee collected in `collectFeePreTx` call.
     pub(crate) collected_fee: U256,
-    /// Initial gas cost. Used for key_authorization validation in collectFeePreTx.
-    ///
-    /// Additional initial gas cost is added for authorization_key setting in pre execution.
-    pub(crate) initial_gas: u64,
     /// The fee token used to pay fees for the current transaction.
     pub(crate) fee_token: Option<Address>,
     /// The expiry timestamp of the access key used by the current transaction.
@@ -81,11 +77,29 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         Self {
             inner,
             collected_fee: U256::ZERO,
-            initial_gas: 0,
             fee_token: None,
             key_expiry: None,
             skip_valid_after_check: false,
             skip_liquidity_check: false,
+        }
+    }
+
+    /// Computes initial gas limit and reservoir for a transaction given its initial gas spending.
+    pub(crate) fn initial_gas_and_reservoir(
+        &self,
+        init_and_floor_gas: &InitialAndFloorGas,
+    ) -> (u64, u64) {
+        // Pre-T0 it could happen that the initial gas spending is greater than the gas limit due to faulty validation.
+        //
+        // Before that it would overflow, so we are reproducing this behavior here by setting the gas limit to u64::MAX and the reservoir to 0.
+        if !self.cfg.spec.is_t0() && init_and_floor_gas.initial_total_gas > self.tx.gas_limit {
+            (u64::MAX, 0)
+        } else {
+            init_and_floor_gas.initial_gas_and_reservoir(
+                self.tx.gas_limit,
+                self.cfg.tx_gas_limit_cap(),
+                self.cfg.is_amsterdam_eip8037_enabled(),
+            )
         }
     }
 }
@@ -108,7 +122,6 @@ impl<DB: Database, I> TempoEvm<DB, I> {
 
     /// Clears all intermediate state from the EVM.
     pub fn clear(&mut self) {
-        self.initial_gas = 0;
         self.fee_token = None;
         self.key_expiry = None;
     }
@@ -1671,21 +1684,6 @@ mod tests {
     }
 
     // ==================== TIP-1000 EVM Configuration Tests ====================
-
-    /// Test that TempoEvm preserves initial fields when using with_inspector.
-    #[test]
-    fn test_tempo_evm_with_inspector_preserves_fields() {
-        let evm = create_evm();
-
-        // Use with_inspector to get a new EVM with CountInspector
-        let evm_with_inspector = evm.with_inspector(CountInspector::new());
-
-        // Verify fields are still initialized correctly
-        assert_eq!(
-            evm_with_inspector.initial_gas, 0,
-            "initial_gas should be 0 after with_inspector"
-        );
-    }
 
     /// Test AA transaction gas usage for simple identity precompile call.
     /// This establishes a baseline for gas comparison.

@@ -5,13 +5,13 @@
 # and the Argo invariant-tests workflow.
 #
 # Usage:
-#   scripts/patch-foundry-cargo.sh <tempo_root> <foundry_root>
+#   scripts/foundry-patch.sh <tempo_root> <foundry_root>
 #
 # Example (GHA – repos side-by-side):
-#   scripts/patch-foundry-cargo.sh "$GITHUB_WORKSPACE/tempo" "$GITHUB_WORKSPACE/foundry"
+#   scripts/foundry-patch.sh "$GITHUB_WORKSPACE/tempo" "$GITHUB_WORKSPACE/foundry"
 #
 # Example (Argo – /workspace layout):
-#   /workspace/scripts/patch-foundry-cargo.sh /workspace /workspace/foundry
+#   /workspace/scripts/foundry-patch.sh /workspace /workspace/foundry
 
 set -euo pipefail
 
