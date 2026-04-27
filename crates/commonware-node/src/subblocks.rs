@@ -304,6 +304,9 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
             .epoch();
 
         // Can't proceed without knowing a validator set for the current epoch.
+        //
+        // TODO(hamdi): When finalizing a boundary block, the scheme for the next epoch is not yet registered meaning
+        // we skip the subblock building task. This issue is scoped to the boundary and will be fixed.
         let Some(scheme) = self.scheme_provider.scoped(epoch_of_next_block) else {
             debug!(%epoch_of_next_block, "scheme not found for epoch");
             return;
@@ -709,11 +712,14 @@ async fn build_subblock(
             let txs = transactions.lock().clone();
 
             for (tx_hash, tx) in txs {
+                let max_regular_gas =
+                    core::cmp::min(tx.gas_limit(), evm.cfg.tx_gas_limit_cap.unwrap_or(u64::MAX));
                 // Remove transactions over subblock gas budget
-                if tx.gas_limit() > gas_budget {
+                if max_regular_gas > gas_budget {
                     warn!(
                         %tx_hash,
                         tx_gas_limit = tx.gas_limit(),
+                        max_regular_gas,
                         gas_budget,
                         "removing transaction with gas limit exceeding maximum subblock gas budget"
                     );
@@ -722,7 +728,7 @@ async fn build_subblock(
                 }
 
                 // Skip transactions that don't fit in remaining budget (may fit in future rounds)
-                if tx.gas_limit() > gas_left {
+                if max_regular_gas > gas_left {
                     continue;
                 }
 
@@ -732,7 +738,7 @@ async fn build_subblock(
                     continue;
                 }
 
-                gas_left -= tx.gas_limit();
+                gas_left -= max_regular_gas;
                 selected.push(tx.inner().clone());
                 senders.push(tx.signer());
 
@@ -850,7 +856,9 @@ async fn validate_subblock(
     let gas_budget = evm.block().gas_limit / TEMPO_SHARED_GAS_DIVISOR / participants as u64;
     let mut total_gas = 0u64;
     for tx in subblock.transactions_recovered() {
-        total_gas = total_gas.saturating_add(tx.gas_limit());
+        let max_regular_gas =
+            core::cmp::min(tx.gas_limit(), evm.cfg.tx_gas_limit_cap.unwrap_or(u64::MAX));
+        total_gas = total_gas.saturating_add(max_regular_gas);
         if total_gas > gas_budget {
             warn!(
                 total_gas,

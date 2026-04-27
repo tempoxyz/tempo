@@ -5,7 +5,9 @@
 
 use std::{net::SocketAddr, time::Duration};
 
-use super::dkg::common::{assert_no_dkg_failures, wait_for_epoch, wait_for_outcome};
+use super::dkg::common::{
+    assert_no_dkg_failures, wait_for_outcome, wait_for_validators_to_reach_epoch,
+};
 use crate::{CONSENSUS_NODE_PREFIX, Setup, setup_validators};
 use alloy::transports::http::reqwest::Url;
 use alloy_primitives::hex;
@@ -79,11 +81,13 @@ async fn consensus_subscribe_and_query_finalization() {
             .unwrap();
 
         match event {
-            Event::Notarized { .. } => {
-                saw_notarized = true;
+            Event::Notarized { block, .. } => {
+                if block.block.inner.number > current_height {
+                    saw_notarized = true;
+                }
             }
             Event::Finalized { block, .. } => {
-                let height = block.height.unwrap();
+                let height = block.block.inner.number;
                 assert!(
                     height > current_height,
                     "finalized height should be > {current_height}"
@@ -181,7 +185,7 @@ fn get_identity_transition_proof_after_full_dkg() {
 
         // --- First full DKG ---
         execution_runtime
-            .set_next_full_dkg_ceremony(http_url.clone(), first_full_dkg_epoch)
+            .set_next_full_dkg_ceremony_v2(http_url.clone(), first_full_dkg_epoch)
             .await
             .unwrap();
 
@@ -198,7 +202,9 @@ fn get_identity_transition_proof_after_full_dkg() {
             first_full_dkg_epoch - 1
         );
 
-        wait_for_epoch(&context, first_full_dkg_epoch + 1, how_many_signers).await;
+        // Wait for full DKG to complete
+        wait_for_validators_to_reach_epoch(&context, first_full_dkg_epoch + 1, how_many_signers)
+            .await;
         assert_no_dkg_failures(&context);
 
         let outcome_after_first =
@@ -211,7 +217,7 @@ fn get_identity_transition_proof_after_full_dkg() {
 
         // --- Second full DKG ---
         execution_runtime
-            .set_next_full_dkg_ceremony(http_url.clone(), second_full_dkg_epoch)
+            .set_next_full_dkg_ceremony_v2(http_url.clone(), second_full_dkg_epoch)
             .await
             .unwrap();
 
@@ -228,7 +234,8 @@ fn get_identity_transition_proof_after_full_dkg() {
             second_full_dkg_epoch - 1
         );
 
-        wait_for_epoch(&context, second_full_dkg_epoch + 1, how_many_signers).await;
+        wait_for_validators_to_reach_epoch(&context, second_full_dkg_epoch + 1, how_many_signers)
+            .await;
         assert_no_dkg_failures(&context);
 
         let outcome_after_second =

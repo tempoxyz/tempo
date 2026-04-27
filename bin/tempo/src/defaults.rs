@@ -2,12 +2,16 @@ use base64::{Engine, prelude::BASE64_STANDARD};
 use eyre::Context as _;
 use jiff::SignedDuration;
 use reth_cli_commands::download::DownloadDefaults;
-use reth_ethereum::node::core::args::{DefaultPayloadBuilderValues, DefaultTxPoolValues};
+use reth_ethereum::node::core::args::{
+    DefaultEngineValues, DefaultNetworkArgs, DefaultPayloadBuilderValues, DefaultStorageValues,
+    DefaultTxPoolValues,
+};
 use std::{borrow::Cow, str::FromStr, time::Duration};
 use tempo_chainspec::hardfork::TempoHardfork;
 use url::Url;
 
 pub(crate) const DEFAULT_DOWNLOAD_URL: &str = "https://snapshots.tempoxyz.dev/4217";
+const SNAPSHOT_API_URL: &str = "https://snapshots.tempoxyz.dev/api/snapshots";
 
 /// Default OTLP logs filter level for telemetry.
 const DEFAULT_LOGS_OTLP_FILTER: &str = "debug";
@@ -85,8 +89,32 @@ impl TelemetryArgs {
 }
 
 /// A `Url` with username and password set.
-#[derive(Clone, Debug)]
+///
+/// `Debug` redacts credentials so they don't leak in clap error output or logs.
+#[derive(Clone)]
 pub(crate) struct UrlWithAuth(Url);
+
+impl UrlWithAuth {
+    /// Returns a copy of the URL with the password replaced by `***`.
+    fn redacted(&self) -> Url {
+        let mut url = self.0.clone();
+        url.set_password(Some("***")).ok();
+        url
+    }
+}
+
+impl std::fmt::Debug for UrlWithAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.redacted())
+    }
+}
+
+impl std::fmt::Display for UrlWithAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.redacted())
+    }
+}
+
 impl FromStr for UrlWithAuth {
     type Err = Box<dyn std::error::Error + Send + Sync + 'static>;
 
@@ -128,6 +156,8 @@ fn init_download_urls() {
             Cow::Borrowed("https://snapshots.tempoxyz.dev/42429 (andantino)"),
         ],
         default_base_url: Cow::Borrowed(DEFAULT_DOWNLOAD_URL),
+        default_chain_aware_base_url: None,
+        snapshot_api_url: Cow::Borrowed(SNAPSHOT_API_URL),
         long_help: None,
     };
 
@@ -168,8 +198,59 @@ fn init_txpool_defaults() {
         .expect("failed to initialize txpool defaults");
 }
 
+fn init_storage_defaults() {
+    DefaultStorageValues::default()
+        // NOTE: when changing, don't forget to change in `e2e::launch_execution_node`
+        .with_v2(false)
+        .try_init()
+        .expect("failed to initialize storage defaults");
+}
+
+fn init_engine_defaults() {
+    DefaultEngineValues::default()
+        // In Commonware consensus, it might happen that a head is notarized (causing it to become a canonical tip for reth),
+        // and immediately nullified (allowing to build a payload on top of its parent). In that case reth might be asked to
+        // build a payload on top an ancestor of canonical tip, which is not possible without this flag.
+        //
+        // Another case when this might happen is if we optimistically canonicalize a valid block that is later getting nullified (reorged).
+        // In that case, if we are asked to propose, we would have to build a payload on top of its parent, which is an ancestor of the canonical tip as well.
+        //
+        // This setting allows reth to process payload attributes even if `headBlockHash` is an ancestor of the canonical tip.
+        .with_always_process_payload_attributes_on_canonical_head(true)
+        .try_init()
+        .expect("failed to initialize engine defaults");
+}
+
+fn init_otlp_defaults() {
+    // Override the default OTLP max queue size (2048) to prevent trace/log dropping under load.
+    // See also reth-bench-compare which uses the same approach via env vars.
+    if std::env::var_os("OTEL_BSP_MAX_QUEUE_SIZE").is_none() {
+        // SAFETY: Must be called at startup before any other threads are spawned
+        unsafe {
+            std::env::set_var("OTEL_BSP_MAX_QUEUE_SIZE", "65536");
+        }
+    }
+    if std::env::var_os("OTEL_BLRP_MAX_QUEUE_SIZE").is_none() {
+        // SAFETY: Must be called at startup before any other threads are spawned
+        unsafe {
+            std::env::set_var("OTEL_BLRP_MAX_QUEUE_SIZE", "65536");
+        }
+    }
+}
+
+fn init_network_defaults() {
+    DefaultNetworkArgs::default()
+        .with_enforce_enr_fork_id(true)
+        .try_init()
+        .expect("failed to initialize network defaults");
+}
+
 pub(crate) fn init_defaults() {
+    init_storage_defaults();
     init_download_urls();
     init_payload_builder_defaults();
     init_txpool_defaults();
+    init_engine_defaults();
+    init_otlp_defaults();
+    init_network_defaults();
 }

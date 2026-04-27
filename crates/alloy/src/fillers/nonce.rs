@@ -1,12 +1,18 @@
 use crate::rpc::TempoTransactionRequest;
 use alloy_network::{Network, TransactionBuilder};
-use alloy_primitives::U256;
+use alloy_primitives::{Address, U256};
 use alloy_provider::{
-    SendableTx,
+    Provider, SendableTx,
     fillers::{FillerControlFlow, TxFiller},
 };
-use alloy_transport::TransportResult;
-use std::time::{SystemTime, UNIX_EPOCH};
+use alloy_transport::{TransportErrorKind, TransportResult};
+use core::num::NonZeroU64;
+use dashmap::DashMap;
+use std::{
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
+use tempo_contracts::precompiles::{INonce, NONCE_PRECOMPILE_ADDRESS};
 use tempo_primitives::{
     subblock::has_sub_block_nonce_key_prefix, transaction::TEMPO_EXPIRING_NONCE_KEY,
 };
@@ -146,7 +152,10 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for E
             // Nonce must be 0 for expiring nonce transactions
             builder.set_nonce(0);
             // Set valid_before to current time + expiry window
-            builder.set_valid_before(Self::current_timestamp() + self.expiry_secs);
+            builder.set_valid_before(
+                NonZeroU64::new(Self::current_timestamp() + self.expiry_secs)
+                    .expect("expiring nonce filler requires a non-zero valid_before"),
+            );
         }
     }
 
@@ -170,11 +179,145 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for E
     }
 }
 
+/// A [`TxFiller`] that fills the nonce for transactions with a pre-set `nonce_key`.
+///
+/// This filler requires `nonce_key` to already be set on the transaction request and fills
+/// the correct next nonce by querying the chain. By default, nonces are cached per
+/// `(address, nonce_key)` pair so that batched sends get sequential nonces without extra RPC
+/// calls. Caching can be disabled to force every fill to refetch from the chain.
+///
+/// Nonce resolution depends on the key:
+/// - `U256::ZERO` (protocol nonce): uses `get_transaction_count`
+/// - `TEMPO_EXPIRING_NONCE_KEY` (U256::MAX): always 0, no caching (use [`ExpiringNonceFiller`]
+///   instead for full expiring nonce support including `valid_before`)
+/// - Any other key: queries the `NonceManager` precompile via `eth_call`
+#[derive(Clone, Debug)]
+pub struct NonceKeyFiller {
+    cache_enabled: bool,
+    #[allow(clippy::type_complexity)]
+    nonces: Arc<DashMap<(Address, U256), Arc<futures::lock::Mutex<u64>>>>,
+}
+
+/// Sentinel value indicating the nonce has not been fetched yet.
+const NONCE_NOT_FETCHED: u64 = u64::MAX;
+
+impl Default for NonceKeyFiller {
+    fn default() -> Self {
+        Self {
+            cache_enabled: true,
+            nonces: Arc::default(),
+        }
+    }
+}
+
+impl NonceKeyFiller {
+    /// Enables or disables nonce caching.
+    pub const fn with_caching_enabled(mut self, cache_enabled: bool) -> Self {
+        self.cache_enabled = cache_enabled;
+        self
+    }
+
+    /// Enables or disables nonce caching.
+    pub fn set_caching_enabled(&mut self, cache_enabled: bool) {
+        self.cache_enabled = cache_enabled;
+    }
+
+    /// Disables nonce caching.
+    pub fn disable_caching(&mut self) {
+        self.set_caching_enabled(false);
+    }
+
+    /// Clears every tracked `(address, nonce_key)` pair.
+    ///
+    /// Future fills will refetch nonces from the chain.
+    pub fn clear(&self) {
+        self.nonces.clear();
+    }
+}
+
+impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for NonceKeyFiller {
+    type Fillable = u64;
+
+    fn status(&self, tx: &N::TransactionRequest) -> FillerControlFlow {
+        if tx.nonce().is_some() {
+            return FillerControlFlow::Finished;
+        }
+        if tx.nonce_key.is_none() {
+            return FillerControlFlow::missing("NonceKeyFiller", vec!["nonce_key"]);
+        }
+        if TransactionBuilder::from(tx).is_none() {
+            return FillerControlFlow::missing("NonceKeyFiller", vec!["from"]);
+        }
+        FillerControlFlow::Ready
+    }
+
+    fn fill_sync(&self, _tx: &mut SendableTx<N>) {}
+
+    async fn prepare<P>(
+        &self,
+        provider: &P,
+        tx: &N::TransactionRequest,
+    ) -> TransportResult<Self::Fillable>
+    where
+        P: Provider<N>,
+    {
+        let from = TransactionBuilder::from(tx)
+            .ok_or_else(|| TransportErrorKind::custom_str("missing `from` address"))?;
+        let nonce_key = tx
+            .nonce_key
+            .ok_or_else(|| TransportErrorKind::custom_str("missing `nonce_key`"))?;
+
+        // Expiring nonces always use nonce 0
+        if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+            return Ok(0);
+        }
+
+        let key = (from, nonce_key);
+        let mutex = self
+            .nonces
+            .entry(key)
+            .or_insert_with(|| Arc::new(futures::lock::Mutex::new(NONCE_NOT_FETCHED)))
+            .clone();
+
+        let mut nonce = mutex.lock().await;
+
+        if *nonce == NONCE_NOT_FETCHED || !self.cache_enabled {
+            *nonce = if nonce_key.is_zero() {
+                provider.get_transaction_count(from).await?
+            } else {
+                let contract = INonce::new(NONCE_PRECOMPILE_ADDRESS, provider);
+                contract
+                    .getNonce(from, nonce_key)
+                    .call()
+                    .await
+                    .map_err(|e| TransportErrorKind::custom_str(&e.to_string()))?
+            };
+        } else {
+            *nonce += 1;
+        }
+
+        Ok(*nonce)
+    }
+
+    async fn fill(
+        &self,
+        fillable: Self::Fillable,
+        mut tx: SendableTx<N>,
+    ) -> TransportResult<SendableTx<N>> {
+        if let Some(builder) = tx.as_mut_builder() {
+            builder.set_nonce(fillable);
+        }
+        Ok(tx)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::{TempoNetwork, fillers::Random2DNonceFiller, rpc::TempoTransactionRequest};
+    use alloy::sol_types::SolCall;
     use alloy_network::TransactionBuilder;
-    use alloy_primitives::ruint::aliases::U256;
+    use alloy_primitives::{Bytes, ruint::aliases::U256};
     use alloy_provider::{ProviderBuilder, mock::Asserter};
     use eyre;
 
@@ -207,6 +350,68 @@ mod tests {
             .try_into_request()?;
         assert_eq!(filled_request.nonce_key, Some(U256::ONE));
         assert!(filled_request.nonce().is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_nonce_key_filler_clear_refetches_chain_nonce() -> eyre::Result<()> {
+        let asserter = Asserter::new();
+        let provider = ProviderBuilder::<_, _, TempoNetwork>::default()
+            .connect_mocked_client(asserter.clone());
+        let filler = NonceKeyFiller::default();
+        let account = Address::repeat_byte(0x11);
+        let nonce_key = U256::from(7_u64);
+        let mut tx = TempoTransactionRequest::default().with_nonce_key(nonce_key);
+        tx.set_from(account);
+
+        asserter.push_success(&Bytes::from(INonce::getNonceCall::abi_encode_returns(
+            &10_u64,
+        )));
+
+        let first = TxFiller::<TempoNetwork>::prepare(&filler, &provider, &tx).await?;
+        let second = TxFiller::<TempoNetwork>::prepare(&filler, &provider, &tx).await?;
+
+        assert_eq!(first, 10);
+        assert_eq!(second, 11);
+
+        filler.clear();
+
+        asserter.push_success(&Bytes::from(INonce::getNonceCall::abi_encode_returns(
+            &42_u64,
+        )));
+
+        let reset = TxFiller::<TempoNetwork>::prepare(&filler, &provider, &tx).await?;
+
+        assert_eq!(reset, 42);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_nonce_key_filler_can_disable_caching() -> eyre::Result<()> {
+        let asserter = Asserter::new();
+        let provider = ProviderBuilder::<_, _, TempoNetwork>::default()
+            .connect_mocked_client(asserter.clone());
+        let mut filler = NonceKeyFiller::default();
+        filler.disable_caching();
+        let account = Address::repeat_byte(0x22);
+        let nonce_key = U256::from(7_u64);
+        let mut tx = TempoTransactionRequest::default().with_nonce_key(nonce_key);
+        tx.set_from(account);
+
+        asserter.push_success(&Bytes::from(INonce::getNonceCall::abi_encode_returns(
+            &10_u64,
+        )));
+        asserter.push_success(&Bytes::from(INonce::getNonceCall::abi_encode_returns(
+            &42_u64,
+        )));
+
+        let first = TxFiller::<TempoNetwork>::prepare(&filler, &provider, &tx).await?;
+        let second = TxFiller::<TempoNetwork>::prepare(&filler, &provider, &tx).await?;
+
+        assert_eq!(first, 10);
+        assert_eq!(second, 42);
 
         Ok(())
     }

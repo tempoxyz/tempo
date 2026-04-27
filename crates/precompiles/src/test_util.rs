@@ -4,18 +4,20 @@
 use crate::error::TempoPrecompileError;
 use crate::{
     PATH_USD_ADDRESS, Precompile, Result,
+    address_registry::{AddressRegistry, IAddressRegistry},
     storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
     tip20::{self, ITIP20, TIP20Token},
     tip20_factory::{self, TIP20Factory},
 };
 use alloy::{
-    primitives::{Address, B256, U256},
+    primitives::{Address, B256, U256, address, hex_literal::hex},
     sol_types::SolError,
 };
 use revm::precompile::PrecompileError;
 #[cfg(any(test, feature = "test-utils"))]
 use tempo_contracts::precompiles::TIP20Error;
 use tempo_contracts::precompiles::{TIP20_FACTORY_ADDRESS, UnknownFunctionSelector};
+use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
 
 /// Checks that all selectors in an interface have dispatch handlers.
 ///
@@ -36,14 +38,14 @@ pub fn check_selector_coverage<P: Precompile>(
 
         let result = precompile.call(&calldata, Address::ZERO);
 
-        // Check if we got "Unknown function selector" error (old format)
+        // Check if we got "Unknown function selector" error (fatal format)
         let is_unsupported_old = matches!(&result,
-            Err(PrecompileError::Other(msg)) if msg.contains("Unknown function selector")
+            Err(PrecompileError::Fatal(msg)) if msg.contains("Unknown function selector")
         );
 
-        // Check if we got "Unknown function selector" error (new format - ABI-encoded)
+        // Check if we got "Unknown function selector" error (ABI-encoded revert)
         let is_unsupported_new = if let Ok(output) = &result {
-            output.reverted && UnknownFunctionSelector::abi_decode(&output.bytes).is_ok()
+            output.is_revert() && UnknownFunctionSelector::abi_decode(&output.bytes).is_ok()
         } else {
             false
         };
@@ -84,7 +86,7 @@ pub fn assert_full_coverage(results: impl IntoIterator<Item = Vec<([u8; 4], &'st
     );
 }
 
-/// Helper to create a test storage provider with a random address
+/// Creates a test [`HashMapStorageProvider`] (chain ID 1) paired with a random address.
 pub fn setup_storage() -> (HashMapStorageProvider, Address) {
     (HashMapStorageProvider::new(1), Address::random())
 }
@@ -179,9 +181,9 @@ impl TIP20Setup {
         }
     }
 
-    /// Do not clear the emitted events of the token.
+    /// Clear the emitted events of the token when `apply()` is called.
     ///
-    /// SAFETY: it is the caller's responsibility to ensure the test uses `HashMapStorageProvider`.
+    /// SAFETY: the caller must ensure the test uses `HashMapStorageProvider`.
     pub fn clear_events(mut self) -> Self {
         self.clear_events = true;
         self
@@ -276,7 +278,7 @@ impl TIP20Setup {
         TIP20Token::from_address(PATH_USD_ADDRESS)
     }
 
-    /// Initialize the TIP20 factory if needed.
+    /// Returns the [`TIP20Factory`], initializing it if not yet deployed.
     pub fn factory() -> Result<TIP20Factory> {
         let mut factory = TIP20Factory::new();
         if !is_initialized(TIP20_FACTORY_ADDRESS)? {
@@ -285,7 +287,7 @@ impl TIP20Setup {
         Ok(factory)
     }
 
-    /// Apply the configuration, returning just the TIP20Token.
+    /// Applies the configuration and returns the fully configured [`TIP20Token`].
     pub fn apply(self) -> Result<TIP20Token> {
         let mut token = match self.action.clone() {
             Action::PathUSD => self.path_usd_inner()?,
@@ -360,13 +362,13 @@ impl TIP20Setup {
         Ok(token)
     }
 
-    /// Apply the configuration, and expect it to fail with the given error.
+    /// Applies the configuration and asserts it fails with `expected`.
     pub fn expect_err(self, expected: TempoPrecompileError) {
         let result = self.apply();
         assert!(result.is_err_and(|err| err == expected));
     }
 
-    /// Apply the configuration, and expect it to fail with the given TIP20 error.
+    /// Applies the configuration and asserts it fails with the given [`TIP20Error`].
     pub fn expect_tip20_err(self, expected: TIP20Error) {
         let result = self.apply();
         assert!(result.is_err_and(|err| err == TempoPrecompileError::TIP20(expected)));
@@ -379,6 +381,7 @@ fn is_initialized(address: Address) -> Result<bool> {
     crate::storage::StorageCtx.has_bytecode(address)
 }
 
+/// Looks up the admin of a TIP-20 token by scanning `TokenCreated` events from the factory.
 #[cfg(any(test, feature = "test-utils"))]
 fn get_tip20_admin(token: Address) -> Option<Address> {
     use alloy::{primitives::Log, sol_types::SolEvent};
@@ -447,4 +450,24 @@ pub fn gen_word_from(values: &[&str]) -> U256 {
     slot_bytes[start_idx..].copy_from_slice(&bytes);
 
     U256::from_be_bytes(slot_bytes)
+}
+
+// ────────────────── TIP-1022 Virtual Address Helpers ──────────────────
+
+/// Pre-computed (address, salt) pair satisfying the 32-bit PoW.
+/// Uses the standard test mnemonic index-0 address so it works in both unit and integration tests.
+pub const VIRTUAL_MASTER: Address = address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
+pub const VIRTUAL_SALT: [u8; 32] =
+    hex!("00000000000000000000000000000000000000000000000000000000abf52baf");
+
+/// Registers [`VIRTUAL_MASTER`] and returns `(master_id, virtual_address)`.
+pub fn register_virtual_master(registry: &mut AddressRegistry) -> Result<(MasterId, Address)> {
+    let master_id = registry.register_virtual_master(
+        VIRTUAL_MASTER,
+        IAddressRegistry::registerVirtualMasterCall {
+            salt: VIRTUAL_SALT.into(),
+        },
+    )?;
+    let virtual_addr = Address::new_virtual(master_id, UserTag::new(hex!("010203040506")));
+    Ok((master_id, virtual_addr))
 }

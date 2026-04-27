@@ -45,6 +45,25 @@ impl ForkSchedule {
         }
     }
 
+    /// Returns whether the given Tempo hardfork is active for this schedule.
+    ///
+    /// For [`Devnet`](Self::Devnet) all forks from the dev genesis are active.
+    /// For other schedules, a fork is active only if its timestamp in the
+    /// reference genesis is in the past.
+    pub(crate) fn is_active(&self, fork: TempoHardfork) -> bool {
+        let Some(reference_json) = self.reference_genesis() else {
+            return true; // devnet: all forks active
+        };
+        let reference: serde_json::Value =
+            serde_json::from_str(reference_json).expect("reference genesis must parse");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let time_key = format!("{}Time", fork.to_string().to_lowercase());
+        matches!(reference["config"][&time_key].as_u64(), Some(ts) if ts <= now)
+    }
+
     /// Apply this profile's fork timestamps to a test genesis JSON value.
     ///
     /// Scans the test genesis config for all `*Time` keys and checks each
@@ -78,6 +97,36 @@ impl ForkSchedule {
     }
 }
 
+/// Build a genesis JSON string from `test-genesis.json` with only forks up to
+/// (and including) `last_active` enabled.  All subsequent forks are removed so
+/// the node starts in a "pre-<next fork>" configuration.
+///
+/// This scales automatically when new hardforks are appended to
+/// `TempoHardfork` — no manual maintenance required.
+pub(crate) fn make_genesis_at(last_active: TempoHardfork) -> String {
+    let mut genesis: serde_json::Value =
+        serde_json::from_str(include_str!("../assets/test-genesis.json"))
+            .expect("test-genesis.json must parse");
+    let config = genesis["config"]
+        .as_object_mut()
+        .expect("genesis must have config");
+
+    let mut past_cutoff = false;
+    for &fork in TempoHardfork::VARIANTS {
+        if fork == TempoHardfork::Genesis {
+            continue;
+        }
+        if past_cutoff {
+            let key = format!("{}Time", fork.name().to_lowercase());
+            config.remove(&key);
+        }
+        if fork == last_active {
+            past_cutoff = true;
+        }
+    }
+    serde_json::to_string(&genesis).expect("genesis must serialize")
+}
+
 /// Standard test mnemonic phrase used across integration tests
 pub(crate) const TEST_MNEMONIC: &str =
     "test test test test test test test test test test test junk";
@@ -92,20 +141,23 @@ use alloy::{
 use alloy_primitives::B256;
 use alloy_rpc_types_engine::PayloadAttributes;
 use reth_e2e_test_utils::setup;
-use reth_ethereum::tasks::TaskManager;
-use reth_node_api::{FullNodeComponents, PayloadBuilderAttributes};
+use reth_ethereum::tasks::Runtime;
+use reth_node_api::FullNodeComponents;
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle, rpc::RethRpcAddOns};
 use reth_node_core::args::RpcServerArgs;
 use reth_rpc_builder::RpcModuleSelection;
 use std::{sync::Arc, time::Duration};
-use tempo_chainspec::spec::TempoChainSpec;
+use tempo_chainspec::{
+    hardfork::{TempoHardfork, TempoHardforks},
+    spec::TempoChainSpec,
+};
 use tempo_contracts::precompiles::{
     IRolesAuth,
     ITIP20::{self, ITIP20Instance},
     ITIP20Factory,
 };
 use tempo_node::node::TempoNode;
-use tempo_payload_types::{TempoPayloadAttributes, TempoPayloadBuilderAttributes};
+use tempo_payload_types::TempoPayloadAttributes;
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::ISSUER_ROLE};
 
 /// Creates a test TIP20 token with issuer role granted to the caller
@@ -156,7 +208,7 @@ pub(crate) enum NodeSource {
 }
 
 /// Type alias for a local test node and task manager
-pub(crate) type LocalTestNode = (Box<dyn TestNodeHandle>, TaskManager);
+pub(crate) type LocalTestNode = (Box<dyn TestNodeHandle>, Runtime);
 
 /// Trait wrapper around NodeHandle to simplify function return types
 pub(crate) trait TestNodeHandle: Send {}
@@ -212,16 +264,14 @@ pub(crate) async fn await_receipts(
 pub(crate) struct SingleNodeSetup {
     /// The node handle for direct manipulation (inject_tx, advance_block, etc.)
     pub node: reth_e2e_test_utils::NodeHelperType<TempoNode>,
-    /// Task manager that must be kept alive for the node to function
-    _tasks: TaskManager,
+    /// Latest Tempo hardfork active at genesis (timestamp 0).
+    pub hardfork: TempoHardfork,
 }
 
 /// Result type for multi-node setup
 pub(crate) struct MultiNodeSetup {
     /// Node handles for direct manipulation
     pub nodes: Vec<reth_e2e_test_utils::NodeHelperType<TempoNode>>,
-    /// Task manager that must be kept alive for nodes to function
-    _tasks: TaskManager,
 }
 
 /// Result type for HTTP-only setup (no direct node access)
@@ -313,8 +363,9 @@ impl TestNodeBuilder {
         }
 
         let chain_spec = self.build_chain_spec()?;
+        let hardfork = chain_spec.tempo_hardfork_at(0);
 
-        let (mut nodes, tasks, _wallet) = setup::<TempoNode>(
+        let (mut nodes, _wallet) = setup::<TempoNode>(
             1,
             Arc::new(chain_spec),
             self.is_dev,
@@ -324,10 +375,7 @@ impl TestNodeBuilder {
 
         let node = nodes.remove(0);
 
-        Ok(SingleNodeSetup {
-            node,
-            _tasks: tasks,
-        })
+        Ok(SingleNodeSetup { node, hardfork })
     }
 
     /// Build multiple nodes with direct access
@@ -346,7 +394,7 @@ impl TestNodeBuilder {
 
         let chain_spec = self.build_chain_spec()?;
 
-        let (nodes, tasks, _wallet) = setup::<TempoNode>(
+        let (nodes, _wallet) = setup::<TempoNode>(
             self.node_count,
             Arc::new(chain_spec),
             self.is_dev,
@@ -354,14 +402,19 @@ impl TestNodeBuilder {
         )
         .await?;
 
-        Ok(MultiNodeSetup {
-            nodes,
-            _tasks: tasks,
-        })
+        Ok(MultiNodeSetup { nodes })
     }
 
     /// Build HTTP-only setup
     pub(crate) async fn build_http_only(self) -> eyre::Result<HttpOnlySetup> {
+        self.build_http_only_with_api(RpcModuleSelection::All).await
+    }
+
+    /// Build HTTP-only setup with a custom RPC module selection.
+    pub(crate) async fn build_http_only_with_api(
+        self,
+        http_api: RpcModuleSelection,
+    ) -> eyre::Result<HttpOnlySetup> {
         if let Some(url) = self.external_rpc {
             return Ok(HttpOnlySetup {
                 http_url: url,
@@ -369,7 +422,7 @@ impl TestNodeBuilder {
             });
         }
 
-        let tasks = TaskManager::current();
+        let runtime = Runtime::test();
         let chain_spec = self.build_chain_spec()?;
         let static_validator = self
             .custom_validator
@@ -383,13 +436,13 @@ impl TestNodeBuilder {
                 RpcServerArgs::default()
                     .with_unused_ports()
                     .with_http()
-                    .with_http_api(RpcModuleSelection::All),
+                    .with_http_api(http_api),
             );
         node_config.txpool.max_account_slots = usize::MAX;
         node_config.dev.block_time = Some(Duration::from_millis(100));
 
         let node_handle = NodeBuilder::new(node_config.clone())
-            .testing_node(tasks.executor())
+            .testing_node(runtime.clone())
             .node(TempoNode::default())
             .launch_with_debug_capabilities()
             .map_debug_payload_attributes(move |mut attributes| {
@@ -412,7 +465,7 @@ impl TestNodeBuilder {
 
         Ok(HttpOnlySetup {
             http_url,
-            local_node: Some((Box::new(node_handle), tasks)),
+            local_node: Some((Box::new(node_handle), runtime)),
         })
     }
 
@@ -432,17 +485,14 @@ impl TestNodeBuilder {
 }
 
 /// Default attributes generator for payload building
-fn default_attributes_generator(timestamp: u64) -> TempoPayloadBuilderAttributes {
-    let attributes = TempoPayloadAttributes {
-        inner: PayloadAttributes {
-            timestamp,
-            prev_randao: alloy::primitives::B256::ZERO,
-            suggested_fee_recipient: alloy::primitives::Address::ZERO,
-            withdrawals: Some(vec![]),
-            parent_beacon_block_root: Some(alloy::primitives::B256::ZERO),
-        },
-        timestamp_millis_part: 0,
-    };
-
-    TempoPayloadBuilderAttributes::try_new(B256::ZERO, attributes, 0).unwrap()
+fn default_attributes_generator(timestamp: u64) -> TempoPayloadAttributes {
+    PayloadAttributes {
+        timestamp,
+        prev_randao: alloy::primitives::B256::ZERO,
+        suggested_fee_recipient: alloy::primitives::Address::ZERO,
+        withdrawals: Some(vec![]),
+        parent_beacon_block_root: Some(alloy::primitives::B256::ZERO),
+        slot_number: None,
+    }
+    .into()
 }

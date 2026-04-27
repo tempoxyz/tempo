@@ -18,3 +18,6 @@ pub use tempo_primitives as primitives;
 
 #[doc(inline)]
 pub use tempo_contracts as contracts;
+
+#[doc(inline)]
+pub use tempo_chainspec as chainspec;

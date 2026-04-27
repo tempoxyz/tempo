@@ -1,4 +1,7 @@
-// Module for tip20_factory precompile
+//! [TIP-20] token factory precompile — deploys new [TIP-20] tokens at deterministic addresses.
+//!
+//! [TIP-20]: <https://docs.tempo.xyz/protocol/tip20>
+
 pub mod dispatch;
 
 pub use tempo_contracts::precompiles::{ITIP20Factory, TIP20FactoryError, TIP20FactoryEvent};
@@ -7,12 +10,13 @@ use tempo_precompiles_macros::contract;
 use crate::{
     PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
     error::{Result, TempoPrecompileError},
-    tip20::{TIP20Error, TIP20Token, USD_CURRENCY, is_tip20_prefix},
+    tip20::{TIP20Error, TIP20Token, USD_CURRENCY},
 };
 use alloy::{
     primitives::{Address, B256, keccak256},
     sol_types::SolValue,
 };
+use tempo_primitives::TempoAddressExt;
 use tracing::trace;
 
 /// Number of reserved addresses (0 to RESERVED_SIZE-1) that cannot be deployed via factory
@@ -54,14 +58,16 @@ pub(crate) fn compute_tip20_address(sender: Address, salt: B256) -> (Address, u6
 
 // Precompile functions
 impl TIP20Factory {
-    /// Initializes the TIP20 factory contract.
+    /// Initializes the TIP-20 factory precompile.
     pub fn initialize(&mut self) -> Result<()> {
-        // must ensure the account is not empty, by setting some code
         self.__initialize()
     }
 
-    /// Computes the deterministic address for a token given sender and salt.
-    /// Reverts if the computed address would be in the reserved range.
+    /// Computes the deterministic address for a token given `sender` and `salt`. Reverts if the
+    /// derived address falls within the reserved range (lower 8 bytes < `RESERVED_SIZE`).
+    ///
+    /// # Errors
+    /// - `AddressReserved` — the derived address is in the reserved range
     pub fn get_token_address(&self, call: ITIP20Factory::getTokenAddressCall) -> Result<Address> {
         let (address, lower_bytes) = compute_tip20_address(call.sender, call.salt);
 
@@ -75,13 +81,9 @@ impl TIP20Factory {
         Ok(address)
     }
 
-    /// Returns true if the address is a valid TIP20 token.
-    ///
-    /// Checks both:
-    /// 1. The address has the correct TIP20 prefix
-    /// 2. The address has code deployed (non-empty code hash)
+    /// Returns `true` if `token` has the correct TIP-20 prefix and has code deployed.
     pub fn is_tip20(&self, token: Address) -> Result<bool> {
-        if !is_tip20_prefix(token) {
+        if !token.is_tip20() {
             return Ok(false);
         }
         // Check if the token has code deployed (non-empty code hash)
@@ -89,6 +91,16 @@ impl TIP20Factory {
             .with_account_info(token, |info| Ok(!info.is_empty_code_hash()))
     }
 
+    /// Deploys a new TIP-20 token at a deterministic address derived from `sender` and `salt`.
+    ///
+    /// Validates that the token does not already exist, the quote token is a deployed TIP-20 of
+    /// a compatible currency, and the derived address is outside the reserved range. Initializes
+    /// the token via [`TIP20Token::initialize`].
+    ///
+    /// # Errors
+    /// - `TokenAlreadyExists` — a TIP-20 is already deployed at the derived address
+    /// - `InvalidQuoteToken` — quote token is not a deployed TIP-20 or has incompatible currency
+    /// - `AddressReserved` — the derived address is in the reserved range
     pub fn create_token(
         &mut self,
         sender: Address,
@@ -148,8 +160,15 @@ impl TIP20Factory {
         Ok(token_address)
     }
 
-    /// Creates a token at a reserved address
-    /// Internal function used to deploy TIP20s at reserved addresses at genesis or hardforks
+    /// Deploys a TIP-20 token at a reserved address (lower 8 bytes < `RESERVED_SIZE`). Used
+    /// during genesis or hardforks to bootstrap protocol tokens like pathUSD.
+    ///
+    /// # Errors
+    /// - `InvalidToken` — `address` does not have the TIP-20 prefix
+    /// - `TokenAlreadyExists` — a TIP-20 is already deployed at `address`
+    /// - `InvalidQuoteToken` — quote token is invalid, not deployed, or has incompatible
+    ///   currency; pathUSD must use `Address::ZERO` as quote token
+    /// - `AddressNotReserved` — the address is outside the reserved range
     pub fn create_token_reserved_address(
         &mut self,
         address: Address,
@@ -160,7 +179,7 @@ impl TIP20Factory {
         admin: Address,
     ) -> Result<Address> {
         // Validate that the address has a TIP20 prefix
-        if !is_tip20_prefix(address) {
+        if !address.is_tip20() {
             return Err(TIP20Error::invalid_token().into());
         }
 
@@ -250,26 +269,6 @@ mod tests {
     }
 
     #[test]
-    fn test_is_tip20_prefix() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-
-        StorageCtx::enter(&mut storage, || {
-            // PATH_USD has correct prefix
-            assert!(is_tip20_prefix(PATH_USD_ADDRESS));
-
-            // Address with TIP20 prefix (0x20C0...)
-            let tip20_addr = Address::from(alloy::hex!("20C0000000000000000000000000000000001234"));
-            assert!(is_tip20_prefix(tip20_addr));
-
-            // Random address does not have TIP20 prefix
-            let random = Address::random();
-            assert!(!is_tip20_prefix(random));
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_is_tip20() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
@@ -346,11 +345,11 @@ mod tests {
         assert_ne!(lower4, lower5);
 
         // All addresses should have TIP20 prefix
-        assert!(is_tip20_prefix(addr1));
-        assert!(is_tip20_prefix(addr2));
-        assert!(is_tip20_prefix(addr3));
-        assert!(is_tip20_prefix(addr4));
-        assert!(is_tip20_prefix(addr5));
+        assert!(addr1.is_tip20());
+        assert!(addr2.is_tip20());
+        assert!(addr3.is_tip20());
+        assert!(addr4.is_tip20());
+        assert!(addr5.is_tip20());
     }
 
     #[test]
@@ -388,8 +387,8 @@ mod tests {
             assert_ne!(token_addr_1, token_addr_2);
 
             // Verify addresses have TIP20 prefix
-            assert!(is_tip20_prefix(token_addr_1));
-            assert!(is_tip20_prefix(token_addr_2));
+            assert!(token_addr_1.is_tip20());
+            assert!(token_addr_2.is_tip20());
 
             // Verify tokens are valid TIP20s
             assert!(factory.is_tip20(token_addr_1)?);
@@ -760,7 +759,7 @@ mod tests {
         assert_ne!(address, Address::ZERO);
 
         // Address should have TIP20 prefix
-        assert!(is_tip20_prefix(address));
+        assert!(address.is_tip20());
 
         // Same inputs should produce same outputs (deterministic)
         let (address2, lower_bytes2) = compute_tip20_address(sender, salt);
@@ -794,7 +793,7 @@ mod tests {
             assert_ne!(address, Address::ZERO);
 
             // Should have TIP20 prefix
-            assert!(is_tip20_prefix(address));
+            assert!(address.is_tip20());
 
             // Should be deterministic
             let address2 =
