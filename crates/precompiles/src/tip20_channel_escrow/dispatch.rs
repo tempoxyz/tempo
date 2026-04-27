@@ -1,21 +1,22 @@
 //! ABI dispatch for the [`TIP20ChannelEscrow`] precompile.
 
 use super::{CLOSE_GRACE_PERIOD, TIP20ChannelEscrow, VOUCHER_TYPEHASH};
-use crate::{Precompile, dispatch_call, input_cost, metadata, mutate, mutate_void, view};
+use crate::{Precompile, charge_input_cost, dispatch_call, metadata, mutate, mutate_void, view};
 use alloy::{primitives::Address, sol_types::SolInterface};
-use revm::precompile::{PrecompileError, PrecompileResult};
+use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::{
     ITIP20ChannelEscrow, ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls,
 };
 
 impl Precompile for TIP20ChannelEscrow {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
-        self.storage
-            .deduct_gas(input_cost(calldata.len()))
-            .map_err(|_| PrecompileError::OutOfGas)?;
+        if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
+            return err;
+        }
 
         dispatch_call(
             calldata,
+            &[],
             ITIP20ChannelEscrowCalls::abi_decode,
             |call| match call {
                 ITIP20ChannelEscrowCalls::CLOSE_GRACE_PERIOD(_) => {

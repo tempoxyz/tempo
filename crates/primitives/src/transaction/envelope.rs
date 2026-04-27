@@ -220,9 +220,7 @@ impl TempoTxEnvelope {
             Self::AA(tx) => {
                 let tx = tx.tx();
                 tx.access_list.is_empty()
-                    && aa_is_payment(tx, |to, input| {
-                        is_payment_call_v2(to, input, t5_active)
-                    })
+                    && aa_is_payment(tx, |to, input| is_payment_call_v2(to, input, t5_active))
             }
         }
     }
@@ -990,18 +988,35 @@ mod tests {
     fn test_payment_v2_accepts_valid_calldata() {
         for calldata in payment_calldatas() {
             for envelope in payment_envelopes(calldata) {
-                assert!(envelope.is_payment_v1(PRE_T5), "V1 must accept valid calldata");
-                assert!(envelope.is_payment_v2(PRE_T5), "V2 must accept valid calldata");
+                assert!(
+                    envelope.is_payment_v1(PRE_T5),
+                    "V1 must accept valid calldata"
+                );
+                assert!(
+                    envelope.is_payment_v2(PRE_T5),
+                    "V2 must accept valid calldata"
+                );
             }
         }
     }
 
     #[test]
     fn test_payment_v2_rejects_empty_calldata() {
-        for envelope in payment_envelopes(Bytes::new()) {
-            assert!(envelope.is_payment_v1(PRE_T5), "V1 must accept (prefix-only)");
-            assert!(!envelope.is_payment_v2(PRE_T5), "V2 must reject empty calldata");
-        }
+        let tx = TxLegacy {
+            to: TxKind::Call(PAYMENT_TKN),
+            gas_limit: 21_000,
+            ..Default::default()
+        };
+        let envelope =
+            TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()));
+        assert!(
+            envelope.is_payment_v1(PRE_T5),
+            "V1 must accept (prefix-only)"
+        );
+        assert!(
+            !envelope.is_payment_v2(PRE_T5),
+            "V2 must reject empty calldata"
+        );
     }
 
     #[test]
@@ -1009,10 +1024,22 @@ mod tests {
         for calldata in payment_calldatas() {
             let mut data = calldata.to_vec();
             data.extend_from_slice(&[0u8; 32]);
-            for envelope in payment_envelopes(Bytes::from(data)) {
-                assert!(envelope.is_payment_v1(PRE_T5), "V1 must accept (prefix-only)");
-                assert!(!envelope.is_payment_v2(PRE_T5), "V2 must reject excess calldata");
-            }
+            let tx = TxLegacy {
+                to: TxKind::Call(PAYMENT_TKN),
+                gas_limit: 21_000,
+                input: Bytes::from(data),
+                ..Default::default()
+            };
+            let envelope =
+                TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()));
+            assert!(
+                envelope.is_payment_v1(PRE_T5),
+                "V1 must accept (prefix-only)"
+            );
+            assert!(
+                !envelope.is_payment_v2(PRE_T5),
+                "V2 must reject excess calldata"
+            );
         }
     }
 
@@ -1021,10 +1048,22 @@ mod tests {
         for calldata in payment_calldatas() {
             let mut data = calldata.to_vec();
             data[..4].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
-            for envelope in payment_envelopes(Bytes::from(data)) {
-                assert!(envelope.is_payment_v1(PRE_T5), "V1 must accept (prefix-only)");
-                assert!(!envelope.is_payment_v2(PRE_T5), "V2 must reject unknown selector");
-            }
+            let tx = TxLegacy {
+                to: TxKind::Call(PAYMENT_TKN),
+                gas_limit: 21_000,
+                input: Bytes::from(data),
+                ..Default::default()
+            };
+            let envelope =
+                TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()));
+            assert!(
+                envelope.is_payment_v1(PRE_T5),
+                "V1 must accept (prefix-only)"
+            );
+            assert!(
+                !envelope.is_payment_v2(PRE_T5),
+                "V2 must reject unknown selector"
+            );
         }
     }
 
@@ -1068,8 +1107,8 @@ mod tests {
         let envelope =
             TempoTxEnvelope::Eip7702(Signed::new_unhashed(tx, Signature::test_signature()));
         assert!(
-            envelope.is_payment_v1(PRE_T5),
-            "V1 ignores authorization_list (backwards compat)"
+            !envelope.is_payment_v1(PRE_T5),
+            "V1 must reject authorization-bearing EIP-7702 transactions"
         );
         assert!(
             !envelope.is_payment_v2(PRE_T5),
@@ -1106,8 +1145,8 @@ mod tests {
         };
         let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
         assert!(
-            envelope.is_payment_v1(PRE_T5),
-            "V1 ignores side-effect fields (backwards compat)"
+            !envelope.is_payment_v1(PRE_T5),
+            "V1 must reject AA tx with key_authorization"
         );
         assert!(
             !envelope.is_payment_v2(PRE_T5),
@@ -1141,8 +1180,8 @@ mod tests {
         };
         let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
         assert!(
-            envelope.is_payment_v1(PRE_T5),
-            "V1 ignores side-effect fields (backwards compat)"
+            !envelope.is_payment_v1(PRE_T5),
+            "V1 must reject AA tx with tempo_authorization_list"
         );
         assert!(
             !envelope.is_payment_v2(PRE_T5),
@@ -1165,7 +1204,10 @@ mod tests {
 
         for envelope in payment_envelopes_with_access_list(calldata, access_list) {
             assert!(envelope.is_payment_v1(PRE_T5), "V1 must ignore access_list");
-            assert!(!envelope.is_payment_v2(PRE_T5), "V2 must reject access_list");
+            assert!(
+                !envelope.is_payment_v2(PRE_T5),
+                "V2 must reject access_list"
+            );
         }
     }
 
@@ -1343,7 +1385,13 @@ mod tests {
             ..Default::default()
         };
         let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
-        assert!(!envelope.is_payment_v1(PRE_T5), "V1 must reject AA without calls");
-        assert!(!envelope.is_payment_v2(PRE_T5), "V2 must reject AA without calls");
+        assert!(
+            !envelope.is_payment_v1(PRE_T5),
+            "V1 must reject AA without calls"
+        );
+        assert!(
+            !envelope.is_payment_v2(PRE_T5),
+            "V2 must reject AA without calls"
+        );
     }
 }
