@@ -2,10 +2,7 @@
 //!
 //! [`alto`]: https://github.com/commonwarexyx/alto
 
-use std::{
-    num::NonZeroUsize,
-    time::{Duration, Instant},
-};
+use std::{num::NonZeroUsize, time::Duration};
 
 use commonware_broadcast::buffered;
 use commonware_consensus::{
@@ -135,27 +132,21 @@ where
 
         let scheme_provider = SchemeProvider::new();
 
-        let start = Instant::now();
         let finalizations_by_height = storage::init_finalizations_archive(
-            context.with_label("finalizations_by_height"),
+            &context,
             &self.partition_prefix,
             page_cache_ref.clone(),
         )
         .await
         .wrap_err("failed to initialize finalizations by height archive")?;
 
-        info!(elapsed = ?start.elapsed(), "restored finalizations by height archive");
-
-        let start = Instant::now();
         let finalized_blocks = storage::init_finalized_blocks_archive(
-            context.with_label("finalized_blocks"),
+            &context,
             &self.partition_prefix,
             page_cache_ref.clone(),
         )
         .await
         .wrap_err("failed to initialize finalizations by height archive")?;
-
-        info!(elapsed = ?start.elapsed(), "restored finalized blocks archive");
 
         // TODO(janis): forward `last_finalized_height` to application so it can
         // forward missing blocks to EL.

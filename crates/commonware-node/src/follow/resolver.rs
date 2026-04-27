@@ -168,7 +168,7 @@ impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> commonware_res
     }
 
     async fn fetch_targeted(&mut self, key: Self::Key, _targets: NonEmptyVec<Self::PublicKey>) {
-        Resolver::fetch(self, key).await;
+        Self::fetch(self, key).await;
     }
 
     async fn fetch_all_targeted(

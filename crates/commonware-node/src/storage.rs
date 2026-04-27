@@ -3,6 +3,9 @@
 //! This module defines the archive formats used by both engines to ensure
 //! data compatibility. A node that starts as a follower can be promoted to
 //! a validator (or vice versa) without data migration.
+//!
+
+use std::time::Instant;
 
 use commonware_consensus::simplex::scheme::bls12381_threshold::vrf::Scheme;
 use commonware_cryptography::{
@@ -11,6 +14,7 @@ use commonware_cryptography::{
 use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage, buffer::paged::CacheRef};
 use commonware_storage::archive::immutable;
 use commonware_utils::{NZU16, NZU64, NZUsize};
+use tracing::info;
 
 use crate::{
     config::BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
@@ -48,15 +52,16 @@ pub(crate) type FinalizedBlocksArchive<TContext> = immutable::Archive<TContext, 
 
 /// Initialize the finalizations archive with the standard format.
 pub(crate) async fn init_finalizations_archive<TContext>(
-    context: TContext,
+    context: &TContext,
     partition_prefix: &str,
     page_cache: CacheRef,
 ) -> Result<FinalizationsArchive<TContext>, commonware_storage::archive::Error>
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
 {
-    immutable::Archive::init(
-        context,
+    let start = Instant::now();
+    let archive = immutable::Archive::init(
+        context.with_label("finalizations_by_height"),
         immutable::Config {
             metadata_partition: format!("{partition_prefix}-{FINALIZATIONS_BY_HEIGHT}-metadata"),
             freezer_table_partition: format!(
@@ -83,20 +88,28 @@ where
             ordinal_write_buffer: WRITE_BUFFER,
         },
     )
-    .await
+    .await;
+
+    info!(
+        elapsed = %tempo_telemetry_util::display_duration(start.elapsed()),
+        "restored finalizations by height archive"
+    );
+
+    archive
 }
 
 /// Initialize the finalized blocks archive with the standard format.
 pub(crate) async fn init_finalized_blocks_archive<TContext>(
-    context: TContext,
+    context: &TContext,
     partition_prefix: &str,
     page_cache: CacheRef,
 ) -> Result<FinalizedBlocksArchive<TContext>, commonware_storage::archive::Error>
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
 {
-    immutable::Archive::init(
-        context,
+    let start = Instant::now();
+    let archive = immutable::Archive::init(
+        context.with_label("finalized_blocks"),
         immutable::Config {
             metadata_partition: format!("{partition_prefix}-{FINALIZED_BLOCKS}-metadata"),
             freezer_table_partition: format!("{partition_prefix}-{FINALIZED_BLOCKS}-freezer-table"),
@@ -117,5 +130,9 @@ where
             ordinal_write_buffer: WRITE_BUFFER,
         },
     )
-    .await
+    .await;
+
+    info!(elapsed = %tempo_telemetry_util::display_duration(start.elapsed()), "restored finalized blocks archive");
+
+    archive
 }

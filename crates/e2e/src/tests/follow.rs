@@ -19,7 +19,7 @@ use crate::{
 use commonware_consensus::types::FixedEpocher;
 use commonware_macros::test_traced;
 use commonware_runtime::{
-    Clock as _, Metrics as _, Runner as _, Spawner as _,
+    Clock as _, Handle, Metrics as _, Runner as _,
     deterministic::{self, Context, Runner},
 };
 use commonware_utils::NZU64;
@@ -64,6 +64,7 @@ struct Follower {
     name: String,
     feed: FeedStateHandle,
     execution_node: ExecutionNode,
+    _engine_handle: Handle<eyre::Result<()>>,
 }
 
 impl Follower {
@@ -109,19 +110,17 @@ impl Follower {
             fcu_heartbeat_interval: Duration::from_secs(300),
         };
 
-        let engine = config
+        let handle = config
             .try_init(context.with_label(&name))
             .await
-            .expect("failed to initialize follow engine");
-
-        context.with_label(&name).spawn(move |_| async move {
-            engine.start().await.expect("follow engine failed");
-        });
+            .expect("failed to initialize follow engine")
+            .start();
 
         Self {
             name,
             feed: feed_state,
             execution_node: node,
+            _engine_handle: handle,
         }
     }
 }

@@ -192,7 +192,8 @@ pub async fn run_follow_stack(
         .start()
         .await;
 
-    ret.and_then(|()| Err(eyre!("exited unexpectedly")))
+    ret.map_err(eyre::Report::from)
+        .and_then(|ret| ret.and_then(|()| Err(eyre!("exited unexpectedly"))))
         .wrap_err("follow engine task failed")
 }
 

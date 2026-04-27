@@ -27,7 +27,8 @@ use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::Pu
 use commonware_macros::select;
 use commonware_parallel::Sequential;
 use commonware_runtime::{
-    BufferPooler, Clock, Metrics, Pacer, Spawner, Storage, buffer::paged::CacheRef,
+    BufferPooler, Clock, ContextCell, Handle, Metrics, Pacer, Spawner, Storage,
+    buffer::paged::CacheRef, spawn_cell,
 };
 use commonware_utils::{NZUsize, channel::mpsc};
 use eyre::{OptionExt as _, WrapErr as _, bail, eyre};
@@ -98,7 +99,7 @@ impl<U: UpstreamNode> Config<U> {
         );
 
         let finalizations_by_height = storage::init_finalizations_archive(
-            context.with_label("finalizations_by_height"),
+            &context,
             &self.partition_prefix,
             page_cache_ref.clone(),
         )
@@ -106,7 +107,7 @@ impl<U: UpstreamNode> Config<U> {
         .wrap_err("failed to initialize finalizations by height archive")?;
 
         let finalized_blocks = storage::init_finalized_blocks_archive(
-            context.with_label("finalized_blocks"),
+            &context,
             &self.partition_prefix,
             page_cache_ref.clone(),
         )
@@ -180,7 +181,7 @@ impl<U: UpstreamNode> Config<U> {
         let broadcast = stubs::null_broadcast(context.with_label("broadcast"), self.mailbox_size);
 
         Ok(Engine {
-            context,
+            context: ContextCell::new(context),
             upstream: self.upstream,
             resolver,
             resolver_rx,
@@ -212,7 +213,7 @@ where
         + Send
         + 'static,
 {
-    context: TContext,
+    context: ContextCell<TContext>,
     upstream: Arc<U>,
     resolver: Resolver<TContext, U>,
     resolver_rx: mpsc::Receiver<commonware_consensus::marshal::resolver::handler::Message<Digest>>,
@@ -242,7 +243,11 @@ where
         + Send
         + 'static,
 {
-    pub async fn start(mut self) -> eyre::Result<()> {
+    pub fn start(mut self) -> Handle<eyre::Result<()>> {
+        spawn_cell!(self.context, self.run().await)
+    }
+
+    async fn run(mut self) -> eyre::Result<()> {
         let mut actors = join_all([
             self.executor_actor.start(),
             self.feed_actor.start(),
