@@ -66,7 +66,7 @@ use tempo_node::{
     telemetry::{PrometheusMetricsConfig, install_prometheus_metrics},
 };
 use tokio::sync::oneshot;
-use tracing::{info, info_span, warn};
+use tracing::{info, info_span, warn, warn_span};
 
 type TempoCli =
     Cli<TempoChainSpecParser, TempoArgs, DefaultRpcModuleValidator, tempo_cmd::TempoSubcommand>;
@@ -76,14 +76,14 @@ type TempoCli =
 struct TempoArgs {
     /// Run in follow mode from an upstream node.
     /// If provided without a value, defaults to the RPC URL for the selected chain.
-    #[arg(long, value_name = "WS_URL", default_missing_value = "auto", num_args(0..=1), env = "TEMPO_FOLLOW")]
+    #[arg(long, value_name = "WEBSOCKET_URL", default_missing_value = "auto", num_args(0..=1), env = "TEMPO_FOLLOW")]
     pub follow: Option<String>,
 
     /// Disable consensus certification in follow mode. The follower syncs execution
     /// state from the upstream node without validating consensus state.
     /// DO NOT USE IN PRODUCTION.
     #[arg(long = "follow.uncertified", requires = "follow")]
-    pub follow_uncertified: Option<bool>,
+    pub follow_nocertify: Option<bool>,
 
     #[command(flatten)]
     pub telemetry: defaults::TelemetryArgs,
@@ -105,7 +105,14 @@ struct TempoArgs {
 impl TempoArgs {
     // When unset, the default is to follow uncertified until the migration is complete
     fn is_following_uncertified(&self) -> bool {
-        self.follow.is_some() && self.follow_uncertified.unwrap_or(true)
+        self.follow.is_some() && self.follow_nocertify.unwrap_or(true)
+    }
+
+    /// Whether the consensus engine should be active.
+    ///
+    /// The engine runs when not in dev mode and not following uncertified.
+    fn has_consensus_engine(&self, dev: bool) -> bool {
+        !dev && !self.is_following_uncertified()
     }
 }
 
@@ -319,7 +326,7 @@ fn main() -> eyre::Result<()> {
         // Exit early if we are not executing `tempo node` command.
         if !is_node {
             return Ok(());
-        };
+        }
 
         let (node, args) = args_and_node_handle_rx.blocking_recv().wrap_err(
             "channel closed before consensus-relevant command line args \
@@ -329,12 +336,11 @@ fn main() -> eyre::Result<()> {
         if node.config.dev.dev || args.is_following_uncertified() {
             return futures::executor::block_on(async move {
                 shutdown_token_clone.cancelled().await;
-                let _ = consensus_dead_tx.send(());
                 Ok(())
             });
         }
 
-        let storage = args.consensus.storage_dir.clone().unwrap_or_else(|| {
+        let consensus_storage = args.consensus.storage_dir.clone().unwrap_or_else(|| {
             node.config
                 .datadir
                 .clone()
@@ -343,9 +349,9 @@ fn main() -> eyre::Result<()> {
                 .join("consensus")
         });
 
-        info_span!("consensus").in_scope(|| {
+        info_span!("prepare_consensus").in_scope(|| {
             info!(
-                path = %storage.display(),
+                path = %consensus_storage.display(),
                 "determined directory for consensus data",
             )
         });
@@ -353,7 +359,7 @@ fn main() -> eyre::Result<()> {
         let runtime_config = commonware_runtime::tokio::Config::default()
             .with_tcp_nodelay(Some(true))
             .with_worker_threads(args.consensus.worker_threads)
-            .with_storage_directory(storage)
+            .with_storage_directory(consensus_storage)
             .with_catch_panics(true);
 
         let runner = commonware_runtime::tokio::Runner::new(runtime_config);
@@ -384,7 +390,7 @@ fn main() -> eyre::Result<()> {
                     .wrap_err("failed to start Prometheus metrics exporter")?;
             }
 
-            let stack = if let Some(follow) = args.follow {
+            let consensus_stack = if let Some(follow) = args.follow {
                 let follow_url = if follow == "auto" {
                     node.chain_spec()
                         .default_follow_url()
@@ -419,7 +425,7 @@ fn main() -> eyre::Result<()> {
                 ))
             };
 
-            tokio::pin!(stack);
+            tokio::pin!(consensus_stack);
             loop {
                 tokio::select!(
                     biased;
@@ -428,7 +434,7 @@ fn main() -> eyre::Result<()> {
                         break Ok(());
                     }
 
-                    ret = &mut stack => {
+                    ret = &mut consensus_stack => {
                         break ret.and_then(|()| Err(eyre::eyre!(
                             "consensus stack exited unexpectedly"))
                         )
@@ -440,7 +446,10 @@ fn main() -> eyre::Result<()> {
                             Ok(Ok(())) => "unexpected regular exit".to_string(),
                             Ok(Err(err)) | Err(err) => format!("{err}"),
                         };
-                        tracing::warn!(reason, "the metrics server exited");
+
+                        warn_span!("consensus_metrics").in_scope(|| {
+                            warn!(reason, "the metrics server exited");
+                        })
                     }
                 )
             }
@@ -526,7 +535,7 @@ fn main() -> eyre::Result<()> {
 
                     // Only emit a warning if explicitly configured. Until the migration
                     // is complete, the default is to follow uncertified.
-                    if args.follow_uncertified.is_some() {
+                    if args.follow_nocertify.is_some() {
                         warn!(
                             "--follow.uncertified does not validate the peer's execution state against \
                             consensus state. The upstream is fully trusted. DO NOT USE IN PRODUCTION!!!!"
@@ -549,9 +558,8 @@ fn main() -> eyre::Result<()> {
                 }
 
                 let has_consensus_engine =
-                    !builder.config().dev.dev && !args.is_following_uncertified();
+                    args.has_consensus_engine(builder.config().dev.dev);
 
-                // Additional RPC Modules
                 builder.extend_rpc_modules(move |ctx| {
                     if faucet_args.enabled {
                         let faucet_ext = TempoFaucetExt::new(
@@ -560,12 +568,14 @@ fn main() -> eyre::Result<()> {
                             faucet_args.provider(),
                         );
 
-                        ctx.modules.merge_configured(faucet_ext.into_rpc())?;
+                        ctx.modules.merge_configured(faucet_ext.into_rpc())
+                            .wrap_err("failed to register faucet rpc module")?;
                     }
 
                     if has_consensus_engine {
                         let consensus_rpc = TempoConsensusRpc::new(cl_feed_state);
-                        ctx.modules.merge_configured(consensus_rpc.into_rpc())?;
+                        ctx.modules.merge_configured(consensus_rpc.into_rpc())
+                            .wrap_err("failed to register consensus rpc module")?;
                     }
 
                     Ok(())
