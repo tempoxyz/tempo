@@ -9,7 +9,7 @@ use crate::{
     tip20::{is_tip20_prefix, TIP20Token},
 };
 use alloy::{
-    primitives::{keccak256, Address, FixedBytes, Uint, B256, U256},
+    primitives::{aliases::U96, keccak256, Address, B256, U256},
     sol_types::SolValue,
 };
 use std::sync::LazyLock;
@@ -32,92 +32,17 @@ static EIP712_DOMAIN_TYPEHASH: LazyLock<B256> = LazyLock::new(|| {
 static NAME_HASH: LazyLock<B256> = LazyLock::new(|| keccak256(b"TIP20 Channel Escrow"));
 static VERSION_HASH: LazyLock<B256> = LazyLock::new(|| keccak256(b"1"));
 
-type AbiU96 = Uint<96, 2>;
-type StorageU96 = FixedBytes<12>;
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-struct U96(u128);
-
-impl U96 {
-    const MAX_VALUE: u128 = (1u128 << 96) - 1;
-    const ZERO: Self = Self(0);
-
-    fn is_zero(self) -> bool {
-        self.0 == 0
-    }
-
-    fn checked_add(self, rhs: Self) -> Option<Self> {
-        self.0
-            .checked_add(rhs.0)
-            .filter(|value| *value <= Self::MAX_VALUE)
-            .map(Self)
-    }
-
-    fn checked_sub(self, rhs: Self) -> Option<Self> {
-        self.0.checked_sub(rhs.0).map(Self)
-    }
-}
-
-impl From<AbiU96> for U96 {
-    fn from(value: AbiU96) -> Self {
-        Self(value.to::<u128>())
-    }
-}
-
-impl From<StorageU96> for U96 {
-    fn from(value: StorageU96) -> Self {
-        let mut bytes = [0u8; 16];
-        bytes[4..].copy_from_slice(value.as_slice());
-        Self(u128::from_be_bytes(bytes))
-    }
-}
-
-impl From<U96> for AbiU96 {
-    fn from(value: U96) -> Self {
-        Self::from(value.0)
-    }
-}
-
-impl From<U96> for StorageU96 {
-    fn from(value: U96) -> Self {
-        let bytes = value.0.to_be_bytes();
-        FixedBytes::from_slice(&bytes[4..])
-    }
-}
-
-impl From<U96> for u128 {
-    fn from(value: U96) -> Self {
-        value.0
-    }
-}
-
 #[derive(Debug, Clone, Copy, Default, Storable)]
 struct PackedChannelState {
-    settled_raw: StorageU96,
-    deposit_raw: StorageU96,
+    settled: U96,
+    deposit: U96,
     expires_at: u32,
     close_data: u32,
 }
 
 impl PackedChannelState {
-    fn settled(self) -> U96 {
-        self.settled_raw.into()
-    }
-
-    fn deposit(self) -> U96 {
-        self.deposit_raw.into()
-    }
-
-    fn set_settled(&mut self, value: U96) {
-        self.settled_raw = value.into();
-    }
-
-    fn set_deposit(&mut self, value: U96) {
-        self.deposit_raw = value.into();
-    }
-
     fn exists(self) -> bool {
-        !self.deposit().is_zero()
+        !self.deposit.is_zero()
     }
 
     fn is_finalized(self) -> bool {
@@ -130,8 +55,8 @@ impl PackedChannelState {
 
     fn to_sol(self) -> ITIP20ChannelEscrow::ChannelState {
         ITIP20ChannelEscrow::ChannelState {
-            settled: self.settled().into(),
-            deposit: self.deposit().into(),
+            settled: self.settled,
+            deposit: self.deposit,
             expiresAt: self.expires_at,
             closeData: self.close_data,
         }
@@ -160,7 +85,7 @@ impl TIP20ChannelEscrow {
             return Err(TIP20ChannelEscrowError::invalid_token().into());
         }
 
-        let deposit = U96::from(call.deposit);
+        let deposit = call.deposit;
         if deposit.is_zero() {
             return Err(TIP20ChannelEscrowError::zero_deposit().into());
         }
@@ -181,8 +106,8 @@ impl TIP20ChannelEscrow {
 
         let batch = self.storage.checkpoint();
         self.channel_states[channel_id].write(PackedChannelState {
-            settled_raw: U96::ZERO.into(),
-            deposit_raw: deposit.into(),
+            settled: U96::ZERO,
+            deposit,
             expires_at: call.expiresAt,
             close_data: 0,
         })?;
@@ -226,11 +151,11 @@ impl TIP20ChannelEscrow {
             return Err(TIP20ChannelEscrowError::channel_expired().into());
         }
 
-        let cumulative = U96::from(call.cumulativeAmount);
-        if cumulative > state.deposit() {
+        let cumulative = call.cumulativeAmount;
+        if cumulative > state.deposit {
             return Err(TIP20ChannelEscrowError::amount_exceeds_deposit().into());
         }
-        if cumulative <= state.settled() {
+        if cumulative <= state.settled {
             return Err(TIP20ChannelEscrowError::amount_not_increasing().into());
         }
 
@@ -242,16 +167,16 @@ impl TIP20ChannelEscrow {
         )?;
 
         let delta = cumulative
-            .checked_sub(state.settled())
+            .checked_sub(state.settled)
             .expect("cumulative amount already checked to be increasing");
 
         let batch = self.storage.checkpoint();
-        state.set_settled(cumulative);
+        state.settled = cumulative;
         self.channel_states[channel_id].write(state)?;
         TIP20Token::from_address(call.descriptor.token)?.system_transfer_from(
             self.address,
             call.descriptor.payee,
-            U256::from(u128::from(delta)),
+            U256::from(delta),
         )?;
         self.emit_event(TIP20ChannelEscrowEvent::Settled(
             ITIP20ChannelEscrow::Settled {
@@ -283,9 +208,9 @@ impl TIP20ChannelEscrow {
             return Err(TIP20ChannelEscrowError::channel_finalized().into());
         }
 
-        let additional = U96::from(call.additionalDeposit);
+        let additional = call.additionalDeposit;
         let next_deposit = state
-            .deposit()
+            .deposit
             .checked_add(additional)
             .ok_or_else(TIP20ChannelEscrowError::deposit_overflow)?;
 
@@ -299,7 +224,7 @@ impl TIP20ChannelEscrow {
         let batch = self.storage.checkpoint();
 
         if !additional.is_zero() {
-            state.set_deposit(next_deposit);
+            state.deposit = next_deposit;
             TIP20Token::from_address(call.descriptor.token)?.system_transfer_from(
                 msg_sender,
                 self.address,
@@ -328,7 +253,7 @@ impl TIP20ChannelEscrow {
             payer: call.descriptor.payer,
             payee: call.descriptor.payee,
             additionalDeposit: call.additionalDeposit,
-            newDeposit: state.deposit().into(),
+            newDeposit: state.deposit,
             newExpiresAt: state.expires_at,
         }))?;
         batch.commit();
@@ -386,13 +311,13 @@ impl TIP20ChannelEscrow {
             return Err(TIP20ChannelEscrowError::channel_finalized().into());
         }
 
-        let cumulative = U96::from(call.cumulativeAmount);
-        let capture = U96::from(call.captureAmount);
-        let previous_settled = state.settled();
+        let cumulative = call.cumulativeAmount;
+        let capture = call.captureAmount;
+        let previous_settled = state.settled;
         if capture < previous_settled || capture > cumulative {
             return Err(TIP20ChannelEscrowError::capture_amount_invalid().into());
         }
-        if capture > state.deposit() {
+        if capture > state.deposit {
             return Err(TIP20ChannelEscrowError::amount_exceeds_deposit().into());
         }
 
@@ -412,12 +337,12 @@ impl TIP20ChannelEscrow {
             .checked_sub(previous_settled)
             .expect("capture amount already checked against previous settled amount");
         let refund = state
-            .deposit()
+            .deposit
             .checked_sub(capture)
             .expect("capture amount already checked against deposit");
 
         let batch = self.storage.checkpoint();
-        state.set_settled(capture);
+        state.settled = capture;
         state.close_data = FINALIZED_CLOSE_DATA;
         self.channel_states[channel_id].write(state)?;
 
@@ -426,14 +351,14 @@ impl TIP20ChannelEscrow {
             token.system_transfer_from(
                 self.address,
                 call.descriptor.payee,
-                U256::from(u128::from(delta)),
+                U256::from(delta),
             )?;
         }
         if !refund.is_zero() {
             token.system_transfer_from(
                 self.address,
                 call.descriptor.payer,
-                U256::from(u128::from(refund)),
+                U256::from(refund),
             )?;
         }
 
@@ -474,8 +399,8 @@ impl TIP20ChannelEscrow {
         }
 
         let refund = state
-            .deposit()
-            .checked_sub(state.settled())
+            .deposit
+            .checked_sub(state.settled)
             .expect("settled is always <= deposit");
 
         let batch = self.storage.checkpoint();
@@ -485,7 +410,7 @@ impl TIP20ChannelEscrow {
             TIP20Token::from_address(call.descriptor.token)?.system_transfer_from(
                 self.address,
                 call.descriptor.payer,
-                U256::from(u128::from(refund)),
+                U256::from(refund),
             )?;
         }
         self.emit_event(TIP20ChannelEscrowEvent::ChannelExpired(
@@ -500,7 +425,7 @@ impl TIP20ChannelEscrow {
                 channelId: channel_id,
                 payer: call.descriptor.payer,
                 payee: call.descriptor.payee,
-                settledToPayee: state.settled().into(),
+                settledToPayee: state.settled,
                 refundedToPayer: refund.into(),
             },
         ))?;
@@ -629,7 +554,7 @@ impl TIP20ChannelEscrow {
         &self,
         descriptor: &ITIP20ChannelEscrow::ChannelDescriptor,
         channel_id: B256,
-        cumulative_amount: AbiU96,
+        cumulative_amount: U96,
         signature: &alloy::primitives::Bytes,
     ) -> Result<()> {
         let digest = self.get_voucher_digest_inner(channel_id, cumulative_amount)?;
@@ -645,7 +570,7 @@ impl TIP20ChannelEscrow {
     fn get_voucher_digest_inner(
         &self,
         channel_id: B256,
-        cumulative_amount: AbiU96,
+        cumulative_amount: U96,
     ) -> Result<B256> {
         let struct_hash = self
             .storage
@@ -691,8 +616,8 @@ mod tests {
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls;
 
-    fn abi_u96(value: u128) -> AbiU96 {
-        AbiU96::from(value)
+    fn abi_u96(value: u128) -> U96 {
+        U96::from(value)
     }
 
     fn descriptor(
