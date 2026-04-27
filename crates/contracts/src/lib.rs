@@ -19,6 +19,8 @@ pub const ARACHNID_CREATE2_FACTORY_ADDRESS: Address =
     address!("0x4e59b44847b379578588920cA78FbF26c0B4956C");
 pub const ERC2470_SINGLETON_DEPLOYER_ADDRESS: Address =
     address!("0xce0042B868300000d44A59004Da54A005ffdcf9f");
+pub const NANO_UNIVERSAL_DEPLOYER_ADDRESS: Address =
+    address!("0x1B926fBB24A9F78DCDd3272f2d86F5D0660E59c0");
 
 /// Helper macro to allow feature-gating rpc and serde implementations.
 macro_rules! sol {
@@ -92,9 +94,15 @@ pub mod contracts {
         ERC2470SingletonDeployer,
         "abi/ERC2470SingletonDeployer.json",
     );
+
+    sol!(
+        #[allow(missing_docs)]
+        NanoUniversalDeployer,
+        "abi/NanoUniversalDeployer.json",
+    );
 }
 
-pub use contracts::{CreateX, ERC2470SingletonDeployer, Multicall3, Permit2, SafeDeployer};
+pub use contracts::{CreateX, ERC2470SingletonDeployer, Multicall3, NanoUniversalDeployer, Permit2, SafeDeployer};
 
 pub mod precompiles;
 
@@ -216,6 +224,21 @@ mod tests {
              Mainnet: {mainnet_hash}\n\
              Ours:    {our_hash}\n\
              This likely means we have the wrong bytecode for SafeDeployer."
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires mainnet RPC access - not needed after mainnet launch"]
+    async fn nano_universal_deployer_bytecode_matches_mainnet() {
+        let mainnet_hash = get_mainnet_code_hash(NANO_UNIVERSAL_DEPLOYER_ADDRESS).await;
+        let our_hash = keccak256(&NanoUniversalDeployer::DEPLOYED_BYTECODE);
+
+        assert_eq!(
+            mainnet_hash, our_hash,
+            "NanoUniversalDeployer bytecode hash mismatch!\n\
+             Mainnet: {mainnet_hash}\n\
+             Ours:    {our_hash}\n\
+             This likely means we have the wrong bytecode for NanoUniversalDeployer."
         );
     }
 
