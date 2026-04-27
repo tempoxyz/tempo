@@ -16,8 +16,8 @@ alloy = { workspace = true, features = [
   "rlp",
   "providers",
 ] }
-alloy-evm.workspace = true
-alloy-genesis.workspace = true
+alloy-evm = { workspace = true, features = ["std"] }
+alloy-genesis = { workspace = true, features = ["std"] }
 alloy-primitives.workspace = true
 
 commonware-codec.workspace = true
@@ -31,6 +31,7 @@ commonware-utils.workspace = true
 itertools.workspace = true
 
 eyre.workspace = true
+reth-chainspec.workspace = true
 reth-db.workspace = true
 reth-ethereum = { workspace = true, features = [
   "node",
@@ -38,13 +39,12 @@ reth-ethereum = { workspace = true, features = [
   "test-utils",
   "pool",
 ] }
-reth-network-peers.workspace = true
 reth-node-builder.workspace = true
 reth-node-core.workspace = true
 reth-node-metrics.workspace = true
 reth-rpc-builder.workspace = true
 
-tempo-chainspec.workspace = true
+tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-dkg-onchain-artifacts.workspace = true
 tempo-commonware-node.workspace = true
 tempo-node.workspace = true
@@ -55,7 +55,6 @@ tempfile.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 serde_json.workspace = true
-secp256k1.workspace = true
 
 [dev-dependencies]
 commonware-consensus.workspace = true
@@ -63,6 +62,7 @@ commonware-macros.workspace = true
 commonware-parallel.workspace = true
 jsonrpsee = { workspace = true, features = ["ws-client", "http-client"] }
 tempo-eyre.workspace = true
+tempo-primitives.workspace = true
 tracing-subscriber.workspace = true
 
 alloy-network.workspace = true

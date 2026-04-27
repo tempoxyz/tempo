@@ -2,7 +2,10 @@
 
 use crate::execution_runtime::{self, ExecutionNode, ExecutionNodeConfig, ExecutionRuntimeHandle};
 use alloy_primitives::Address;
-use commonware_cryptography::ed25519::PublicKey;
+use commonware_cryptography::{
+    Signer as _,
+    ed25519::{PrivateKey, PublicKey},
+};
 use commonware_p2p::simulated::{Control, Oracle, SocketManager};
 use commonware_runtime::{Handle, Metrics as _, deterministic::Context};
 use reth_db::{Database, DatabaseEnv, mdbx::DatabaseArguments, open_db_read_only};
@@ -14,7 +17,11 @@ use reth_ethereum::{
     storage::BlockNumReader,
 };
 use reth_node_builder::NodeTypesWithDBAdapter;
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+    sync::Arc,
+};
 use tempo_commonware_node::{
     BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT,
     DKG_CHANNEL_IDENT, DKG_LIMIT, MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, RESOLVER_CHANNEL_IDENT,
@@ -32,7 +39,7 @@ where
     /// Unique identifier for this node
     pub uid: String,
     /// Public key of the validator
-    pub public_key: PublicKey,
+    pub private_key: PrivateKey,
     /// Simulated network oracle for test environments
     pub oracle: Oracle<PublicKey, TClock>,
     /// Consensus configuration used to start the consensus engine
@@ -78,7 +85,7 @@ where
     #[expect(clippy::too_many_arguments, reason = "quickly threw this together")]
     pub fn new(
         uid: String,
-        public_key: PublicKey,
+        private_key: PrivateKey,
         oracle: Oracle<PublicKey, TClock>,
         consensus_config: consensus::Builder<
             Control<PublicKey, TClock>,
@@ -89,6 +96,7 @@ where
         network_address: SocketAddr,
         chain_address: Address,
     ) -> Self {
+        let public_key = private_key.public_key();
         let execution_node_datadir = execution_runtime
             .nodes_dir()
             .join(execution_runtime::execution_node_name(&public_key));
@@ -96,7 +104,7 @@ where
         let execution_node_name = execution_runtime::execution_node_name(&public_key);
         Self {
             uid,
-            public_key,
+            private_key,
             oracle,
             consensus_config,
             consensus_handle: None,
@@ -115,14 +123,31 @@ where
         }
     }
 
+    pub fn fee_recipient(&self) -> Address {
+        Address::ZERO
+    }
+
+    pub fn private_key(&self) -> &PrivateKey {
+        &self.private_key
+    }
+
     /// Get the validator public key of this node.
-    pub fn public_key(&self) -> &PublicKey {
-        &self.public_key
+    pub fn public_key(&self) -> PublicKey {
+        self.private_key.public_key()
     }
 
     /// Get the unique identifier of this node.
     pub fn uid(&self) -> &str {
         &self.uid
+    }
+
+    /// Get the metric prefix used by the most recently started instance.
+    ///
+    /// # Panics
+    /// Panics if the node has was never started.
+    pub fn metric_prefix(&self) -> String {
+        assert!(self.n_starts > 0, "node has never been started");
+        format!("{}_{}", self.uid, self.n_starts - 1)
     }
 
     /// Get a reference to the consensus config.
@@ -144,12 +169,34 @@ where
         &self.oracle
     }
 
+    pub fn ingress(&self) -> SocketAddr {
+        self.network_address
+    }
+
+    pub fn egress(&self) -> IpAddr {
+        self.network_address.ip()
+    }
+
+    /// A verifier is a node that has a share.
+    pub fn is_signer(&self) -> bool {
+        self.consensus_config.share.is_some()
+    }
+
+    /// A verifier is a node that has no share.
+    pub fn is_verifier(&self) -> bool {
+        self.consensus_config.share.is_none()
+    }
+
     /// Start both consensus and execution layers.
     ///
     ///
     /// # Panics
     /// Panics if either consensus or execution is already running.
     pub async fn start(&mut self, context: &Context) {
+        Box::pin(self.start_inner(context)).await
+    }
+
+    async fn start_inner(&mut self, context: &Context) {
         self.start_execution().await;
         self.start_consensus(context).await;
         self.n_starts += 1;
@@ -209,7 +256,7 @@ where
         self.consensus_config = self
             .consensus_config
             .clone()
-            .with_execution_node(execution_node.node.clone());
+            .with_execution_node((*execution_node.node).clone());
         self.execution_node = Some(execution_node);
         debug!(%self.uid, "started execution node for testing node");
     }
@@ -233,43 +280,43 @@ where
 
         let votes = self
             .oracle
-            .control(self.public_key.clone())
+            .control(self.public_key())
             .register(VOTES_CHANNEL_IDENT, VOTES_LIMIT)
             .await
             .unwrap();
         let certificates = self
             .oracle
-            .control(self.public_key.clone())
+            .control(self.public_key())
             .register(CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT)
             .await
             .unwrap();
         let resolver = self
             .oracle
-            .control(self.public_key.clone())
+            .control(self.public_key())
             .register(RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT)
             .await
             .unwrap();
         let broadcast = self
             .oracle
-            .control(self.public_key.clone())
+            .control(self.public_key())
             .register(BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT)
             .await
             .unwrap();
         let marshal = self
             .oracle
-            .control(self.public_key.clone())
+            .control(self.public_key())
             .register(MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT)
             .await
             .unwrap();
         let dkg = self
             .oracle
-            .control(self.public_key.clone())
+            .control(self.public_key())
             .register(DKG_CHANNEL_IDENT, DKG_LIMIT)
             .await
             .unwrap();
         let subblocks = self
             .oracle
-            .control(self.public_key.clone())
+            .control(self.public_key())
             .register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT)
             .await
             .unwrap();
@@ -427,7 +474,7 @@ where
         .with_metrics();
 
         let static_file_provider =
-            StaticFileProvider::read_only(self.execution_node_datadir.join("static_files"), true)
+            StaticFileProvider::read_only(self.execution_node_datadir.join("static_files"))
                 .expect("failed to open static files");
 
         let rocksdb = RocksDBProvider::builder(self.execution_node_datadir.join("rocksdb"))

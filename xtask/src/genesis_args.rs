@@ -3,7 +3,7 @@ use alloy::{
     primitives::{Address, U256, address},
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
 };
-use alloy_primitives::{B256, Bytes, Keccak256};
+use alloy_primitives::{B256, Bytes};
 use commonware_codec::Encode as _;
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
@@ -43,24 +43,23 @@ use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
     PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
     contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
-    precompiles::{
-        ITIP20Factory, IValidatorConfig, IValidatorConfigV2, VALIDATOR_CONFIG_V2_ADDRESS,
-    },
+    precompiles::{ITIP20Factory, IValidatorConfigV2},
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
     PATH_USD_ADDRESS,
     account_keychain::AccountKeychain,
+    address_registry::AddressRegistry,
     nonce::NonceManager,
+    signature_verifier::SignatureVerifier,
     stablecoin_dex::StablecoinDEX,
     storage::{ContractStorage, StorageCtx},
     tip_fee_manager::{IFeeManager, TipFeeManager},
     tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
     tip20_factory::TIP20Factory,
     tip403_registry::TIP403Registry,
-    validator_config::ValidatorConfig,
-    validator_config_v2::{VALIDATOR_NS_ADD, ValidatorConfigV2},
+    validator_config_v2::ValidatorConfigV2,
 };
 
 /// Generate genesis allocation file for testing
@@ -171,9 +170,17 @@ pub(crate) struct GenesisArgs {
     #[arg(long, default_value = "0")]
     t2_time: u64,
 
-    /// Whether to skip initializing validator config v1
-    #[arg(long)]
-    no_initialize_validator_config_v1: bool,
+    /// T3 hardfork activation time.
+    #[arg(long, default_value = "0")]
+    t3_time: u64,
+
+    /// T4 hardfork activation time.
+    #[arg(long, default_value = "0")]
+    t4_time: u64,
+
+    /// T5 hardfork activation time.
+    #[arg(long, default_value = "0")]
+    t5_time: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -358,30 +365,15 @@ impl GenesisArgs {
             &self.validator_addresses[0..self.validators.len()]
         };
 
-        if self.t2_time == 0 {
-            println!("Initializing validator config v2 (T2 active at genesis)");
-            initialize_validator_config_v2(
-                validator_admin,
-                &mut evm,
-                &consensus_config,
-                validator_onchain_addresses,
-                self.no_dkg_in_genesis,
-                self.chain_id,
-            )?;
-        }
-
-        if !self.no_initialize_validator_config_v1 {
-            println!("Initializing validator config v1");
-            initialize_validator_config(
-                validator_admin,
-                &mut evm,
-                &consensus_config,
-                validator_onchain_addresses,
-                self.no_dkg_in_genesis,
-            )?;
-        } else {
-            println!("flag specified; skipping initialization of validator config v1");
-        }
+        println!("Initializing validator config v2");
+        initialize_validator_config_v2(
+            validator_admin,
+            &mut evm,
+            &consensus_config,
+            validator_onchain_addresses,
+            self.no_dkg_in_genesis,
+            self.chain_id,
+        )?;
 
         println!("Initializing fee manager");
         let default_user_fee_token = if let Some(address) = deployment_gas_token {
@@ -413,6 +405,14 @@ impl GenesisArgs {
 
         println!("Initializing account keychain");
         initialize_account_keychain(&mut evm)?;
+
+        println!("Initializing TIP20 registry");
+        initialize_address_registry(&mut evm)?;
+
+        if self.t3_time == 0 {
+            println!("Initializing signature verifier (T3 active at genesis)");
+            initialize_signature_verifier(&mut evm)?;
+        }
 
         if !self.no_pairwise_liquidity {
             if let (Some(alpha), Some(beta), Some(theta)) =
@@ -539,6 +539,15 @@ impl GenesisArgs {
         chain_config
             .extra_fields
             .insert_value("t2Time".to_string(), self.t2_time)?;
+        chain_config
+            .extra_fields
+            .insert_value("t3Time".to_string(), self.t3_time)?;
+        chain_config
+            .extra_fields
+            .insert_value("t4Time".to_string(), self.t4_time)?;
+        chain_config
+            .extra_fields
+            .insert_value("t5Time".to_string(), self.t5_time)?;
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
@@ -888,79 +897,30 @@ fn initialize_account_keychain(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Re
     Ok(())
 }
 
-/// Initializes the initial validator config smart contract.
-///
-/// NOTE: Does not populate it at all because consensus does not read the
-/// validators at genesis.
-fn initialize_validator_config(
-    admin: Address,
-    evm: &mut TempoEvm<CacheDB<EmptyDB>>,
-    consensus_config: &Option<ConsensusConfig>,
-    onchain_validator_addresses: &[Address],
-    no_dkg_in_genesis: bool,
-) -> eyre::Result<()> {
+fn initialize_address_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
     StorageCtx::enter_evm(
         &mut ctx.journaled_state,
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
-        || {
-            let mut validator_config = ValidatorConfig::new();
-            validator_config
-                .initialize(admin)
-                .wrap_err("failed to initialize validator config contract")?;
+        || AddressRegistry::new().initialize(),
+    )?;
 
-            if no_dkg_in_genesis {
-                println!("no-dkg-in-genesis passed; not writing validators to genesis block");
-                return Ok(());
-            }
+    Ok(())
+}
 
-            if let Some(consensus_config) = consensus_config.clone() {
-                let num_validators = consensus_config.validators.len();
+fn initialize_signature_verifier(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
+    let ctx = evm.ctx_mut();
+    StorageCtx::enter_evm(
+        &mut ctx.journaled_state,
+        &ctx.block,
+        &ctx.cfg,
+        &ctx.tx,
+        || SignatureVerifier::new().initialize(),
+    )?;
 
-                if onchain_validator_addresses.len() < num_validators {
-                    return Err(eyre!(
-                        "need {} addresses for all validators, but only {} were provided",
-                        num_validators,
-                        onchain_validator_addresses.len()
-                    ));
-                }
-
-                println!("writing {num_validators} validators into contract");
-                for (i, validator) in consensus_config.validators.iter().enumerate() {
-                    #[expect(non_snake_case, reason = "field of a snakeCase smart contract call")]
-                    let newValidatorAddress = onchain_validator_addresses[i];
-                    let public_key = validator.public_key();
-                    let addr = validator.addr;
-                    validator_config
-                        .add_validator(
-                            admin,
-                            IValidatorConfig::addValidatorCall {
-                                newValidatorAddress,
-                                publicKey: public_key.encode().as_ref().try_into().unwrap(),
-                                active: true,
-                                inboundAddress: addr.to_string(),
-                                outboundAddress: addr.to_string(),
-                            },
-                        )
-                        .wrap_err(
-                            "failed to execute smart contract call to add validator to evm state",
-                        )?;
-                    println!(
-                        "added validator\
-                \n\tpublic key: {public_key}\
-                \n\tonchain address: {newValidatorAddress}\
-                \n\tnet address: {addr}"
-                    );
-                }
-            } else {
-                println!("no consensus config passed; no validators to write to contract");
-            }
-
-            Ok(())
-        },
-    )
+    Ok(())
 }
 
 /// Initializes the [`ValidatorConfigV2`] contract at genesis (T2 active at genesis).
@@ -1011,35 +971,29 @@ fn initialize_validator_config_v2(
                 let public_key = validator.public_key();
                 let pubkey: B256 = public_key.encode().as_ref().try_into().unwrap();
                 let addr = validator.addr;
-                let ingress = addr.to_string();
-                let egress = addr.ip().to_string();
 
-                // message: keccak256(chainId || contractAddr || validatorAddr || uint8(ingress.len)
-                //                    || ingress || uint8(egress.len) || egress || feeRecipient)
-                let mut hasher = Keccak256::new();
-                hasher.update(chain_id.to_be_bytes());
-                hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
-                hasher.update(validator_address.as_slice());
-                hasher.update([u8::try_from(ingress.len())
-                    .expect("validator ingress length must fit in uint8")]);
-                hasher.update(ingress.as_bytes());
-                hasher
-                    .update([u8::try_from(egress.len())
-                        .expect("validator egress length must fit in uint8")]);
-                hasher.update(egress.as_bytes());
-                hasher.update(validator_address.as_slice());
-                let message = hasher.finalize();
+                let config = tempo_validator_config::ValidatorConfig {
+                    chain_id,
+                    validator_address,
+                    public_key: pubkey,
+                    ingress: addr,
+                    egress: addr.ip(),
+                };
 
+                let message = config.add_validator_message_hash(validator_address);
                 let private_key = validator.signing_key.clone().into_inner();
-                let signature = private_key.sign(VALIDATOR_NS_ADD, message.as_slice());
+                let signature = private_key.sign(
+                    tempo_precompiles::validator_config_v2::VALIDATOR_NS_ADD,
+                    message.as_slice(),
+                );
 
                 v2.add_validator(
                     admin,
                     IValidatorConfigV2::addValidatorCall {
                         validatorAddress: validator_address,
                         publicKey: pubkey,
-                        ingress: ingress.clone(),
-                        egress: egress.clone(),
+                        ingress: config.ingress.to_string(),
+                        egress: config.egress.to_string(),
                         feeRecipient: validator_address,
                         signature: signature.encode().to_vec().into(),
                     },

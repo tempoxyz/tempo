@@ -163,6 +163,22 @@ struct ExactFit {
     pub flag: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Storable)]
+#[repr(u8)]
+enum PackedStatus {
+    Pending,
+    Active,
+    Frozen,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Storable)]
+struct EnumPacked {
+    pub status: PackedStatus,       // 1 byte (slot 0, offset 0)
+    pub retries: u16,               // 2 bytes (slot 0, offset 1)
+    pub enabled: bool,              // 1 byte (slot 0, offset 3)
+    pub other_status: PackedStatus, // 1 byte (slot 0, offset 4)
+}
+
 #[test]
 fn test_slot_and_byte_counts() {
     // Rule verification
@@ -187,6 +203,62 @@ fn test_slot_and_byte_counts() {
 
     // Multi-level nesting
     assert_eq!(DeepNested::LAYOUT, Layout::Slots(6));
+
+    // Unit enums derive as a single packed byte
+    assert_eq!(PackedStatus::LAYOUT, Layout::Bytes(1));
+    assert_eq!(EnumPacked::LAYOUT, Layout::Slots(1));
+}
+
+#[test]
+fn test_unit_enum_storage_roundtrip_and_packing() {
+    let (mut storage, address) = setup_storage();
+    let base_slot = U256::from(1234);
+    let value = EnumPacked {
+        status: PackedStatus::Frozen,
+        retries: 0x0201,
+        enabled: true,
+        other_status: PackedStatus::Active,
+    };
+
+    StorageCtx::enter(&mut storage, || {
+        let mut packed_slot = Slot::<EnumPacked>::new(base_slot, address);
+        packed_slot.write(value.clone()).unwrap();
+        assert_eq!(packed_slot.read().unwrap(), value);
+
+        let raw_word = Slot::<U256>::new(base_slot, address).read().unwrap();
+        let stored_status: u8 = extract_from_word(raw_word, 0, 1).unwrap();
+        let stored_retries: u16 = extract_from_word(raw_word, 1, 2).unwrap();
+        let stored_enabled: bool = extract_from_word(raw_word, 3, 1).unwrap();
+        let stored_other_status: u8 = extract_from_word(raw_word, 4, 1).unwrap();
+
+        assert_eq!(stored_status, 2);
+        assert_eq!(stored_retries, value.retries);
+        assert!(stored_enabled);
+        assert_eq!(stored_other_status, 1);
+
+        let mut enum_slot = Slot::<PackedStatus>::new(base_slot + U256::from(1), address);
+        enum_slot.write(PackedStatus::Active).unwrap();
+        assert_eq!(enum_slot.read().unwrap(), PackedStatus::Active);
+
+        enum_slot.delete().unwrap();
+        assert_eq!(enum_slot.read().unwrap(), PackedStatus::Pending);
+    });
+}
+
+#[test]
+fn test_unit_enum_storage_rejects_invalid_discriminant() {
+    let (mut storage, address) = setup_storage();
+    let base_slot = U256::from(5678);
+
+    StorageCtx::enter(&mut storage, || {
+        Slot::<u8>::new(base_slot, address).write(99).unwrap();
+
+        let enum_slot = Slot::<PackedStatus>::new(base_slot, address);
+        assert_eq!(
+            enum_slot.read().unwrap_err(),
+            error::TempoPrecompileError::enum_conversion_error()
+        );
+    });
 }
 
 proptest! {
