@@ -292,9 +292,9 @@ fn infer_variant_ident(pat: &Pat) -> Option<Ident> {
     }
 }
 
-/// Infers the `calls` path from the first arm whose outermost pattern is a qualified tuple-struct.
+/// Whether an arm body must be followed by a `,` separator (i.e. is not a block-like expression).
+#[rustfmt::skip]
 fn arm_body_requires_comma(body: &Expr) -> bool {
-    #[rustfmt::skip]
     !matches!(
         body,
         Expr::Block(_) | Expr::If(_) | Expr::Match(_) | Expr::Loop(_) | Expr::While(_) | Expr::ForLoop(_)

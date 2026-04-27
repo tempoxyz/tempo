@@ -259,21 +259,58 @@ pub fn derive_storage_block(input: TokenStream) -> TokenStream {
 
 /// Generate a `crate::dispatch_call(...)` invocation from concise match-style syntax.
 ///
-/// `#[since = T2]` adds selector gating starting at that hardfork. `#[until = T4]` drops the
-/// selector once `T4` activates. Renamed variants can use `#[selector = SomeCallType]`.
+/// # Requirements
 ///
-/// Requirements:
-/// - a `calldata: &[u8]` binding must be in scope
+/// - a `calldata: &[u8]` binding must be in scope at the call site
 /// - every arm must use a fully qualified pattern (e.g. `ICalls::variant(call) => ...`) so that
 ///   the calls enum and `abi_decode` function can be inferred
+///
+/// # Hardfork-gated selectors
+///
+/// Arms accept `[since, until)``attributes, express the selector's validity window:
+/// - `#[since = HF]`: throws `TempoPrecompileError::UnknownSelector` before `HF` activates.
+/// - `#[until = HF]`: throws `TempoPrecompileError::UnknownSelector` once `HF` activates.
+/// - `#[selector = SomeCallType]`: override the inferred `<Variant>Call` type used for computing
+///    the 4-byte selector (only needed for renamed variants / wrapper enums).
+///
+/// At runtime, gated selectors are rejected by [`crate::dispatch_call`] BEFORE the body runs and
+/// calldata is decoded. Thus, hardfork-gated ABI selectors behave identically to unexistent ones.
+///
+/// # Example
 ///
 /// ```ignore
 /// dispatch! {
 ///     ITIP20Calls::name(_) => metadata::<ITIP20::nameCall>(|| self.name()),
+///
+///     // Available only on [T2, T4).
 ///     #[since = T2, until = T4]
 ///     ITIP20Calls::mint(call) => mutate_void(call, msg_sender, |s, c| self.mint(s, c)),
+///
+///     // Custom error: bail out with a domain-specific revert before the helper runs.
+///     ITIP20Calls::burn(call) => {
+///         if !self.can_burn(msg_sender) {
+///             return self.storage.error_result(TIP20Error::not_authorized());
+///         }
+///         mutate_void(call, msg_sender, |s, c| self.burn(s, c))
+///     },
 /// }
 /// ```
+///
+/// NOTE: Custom / domain errors are NOT automated. Arm bodies are responsible for producing
+/// their own revert payloads, typically by returning early with `self.storage.error_result(..)`.
+///
+/// ```ignore
+/// IAccountKeychainCalls::authorizeKey_0(call) => {
+///     if self.storage.spec().is_t3() {
+///         return self.storage.error_result(
+///             AccountKeychainError::legacy_authorize_key_selector_changed(
+///                 authorizeKeyCall::SELECTOR,
+///             ),
+///         );
+///     }
+///     // ...pre-T3 handling...
+/// }
+///  ```
 #[proc_macro]
 pub fn dispatch(input: TokenStream) -> TokenStream {
     let input = proc_macro2::TokenStream::from(input);
