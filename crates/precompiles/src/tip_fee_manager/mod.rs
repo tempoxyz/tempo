@@ -275,7 +275,7 @@ impl TipFeeManager {
 
         // Direct (single-hop) path.
         let pool_id = PoolKey::new(user_token, validator_token).get_id();
-        if let Some(swap_info) = self.try_check_sufficient_liquidity(pool_id, max_amount)? {
+        if let Some(swap_info) = self.check_sufficient_liquidity(pool_id, max_amount)? {
             return Ok(Some(FeeSwapPlan::Direct(swap_info)));
         }
 
@@ -284,22 +284,21 @@ impl TipFeeManager {
             return Ok(None);
         }
 
+        // TIP-20 token graph forbids self-quoting, so `intermediate == user_token` is unreachable.
         let intermediate = TIP20Token::from_address(user_token)?.quote_token()?;
-        if intermediate.is_zero() || intermediate == user_token || intermediate == validator_token {
+        if intermediate.is_zero() || intermediate == validator_token {
             return Ok(None);
         }
 
         // First hop: user_token -> intermediate (input = max_amount).
         let pool1 = PoolKey::new(user_token, intermediate).get_id();
-        let Some(swap1) = self.try_check_sufficient_liquidity(pool1, max_amount)? else {
+        let Some(swap1) = self.check_sufficient_liquidity(pool1, max_amount)? else {
             return Ok(None);
         };
 
         // Second hop: intermediate -> validator_token.
         let pool2 = PoolKey::new(intermediate, validator_token).get_id();
-        if let Some(swap2) =
-            self.try_check_sufficient_liquidity(pool2, U256::from(swap1.amount_out))?
-        {
+        if let Some(swap2) = self.check_sufficient_liquidity(pool2, U256::from(swap1.amount_out))? {
             Ok(Some(FeeSwapPlan::TwoHop {
                 intermediate,
                 swap1,
@@ -1107,7 +1106,7 @@ mod tests {
     /// three distinct USD tokens with `user_token.quoteToken()` set per
     /// `quote`, and `validator_token` registered as the validator's preferred
     /// fee token. The closure runs inside an active `StorageCtx` at `spec`.
-    fn with_two_hop_env<F>(spec: TempoHardfork, f: F) -> eyre::Result<()>
+    fn with_two_hop_env<F>(spec: TempoHardfork, hop_quote_is_val: bool, f: F) -> eyre::Result<()>
     where
         F: FnOnce(&mut TipFeeManager, &TwoHopTokens, Address, Address) -> eyre::Result<()>,
     {
@@ -1124,9 +1123,14 @@ mod tests {
                 .with_issuer(admin)
                 .apply()?
                 .address();
+            let quote_token = if hop_quote_is_val {
+                validator_token
+            } else {
+                hop_token
+            };
             let user_token = TIP20Setup::create("UserToken", "UTK", admin)
                 .with_issuer(admin)
-                .quote_token(hop_token)
+                .quote_token(quote_token)
                 .with_mint(user, U256::from(10_000))
                 .with_approval(user, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
                 .apply()?
@@ -1176,7 +1180,7 @@ mod tests {
         };
 
         // Pre-T5: fallback disabled — must revert.
-        with_two_hop_env(TempoHardfork::T4, |fm, t, user, validator| {
+        with_two_hop_env(TempoHardfork::T4, false, |fm, t, user, validator| {
             setup_pools(fm, t)?;
             let res = fm.collect_fee_pre_tx(user, t.user, U256::from(1_000), validator, false);
             assert_eq!(
@@ -1188,7 +1192,7 @@ mod tests {
         })?;
 
         // T5: same setup — fallback engages successfully.
-        with_two_hop_env(TempoHardfork::T5, |fm, t, user, validator| {
+        with_two_hop_env(TempoHardfork::T5, false, |fm, t, user, validator| {
             setup_pools(fm, t)?;
 
             fm.collect_fee_pre_tx(user, t.user, U256::from(1_000), validator, false)?;
@@ -1210,43 +1214,83 @@ mod tests {
 
     #[test]
     fn test_collect_fee_pre_tx_two_hop_no_side_effects() -> eyre::Result<()> {
-        // (label, skip, direct, first_hop, second_hop)
-        let cases: &[(&str, bool, u128, u128, u128)] = &[
-            ("direct pool sufficient", false, 100_000, 0, 0),
-            ("skip_liquidity_check bypass", true, 0, 0, 0),
-            ("1st hop empty", false, 0, 0, 100_000),
-            ("2nd hop too small", false, 0, 100_000, 50),
+        // (label, hop_quote_is_val, skip, direct, first_hop, second_hop)
+        let cases: &[(&str, bool, bool, u128, u128, u128)] = &[
+            ("direct pool sufficient", false, false, 100_000, 0, 0),
+            ("skip_liquidity_check bypass", false, true, 0, 0, 0),
+            ("1st hop empty", false, false, 0, 0, 100_000),
+            ("2nd hop too small", false, false, 0, 100_000, 50),
+            // `userToken.quoteToken() == validatorToken` degenerates failed direct pair.
+            ("quote == validator", true, false, 0, 100_000, 100_000),
         ];
 
-        for &(label, skip, direct, r1, r2) in cases {
-            with_two_hop_env(TempoHardfork::T5, |fm, t, user, validator| {
-                write_pool(fm, t.user, t.validator, direct)?;
-                write_pool(fm, t.user, t.hop, r1)?;
-                write_pool(fm, t.hop, t.validator, r2)?;
+        for &(label, hop_quote_is_val, skip, direct, r1, r2) in cases {
+            with_two_hop_env(
+                TempoHardfork::T5,
+                hop_quote_is_val,
+                |fm, t, user, validator| {
+                    write_pool(fm, t.user, t.validator, direct)?;
+                    write_pool(fm, t.user, t.hop, r1)?;
+                    write_pool(fm, t.hop, t.validator, r2)?;
 
-                let res = fm.collect_fee_pre_tx(user, t.user, U256::from(1_000), validator, skip);
-                assert_eq!(
-                    res.is_ok(),
-                    direct > 0 || skip,
-                    "{label}: succeeds iff the two-hop fallback isn't needed, got {res:?}",
-                );
-
-                // Two-hop fallback must never half-commit: neither hop pool is
-                // reserved and no intermediate token is cached.
-                for (a, b) in [(t.user, t.hop), (t.hop, t.validator)] {
+                    let res =
+                        fm.collect_fee_pre_tx(user, t.user, U256::from(1_000), validator, skip);
                     assert_eq!(
-                        fm.pending_fee_swap_reservation[fm.pool_id(a, b)].t_read()?,
-                        0,
-                        "{label}: hop pool reservation leaked for ({a}, {b})",
+                        res.is_ok(),
+                        direct > 0 || skip,
+                        "{label}: succeeds iff the two-hop fallback isn't needed, got {res:?}",
                     );
-                }
-                assert!(
-                    fm.two_hop_intermediate.t_read()?.is_zero(),
-                    "{label}: intermediate cache leaked",
-                );
-                Ok(())
-            })?;
+
+                    // Two-hop fallback must never half-commit: neither hop pool is
+                    // reserved and no intermediate token is cached.
+                    for (a, b) in [(t.user, t.hop), (t.hop, t.validator)] {
+                        assert_eq!(
+                            fm.pending_fee_swap_reservation[fm.pool_id(a, b)].t_read()?,
+                            0,
+                            "{label}: hop pool reservation leaked for ({a}, {b})",
+                        );
+                    }
+                    assert!(
+                        fm.two_hop_intermediate.t_read()?.is_zero(),
+                        "{label}: intermediate cache leaked",
+                    );
+                    Ok(())
+                },
+            )?;
         }
         Ok(())
+    }
+
+    #[test]
+    fn test_collect_fee_post_tx_two_hop_compound_fee() -> eyre::Result<()> {
+        with_two_hop_env(TempoHardfork::T5, false, |fm, t, user, validator| {
+            write_pool(fm, t.user, t.validator, 0)?;
+            write_pool(fm, t.user, t.hop, 1_000)?;
+            write_pool(fm, t.hop, t.validator, 1_000)?;
+
+            let amount = U256::from(4);
+            fm.collect_fee_pre_tx(user, t.user, amount, validator, false)?;
+            fm.collect_fee_post_tx(user, amount, U256::ZERO, t.user, validator)?;
+
+            // floor(4 * 9970/10000) = 3, then floor(3 * 9970/10000) = 2.
+            assert_eq!(
+                fm.collected_fees[validator][t.validator].read()?,
+                U256::from(2),
+            );
+
+            // pool1 (user, hop): user-side gained 4, hop-side lost out1 = 3.
+            let p1 = fm.pools[fm.pool_id(t.user, t.hop)].read()?;
+            assert_eq!(
+                (p1.reserve_user_token, p1.reserve_validator_token),
+                (1_004, 997),
+            );
+            // pool2 (hop, validator): hop-side gained out1 = 3, validator-side lost out2 = 2.
+            let p2 = fm.pools[fm.pool_id(t.hop, t.validator)].read()?;
+            assert_eq!(
+                (p2.reserve_user_token, p2.reserve_validator_token),
+                (1_003, 998),
+            );
+            Ok(())
+        })
     }
 }

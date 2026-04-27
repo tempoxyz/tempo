@@ -100,21 +100,11 @@ impl TipFeeManager {
     }
 
     /// Checks that the pool identified by `pool_id` has enough validator-token reserves for the
-    /// fee swap of `max_amount` and returns the required output amount as `u128`.
+    /// the fee swap of `max_amount`. Returns `Ok(None)` when the pool doesn't have enough liquidity.
     ///
     /// # Errors
-    /// - `InsufficientLiquidity` — pool validator-token reserve is below the required output
     /// - `UnderOverflow` — output amount exceeds `u128`
-    pub fn check_sufficient_liquidity(&self, pool_id: B256, max_amount: U256) -> Result<u128> {
-        self.try_check_sufficient_liquidity(pool_id, max_amount)?
-            .map(|swap_info| swap_info.amount_out)
-            .ok_or_else(|| TIPFeeAMMError::insufficient_liquidity().into())
-    }
-
-    /// Like [`Self::check_sufficient_liquidity`], but returns `Ok(None)` instead of an error
-    /// when the pool has insufficient liquidity. Used by TIP-1033 two-hop fallback routing to
-    /// inspect a pool without aborting on the failure path.
-    pub fn try_check_sufficient_liquidity(
+    pub fn check_sufficient_liquidity(
         &self,
         pool_id: B256,
         max_amount: U256,
@@ -1076,11 +1066,14 @@ mod tests {
 
             // Exactly at boundary should succeed (100 * 0.997 = 99.7, which is < 100)
             let ok_amount = uint!(100_U256) * uint!(10_U256).pow(U256::from(6));
-            assert!(amm.check_sufficient_liquidity(pool_id, ok_amount).is_ok());
+            assert!(
+                amm.check_sufficient_liquidity(pool_id, ok_amount)?
+                    .is_some()
+            );
 
             // Just over boundary should fail (101 * 0.997 = 100.697, which is > 100)
             let too_much = uint!(101_U256) * uint!(10_U256).pow(U256::from(6));
-            assert!(amm.check_sufficient_liquidity(pool_id, too_much).is_err());
+            assert!(amm.check_sufficient_liquidity(pool_id, too_much)?.is_none());
 
             Ok(())
         })
@@ -1424,7 +1417,10 @@ mod tests {
             )?;
 
             let max_amount = uint!(10000_U256);
-            let amount_out = amm.check_sufficient_liquidity(pool_id, max_amount)?;
+            let amount_out = amm
+                .check_sufficient_liquidity(pool_id, max_amount)?
+                .unwrap()
+                .amount_out;
             amm.reserve_pool_liquidity(pool_id, amount_out)?;
 
             let reserved = amm.pending_fee_swap_reservation[pool_id].t_read()?;
@@ -1464,7 +1460,10 @@ mod tests {
 
             // Reserve most of the validator token liquidity
             let reserve_amount = U256::from(pool.reserve_validator_token) - uint!(100_U256);
-            let amount_out = amm.check_sufficient_liquidity(pool_id, reserve_amount)?;
+            let amount_out = amm
+                .check_sufficient_liquidity(pool_id, reserve_amount)?
+                .unwrap()
+                .amount_out;
             amm.reserve_pool_liquidity(pool_id, amount_out)?;
 
             let result = amm.burn(admin, user_token, validator_token, liquidity, recipient);
@@ -1505,7 +1504,10 @@ mod tests {
 
             let pool_id = amm.pool_id(user_token, validator_token);
             let small_reserve = uint!(1000_U256);
-            let amount_out = amm.check_sufficient_liquidity(pool_id, small_reserve)?;
+            let amount_out = amm
+                .check_sufficient_liquidity(pool_id, small_reserve)?
+                .unwrap()
+                .amount_out;
             amm.reserve_pool_liquidity(pool_id, amount_out)?;
 
             let small_burn = liquidity / uint!(10_U256);
@@ -1543,7 +1545,10 @@ mod tests {
             let pool_id =
                 setup_pool_with_liquidity(&mut amm, user_token, validator_token, liq, liq)?;
 
-            let amount_out = amm.check_sufficient_liquidity(pool_id, uint!(50000_U256))?;
+            let amount_out = amm
+                .check_sufficient_liquidity(pool_id, uint!(50000_U256))?
+                .unwrap()
+                .amount_out;
             amm.reserve_pool_liquidity(pool_id, amount_out)?;
 
             amm.rebalance_swap(admin, user_token, validator_token, uint!(5000_U256), to)?;
