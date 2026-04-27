@@ -432,7 +432,7 @@ impl ValidatorTransactionArgs {
             }
         }
 
-        let wallet = self.wallet.build().await?;
+        let wallet = self.wallet.build().await.wrap_err("failed to open wallet to send transaction")?;
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .with_gas_estimation()
             .wallet(wallet)
