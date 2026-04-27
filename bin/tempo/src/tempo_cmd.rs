@@ -405,7 +405,7 @@ pub(crate) struct ValidatorTransactionArgs {
     #[arg(long, short = 'y')]
     yes: bool,
 
-    /// Skip signing and submitting the transaction. Only printing out the details
+    /// Prints transaction and exits. Does not send sign or send the transaction.
     #[arg(long)]
     dry_run: bool,
 }
