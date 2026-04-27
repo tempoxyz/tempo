@@ -157,7 +157,10 @@ reth-node-metrics = { git = "https://github.com/paradigmxyz/reth", rev = "7839f3
 reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "7839f3d" }
 reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "7839f3d" }
 reth-primitives-traits = { version = "0.3.0", default-features = false }
+reth-config = { git = "https://github.com/paradigmxyz/reth", rev = "7839f3d" }
+reth-downloaders = { git = "https://github.com/paradigmxyz/reth", rev = "7839f3d" }
 reth-provider = { git = "https://github.com/paradigmxyz/reth", rev = "7839f3d" }
+reth-prune-types = { git = "https://github.com/paradigmxyz/reth", rev = "7839f3d" }
 reth-rpc = { git = "https://github.com/paradigmxyz/reth", rev = "7839f3d" }
 reth-rpc-api = { git = "https://github.com/paradigmxyz/reth", rev = "7839f3d" }
 reth-rpc-builder = { git = "https://github.com/paradigmxyz/reth", rev = "7839f3d" }
@@ -165,6 +168,8 @@ reth-rpc-convert = { git = "https://github.com/paradigmxyz/reth", rev = "7839f3d
 reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", rev = "7839f3d" }
 reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", rev = "7839f3d" }
 reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", rev = "7839f3d" }
+reth-stages = { git = "https://github.com/paradigmxyz/reth", rev = "7839f3d" }
+reth-static-file = { git = "https://github.com/paradigmxyz/reth", rev = "7839f3d" }
 reth-storage-api = { git = "https://github.com/paradigmxyz/reth", rev = "7839f3d" }
 reth-tracing = { git = "https://github.com/paradigmxyz/reth", rev = "7839f3d" }
 reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", rev = "7839f3d" }
