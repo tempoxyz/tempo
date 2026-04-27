@@ -271,7 +271,7 @@ pub fn derive_storage_block(input: TokenStream) -> TokenStream {
 /// - `#[since = HF]`: throws `TempoPrecompileError::UnknownSelector` before `HF` activates.
 /// - `#[until = HF]`: throws `TempoPrecompileError::UnknownSelector` once `HF` activates.
 /// - `#[selector = SomeCallType]`: override the inferred `<Variant>Call` type used for computing
-///    the 4-byte selector (only needed for renamed variants / wrapper enums).
+///   the 4-byte selector (only needed for renamed variants / wrapper enums).
 ///
 /// At runtime, gated selectors are rejected by [`crate::dispatch_call`] BEFORE the body runs and
 /// calldata is decoded. Thus, hardfork-gated ABI selectors behave identically to unexistent ones.
