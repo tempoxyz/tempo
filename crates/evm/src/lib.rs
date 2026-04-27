@@ -19,6 +19,8 @@ use rayon as _;
 mod error;
 pub use error::TempoEvmError;
 pub mod evm;
+#[cfg(feature = "jit")]
+pub mod jit;
 use std::{borrow::Cow, sync::Arc};
 
 use alloy_evm::{
@@ -39,9 +41,11 @@ use tempo_primitives::{
 use crate::{block::TempoBlockExecutor, evm::TempoEvm};
 use reth_evm_ethereum::EthEvmConfig;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_revm::{evm::TempoContext, gas_params::tempo_gas_params};
+use tempo_revm::evm::TempoContext;
 
-pub use tempo_revm::{TempoBlockEnv, TempoHaltReason, TempoStateAccess};
+pub use tempo_revm::{
+    TempoBlockEnv, TempoHaltReason, TempoStateAccess, gas_params::tempo_gas_params,
+};
 
 #[cfg(test)]
 mod test_utils;
@@ -61,6 +65,18 @@ impl TempoEvmConfig {
     pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
         let inner =
             EthEvmConfig::new_with_evm_factory(chain_spec.clone(), TempoEvmFactory::default());
+        Self {
+            inner,
+            block_assembler: TempoBlockAssembler::new(chain_spec),
+        }
+    }
+
+    /// Create a new [`TempoEvmConfig`] with the given chain spec and custom EVM factory.
+    pub fn new_with_evm_factory(
+        chain_spec: Arc<TempoChainSpec>,
+        evm_factory: TempoEvmFactory,
+    ) -> Self {
+        let inner = EthEvmConfig::new_with_evm_factory(chain_spec.clone(), evm_factory);
         Self {
             inner,
             block_assembler: TempoBlockAssembler::new(chain_spec),
