@@ -5,7 +5,7 @@ pub mod dispatch;
 use crate::{
     error::Result,
     signature_verifier::SignatureVerifier,
-    storage::{Handler, Mapping, U96 as PackedU96},
+    storage::{Handler, Mapping, U96},
     tip20::{TIP20Token, is_tip20_prefix},
 };
 use alloy::{
@@ -36,8 +36,8 @@ type AbiU96 = Uint<96, 2>;
 
 #[derive(Debug, Clone, Copy, Default, Storable)]
 struct PackedChannelState {
-    settled: PackedU96,
-    deposit: PackedU96,
+    settled: U96,
+    deposit: U96,
     expires_at: u32,
     close_data: u32,
 }
@@ -87,7 +87,7 @@ impl TIP20ChannelEscrow {
             return Err(TIP20ChannelEscrowError::invalid_token().into());
         }
 
-        let deposit = PackedU96::from(call.deposit);
+        let deposit = U96::from(call.deposit);
         if deposit.is_zero() {
             return Err(TIP20ChannelEscrowError::zero_deposit().into());
         }
@@ -108,7 +108,7 @@ impl TIP20ChannelEscrow {
 
         let batch = self.storage.checkpoint();
         self.channel_states[channel_id].write(PackedChannelState {
-            settled: PackedU96::ZERO,
+            settled: U96::ZERO,
             deposit,
             expires_at: call.expiresAt,
             close_data: 0,
@@ -153,7 +153,7 @@ impl TIP20ChannelEscrow {
             return Err(TIP20ChannelEscrowError::channel_expired().into());
         }
 
-        let cumulative = PackedU96::from(call.cumulativeAmount);
+        let cumulative = U96::from(call.cumulativeAmount);
         if cumulative > state.deposit {
             return Err(TIP20ChannelEscrowError::amount_exceeds_deposit().into());
         }
@@ -210,7 +210,7 @@ impl TIP20ChannelEscrow {
             return Err(TIP20ChannelEscrowError::channel_finalized().into());
         }
 
-        let additional = PackedU96::from(call.additionalDeposit);
+        let additional = U96::from(call.additionalDeposit);
         let next_deposit = state
             .deposit
             .checked_add(additional)
@@ -313,8 +313,8 @@ impl TIP20ChannelEscrow {
             return Err(TIP20ChannelEscrowError::channel_finalized().into());
         }
 
-        let cumulative = PackedU96::from(call.cumulativeAmount);
-        let capture = PackedU96::from(call.captureAmount);
+        let cumulative = U96::from(call.cumulativeAmount);
+        let capture = U96::from(call.captureAmount);
         let previous_settled = state.settled;
         if capture < previous_settled || capture > cumulative {
             return Err(TIP20ChannelEscrowError::capture_amount_invalid().into());
