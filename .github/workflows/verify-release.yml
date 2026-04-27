@@ -1,0 +1,31 @@
+name: Verify Release
+
+on:
+  release:
+    types: [published]
+
+permissions: {}
+
+jobs:
+  verify:
+    name: Verify Release Attestation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Verify release attestation
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release verify "$TAG" --repo ${{ github.repository }}
+
+      - name: Verify individual assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release download "$TAG" --repo ${{ github.repository }} -D /tmp/assets
+          for file in /tmp/assets/*; do
+            echo "Verifying $(basename "$file")..."
+            gh release verify-asset "$TAG" "$file" --repo ${{ github.repository }}
+          done
