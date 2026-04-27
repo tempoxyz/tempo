@@ -580,7 +580,8 @@ impl StablecoinDEX {
     /// Places a flip order that auto-reverses to the opposite side when
     /// fully filled, acting as perpetual liquidity. Escrows tokens via
     /// [`TIP20Token`] and enforces compliance via [`TIP403Registry`].
-    /// For bids `flip_tick` must be > `tick`; for asks, < `tick`.
+    /// Pre-T5: for bids `flip_tick` must be > `tick`; for asks, < `tick`.
+    /// T5+ (TIP-1030): for bids `flip_tick >= tick`; for asks `flip_tick <= tick`.
     ///
     /// # Errors
     /// - `InvalidBaseToken` — token address does not have a valid TIP-20 prefix

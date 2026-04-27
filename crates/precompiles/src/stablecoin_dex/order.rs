@@ -53,9 +53,9 @@ pub struct Order {
     pub next: u128,
     /// Whether this is a flip order
     pub is_flip: bool,
-    /// Tick to flip to when fully filled (for flip orders, 0 for regular orders)
-    /// For bid flips: flip_tick must be > tick
-    /// For ask flips: flip_tick must be < tick
+    /// Tick to flip to when fully filled (for flip orders, 0 for regular orders).
+    /// Pre-T5: for bid flips `flip_tick > tick`; for ask flips `flip_tick < tick`.
+    /// T5+ (TIP-1030): for bid flips `flip_tick >= tick`; for ask flips `flip_tick <= tick`.
     pub flip_tick: i16,
 }
 
