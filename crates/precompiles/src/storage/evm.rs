@@ -115,7 +115,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             was_empty
         };
 
-        // T4: charge TIP20 creations as CREATE
+        // T4: charge TIP20 deployments as CREATE. Precompile bytecode is a fixed 0xEF marker,
+        // so new accounts only pay CREATE + code-deposit, but not HASH_COST(L).
         if self.spec.is_t4() && was_empty {
             self.deduct_gas(self.gas_params.create_cost())?;
             self.deduct_state_gas(self.gas_params.create_state_gas())?;

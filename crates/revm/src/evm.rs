@@ -221,7 +221,7 @@ mod tests {
     use crate::gas_params::tempo_gas_params;
     use alloy_eips::eip7702::Authorization;
     use alloy_evm::FromRecoveredTx;
-    use alloy_primitives::{Address, Bytes, TxKind, U256, bytes};
+    use alloy_primitives::{Address, Bytes, TxKind, U256, bytes, hex};
     use alloy_sol_types::SolCall;
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use p256::{
@@ -347,6 +347,25 @@ mod tests {
         let mut cfg = CfgEnv::<TempoHardfork>::default();
         cfg.spec = TempoHardfork::T3;
         cfg.gas_params = tempo_gas_params(TempoHardfork::T3);
+
+        let ctx = Context::mainnet()
+            .with_db(db)
+            .with_block(Default::default())
+            .with_cfg(cfg)
+            .with_tx(Default::default());
+
+        let mut evm = TempoEvm::new(ctx, ());
+        fund_account(&mut evm, address);
+        evm
+    }
+
+    /// Create an EVM with T4 hardfork enabled and a funded account.
+    fn create_funded_evm_t4(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T4;
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T4);
+        cfg.enable_amsterdam_eip8037 = true;
 
         let ctx = Context::mainnet()
             .with_db(db)
@@ -1891,6 +1910,45 @@ mod tests {
         let gas_used = result.tx_gas_used();
         assert_eq!(gas_used, 778720, "T1 CREATE contract gas should be exact");
 
+        Ok(())
+    }
+
+    /// TIP-1016: generic EVM CREATE charges deployed-bytecode HASH_COST(L)
+    /// in addition to CREATE base gas and code deposit gas on the success path.
+    #[test]
+    fn test_t4_create_tx_charges_hash_cost() -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+
+        // Initcode that returns a 1-byte runtime (`STOP`), so HASH_COST(L) = 6.
+        let tx = TxBuilder::new()
+            .create(&hex!("6001600c60003960016000f300"))
+            .gas_limit(1_000_000)
+            .build();
+        let signed_tx = key_pair.sign_tx(tx)?;
+
+        let run_create = |without_word_cost: bool| -> eyre::Result<u64> {
+            let mut evm = create_funded_evm_t4(caller);
+            if without_word_cost {
+                evm.ctx.cfg.gas_params.override_gas(vec![(
+                    revm::context_interface::cfg::GasId::keccak256_per_word(),
+                    0,
+                )]);
+            }
+
+            let result = evm.transact_commit(TempoTxEnv::from_recovered_tx(&signed_tx, caller))?;
+            assert!(
+                result.is_success(),
+                "T4 CREATE transaction should succeed with keccak256_per_word={without_word_cost:?}"
+            );
+            Ok(result.tx_gas_used())
+        };
+
+        assert_eq!(
+            run_create(false)? - run_create(true)?, // gas_with_hash - gas_without_hash (test fixture)
+            tempo_gas_params(TempoHardfork::T4).keccak256_cost(1),
+            "generic CREATE should add HASH_COST(L) on top of the non-hash baseline"
+        );
         Ok(())
     }
 
