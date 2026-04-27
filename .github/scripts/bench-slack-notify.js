@@ -255,6 +255,128 @@ function buildFailureBlocks({ prNumber, actor, actorSlackId, jobUrl, repo, faile
   ];
 }
 
+// ==================== Replay summary support ====================
+
+function isReplaySummary(summary) {
+  return summary.paired != null && summary.changes != null;
+}
+
+function replayHasSignificantChange(changes) {
+  return Object.values(changes).some(c => c.sig !== 'neutral');
+}
+
+function replayVerdict(changes) {
+  const hasBad = Object.values(changes).some(c => c.sig === 'bad');
+  const hasGood = Object.values(changes).some(c => c.sig === 'good');
+  if (hasBad && hasGood) return { emoji: ':warning:', label: 'Mixed Results' };
+  if (hasBad) return { emoji: ':x:', label: 'Regression' };
+  if (hasGood) return { emoji: ':white_check_mark:', label: 'Improvement' };
+  return { emoji: ':white_circle:', label: 'No Significant Change' };
+}
+
+function replayFmtChange(change, inverse = false) {
+  if (!change) return '';
+  const pct = change.pct;
+  const sig = change.sig;
+  const sign = pct >= 0 ? '+' : '';
+  const emoji = sig === 'neutral' ? '⚪' : sig === 'good' ? '✅' : '❌';
+  return `${sign}${pct.toFixed(2)}% ${emoji}`;
+}
+
+function buildReplayMetricRows(summary) {
+  const b = summary.baseline.stats;
+  const f = summary.feature.stats;
+  const c = summary.changes;
+  return [
+    { label: 'newPayload P50', baseline: fmtMs(b.p50_ms), feature: fmtMs(f.p50_ms), change: replayFmtChange(c.p50) },
+    { label: 'newPayload P90', baseline: fmtMs(b.p90_ms), feature: fmtMs(f.p90_ms), change: replayFmtChange(c.p90) },
+    { label: 'newPayload P99', baseline: fmtMs(b.p99_ms), feature: fmtMs(f.p99_ms), change: replayFmtChange(c.p99) },
+    { label: 'Mgas/s', baseline: fmtVal(b.mean_mgas_s, '', 2), feature: fmtVal(f.mean_mgas_s, '', 2), change: replayFmtChange(c.mgas_s) },
+    { label: 'Wall Clock', baseline: fmtVal(b.wall_clock_s, 's', 2), feature: fmtVal(f.wall_clock_s, 's', 2), change: replayFmtChange(c.wall_clock) },
+    { label: 'Persist Wait', baseline: fmtMs(b.mean_persist_ms), feature: fmtMs(f.mean_persist_ms), change: replayFmtChange(c.persist_wait) },
+  ];
+}
+
+function buildReplaySuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, repo }) {
+  const { emoji, label } = replayVerdict(summary.changes);
+
+  const prUrl = prNumber ? `https://github.com/${repo}/pull/${prNumber}` : '';
+  const commitUrl = `https://github.com/${repo}/commit`;
+  const baselineName = summary.baseline.name || process.env.BENCH_BASELINE_NAME || 'baseline';
+  const featureName = summary.feature.name || process.env.BENCH_FEATURE_NAME || 'feature';
+  const baselineLink = refLink(commitUrl, summary.baseline.ref, baselineName, 'baseline');
+  const featureLink = refLink(commitUrl, summary.feature.ref, featureName, 'feature');
+
+  const metaParts = [];
+  if (prNumber) metaParts.push(`*<${prUrl}|PR #${prNumber}>*`);
+  metaParts.push(`triggered by ${actorSlackId ? `<@${actorSlackId}>` : `@${actor}`}`);
+
+  const chain = process.env.BENCH_CHAIN || 'mainnet';
+  const blocks = summary.blocks || process.env.BENCH_BLOCKS || '-';
+  const warmup = process.env.BENCH_WARMUP_BLOCKS || '-';
+
+  const sectionText = [
+    metaParts.join(' | '),
+    '',
+    `*Baseline:* ${baselineLink}`,
+    `*Feature:* ${featureLink}`,
+    '',
+    `*Mode:* \`replay\` | *Chain:* \`${chain}\``,
+    `*Blocks:* \`${blocks}\` | *Warmup:* \`${warmup}\``,
+  ].join('\n');
+
+  const rows = buildReplayMetricRows(summary);
+  const tableRows = [
+    [cell('Metric'), cell('Baseline'), cell('Feature'), cell('Change')],
+    ...rows.map(r => [cell(r.label), cell(r.baseline), cell(r.feature), cell(r.change || ' ')]),
+  ];
+
+  const buttons = [
+    {
+      type: 'button',
+      text: { type: 'plain_text', text: 'CI :github:', emoji: true },
+      url: jobUrl,
+      action_id: 'ci_button',
+    },
+  ];
+  if (prNumber) {
+    const diffUrl = `https://github.com/${repo}/pull/${prNumber}/files`;
+    buttons.push({
+      type: 'button',
+      text: { type: 'plain_text', text: 'Diff :github:', emoji: true },
+      url: diffUrl,
+      action_id: 'diff_button',
+    });
+  }
+
+  return [
+    {
+      type: 'header',
+      text: { type: 'plain_text', text: `${emoji} Tempo Replay Bench ${label}`, emoji: true },
+    },
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: sectionText },
+    },
+    {
+      type: 'table',
+      column_settings: [
+        { align: 'left' },
+        { align: 'right' },
+        { align: 'right' },
+        { align: 'right' },
+      ],
+      rows: tableRows,
+    },
+    {
+      type: 'actions',
+      elements: buttons,
+    },
+  ];
+}
+
+// ================================================================
+
 async function success({ core, context }) {
   const token = process.env.SLACK_BENCH_BOT_TOKEN;
   if (!token) {
@@ -279,15 +401,20 @@ async function success({ core, context }) {
   const slackUsers = loadSlackUsers(process.env.GITHUB_WORKSPACE || '.');
   const actorSlackId = slackUsers[actor];
 
-  const blocks = buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, repo });
-  const text = `Tempo bench: baseline vs feature`;
+  const isReplay = isReplaySummary(summary);
+  const blocks = isReplay
+    ? buildReplaySuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, repo })
+    : buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, repo });
+  const text = isReplay ? `Tempo replay bench: baseline vs feature` : `Tempo bench: baseline vs feature`;
 
-  const deltas = summary.results.deltas;
+  const hasSignificant = isReplay
+    ? replayHasSignificantChange(summary.changes)
+    : hasSignificantChange(summary.results.deltas);
   const channel = process.env.SLACK_BENCH_CHANNEL;
   let postedToChannel = false;
 
   // Post to public channel if any metric shows significant change
-  if (channel && hasSignificantChange(deltas)) {
+  if (channel && hasSignificant) {
     await postToSlack(token, channel, blocks, text, core);
     postedToChannel = true;
   } else if (channel) {
