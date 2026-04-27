@@ -75,7 +75,7 @@ impl From<U96> for u128 {
 
 impl From<U96> for U256 {
     fn from(value: U96) -> Self {
-        U256::from(value.0)
+        Self::from(value.0)
     }
 }
 
@@ -108,7 +108,7 @@ impl FromWord for U96 {
 
     #[inline]
     fn from_word(word: U256) -> crate::error::Result<Self> {
-        if word > U256::from(U96::MAX_VALUE) {
+        if word > U256::from(Self::MAX_VALUE) {
             return Err(crate::error::TempoPrecompileError::under_overflow());
         }
 
