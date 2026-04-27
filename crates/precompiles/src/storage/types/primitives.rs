@@ -1,6 +1,6 @@
 //! `StorableType`, `FromWord`, and `StorageKey` implementations for single-word primitives.
 //!
-//! Covers Rust integers, Alloy integers (including `U96`), Alloy fixed bytes, `bool`, and `Address`.
+//! Covers Rust integers, Alloy integers, Alloy fixed bytes, `bool`, and `Address`.
 
 use alloy::primitives::{Address, U256};
 use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
