@@ -3,191 +3,253 @@
 //! Implements [`Resolver`] for marshal's gap-repair machinery. Checks the
 //! local execution node first and falls back to the upstream abstraction.
 
-use std::{collections::HashSet, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc};
 
 use bytes::Bytes;
-use commonware_codec::{Encode, ReadExt as _};
+use commonware_codec::{DecodeExt as _, Encode as _};
 use commonware_consensus::{
-    marshal::resolver::handler::{Message, Request},
+    marshal::resolver::handler,
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization},
+    types::Height,
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
-use commonware_runtime::Spawner;
+use commonware_runtime::{ContextCell, Spawner, spawn_cell};
 use commonware_utils::{
-    channel::{mpsc, oneshot},
+    channel::{fallible::FallibleExt as _, mpsc},
+    futures::{AbortablePool, Aborter},
     vec::NonEmptyVec,
 };
-use eyre::WrapErr as _;
 use reth_node_core::primitives::SealedBlock;
 use reth_provider::{BlockReader as _, BlockSource};
 use tempo_node::{TempoFullNode, rpc::consensus::Query};
-use tokio::sync::Mutex;
-use tracing::{debug, warn, warn_span};
+use tokio::select;
+use tracing::{debug, debug_span, error, instrument, warn};
 
 use super::upstream::UpstreamNode;
 use crate::consensus::{Digest, block::Block};
 
-#[derive(Clone)]
-pub(crate) struct Resolver<TContext, U: UpstreamNode> {
+pub(crate) fn try_init<TContext, TUpstream>(
     context: TContext,
-    upstream: Arc<U>,
-    sender: mpsc::Sender<Message<Digest>>,
-    pending: Arc<Mutex<HashSet<Request<Digest>>>>,
-    execution_node: TempoFullNode,
+    config: Config<TUpstream>,
+) -> (
+    Resolver<TContext, TUpstream>,
+    Mailbox,
+    mpsc::Receiver<handler::Message<Digest>>,
+) {
+    let (handler_tx, handler_rx) = mpsc::channel(config.mailbox_size);
+    let (mailbox_tx, mailbox_rx) = mpsc::unbounded_channel();
+    let actor = Resolver {
+        context: ContextCell::new(context),
+        config,
+        mailbox: mailbox_rx,
+        handler_tx,
+        requests: BTreeMap::new(),
+        fetches: AbortablePool::default(),
+    };
+    let mailbox = Mailbox { inner: mailbox_tx };
+    (actor, mailbox, handler_rx)
 }
 
-impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> Resolver<TContext, U> {
-    pub(crate) fn new(
-        context: TContext,
-        upstream: Arc<U>,
-        sender: mpsc::Sender<Message<Digest>>,
-        execution_node: TempoFullNode,
-    ) -> Self {
-        Self {
-            context,
-            upstream,
-            sender,
-            pending: Arc::new(Mutex::new(HashSet::new())),
-            execution_node,
+#[derive(Clone)]
+pub(crate) struct Mailbox {
+    // FIXME: This should probably not be an unbounded channel - but how do
+    // we exert backpressure?
+    inner: mpsc::UnboundedSender<Message>,
+}
+
+/// Messages sent to the resolver.
+enum Message {
+    /// Initiate fetch requests.
+    Fetch { keys: Vec<handler::Request<Digest>> },
+
+    /// Cancel a fetch request by key.
+    Cancel { key: handler::Request<Digest> },
+
+    /// Cancel all fetch requests.
+    Clear,
+
+    /// Cancel all fetch requests that do not satisfy the predicate.
+    Retain {
+        predicate: Box<dyn Fn(&handler::Request<Digest>) -> bool + Send>,
+    },
+}
+
+pub(crate) struct Config<TUpstream> {
+    /// For reading blocks locally from the execution layer.
+    pub(crate) execution_node: Arc<TempoFullNode>,
+    /// For reading blocks and certificates from the connected node.
+    pub(crate) upstream: TUpstream,
+    pub(crate) mailbox_size: usize,
+}
+
+pub(crate) struct Resolver<TContext, TUpstream> {
+    context: ContextCell<TContext>,
+    config: Config<TUpstream>,
+    /// To send messages to the application/actor relying on the resolver.
+    handler_tx: mpsc::Sender<handler::Message<Digest>>,
+    mailbox: mpsc::UnboundedReceiver<Message>,
+    requests: BTreeMap<handler::Request<Digest>, Aborter>,
+    fetches: AbortablePool<Result<(handler::Request<Digest>, Bytes), handler::Request<Digest>>>,
+}
+
+impl<TContext, TUpstream> Resolver<TContext, TUpstream>
+where
+    TContext: Spawner,
+    TUpstream: UpstreamNode,
+{
+    async fn run(mut self) {
+        loop {
+            select!(
+                biased;
+
+                response = self.fetches.next_completed() => {
+                    match response {
+                        Ok(Ok((key, value))) => {
+                            self.requests.remove(&key);
+                            // Fire and forget; there is no mechanism to retry
+                            // sending the response.
+                            let (response, _) = commonware_utils::channel::oneshot::channel();
+                            let _ = self.handler_tx.try_send(handler::Message::Deliver {
+                                key,
+                                value,
+                                response,
+                            });
+                        }
+                        Ok(Err(key)) => { self.requests.remove(&key); }
+                        Err(_) => {}
+                    }
+                }
+
+                Some(msg) = self.mailbox.recv() => {
+                    match msg {
+                        Message::Fetch { keys, } => {
+                            for key in keys {
+                                if self.requests.contains_key(&key) {
+                                    let aborter = match &key {
+                                        handler::Request::Block(digest) => {
+                                            let execution_node = self.config.execution_node.clone();
+                                            let digest = *digest;
+                                            let key = key.clone();
+                                            self.fetches.push(async move {
+                                                resolve_block(&execution_node, digest).ok_or(key.clone())
+                                                    .map(move |response| (key, response))
+                                            })
+                                        }
+                                        handler::Request::Finalized { height } => {
+                                            let upstream = self.config.upstream.clone();
+                                            let height = *height;
+                                            let key = key.clone();
+                                            self.fetches.push(async move {
+                                                resolve_finalized(&upstream, height)
+                                                .await
+                                                .ok_or(key.clone())
+                                                .map(move |response| (key, response))
+                                            })
+                                        },
+                                        handler::Request::Notarized { .. } => {
+                                            debug_span!("follow")
+                                                .in_scope(|| debug!("ignoring requests for notarized blocks"));
+                                            continue;
+                                        }
+                                    };
+                                    self.requests.insert(key, aborter);
+                                }
+                            }
+                        }
+                        Message::Cancel { key } => {
+                            self.requests.remove(&key);
+                        }
+                        Message::Clear => {
+                            self.requests.clear();
+                        }
+                        Message::Retain { predicate } => {
+                            self.requests.retain(move |key, _| predicate(key));
+                        }
+                    }
+                }
+            )
         }
     }
 
-    // ── Gap-repair internals ────────────────────────────────────────────
-
-    fn spawn_fetch(&self, key: Request<Digest>) {
-        let resolver = self.clone();
-
-        self.context.clone().spawn(move |_| async move {
-            {
-                let p = resolver.pending.lock().await;
-                if !p.contains(&key) {
-                    return;
-                }
-            }
-
-            let result = match &key {
-                Request::Finalized { height } => resolver.resolve_finalized(height.get()).await,
-                Request::Block(commitment) => resolver.resolve_block(*commitment).await,
-                other => {
-                    warn_span!("follow")
-                        .in_scope(|| warn!(?other, "unexpected resolver request type"));
-                    return;
-                }
-            };
-
-            {
-                let p = resolver.pending.lock().await;
-                if !p.contains(&key) {
-                    return;
-                }
-            }
-
-            match result {
-                Ok(Some(value)) => {
-                    let (response_tx, response_rx) = oneshot::channel();
-                    let msg = Message::Deliver {
-                        key: key.clone(),
-                        value,
-                        response: response_tx,
-                    };
-
-                    if resolver.sender.send(msg).await.is_ok()
-                        && let Ok(true) = response_rx.await
-                    {
-                        resolver.pending.lock().await.remove(&key);
-                    }
-                }
-                Ok(None) => {
-                    debug!(?key, "data not yet available from upstream");
-                }
-                Err(e) => {
-                    warn!(?key, %e, "failed to fetch from upstream");
-                }
-            }
-        });
-    }
-
-    async fn resolve_finalized(&self, height: u64) -> eyre::Result<Option<Bytes>> {
-        let Some(certified) = self
-            .upstream
-            .get_finalization(Query::Height(height))
-            .await?
-        else {
-            return Ok(None);
-        };
-
-        let cert_bytes = alloy_primitives::hex::decode(&certified.certificate)
-            .wrap_err("failed to decode certificate hex")?;
-
-        let finalization: Finalization<Scheme<PublicKey, MinSig>, Digest> =
-            Finalization::read(&mut &cert_bytes[..]).wrap_err("failed to decode finalization")?;
-
-        let consensus_block = Block::from_execution_block(SealedBlock::seal_slow(certified.block));
-        Ok(Some((finalization, consensus_block).encode()))
-    }
-
-    // We don't fallback to the upstream and rely on EL pipeline sync for any
-    // intermediary blocks that the marshal doesn't have to be resolved.
-    async fn resolve_block(&self, commitment: Digest) -> eyre::Result<Option<Bytes>> {
-        let Some(block) = self
-            .execution_node
-            .provider
-            .find_block_by_hash(commitment.0, BlockSource::Any)
-            .map_err(|e| eyre::eyre!("local provider error: {e}"))?
-        else {
-            return Ok(None);
-        };
-
-        let consensus_block = Block::from_execution_block(SealedBlock::seal_slow(block));
-        Ok(Some(consensus_block.encode()))
+    pub(crate) fn start(mut self) -> commonware_runtime::Handle<()> {
+        spawn_cell!(self.context, self.run().await)
     }
 }
 
-// ── Resolver trait impl ─────────────────────────────────────────────────────
+#[instrument(skip(execution_node))]
+fn resolve_block(execution_node: &TempoFullNode, block_digest: Digest) -> Option<Bytes> {
+    let block = execution_node
+        .provider
+        .find_block_by_hash(block_digest.0, BlockSource::Any)
+        .map_err(eyre::Report::new)
+        .inspect_err(
+            |error| error!(%error, "unable to communicate with execution layer to lookup block"),
+        )
+        .ok()??;
+    let consensus_block = Block::from_execution_block(SealedBlock::seal_slow(block));
+    Some(consensus_block.encode())
+}
 
-impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> commonware_resolver::Resolver
-    for Resolver<TContext, U>
-{
-    type Key = Request<Digest>;
+#[instrument(skip(upstream_node))]
+async fn resolve_finalized(upstream_node: &impl UpstreamNode, height: Height) -> Option<Bytes> {
+    let certified_block = match upstream_node
+        .get_finalization(Query::Height(height.get()))
+        .await
+    {
+        Ok(Some(cert)) => cert,
+        Ok(None) | Err(_) => return None,
+    };
+
+    let finalization = <Finalization<Scheme<PublicKey, MinSig>, Digest>>::decode(
+        &*alloy_primitives::hex::decode(&certified_block.certificate)
+            .map_err(eyre::Report::new)
+            .inspect_err(|error| warn!(%error, "failed decoding certificate"))
+            .ok()?,
+    )
+    .map_err(eyre::Report::new)
+    .inspect_err(|error| warn!(%error, "failed decoding certificate"))
+    .ok()?;
+
+    let consensus_block =
+        Block::from_execution_block(SealedBlock::seal_slow(certified_block.block));
+    Some((finalization, consensus_block).encode())
+}
+
+impl commonware_resolver::Resolver for Mailbox {
+    type Key = handler::Request<Digest>;
     type PublicKey = PublicKey;
 
     async fn fetch(&mut self, key: Self::Key) {
-        self.pending.lock().await.insert(key.clone());
-        self.spawn_fetch(key);
+        self.fetch_all(vec![key]).await;
     }
 
     async fn fetch_all(&mut self, keys: Vec<Self::Key>) {
-        let mut pending = self.pending.lock().await;
-        for key in &keys {
-            pending.insert(key.clone());
-        }
-        drop(pending);
-        for key in keys {
-            self.spawn_fetch(key);
-        }
+        self.inner.send_lossy(Message::Fetch { keys });
     }
 
     async fn fetch_targeted(&mut self, key: Self::Key, _targets: NonEmptyVec<Self::PublicKey>) {
-        Resolver::fetch(self, key).await;
+        self.fetch(key).await;
     }
 
     async fn fetch_all_targeted(
         &mut self,
         requests: Vec<(Self::Key, NonEmptyVec<Self::PublicKey>)>,
     ) {
-        let keys: Vec<Self::Key> = requests.into_iter().map(|(k, _)| k).collect();
-        self.fetch_all(keys).await;
+        self.fetch_all(requests.into_iter().map(|(k, _)| k).collect())
+            .await;
     }
 
     async fn cancel(&mut self, key: Self::Key) {
-        self.pending.lock().await.remove(&key);
+        self.inner.send_lossy(Message::Cancel { key });
     }
 
     async fn clear(&mut self) {
-        self.pending.lock().await.clear();
+        self.inner.send_lossy(Message::Clear);
     }
 
     async fn retain(&mut self, predicate: impl Fn(&Self::Key) -> bool + Send + 'static) {
-        self.pending.lock().await.retain(|k| predicate(k));
+        self.inner.send_lossy(Message::Retain {
+            predicate: Box::new(predicate),
+        });
     }
 }
