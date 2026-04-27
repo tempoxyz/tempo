@@ -11,28 +11,24 @@ impl Precompile for AddressRegistry {
             return err;
         }
 
-        dispatch!(
-            calldata,
-            IAddressRegistryCalls::abi_decode,
-            {
-            registerVirtualMaster(call) => {
+        dispatch! {
+            IAddressRegistryCalls::registerVirtualMaster(call) => {
                 mutate(call, msg_sender, |s, c| self.register_virtual_master(s, c))
             },
-            getMaster(call) => view(call, |c| {
+            IAddressRegistryCalls::getMaster(call) => view(call, |c| {
                 Ok(self.get_master(c.masterId)?.unwrap_or(Address::ZERO))
             }),
-            resolveRecipient(call) => view(call, |c| self.resolve_recipient(c.to)),
-            resolveVirtualAddress(call) => view(call, |c| self.resolve_virtual_address(c.virtualAddr)),
-            isVirtualAddress(call) => view(call, |c| Ok(c.addr.is_virtual())),
-            decodeVirtualAddress(call) => view(call, |c| {
+            IAddressRegistryCalls::resolveRecipient(call) => view(call, |c| self.resolve_recipient(c.to)),
+            IAddressRegistryCalls::resolveVirtualAddress(call) => view(call, |c| self.resolve_virtual_address(c.virtualAddr)),
+            IAddressRegistryCalls::isVirtualAddress(call) => view(call, |c| Ok(c.addr.is_virtual())),
+            IAddressRegistryCalls::decodeVirtualAddress(call) => view(call, |c| {
                 let (is_virtual, master_id, user_tag) = match c.addr.decode_virtual() {
                     Some((mid, tag)) => (true, mid, tag),
                     None => (false, MasterId::ZERO, UserTag::ZERO),
                 };
                 Ok((is_virtual, master_id, user_tag).into())
             }),
-            },
-        )
+        }
     }
 }
 

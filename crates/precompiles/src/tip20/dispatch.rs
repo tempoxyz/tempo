@@ -21,7 +21,7 @@ enum TIP20Call {
 }
 
 impl TIP20Call {
-    fn decode(calldata: &[u8]) -> Result<Self, alloy::sol_types::Error> {
+    fn abi_decode(calldata: &[u8]) -> Result<Self, alloy::sol_types::Error> {
         // safe to expect as `dispatch_call` pre-validates calldata len
         let selector: [u8; 4] = calldata[..4].try_into().expect("calldata len >= 4");
 
@@ -49,10 +49,7 @@ impl Precompile for TIP20Token {
             return self.storage.error_result(TIP20Error::uninitialized());
         }
 
-        dispatch!(
-            calldata,
-            TIP20Call::decode,
-            {
+        dispatch! {
             TIP20Call::TIP20(ITIP20Calls::name(_)) => metadata::<ITIP20::nameCall>(|| self.name()),
             TIP20Call::TIP20(ITIP20Calls::symbol(_)) => metadata::<ITIP20::symbolCall>(|| self.symbol()),
             TIP20Call::TIP20(ITIP20Calls::decimals(_)) => {
@@ -180,8 +177,7 @@ impl Precompile for TIP20Token {
             TIP20Call::RolesAuth(IRolesAuthCalls::setRoleAdmin(call)) => {
                 mutate_void(call, msg_sender, |s, c| self.set_role_admin(s, c))
             },
-            },
-        )
+        }
     }
 }
 

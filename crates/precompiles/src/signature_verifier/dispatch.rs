@@ -26,16 +26,12 @@ impl Precompile for SignatureVerifier {
                 .abi_revert(SignatureVerifierError::invalid_format()));
         }
 
-        dispatch!(
-            calldata,
-            ISVCalls::abi_decode,
-            {
-            recover(call) => view(call, |c| self.recover(c.hash, c.signature)),
-            verify(call) => view(call, |c| {
+        dispatch! {
+            ISVCalls::recover(call) => view(call, |c| self.recover(c.hash, c.signature)),
+            ISVCalls::verify(call) => view(call, |c| {
                 self.recover(c.hash, c.signature).map(|sig| sig == c.signer)
             }),
-            },
-        )
+        }
     }
 }
 

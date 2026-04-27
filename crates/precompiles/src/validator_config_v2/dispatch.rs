@@ -18,51 +18,47 @@ impl Precompile for ValidatorConfigV2 {
             return Ok(self.storage.success_output(Default::default()));
         }
 
-        dispatch!(
-            calldata,
-            IValidatorConfigV2Calls::abi_decode,
-            {
-            owner(call) => view(call, |_| self.owner()),
-            getActiveValidators(call) => view(call, |_| self.get_active_validators()),
-            getInitializedAtHeight(call) => view(call, |_| self.get_initialized_at_height()),
-            validatorCount(call) => view(call, |_| self.validator_count()),
-            validatorByIndex(call) => view(call, |c| self.validator_by_index(c.index)),
-            validatorByAddress(call) => view(call, |c| self.validator_by_address(c.validatorAddress)),
-            validatorByPublicKey(call) => view(call, |c| self.validator_by_public_key(c.publicKey)),
-            getNextNetworkIdentityRotationEpoch(call) => {
+        dispatch! {
+            IValidatorConfigV2Calls::owner(call) => view(call, |_| self.owner()),
+            IValidatorConfigV2Calls::getActiveValidators(call) => view(call, |_| self.get_active_validators()),
+            IValidatorConfigV2Calls::getInitializedAtHeight(call) => view(call, |_| self.get_initialized_at_height()),
+            IValidatorConfigV2Calls::validatorCount(call) => view(call, |_| self.validator_count()),
+            IValidatorConfigV2Calls::validatorByIndex(call) => view(call, |c| self.validator_by_index(c.index)),
+            IValidatorConfigV2Calls::validatorByAddress(call) => view(call, |c| self.validator_by_address(c.validatorAddress)),
+            IValidatorConfigV2Calls::validatorByPublicKey(call) => view(call, |c| self.validator_by_public_key(c.publicKey)),
+            IValidatorConfigV2Calls::getNextNetworkIdentityRotationEpoch(call) => {
                 view(call, |_| self.get_next_network_identity_rotation_epoch())
             },
-            isInitialized(call) => view(call, |_| self.is_initialized()),
-            addValidator(call) => mutate(call, msg_sender, |s, c| self.add_validator(s, c)),
-            deactivateValidator(call) => {
+            IValidatorConfigV2Calls::isInitialized(call) => view(call, |_| self.is_initialized()),
+            IValidatorConfigV2Calls::addValidator(call) => mutate(call, msg_sender, |s, c| self.add_validator(s, c)),
+            IValidatorConfigV2Calls::deactivateValidator(call) => {
                 mutate_void(call, msg_sender, |s, c| self.deactivate_validator(s, c))
             },
-            rotateValidator(call) => {
+            IValidatorConfigV2Calls::rotateValidator(call) => {
                 mutate_void(call, msg_sender, |s, c| self.rotate_validator(s, c))
             },
-            setFeeRecipient(call) => {
+            IValidatorConfigV2Calls::setFeeRecipient(call) => {
                 mutate_void(call, msg_sender, |s, c| self.set_fee_recipient(s, c))
             },
-            setIpAddresses(call) => {
+            IValidatorConfigV2Calls::setIpAddresses(call) => {
                 mutate_void(call, msg_sender, |s, c| self.set_ip_addresses(s, c))
             },
-            transferValidatorOwnership(call) => mutate_void(call, msg_sender, |s, c| {
+            IValidatorConfigV2Calls::transferValidatorOwnership(call) => mutate_void(call, msg_sender, |s, c| {
                 self.transfer_validator_ownership(s, c)
             }),
-            transferOwnership(call) => {
+            IValidatorConfigV2Calls::transferOwnership(call) => {
                 mutate_void(call, msg_sender, |s, c| self.transfer_ownership(s, c))
             },
-            setNetworkIdentityRotationEpoch(call) => mutate_void(call, msg_sender, |s, c| {
+            IValidatorConfigV2Calls::setNetworkIdentityRotationEpoch(call) => mutate_void(call, msg_sender, |s, c| {
                 self.set_network_identity_rotation_epoch(s, c)
             }),
-            migrateValidator(call) => {
+            IValidatorConfigV2Calls::migrateValidator(call) => {
                 mutate_void(call, msg_sender, |s, c| self.migrate_validator(s, c))
             },
-            initializeIfMigrated(call) => {
+            IValidatorConfigV2Calls::initializeIfMigrated(call) => {
                 mutate_void(call, msg_sender, |s, _| self.initialize_if_migrated(s))
             },
-            },
-        )
+        }
     }
 }
 

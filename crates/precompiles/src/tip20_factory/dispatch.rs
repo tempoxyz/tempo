@@ -12,15 +12,11 @@ impl Precompile for TIP20Factory {
             return err;
         }
 
-        dispatch!(
-            calldata,
-            ITIP20FactoryCalls::abi_decode,
-            {
-            createToken(call) => mutate(call, msg_sender, |s, c| self.create_token(s, c)),
-            isTIP20(call) => view(call, |c| self.is_tip20(c.token)),
-            getTokenAddress(call) => view(call, |c| self.get_token_address(c)),
-            },
-        )
+        dispatch! {
+            ITIP20FactoryCalls::createToken(call) => mutate(call, msg_sender, |s, c| self.create_token(s, c)),
+            ITIP20FactoryCalls::isTIP20(call) => view(call, |c| self.is_tip20(c.token)),
+            ITIP20FactoryCalls::getTokenAddress(call) => view(call, |c| self.get_token_address(c)),
+        }
     }
 }
 

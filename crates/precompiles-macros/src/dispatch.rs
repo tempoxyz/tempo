@@ -1,11 +1,15 @@
-use proc_macro2::TokenStream;
+use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::{
-    Expr, ExprPath, Ident, Pat, Path, PathArguments, PathSegment, Result, Token, braced,
+    Expr, ExprPath, Ident, Pat, Path, PathArguments, PathSegment, Result, Token,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
     spanned::Spanned,
 };
+
+// The macro assumes:
+// - a `calldata: &[u8]` binding is in scope at the call site
+// - every arm uses a qualified pattern `ICalls::variant(call) =>` to infer its `ICalls::abi_decode`
 
 pub(crate) fn expand(input: TokenStream) -> Result<TokenStream> {
     let input = syn::parse2::<DispatchInput>(input)?;
@@ -13,34 +17,28 @@ pub(crate) fn expand(input: TokenStream) -> Result<TokenStream> {
 }
 
 struct DispatchInput {
-    calldata: Expr,
     decode: Expr,
-    calls: Option<Path>,
+    calls: Path,
     arms: Vec<DispatchArm>,
 }
 
 impl Parse for DispatchInput {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
-        let calldata = input.parse()?;
-        input.parse::<Token![,]>()?;
-
-        let decode = input.parse()?;
-        input.parse::<Token![,]>()?;
-
-        let content;
-        braced!(content in input);
-
         let mut arms = Vec::new();
-        while !content.is_empty() {
-            arms.push(content.parse()?);
-            if content.is_empty() {
+        while !input.is_empty() {
+            let arm: DispatchArm = input.parse()?;
+            let needs_comma = arm_body_requires_comma(&arm.body);
+            arms.push(arm);
+            if input.is_empty() {
                 break;
             }
-            content.parse::<Token![,]>()?;
-        }
-
-        if !input.is_empty() {
-            input.parse::<Token![,]>()?;
+            // Mirror Rust's `match` rule: arms with block-like bodies may omit the trailing comma.
+            // All other bodies (call expressions, etc.) require it.
+            if needs_comma {
+                input.parse::<Token![,]>()?;
+            } else {
+                let _: Option<Token![,]> = input.parse()?;
+            }
         }
 
         if arms.is_empty() {
@@ -50,10 +48,16 @@ impl Parse for DispatchInput {
             ));
         }
 
-        let calls = infer_calls_from_decode(&decode);
+        let calls = infer_calls_from_arms(&arms).ok_or_else(|| {
+            syn::Error::new(
+                input.span(),
+                "could not infer a decode path from the arm patterns; \
+                 every arm must use a qualified pattern like `ICalls::variant(call) => ...`",
+            )
+        })?;
+        let decode = build_decode_expr(&calls);
 
         Ok(Self {
-            calldata,
             decode,
             calls,
             arms,
@@ -67,17 +71,16 @@ impl DispatchInput {
             .arms
             .iter()
             .try_fold(Vec::new(), |mut schedules, arm| {
-                schedules.extend(arm.schedules(self.calls.as_ref())?);
+                schedules.extend(arm.schedules(Some(&self.calls))?);
                 Ok::<Vec<TokenStream>, syn::Error>(schedules)
             })?;
 
         let match_arms = self
             .arms
             .iter()
-            .map(|arm| arm.expand(self.calls.as_ref()))
+            .map(|arm| arm.expand(Some(&self.calls)))
             .collect::<Result<Vec<_>>>()?;
 
-        let calldata = &self.calldata;
         let decode = &self.decode;
 
         let schedules = if schedules.is_empty() {
@@ -88,7 +91,7 @@ impl DispatchInput {
 
         Ok(quote! {
             crate::dispatch_call(
-                #calldata,
+                calldata,
                 #schedules,
                 #decode,
                 |call| match call {
@@ -131,10 +134,10 @@ impl DispatchArm {
                     .with_added(&[#selector])
             });
         }
-        if let Some(to) = &self.attrs.to {
+        if let Some(until) = &self.attrs.until {
             let selector = self.selector(interface)?;
             schedules.push(quote! {
-                crate::SelectorSchedule::new(tempo_chainspec::hardfork::TempoHardfork::#to)
+                crate::SelectorSchedule::new(tempo_chainspec::hardfork::TempoHardfork::#until)
                     .with_dropped(&[#selector])
             });
         }
@@ -170,7 +173,7 @@ impl DispatchArm {
 #[derive(Default)]
 struct ArmAttrs {
     since: Option<Ident>,
-    to: Option<Ident>,
+    until: Option<Ident>,
     selector: Option<Path>,
 }
 
@@ -194,11 +197,11 @@ impl ArmAttrs {
                             ));
                         }
                     }
-                    ArmMeta::To(value) => {
-                        if attrs.to.replace(value).is_some() {
+                    ArmMeta::Until(value) => {
+                        if attrs.until.replace(value).is_some() {
                             return Err(syn::Error::new(
                                 input.span(),
-                                "duplicate `to` on dispatch arm",
+                                "duplicate `until` on dispatch arm",
                             ));
                         }
                     }
@@ -220,7 +223,7 @@ impl ArmAttrs {
 
 enum ArmMeta {
     Since(Ident),
-    To(Ident),
+    Until(Ident),
     Selector(Path),
 }
 
@@ -231,11 +234,11 @@ impl Parse for ArmMeta {
 
         match key.to_string().as_str() {
             "since" => Ok(Self::Since(input.parse()?)),
-            "to" => Ok(Self::To(input.parse()?)),
+            "until" => Ok(Self::Until(input.parse()?)),
             "selector" => Ok(Self::Selector(input.parse()?)),
             _ => Err(syn::Error::new(
                 key.span(),
-                "expected `since`, `to`, or `selector`",
+                "expected `since`, `until`, or `selector`",
             )),
         }
     }
@@ -289,20 +292,44 @@ fn infer_variant_ident(pat: &Pat) -> Option<Ident> {
     }
 }
 
-fn infer_calls_from_decode(decode: &Expr) -> Option<Path> {
-    let Expr::Path(ExprPath {
-        qself: None, path, ..
-    }) = decode
-    else {
-        return None;
-    };
+/// Infers the `calls` path from the first arm whose outermost pattern is a qualified tuple-struct.
+fn arm_body_requires_comma(body: &Expr) -> bool {
+    #[rustfmt::skip]
+    !matches!(
+        body,
+        Expr::Block(_) | Expr::If(_) | Expr::Match(_) | Expr::Loop(_) | Expr::While(_) | Expr::ForLoop(_)
+            | Expr::TryBlock(_) | Expr::Unsafe(_) | Expr::Const(_) | Expr::Async(_)
+    )
+}
 
-    let last = path.segments.last()?;
-    if last.ident != "abi_decode" {
-        return None;
+fn infer_calls_from_arms(arms: &[DispatchArm]) -> Option<Path> {
+    arms.iter().find_map(|arm| infer_calls_from_pat(&arm.pat))
+}
+
+/// Returns the `calls` path from the outermost tuple-struct pattern
+fn infer_calls_from_pat(pat: &Pat) -> Option<Path> {
+    match pat {
+        Pat::TupleStruct(tuple) => path_prefix(&tuple.path),
+        Pat::Or(or) => or.cases.iter().find_map(infer_calls_from_pat),
+        Pat::Paren(p) => infer_calls_from_pat(&p.pat),
+        Pat::Reference(r) => infer_calls_from_pat(&r.pat),
+        Pat::Type(t) => infer_calls_from_pat(&t.pat),
+        _ => None,
     }
+}
 
-    path_prefix(path)
+/// Constructs `calls::abi_decode` as an `Expr` from a `calls` path.
+fn build_decode_expr(calls: &Path) -> Expr {
+    let mut path = calls.clone();
+    path.segments.push(PathSegment {
+        ident: Ident::new("abi_decode", Span::call_site()),
+        arguments: PathArguments::None,
+    });
+    Expr::Path(ExprPath {
+        attrs: vec![],
+        qself: None,
+        path,
+    })
 }
 
 fn infer_calls_and_variant_from_pat(pat: &Pat) -> Option<(Path, Ident)> {
@@ -400,4 +427,76 @@ fn selector_path(path: &Path, ident: Ident) -> Path {
         arguments: PathArguments::None,
     });
     path
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_ok(tokens: proc_macro2::TokenStream) -> Vec<DispatchArm> {
+        match syn::parse2::<DispatchInput>(tokens) {
+            Ok(input) => input.arms,
+            Err(err) => panic!("parse failed: {err}"),
+        }
+    }
+
+    fn parse_err(tokens: proc_macro2::TokenStream) -> String {
+        syn::parse2::<DispatchInput>(tokens)
+            .err()
+            .expect("expected parse error")
+            .to_string()
+    }
+
+    #[test]
+    fn body_with_nested_commas_in_call() {
+        // Commas inside `()` and `||` of the body must not be treated as arm separators.
+        let arms = parse_ok(quote! {
+            ICalls::foo(call) => view(call, |c| do_stuff(c.a, c.b, c.c)),
+            ICalls::bar(call) => view(call, |c| self.bar(c)),
+        });
+        assert_eq!(arms.len(), 2);
+    }
+
+    #[test]
+    fn body_with_block_and_internal_commas() {
+        let arms = parse_ok(quote! {
+            ICalls::foo(call) => view(call, |c| {
+                let (a, b) = split(c);
+                combine(a, b, c.extra)
+            }),
+            ICalls::bar(call) => view(call, |_| Ok(())),
+        });
+        assert_eq!(arms.len(), 2);
+    }
+
+    #[test]
+    fn block_body_allows_optional_trailing_comma() {
+        // A block-bodied arm may omit the trailing comma (matches Rust `match` semantics).
+        let arms = parse_ok(quote! {
+            ICalls::foo(call) => {
+                let x = thing(call.a, call.b);
+                view(call, |_| Ok(x))
+            }
+            ICalls::bar(call) => view(call, |_| Ok(())),
+        });
+        assert_eq!(arms.len(), 2);
+    }
+
+    #[test]
+    fn non_block_body_requires_trailing_comma() {
+        // Two call-expression arms without a separating comma must error.
+        let err = parse_err(quote! {
+            ICalls::foo(call) => view(call, |_| Ok(()))
+            ICalls::bar(call) => view(call, |_| Ok(()))
+        });
+        assert!(err.contains("expected `,`"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn or_pattern_with_leading_vert() {
+        let arms = parse_ok(quote! {
+            | ICalls::foo(call) | ICalls::bar(call) => view(call, |c| self.handle(c)),
+        });
+        assert_eq!(arms.len(), 1);
+    }
 }

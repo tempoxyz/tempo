@@ -259,22 +259,20 @@ pub fn derive_storage_block(input: TokenStream) -> TokenStream {
 
 /// Generate a `crate::dispatch_call(...)` invocation from concise match-style syntax.
 ///
-/// `#[since = T2]` adds selector gating starting at that hardfork. `#[to = T4]` drops the
-/// selector once `T4` activates. When `decode` is a generated `ICalls::abi_decode`, the macro
-/// derives the calls enum for shorthand arms like `mint(call) => ...` and infers selectors for
-/// hardfork-gated arms. Wrapper decoders can still use full patterns, and renamed variants can
-/// use `#[selector = SomeCallType]`.
+/// `#[since = T2]` adds selector gating starting at that hardfork. `#[until = T4]` drops the
+/// selector once `T4` activates. Renamed variants can use `#[selector = SomeCallType]`.
+///
+/// Requirements:
+/// - a `calldata: &[u8]` binding must be in scope
+/// - every arm must use a fully qualified pattern (e.g. `ICalls::variant(call) => ...`) so that
+///   the calls enum and `abi_decode` function can be inferred
 ///
 /// ```ignore
-/// dispatch!(
-///     calldata,
-///     ITIP20Calls::abi_decode,
-///     {
-///         name(_) => metadata::<ITIP20::nameCall>(|| self.name()),
-///         #[since = T2, to = T4]
-///         mint(call) => mutate_void(call, msg_sender, |s, c| self.mint(s, c)),
-///     },
-/// )
+/// dispatch! {
+///     ITIP20Calls::name(_) => metadata::<ITIP20::nameCall>(|| self.name()),
+///     #[since = T2, until = T4]
+///     ITIP20Calls::mint(call) => mutate_void(call, msg_sender, |s, c| self.mint(s, c)),
+/// }
 /// ```
 #[proc_macro]
 pub fn dispatch(input: TokenStream) -> TokenStream {

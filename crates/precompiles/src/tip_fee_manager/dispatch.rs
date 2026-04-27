@@ -21,7 +21,7 @@ enum TipFeeManagerCall {
 }
 
 impl TipFeeManagerCall {
-    fn decode(calldata: &[u8]) -> Result<Self, alloy::sol_types::Error> {
+    fn abi_decode(calldata: &[u8]) -> Result<Self, alloy::sol_types::Error> {
         // safe to expect as `dispatch_call` pre-validates calldata len
         let selector: [u8; 4] = calldata[..4].try_into().expect("calldata len >= 4");
 
@@ -39,10 +39,7 @@ impl Precompile for TipFeeManager {
             return err;
         }
 
-        dispatch!(
-            calldata,
-            TipFeeManagerCall::decode,
-            {
+        dispatch! {
             TipFeeManagerCall::FeeManager(IFeeManagerCalls::userTokens(call)) => {
                 view(call, |c| self.user_tokens(c))
             },
@@ -109,8 +106,7 @@ impl Precompile for TipFeeManager {
                     self.rebalance_swap(s, c.userToken, c.validatorToken, c.amountOut, c.to)
                 })
             },
-            },
-        )
+        }
     }
 }
 

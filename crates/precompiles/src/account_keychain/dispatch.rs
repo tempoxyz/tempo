@@ -18,10 +18,7 @@ impl Precompile for AccountKeychain {
             return err;
         }
 
-        dispatch!(
-            calldata,
-            IAccountKeychainCalls::abi_decode,
-            {
+        dispatch! {
             IAccountKeychainCalls::authorizeKey_0(call) => {
                 if self.storage.spec().is_t3() {
                     return self.storage.error_result(
@@ -80,7 +77,7 @@ impl Precompile for AccountKeychain {
                 |sender, c| self.remove_allowed_calls(sender, c),
             ),
             IAccountKeychainCalls::getKey(call) => view(call, |c| self.get_key(c)),
-            #[to = T3]
+            #[until = T3]
             IAccountKeychainCalls::getRemainingLimit(call) => {
                 view(call, |c| self.get_remaining_limit(c))
             },
@@ -95,8 +92,7 @@ impl Precompile for AccountKeychain {
             IAccountKeychainCalls::getTransactionKey(call) => {
                 view(call, |c| self.get_transaction_key(c, msg_sender))
             },
-            },
-        )
+        }
     }
 }
 
