@@ -386,7 +386,7 @@ impl WalletArgs {
 
             Ok(EthereumWallet::new(signer))
         } else {
-            bail!("a wallet option must be set")
+            bail!("no wallet provided")
         }
     }
 }
