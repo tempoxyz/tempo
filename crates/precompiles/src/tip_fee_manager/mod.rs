@@ -41,6 +41,19 @@ pub struct TipFeeManager {
     /// T1C+: Tracks liquidity reserved for a pending fee swap during `collect_fee_pre_tx`.
     /// Checked by `burn` and `rebalance_swap` to prevent withdrawals that would violate the reservation.
     pending_fee_swap_reservation: Mapping<B256, u128>,
+
+    /// T2+: The fee token used for the current transaction ([TIP-1007]).
+    /// Set by the handler before execution, read via `getFeeToken()`.
+    ///
+    /// [TIP-1007]: <https://docs.tempo.xyz/protocol/tips/tip-1007>
+    tx_fee_token: Address,
+
+    /// T5+: Intermediate token for two-hop fee swap routing ([TIP-1033]).
+    /// Set by `collect_fee_pre_tx` when the direct `(userToken, validatorToken)` pool has
+    /// insufficient liquidity and the swap falls back through `userToken.quoteToken()`.
+    ///
+    /// [TIP-1033]: <https://docs.tempo.xyz/protocol/tips/tip-1033>
+    two_hop_intermediate: Address,
 }
 
 impl TipFeeManager {
@@ -173,10 +186,36 @@ impl TipFeeManager {
 
         if user_token != validator_token && !skip_liquidity_check {
             let pool_id = PoolKey::new(user_token, validator_token).get_id();
-            let amount_out_needed = self.check_sufficient_liquidity(pool_id, max_amount)?;
 
-            if self.storage.spec().is_t1c() {
-                self.reserve_pool_liquidity(pool_id, amount_out_needed)?;
+            // Check whether direct (single-hop) swap has enough liquidity
+            if let Some(amount_out_needed) =
+                self.try_check_sufficient_liquidity(pool_id, max_amount)?
+            {
+                if self.storage.spec().is_t1c() {
+                    self.reserve_pool_liquidity(pool_id, amount_out_needed)?;
+                }
+            }
+            // T4+: Fall back to two-hop routing through `userToken.quoteToken()`.
+            else if self.storage.spec().is_t4() {
+                let hop_token = TIP20Token::from_address(user_token)?.quote_token()?;
+                if hop_token == validator_token {
+                    return Err(TIPFeeAMMError::insufficient_liquidity().into());
+                }
+
+                // First hop: userToken -> intermediateToken (input = max_amount).
+                let pool_1st = PoolKey::new(user_token, hop_token).get_id();
+                let out_1st = self.check_sufficient_liquidity(pool_1st, max_amount)?;
+
+                // Second hop: intermediateToken -> validatorToken
+                let pool_2nd = PoolKey::new(hop_token, validator_token).get_id();
+                let out_2nd = self.check_sufficient_liquidity(pool_2nd, U256::from(out_1st))?;
+
+                // Reserve liquidity and cache intermediate token.
+                self.reserve_pool_liquidity(pool_1st, out_1st)?;
+                self.reserve_pool_liquidity(pool_2nd, out_2nd)?;
+                self.two_hop_intermediate.t_write(hop_token)?;
+            } else {
+                return Err(TIPFeeAMMError::insufficient_liquidity().into());
             }
         }
 
@@ -206,17 +245,24 @@ impl TipFeeManager {
         tip20_token.transfer_fee_post_tx(fee_payer, refund_amount, actual_spending)?;
 
         // Execute fee swap and track collected fees
+        let hop_token = self.two_hop_intermediate.t_read()?;
         let validator_token = self.get_validator_token(beneficiary)?;
-
-        if fee_token != validator_token && !actual_spending.is_zero() {
-            // Execute fee swap immediately and accumulate fees
-            self.execute_fee_swap(fee_token, validator_token, actual_spending)?;
-        }
 
         let amount = if fee_token == validator_token {
             actual_spending
-        } else {
+        } else if hop_token.is_zero() {
+            // Single-hop (direct) swap
+            if !actual_spending.is_zero() {
+                self.execute_fee_swap(fee_token, validator_token, actual_spending)?;
+            }
             compute_amount_out(actual_spending)?
+        } else {
+            // Two-hop swap (only in T4+): each hop applies M = 9970/10000 sequentially
+            if !actual_spending.is_zero() {
+                let out1 = self.execute_fee_swap(fee_token, hop_token, actual_spending)?;
+                self.execute_fee_swap(hop_token, validator_token, out1)?;
+            }
+            compute_amount_out(compute_amount_out(actual_spending)?)?
         };
 
         self.increment_collected_fees(beneficiary, validator_token, amount)?;
