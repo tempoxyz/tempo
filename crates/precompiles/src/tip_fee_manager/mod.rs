@@ -240,24 +240,15 @@ impl TipFeeManager {
         Ok(user_token)
     }
 
-    /// Read-only: plans the AMM path needed to swap `max_amount` of `user_token`
-    /// into `validator_token` under the active hardfork. Returns `Ok(None)` if
-    /// no path has sufficient liquidity.
-    ///
-    /// Performs no state mutation and is safe to invoke inside a read-only
-    /// storage context. Used by [`Self::collect_fee_pre_tx`] to drive
-    /// reservations and by the mempool's `AmmLiquidityCache` to pre-screen
-    /// transactions, so both code paths share the same routing decision.
-    ///
-    /// On T5+ the planner falls back to a single two-hop path through
-    /// `userToken.quoteToken()` per [TIP-1033] when the direct pool lacks
-    /// liquidity.
-    ///
-    /// [TIP-1033]: <https://docs.tempo.xyz/protocol/tips/tip-1033>
+    /// Plans the AMM path needed to swap `max_amount` of `user_token` into `validator_token` under
+    /// the active hardfork. On T5+ falls back to a two-hop path through `userToken.quoteToken()` as
+    /// per [TIP-1033]. Returns `Ok(None)` if no path has sufficient liquidity.
     ///
     /// # Errors
     /// - `InvalidToken` — `user_token` does not have a valid TIP-20 prefix
     /// - `UnderOverflow` — fee-amount arithmetic overflows
+    ///
+    /// [TIP-1033]: <https://docs.tempo.xyz/protocol/tips/tip-1033>
     pub fn plan_fee_swap(
         &self,
         user_token: Address,
@@ -1097,10 +1088,7 @@ mod tests {
         validator: Address,
     }
 
-    /// Builds the standard 3-token environment used by all TIP-1033 tests:
-    /// three distinct USD tokens with `user_token.quoteToken()` set per
-    /// `quote`, and `validator_token` registered as the validator's preferred
-    /// fee token. The closure runs inside an active `StorageCtx` at `spec`.
+    /// Builds the standard 3-token environment used by all TIP-1033 tests.
     fn with_two_hop_env<F>(spec: TempoHardfork, hop_quote_is_val: bool, f: F) -> eyre::Result<()>
     where
         F: FnOnce(&mut TipFeeManager, &TwoHopTokens, Address, Address) -> eyre::Result<()>,
@@ -1149,8 +1137,7 @@ mod tests {
         })
     }
 
-    /// Writes a pool with `validator_reserve` on both sides (square pool).
-    /// `0` produces an empty pool that fails any liquidity check.
+    /// Writes a pool with `validator_reserve` on both sides.
     fn write_pool(
         fm: &mut TipFeeManager,
         a: Address,

@@ -156,9 +156,12 @@ impl AmmLiquidityCache {
                                 cache_swap(&mut inner, (intermediate, validator_token), &swap2);
                             }
                         }
+
+                        // If there is enough liquidity, short circuit and return `true`
                         return Ok(true);
                     }
                 }
+
                 Ok(false)
             })
             .map_err(ProviderError::other)
@@ -299,9 +302,7 @@ impl AmmLiquidityCache {
                 .collect();
         }
 
-        // Refresh the cached active hardfork from the latest seen header. Used
-        // by `has_enough_liquidity` to gate TIP-1033 two-hop routing without
-        // re-querying the chain spec on every call.
+        // Refresh the cached active hardfork from the latest seen header.
         self.inner.write().current_fork = client.chain_spec().tempo_hardfork_at(latest_timestamp);
 
         Ok(())
@@ -311,9 +312,6 @@ impl AmmLiquidityCache {
 #[derive(Debug, Default)]
 struct AmmLiquidityCacheInner {
     /// Hardfork active at the most recently observed canonical header.
-    /// Refreshed in [`AmmLiquidityCache::on_new_blocks`] and used by
-    /// [`AmmLiquidityCache::has_enough_liquidity`] to gate the T5+ two-hop
-    /// routing inside the read-only storage context.
     current_fork: TempoHardfork,
 
     /// Cache for (user_token, validator_token) -> liquidity
@@ -511,9 +509,6 @@ mod tests {
         );
     }
 
-    /// On T5+ with all three two-hop primitives cached (`quote_tokens[user]`,
-    /// `pools[(user, hop)]`, `pools[(hop, validator)]`), the hot path resolves the pair
-    /// in-memory without touching the slow path — even when the direct pool is unknown.
     #[test]
     fn test_has_enough_liquidity_two_hop_cached() {
         let user = address!("1111111111111111111111111111111111111111");
