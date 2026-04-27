@@ -17,7 +17,7 @@ pub use set::{Set, SetHandler};
 
 pub mod bytes_like;
 mod primitives;
-pub use primitives::U96;
+pub use alloy::primitives::aliases::U96;
 
 use crate::{
     error::Result,
