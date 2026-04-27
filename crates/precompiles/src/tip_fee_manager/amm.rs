@@ -197,13 +197,13 @@ impl TipFeeManager {
             },
         )?;
 
-        self.emit_event(TIPFeeAMMEvent::RebalanceSwap(ITIPFeeAMM::RebalanceSwap {
-            userToken: user_token,
-            validatorToken: validator_token,
-            swapper: msg_sender,
-            amountIn: amount_in,
-            amountOut: amount_out,
-        }))?;
+        self.emit_event(TIPFeeAMMEvent::rebalance_swap(
+            user_token,
+            validator_token,
+            msg_sender,
+            amount_in,
+            amount_out,
+        ))?;
 
         Ok(amount_in)
     }
@@ -330,14 +330,14 @@ impl TipFeeManager {
         )?;
 
         // Emit Mint event
-        self.emit_event(TIPFeeAMMEvent::Mint(ITIPFeeAMM::Mint {
-            sender: msg_sender,
+        self.emit_event(TIPFeeAMMEvent::mint(
+            msg_sender,
             to,
-            userToken: user_token,
-            validatorToken: validator_token,
-            amountValidatorToken: amount_validator_token,
+            user_token,
+            validator_token,
+            amount_validator_token,
             liquidity,
-        }))?;
+        ))?;
 
         Ok(liquidity)
     }
@@ -455,15 +455,15 @@ impl TipFeeManager {
         )?;
 
         // Emit Burn event
-        self.emit_event(TIPFeeAMMEvent::Burn(ITIPFeeAMM::Burn {
-            sender: msg_sender,
-            userToken: user_token,
-            validatorToken: validator_token,
-            amountUserToken: amount_user_token,
-            amountValidatorToken: amount_validator_token,
+        self.emit_event(TIPFeeAMMEvent::burn(
+            msg_sender,
+            user_token,
+            validator_token,
+            amount_user_token,
+            amount_validator_token,
             liquidity,
             to,
-        }))?;
+        ))?;
 
         Ok((amount_user_token, amount_validator_token))
     }
