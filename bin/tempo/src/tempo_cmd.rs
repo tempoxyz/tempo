@@ -416,13 +416,20 @@ impl ValidatorTransactionArgs {
             .to(VALIDATOR_CONFIG_V2_ADDRESS)
             .input(call.abi_encode().into());
 
-        eprintln!("{}", &serde_json::json!(tx));
+        let mut output: Box<dyn std::io::Write + Send> = if self.yes {
+            Box::new(std::io::stderr())
+        } else {
+            Box::new(std::io::stdout())
+        };
+
+        writeln!(output, "{}", &serde_json::json!(tx))?;
         if self.dry_run {
             return Ok(());
         }
+
         if !self.yes {
-            eprint!("\nSubmit this transaction? [y/N] ");
-            std::io::stderr().flush()?;
+            write!(output, "\nSubmit this transaction? [y/N] ")?;
+            output.flush()?;
 
             let mut input = String::new();
             std::io::stdin().read_line(&mut input)?;
@@ -432,7 +439,12 @@ impl ValidatorTransactionArgs {
             }
         }
 
-        let wallet = self.wallet.build().await.wrap_err("failed to open wallet to send transaction")?;
+        let wallet = self
+            .wallet
+            .build()
+            .await
+            .wrap_err("failed to open wallet to send transaction")?;
+
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .with_gas_estimation()
             .wallet(wallet)
@@ -446,7 +458,8 @@ impl ValidatorTransactionArgs {
             .wrap_err("failed to send transaction")?;
 
         let tx_hash = pending.tx_hash();
-        println!("{tx_hash}");
+        writeln!(output, "{tx_hash}")?;
+
         Ok(())
     }
 
