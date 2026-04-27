@@ -20,9 +20,8 @@ use tempo_evm::TempoStateAccess;
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
     error::Result as TempoResult,
-    storage::Handler,
     tip_fee_manager::{
-        TipFeeManager,
+        FeeSwapPlan, TipFeeManager,
         amm::{Pool, PoolKey, compute_amount_out},
     },
 };
@@ -54,8 +53,11 @@ impl AmmLiquidityCache {
         Ok(this)
     }
 
-    /// Checks whether there's enough liquidity in at least one of the AMM pools
-    /// used by recent validators for the given fee token and fee amount
+    /// Checks whether there's enough liquidity in at least one of the AMM pools used by recent
+    /// validators for the given fee token and fee amount. On T5+, as per [TIP-1033], considers
+    /// the two-hop fallback through an intermediate `userToken.quoteToken()`.
+    ///
+    /// [TIP-1033]: <https://docs.tempo.xyz/protocol/tips/tip-1033>
     pub fn has_enough_liquidity(
         &self,
         user_token: Address,
@@ -64,11 +66,13 @@ impl AmmLiquidityCache {
     ) -> Result<bool, ProviderError> {
         let amount_out = compute_amount_out(fee).map_err(ProviderError::other)?;
 
-        let mut missing_in_cache = Vec::new();
+        let mut deferred = Vec::new();
+        let current_fork;
 
         // search through latest observed validator tokens and find any cached pools that have enough liquidity
         {
             let inner = self.inner.read();
+            current_fork = inner.current_fork;
             for validator_token in &inner.unique_tokens {
                 // If user token matches one of the recently seen validator tokens,
                 // short circuit and return true. We assume that validators are willing to
@@ -77,43 +81,45 @@ impl AmmLiquidityCache {
                     return Ok(true);
                 }
 
-                if let Some(validator_reserve) = inner.cache.get(&(user_token, *validator_token)) {
-                    if *validator_reserve >= amount_out {
+                match inner.cache.get(&(user_token, *validator_token)) {
+                    Some(validator_reserve) if *validator_reserve >= amount_out => {
                         return Ok(true);
                     }
-                } else {
-                    missing_in_cache.push(*validator_token);
+                    // Defer to slow path so `plan_fee_swap` evaluates uncached direct + two-hop fallbacks.
+                    _ => deferred.push(*validator_token),
                 }
             }
         }
 
-        // If no cache misses were hit, just return false
-        if missing_in_cache.is_empty() {
+        if deferred.is_empty() {
             return Ok(false);
         }
 
-        // Spec doesn't affect raw storage reads (sload), so default is safe here.
         state_provider
-            .with_read_only_storage_ctx(TempoHardfork::default(), || -> TempoResult<bool> {
-                // Otherwise, load pools that weren't found in cache and check if they have enough liquidity
-                for validator_token in missing_in_cache {
-                    // This might race other fetches but we're OK with it.
-                    let pool_key = PoolKey::new(user_token, validator_token).get_id();
-                    let manager = TipFeeManager::new();
-                    let (slot, pool) = (
-                        manager.pools[pool_key].base_slot(),
-                        manager.pools[pool_key].read()?,
-                    );
-                    let reserve = U256::from(pool.reserve_validator_token);
+            .with_read_only_storage_ctx(current_fork, || -> TempoResult<bool> {
+                let manager = TipFeeManager::new();
 
-                    let mut inner = self.inner.write();
-                    inner.cache.insert((user_token, validator_token), reserve);
-                    inner
-                        .slot_to_pool
-                        .insert(slot, (user_token, validator_token));
-
-                    // If the pool has enough liquidity, short circuit and return true
-                    if reserve >= amount_out {
+                // Check `plan_fee_swap` for deferred checks. This might race other fetches but we're OK with it.
+                for validator_token in deferred {
+                    if let Some(plan) = manager.plan_fee_swap(user_token, validator_token, fee)? {
+                        if let FeeSwapPlan::Direct(swap) = plan
+                            && !self
+                                .inner
+                                .read()
+                                .cache
+                                .contains_key(&(user_token, validator_token))
+                        {
+                            let pool_key = PoolKey::new(user_token, validator_token).get_id();
+                            let slot = manager.pools[pool_key].base_slot();
+                            let mut inner = self.inner.write();
+                            inner
+                                .cache
+                                .insert((user_token, validator_token), U256::from(swap.reserves));
+                            inner
+                                .slot_to_pool
+                                .insert(slot, (user_token, validator_token));
+                        }
+                        // If the pool has enough liquidity, short circuit and return true
                         return Ok(true);
                     }
                 }
@@ -184,8 +190,8 @@ impl AmmLiquidityCache {
         P: StateProviderFactory + ChainSpecProvider<ChainSpec: TempoHardforks>,
     {
         let headers = headers.into_iter().collect::<Vec<_>>();
-        let latest_hash = if let Some(header) = headers.last() {
-            header.hash()
+        let (latest_hash, latest_timestamp) = if let Some(header) = headers.last() {
+            (header.hash(), header.timestamp())
         } else {
             return Ok(());
         };
@@ -258,12 +264,23 @@ impl AmmLiquidityCache {
                 .collect();
         }
 
+        // Refresh the cached active hardfork from the latest seen header. Used
+        // by `has_enough_liquidity` to gate TIP-1033 two-hop routing without
+        // re-querying the chain spec on every call.
+        self.inner.write().current_fork = client.chain_spec().tempo_hardfork_at(latest_timestamp);
+
         Ok(())
     }
 }
 
 #[derive(Debug, Default)]
 struct AmmLiquidityCacheInner {
+    /// Hardfork active at the most recently observed canonical header.
+    /// Refreshed in [`AmmLiquidityCache::on_new_blocks`] and used by
+    /// [`AmmLiquidityCache::has_enough_liquidity`] to gate the T5+ two-hop
+    /// routing inside the read-only storage context.
+    current_fork: TempoHardfork,
+
     /// Cache for (user_token, validator_token) -> liquidity
     cache: HashMap<(Address, Address), U256>,
 
@@ -677,6 +694,7 @@ mod tests {
                     m.insert(U256::from(2), validator);
                     m
                 },
+                ..Default::default()
             })),
         };
 
@@ -748,6 +766,7 @@ mod tests {
                     m.insert(U256::from(99), stale_validator);
                     m
                 },
+                ..Default::default()
             })),
         };
 

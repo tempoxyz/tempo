@@ -56,6 +56,38 @@ pub struct TipFeeManager {
     two_hop_intermediate: Address,
 }
 
+/// The AMM path the [`TipFeeManager`] will take to swap `user_token` into
+/// `validator_token` for fee collection.
+///
+/// Computed up-front by [`TipFeeManager::plan_fee_swap`] and consumed by
+/// [`TipFeeManager::collect_fee_pre_tx`] to drive liquidity reservations.
+/// The mempool's [`AmmLiquidityCache`] uses the same planner to pre-screen
+/// transactions, ensuring the pre-tx gate and the mempool pre-screen cannot
+/// drift.
+///
+/// [`AmmLiquidityCache`]: ../../tempo_transaction_pool/struct.AmmLiquidityCache.html
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FeeSwapPlan {
+    /// `user_token == validator_token`; no swap needed.
+    SameToken,
+    /// Single-hop swap: pool(user_token, validator_token) has sufficient liquidity.
+    Direct(SwapInfo),
+    /// Two-hop swap (T5+): routes through `intermediate = userToken.quoteToken()`.
+    /// Each hop applies the standard `M = 9970/10000` rate sequentially.
+    TwoHop {
+        intermediate: Address,
+        swap1: SwapInfo,
+        swap2: SwapInfo,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SwapInfo {
+    pub pool_id: B256,
+    pub reserves: u128,
+    pub amount_out: u128,
+}
+
 impl TipFeeManager {
     /// Swap fee in basis points (0.25%).
     pub const FEE_BPS: u64 = 25;
@@ -185,43 +217,97 @@ impl TipFeeManager {
         tip20_token.ensure_transfer_authorized(fee_payer, self.address)?;
         tip20_token.transfer_fee_pre_tx(fee_payer, max_amount)?;
 
-        if user_token != validator_token && !skip_liquidity_check {
-            let pool_id = PoolKey::new(user_token, validator_token).get_id();
+        if !skip_liquidity_check {
+            let plan = self
+                .plan_fee_swap(user_token, validator_token, max_amount)?
+                .ok_or(TIPFeeAMMError::insufficient_liquidity())?;
 
-            // Check whether direct (single-hop) swap has enough liquidity
-            if let Some(amount_out_needed) =
-                self.try_check_sufficient_liquidity(pool_id, max_amount)?
-            {
-                if self.storage.spec().is_t1c() {
-                    self.reserve_pool_liquidity(pool_id, amount_out_needed)?;
+            match plan {
+                FeeSwapPlan::SameToken => {}
+                FeeSwapPlan::Direct(swap) => {
+                    if self.storage.spec().is_t1c() {
+                        self.reserve_pool_liquidity(swap.pool_id, swap.amount_out)?;
+                    }
                 }
-            }
-            // T5+: Fall back to two-hop routing through `userToken.quoteToken()`.
-            else if self.storage.spec().is_t5() {
-                let hop_token = TIP20Token::from_address(user_token)?.quote_token()?;
-                if hop_token == validator_token {
-                    return Err(TIPFeeAMMError::insufficient_liquidity().into());
+                FeeSwapPlan::TwoHop {
+                    intermediate,
+                    swap1,
+                    swap2,
+                } => {
+                    self.reserve_pool_liquidity(swap1.pool_id, swap1.amount_out)?;
+                    self.reserve_pool_liquidity(swap2.pool_id, swap2.amount_out)?;
+                    self.two_hop_intermediate.t_write(intermediate)?;
                 }
-
-                // First hop: userToken -> intermediateToken (input = max_amount).
-                let pool_1st = PoolKey::new(user_token, hop_token).get_id();
-                let out_1st = self.check_sufficient_liquidity(pool_1st, max_amount)?;
-
-                // Second hop: intermediateToken -> validatorToken
-                let pool_2nd = PoolKey::new(hop_token, validator_token).get_id();
-                let out_2nd = self.check_sufficient_liquidity(pool_2nd, U256::from(out_1st))?;
-
-                // Reserve liquidity and cache intermediate token.
-                self.reserve_pool_liquidity(pool_1st, out_1st)?;
-                self.reserve_pool_liquidity(pool_2nd, out_2nd)?;
-                self.two_hop_intermediate.t_write(hop_token)?;
-            } else {
-                return Err(TIPFeeAMMError::insufficient_liquidity().into());
             }
         }
 
         // Return the user's token preference
         Ok(user_token)
+    }
+
+    /// Read-only: plans the AMM path needed to swap `max_amount` of `user_token`
+    /// into `validator_token` under the active hardfork. Returns `Ok(None)` if
+    /// no path has sufficient liquidity.
+    ///
+    /// Performs no state mutation and is safe to invoke inside a read-only
+    /// storage context. Used by [`Self::collect_fee_pre_tx`] to drive
+    /// reservations and by the mempool's `AmmLiquidityCache` to pre-screen
+    /// transactions, so both code paths share the same routing decision.
+    ///
+    /// On T5+ the planner falls back to a single two-hop path through
+    /// `userToken.quoteToken()` per [TIP-1033] when the direct pool lacks
+    /// liquidity.
+    ///
+    /// [TIP-1033]: <https://docs.tempo.xyz/protocol/tips/tip-1033>
+    ///
+    /// # Errors
+    /// - `InvalidToken` — `user_token` does not have a valid TIP-20 prefix
+    /// - `UnderOverflow` — fee-amount arithmetic overflows
+    pub fn plan_fee_swap(
+        &self,
+        user_token: Address,
+        validator_token: Address,
+        max_amount: U256,
+    ) -> Result<Option<FeeSwapPlan>> {
+        if user_token == validator_token {
+            return Ok(Some(FeeSwapPlan::SameToken));
+        }
+
+        // Direct (single-hop) path.
+        let pool_id = PoolKey::new(user_token, validator_token).get_id();
+        if let Some(swap_info) = self.try_check_sufficient_liquidity(pool_id, max_amount)? {
+            return Ok(Some(FeeSwapPlan::Direct(swap_info)));
+        }
+
+        // T5+: two-hop fallback through `userToken.quoteToken()`.
+        if !self.storage.spec().is_t5() {
+            return Ok(None);
+        }
+
+        let intermediate = TIP20Token::from_address(user_token)?.quote_token()?;
+        if intermediate.is_zero() || intermediate == user_token || intermediate == validator_token {
+            return Ok(None);
+        }
+
+        // First hop: user_token -> intermediate (input = max_amount).
+        let pool1 = PoolKey::new(user_token, intermediate).get_id();
+        let Some(swap1) = self.try_check_sufficient_liquidity(pool1, max_amount)? else {
+            return Ok(None);
+        };
+
+        // Second hop: intermediate -> validator_token.
+        let pool2 = PoolKey::new(intermediate, validator_token).get_id();
+        if let Some(swap2) =
+            self.try_check_sufficient_liquidity(pool2, U256::from(swap1.amount_out))?
+        {
+            Ok(Some(FeeSwapPlan::TwoHop {
+                intermediate,
+                swap1,
+                swap2,
+            }))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Finalizes fee collection after transaction execution.

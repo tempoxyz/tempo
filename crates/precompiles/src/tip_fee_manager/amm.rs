@@ -1,7 +1,7 @@
 use crate::{
     error::{Result, TempoPrecompileError},
     storage::Handler,
-    tip_fee_manager::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent, TipFeeManager},
+    tip_fee_manager::{ITIPFeeAMM, SwapInfo, TIPFeeAMMError, TIPFeeAMMEvent, TipFeeManager},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
 };
 use alloy::{
@@ -105,8 +105,9 @@ impl TipFeeManager {
     /// # Errors
     /// - `InsufficientLiquidity` — pool validator-token reserve is below the required output
     /// - `UnderOverflow` — output amount exceeds `u128`
-    pub fn check_sufficient_liquidity(&mut self, pool_id: B256, max_amount: U256) -> Result<u128> {
+    pub fn check_sufficient_liquidity(&self, pool_id: B256, max_amount: U256) -> Result<u128> {
         self.try_check_sufficient_liquidity(pool_id, max_amount)?
+            .map(|swap_info| swap_info.amount_out)
             .ok_or_else(|| TIPFeeAMMError::insufficient_liquidity().into())
     }
 
@@ -114,10 +115,10 @@ impl TipFeeManager {
     /// when the pool has insufficient liquidity. Used by TIP-1033 two-hop fallback routing to
     /// inspect a pool without aborting on the failure path.
     pub fn try_check_sufficient_liquidity(
-        &mut self,
+        &self,
         pool_id: B256,
         max_amount: U256,
-    ) -> Result<Option<u128>> {
+    ) -> Result<Option<SwapInfo>> {
         let amount_out_needed = compute_amount_out(max_amount)?;
         let pool = self.pools[pool_id].read()?;
 
@@ -125,10 +126,13 @@ impl TipFeeManager {
             return Ok(None);
         }
 
-        let amount: u128 = amount_out_needed
-            .try_into()
-            .map_err(|_| TempoPrecompileError::under_overflow())?;
-        Ok(Some(amount))
+        Ok(Some(SwapInfo {
+            pool_id,
+            reserves: pool.reserve_validator_token,
+            amount_out: amount_out_needed
+                .try_into()
+                .map_err(|_| TempoPrecompileError::under_overflow())?,
+        }))
     }
 
     /// Reserves pool liquidity in transient storage for a pending fee swap.
