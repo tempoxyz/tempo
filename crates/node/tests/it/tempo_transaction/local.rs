@@ -4,7 +4,9 @@
 //! which spins up an in-process node with direct pool/block access, plus tests
 //! that require pool introspection or controlled block mining.
 
-use crate::utils::{ForkSchedule, SingleNodeSetup, TEST_MNEMONIC, TestNodeBuilder};
+use crate::utils::{
+    ForkSchedule, SingleNodeSetup, TEST_MNEMONIC, TestNodeBuilder, make_genesis_at,
+};
 use alloy::{
     consensus::{BlockHeader, Transaction},
     network::{EthereumWallet, ReceiptResponse},
@@ -123,9 +125,8 @@ impl super::types::TestEnv for Localnet {
         assert!(rpc_result.is_err(), "RPC should reject the transaction");
 
         if let (Some(reason), Err(err)) = (expected_reason, &rpc_result) {
-            let err_str = err.to_string().to_lowercase();
             assert!(
-                err_str.contains(&reason.to_lowercase()),
+                rpc_error_contains_reason(err, reason),
                 "Rejection error should contain '{reason}', got: {err}"
             );
         }
@@ -151,36 +152,6 @@ impl super::types::TestEnv for Localnet {
             .ok_or_else(|| eyre::eyre!("Receipt missing status field"))?;
         assert_eq!(status, "0x1", "Receipt status mismatch for {tx_hash}");
         Ok(receipt)
-    }
-
-    async fn submit_tx_excluded_by_builder(
-        &mut self,
-        encoded: Vec<u8>,
-        tx_hash: B256,
-    ) -> eyre::Result<()> {
-        self.setup.node.rpc.inject_tx(encoded.into()).await?;
-        assert!(
-            self.setup.node.inner.pool.contains(&tx_hash),
-            "Tx should be in pool after injection"
-        );
-
-        // Advance several blocks — tx should never be included by the builder.
-        for _ in 0..5 {
-            self.setup.node.advance_block().await?;
-
-            let raw: Option<serde_json::Value> = self
-                .provider
-                .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
-                .await?;
-            if let Some(receipt) = raw {
-                let status = receipt["status"].as_str().unwrap_or("?");
-                panic!(
-                    "Transaction {tx_hash} was mined (status={status}), \
-                     expected exclusion by builder"
-                );
-            }
-        }
-        Ok(())
     }
 
     async fn bump_protocol_nonce(
@@ -1464,7 +1435,7 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
         2_000_000,
     );
     delayed_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
-    delayed_tx.valid_after = Some(valid_after_time);
+    delayed_tx.valid_after = Some(nonzero_timestamp(valid_after_time));
 
     // Sign with the access key (wrapped in Keychain signature)
     let access_key_sig = sign_aa_tx_with_p256_access_key(
@@ -1711,6 +1682,7 @@ async fn test_aa_keychain_spending_limit_toctou_dos() -> eyre::Result<()> {
         Some(vec![tempo_primitives::transaction::TokenLimit {
             token: DEFAULT_FEE_TOKEN,
             limit: initial_spending_limit,
+            period: 0,
         }]),
     )?;
 
@@ -1764,7 +1736,7 @@ async fn test_aa_keychain_spending_limit_toctou_dos() -> eyre::Result<()> {
         2_000_000,
     );
     delayed_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
-    delayed_tx.valid_after = Some(valid_after_time);
+    delayed_tx.valid_after = Some(nonzero_timestamp(valid_after_time));
 
     // Sign with the access key (wrapped in Keychain signature)
     let access_key_sig = sign_aa_tx_with_p256_access_key(
@@ -2091,16 +2063,8 @@ async fn test_v1_keychain_cross_account_replay_pre_t1c() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Pre-T1C genesis so V1 keychain sigs are accepted.
-    // Set t1cTime and t2Time far in the future instead of removing them,
-    // because the genesis deserializer requires all hardfork fields.
-    let genesis_json = include_str!("../../assets/test-genesis.json").to_string();
-    let mut genesis: serde_json::Value = serde_json::from_str(&genesis_json)?;
-    let config = genesis["config"].as_object_mut().unwrap();
-    let far_future = serde_json::Value::Number(serde_json::Number::from(u64::MAX));
-    config.insert("t1cTime".to_string(), far_future.clone());
-    config.insert("t2Time".to_string(), far_future);
     let mut setup = TestNodeBuilder::new()
-        .with_genesis(serde_json::to_string(&genesis)?)
+        .with_genesis(make_genesis_at(TempoHardfork::T1B))
         .build_with_node_access()
         .await?;
 

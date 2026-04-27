@@ -56,12 +56,10 @@ pub struct Args {
     #[arg(long = "consensus.deque-size", default_value_t = 10)]
     pub deque_size: usize,
 
-    /// The fee recipient that will be specified by this node. Will use the
-    /// coinbase address in genesis if not set.
-    #[arg(
-        long = "consensus.fee-recipient",
-        required_unless_present_any = ["follow", "dev"],
-    )]
+    /// Deprecated: the fee recipient is now read from the validator config v2
+    /// contract. This value is used as a fallback when the on-chain fee
+    /// recipient is `Address::ZERO` or when the v2 contract is not yet active.
+    #[arg(long = "consensus.fee-recipient")]
     pub fee_recipient: Option<alloy_primitives::Address>,
 
     /// The amount of time to wait for a peer to respond to a consensus request.
@@ -119,13 +117,6 @@ pub struct Args {
         default_value = "450ms"
     )]
     pub minimum_time_before_propose: PositiveDuration,
-
-    /// Whether to enable subblock processing.
-    ///
-    /// When disabled, the node will not build or broadcast subblocks, and will
-    /// ignore any incoming subblocks from the network.
-    #[arg(long = "consensus.enable-subblocks", default_value_t = false)]
-    pub enable_subblocks: bool,
 
     /// The amount of time this node will use to construct a subblock before
     /// sending it to the next proposer. This value should be well below

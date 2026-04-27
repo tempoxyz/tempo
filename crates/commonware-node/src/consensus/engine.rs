@@ -69,7 +69,7 @@ const MAX_PENDING_ACKS: NonZeroUsize = NZUsize!(1);
 // because there doesn't really seem to be a point putting it into an extra initializer.
 #[derive(Clone)]
 pub struct Builder<TBlocker, TPeerManager> {
-    pub fee_recipient: alloy_primitives::Address,
+    pub fee_recipient: Option<alloy_primitives::Address>,
 
     pub execution_node: Option<TempoFullNode>,
 
@@ -275,6 +275,17 @@ where
         )
         .await;
 
+        let (executor, executor_mailbox) = crate::executor::init(
+            context.with_label("executor"),
+            crate::executor::Config {
+                execution_node: execution_node.clone(),
+                last_finalized_height,
+                marshal: marshal_mailbox.clone(),
+                fcu_heartbeat_interval: self.fcu_heartbeat_interval,
+            },
+        )
+        .wrap_err("failed initialization executor actor")?;
+
         let (peer_manager, peer_manager_mailbox) = peer_manager::init(
             context.with_label("peer_manager"),
             peer_manager::Config {
@@ -318,7 +329,7 @@ where
                 signer: self.signer.clone(),
                 scheme_provider: scheme_provider.clone(),
                 node: execution_node.clone(),
-                fee_recipient: self.fee_recipient,
+                fee_recipient: self.fee_recipient.unwrap_or_default(),
                 time_to_build_subblock: self.time_to_build_subblock,
                 subblock_broadcast_interval: self.subblock_broadcast_interval,
                 epoch_strategy: epoch_strategy.clone(),
@@ -333,19 +344,9 @@ where
             self.feed_state,
         );
 
-        let (executor, executor_mailbox) = crate::executor::init(
-            context.with_label("executor"),
-            crate::executor::Config {
-                execution_node: execution_node.clone(),
-                last_finalized_height,
-                marshal: marshal_mailbox.clone(),
-                fcu_heartbeat_interval: self.fcu_heartbeat_interval,
-            },
-        )
-        .wrap_err("failed initialization executor actor")?;
-
         let (application, application_mailbox) = application::init(super::application::Config {
             context: context.with_label("application"),
+            public_key: self.signer.public_key(),
             fee_recipient: self.fee_recipient,
             mailbox_size: self.mailbox_size,
             marshal: marshal_mailbox.clone(),
@@ -543,7 +544,6 @@ where
                 dkg_channel,
                 subblocks_channel,
             )
-            .await
         )
     }
 
