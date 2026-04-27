@@ -416,13 +416,11 @@ impl ValidatorTransactionArgs {
             .to(VALIDATOR_CONFIG_V2_ADDRESS)
             .input(call.abi_encode().into());
 
+        eprintln!("{}", &serde_json::json!(tx));
         if self.dry_run {
-            println!("{}", &serde_json::json!(tx));
             return Ok(());
         }
-
         if !self.yes {
-            eprintln!("{}", &serde_json::json!(tx));
             eprint!("\nSubmit this transaction? [y/N] ");
             std::io::stderr().flush()?;
 
