@@ -2762,6 +2762,73 @@ mod tests {
         })
     }
 
+    /// TIP-1030 happy-path mirror of `test_flip_order_execution` with
+    /// `tick == flip_tick` on T5. Isolates the basic fill-and-flip-back
+    /// behavior (separate from the locked-book scenario) so a regression in
+    /// the inner `place_flip(internal_balance_only=true)` path bisects to
+    /// just this case.
+    #[test]
+    fn test_flip_same_tick_execution_t5() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let bob = Address::random();
+            let admin = Address::random();
+            let amount = MIN_ORDER_AMOUNT;
+            let tick = 100i16;
+            // TIP-1030: flip_tick equal to tick is allowed on T5+.
+            let flip_tick = tick;
+
+            let price = orderbook::tick_to_price(tick);
+            let expected_escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, alice, exchange.address, expected_escrow * 2)?;
+            exchange.create_pair(base_token)?;
+
+            let flip_order_id =
+                exchange.place_flip(alice, base_token, amount, true, tick, flip_tick, false)?;
+
+            exchange.set_balance(bob, base_token, amount)?;
+            exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
+
+            // Original flip bid is fully filled and removed from storage.
+            let filled = exchange.orders[flip_order_id].read()?;
+            assert_eq!(filled.maker(), Address::ZERO);
+
+            // Post-fill flip created a new ask at the same tick with
+            // `flip_tick == tick`, escrowed via the internal-balance path.
+            let new_order_id = exchange.next_order_id()? - 1;
+            assert_eq!(new_order_id, flip_order_id + 1);
+
+            let new_order = exchange.orders[new_order_id].read()?;
+            assert_eq!(new_order.maker(), alice);
+            assert!(new_order.is_ask());
+            assert!(new_order.is_flip());
+            assert_eq!(new_order.tick(), tick);
+            assert_eq!(new_order.flip_tick(), tick);
+            assert_eq!(new_order.amount(), amount);
+            assert_eq!(new_order.remaining(), amount);
+
+            // Internal-balance bookkeeping: the post-fill flip credited alice
+            // with `amount` base from the fill and immediately debited the
+            // same `amount` to escrow the new ask, so alice nets to zero.
+            assert_eq!(exchange.balance_of(alice, base_token)?, 0);
+            assert_eq!(exchange.balance_of(alice, quote_token)?, 0);
+
+            // Best ask collapses to `tick` (no asks before, now one at tick).
+            let book_key = compute_book_key(base_token, quote_token);
+            let book = exchange.books[book_key].read()?;
+            assert_eq!(book.best_ask_tick, tick);
+            assert_eq!(book.best_bid_tick, i16::MIN);
+
+            Ok(())
+        })
+    }
+
     #[test]
     fn test_pair_created() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
