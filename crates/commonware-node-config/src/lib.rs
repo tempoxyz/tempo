@@ -31,7 +31,7 @@ impl SigningKey {
     }
 
     pub fn try_from_hex(hex: &str) -> Result<Self, SigningKeyError> {
-        let bytes = const_hex::decode(hex).map_err(SigningKeyErrorKind::Hex)?;
+        let bytes = const_hex::decode(hex.trim()).map_err(SigningKeyErrorKind::Hex)?;
         let inner = PrivateKey::decode(&bytes[..]).map_err(SigningKeyErrorKind::Parse)?;
         Ok(Self { inner })
     }
@@ -96,7 +96,7 @@ impl SigningShare {
     }
 
     pub fn try_from_hex(hex: &str) -> Result<Self, SigningShareError> {
-        let bytes = const_hex::decode(hex).map_err(SigningShareErrorKind::Hex)?;
+        let bytes = const_hex::decode(hex.trim()).map_err(SigningShareErrorKind::Hex)?;
         let inner = Share::decode(&bytes[..]).map_err(SigningShareErrorKind::Parse)?;
         Ok(Self { inner })
     }

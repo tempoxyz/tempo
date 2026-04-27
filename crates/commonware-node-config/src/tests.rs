@@ -17,6 +17,12 @@ fn signing_key_snapshot() {
 }
 
 #[test]
+fn signing_key_trims_whitespace() {
+    SigningKey::try_from_hex(&format!("{SIGNING_KEY}\n")).unwrap();
+    SigningKey::try_from_hex(&format!("  {SIGNING_KEY}\r\n")).unwrap();
+}
+
+#[test]
 fn signing_key_roundtrip() {
     let signing_key: SigningKey = PrivateKey::from_seed(42).into();
     assert_eq!(
@@ -30,6 +36,12 @@ fn signing_key_roundtrip() {
 #[test]
 fn signing_share_snapshot() {
     SigningShare::try_from_hex(SIGNING_SHARE).unwrap();
+}
+
+#[test]
+fn signing_share_trims_whitespace() {
+    SigningShare::try_from_hex(&format!("{SIGNING_SHARE}\n")).unwrap();
+    SigningShare::try_from_hex(&format!("  {SIGNING_SHARE}\r\n")).unwrap();
 }
 
 #[test]
