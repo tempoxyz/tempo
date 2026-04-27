@@ -1,5 +1,11 @@
 # Changelog
 
+## `tempo-primitives@1.7.0`
+
+### Minor Changes
+
+- Moved TIP-20 and TIP-1022 virtual-address helpers (`is_tip20_prefix`, `is_virtual_address`, `decode_virtual_address`, `make_virtual_address`, `MasterId`, `UserTag`) from `tempo-precompiles` into a new `TempoAddressExt` trait on `Address` in `tempo-primitives`. Updated all consumers to use the new trait methods (`address.is_tip20()`, `address.is_virtual()`, `Address::new_virtual(...)`, etc.). (by @DerekCofausper, [#3658](https://github.com/tempoxyz/tempo/pull/3658))
+
 ## `tempo-primitives@1.6.0`
 
 ### Minor Changes
