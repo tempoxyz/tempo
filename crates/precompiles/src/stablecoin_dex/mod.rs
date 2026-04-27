@@ -2220,6 +2220,61 @@ mod tests {
         })
     }
 
+    /// TIP-1030 invariant: even on T5, `flip_tick` strictly on the wrong side
+    /// of `tick` is still rejected at the `place_flip` precompile entrypoint.
+    /// `Order::new_flip_with_same_tick` enforces this in `order.rs`, but the
+    /// precompile is the security boundary so we pin the behavior here too.
+    #[test]
+    fn test_place_flip_wrong_side_still_rejected_t5() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let admin = Address::random();
+            let tick = 100i16;
+
+            let price = orderbook::tick_to_price(tick);
+            let escrow = (MIN_ORDER_AMOUNT * price as u128) / orderbook::PRICE_SCALE as u128;
+
+            let (base_token, _) = setup_test_tokens(admin, alice, exchange.address, escrow)?;
+            exchange.create_pair(base_token)?;
+
+            // Bid with flip_tick < tick is still rejected on T5.
+            let bid_result = exchange.place_flip(
+                alice,
+                base_token,
+                MIN_ORDER_AMOUNT,
+                true,
+                tick,
+                tick - TICK_SPACING,
+                false,
+            );
+            assert_eq!(
+                bid_result,
+                Err(StablecoinDEXError::invalid_flip_tick().into())
+            );
+
+            // Ask with flip_tick > tick is still rejected on T5.
+            let ask_result = exchange.place_flip(
+                alice,
+                base_token,
+                MIN_ORDER_AMOUNT,
+                false,
+                tick,
+                tick + TICK_SPACING,
+                false,
+            );
+            assert_eq!(
+                ask_result,
+                Err(StablecoinDEXError::invalid_flip_tick().into())
+            );
+
+            Ok(())
+        })
+    }
+
     /// TIP-1030 (T5): pins down the "locked book" implication called out in
     /// the spec. Same-tick flip orders can produce `best_bid_tick ==
     /// best_ask_tick`. When a same-tick flip bid fills while another resting
