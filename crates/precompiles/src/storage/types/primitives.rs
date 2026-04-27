@@ -1,12 +1,83 @@
 //! `StorableType`, `FromWord`, and `StorageKey` implementations for single-word primitives.
 //!
-//! Covers Rust integers, Alloy integers, Alloy fixed bytes, `bool`, and `Address`.
+//! Covers Rust integers, Alloy integers, Alloy fixed bytes, `bool`, `Address`, and `U96`.
 
-use alloy::primitives::{Address, U256};
+use alloy::primitives::{Address, U256, Uint};
 use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
 use tempo_precompiles_macros;
 
 use crate::storage::types::*;
+
+/// A 96-bit unsigned integer used for packed TIP-1034 channel accounting.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct U96(u128);
+
+impl U96 {
+    pub const MAX_VALUE: u128 = (1u128 << 96) - 1;
+    pub const ZERO: Self = Self(0);
+    pub const MAX: Self = Self(Self::MAX_VALUE);
+
+    #[inline]
+    pub const fn new(value: u128) -> Option<Self> {
+        if value <= Self::MAX_VALUE {
+            Some(Self(value))
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    pub const fn as_u128(self) -> u128 {
+        self.0
+    }
+
+    #[inline]
+    pub const fn is_zero(self) -> bool {
+        self.0 == 0
+    }
+
+    #[inline]
+    pub fn checked_add(self, rhs: Self) -> Option<Self> {
+        self.0.checked_add(rhs.0).and_then(Self::new)
+    }
+
+    #[inline]
+    pub fn checked_sub(self, rhs: Self) -> Option<Self> {
+        self.0.checked_sub(rhs.0).map(Self)
+    }
+}
+
+impl TryFrom<u128> for U96 {
+    type Error = crate::error::TempoPrecompileError;
+
+    fn try_from(value: u128) -> std::result::Result<Self, Self::Error> {
+        Self::new(value).ok_or_else(crate::error::TempoPrecompileError::under_overflow)
+    }
+}
+
+impl From<Uint<96, 2>> for U96 {
+    fn from(value: Uint<96, 2>) -> Self {
+        Self(value.to::<u128>())
+    }
+}
+
+impl From<U96> for Uint<96, 2> {
+    fn from(value: U96) -> Self {
+        Self::from(value.as_u128())
+    }
+}
+
+impl From<U96> for u128 {
+    fn from(value: U96) -> Self {
+        value.0
+    }
+}
+
+impl From<U96> for U256 {
+    fn from(value: U96) -> Self {
+        U256::from(value.0)
+    }
+}
 
 // rust integers: (u)int8, (u)int16, (u)int32, (u)int64, (u)int128
 tempo_precompiles_macros::storable_rust_ints!();
@@ -16,6 +87,41 @@ tempo_precompiles_macros::storable_alloy_ints!();
 tempo_precompiles_macros::storable_alloy_bytes!();
 
 // -- MANUAL STORAGE TRAIT IMPLEMENTATIONS -------------------------------------
+
+impl StorableType for U96 {
+    const LAYOUT: Layout = Layout::Bytes(12);
+
+    type Handler = Slot<Self>;
+
+    fn handle(slot: U256, ctx: LayoutCtx, address: Address) -> Self::Handler {
+        Slot::new_with_ctx(slot, ctx, address)
+    }
+}
+
+impl super::sealed::OnlyPrimitives for U96 {}
+impl Packable for U96 {}
+impl FromWord for U96 {
+    #[inline]
+    fn to_word(&self) -> U256 {
+        U256::from(self.0)
+    }
+
+    #[inline]
+    fn from_word(word: U256) -> crate::error::Result<Self> {
+        if word > U256::from(U96::MAX_VALUE) {
+            return Err(crate::error::TempoPrecompileError::under_overflow());
+        }
+
+        Ok(Self(word.to::<u128>()))
+    }
+}
+
+impl StorageKey for U96 {
+    #[inline]
+    fn as_storage_bytes(&self) -> impl AsRef<[u8]> {
+        self.0.to_be_bytes()
+    }
+}
 
 impl StorableType for bool {
     const LAYOUT: Layout = Layout::Bytes(1);
@@ -100,6 +206,10 @@ mod tests {
         any::<[u8; 20]>().prop_map(Address::from)
     }
 
+    fn arb_u96() -> impl Strategy<Value = U96> {
+        (0..=U96::MAX_VALUE).prop_map(|value| U96::new(value).unwrap())
+    }
+
     // -- STORAGE TESTS --------------------------------------------------------
 
     // Generate property tests for all storage types:
@@ -155,12 +265,46 @@ mod tests {
                 assert_eq!(b, recovered, "Bool EVM word roundtrip failed");
             });
         }
+
+        #[test]
+        fn test_u96_values(value in arb_u96(), base_slot in arb_safe_slot()) {
+            let (mut storage, address) = setup_storage();
+            StorageCtx::enter(&mut storage, || {
+                let mut slot = U96::handle(base_slot, LayoutCtx::FULL, address);
+
+                slot.write(value).unwrap();
+                let loaded = slot.read().unwrap();
+                assert_eq!(value, loaded, "U96 roundtrip failed");
+
+                slot.delete().unwrap();
+                let after_delete = slot.read().unwrap();
+                assert_eq!(after_delete, U96::ZERO, "U96 not zero after delete");
+
+                let word = value.to_word();
+                let recovered = <U96 as FromWord>::from_word(word).unwrap();
+                assert_eq!(value, recovered, "U96 EVM word roundtrip failed");
+            });
+        }
     }
 
     // -- WORD REPRESENTATION TESTS ------------------------------------------------
 
     #[test]
     fn test_unsigned_word_byte_representation() {
+        assert_eq!(
+            U96::ZERO.to_word(),
+            gen_word_from(&["0x000000000000000000000000"])
+        );
+        assert_eq!(
+            U96::new(0x1234567890ABCDEF12345678).unwrap().to_word(),
+            gen_word_from(&["0x1234567890ABCDEF12345678"])
+        );
+        assert_eq!(
+            U96::MAX.to_word(),
+            gen_word_from(&["0xFFFFFFFFFFFFFFFFFFFFFFFF"])
+        );
+        assert!(U96::from_word(gen_word_from(&["0x01000000000000000000000000"])).is_err());
+
         // u8: single byte, right-aligned
         assert_eq!(0u8.to_word(), gen_word_from(&["0x00"]));
         assert_eq!(1u8.to_word(), gen_word_from(&["0x01"]));
