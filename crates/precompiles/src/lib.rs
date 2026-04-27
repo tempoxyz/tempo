@@ -26,19 +26,11 @@ pub mod validator_config_v2;
 pub mod test_util;
 
 use crate::{
-    account_keychain::AccountKeychain,
-    address_registry::AddressRegistry,
-    nonce::NonceManager,
-    signature_verifier::SignatureVerifier,
-    stablecoin_dex::StablecoinDEX,
-    storage::StorageCtx,
-    tip_fee_manager::TipFeeManager,
-    tip20::{TIP20Token, is_tip20_prefix},
-    tip20_channel_escrow::TIP20ChannelEscrow,
-    tip20_factory::TIP20Factory,
-    tip403_registry::TIP403Registry,
-    validator_config::ValidatorConfig,
-    validator_config_v2::ValidatorConfigV2,
+    account_keychain::AccountKeychain, address_registry::AddressRegistry, nonce::NonceManager,
+    signature_verifier::SignatureVerifier, stablecoin_dex::StablecoinDEX, storage::StorageCtx,
+    tip_fee_manager::TipFeeManager, tip20::TIP20Token, tip20_channel_escrow::TIP20ChannelEscrow,
+    tip20_factory::TIP20Factory, tip403_registry::TIP403Registry,
+    validator_config::ValidatorConfig, validator_config_v2::ValidatorConfigV2,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::TempoAddressExt;
