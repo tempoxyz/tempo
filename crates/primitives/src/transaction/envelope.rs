@@ -1,4 +1,4 @@
-use super::tt_signed::AASigned;
+use super::{TempoSignature, tt_signed::AASigned};
 use crate::{TempoTransaction, subblock::PartialValidatorKey};
 use alloy_consensus::{
     EthereumTxEnvelope, SignableTransaction, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702,
@@ -8,6 +8,7 @@ use alloy_consensus::{
     transaction::Either,
 };
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, hex};
+use alloy_sol_types::{SolCall, SolInterface, SolType};
 use core::fmt;
 use tempo_contracts::precompiles::{ITIP20, ITIP20ChannelEscrow, TIP20_CHANNEL_ESCROW_ADDRESS};
 
@@ -490,7 +491,34 @@ fn is_tip20_payment(to: Option<&Address>, input: &[u8]) -> bool {
 fn is_channel_escrow_payment(to: Option<&Address>, input: &[u8], t5_active: bool) -> bool {
     t5_active
         && to == Some(&TIP20_CHANNEL_ESCROW_ADDRESS)
-        && ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls::is_payment(input)
+        && is_channel_escrow_payment_calldata(input)
+}
+
+/// Returns `true` if `input` matches a channel escrow payment-lane selector and its calldata is
+/// well-formed. `settle` and `close` also require a valid Tempo signature encoding.
+fn is_channel_escrow_payment_calldata(input: &[u8]) -> bool {
+    fn is_static_call<C: SolCall>(input: &[u8]) -> bool {
+        input.first_chunk::<4>() == Some(&C::SELECTOR)
+            && input.len() == 4 + <C::Parameters<'_> as SolType>::ENCODED_SIZE.unwrap_or_default()
+    }
+
+    if is_static_call::<ITIP20ChannelEscrow::openCall>(input)
+        || is_static_call::<ITIP20ChannelEscrow::topUpCall>(input)
+        || is_static_call::<ITIP20ChannelEscrow::requestCloseCall>(input)
+        || is_static_call::<ITIP20ChannelEscrow::withdrawCall>(input)
+    {
+        return true;
+    }
+
+    match ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls::abi_decode(input) {
+        Ok(ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls::settle(call)) => {
+            TempoSignature::from_bytes(&call.signature).is_ok()
+        }
+        Ok(ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls::close(call)) => {
+            TempoSignature::from_bytes(&call.signature).is_ok()
+        }
+        _ => false,
+    }
 }
 
 fn is_payment_call_v1(to: Option<&Address>, input: &[u8], t5_active: bool) -> bool {
