@@ -9,6 +9,7 @@ use alloy_eips::{
 };
 use alloy_evm::FromRecoveredTx;
 use alloy_primitives::{Address, B256, Bytes, TxHash, TxKind, U256, bytes, map::AddressMap};
+use alloy_sol_types::SolInterface;
 use reth_evm::execute::WithTxEnv;
 use reth_primitives_traits::{InMemorySize, Recovered};
 use reth_transaction_pool::{
@@ -20,7 +21,10 @@ use std::{
     fmt::Debug,
     sync::{Arc, OnceLock},
 };
-use tempo_precompiles::{DEFAULT_FEE_TOKEN, nonce::NonceManager};
+use tempo_contracts::precompiles::ITIP20;
+use tempo_precompiles::{
+    DEFAULT_FEE_TOKEN, nonce::NonceManager, storage::StorageKey, tip20::tip20_slots,
+};
 use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
 use tempo_revm::{TempoInvalidTransaction, TempoTxEnv};
 use thiserror::Error;
@@ -235,6 +239,41 @@ impl TempoPooledTransaction {
             let hash = self.expiring_nonce_hash()?;
             Some(NonceManager::new().expiring_nonce_seen[hash].slot())
         })
+    }
+
+    /// Warms the global keccak cache with storage slot hashes that will be accessed
+    /// during block building (TIP-20 balance slots, fee manager mappings).
+    ///
+    /// Fee manager slots like `user_tokens[fee_payer]` and `validator_tokens[beneficiary]`
+    /// are not warmed here: the former is already cached from `validate_with_evm`, and the
+    /// latter depends on the block producer which is unknown at validation time.
+    pub fn precalculate_keccak_slots(&self) {
+        let sender = self.sender();
+        let fee_payer = self.inner().fee_payer(sender).unwrap_or(sender);
+        fee_payer.mapping_slot(tip20_slots::BALANCES);
+
+        // For payment transactions, warm sender + recipient balance and allowance slots.
+        if self.is_payment {
+            if fee_payer != sender {
+                sender.mapping_slot(tip20_slots::BALANCES);
+            }
+            for (_kind, input) in self.inner().calls() {
+                if let Ok(call) = ITIP20::ITIP20Calls::abi_decode(input) {
+                    for addr in call.balance_addresses().into_iter().flatten() {
+                        addr.mapping_slot(tip20_slots::BALANCES);
+                    }
+                    // Allowance slots for transferFrom variants: allowances[from][sender]
+                    let from = match &call {
+                        ITIP20::ITIP20Calls::transferFrom(c) => Some(c.from),
+                        ITIP20::ITIP20Calls::transferFromWithMemo(c) => Some(c.from),
+                        _ => None,
+                    };
+                    if let Some(from) = from {
+                        sender.mapping_slot(from.mapping_slot(tip20_slots::ALLOWANCES));
+                    }
+                }
+            }
+        }
     }
 }
 
