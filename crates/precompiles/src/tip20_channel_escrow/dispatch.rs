@@ -1,7 +1,7 @@
 //! ABI dispatch for the [`TIP20ChannelEscrow`] precompile.
 
-use super::{CLOSE_GRACE_PERIOD, TIP20ChannelEscrow, VOUCHER_TYPEHASH};
-use crate::{Precompile, charge_input_cost, dispatch_call, metadata, mutate, mutate_void, view};
+use super::{TIP20ChannelEscrow, CLOSE_GRACE_PERIOD, VOUCHER_TYPEHASH};
+use crate::{charge_input_cost, dispatch_call, metadata, mutate, mutate_void, view, Precompile};
 use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::{
