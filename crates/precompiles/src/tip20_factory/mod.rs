@@ -4,7 +4,9 @@
 
 pub mod dispatch;
 
-pub use tempo_contracts::precompiles::{ITIP20Factory, TIP20FactoryError, TIP20FactoryEvent};
+pub use tempo_contracts::precompiles::{
+    ITIP20Factory, TIP20FactoryError, TIP20FactoryEvent, createTokenCall, createTokenWithLogoCall,
+};
 use tempo_precompiles_macros::contract;
 
 use crate::{
@@ -101,11 +103,7 @@ impl TIP20Factory {
     /// - `TokenAlreadyExists` — a TIP-20 is already deployed at the derived address
     /// - `InvalidQuoteToken` — quote token is not a deployed TIP-20 or has incompatible currency
     /// - `AddressReserved` — the derived address is in the reserved range
-    pub fn create_token(
-        &mut self,
-        sender: Address,
-        call: ITIP20Factory::createTokenCall,
-    ) -> Result<Address> {
+    pub fn create_token(&mut self, sender: Address, call: createTokenCall) -> Result<Address> {
         trace!(%sender, ?call, "Create token");
 
         // Compute the deterministic address from sender and salt
@@ -156,6 +154,38 @@ impl TIP20Factory {
                 salt: call.salt,
             },
         ))?;
+
+        Ok(token_address)
+    }
+
+    /// Creates a token and atomically sets its `logoURI` (TIP-1026).
+    ///
+    /// Behaves identically to `create_token` plus, when `logoURI` is non-empty,
+    /// writes the URI to the new token's storage and emits `LogoURIUpdated` from
+    /// the new token's address with `updater = sender`. An empty `logoURI` is
+    /// valid and is treated as "no logo set" — no slot write, no event.
+    ///
+    /// Reverts with `LogoURITooLong` if `bytes(logoURI).length > 256`.
+    pub fn create_token_with_logo(
+        &mut self,
+        sender: Address,
+        call: createTokenWithLogoCall,
+    ) -> Result<Address> {
+        let token_address = self.create_token(
+            sender,
+            createTokenCall {
+                name: call.name,
+                symbol: call.symbol,
+                currency: call.currency,
+                quoteToken: call.quoteToken,
+                admin: call.admin,
+                salt: call.salt,
+            },
+        )?;
+
+        if !call.logoURI.is_empty() {
+            TIP20Token::from_address(token_address)?.write_logo_uri(sender, call.logoURI)?;
+        }
 
         Ok(token_address)
     }
@@ -363,7 +393,7 @@ mod tests {
 
             let salt1 = B256::random();
             let salt2 = B256::random();
-            let call1 = ITIP20Factory::createTokenCall {
+            let call1 = createTokenCall {
                 name: "Test Token 1".to_string(),
                 symbol: "TEST1".to_string(),
                 currency: "USD".to_string(),
@@ -371,7 +401,7 @@ mod tests {
                 admin: sender,
                 salt: salt1,
             };
-            let call2 = ITIP20Factory::createTokenCall {
+            let call2 = createTokenCall {
                 name: "Test Token 2".to_string(),
                 symbol: "TEST2".to_string(),
                 currency: "USD".to_string(),
@@ -421,6 +451,153 @@ mod tests {
     }
 
     #[test]
+    fn test_create_token_selector_and_event_unchanged() {
+        // Regression guard: TIP-1026 must not break ABI compatibility for the
+        // existing 6-arg createToken / TokenCreated event. See
+        // https://github.com/tempoxyz/tempo/pull/2996#discussion_r3146661496
+        use alloy::sol_types::{SolCall, SolEvent};
+
+        assert_eq!(
+            createTokenCall::SELECTOR,
+            [0x68, 0x13, 0x04, 0x45],
+            "createToken selector must remain 0x68130445"
+        );
+
+        assert_eq!(
+            ITIP20Factory::TokenCreated::SIGNATURE_HASH,
+            alloy::primitives::b256!(
+                "44f7b8011db3e3647a530b4ff635726de5fafc8fa8ad10f0f31c0eb9dd52fc65"
+            ),
+            "TokenCreated topic0 must remain unchanged"
+        );
+    }
+
+    #[test]
+    fn test_create_token_with_logo() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let sender = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Setup::factory()?;
+            let path_usd = TIP20Setup::path_usd(sender).apply()?;
+            factory.clear_emitted_events();
+
+            let salt = B256::random();
+            let logo_uri = "https://example.com/icon.svg".to_string();
+            let call = createTokenWithLogoCall {
+                name: "Logo Token".to_string(),
+                symbol: "LOGO".to_string(),
+                currency: "USD".to_string(),
+                quoteToken: path_usd.address(),
+                admin: sender,
+                salt,
+                logoURI: logo_uri.clone(),
+            };
+
+            let token_addr = factory.create_token_with_logo(sender, call.clone())?;
+
+            // Token deployed correctly
+            assert!(token_addr.is_tip20());
+            assert!(factory.is_tip20(token_addr)?);
+
+            // logoURI is stored on the new token
+            let token = TIP20Token::from_address(token_addr)?;
+            assert_eq!(token.logo_uri()?, logo_uri);
+
+            // Factory emits TokenCreated (unchanged signature)
+            factory.assert_emitted_events(vec![TIP20FactoryEvent::TokenCreated(
+                ITIP20Factory::TokenCreated {
+                    token: token_addr,
+                    name: call.name,
+                    symbol: call.symbol,
+                    currency: call.currency,
+                    quoteToken: call.quoteToken,
+                    admin: call.admin,
+                    salt: call.salt,
+                },
+            )]);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_create_token_with_logo_empty_uri_skips_event() -> eyre::Result<()> {
+        use alloy::sol_types::SolEvent;
+        use tempo_contracts::precompiles::ITIP20;
+
+        let mut storage = HashMapStorageProvider::new(1);
+        let sender = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Setup::factory()?;
+            let path_usd = TIP20Setup::path_usd(sender).apply()?;
+            factory.clear_emitted_events();
+
+            let token_addr = factory.create_token_with_logo(
+                sender,
+                createTokenWithLogoCall {
+                    name: "Empty Logo".to_string(),
+                    symbol: "EMPTY".to_string(),
+                    currency: "USD".to_string(),
+                    quoteToken: path_usd.address(),
+                    admin: sender,
+                    salt: B256::random(),
+                    logoURI: String::new(),
+                },
+            )?;
+
+            // logoURI remains the default (empty)
+            let token = TIP20Token::from_address(token_addr)?;
+            assert_eq!(token.logo_uri()?, "");
+
+            // No LogoURIUpdated event was emitted on the new token
+            let logo_topic = ITIP20::LogoURIUpdated::SIGNATURE_HASH;
+            assert!(
+                !token
+                    .emitted_events()
+                    .iter()
+                    .any(|e| e.topics().first() == Some(&logo_topic)),
+                "LogoURIUpdated should not be emitted when logoURI is empty"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_create_token_with_logo_too_long_reverts() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let sender = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Setup::factory()?;
+            let path_usd = TIP20Setup::path_usd(sender).apply()?;
+
+            let salt = B256::random();
+            let result = factory.create_token_with_logo(
+                sender,
+                createTokenWithLogoCall {
+                    name: "Too Long".to_string(),
+                    symbol: "TL".to_string(),
+                    currency: "USD".to_string(),
+                    quoteToken: path_usd.address(),
+                    admin: sender,
+                    salt,
+                    logoURI: "a".repeat(257),
+                },
+            );
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::LogoURITooLong(_)))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_create_token_invalid_quote_token() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
@@ -428,7 +605,7 @@ mod tests {
             let mut factory = TIP20Setup::factory()?;
             TIP20Setup::path_usd(sender).apply()?;
 
-            let invalid_call = ITIP20Factory::createTokenCall {
+            let invalid_call = createTokenCall {
                 name: "Test Token".to_string(),
                 symbol: "TEST".to_string(),
                 currency: "USD".to_string(),
@@ -457,7 +634,7 @@ mod tests {
                 .currency("EUR")
                 .apply()?;
 
-            let invalid_call = ITIP20Factory::createTokenCall {
+            let invalid_call = createTokenCall {
                 name: "USD Token".to_string(),
                 symbol: "USDT".to_string(),
                 currency: "USD".to_string(),
@@ -486,7 +663,7 @@ mod tests {
             // Create an address with TIP20 prefix but no code
             let non_existent_tip20 =
                 Address::from(alloy::hex!("20C0000000000000000000000000000000009999"));
-            let invalid_call = ITIP20Factory::createTokenCall {
+            let invalid_call = createTokenCall {
                 name: "Test Token".to_string(),
                 symbol: "TEST".to_string(),
                 currency: "USD".to_string(),
@@ -513,7 +690,7 @@ mod tests {
             TIP20Setup::path_usd(sender).apply()?;
 
             let salt = B256::random();
-            let create_token_call = ITIP20Factory::createTokenCall {
+            let create_token_call = createTokenCall {
                 name: "Test Token".to_string(),
                 symbol: "TEST".to_string(),
                 currency: "USD".to_string(),

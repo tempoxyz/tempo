@@ -57,7 +57,7 @@ where
 
     // Create token
     let salt = B256::random();
-    let create_tx = factory.createToken(
+    let create_tx = factory.createToken_0(
         "Test".to_string(),
         "TEST".to_string(),
         "USD".to_string(),

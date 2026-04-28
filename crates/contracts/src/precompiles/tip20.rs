@@ -85,6 +85,8 @@ crate::sol! {
         function supplyCap() external view returns (uint256);
         function paused() external view returns (bool);
         function transferPolicyId() external view returns (uint64);
+        function logoURI() external view returns (string memory);
+        function setLogoURI(string calldata newLogoURI) external;
         function burnBlocked(address from, uint256 amount) external;
         function mintWithMemo(address to, uint256 amount, bytes32 memo) external;
         function burnWithMemo(uint256 amount, bytes32 memo) external;
@@ -149,6 +151,7 @@ crate::sol! {
         event QuoteTokenUpdate(address indexed updater, address indexed newQuoteToken);
         event RewardDistributed(address indexed funder, uint256 amount);
         event RewardRecipientSet(address indexed holder, address indexed recipient);
+        event LogoURIUpdated(address indexed updater, string newLogoURI);
 
         // Errors
         error InsufficientBalance(uint256 available, uint256 required, address token);
@@ -170,6 +173,7 @@ crate::sol! {
         error InvalidTransferPolicyId();
         error PermitExpired();
         error InvalidSignature();
+        error LogoURITooLong();
     }
 }
 
@@ -309,6 +313,11 @@ impl TIP20Error {
     /// Error when permit signature is invalid
     pub const fn invalid_signature() -> Self {
         Self::InvalidSignature(ITIP20::InvalidSignature {})
+    }
+
+    /// Error when logoURI exceeds 256 bytes (TIP-1026)
+    pub const fn logo_uri_too_long() -> Self {
+        Self::LogoURITooLong(ITIP20::LogoURITooLong {})
     }
 }
 

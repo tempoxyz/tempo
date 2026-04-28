@@ -45,6 +45,9 @@ pub const U128_MAX: U256 = uint!(0xffffffffffffffffffffffffffffffff_U256);
 
 use tempo_contracts::precompiles::DECIMALS as TIP20_DECIMALS;
 
+/// Maximum byte length of a token logo URI (TIP-1026).
+pub const MAX_LOGO_URI_BYTES: usize = 256;
+
 /// Validates that the given token's currency is `"USD"`.
 ///
 /// # Errors
@@ -100,6 +103,9 @@ pub struct TIP20Token {
     global_reward_per_token: U256,
     opted_in_supply: u128,
     user_reward_info: Mapping<Address, UserRewardInfo>,
+
+    // TIP-1026: Token Logo URI (must remain at the end — storage is append-only)
+    logo_uri: String,
 }
 
 /// EIP-712 Permit typehash: keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)")
@@ -143,6 +149,13 @@ impl TIP20Token {
     /// Returns the token's currency denomination (e.g. `"USD"`).
     pub fn currency(&self) -> Result<String> {
         self.currency.read()
+    }
+
+    /// Returns the logo URI for this token (TIP-1026).
+    ///
+    /// Returns an empty string if not set.
+    pub fn logo_uri(&self) -> Result<String> {
+        self.logo_uri.read()
     }
 
     /// Returns the current total supply.
@@ -271,6 +284,38 @@ impl TIP20Token {
         self.emit_event(TIP20Event::SupplyCapUpdate(ITIP20::SupplyCapUpdate {
             updater: msg_sender,
             newSupplyCap: call.newSupplyCap,
+        }))
+    }
+
+    /// Sets the logo URI for this token (TIP-1026).
+    ///
+    /// Restricted to `DEFAULT_ADMIN_ROLE`. Reverts with `LogoURITooLong` if the URI
+    /// exceeds 256 bytes. Empty strings are valid and clear the URI.
+    pub fn set_logo_uri(
+        &mut self,
+        msg_sender: Address,
+        call: ITIP20::setLogoURICall,
+    ) -> Result<()> {
+        self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
+        self.write_logo_uri(msg_sender, call.newLogoURI)
+    }
+
+    /// Internal helper: validates length, writes the slot, and emits `LogoURIUpdated`.
+    ///
+    /// Used by `set_logo_uri` (after role check) and by the factory at token creation
+    /// time (skipping the role check, since admin role hasn't been used yet by the new
+    /// token's caller). The `updater` field is set verbatim — callers are responsible
+    /// for choosing the appropriate value.
+    pub(crate) fn write_logo_uri(&mut self, updater: Address, new_logo_uri: String) -> Result<()> {
+        if new_logo_uri.len() > MAX_LOGO_URI_BYTES {
+            return Err(TIP20Error::logo_uri_too_long().into());
+        }
+
+        self.logo_uri.write(new_logo_uri.clone())?;
+
+        self.emit_event(TIP20Event::LogoURIUpdated(ITIP20::LogoURIUpdated {
+            updater,
+            newLogoURI: new_logo_uri,
         }))
     }
 
@@ -1317,7 +1362,7 @@ mod recipient_tests {
 #[cfg(test)]
 pub(crate) mod tests {
     use alloy::primitives::{Address, FixedBytes, IntoLogData, U256, hex};
-    use tempo_contracts::precompiles::ITIP20Factory;
+    use tempo_contracts::precompiles::createTokenCall;
 
     use super::*;
     use crate::{
@@ -2116,6 +2161,113 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn test_logo_uri_default_empty() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let token = TIP20Setup::create("Test", "TST", admin).apply()?;
+            assert_eq!(token.logo_uri()?, "");
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_logo_uri_non_admin_reverts() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let non_admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+
+            let result = token.set_logo_uri(
+                non_admin,
+                ITIP20::setLogoURICall {
+                    newLogoURI: "https://example.com/icon.svg".to_string(),
+                },
+            );
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::RolesAuthError(
+                    RolesAuthError::Unauthorized(_)
+                ))
+            ));
+
+            // logoURI should remain unchanged (empty)
+            assert_eq!(token.logo_uri()?, "");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_logo_uri_too_long_reverts() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+
+            // 257 bytes — one over the limit
+            let too_long = "a".repeat(257);
+            let result = token.set_logo_uri(
+                admin,
+                ITIP20::setLogoURICall {
+                    newLogoURI: too_long,
+                },
+            );
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::LogoURITooLong(_)))
+            ));
+
+            // 256 bytes — at the limit, should succeed
+            let at_limit = "a".repeat(256);
+            token.set_logo_uri(
+                admin,
+                ITIP20::setLogoURICall {
+                    newLogoURI: at_limit.clone(),
+                },
+            )?;
+            assert_eq!(token.logo_uri()?, at_limit);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_logo_uri_writes_and_emits() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .clear_events()
+                .apply()?;
+
+            let uri = "https://example.com/icon.svg".to_string();
+            token.set_logo_uri(
+                admin,
+                ITIP20::setLogoURICall {
+                    newLogoURI: uri.clone(),
+                },
+            )?;
+
+            assert_eq!(token.logo_uri()?, uri);
+
+            token.assert_emitted_events(vec![TIP20Event::LogoURIUpdated(ITIP20::LogoURIUpdated {
+                updater: admin,
+                newLogoURI: uri,
+            })]);
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_from_address() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
@@ -2256,7 +2408,7 @@ pub(crate) mod tests {
 
             let created_tip20 = TIP20Factory::new().create_token(
                 sender,
-                ITIP20Factory::createTokenCall {
+                createTokenCall {
                     name: "Test Token".to_string(),
                     symbol: "TEST".to_string(),
                     currency: "USD".to_string(),
