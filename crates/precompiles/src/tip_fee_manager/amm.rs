@@ -87,7 +87,7 @@ impl PoolKey {
 }
 
 /// AMM path [`TipFeeManager`] will take to swap `user_token` into `validator_token`
-/// for fee collection. See [`TipFeeManager::plan_fee_swap`].
+/// for fee collection. See [`TipFeeManager::get_fee_route`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeeRoute {
     /// `user_token == validator_token`, or the direct pool has sufficient liquidity.
@@ -493,7 +493,7 @@ impl TipFeeManager {
     /// - `UnderOverflow` — fee-amount arithmetic overflows
     ///
     /// [TIP-1033]: <https://docs.tempo.xyz/protocol/tips/tip-1033>
-    pub fn plan_fee_swap(
+    pub fn get_fee_route(
         &self,
         user_token: Address,
         validator_token: Address,

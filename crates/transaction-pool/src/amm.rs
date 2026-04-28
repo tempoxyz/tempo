@@ -59,7 +59,7 @@ impl AmmLiquidityCache {
     /// planner considers the two-hop fallback through `userToken.quoteToken()`.
     ///
     /// Hot path checks only the direct pool from the primitive cache; T5+ two-hop probes
-    /// always defer to the slow path (which calls [`TipFeeManager::plan_fee_swap`]).
+    /// always defer to the slow path (which calls [`TipFeeManager::get_fee_route`]).
     ///
     /// [TIP-1033]: <https://docs.tempo.xyz/protocol/tips/tip-1033>
     pub fn has_enough_liquidity(
@@ -101,7 +101,7 @@ impl AmmLiquidityCache {
             .with_read_only_storage_ctx(current_fork, || -> TempoResult<bool> {
                 let manager = TipFeeManager::new();
                 for validator_token in missing_in_cache {
-                    let route = manager.plan_fee_swap(user_token, validator_token, fee)?;
+                    let route = manager.get_fee_route(user_token, validator_token, fee)?;
 
                     // Warm the direct pool entry so future hot-path checks can short-circuit.
                     let direct_id = manager.pool_id(user_token, validator_token);

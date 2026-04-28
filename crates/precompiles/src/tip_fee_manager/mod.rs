@@ -186,7 +186,7 @@ impl TipFeeManager {
         tip20_token.transfer_fee_pre_tx(fee_payer, max_amount)?;
 
         if !skip_liquidity_check {
-            match self.plan_fee_swap(user_token, validator_token, max_amount)? {
+            match self.get_fee_route(user_token, validator_token, max_amount)? {
                 None => return Err(TIPFeeAMMError::insufficient_liquidity().into()),
                 Some(FeeRoute::Direct) => {
                     if user_token != validator_token && self.storage.spec().is_t1c() {
