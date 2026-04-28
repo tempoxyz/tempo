@@ -214,6 +214,10 @@ where
                 ));
             }
 
+            if self.evm().cfg.spec.is_t4() {
+                return Err(BlockValidationError::msg("subblocks are disabled in T4+"));
+            }
+
             if tx.input().len() < U256::BYTES
                 || tx.input()[tx.input().len() - U256::BYTES..] != block_number
             {
