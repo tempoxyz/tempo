@@ -8,7 +8,10 @@ pub(crate) mod marshal {
     use commonware_codec::ReadExt as _;
     use commonware_consensus::{
         Epochable as _,
-        marshal::{self, Start, core, standard::Standard},
+        marshal::{
+            self, Start, core,
+            standard::{Inline, Standard},
+        },
         simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization},
         types::{Epoch, Epocher as _, FixedEpocher, Height, ViewDelta},
     };
@@ -30,23 +33,28 @@ pub(crate) mod marshal {
     use tracing::{info, instrument};
 
     use crate::{
-        consensus::{Digest, block::Block},
+        consensus::{Digest, application::TempoApplication, block::Block},
         epoch::SchemeProvider,
         storage::{self, Hybrid},
     };
+
+    type CertificateScheme = Scheme<PublicKey, MinSig>;
 
     pub(crate) type Actor<TContext> = core::Actor<
         TContext,
         Standard<Block>,
         SchemeProvider,
-        immutable::Archive<TContext, Digest, Finalization<Scheme<PublicKey, MinSig>, Digest>>,
+        immutable::Archive<TContext, Digest, Finalization<CertificateScheme, Digest>>,
         Hybrid<TContext, BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>>,
         FixedEpocher,
         Sequential,
         Exact,
     >;
 
-    pub(crate) type Mailbox = core::Mailbox<Scheme<PublicKey, MinSig>, Standard<Block>>;
+    pub(crate) type Mailbox = core::Mailbox<CertificateScheme, Standard<Block>>;
+
+    pub(crate) type InlineApplication<TContext> =
+        Inline<TContext, CertificateScheme, TempoApplication, Block, FixedEpocher>;
 
     /// Settings shared by both engines when initializing the marshal actor
     /// and its backing finalized-blocks store.

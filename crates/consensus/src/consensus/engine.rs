@@ -28,7 +28,7 @@ use tracing::info;
 
 use crate::{
     alias,
-    consensus::application,
+    consensus::application::TempoApplication,
     dkg,
     epoch::{self, SchemeProvider},
     peer_manager, storage, subblocks,
@@ -239,25 +239,30 @@ where
             self.feed_state,
         );
 
-        let (application, application_mailbox) = application::init(super::application::Config {
-            context: context.child("application"),
-            public_key: self.signer.public_key(),
-            mailbox_size: self.mailbox_size,
-            marshal: marshal_mailbox.clone(),
-            execution_node: execution_node.clone(),
-            executor: executor_mailbox.clone(),
-            proposal_return_budget: self.proposal_return_budget,
-            subblocks: subblocks.as_ref().map(|s| s.mailbox()),
-            scheme_provider: scheme_provider.clone(),
-            epoch_strategy: epoch_strategy.clone(),
-        })
-        .await
-        .wrap_err("failed initializing application actor")?;
+        let tempo = TempoApplication::new(
+            context.child("application"),
+            super::application::Config {
+                public_key: self.signer.public_key(),
+                execution_node: execution_node.clone(),
+                executor: executor_mailbox.clone(),
+                proposal_return_budget: self.proposal_return_budget,
+                subblocks: subblocks.as_ref().map(|s| s.mailbox()),
+                scheme_provider: scheme_provider.clone(),
+                epoch_strategy: epoch_strategy.clone(),
+            },
+        );
+
+        let automaton = crate::alias::marshal::InlineApplication::new(
+            context.child("automaton"),
+            tempo.clone(),
+            marshal_mailbox.clone(),
+            epoch_strategy.clone(),
+        );
 
         let (epoch_manager, epoch_manager_mailbox) = epoch::manager::init(
             context.child("epoch_manager"),
             epoch::manager::Config {
-                application: application_mailbox.clone(),
+                automaton: automaton.clone(),
                 execution_node: execution_node.clone(),
                 blocker: self.blocker.clone(),
                 page_cache: page_cache_ref,
@@ -295,6 +300,8 @@ where
         .await
         .wrap_err("failed initializing dkg manager")?;
 
+        tempo.set_dkg_manager(dkg_manager_mailbox.clone());
+
         Ok(Engine {
             context: ContextCell::new(context),
 
@@ -304,7 +311,7 @@ where
             dkg_manager,
             dkg_manager_mailbox,
 
-            application,
+            automaton,
 
             executor,
             executor_mailbox,
@@ -351,8 +358,8 @@ where
     dkg_manager_mailbox: dkg::manager::Mailbox,
 
     /// Acts as the glue between the consensus and execution layers implementing
-    /// the `[commonware_consensus::Automaton]` trait.
-    application: application::Actor<TContext>,
+    /// the [`commonware_consensus::Automaton`] trait.
+    automaton: crate::alias::marshal::InlineApplication<TContext>,
 
     /// Responsible for keeping the consensus layer state and execution layer
     /// states in sync. Drives the chain state of the execution layer by sending
@@ -367,7 +374,11 @@ where
     /// local node.
     marshal: crate::alias::marshal::Actor<TContext>,
 
-    epoch_manager: epoch::manager::Actor<TContext, TBlocker>,
+    epoch_manager: epoch::manager::Actor<
+        TContext,
+        TBlocker,
+        crate::alias::marshal::InlineApplication<TContext>,
+    >,
     epoch_manager_mailbox: epoch::manager::Mailbox,
 
     peer_manager: peer_manager::Actor<TContext, TPeerManager>,
@@ -486,15 +497,19 @@ where
             marshal_channel,
         );
 
-        let application = self.application.start(self.dkg_manager_mailbox.clone());
         let executor = self.executor.start();
 
+        // The `Inline` wrapper is part of the marshal's reporter chain so that
+        // its internal availability cache is pruned on tip advances.
         let marshal = self.marshal.start(
             Reporters::from((
                 self.epoch_manager_mailbox,
                 Reporters::from((
                     self.executor_mailbox,
-                    Reporters::from((self.dkg_manager_mailbox.clone(), self.peer_manager_mailbox)),
+                    Reporters::from((
+                        self.dkg_manager_mailbox.clone(),
+                        Reporters::from((self.peer_manager_mailbox, self.automaton)),
+                    )),
                 )),
             )),
             self.broadcast_mailbox,
@@ -510,7 +525,6 @@ where
         let dkg_manager = self.dkg_manager.start(dkg_channel);
 
         let mut tasks = vec![
-            application,
             broadcast,
             epoch_manager,
             executor,
