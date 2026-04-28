@@ -132,25 +132,19 @@ impl Order {
         hardfork: TempoHardfork,
     ) -> Result<Self, OrderError> {
         // TIP-1030 (T5+) relaxes the constraint to allow `flip_tick == tick`.
-        let allow_same_tick = hardfork.is_t5();
-
-        let bid_invalid = if allow_same_tick {
-            flip_tick < tick
+        let t5_active = hardfork.is_t5();
+        let invalid = if is_bid {
+            flip_tick < tick || (!t5_active && flip_tick == tick)
         } else {
-            flip_tick <= tick
-        };
-        let ask_invalid = if allow_same_tick {
-            flip_tick > tick
-        } else {
-            flip_tick >= tick
+            flip_tick > tick || (!t5_active && flip_tick == tick)
         };
 
-        if is_bid {
-            if bid_invalid {
-                return Err(OrderError::InvalidBidFlipTick { tick, flip_tick });
-            }
-        } else if ask_invalid {
-            return Err(OrderError::InvalidAskFlipTick { tick, flip_tick });
+        if invalid {
+            return Err(if is_bid {
+                OrderError::InvalidBidFlipTick { tick, flip_tick }
+            } else {
+                OrderError::InvalidAskFlipTick { tick, flip_tick }
+            });
         }
 
         Ok(Self::new(
