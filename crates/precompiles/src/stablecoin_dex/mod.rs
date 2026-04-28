@@ -681,13 +681,16 @@ impl StablecoinDEX {
 
         // Create the flip order
         let order_id = self.next_order_id()?;
-        let order = if self.storage.spec().is_t5() {
-            Order::new_flip_with_same_tick(
-                order_id, sender, book_key, amount, tick, is_bid, flip_tick,
-            )
-        } else {
-            Order::new_flip(order_id, sender, book_key, amount, tick, is_bid, flip_tick)
-        }
+        let order = Order::new_flip(
+            order_id,
+            sender,
+            book_key,
+            amount,
+            tick,
+            is_bid,
+            flip_tick,
+            self.storage.spec(),
+        )
         .map_err(|_| StablecoinDEXError::invalid_flip_tick())?;
 
         // Commit the flip order
@@ -2222,8 +2225,8 @@ mod tests {
 
     /// TIP-1030 invariant: even on T5, `flip_tick` strictly on the wrong side
     /// of `tick` is still rejected at the `place_flip` precompile entrypoint.
-    /// `Order::new_flip_with_same_tick` enforces this in `order.rs`, but the
-    /// precompile is the security boundary so we pin the behavior here too.
+    /// `Order::new_flip` enforces this in `order.rs`, but the precompile is the
+    /// security boundary so we pin the behavior here too.
     #[test]
     fn test_place_flip_wrong_side_still_rejected_t5() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
