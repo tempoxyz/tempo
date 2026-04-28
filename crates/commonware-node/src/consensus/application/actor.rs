@@ -426,7 +426,10 @@ impl Inner<Init> {
         Ok(())
     }
 
-    #[expect(clippy::too_many_arguments, reason = "internal helper used in one place")]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal helper used in one place"
+    )]
     async fn propose<TContext: Pacer>(
         self,
         context: TContext,
@@ -617,11 +620,11 @@ impl Inner<Init> {
         // Share the dispatch receiver with the cancel branch so that, if cancellation
         // hits between dispatch send and receiving `payload_id`, the cancel branch can
         // still drain the rx, learn `payload_id`, and cancel the now-registered job.
-        *payload_id_rx_slot = Some(
-            self.state
-                .executor
-                .canonicalize_and_build(parent.height(), parent.digest(), attrs)?,
-        );
+        *payload_id_rx_slot = Some(self.state.executor.canonicalize_and_build(
+            parent.height(),
+            parent.digest(),
+            attrs,
+        )?);
 
         let payload_id = payload_id_rx_slot
             .as_mut()
