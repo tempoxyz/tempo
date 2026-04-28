@@ -195,40 +195,36 @@ where
                     let marshal = marshal.clone();
                     async move { (height, marshal.get_block(Height::new(height)).await) }
                 })
-                .fuse()
             )
         };
 
+        while let Some((height, block)) = backfill_on_start.next().await {
+            match block {
+                Some(block) => {
+                    let (ack, _wait) = Exact::handle();
+                    let span = info_span!("backfill_on_start", height);
+                    let _ = self.forward_finalized(span, block, ack).await;
+                }
+                None => {
+                    warn_span!("backfill_on_start", height).in_scope(|| {
+                        warn!(
+                            "marshal actor did not have block even though \
+                        it must have finalized it previously",
+                        )
+                    });
+                }
+            }
+        }
+
+        info_span!("backfill_on_start").in_scope(|| {
+            info!(
+                "no more blocks to backfill from consensus to \
+            execution layer"
+            )
+        });
+
         loop {
             select_biased! {
-                backfill = backfill_on_start.next() => {
-                    match backfill {
-                        Some((height, Some(block))) => {
-                            let (ack, _wait) = Exact::handle();
-                            let span = info_span!("backfill_on_start", height);
-                            let _ = self.forward_finalized(
-                                span,
-                                block,
-                                ack,
-                            ).await;
-                        }
-                        Some((height, None)) => {
-                            warn_span!("backfill_on_start", height)
-                            .in_scope(|| warn!(
-                                "marshal actor did not have block even though \
-                                it must have finalized it previously",
-                            ));
-                        }
-                        None => {
-                            info_span!("backfill_on_start")
-                            .in_scope(|| info!(
-                                "no more blocks to backfill from consensus to \
-                                execution layer")
-                            );
-                        }
-                    }
-                },
-
                 msg = self.mailbox.next() => {
                     let Some(msg) = msg else { break; };
                     // XXX: updating forkchoice and finalizing blocks must
