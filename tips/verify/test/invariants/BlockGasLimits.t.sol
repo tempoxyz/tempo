@@ -3,7 +3,7 @@ pragma solidity >=0.8.13 <0.9.0;
 
 import { Test } from "forge-std/Test.sol";
 
-import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
+import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 import { InvariantBase } from "../helpers/InvariantBase.sol";
 import { TxBuilder } from "../helpers/TxBuilder.sol";
 
@@ -135,7 +135,6 @@ contract BlockGasLimitsInvariantTest is InvariantBase {
     /// @param gasMultiplier Multiplier to test various gas levels
     function handler_txGasCapEnforcement(uint256 actorSeed, uint256 gasMultiplier) external {
         // Skip when not on Tempo (vmExec.executeTransaction not available)
-        if (!isTempo) return;
 
         ghost_txGasCapTests++;
 
@@ -190,7 +189,6 @@ contract BlockGasLimitsInvariantTest is InvariantBase {
     /// @param sizeFraction Fraction of max size to deploy (50-100%)
     function handler_maxDeploymentFits(uint256 actorSeed, uint256 sizeFraction) external {
         // Skip when not on Tempo (vmExec.executeTransaction not available)
-        if (!isTempo) return;
 
         ghost_deploymentTests++;
 

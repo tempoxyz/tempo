@@ -39,7 +39,7 @@ use tempo_primitives::{
 use crate::{block::TempoBlockExecutor, evm::TempoEvm};
 use reth_evm_ethereum::EthEvmConfig;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_revm::{evm::TempoContext, gas_params::tempo_gas_params};
+use tempo_revm::{evm::TempoContext, gas_params::tempo_gas_params_with_amsterdam};
 
 pub use tempo_revm::{TempoBlockEnv, TempoHaltReason, TempoStateAccess};
 
@@ -144,8 +144,10 @@ impl ConfigureEvm for TempoEvmConfig {
         // (`false`) so TIP-1016 is disabled even on T4; flipping it on enables the regular/
         // state gas split everywhere it is checked downstream.
         let amsterdam_eip8037_enabled = cfg_env.enable_amsterdam_eip8037;
-        let mut cfg_env = cfg_env
-            .with_spec_and_gas_params(spec, tempo_gas_params(spec, amsterdam_eip8037_enabled));
+        let mut cfg_env = cfg_env.with_spec_and_gas_params(
+            spec,
+            tempo_gas_params_with_amsterdam(spec, amsterdam_eip8037_enabled),
+        );
         cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
 
         Ok(EvmEnv {
@@ -186,8 +188,10 @@ impl ConfigureEvm for TempoEvmConfig {
         // `cfg_env.enable_amsterdam_eip8037`, independent of the T4 hardfork
         // (see `evm_env_for_block` for details).
         let amsterdam_eip8037_enabled = cfg_env.enable_amsterdam_eip8037;
-        let mut cfg_env = cfg_env
-            .with_spec_and_gas_params(spec, tempo_gas_params(spec, amsterdam_eip8037_enabled));
+        let mut cfg_env = cfg_env.with_spec_and_gas_params(
+            spec,
+            tempo_gas_params_with_amsterdam(spec, amsterdam_eip8037_enabled),
+        );
         cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
 
         Ok(EvmEnv {

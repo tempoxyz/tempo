@@ -3,7 +3,7 @@ pragma solidity >=0.8.13 <0.9.0;
 
 import { Test } from "forge-std/Test.sol";
 
-import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
+import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 import { InvariantBase } from "../helpers/InvariantBase.sol";
 import { Counter, InitcodeHelper, SimpleStorage } from "../helpers/TestContracts.sol";
 import { TxBuilder } from "../helpers/TxBuilder.sol";
@@ -151,7 +151,6 @@ contract GasPricingInvariantTest is InvariantBase {
     /// @param slotSeed Seed for generating unique slot
     function handler_sstoreNewSlot(uint256 actorSeed, uint256 slotSeed) external {
         // Skip when not on Tempo (vmExec.executeTransaction not available)
-        if (!isTempo) return;
 
         ghost_sstoreTests++;
 
@@ -209,7 +208,6 @@ contract GasPricingInvariantTest is InvariantBase {
     /// @param actorSeed Seed for selecting actor
     function handler_createContract(uint256 actorSeed) external {
         // Skip when not on Tempo (vmExec.executeTransaction not available)
-        if (!isTempo) return;
 
         ghost_createTests++;
 
@@ -267,7 +265,6 @@ contract GasPricingInvariantTest is InvariantBase {
     /// @param numSlots Number of slots to write (2-5)
     function handler_multipleNewSlots(uint256 actorSeed, uint256 numSlots) external {
         // Skip when not on Tempo (vmExec.executeTransaction not available)
-        if (!isTempo) return;
 
         numSlots = bound(numSlots, 2, 5);
         ghost_multiSlotTests++;

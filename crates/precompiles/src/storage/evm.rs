@@ -374,7 +374,7 @@ mod tests {
     };
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_evm::{TempoEvmFactory, evm::TempoEvm};
-    use tempo_revm::gas_params::tempo_gas_params;
+    use tempo_revm::gas_params::tempo_gas_params_with_amsterdam;
 
     struct TestEvm(TempoEvm<CacheDB<EmptyDB>>);
 
@@ -384,7 +384,7 @@ mod tests {
             let mut cfg = revm::context::CfgEnv::<TempoHardfork>::default();
             cfg.spec = spec;
             cfg.enable_amsterdam_eip8037 = spec.is_t4();
-            cfg.gas_params = tempo_gas_params(spec, cfg.enable_amsterdam_eip8037);
+            cfg.gas_params = tempo_gas_params_with_amsterdam(spec, cfg.enable_amsterdam_eip8037);
 
             Self(TempoEvmFactory::default().create_evm(
                 db,

@@ -259,7 +259,7 @@ mod tests {
         database::{EmptyDB, in_memory_db::CacheDB},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_revm::gas_params::tempo_gas_params;
+    use tempo_revm::gas_params::tempo_gas_params_with_amsterdam;
 
     use super::*;
 
@@ -423,7 +423,10 @@ mod tests {
         spec: tempo_chainspec::hardfork::TempoHardfork,
     ) -> EvmEnv<tempo_chainspec::hardfork::TempoHardfork, TempoBlockEnv> {
         EvmEnv::<tempo_chainspec::hardfork::TempoHardfork, TempoBlockEnv>::new(
-            CfgEnv::new_with_spec_and_gas_params(spec, tempo_gas_params(spec, false)),
+            CfgEnv::new_with_spec_and_gas_params(
+                spec,
+                tempo_gas_params_with_amsterdam(spec, false),
+            ),
             TempoBlockEnv::default(),
         )
     }
