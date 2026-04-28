@@ -166,18 +166,6 @@ impl Block {
     pub(crate) fn block(&self) -> &SealedBlock<tempo_primitives::Block> {
         &self.0.execution_block
     }
-
-    /// Returns the block access list of the wrapped block.
-    pub(crate) fn block_access_list(&self) -> Option<&Bytes> {
-        #[cfg(feature = "bal")]
-        {
-            self.0.block_access_list.as_ref()
-        }
-        #[cfg(not(feature = "bal"))]
-        {
-            None
-        }
-    }
 }
 
 impl Display for Block {
@@ -667,7 +655,7 @@ mod tests {
 
         let decoded = Block::read_cfg(&mut block_bytes.as_ref(), &()).unwrap();
         assert_eq!(decoded, expected);
-        assert!(decoded.block_access_list().is_none());
+        assert!(decoded.clone().into_parts().1.is_none());
 
         let encoded = decoded.encode();
 
@@ -750,10 +738,7 @@ mod tests {
         let decoded = Block::read_cfg(&mut encoded.as_ref(), &()).unwrap();
 
         assert_eq!(decoded, block);
-        assert_eq!(
-            decoded.block_access_list().map(|bytes| bytes.as_ref()),
-            Some(block_access_list.as_ref())
-        );
+        assert_eq!(decoded.into_parts().1, Some(block_access_list));
     }
 
     #[cfg(feature = "bal")]

@@ -46,9 +46,11 @@ use std::{collections::BTreeMap, num::NonZeroUsize};
 use alloy_consensus::BlockHeader as _;
 use commonware_codec::ReadExt as _;
 use commonware_consensus::{
-    Reporters,
+    CertifiableAutomaton, Relay, Reporters,
     marshal::{Update, core::DigestFallback},
-    simplex::{self, config::Floor, elector, scheme::bls12381_threshold::vrf::Scheme},
+    simplex::{
+        self, Plan, config::Floor, elector, scheme::bls12381_threshold::vrf::Scheme, types::Context,
+    },
     types::{Epoch, EpochDelta, Epocher as _, Height},
 };
 use commonware_cryptography::ed25519::PublicKey;
@@ -79,18 +81,20 @@ use super::ingress::{Content, Message};
 const REPLAY_BUFFER: NonZeroUsize = NZUsize!(8 * 1024 * 1024); // 8MB
 const WRITE_BUFFER: NonZeroUsize = NZUsize!(1024 * 1024); // 1MB
 
-pub(crate) struct Actor<TContext, TBlocker> {
+pub(crate) struct Actor<TContext, TBlocker, TAutomaton> {
     active_epochs: BTreeMap<Epoch, Handle<()>>,
-    config: super::Config<TBlocker>,
+    config: super::Config<TBlocker, TAutomaton>,
     context: ContextCell<TContext>,
     confirmed_latest_network_epoch: Option<Epoch>,
     mailbox: mpsc::UnboundedReceiver<Message>,
     metrics: Metrics,
 }
 
-impl<TContext, TBlocker> Actor<TContext, TBlocker>
+impl<TContext, TBlocker, TAutomaton> Actor<TContext, TBlocker, TAutomaton>
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
+    TAutomaton: CertifiableAutomaton<Context = Context<Digest, PublicKey>, Digest = Digest>
+        + Relay<Digest = Digest, PublicKey = PublicKey, Plan = Plan<PublicKey>>,
     // TODO(janis): are all of these bounds necessary?
     TContext: BufferPooler
         + Spawner
@@ -103,7 +107,7 @@ where
         + Network,
 {
     pub(super) fn new(
-        config: super::Config<TBlocker>,
+        config: super::Config<TBlocker, TAutomaton>,
         context: TContext,
         mailbox: mpsc::UnboundedReceiver<Message>,
     ) -> Self {
@@ -379,8 +383,8 @@ where
                 write_buffer: WRITE_BUFFER,
 
                 blocker: self.config.blocker.clone(),
-                automaton: self.config.application.clone(),
-                relay: self.config.application.clone(),
+                automaton: self.config.automaton.clone(),
+                relay: self.config.automaton.clone(),
                 page_cache: self.config.page_cache.clone(),
                 leader_timeout: self.config.time_to_propose,
                 certification_timeout: self.config.time_to_collect_notarizations,
