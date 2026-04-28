@@ -20,11 +20,11 @@ use tempo_evm::TempoStateAccess;
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
     error::Result as TempoResult,
+    storage::Handler,
     tip_fee_manager::{
         TipFeeManager,
-        amm::{FeeSwapPlan, Pool, SwapInfo, compute_amount_out},
+        amm::{Pool, compute_amount_out},
     },
-    tip20,
 };
 use tempo_primitives::{TempoHeader, TempoReceipt};
 use tempo_revm::IntoAddress;
@@ -55,8 +55,11 @@ impl AmmLiquidityCache {
     }
 
     /// Checks whether there's enough liquidity in at least one of the AMM pools used by recent
-    /// validators for the given fee token and fee amount. On T5+, as per [TIP-1033], considers
-    /// the two-hop fallback through an intermediate `userToken.quoteToken()`.
+    /// validators for the given fee token and fee amount. On T5+, as per [TIP-1033], the
+    /// planner considers the two-hop fallback through `userToken.quoteToken()`.
+    ///
+    /// Hot path checks only the direct pool from the primitive cache; T5+ two-hop probes
+    /// always defer to the slow path (which calls [`TipFeeManager::plan_fee_swap`]).
     ///
     /// [TIP-1033]: <https://docs.tempo.xyz/protocol/tips/tip-1033>
     pub fn has_enough_liquidity(
@@ -67,10 +70,10 @@ impl AmmLiquidityCache {
     ) -> Result<bool, ProviderError> {
         let amount_out = compute_amount_out(fee).map_err(ProviderError::other)?;
 
-        let mut deferred = Vec::new();
+        let mut missing_in_cache = Vec::new();
         let current_fork;
 
-        // Hot path: decide each `(user, validator)` pair entirely from the primitive cache.
+        // Hot path: only the direct `(user, validator)` pool is consulted from the cache.
         {
             let inner = self.inner.read();
             current_fork = inner.current_fork;
@@ -80,85 +83,42 @@ impl AmmLiquidityCache {
                     return Ok(true);
                 }
 
-                let direct = inner
-                    .pool_cache
-                    .get(&(user_token, validator_token))
-                    .copied();
-                if matches!(direct, Some(r) if r >= amount_out) {
-                    return Ok(true);
-                }
-
-                if current_fork.is_t5() {
-                    match inner.quote_token_cache.get(&user_token).copied() {
-                        Some(h) if !h.is_zero() && h != validator_token => {
-                            let r1 = inner.pool_cache.get(&(user_token, h)).copied();
-                            let r2 = inner.pool_cache.get(&(h, validator_token)).copied();
-                            let out1 = amount_out;
-                            let out2 = compute_amount_out(out1).map_err(ProviderError::other)?;
-                            match (r1, r2) {
-                                (Some(r1), Some(r2)) if r1 >= out1 && r2 >= out2 => {
-                                    return Ok(true);
-                                }
-                                (Some(_), Some(_)) => {} // Both cached and not enough liquidity.
-                                _ => {
-                                    // A leg's reserve is missing: defer.
-                                    deferred.push(validator_token);
-                                    continue;
-                                }
-                            }
-                        }
-                        Some(_) => {} // Cached as zero / equal to validator: no two-hop path possible.
-                        None => {
-                            deferred.push(validator_token);
-                            continue;
-                        }
-                    }
-                }
-
-                // Direct unknown and (pre-T5 || two-hop ruled out): defer.
-                if direct.is_none() {
-                    deferred.push(validator_token);
+                match inner.pool_cache.get(&(user_token, validator_token)) {
+                    Some(reserve) if *reserve >= amount_out => return Ok(true),
+                    Some(_) if !current_fork.is_t5() => {} // direct insufficient, no fallback
+                    _ => missing_in_cache.push(validator_token),
                 }
             }
         }
 
-        if deferred.is_empty() {
+        if missing_in_cache.is_empty() {
             return Ok(false);
         }
 
-        // Slow path: check `plan_fee_swap` for deferred checks. This might race other fetches but we're OK with it.
+        // Slow path: ask the planner. Always warms the direct pool slot; T5+ two-hop pools
+        // are intentionally not cached (the hot path can never query them).
         state_provider
             .with_read_only_storage_ctx(current_fork, || -> TempoResult<bool> {
                 let manager = TipFeeManager::new();
-                for validator_token in deferred {
-                    let attempt = manager.plan_fee_swap(user_token, validator_token, fee)?;
+                for validator_token in missing_in_cache {
+                    let route = manager.plan_fee_swap(user_token, validator_token, fee)?;
+
+                    // Warm the direct pool entry so future hot-path checks can short-circuit.
+                    let direct_id = manager.pool_id(user_token, validator_token);
+                    let direct_pool = manager.pools[direct_id].read()?;
+                    let direct_slot = manager.pools[direct_id].base_slot();
                     {
                         let mut inner = self.inner.write();
-                        let cache_pool =
-                            |inner: &mut AmmLiquidityCacheInner,
-                             pair: (Address, Address),
-                             swap: &SwapInfo| {
-                                let slot = manager.pools[swap.pool_id].base_slot();
-                                inner.pool_cache.insert(pair, U256::from(swap.reserves));
-                                inner.slot_to_pool.insert(slot, pair);
-                            };
-
-                        if let Some(swap) = attempt.direct_check() {
-                            cache_pool(&mut inner, (user_token, validator_token), swap);
-                        }
-                        if let Some(FeeSwapPlan::TwoHop {
-                            intermediate,
-                            swap1,
-                            swap2,
-                        }) = &attempt.plan
-                        {
-                            inner.quote_token_cache.insert(user_token, *intermediate);
-                            cache_pool(&mut inner, (user_token, *intermediate), swap1);
-                            cache_pool(&mut inner, (*intermediate, validator_token), swap2);
-                        }
+                        inner.pool_cache.insert(
+                            (user_token, validator_token),
+                            U256::from(direct_pool.reserve_validator_token),
+                        );
+                        inner
+                            .slot_to_pool
+                            .insert(direct_slot, (user_token, validator_token));
                     }
-                    // If there is enough liquidity, short circuit and return `true`
-                    if attempt.is_sufficient() {
+
+                    if route.is_some() {
                         return Ok(true);
                     }
                 }
@@ -193,40 +153,30 @@ impl AmmLiquidityCache {
 
     /// Processes a new [`ExecutionOutcome`] and caches new validator
     /// fee token preferences and AMM pool liquidity changes.
-    ///
-    /// On T5+ also invalidates `AmmLiquidityCacheInner::quote_token_cache` entries for TIP-20
-    /// tokens whose `quoteToken` storage slot was written.
     pub fn on_new_state(&self, execution_outcome: &ExecutionOutcome<TempoReceipt>) {
-        let mut inner = self.inner.write();
-
-        // Process FeeManager slot changes: update pool reserves and validator preferences.
-        if let Some(storage) = execution_outcome
+        let Some(storage) = execution_outcome
             .account_state(&TIP_FEE_MANAGER_ADDRESS)
             .map(|acc| &acc.storage)
-        {
-            for (slot, value) in storage.iter() {
-                if let Some(pool) = inner.slot_to_pool.get(slot).copied() {
-                    // Update AMM pools
-                    let validator_reserve = U256::from(
-                        Pool::decode_from_slot(value.present_value).reserve_validator_token,
-                    );
-                    inner.pool_cache.insert(pool, validator_reserve);
-                } else if let Some(validator) = inner.slot_to_validator.get(slot).copied() {
-                    // Update validator fee token preferences
-                    inner
-                        .validator_preferences
-                        .insert(validator, value.present_value().into_address());
-                }
+        else {
+            return;
+        };
+
+        let mut inner = self.inner.write();
+
+        // Process all FeeManager slot changes and update the cache.
+        for (slot, value) in storage.iter() {
+            if let Some(pool) = inner.slot_to_pool.get(slot).copied() {
+                // Update AMM pools
+                let validator_reserve =
+                    U256::from(Pool::decode_from_slot(value.present_value).reserve_validator_token);
+                inner.pool_cache.insert(pool, validator_reserve);
+            } else if let Some(validator) = inner.slot_to_validator.get(slot).copied() {
+                // Update validator fee token preferences
+                inner
+                    .validator_preferences
+                    .insert(validator, value.present_value().into_address());
             }
         }
-
-        // Process TIP-20 quote token updates: invalidate stale entries.
-        inner.quote_token_cache.retain(|token, _| {
-            execution_outcome
-                .account_state(token)
-                .and_then(|acc| acc.storage.get(&tip20::slots::QUOTE_TOKEN))
-                .is_none()
-        });
     }
 
     /// Processes new blocks and records recent validators and their fee token preferences in the cache.
@@ -327,9 +277,6 @@ struct AmmLiquidityCacheInner {
 
     /// Cache for (user_token, validator_token) -> liquidity
     pool_cache: HashMap<(Address, Address), U256>,
-
-    /// Cached `userToken.quoteToken()` lookups.
-    quote_token_cache: AddressMap<Address>,
 
     /// Reverse index from a FeeManager pool slot to its `(user_token, validator_token)` key.
     slot_to_pool: U256Map<(Address, Address)>,
@@ -521,45 +468,6 @@ mod tests {
     }
 
     #[test]
-    fn test_has_enough_liquidity_two_hop_cached() {
-        let user = address!("1111111111111111111111111111111111111111");
-        let hop = address!("2222222222222222222222222222222222222222");
-        let validator = address!("3333333333333333333333333333333333333333");
-
-        let cache = AmmLiquidityCache {
-            inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
-                current_fork: TempoHardfork::T5,
-                unique_tokens: vec![validator],
-                pool_cache: {
-                    let mut m = HashMap::default();
-                    // Reserves easily cover floor(100*M) and floor(99*M) sequentially.
-                    m.insert((user, hop), U256::from(1_000_000));
-                    m.insert((hop, validator), U256::from(1_000_000));
-                    m
-                },
-                quote_token_cache: {
-                    let mut m = AddressMap::default();
-                    m.insert(user, hop);
-                    m
-                },
-                ..Default::default()
-            })),
-        };
-
-        // Provider would return zero for any storage read; if the slow path runs we'd see
-        // either a `false` result or a panic from the missing TIP-20 prefix on `user`.
-        let provider = create_mock_provider();
-        let mut state = provider.latest().unwrap();
-
-        let result = cache.has_enough_liquidity(user, U256::from(100), &mut state);
-        assert!(result.is_ok());
-        assert!(
-            result.unwrap(),
-            "two-hop primitives cached should resolve from hot path",
-        );
-    }
-
-    #[test]
     fn test_has_enough_liquidity_cache_miss_insufficient() {
         let user_token = address!("2222222222222222222222222222222222222222");
         let validator_token = address!("3333333333333333333333333333333333333333");
@@ -615,66 +523,7 @@ mod tests {
 
         let inner = cache.inner.read();
         assert!(inner.pool_cache.is_empty());
-        assert!(inner.quote_token_cache.is_empty());
         assert!(inner.validator_preferences.is_empty());
-    }
-
-    #[test]
-    fn test_on_new_state_invalidates_stale_quote_token_cache() {
-        use reth_provider::ExecutionOutcome;
-        use revm::database::{AccountStatus, BundleAccount, BundleState, states::StorageSlot};
-        use tempo_primitives::TempoReceipt;
-
-        // TIP-20-prefixed addresses so `from_address_unchecked`'s debug_assert holds.
-        let user_token = address!("20c0000000000000000000000000000000000001");
-        let hop_old = address!("20c0000000000000000000000000000000000002");
-        let hop_new = address!("20c0000000000000000000000000000000000003");
-        let other_user = address!("20c0000000000000000000000000000000000099");
-
-        let cache = AmmLiquidityCache {
-            inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
-                quote_token_cache: {
-                    let mut m = AddressMap::default();
-                    m.insert(user_token, hop_old);
-                    m.insert(other_user, hop_old);
-                    m
-                },
-                ..Default::default()
-            })),
-        };
-
-        // Build a bundle where `user_token`'s `quoteToken` slot was rewritten to `hop_new`.
-        let mut storage = HashMap::default();
-        storage.insert(
-            tip20::slots::QUOTE_TOKEN,
-            StorageSlot::new_changed(hop_old.into_word().into(), hop_new.into_word().into()),
-        );
-        let mut bundle_state = AddressMap::default();
-        bundle_state.insert(
-            user_token,
-            BundleAccount::new(None, None, storage, AccountStatus::Changed),
-        );
-        let bundle = BundleState {
-            state: bundle_state,
-            ..Default::default()
-        };
-        let execution_outcome: ExecutionOutcome<TempoReceipt> = ExecutionOutcome {
-            bundle,
-            ..Default::default()
-        };
-
-        cache.on_new_state(&execution_outcome);
-
-        let inner = cache.inner.read();
-        assert!(
-            !inner.quote_token_cache.contains_key(&user_token),
-            "stale quote_token_cache entry must be dropped on slot write",
-        );
-        assert_eq!(
-            inner.quote_token_cache.get(&other_user),
-            Some(&hop_old),
-            "untouched user tokens must keep their cached intermediate",
-        );
     }
 
     // ============================================
@@ -835,11 +684,6 @@ mod tests {
                     m.insert((user_token, validator_token), U256::from(1000));
                     m
                 },
-                quote_token_cache: {
-                    let mut m = AddressMap::default();
-                    m.insert(user_token, validator_token);
-                    m
-                },
                 slot_to_pool: {
                     let mut m = U256Map::default();
                     m.insert(U256::from(1), (user_token, validator_token));
@@ -869,10 +713,6 @@ mod tests {
         assert!(
             inner.pool_cache.is_empty(),
             "pools should be empty after clear"
-        );
-        assert!(
-            inner.quote_token_cache.is_empty(),
-            "quote_tokens should be empty after clear"
         );
         assert!(
             inner.slot_to_pool.is_empty(),
