@@ -32,14 +32,16 @@ use commonware_runtime::{
 };
 use prometheus_client::metrics::counter::Counter;
 
-use commonware_utils::{SystemTimeExt, channel::oneshot};
+use commonware_utils::SystemTimeExt;
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
-use futures::{StreamExt as _, TryFutureExt as _, channel::mpsc, future::try_join};
+use futures::{
+    StreamExt as _, TryFutureExt as _,
+    channel::{mpsc, oneshot},
+    future::try_join,
+};
 use rand_08::{CryptoRng, Rng};
 use reth_ethereum::chainspec::EthChainSpec as _;
-use reth_node_builder::{
-    Block as _, BuiltPayload, ConsensusEngineHandle, PayloadAttributes, PayloadKind,
-};
+use reth_node_builder::{Block as _, BuiltPayload, ConsensusEngineHandle, PayloadKind};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks as _};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
@@ -311,17 +313,26 @@ impl Inner<Init> {
             leader,
         } = request;
 
-        let (payload_id_tx, mut payload_id_rx) = oneshot::channel();
+        let mut payload_id_rx: Option<oneshot::Receiver<eyre::Result<PayloadId>>> = None;
+        let mut payload_id: Option<PayloadId> = None;
 
         let proposal_digest = select!(
             () = response.closed() => {
-                // If we got interrupted, fetch payload resolve future and drop it
-                // to make sure that payload building is canceled.
-                if let Ok(payload_id) = payload_id_rx.try_recv() {
+                let id = if let Some(id) = payload_id {
+                    Some(id)
+                } else if let Some(rx) = payload_id_rx.as_mut() {
+                    Some(rx
+                        .await
+                        .wrap_err("executor dropped response")?
+                        .wrap_err("failed requesting a new payload build")?)
+                } else {
+                    None
+                };
+                if let Some(id) = id {
                     let fut = self
                         .execution_node
                         .payload_builder_handle
-                        .resolve_kind_fut(payload_id, PayloadKind::WaitForPending)
+                        .resolve_kind_fut(id, PayloadKind::WaitForPending)
                         .await
                         .wrap_err("failed resolving payload")?;
                     drop(fut);
@@ -338,7 +349,8 @@ impl Inner<Init> {
                 parent_view,
                 parent_digest,
                 round,
-                payload_id_tx,
+                &mut payload_id_rx,
+                &mut payload_id,
                 leader,
             ) => {
                 res.wrap_err("failed creating a proposal")
@@ -414,13 +426,15 @@ impl Inner<Init> {
         Ok(())
     }
 
+    #[expect(clippy::too_many_arguments, reason = "internal helper used in one place")]
     async fn propose<TContext: Pacer>(
         self,
         context: TContext,
         parent_view: View,
         parent_digest: Digest,
         round: Round,
-        payload_id_tx: oneshot::Sender<PayloadId>,
+        payload_id_rx_slot: &mut Option<oneshot::Receiver<eyre::Result<PayloadId>>>,
+        payload_id_slot: &mut Option<PayloadId>,
         leader: PublicKey,
     ) -> eyre::Result<Digest> {
         let propose_start = Instant::now();
@@ -598,17 +612,28 @@ impl Inner<Init> {
             },
         );
 
-        let payload_id = attrs.payload_id(&parent.digest().0);
-        payload_id_tx.send(payload_id).map_err(|_| {
-            eyre!("caller went away before payload job ID could be returned; aborting proposal")
-        })?;
         let interrupt_handle = attrs.interrupt_handle().clone();
 
-        self.state
-            .executor
-            .canonicalize_and_build(parent.height(), parent.digest(), attrs)
+        // Share the dispatch receiver with the cancel branch so that, if cancellation
+        // hits between dispatch send and receiving `payload_id`, the cancel branch can
+        // still drain the rx, learn `payload_id`, and cancel the now-registered job.
+        *payload_id_rx_slot = Some(
+            self.state
+                .executor
+                .canonicalize_and_build(parent.height(), parent.digest(), attrs)?,
+        );
+
+        let payload_id = payload_id_rx_slot
+            .as_mut()
+            .expect("just set")
             .await
+            .wrap_err("executor dropped response")?
             .wrap_err("failed requesting a new payload build")?;
+
+        // Once we hold `payload_id`, the cancel branch no longer needs the rx;
+        // it can cancel directly by id.
+        *payload_id_rx_slot = None;
+        *payload_id_slot = Some(payload_id);
 
         let elapsed = propose_start.elapsed();
         let remaining_resolve = self.payload_resolve_time.saturating_sub(elapsed);
