@@ -46,9 +46,9 @@ use std::{collections::BTreeMap, num::NonZeroUsize};
 use alloy_consensus::BlockHeader as _;
 use commonware_codec::ReadExt as _;
 use commonware_consensus::{
-    Reporters,
+    CertifiableAutomaton, Relay, Reporters,
     marshal::Update,
-    simplex::{self, elector, scheme::bls12381_threshold::vrf::Scheme},
+    simplex::{self, Plan, elector, scheme::bls12381_threshold::vrf::Scheme, types::Context},
     types::{Epoch, EpochDelta, Epocher as _, Height},
 };
 use commonware_cryptography::ed25519::PublicKey;
@@ -79,18 +79,20 @@ use super::ingress::{Content, Message};
 const REPLAY_BUFFER: NonZeroUsize = NonZeroUsize::new(8 * 1024 * 1024).expect("value is not zero"); // 8MB
 const WRITE_BUFFER: NonZeroUsize = NonZeroUsize::new(1024 * 1024).expect("value is not zero"); // 1MB
 
-pub(crate) struct Actor<TContext, TBlocker> {
+pub(crate) struct Actor<TContext, TBlocker, TApplication> {
     active_epochs: BTreeMap<Epoch, (Handle<()>, ContextCell<TContext>)>,
-    config: super::Config<TBlocker>,
+    config: super::Config<TBlocker, TApplication>,
     context: ContextCell<TContext>,
     confirmed_latest_network_epoch: Option<Epoch>,
     mailbox: mpsc::UnboundedReceiver<Message>,
     metrics: Metrics,
 }
 
-impl<TContext, TBlocker> Actor<TContext, TBlocker>
+impl<TContext, TBlocker, TApplication> Actor<TContext, TBlocker, TApplication>
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
+    TApplication: CertifiableAutomaton<Context = Context<Digest, PublicKey>, Digest = Digest>
+        + Relay<Digest = Digest, PublicKey = PublicKey, Plan = Plan<PublicKey>>,
     // TODO(janis): are all of these bounds necessary?
     TContext: BufferPooler
         + Spawner
@@ -103,7 +105,7 @@ where
         + Network,
 {
     pub(super) fn new(
-        config: super::Config<TBlocker>,
+        config: super::Config<TBlocker, TApplication>,
         context: TContext,
         mailbox: mpsc::UnboundedReceiver<Message>,
     ) -> Self {
