@@ -174,9 +174,19 @@ impl Consensus<Block> for TempoConsensus {
             .into());
         }
 
+        let expected_system_tx_count = if self
+            .inner
+            .chain_spec()
+            .is_t4_active_at_timestamp(block.header().timestamp())
+        {
+            0
+        } else {
+            SYSTEM_TX_COUNT
+        };
+
         // Get the last END_OF_BLOCK_SYSTEM_TX_COUNT transactions and validate they are end-of-block system txs
         let end_of_block_system_txs = transactions
-            .get(transactions.len().saturating_sub(SYSTEM_TX_COUNT)..)
+            .get(transactions.len().saturating_sub(expected_system_tx_count)..)
             .map(|slice| {
                 slice
                     .iter()
@@ -185,9 +195,9 @@ impl Consensus<Block> for TempoConsensus {
             })
             .unwrap_or_default();
 
-        if end_of_block_system_txs.len() != SYSTEM_TX_COUNT {
+        if end_of_block_system_txs.len() != expected_system_tx_count {
             return Err(TempoConsensusError::MissingEndOfBlockSystemTxs {
-                expected: SYSTEM_TX_COUNT,
+                expected: expected_system_tx_count,
                 actual: end_of_block_system_txs.len(),
             }
             .into());

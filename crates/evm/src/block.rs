@@ -564,6 +564,18 @@ where
     fn finish(
         self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
+        let seen_subblock_signatures = match self.section {
+            BlockSection::System {
+                seen_subblocks_signatures,
+            } => seen_subblocks_signatures,
+            _ => false,
+        };
+
+        // If subblocks metadata transaction was not seen, imply empty metadata.
+        if !seen_subblock_signatures {
+            self.validate_shared_gas(&[])?;
+        }
+
         let timestamp = self.evm().block().timestamp.to::<u64>();
         let is_t4 = self.inner.spec.is_t4_active_at_timestamp(timestamp);
 
