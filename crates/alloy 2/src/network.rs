@@ -1,0 +1,573 @@
+use std::fmt::Debug;
+
+use crate::rpc::{TempoHeaderResponse, TempoTransactionReceipt, TempoTransactionRequest};
+use alloy_consensus::{ReceiptWithBloom, TxType, error::UnsupportedTransactionType};
+
+use alloy_network::{
+    BuildResult, Ethereum, EthereumWallet, IntoWallet, Network, NetworkWallet, TransactionBuilder,
+    TransactionBuilderError, UnbuiltTransactionError,
+};
+use alloy_primitives::{Address, Bytes, ChainId, TxKind, U256};
+use alloy_provider::fillers::{
+    ChainIdFiller, GasFiller, JoinFill, NonceFiller, RecommendedFillers,
+};
+use alloy_rpc_types_eth::{AccessList, Block, Transaction};
+use alloy_signer_local::PrivateKeySigner;
+use tempo_primitives::{
+    TempoHeader, TempoReceipt, TempoTxEnvelope, TempoTxType, transaction::TempoTypedTransaction,
+};
+
+/// Set of recommended fillers.
+///
+/// `N` is a nonce filler.
+pub type TempoFillers<N> = JoinFill<N, JoinFill<GasFiller, ChainIdFiller>>;
+
+/// The Tempo specific configuration of [`Network`] schema and consensus primitives.
+#[derive(Default, Debug, Clone, Copy)]
+#[non_exhaustive]
+pub struct TempoNetwork;
+
+impl Network for TempoNetwork {
+    type TxType = TempoTxType;
+    type TxEnvelope = TempoTxEnvelope;
+    type UnsignedTx = TempoTypedTransaction;
+    type ReceiptEnvelope = ReceiptWithBloom<TempoReceipt>;
+    type Header = TempoHeader;
+    type TransactionRequest = TempoTransactionRequest;
+    type TransactionResponse = Transaction<TempoTxEnvelope>;
+    type ReceiptResponse = TempoTransactionReceipt;
+    type HeaderResponse = TempoHeaderResponse;
+    type BlockResponse = Block<Transaction<TempoTxEnvelope>, Self::HeaderResponse>;
+}
+
+impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
+    fn chain_id(&self) -> Option<ChainId> {
+        TransactionBuilder::chain_id(&self.inner)
+    }
+
+    fn set_chain_id(&mut self, chain_id: ChainId) {
+        TransactionBuilder::set_chain_id(&mut self.inner, chain_id)
+    }
+
+    fn nonce(&self) -> Option<u64> {
+        TransactionBuilder::nonce(&self.inner)
+    }
+
+    fn set_nonce(&mut self, nonce: u64) {
+        TransactionBuilder::set_nonce(&mut self.inner, nonce)
+    }
+
+    fn take_nonce(&mut self) -> Option<u64> {
+        TransactionBuilder::take_nonce(&mut self.inner)
+    }
+
+    fn input(&self) -> Option<&Bytes> {
+        TransactionBuilder::input(&self.inner)
+    }
+
+    fn set_input<T: Into<Bytes>>(&mut self, input: T) {
+        TransactionBuilder::set_input(&mut self.inner, input)
+    }
+
+    fn from(&self) -> Option<Address> {
+        TransactionBuilder::from(&self.inner)
+    }
+
+    fn set_from(&mut self, from: Address) {
+        TransactionBuilder::set_from(&mut self.inner, from)
+    }
+
+    fn kind(&self) -> Option<TxKind> {
+        TransactionBuilder::kind(&self.inner)
+    }
+
+    fn clear_kind(&mut self) {
+        TransactionBuilder::clear_kind(&mut self.inner)
+    }
+
+    fn set_kind(&mut self, kind: TxKind) {
+        TransactionBuilder::set_kind(&mut self.inner, kind)
+    }
+
+    fn value(&self) -> Option<U256> {
+        TransactionBuilder::value(&self.inner)
+    }
+
+    fn set_value(&mut self, value: U256) {
+        TransactionBuilder::set_value(&mut self.inner, value)
+    }
+
+    fn gas_price(&self) -> Option<u128> {
+        TransactionBuilder::gas_price(&self.inner)
+    }
+
+    fn set_gas_price(&mut self, gas_price: u128) {
+        TransactionBuilder::set_gas_price(&mut self.inner, gas_price)
+    }
+
+    fn max_fee_per_gas(&self) -> Option<u128> {
+        TransactionBuilder::max_fee_per_gas(&self.inner)
+    }
+
+    fn set_max_fee_per_gas(&mut self, max_fee_per_gas: u128) {
+        TransactionBuilder::set_max_fee_per_gas(&mut self.inner, max_fee_per_gas)
+    }
+
+    fn max_priority_fee_per_gas(&self) -> Option<u128> {
+        TransactionBuilder::max_priority_fee_per_gas(&self.inner)
+    }
+
+    fn set_max_priority_fee_per_gas(&mut self, max_priority_fee_per_gas: u128) {
+        TransactionBuilder::set_max_priority_fee_per_gas(&mut self.inner, max_priority_fee_per_gas)
+    }
+
+    fn gas_limit(&self) -> Option<u64> {
+        TransactionBuilder::gas_limit(&self.inner)
+    }
+
+    fn set_gas_limit(&mut self, gas_limit: u64) {
+        TransactionBuilder::set_gas_limit(&mut self.inner, gas_limit)
+    }
+
+    fn access_list(&self) -> Option<&AccessList> {
+        TransactionBuilder::access_list(&self.inner)
+    }
+
+    fn set_access_list(&mut self, access_list: AccessList) {
+        TransactionBuilder::set_access_list(&mut self.inner, access_list)
+    }
+
+    fn complete_type(&self, ty: TempoTxType) -> Result<(), Vec<&'static str>> {
+        match ty {
+            TempoTxType::AA => self.complete_aa(),
+            TempoTxType::Legacy
+            | TempoTxType::Eip2930
+            | TempoTxType::Eip1559
+            | TempoTxType::Eip7702 => TransactionBuilder::complete_type(
+                &self.inner,
+                ty.try_into().expect("tempo tx types checked"),
+            ),
+        }
+    }
+
+    fn can_submit(&self) -> bool {
+        TransactionBuilder::can_submit(&self.inner)
+    }
+
+    fn can_build(&self) -> bool {
+        TransactionBuilder::can_build(&self.inner) || self.can_build_aa()
+    }
+
+    fn output_tx_type(&self) -> TempoTxType {
+        if !self.calls.is_empty()
+            || self.nonce_key.is_some()
+            || self.fee_token.is_some()
+            || !self.tempo_authorization_list.is_empty()
+            || self.key_authorization.is_some()
+            || self.key_id.is_some()
+            || self.valid_before.is_some()
+            || self.valid_after.is_some()
+            || self.fee_payer_signature.is_some()
+        {
+            TempoTxType::AA
+        } else {
+            match TransactionBuilder::output_tx_type(&self.inner) {
+                TxType::Legacy => TempoTxType::Legacy,
+                TxType::Eip2930 => TempoTxType::Eip2930,
+                TxType::Eip1559 => TempoTxType::Eip1559,
+                // EIP-4844 transactions are not supported on Tempo
+                TxType::Eip4844 => TempoTxType::Legacy,
+                TxType::Eip7702 => TempoTxType::Eip7702,
+            }
+        }
+    }
+
+    fn output_tx_type_checked(&self) -> Option<TempoTxType> {
+        match self.output_tx_type() {
+            TempoTxType::AA => Some(TempoTxType::AA).filter(|_| self.can_build_aa()),
+            TempoTxType::Legacy
+            | TempoTxType::Eip2930
+            | TempoTxType::Eip1559
+            | TempoTxType::Eip7702 => TransactionBuilder::output_tx_type_checked(&self.inner)?
+                .try_into()
+                .ok(),
+        }
+    }
+
+    fn prep_for_submission(&mut self) {
+        self.inner.transaction_type = Some(self.output_tx_type() as u8);
+        self.inner.trim_conflicting_keys();
+        self.inner.populate_blob_hashes();
+    }
+
+    fn build_unsigned(self) -> BuildResult<TempoTypedTransaction, TempoNetwork> {
+        match self.output_tx_type() {
+            TempoTxType::AA => match self.complete_aa() {
+                Ok(..) => Ok(self.build_aa().expect("checked by above condition").into()),
+                Err(missing) => Err(TransactionBuilderError::InvalidTransactionRequest(
+                    TempoTxType::AA,
+                    missing,
+                )
+                .into_unbuilt(self)),
+            },
+            _ => {
+                if let Err((tx_type, missing)) = self.inner.missing_keys() {
+                    return Err(match tx_type.try_into() {
+                        Ok(tx_type) => {
+                            TransactionBuilderError::InvalidTransactionRequest(tx_type, missing)
+                        }
+                        Err(err) => TransactionBuilderError::from(err),
+                    }
+                    .into_unbuilt(self));
+                }
+
+                if let Some(TxType::Eip4844) = self.inner.buildable_type() {
+                    return Err(UnbuiltTransactionError {
+                        request: self,
+                        error: TransactionBuilderError::Custom(Box::new(
+                            UnsupportedTransactionType::new(TxType::Eip4844),
+                        )),
+                    });
+                }
+
+                let inner = self
+                    .inner
+                    .build_typed_tx()
+                    .expect("checked by missing_keys");
+
+                Ok(inner.try_into().expect("checked by above condition"))
+            }
+        }
+    }
+
+    async fn build<W: NetworkWallet<TempoNetwork>>(
+        self,
+        wallet: &W,
+    ) -> Result<TempoTxEnvelope, TransactionBuilderError<TempoNetwork>> {
+        Ok(wallet.sign_request(self).await?)
+    }
+}
+
+impl TempoTransactionRequest {
+    fn can_build_aa(&self) -> bool {
+        (!self.calls.is_empty() || self.inner.to.is_some())
+            && self.inner.nonce.is_some()
+            && self.inner.gas.is_some()
+            && self.inner.max_fee_per_gas.is_some()
+            && self.inner.max_priority_fee_per_gas.is_some()
+    }
+
+    fn complete_aa(&self) -> Result<(), Vec<&'static str>> {
+        let mut fields = Vec::new();
+
+        if self.calls.is_empty() && self.inner.to.is_none() {
+            fields.push("calls or to");
+        }
+        if self.inner.nonce.is_none() {
+            fields.push("nonce");
+        }
+        if self.inner.gas.is_none() {
+            fields.push("gas");
+        }
+        if self.inner.max_fee_per_gas.is_none() {
+            fields.push("max_fee_per_gas");
+        }
+        if self.inner.max_priority_fee_per_gas.is_none() {
+            fields.push("max_priority_fee_per_gas");
+        }
+
+        if fields.is_empty() {
+            Ok(())
+        } else {
+            Err(fields)
+        }
+    }
+}
+
+impl RecommendedFillers for TempoNetwork {
+    type RecommendedFillers = TempoFillers<NonceFiller>;
+
+    fn recommended_fillers() -> Self::RecommendedFillers {
+        Default::default()
+    }
+}
+
+impl NetworkWallet<TempoNetwork> for EthereumWallet {
+    fn default_signer_address(&self) -> Address {
+        NetworkWallet::<Ethereum>::default_signer_address(self)
+    }
+
+    fn has_signer_for(&self, address: &Address) -> bool {
+        NetworkWallet::<Ethereum>::has_signer_for(self, address)
+    }
+
+    fn signer_addresses(&self) -> impl Iterator<Item = Address> {
+        NetworkWallet::<Ethereum>::signer_addresses(self)
+    }
+
+    #[doc(alias = "sign_tx_from")]
+    async fn sign_transaction_from(
+        &self,
+        sender: Address,
+        mut tx: TempoTypedTransaction,
+    ) -> alloy_signer::Result<TempoTxEnvelope> {
+        let signer = self.signer_by_address(sender).ok_or_else(|| {
+            alloy_signer::Error::other(format!("Missing signing credential for {sender}"))
+        })?;
+        let sig = signer.sign_transaction(tx.as_dyn_signable_mut()).await?;
+        Ok(tx.into_envelope(sig))
+    }
+}
+
+impl IntoWallet<TempoNetwork> for PrivateKeySigner {
+    type NetworkWallet = EthereumWallet;
+
+    fn into_wallet(self) -> Self::NetworkWallet {
+        self.into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_consensus::{TxEip1559, TxEip2930, TxEip7702, TxLegacy};
+    use alloy_eips::eip7702::SignedAuthorization;
+    use alloy_primitives::{B256, Signature};
+    use alloy_rpc_types_eth::{AccessListItem, Authorization, TransactionRequest};
+    use tempo_primitives::{
+        SignatureType, TempoSignature,
+        transaction::{
+            KeyAuthorization, PrimitiveSignature, SignedKeyAuthorization, TempoSignedAuthorization,
+        },
+    };
+
+    #[test_case::test_case(
+        TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TxKind::Call(Address::repeat_byte(0xDE))),
+                gas_price: Some(1234),
+                nonce: Some(57),
+                gas: Some(123456),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        TempoTypedTransaction::Legacy(TxLegacy {
+            to: TxKind::Call(Address::repeat_byte(0xDE)),
+            gas_price: 1234,
+            nonce: 57,
+            gas_limit: 123456,
+            ..Default::default()
+        });
+        "Legacy"
+    )]
+    #[test_case::test_case(
+        TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TxKind::Call(Address::repeat_byte(0xDE))),
+                max_fee_per_gas: Some(1234),
+                max_priority_fee_per_gas: Some(987),
+                nonce: Some(57),
+                gas: Some(123456),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        TempoTypedTransaction::Eip1559(TxEip1559 {
+            to: TxKind::Call(Address::repeat_byte(0xDE)),
+            max_fee_per_gas: 1234,
+            max_priority_fee_per_gas: 987,
+            nonce: 57,
+            gas_limit: 123456,
+            chain_id: 1,
+            ..Default::default()
+        });
+        "EIP-1559"
+    )]
+    #[test_case::test_case(
+        TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TxKind::Call(Address::repeat_byte(0xDE))),
+                gas_price: Some(1234),
+                nonce: Some(57),
+                gas: Some(123456),
+                access_list: Some(AccessList(vec![AccessListItem {
+                    address: Address::from([3u8; 20]),
+                    storage_keys: vec![B256::from([4u8; 32])],
+                }])),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        TempoTypedTransaction::Eip2930(TxEip2930 {
+            to: TxKind::Call(Address::repeat_byte(0xDE)),
+            gas_price: 1234,
+            nonce: 57,
+            gas_limit: 123456,
+            chain_id: 1,
+            access_list: AccessList(vec![AccessListItem {
+                address: Address::from([3u8; 20]),
+                storage_keys: vec![B256::from([4u8; 32])],
+            }]),
+            ..Default::default()
+        });
+        "EIP-2930"
+    )]
+    #[test_case::test_case(
+        TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TxKind::Call(Address::repeat_byte(0xDE))),
+                max_fee_per_gas: Some(1234),
+                max_priority_fee_per_gas: Some(987),
+                nonce: Some(57),
+                gas: Some(123456),
+                authorization_list: Some(vec![SignedAuthorization::new_unchecked(
+                    Authorization {
+                        chain_id: U256::from(1337),
+                        address: Address::ZERO,
+                        nonce: 0
+                    },
+                    0,
+                    U256::ZERO,
+                    U256::ZERO,
+                )]),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        TempoTypedTransaction::Eip7702(TxEip7702 {
+            to: Address::repeat_byte(0xDE),
+            max_fee_per_gas: 1234,
+            max_priority_fee_per_gas: 987,
+            nonce: 57,
+            gas_limit: 123456,
+            chain_id: 1,
+            authorization_list: vec![SignedAuthorization::new_unchecked(
+                Authorization {
+                    chain_id: U256::from(1337),
+                    address: Address::ZERO,
+                    nonce: 0
+                },
+                0,
+                U256::ZERO,
+                U256::ZERO,
+            )],
+            ..Default::default()
+        });
+        "EIP-7702"
+    )]
+    fn test_transaction_builds_successfully(
+        request: TempoTransactionRequest,
+        expected_transaction: TempoTypedTransaction,
+    ) {
+        let actual_transaction = request
+            .build_unsigned()
+            .expect("required fields should be filled out");
+
+        assert_eq!(actual_transaction, expected_transaction);
+    }
+
+    #[test_case::test_case(
+        TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TxKind::Call(Address::repeat_byte(0xDE))),
+                max_priority_fee_per_gas: Some(987),
+                nonce: Some(57),
+                gas: Some(123456),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        "Failed to build transaction: EIP-1559 transaction can't be built due to missing keys: [\"max_fee_per_gas\"]";
+        "EIP-1559 missing max fee"
+    )]
+    fn test_transaction_fails_to_build(request: TempoTransactionRequest, expected_error: &str) {
+        let actual_error = request
+            .build_unsigned()
+            .expect_err("some required fields should be missing")
+            .to_string();
+
+        assert_eq!(actual_error, expected_error);
+    }
+
+    #[test]
+    fn output_tx_type_empty_request_is_not_aa() {
+        let req = TempoTransactionRequest::default();
+        assert_ne!(req.output_tx_type(), TempoTxType::AA);
+    }
+
+    #[test]
+    fn output_tx_type_tempo_authorization_list_is_aa() {
+        let req = TempoTransactionRequest {
+            tempo_authorization_list: vec![TempoSignedAuthorization::new_unchecked(
+                Authorization {
+                    chain_id: U256::ZERO,
+                    address: Address::ZERO,
+                    nonce: 0,
+                },
+                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::new(
+                    U256::ZERO,
+                    U256::ZERO,
+                    false,
+                ))),
+            )],
+            ..Default::default()
+        };
+        assert_eq!(req.output_tx_type(), TempoTxType::AA);
+    }
+
+    #[test]
+    fn output_tx_type_key_authorization_is_aa() {
+        let req = TempoTransactionRequest {
+            key_authorization: Some(SignedKeyAuthorization {
+                authorization: KeyAuthorization {
+                    chain_id: 0,
+                    key_type: SignatureType::Secp256k1,
+                    key_id: Address::ZERO,
+                    expiry: None,
+                    limits: None,
+                },
+                signature: PrimitiveSignature::Secp256k1(Signature::new(
+                    U256::ZERO,
+                    U256::ZERO,
+                    false,
+                )),
+            }),
+            ..Default::default()
+        };
+        assert_eq!(req.output_tx_type(), TempoTxType::AA);
+    }
+
+    #[test]
+    fn output_tx_type_key_id_is_aa() {
+        let req = TempoTransactionRequest {
+            key_id: Some(Address::ZERO),
+            ..Default::default()
+        };
+        assert_eq!(req.output_tx_type(), TempoTxType::AA);
+    }
+
+    #[test]
+    fn output_tx_type_fee_payer_signature_is_aa() {
+        let req = TempoTransactionRequest {
+            fee_payer_signature: Some(Signature::new(U256::ZERO, U256::ZERO, false)),
+            ..Default::default()
+        };
+        assert_eq!(req.output_tx_type(), TempoTxType::AA);
+    }
+
+    #[test]
+    fn output_tx_type_validity_window_is_aa() {
+        let req = TempoTransactionRequest {
+            valid_before: Some(1000),
+            ..Default::default()
+        };
+        assert_eq!(req.output_tx_type(), TempoTxType::AA);
+
+        let req = TempoTransactionRequest {
+            valid_after: Some(500),
+            ..Default::default()
+        };
+        assert_eq!(req.output_tx_type(), TempoTxType::AA);
+    }
+}
