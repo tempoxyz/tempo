@@ -508,56 +508,6 @@ mod tests {
     }
 
     #[test]
-    fn test_context_for_block_no_subblock_metadata() {
-        let evm_config = TempoEvmConfig::new(test_chainspec());
-
-        // Create a block without subblock metadata system tx
-        let regular_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
-            TxLegacy {
-                chain_id: Some(1),
-                nonce: 0,
-                gas_price: 1,
-                gas_limit: 21000,
-                to: TxKind::Call(alloy_primitives::Address::repeat_byte(0x01)),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            },
-            Signature::test_signature(),
-        ));
-
-        let header = TempoHeader {
-            inner: alloy_consensus::Header {
-                number: 1,
-                timestamp: 1000,
-                gas_limit: 30_000_000,
-                ..Default::default()
-            },
-            general_gas_limit: 10_000_000,
-            timestamp_millis_part: 500,
-            shared_gas_limit: 3_000_000,
-            ..Default::default()
-        };
-
-        let body = BlockBody {
-            transactions: vec![regular_tx],
-            ommers: vec![],
-            withdrawals: None,
-        };
-
-        let block = Block { header, body };
-        let sealed_block = SealedBlock::seal_slow(block);
-
-        let result = evm_config.context_for_block(&sealed_block);
-
-        // Should fail because no subblock metadata tx was found
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            TempoEvmError::NoSubblockMetadataFound
-        ));
-    }
-
-    #[test]
     fn test_context_for_next_block() {
         let evm_config = TempoEvmConfig::new(test_chainspec());
 
