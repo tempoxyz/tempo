@@ -100,7 +100,7 @@ impl TipFeeManager {
     }
 
     /// Checks that the pool identified by `pool_id` has enough validator-token reserves for the
-    /// the fee swap of `max_amount`. Returns `Ok(None)` when the pool doesn't have enough liquidity.
+    /// fee swap of `max_amount`. Returns `Ok(None)` when the pool doesn't have enough liquidity.
     ///
     /// # Errors
     /// - `UnderOverflow` — output amount exceeds `u128`

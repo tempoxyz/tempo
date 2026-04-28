@@ -24,6 +24,7 @@ use tempo_precompiles::{
         FeeSwapPlan, SwapInfo, TipFeeManager,
         amm::{Pool, compute_amount_out},
     },
+    tip20,
 };
 use tempo_primitives::{TempoHeader, TempoReceipt};
 use tempo_revm::IntoAddress;
@@ -192,30 +193,40 @@ impl AmmLiquidityCache {
 
     /// Processes a new [`ExecutionOutcome`] and caches new validator
     /// fee token preferences and AMM pool liquidity changes.
+    ///
+    /// On T5+ also invalidates `AmmLiquidityCacheInner::quote_token_cache` entries for TIP-20
+    /// tokens whose `quoteToken` storage slot was written.
     pub fn on_new_state(&self, execution_outcome: &ExecutionOutcome<TempoReceipt>) {
-        let Some(storage) = execution_outcome
-            .account_state(&TIP_FEE_MANAGER_ADDRESS)
-            .map(|acc| &acc.storage)
-        else {
-            return;
-        };
-
         let mut inner = self.inner.write();
 
-        // Process all FeeManager slot changes and update the cache.
-        for (slot, value) in storage.iter() {
-            if let Some(pool) = inner.slot_to_pool.get(slot).copied() {
-                // Update AMM pools
-                let validator_reserve =
-                    U256::from(Pool::decode_from_slot(value.present_value).reserve_validator_token);
-                inner.pool_cache.insert(pool, validator_reserve);
-            } else if let Some(validator) = inner.slot_to_validator.get(slot).copied() {
-                // Update validator fee token preferences
-                inner
-                    .validator_preferences
-                    .insert(validator, value.present_value().into_address());
+        // Process FeeManager slot changes: update pool reserves and validator preferences.
+        if let Some(storage) = execution_outcome
+            .account_state(&TIP_FEE_MANAGER_ADDRESS)
+            .map(|acc| &acc.storage)
+        {
+            for (slot, value) in storage.iter() {
+                if let Some(pool) = inner.slot_to_pool.get(slot).copied() {
+                    // Update AMM pools
+                    let validator_reserve = U256::from(
+                        Pool::decode_from_slot(value.present_value).reserve_validator_token,
+                    );
+                    inner.pool_cache.insert(pool, validator_reserve);
+                } else if let Some(validator) = inner.slot_to_validator.get(slot).copied() {
+                    // Update validator fee token preferences
+                    inner
+                        .validator_preferences
+                        .insert(validator, value.present_value().into_address());
+                }
             }
         }
+
+        // Process TIP-20 quote token updates: invalidate stale entries.
+        inner.quote_token_cache.retain(|token, _| {
+            execution_outcome
+                .account_state(token)
+                .and_then(|acc| acc.storage.get(&tip20::slots::QUOTE_TOKEN))
+                .is_none()
+        });
     }
 
     /// Processes new blocks and records recent validators and their fee token preferences in the cache.
@@ -593,6 +604,64 @@ mod tests {
         assert!(inner.pool_cache.is_empty());
         assert!(inner.quote_token_cache.is_empty());
         assert!(inner.validator_preferences.is_empty());
+    }
+
+    #[test]
+    fn test_on_new_state_invalidates_stale_quote_token_cache() {
+        use reth_provider::ExecutionOutcome;
+        use revm::database::{AccountStatus, BundleAccount, BundleState, states::StorageSlot};
+        use tempo_primitives::TempoReceipt;
+
+        // TIP-20-prefixed addresses so `from_address_unchecked`'s debug_assert holds.
+        let user_token = address!("20c0000000000000000000000000000000000001");
+        let hop_old = address!("20c0000000000000000000000000000000000002");
+        let hop_new = address!("20c0000000000000000000000000000000000003");
+        let other_user = address!("20c0000000000000000000000000000000000099");
+
+        let cache = AmmLiquidityCache {
+            inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
+                quote_token_cache: {
+                    let mut m = AddressMap::default();
+                    m.insert(user_token, hop_old);
+                    m.insert(other_user, hop_old);
+                    m
+                },
+                ..Default::default()
+            })),
+        };
+
+        // Build a bundle where `user_token`'s `quoteToken` slot was rewritten to `hop_new`.
+        let mut storage = HashMap::default();
+        storage.insert(
+            tip20::slots::QUOTE_TOKEN,
+            StorageSlot::new_changed(hop_old.into_word().into(), hop_new.into_word().into()),
+        );
+        let mut bundle_state = AddressMap::default();
+        bundle_state.insert(
+            user_token,
+            BundleAccount::new(None, None, storage, AccountStatus::Changed),
+        );
+        let bundle = BundleState {
+            state: bundle_state,
+            ..Default::default()
+        };
+        let execution_outcome: ExecutionOutcome<TempoReceipt> = ExecutionOutcome {
+            bundle,
+            ..Default::default()
+        };
+
+        cache.on_new_state(&execution_outcome);
+
+        let inner = cache.inner.read();
+        assert!(
+            !inner.quote_token_cache.contains_key(&user_token),
+            "stale quote_token_cache entry must be dropped on slot write",
+        );
+        assert_eq!(
+            inner.quote_token_cache.get(&other_user),
+            Some(&hop_old),
+            "untouched user tokens must keep their cached intermediate",
+        );
     }
 
     // ============================================
