@@ -214,7 +214,7 @@ impl ConfigureEvm for TempoEvmConfig {
             .rev()
             .filter(|tx| (*tx).to() == Some(Address::ZERO))
             .find_map(|tx| Vec::<SubBlockMetadata>::decode(&mut tx.input().as_ref()).ok())
-            .ok_or(TempoEvmError::NoSubblockMetadataFound)?
+            .unwrap_or_default()
             .into_iter()
             .map(|metadata| {
                 (
