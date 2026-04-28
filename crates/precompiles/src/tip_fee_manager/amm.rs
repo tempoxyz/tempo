@@ -1081,16 +1081,6 @@ mod tests {
         })
     }
 
-    /// Helper for tests: returns the validator-token reserve of a pool and the
-    /// validator-token output `compute_amount_out(max_amount)` would require.
-    fn pool_check(amm: &TipFeeManager, pool_id: B256, max_amount: U256) -> eyre::Result<(u128, u128)> {
-        let pool = amm.pools[pool_id].read()?;
-        let amount_out: u128 = compute_amount_out(max_amount)?
-            .try_into()
-            .map_err(|_| eyre::eyre!("amount_out exceeds u128"))?;
-        Ok((pool.reserve_validator_token, amount_out))
-    }
-
     /// Test pool boundary condition
     #[test]
     fn test_pool_liquidity_boundary() -> eyre::Result<()> {
@@ -1114,16 +1104,15 @@ mod tests {
                 liquidity,
                 liquidity,
             )?;
+            let reserve = U256::from(amm.pools[pool_id].read()?.reserve_validator_token);
 
             // Exactly at boundary should succeed (100 * 0.997 = 99.7, which is < 100)
             let ok_amount = uint!(100_U256) * uint!(10_U256).pow(U256::from(6));
-            let (reserve, amount_out) = pool_check(&amm, pool_id, ok_amount)?;
-            assert!(reserve >= amount_out);
+            assert!(reserve >= compute_amount_out(ok_amount)?);
 
             // Just over boundary should fail (101 * 0.997 = 100.697, which is > 100)
             let too_much = uint!(101_U256) * uint!(10_U256).pow(U256::from(6));
-            let (reserve, amount_out) = pool_check(&amm, pool_id, too_much)?;
-            assert!(reserve < amount_out);
+            assert!(reserve < compute_amount_out(too_much)?);
 
             Ok(())
         })
