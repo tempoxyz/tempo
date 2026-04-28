@@ -57,6 +57,8 @@ pub(crate) struct Mailbox {
     inner: mpsc::UnboundedSender<Message>,
 }
 
+type Predicate<K> = Box<dyn Fn(&K) -> bool + Send>;
+
 /// Messages sent to the resolver.
 enum Message {
     /// Initiate fetch requests.
@@ -70,7 +72,7 @@ enum Message {
 
     /// Cancel all fetch requests that do not satisfy the predicate.
     Retain {
-        predicate: Box<dyn Fn(&handler::Request<Digest>) -> bool + Send>,
+        predicate: Predicate<handler::Request<Digest>>,
     },
 }
 
@@ -82,6 +84,7 @@ pub(crate) struct Config<TUpstream> {
     pub(crate) mailbox_size: usize,
 }
 
+type FetchPool = AbortablePool<Result<(handler::Request<Digest>, Bytes), handler::Request<Digest>>>;
 pub(crate) struct Resolver<TContext, TUpstream> {
     context: ContextCell<TContext>,
     config: Config<TUpstream>,
@@ -89,7 +92,7 @@ pub(crate) struct Resolver<TContext, TUpstream> {
     handler_tx: mpsc::Sender<handler::Message<Digest>>,
     mailbox: mpsc::UnboundedReceiver<Message>,
     requests: BTreeMap<handler::Request<Digest>, Aborter>,
-    fetches: AbortablePool<Result<(handler::Request<Digest>, Bytes), handler::Request<Digest>>>,
+    fetches: FetchPool,
 }
 
 impl<TContext, TUpstream> Resolver<TContext, TUpstream>
@@ -103,11 +106,9 @@ where
                 biased;
 
                 response = self.fetches.next_completed() => {
-                    match response {
-                        Ok(resolution) => self.handle_fetch_resolution(resolution),
-                        // We abort futures by dropping their handles; no need
-                        // to track this.
-                        Err(futures::future::Aborted) => {}
+                    // Error case is aborting the future, no need to track.
+                    if let Ok(resolution) = response {
+                        self.handle_fetch_resolution(resolution);
                     }
                 }
 
