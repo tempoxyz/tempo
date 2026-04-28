@@ -636,11 +636,10 @@ impl StablecoinDEX {
 
         // Validate flip_tick relationship to tick based on order side.
         // TIP-1030 (T5): allow flip_tick == tick for same-tick flip orders.
-        if self.storage.spec().is_t5() {
-            if (is_bid && flip_tick < tick) || (!is_bid && flip_tick > tick) {
-                return Err(StablecoinDEXError::invalid_flip_tick().into());
-            }
-        } else if (is_bid && flip_tick <= tick) || (!is_bid && flip_tick >= tick) {
+        if (flip_tick == tick && !self.storage.spec().is_t5())
+            || (is_bid && flip_tick < tick)
+            || (!is_bid && flip_tick > tick)
+        {
             return Err(StablecoinDEXError::invalid_flip_tick().into());
         }
 
