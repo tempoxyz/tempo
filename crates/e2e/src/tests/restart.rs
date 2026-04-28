@@ -617,11 +617,11 @@ fn backfill_on_start_after_crash() {
 /// The test asserts that **no** pipeline runs occur — the node should
 /// recover purely via backfill + live sync.
 #[test_traced]
-fn backfill_on_start_large_gap_triggers_pipeline() {
+fn backfill_on_start_large_gap_does_not_trigger_pipeline_sync() {
     let _ = tempo_eyre::install();
     let metrics_recorder = install_prometheus_recorder();
 
-    let setup = Setup::new().how_many_signers(3).epoch_length(100);
+    let setup = Setup::new().how_many_signers(4).epoch_length(100);
 
     let cfg = deterministic::Config::default().with_seed(setup.seed);
     Runner::from(cfg).start(|mut context| async move {
@@ -631,16 +631,16 @@ fn backfill_on_start_large_gap_triggers_pipeline() {
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
         connect_execution_peers(&validators).await;
 
-        // Let the network reach height 70.
-        wait_for_height(&context, 3, 70, false).await;
+        // Let the network reach height 40.
+        wait_for_height(&context, 4, 40, false).await;
 
-        // Stop validator[0] and unwind its EL by 50 blocks.
+        // Stop validator[0] and unwind its EL by 35 blocks (exceeds 32-block pipeline sync threshold).
         validators[0].stop().await;
-        let (el_before, el_after) = validators[0].unwind(50);
-        debug!(el_before, el_after, "unwound validator[0] by 50 blocks");
+        let (el_before, el_after) = validators[0].unwind(35);
+        debug!(el_before, el_after, "unwound validator[0] by 35 blocks");
 
-        // Let the remaining 2 validators advance 20 more blocks.
-        wait_for_height(&context, 2, 90, false).await;
+        // Let the remaining 3 validators advance 10 more blocks.
+        wait_for_height(&context, 3, 50, false).await;
 
         let pipeline_runs_before = get_pipeline_runs(metrics_recorder);
 
@@ -656,19 +656,16 @@ fn backfill_on_start_large_gap_triggers_pipeline() {
                 .execution_provider()
                 .last_block_number()
                 .unwrap();
+
             if current >= el_before + 5 {
                 recovered = true;
                 break;
             }
         }
-        assert!(recovered, "validator[0] did not recover within 60s");
 
-        let pipeline_runs_after = get_pipeline_runs(metrics_recorder);
-        assert_eq!(
-            pipeline_runs_after - pipeline_runs_before,
-            0,
-            "expected no pipeline runs, but got {}",
-            pipeline_runs_after - pipeline_runs_before,
-        );
+        assert!(recovered, "unwound validator did not recover");
+
+        let new_pipeline_runs = get_pipeline_runs(metrics_recorder) - pipeline_runs_before;
+        assert_eq!(new_pipeline_runs, 0);
     });
 }

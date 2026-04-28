@@ -4,7 +4,7 @@
 //! execution layer and tracks the digest of the latest finalized block.
 //! It also advances the canonical chain by sending forkchoice-updates.
 
-use std::{pin::Pin, sync::Arc, time::Duration};
+use std::{collections::VecDeque, pin::Pin, sync::Arc, time::Duration};
 
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadId};
 use commonware_consensus::{Heightable as _, marshal::Update, types::Height};
@@ -175,53 +175,24 @@ where
     }
 
     async fn run(mut self) {
-        info_span!("start").in_scope(|| {
-            info!(
-                last_finalized_consensus_height = %self.last_consensus_finalized_height,
-                last_finalized_execution_height = %self.last_execution_finalized_height,
-                "consensus and execution layers reported last finalized heights; \
-                backfilling blocks from consensus to execution if necessary",
-            );
-        });
+        let pending_finalizations = self.backfill_on_start().await;
+        for (cause, update) in pending_finalizations {
+            if let Err(error) = self
+                .finalize(cause, *update)
+                .await
+                .wrap_err("failed handling deferred finalization after backfill")
+            {
+                error_span!("shutdown").in_scope(|| {
+                    error!(
+                        %error,
+                        "executor encountered fatal fork choice update error; \
+                        shutting down to prevent consensus-execution divergence"
+                    )
+                });
 
-        let mut backfill_on_start = {
-            let marshal = self.marshal.clone();
-            std::pin::pin!(
-                futures::stream::iter(
-                    self.last_execution_finalized_height.get() + 1
-                        ..=self.last_consensus_finalized_height.get(),
-                )
-                .then(move |height| {
-                    let marshal = marshal.clone();
-                    async move { (height, marshal.get_block(Height::new(height)).await) }
-                })
-            )
-        };
-
-        while let Some((height, block)) = backfill_on_start.next().await {
-            match block {
-                Some(block) => {
-                    let (ack, _wait) = Exact::handle();
-                    let span = info_span!("backfill_on_start", height);
-                    let _ = self.forward_finalized(span, block, ack).await;
-                }
-                None => {
-                    warn_span!("backfill_on_start", height).in_scope(|| {
-                        warn!(
-                            "marshal actor did not have block even though \
-                        it must have finalized it previously",
-                        )
-                    });
-                }
+                return;
             }
         }
-
-        info_span!("backfill_on_start").in_scope(|| {
-            info!(
-                "no more blocks to backfill from consensus to \
-            execution layer"
-            )
-        });
 
         loop {
             select_biased! {
@@ -249,6 +220,73 @@ where
                 },
             }
         }
+    }
+
+    // Backfills any necessary blocks from the consensus layer while buffering
+    // incoming finalization messages to flush after completion.
+    async fn backfill_on_start(&mut self) -> VecDeque<(Span, Box<Update<Block>>)> {
+        info_span!("start").in_scope(|| {
+            info!(
+                last_finalized_consensus_height = %self.last_consensus_finalized_height,
+                last_finalized_execution_height = %self.last_execution_finalized_height,
+                "consensus and execution layers reported last finalized heights; \
+                backfilling blocks from consensus to execution if necessary",
+            );
+        });
+
+        let mut backfill = {
+            let marshal = self.marshal.clone();
+            let heights = futures::stream::iter(
+                self.last_execution_finalized_height.get() + 1
+                    ..=self.last_consensus_finalized_height.get(),
+            );
+
+            let blocks = heights.then(move |h| {
+                let marshal = marshal.clone();
+                async move { (h, marshal.get_block(Height::new(h)).await) }
+            });
+
+            std::pin::pin!(blocks.fuse())
+        };
+
+        let mut pending_finalizations = VecDeque::new();
+        'backfill: loop {
+            select_biased! {
+                item = backfill.next() => {
+                    match item {
+                        None => {
+                            info_span!("backfill_on_start").in_scope(|| info!(
+                                "no more blocks to backfill from consensus to execution layer")
+                            );
+
+                            break 'backfill;
+                        }
+
+                        Some((height, Some(block))) => {
+                            let (ack, _wait) = Exact::handle();
+                            let span = info_span!("backfill_on_start", height);
+                            let _ = self.forward_finalized(span, block, ack).await;
+                        }
+
+                        Some((height, None)) => {
+                            warn_span!("backfill_on_start", height).in_scope(|| warn!(
+                                "marshal actor did not have block even though \
+                                it must have finalized it previously",
+                            ));
+                        }
+                    }
+                },
+
+                msg = self.mailbox.next() => {
+                    let Some(msg) = msg else { break; };
+                    if let Command::Finalize(update) = msg.command {
+                        pending_finalizations.push_back((msg.cause, update));
+                    }
+                }
+            }
+        }
+
+        pending_finalizations
     }
 
     fn reset_fcu_heartbeat_timer(&mut self) {
