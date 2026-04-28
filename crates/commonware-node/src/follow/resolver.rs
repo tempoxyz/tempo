@@ -23,7 +23,7 @@ use reth_node_core::primitives::SealedBlock;
 use reth_provider::{BlockReader as _, BlockSource};
 use tempo_node::{TempoFullNode, rpc::consensus::Query};
 use tokio::select;
-use tracing::{debug, debug_span, error, instrument, warn};
+use tracing::{debug, error, instrument, warn};
 
 use super::upstream::UpstreamNode;
 use crate::consensus::{Digest, block::Block};
@@ -104,57 +104,17 @@ where
 
                 response = self.fetches.next_completed() => {
                     match response {
-                        Ok(Ok((key, value))) => {
-                            self.requests.remove(&key);
-                            // Fire and forget; there is no mechanism to retry
-                            // sending the response.
-                            let (response, _) = commonware_utils::channel::oneshot::channel();
-                            let _ = self.handler_tx.try_send(handler::Message::Deliver {
-                                key,
-                                value,
-                                response,
-                            });
-                        }
-                        Ok(Err(key)) => { self.requests.remove(&key); }
-                        Err(_) => {}
+                        Ok(resolution) => self.handle_fetch_resolution(resolution),
+                        // We abort futures by dropping their handles; no need
+                        // to track this.
+                        Err(futures::future::Aborted) => {}
                     }
                 }
 
                 Some(msg) = self.mailbox.recv() => {
                     match msg {
                         Message::Fetch { keys, } => {
-                            for key in keys {
-                                if self.requests.contains_key(&key) {
-                                    let aborter = match &key {
-                                        handler::Request::Block(digest) => {
-                                            let execution_node = self.config.execution_node.clone();
-                                            let digest = *digest;
-                                            let key = key.clone();
-                                            self.fetches.push(async move {
-                                                resolve_block(&execution_node, digest).ok_or(key.clone())
-                                                    .map(move |response| (key, response))
-                                            })
-                                        }
-                                        handler::Request::Finalized { height } => {
-                                            let upstream = self.config.upstream.clone();
-                                            let height = *height;
-                                            let key = key.clone();
-                                            self.fetches.push(async move {
-                                                resolve_finalized(&upstream, height)
-                                                .await
-                                                .ok_or(key.clone())
-                                                .map(move |response| (key, response))
-                                            })
-                                        },
-                                        handler::Request::Notarized { .. } => {
-                                            debug_span!("follow")
-                                                .in_scope(|| debug!("ignoring requests for notarized blocks"));
-                                            continue;
-                                        }
-                                    };
-                                    self.requests.insert(key, aborter);
-                                }
-                            }
+                            self.handle_fetch_request(keys);
                         }
                         Message::Cancel { key } => {
                             self.requests.remove(&key);
@@ -173,6 +133,70 @@ where
 
     pub(crate) fn start(mut self) -> commonware_runtime::Handle<()> {
         spawn_cell!(self.context, self.run().await)
+    }
+
+    #[instrument(skip_all)]
+    fn handle_fetch_request(&mut self, keys: Vec<handler::Request<Digest>>) {
+        for key in keys {
+            if !self.requests.contains_key(&key) {
+                let aborter = match &key {
+                    handler::Request::Block(digest) => {
+                        let execution_node = self.config.execution_node.clone();
+                        let digest = *digest;
+                        let key = key.clone();
+                        self.fetches.push(async move {
+                            resolve_block(&execution_node, digest)
+                                .ok_or(key.clone())
+                                .map(move |response| (key, response))
+                        })
+                    }
+                    handler::Request::Finalized { height } => {
+                        let upstream = self.config.upstream.clone();
+                        let height = *height;
+                        let key = key.clone();
+                        self.fetches.push(async move {
+                            resolve_finalized(&upstream, height)
+                                .await
+                                .ok_or(key.clone())
+                                .map(move |response| (key, response))
+                        })
+                    }
+                    handler::Request::Notarized { .. } => {
+                        debug!("ignoring requests for notarized blocks");
+                        continue;
+                    }
+                };
+                debug!(%key, "scheduled new request");
+                self.requests.insert(key, aborter);
+            } else {
+                debug!(%key, "request already scheduled");
+            }
+        }
+    }
+
+    #[instrument(skip_all)]
+    fn handle_fetch_resolution(
+        &mut self,
+        resolution: Result<(handler::Request<Digest>, Bytes), handler::Request<Digest>>,
+    ) {
+        match resolution {
+            Ok((key, value)) => {
+                debug!(%key, "fetched value, delivering to client");
+                self.requests.remove(&key);
+                // Fire and forget; there is no mechanism to retry
+                // sending the response.
+                let (response, _) = commonware_utils::channel::oneshot::channel();
+                let _ = self.handler_tx.try_send(handler::Message::Deliver {
+                    key,
+                    value,
+                    response,
+                });
+            }
+            Err(key) => {
+                debug!(%key, "fetch failed, dropping");
+                self.requests.remove(&key);
+            }
+        }
     }
 }
 
