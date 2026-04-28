@@ -32,7 +32,7 @@ use commonware_runtime::{
 };
 use commonware_utils::{NZUsize, channel::mpsc};
 use eyre::{OptionExt as _, WrapErr as _, bail, eyre};
-use futures::future::join_all;
+use futures::{StreamExt as _, future::join_all, stream::FuturesUnordered};
 use rand_08::{CryptoRng, Rng};
 use reth_node_core::primitives::SealedBlock;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -181,19 +181,32 @@ impl<U: UpstreamNode> Config<U> {
         // No broadcast is needed in follow mode.
         let broadcast = stubs::null_broadcast(context.with_label("broadcast"), self.mailbox_size);
 
+        let driver = driver::init(
+            context.with_label("driver"),
+            driver::Config {
+                upstream: self.upstream.clone(),
+                scheme_provider: scheme_provider.clone(),
+                marshal: marshal_mailbox.clone(),
+                feed: feed_mailbox.clone(),
+                epoch_strategy: epoch_strategy.clone(),
+                last_seen: last_finalized_height,
+            },
+        );
+
         Ok(Engine {
             context: ContextCell::new(context),
             upstream: self.upstream,
+            driver,
             resolver,
             resolver_mailbox,
             resolver_rx,
             scheme_provider,
             epoch_strategy,
-            marshal_actor,
+            marshal: marshal_actor,
             marshal_mailbox,
-            executor_actor,
+            executor: executor_actor,
             executor_mailbox,
-            feed_actor,
+            feed: feed_actor,
             feed_mailbox,
             broadcast,
             last_finalized_height,
@@ -217,16 +230,17 @@ where
 {
     context: ContextCell<TContext>,
     upstream: U,
+    driver: driver::Driver<TContext, U>,
     resolver: Resolver<TContext, U>,
     resolver_mailbox: resolver::Mailbox,
     resolver_rx: mpsc::Receiver<commonware_consensus::marshal::resolver::handler::Message<Digest>>,
     scheme_provider: SchemeProvider,
     epoch_strategy: FixedEpocher,
-    marshal_actor: crate::alias::marshal::Actor<TContext>,
+    marshal: crate::alias::marshal::Actor<TContext>,
     marshal_mailbox: crate::alias::marshal::Mailbox,
-    executor_actor: executor::Actor<TContext>,
+    executor: executor::Actor<TContext>,
     executor_mailbox: executor::Mailbox,
-    feed_actor: feed::Actor<TContext>,
+    feed: feed::Actor<TContext>,
     feed_mailbox: feed::Mailbox,
     broadcast: buffered::Mailbox<PublicKey, Block>,
     last_finalized_height: Height,
@@ -251,16 +265,17 @@ where
     }
 
     async fn run(mut self) -> eyre::Result<()> {
-        let mut actors = join_all([
-            self.executor_actor.start(),
-            self.feed_actor.start(),
-            self.marshal_actor.start(
+        let actors = vec![
+            self.driver.start(),
+            self.executor.start(),
+            self.feed.start(),
+            self.marshal.start(
                 self.executor_mailbox.clone(),
                 self.broadcast,
                 (self.resolver_rx, self.resolver_mailbox),
             ),
             self.resolver.start(),
-        ]);
+        ];
 
         let bootstrap = self.last_finalized_height == Height::zero();
         let boundary_block = if bootstrap {
@@ -384,19 +399,11 @@ where
             )
         });
 
-        let driver = driver::FollowDriver::new(
-            self.context,
-            self.upstream,
-            self.scheme_provider,
-            self.marshal_mailbox,
-            self.feed_mailbox,
-            self.epoch_strategy,
-            self.last_finalized_height,
-        );
-
-        select! {
-            result = driver.run() => result,
-            _ = &mut actors => bail!("actors exited unexpectedly"),
+        // TODO: report which actor failed and why.
+        if let Some(_) = FuturesUnordered::from_iter(actors).next().await {
+            return Err(eyre!("one critical subsystem exited unexpectedly"));
         }
+
+        Ok(())
     }
 }

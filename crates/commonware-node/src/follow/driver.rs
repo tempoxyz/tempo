@@ -20,7 +20,7 @@ use commonware_cryptography::{
     bls12381::primitives::variant::MinSig, certificate::Provider as _, ed25519::PublicKey,
 };
 use commonware_parallel::Sequential;
-use commonware_runtime::Clock;
+use commonware_runtime::{Clock, ContextCell, Spawner, spawn_cell};
 use futures::StreamExt as _;
 use rand_08::{CryptoRng, Rng};
 
@@ -41,38 +41,39 @@ use crate::{
 
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 
-pub(super) struct FollowDriver<C, U: UpstreamNode> {
-    context: C,
-    upstream: U,
-    scheme_provider: SchemeProvider,
-    marshal_mailbox: marshal::Mailbox,
-    feed_mailbox: feed::Mailbox,
-    epocher: FixedEpocher,
-    last_seen: Height,
+pub(super) fn init<TContext, TUpstreamNode>(
+    context: TContext,
+    config: Config<TUpstreamNode>,
+) -> Driver<TContext, TUpstreamNode> {
+    Driver {
+        context: ContextCell::new(context),
+        config,
+    }
 }
 
-impl<C: Clock + Rng + CryptoRng, U: UpstreamNode> FollowDriver<C, U> {
-    pub(super) fn new(
-        context: C,
-        upstream: U,
-        scheme_provider: SchemeProvider,
-        marshal_mailbox: marshal::Mailbox,
-        feed_mailbox: feed::Mailbox,
-        epocher: FixedEpocher,
-        last_finalized_height: Height,
-    ) -> Self {
-        Self {
-            context,
-            upstream,
-            scheme_provider,
-            marshal_mailbox,
-            feed_mailbox,
-            epocher,
-            last_seen: last_finalized_height,
-        }
+pub(super) struct Config<TUpstreamNode> {
+    pub(super) upstream: TUpstreamNode,
+    pub(super) scheme_provider: SchemeProvider,
+    pub(super) marshal: marshal::Mailbox,
+    pub(super) feed: feed::Mailbox,
+    pub(super) epoch_strategy: FixedEpocher,
+    pub(super) last_seen: Height,
+}
+
+pub(super) struct Driver<TContext, TUpstreamNode> {
+    context: ContextCell<TContext>,
+    config: Config<TUpstreamNode>,
+}
+
+impl<C: Clock + Rng + CryptoRng, U: UpstreamNode> Driver<C, U>
+where
+    C: Spawner,
+{
+    pub(super) fn start(mut self) -> commonware_runtime::Handle<()> {
+        spawn_cell!(self.context, self.run().await)
     }
 
-    pub(super) async fn run(mut self) -> eyre::Result<()> {
+    async fn run(mut self) {
         loop {
             match self.run_subscription().await {
                 Ok(()) => {
@@ -89,7 +90,7 @@ impl<C: Clock + Rng + CryptoRng, U: UpstreamNode> FollowDriver<C, U> {
     }
 
     async fn run_subscription(&mut self) -> eyre::Result<()> {
-        let mut sub = self.upstream.subscribe_events().await?;
+        let mut sub = self.config.upstream.subscribe_events().await?;
 
         info_span!("follow_driver").in_scope(|| info!("subscribed to consensus events"));
         while let Some(event) = sub.next().await {
@@ -101,7 +102,7 @@ impl<C: Clock + Rng + CryptoRng, U: UpstreamNode> FollowDriver<C, U> {
             };
 
             let height = Height::new(certified.block.number());
-            if height <= self.last_seen {
+            if height <= self.config.last_seen {
                 continue;
             }
 
@@ -111,7 +112,7 @@ impl<C: Clock + Rng + CryptoRng, U: UpstreamNode> FollowDriver<C, U> {
 
             self.process_boundaries(height).await?;
             self.process_finalization(&certified).await?;
-            self.last_seen = height;
+            self.config.last_seen = height;
         }
 
         info_span!("follow_driver").in_scope(|| info!("subscription stream ended"));
@@ -120,7 +121,8 @@ impl<C: Clock + Rng + CryptoRng, U: UpstreamNode> FollowDriver<C, U> {
 
     #[instrument(skip_all, fields(%up_to))]
     async fn process_boundaries(&mut self, up_to: Height) -> eyre::Result<()> {
-        let boundaries = boundary_heights_between(&self.epocher, self.last_seen, up_to);
+        let boundaries =
+            boundary_heights_between(&self.config.epoch_strategy, self.config.last_seen, up_to);
         if boundaries.is_empty() {
             return Ok(());
         }
@@ -131,6 +133,7 @@ impl<C: Clock + Rng + CryptoRng, U: UpstreamNode> FollowDriver<C, U> {
 
         for height in boundaries {
             let certified = self
+                .config
                 .upstream
                 .get_finalization(Query::Height(height.get()))
                 .await?
@@ -147,6 +150,7 @@ impl<C: Clock + Rng + CryptoRng, U: UpstreamNode> FollowDriver<C, U> {
                 Finalization::read(&mut &cert_bytes[..])?;
 
             let scheme = self
+                .config
                 .scheme_provider
                 .scoped(finalization.proposal.round.epoch())
                 .ok_or_eyre("no scheme registered for epoch")?;
@@ -163,14 +167,16 @@ impl<C: Clock + Rng + CryptoRng, U: UpstreamNode> FollowDriver<C, U> {
             );
 
             // Register the scheme for the next epoch.
-            self.scheme_provider.register(outcome.epoch, outcome_scheme);
+            self.config
+                .scheme_provider
+                .register(outcome.epoch, outcome_scheme);
 
             // Store the Boundary Block
             let round = Round::new(Epoch::new(certified.epoch), View::new(certified.view));
             let activity = Activity::Finalization(finalization);
-            self.marshal_mailbox.verified(round, block).await;
-            self.marshal_mailbox.report(activity.clone()).await;
-            self.feed_mailbox.report(activity).await;
+            self.config.marshal.verified(round, block).await;
+            self.config.marshal.report(activity.clone()).await;
+            self.config.feed.report(activity).await;
         }
 
         Ok(())
@@ -194,6 +200,7 @@ impl<C: Clock + Rng + CryptoRng, U: UpstreamNode> FollowDriver<C, U> {
 
         let epoch = finalization.proposal.round.epoch();
         let scheme = self
+            .config
             .scheme_provider
             .scoped(epoch)
             .ok_or_eyre("no scheme registered for epoch")?;
@@ -207,9 +214,9 @@ impl<C: Clock + Rng + CryptoRng, U: UpstreamNode> FollowDriver<C, U> {
         // Store the Finalized Block
         let round = Round::new(Epoch::new(block.epoch), View::new(block.view));
         let activity = Activity::Finalization(finalization);
-        self.marshal_mailbox.verified(round, consensus_block).await;
-        self.marshal_mailbox.report(activity.clone()).await;
-        self.feed_mailbox.report(activity).await;
+        self.config.marshal.verified(round, consensus_block).await;
+        self.config.marshal.report(activity.clone()).await;
+        self.config.feed.report(activity).await;
         Ok(())
     }
 }
