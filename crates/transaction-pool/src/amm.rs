@@ -21,8 +21,8 @@ use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
     error::Result as TempoResult,
     tip_fee_manager::{
-        FeeSwapPlan, SwapInfo, TipFeeManager,
-        amm::{Pool, compute_amount_out},
+        TipFeeManager,
+        amm::{FeeSwapPlan, Pool, SwapInfo, compute_amount_out},
     },
     tip20,
 };
@@ -131,9 +131,10 @@ impl AmmLiquidityCache {
             .with_read_only_storage_ctx(current_fork, || -> TempoResult<bool> {
                 let manager = TipFeeManager::new();
                 for validator_token in deferred {
-                    if let Some(plan) = manager.plan_fee_swap(user_token, validator_token, fee)? {
+                    let attempt = manager.plan_fee_swap(user_token, validator_token, fee)?;
+                    {
                         let mut inner = self.inner.write();
-                        let cache_swap =
+                        let cache_pool =
                             |inner: &mut AmmLiquidityCacheInner,
                              pair: (Address, Address),
                              swap: &SwapInfo| {
@@ -142,23 +143,22 @@ impl AmmLiquidityCache {
                                 inner.slot_to_pool.insert(slot, pair);
                             };
 
-                        match plan {
-                            FeeSwapPlan::SameToken => unreachable!("same token is fast-tracked"),
-                            FeeSwapPlan::Direct(swap) => {
-                                cache_swap(&mut inner, (user_token, validator_token), &swap);
-                            }
-                            FeeSwapPlan::TwoHop {
-                                intermediate,
-                                swap1,
-                                swap2,
-                            } => {
-                                inner.quote_token_cache.insert(user_token, intermediate);
-                                cache_swap(&mut inner, (user_token, intermediate), &swap1);
-                                cache_swap(&mut inner, (intermediate, validator_token), &swap2);
-                            }
+                        if let Some(swap) = attempt.direct_check() {
+                            cache_pool(&mut inner, (user_token, validator_token), swap);
                         }
-
-                        // If there is enough liquidity, short circuit and return `true`
+                        if let Some(FeeSwapPlan::TwoHop {
+                            intermediate,
+                            swap1,
+                            swap2,
+                        }) = &attempt.plan
+                        {
+                            inner.quote_token_cache.insert(user_token, *intermediate);
+                            cache_pool(&mut inner, (user_token, *intermediate), swap1);
+                            cache_pool(&mut inner, (*intermediate, validator_token), swap2);
+                        }
+                    }
+                    // If there is enough liquidity, short circuit and return `true`
+                    if attempt.is_sufficient() {
                         return Ok(true);
                     }
                 }
@@ -581,6 +581,19 @@ mod tests {
         assert!(
             !result.unwrap(),
             "Should return false for insufficient reserve"
+        );
+
+        // Slow-path checks must populate `pool_cache` even when no plan was viable, so the
+        // next admission resolves from the hot path without re-issuing SLOADs.
+        let inner = cache.inner.read();
+        assert_eq!(
+            inner.pool_cache.get(&(user_token, validator_token)),
+            Some(&U256::ZERO),
+            "failed direct check should still warm pool_cache",
+        );
+        assert!(
+            !inner.slot_to_pool.is_empty(),
+            "slot_to_pool reverse index should be populated for the check pool",
         );
     }
 

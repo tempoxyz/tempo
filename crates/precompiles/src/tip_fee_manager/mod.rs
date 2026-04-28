@@ -8,7 +8,7 @@ pub mod dispatch;
 use crate::{
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
-    tip_fee_manager::amm::{Pool, PoolKey, compute_amount_out},
+    tip_fee_manager::amm::{FeeSwapPlan, Pool, compute_amount_out},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
     tip20_factory::TIP20Factory,
 };
@@ -54,33 +54,6 @@ pub struct TipFeeManager {
     ///
     /// [TIP-1033]: <https://docs.tempo.xyz/protocol/tips/tip-1033>
     two_hop_intermediate: Address,
-}
-
-/// AMM path [`TipFeeManager`] will take to swap `user_token` into `validator_token` for fee collection.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum FeeSwapPlan {
-    /// User and validator share the same fee token; no swap is performed.
-    SameToken,
-    /// Direct pool `(user_token, validator_token)` has enough liquidity for a single-hop swap.
-    Direct(SwapInfo),
-    /// Two-hop swap (T5+): routes through `intermediate = userToken.quoteToken()`.
-    /// Each hop applies the standard `M = 9970/10000` rate sequentially.
-    TwoHop {
-        intermediate: Address,
-        swap1: SwapInfo,
-        swap2: SwapInfo,
-    },
-}
-
-/// Output of a per-pool liquidity check used to build a [`FeeSwapPlan`].
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SwapInfo {
-    /// Identifier of the `(user_token, validator_token)` AMM pool inspected.
-    pub pool_id: B256,
-    /// Validator-token reserve observed on this pool.
-    pub reserves: u128,
-    /// Validator-token amount this hop must produce `floor(amount_in · 9970 / 10000)`.
-    pub amount_out: u128,
 }
 
 impl TipFeeManager {
@@ -213,86 +186,38 @@ impl TipFeeManager {
         tip20_token.transfer_fee_pre_tx(fee_payer, max_amount)?;
 
         if !skip_liquidity_check {
-            let plan = self
-                .plan_fee_swap(user_token, validator_token, max_amount)?
-                .ok_or(TIPFeeAMMError::insufficient_liquidity())?;
+            let attempt = self.plan_fee_swap(user_token, validator_token, max_amount)?;
+            if !attempt.is_sufficient() {
+                return Err(TIPFeeAMMError::insufficient_liquidity().into());
+            }
 
-            match plan {
-                FeeSwapPlan::SameToken => {}
-                FeeSwapPlan::Direct(swap) => {
+            match attempt.plan {
+                Some(FeeSwapPlan::SameToken) => {}
+                Some(FeeSwapPlan::Direct(swap)) => {
                     if self.storage.spec().is_t1c() {
                         self.reserve_pool_liquidity(swap.pool_id, swap.amount_out)?;
                     }
                 }
-                FeeSwapPlan::TwoHop {
+                Some(FeeSwapPlan::TwoHop {
                     intermediate,
                     swap1,
                     swap2,
-                } => {
+                }) => {
+                    debug_assert!(
+                        self.storage.spec().is_t1c(),
+                        "two-hop fallback is T5-gated and T5 implies T1C",
+                    );
                     self.reserve_pool_liquidity(swap1.pool_id, swap1.amount_out)?;
                     self.reserve_pool_liquidity(swap2.pool_id, swap2.amount_out)?;
                     self.two_hop_intermediate.t_write(intermediate)?;
                 }
+                // Unreachable: `is_sufficient()` above rejects `None`.
+                None => unreachable!("guarded by is_sufficient()"),
             }
         }
 
         // Return the user's token preference
         Ok(user_token)
-    }
-
-    /// Plans the AMM path needed to swap `max_amount` of `user_token` into `validator_token` under
-    /// the active hardfork. On T5+ falls back to a two-hop path through `userToken.quoteToken()` as
-    /// per [TIP-1033]. Returns `Ok(None)` if no path has sufficient liquidity.
-    ///
-    /// # Errors
-    /// - `InvalidToken` — `user_token` does not have a valid TIP-20 prefix
-    /// - `UnderOverflow` — fee-amount arithmetic overflows
-    ///
-    /// [TIP-1033]: <https://docs.tempo.xyz/protocol/tips/tip-1033>
-    pub fn plan_fee_swap(
-        &self,
-        user_token: Address,
-        validator_token: Address,
-        max_amount: U256,
-    ) -> Result<Option<FeeSwapPlan>> {
-        if user_token == validator_token {
-            return Ok(Some(FeeSwapPlan::SameToken));
-        }
-
-        // Direct (single-hop) path.
-        let pool_id = PoolKey::new(user_token, validator_token).get_id();
-        if let Some(swap_info) = self.check_sufficient_liquidity(pool_id, max_amount)? {
-            return Ok(Some(FeeSwapPlan::Direct(swap_info)));
-        }
-
-        // T5+: two-hop fallback through `userToken.quoteToken()`.
-        if !self.storage.spec().is_t5() {
-            return Ok(None);
-        }
-
-        // TIP-20 token graph forbids self-quoting, so `intermediate == user_token` is unreachable.
-        let intermediate = TIP20Token::from_address(user_token)?.quote_token()?;
-        if intermediate.is_zero() || intermediate == validator_token {
-            return Ok(None);
-        }
-
-        // First hop: user_token -> intermediate (input = max_amount).
-        let pool1 = PoolKey::new(user_token, intermediate).get_id();
-        let Some(swap1) = self.check_sufficient_liquidity(pool1, max_amount)? else {
-            return Ok(None);
-        };
-
-        // Second hop: intermediate -> validator_token.
-        let pool2 = PoolKey::new(intermediate, validator_token).get_id();
-        if let Some(swap2) = self.check_sufficient_liquidity(pool2, U256::from(swap1.amount_out))? {
-            Ok(Some(FeeSwapPlan::TwoHop {
-                intermediate,
-                swap1,
-                swap2,
-            }))
-        } else {
-            Ok(None)
-        }
     }
 
     /// Finalizes fee collection after transaction execution.

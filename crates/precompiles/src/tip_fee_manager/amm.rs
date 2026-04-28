@@ -1,7 +1,7 @@
 use crate::{
     error::{Result, TempoPrecompileError},
     storage::Handler,
-    tip_fee_manager::{ITIPFeeAMM, SwapInfo, TIPFeeAMMError, TIPFeeAMMEvent, TipFeeManager},
+    tip_fee_manager::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent, TipFeeManager},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
 };
 use alloy::{
@@ -86,6 +86,130 @@ impl PoolKey {
     }
 }
 
+/// Result of a per-pool liquidity check used to build a [`FeeSwapPlan`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SwapInfo {
+    /// Identifier of the `(user_token, validator_token)` AMM pool inspected.
+    pub pool_id: B256,
+    /// Validator-token reserve observed on this pool.
+    pub reserves: u128,
+    /// Validator-token amount this hop must produce `floor(amount_in · 9970 / 10000)`.
+    pub amount_out: u128,
+}
+
+impl SwapInfo {
+    /// `true` if `reserves` cover the required `amount_out` for this hop.
+    #[inline]
+    pub fn is_sufficient(&self) -> bool {
+        self.reserves >= self.amount_out
+    }
+}
+
+/// AMM path [`TipFeeManager`] will take to swap `user_token` into `validator_token` for fee collection.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FeeSwapPlan {
+    /// User and validator share the same fee token; no swap is performed.
+    SameToken,
+    /// Direct pool `(user_token, validator_token)` has enough liquidity for a single-hop swap.
+    Direct(SwapInfo),
+    /// Two-hop swap (T5+): routes through `intermediate = userToken.quoteToken()`.
+    /// Each hop applies the standard `M = 9970/10000` rate sequentially.
+    TwoHop {
+        intermediate: Address,
+        swap1: SwapInfo,
+        swap2: SwapInfo,
+    },
+}
+
+impl FeeSwapPlan {
+    /// `true` iff this plan represents a viable fee-swap route.
+    pub fn is_sufficient(&self) -> bool {
+        match self {
+            Self::SameToken => true,
+            Self::Direct(swap) => swap.is_sufficient(),
+            Self::TwoHop { swap1, swap2, .. } => swap1.is_sufficient() && swap2.is_sufficient(),
+        }
+    }
+}
+
+/// Outcome of [`TipFeeManager::plan_fee_swap`]. Couples the chosen [`FeeSwapPlan`] with the
+/// planner's direct `(user_token, validator_token)` check, so the txpool can warm caches.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FeeSwapAttempt {
+    /// `Some` iff the planner produced a route, viable or not.
+    pub plan: Option<FeeSwapPlan>,
+    /// Direct probe held here only when not already exposed via `plan`.
+    direct: Option<SwapInfo>,
+}
+
+impl FeeSwapAttempt {
+    /// `user_token == validator_token` — no probe, no swap.
+    pub fn same_token() -> Self {
+        Self {
+            plan: Some(FeeSwapPlan::SameToken),
+            direct: None,
+        }
+    }
+
+    /// Direct pool is sufficient; `swap` is owned by the plan.
+    pub fn direct(swap: SwapInfo) -> Self {
+        debug_assert!(
+            swap.is_sufficient(),
+            "`Direct` plans must hold a sufficient probe",
+        );
+        Self {
+            plan: Some(FeeSwapPlan::Direct(swap)),
+            direct: None,
+        }
+    }
+
+    /// Direct pool was probed and found insufficient.
+    pub fn no_route(direct: SwapInfo) -> Self {
+        debug_assert!(
+            !direct.is_sufficient(),
+            "`no_route` only applies after the direct probe failed",
+        );
+        Self {
+            plan: None,
+            direct: Some(direct),
+        }
+    }
+
+    /// Two-hop fallback was checked end-to-end. `direct` is the insufficient path checked earlier.
+    pub fn two_hop(
+        intermediate: Address,
+        swap1: SwapInfo,
+        swap2: SwapInfo,
+        direct: SwapInfo,
+    ) -> Self {
+        debug_assert!(
+            !direct.is_sufficient(),
+            "two-hop fallback is only attempted after the direct probe fails",
+        );
+        Self {
+            plan: Some(FeeSwapPlan::TwoHop {
+                intermediate,
+                swap1,
+                swap2,
+            }),
+            direct: Some(direct),
+        }
+    }
+
+    /// Direct `(user_token, validator_token)` probe, regardless of where it is stored.
+    pub fn direct_check(&self) -> Option<&SwapInfo> {
+        match &self.plan {
+            Some(FeeSwapPlan::Direct(swap)) => Some(swap),
+            _ => self.direct.as_ref(),
+        }
+    }
+
+    /// `true` iff the chosen plan is a viable fee-swap route.
+    pub fn is_sufficient(&self) -> bool {
+        self.plan.as_ref().is_some_and(FeeSwapPlan::is_sufficient)
+    }
+}
+
 impl TipFeeManager {
     /// Returns the deterministic pool ID for a directional token pair. Note that the pool id is
     /// order-dependent: `(A, B)` produces a different ID than `(B, A)`.
@@ -99,30 +223,23 @@ impl TipFeeManager {
         self.pools[pool_id].read()
     }
 
-    /// Checks that the pool identified by `pool_id` has enough validator-token reserves for the
-    /// fee swap of `max_amount`. Returns `Ok(None)` when the pool doesn't have enough liquidity.
+    /// Checks the pool identified by `pool_id` and returns a [`SwapInfo`] capturing the
+    /// validator-token reserve and the output amount that a fee swap of `max_amount` would
+    /// require. Sufficiency to perform the swap is reported via [`SwapInfo::is_sufficient`].
     ///
     /// # Errors
     /// - `UnderOverflow` — output amount exceeds `u128`
-    pub fn check_sufficient_liquidity(
-        &self,
-        pool_id: B256,
-        max_amount: U256,
-    ) -> Result<Option<SwapInfo>> {
+    pub fn check_sufficient_liquidity(&self, pool_id: B256, max_amount: U256) -> Result<SwapInfo> {
         let amount_out_needed = compute_amount_out(max_amount)?;
         let pool = self.pools[pool_id].read()?;
 
-        if amount_out_needed > U256::from(pool.reserve_validator_token) {
-            return Ok(None);
-        }
-
-        Ok(Some(SwapInfo {
+        Ok(SwapInfo {
             pool_id,
             reserves: pool.reserve_validator_token,
             amount_out: amount_out_needed
                 .try_into()
                 .map_err(|_| TempoPrecompileError::under_overflow())?,
-        }))
+        })
     }
 
     /// Reserves pool liquidity in transient storage for a pending fee swap.
@@ -493,6 +610,62 @@ impl TipFeeManager {
             .ok_or(TempoPrecompileError::under_overflow())?;
 
         Ok((amount_user_token, amount_validator_token))
+    }
+
+    /// Plans the AMM path needed to swap `max_amount` of `user_token` into `validator_token`
+    /// under the active hardfork. On T5+ falls back to a two-hop path through
+    /// `userToken.quoteToken()` as per [TIP-1033].
+    ///
+    /// Returns a [`FeeSwapAttempt`] whose `plan` is `None` when no path has sufficient
+    /// liquidity. The direct `(user_token, validator_token)` probe is reported separately on
+    /// the attempt so callers can warm caches even when the chosen plan discards it (i.e.
+    /// when falling through to the two-hop fallback) or no viable plan exists.
+    ///
+    /// # Errors
+    /// - `InvalidToken` — `user_token` does not have a valid TIP-20 prefix
+    /// - `UnderOverflow` — fee-amount arithmetic overflows
+    ///
+    /// [TIP-1033]: <https://docs.tempo.xyz/protocol/tips/tip-1033>
+    pub fn plan_fee_swap(
+        &self,
+        user_token: Address,
+        validator_token: Address,
+        max_amount: U256,
+    ) -> Result<FeeSwapAttempt> {
+        if user_token == validator_token {
+            return Ok(FeeSwapAttempt::same_token());
+        }
+
+        // Direct (single-hop) path — always probed.
+        let direct_id = PoolKey::new(user_token, validator_token).get_id();
+        let direct = self.check_sufficient_liquidity(direct_id, max_amount)?;
+        if direct.is_sufficient() {
+            return Ok(FeeSwapAttempt::direct(direct));
+        }
+
+        // T5+: two-hop fallback through `userToken.quoteToken()`.
+        if !self.storage.spec().is_t5() {
+            return Ok(FeeSwapAttempt::no_route(direct));
+        }
+
+        // TIP-20 token graph forbids self-quoting, so `intermediate == user_token` is unreachable.
+        let intermediate = TIP20Token::from_address(user_token)?.quote_token()?;
+        if intermediate.is_zero() || intermediate == validator_token {
+            return Ok(FeeSwapAttempt::no_route(direct));
+        }
+
+        // First leg: user_token -> intermediate.
+        let leg1_id = PoolKey::new(user_token, intermediate).get_id();
+        let swap1 = self.check_sufficient_liquidity(leg1_id, max_amount)?;
+        if !swap1.is_sufficient() {
+            return Ok(FeeSwapAttempt::no_route(direct));
+        }
+
+        // Second leg: intermediate -> validator_token. Reported as `TwoHop` regardless of
+        // sufficiency so callers can warm caches with the observed reserves.
+        let leg2_id = PoolKey::new(intermediate, validator_token).get_id();
+        let swap2 = self.check_sufficient_liquidity(leg2_id, U256::from(swap1.amount_out))?;
+        Ok(FeeSwapAttempt::two_hop(intermediate, swap1, swap2, direct))
     }
 
     /// Executes a fee swap, converting `user_token` to `validator_token` at a fixed rate m = 0.997
@@ -1068,12 +1241,15 @@ mod tests {
             let ok_amount = uint!(100_U256) * uint!(10_U256).pow(U256::from(6));
             assert!(
                 amm.check_sufficient_liquidity(pool_id, ok_amount)?
-                    .is_some()
+                    .is_sufficient()
             );
 
             // Just over boundary should fail (101 * 0.997 = 100.697, which is > 100)
             let too_much = uint!(101_U256) * uint!(10_U256).pow(U256::from(6));
-            assert!(amm.check_sufficient_liquidity(pool_id, too_much)?.is_none());
+            assert!(
+                !amm.check_sufficient_liquidity(pool_id, too_much)?
+                    .is_sufficient()
+            );
 
             Ok(())
         })
@@ -1419,7 +1595,6 @@ mod tests {
             let max_amount = uint!(10000_U256);
             let amount_out = amm
                 .check_sufficient_liquidity(pool_id, max_amount)?
-                .unwrap()
                 .amount_out;
             amm.reserve_pool_liquidity(pool_id, amount_out)?;
 
@@ -1462,7 +1637,6 @@ mod tests {
             let reserve_amount = U256::from(pool.reserve_validator_token) - uint!(100_U256);
             let amount_out = amm
                 .check_sufficient_liquidity(pool_id, reserve_amount)?
-                .unwrap()
                 .amount_out;
             amm.reserve_pool_liquidity(pool_id, amount_out)?;
 
@@ -1506,7 +1680,6 @@ mod tests {
             let small_reserve = uint!(1000_U256);
             let amount_out = amm
                 .check_sufficient_liquidity(pool_id, small_reserve)?
-                .unwrap()
                 .amount_out;
             amm.reserve_pool_liquidity(pool_id, amount_out)?;
 
@@ -1547,7 +1720,6 @@ mod tests {
 
             let amount_out = amm
                 .check_sufficient_liquidity(pool_id, uint!(50000_U256))?
-                .unwrap()
                 .amount_out;
             amm.reserve_pool_liquidity(pool_id, amount_out)?;
 
