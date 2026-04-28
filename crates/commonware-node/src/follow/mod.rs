@@ -10,5 +10,5 @@ mod stubs;
 mod upstream;
 
 pub use engine::Config;
-pub use upstream::{LocalUpstream, UpstreamNode};
 pub(crate) use upstream::WsUpstream;
+pub use upstream::{LocalUpstream, UpstreamNode};
