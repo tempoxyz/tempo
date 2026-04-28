@@ -283,7 +283,7 @@ mod tests {
     use super::*;
     use crate::test_utils::test_chainspec;
     use alloy_consensus::{BlockHeader, Signed, TxLegacy};
-    use alloy_primitives::{B256, Bytes, Signature, TxKind, U256};
+    use alloy_primitives::{B256, Bytes, TxKind, U256};
     use alloy_rlp::{Encodable, bytes::BytesMut};
     use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
     use std::collections::HashMap;
