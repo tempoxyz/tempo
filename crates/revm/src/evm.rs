@@ -328,7 +328,7 @@ mod tests {
         let mut cfg = CfgEnv::<TempoHardfork>::default();
         cfg.spec = TempoHardfork::T1C;
         // Apply TIP-1000 gas params for T1C hardfork
-        cfg.gas_params = tempo_gas_params(TempoHardfork::T1C);
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T1C, TempoHardfork::T1C.is_t4());
 
         let ctx = Context::mainnet()
             .with_db(db)
@@ -346,7 +346,7 @@ mod tests {
         let db = CacheDB::new(EmptyDB::new());
         let mut cfg = CfgEnv::<TempoHardfork>::default();
         cfg.spec = TempoHardfork::T3;
-        cfg.gas_params = tempo_gas_params(TempoHardfork::T3);
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T3, TempoHardfork::T3.is_t4());
 
         let ctx = Context::mainnet()
             .with_db(db)
@@ -377,7 +377,7 @@ mod tests {
         let db = CacheDB::new(EmptyDB::new());
         let mut cfg = CfgEnv::<TempoHardfork>::default();
         cfg.spec = TempoHardfork::T1;
-        cfg.gas_params = tempo_gas_params(TempoHardfork::T1);
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T1, TempoHardfork::T1.is_t4());
 
         let mut block = TempoBlockEnv::default();
         block.inner.timestamp = U256::from(timestamp);
@@ -2405,7 +2405,7 @@ mod tests {
             let db = CacheDB::new(EmptyDB::new());
             let mut cfg = CfgEnv::<TempoHardfork>::default();
             cfg.spec = spec;
-            cfg.gas_params = tempo_gas_params(spec);
+            cfg.gas_params = tempo_gas_params(spec, spec.is_t4());
 
             let ctx = Context::mainnet()
                 .with_db(db)
@@ -2523,7 +2523,7 @@ mod tests {
             let db = CacheDB::new(EmptyDB::new());
             let mut cfg = CfgEnv::<TempoHardfork>::default();
             cfg.spec = spec;
-            cfg.gas_params = tempo_gas_params(spec);
+            cfg.gas_params = tempo_gas_params(spec, spec.is_t4());
 
             let ctx = Context::mainnet()
                 .with_db(db)

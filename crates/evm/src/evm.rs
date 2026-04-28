@@ -68,20 +68,13 @@ pub struct TempoEvm<DB: Database, I = NoOpInspector> {
 impl<DB: Database> TempoEvm<DB> {
     /// Create a new [`TempoEvm`] instance.
     pub fn new(db: DB, input: EvmEnv<TempoHardfork, TempoBlockEnv>) -> Self {
-        let mut cfg_env = input.cfg_env;
-
-        // TIP-1016 (T4): Enable EIP-8037 state gas charging automatically.
-        // This ensures all consumers (including foundry's executeTransaction cheatcode)
-        // get the correct gas validation behavior where tx.gas_limit > cap is allowed
-        // when the excess is state gas.
-        if cfg_env.spec.is_t4() {
-            cfg_env.enable_amsterdam_eip8037 = true;
-        }
-
+        // TIP-1016 (EIP-8037 state gas split) is gated by `cfg_env.enable_amsterdam_eip8037`
+        // and is independent of the T4 hardfork. The caller is responsible for setting the
+        // flag on the input `EvmEnv`; here we pass it through unchanged.
         let ctx = Context::mainnet()
             .with_db(db)
             .with_block(input.block_env)
-            .with_cfg(cfg_env)
+            .with_cfg(input.cfg_env)
             .with_tx(Default::default());
 
         Self {
@@ -430,7 +423,7 @@ mod tests {
         spec: tempo_chainspec::hardfork::TempoHardfork,
     ) -> EvmEnv<tempo_chainspec::hardfork::TempoHardfork, TempoBlockEnv> {
         EvmEnv::<tempo_chainspec::hardfork::TempoHardfork, TempoBlockEnv>::new(
-            CfgEnv::new_with_spec_and_gas_params(spec, tempo_gas_params(spec)),
+            CfgEnv::new_with_spec_and_gas_params(spec, tempo_gas_params(spec, false)),
             TempoBlockEnv::default(),
         )
     }

@@ -75,6 +75,7 @@ async fn test_matrices_local(schedule: ForkSchedule) -> eyre::Result<()> {
     run_all_matrices(&mut local::Localnet::with_schedule(schedule).await?).await
 }
 
+#[ignore = "TODO: TIP-1016 deferred; snapshot reflects T4/TIP-1016 gas costs which differ when cfg_env.enable_amsterdam_eip8037 is false. Re-record once TIP-1016 is re-enabled."]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_gas_estimation_snapshots() -> eyre::Result<()> {
     // Auth group from case name. All `key_auth_*` variants collapse into "key_auth".

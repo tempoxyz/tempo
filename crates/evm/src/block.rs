@@ -481,10 +481,9 @@ where
             // If pre-execution validation returned a section to use, just use it.
             next_section
         } else {
-            // T4+: use block_regular_gas_used (excludes state gas) for section validation,
-            // matching block gas limit semantics. Pre-T4: use tx_gas_used.
-            let timestamp = self.evm().block().timestamp.to::<u64>();
-            let gas_used = if self.inner.spec.is_t4_active_at_timestamp(timestamp) {
+            // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
+            // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.
+            let gas_used = if self.evm().cfg.enable_amsterdam_eip8037 {
                 inner.result.result.gas().block_regular_gas_used()
             } else {
                 inner.result.result.tx_gas_used()
@@ -511,10 +510,9 @@ where
             tx,
         } = output;
 
-        // T4+: use block_regular_gas_used (excludes state gas) for section validation,
-        // matching block gas limit semantics. Pre-T4: use tx_gas_used.
-        let timestamp = self.evm().block().timestamp.to::<u64>();
-        let gas_used = if self.inner.spec.is_t4_active_at_timestamp(timestamp) {
+        // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
+        // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.
+        let gas_used = if self.evm().cfg.enable_amsterdam_eip8037 {
             inner.result.result.gas().block_regular_gas_used()
         } else {
             inner.result.result.tx_gas_used()
@@ -564,21 +562,20 @@ where
     fn finish(
         self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
-        let timestamp = self.evm().block().timestamp.to::<u64>();
-        let is_t4 = self.inner.spec.is_t4_active_at_timestamp(timestamp);
+        let amsterdam_eip8037_enabled = self.evm().cfg.enable_amsterdam_eip8037;
 
         let regular_gas_used = self.inner.block_regular_gas_used;
         let (evm, mut result) = self.inner.finish()?;
 
-        // TIP-1016 (T4+): block header `gas_used` = block_regular_gas_used.
+        // TIP-1016 enabled: block header `gas_used` = block_regular_gas_used.
         // State gas is charged to users (in receipts) but exempted from block
         // capacity. block_regular_gas_used is accumulated per-tx as
         // max(total_spent - state_spent, floor) and is independent of refunds.
         //
-        // Pre-T4: use the standard gas_used from the inner executor which equals
+        // TIP-1016 disabled: use the standard gas_used from the inner executor which equals
         // cumulative_tx_gas_used (total_spent - refunded), matching the original
         // block header semantics.
-        if is_t4 {
+        if amsterdam_eip8037_enabled {
             result.gas_used = regular_gas_used;
         }
 
@@ -1384,6 +1381,7 @@ mod tests {
         let mut executor = TestExecutorBuilder::default()
             .with_general_gas_limit(30_000_000)
             .with_parent_beacon_block_root(B256::ZERO)
+            .with_amsterdam_eip8037_enabled(true)
             .build(&mut db, &chainspec);
 
         executor.apply_pre_execution_changes().unwrap();
@@ -1436,6 +1434,7 @@ mod tests {
         let mut executor = TestExecutorBuilder::default()
             .with_general_gas_limit(30_000_000)
             .with_parent_beacon_block_root(B256::ZERO)
+            .with_amsterdam_eip8037_enabled(true)
             .build(&mut db, &chainspec);
 
         executor.apply_pre_execution_changes().unwrap();
@@ -1577,6 +1576,7 @@ mod tests {
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
+            .with_amsterdam_eip8037_enabled(true)
             .build(&mut db, &chainspec);
 
         executor.apply_pre_execution_changes().unwrap();

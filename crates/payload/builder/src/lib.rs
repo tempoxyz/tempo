@@ -433,7 +433,10 @@ where
             .pool_fetch_duration_seconds
             .record(pool_fetch_start.elapsed());
 
-        let is_t4 = builder.evm().cfg.spec.is_t4();
+        // TIP-1016 (EIP-8037 state gas split) gating: when enabled, `block_regular_gas_used`
+        // (excludes state gas) governs block-capacity accounting; otherwise standard
+        // `tx_gas_used` is used. This flag is independent of the T4 hardfork.
+        let amsterdam_eip8037_enabled = builder.evm().cfg.enable_amsterdam_eip8037;
 
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
@@ -527,8 +530,9 @@ where
             let tx_execution_start = Instant::now();
             if let Err(err) =
                 builder.execute_transaction_with_result_closure(tx_with_env, |result| {
-                    // Compute gas usage as either regular-only gas spending (T4+) or total gas spending (pre-T4)
-                    let gas_used = if is_t4 {
+                    // Compute gas usage as either regular-only gas spending (TIP-1016) or
+                    // total gas spending (TIP-1016 disabled).
+                    let gas_used = if amsterdam_eip8037_enabled {
                         result.result().result.gas().block_regular_gas_used()
                     } else {
                         result.result().result.tx_gas_used()

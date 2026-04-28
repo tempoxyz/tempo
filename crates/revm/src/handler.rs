@@ -1180,6 +1180,7 @@ where
                 None
             };
 
+            let amsterdam_eip8037_enabled = cfg.enable_amsterdam_eip8037;
             let internals = EvmInternals::new(journal, block, cfg, tx);
 
             // T1/T1A: Apply gas metering for the keychain precompile call.
@@ -1214,7 +1215,13 @@ where
 
             // It's ok to set reservoir to 0 because pre-T1B it doesn't matter and post-T1B we have unlimited gas anyway.
             let mut provider = EvmPrecompileStorageProvider::new(
-                internals, gas_limit, 0, cfg.spec, false, gas_params,
+                internals,
+                gas_limit,
+                0,
+                cfg.spec,
+                amsterdam_eip8037_enabled,
+                false,
+                gas_params,
             );
 
             // The core logic of setting up thread-local storage is here.
@@ -2235,7 +2242,7 @@ mod tests {
         ) -> Self {
             let mut cfg = CfgEnv::<TempoHardfork>::default();
             cfg.spec = spec;
-            cfg.gas_params = tempo_gas_params(spec);
+            cfg.gas_params = tempo_gas_params(spec, spec.is_t4());
             cfg.enable_amsterdam_eip8037 = spec.is_t4();
             configure(&mut cfg);
 
@@ -2933,7 +2940,8 @@ mod tests {
         );
 
         // T1B branch: gas = sig_gas + SLOAD + SSTORE * (1 + num_limits) + buffer
-        let t1b_gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T1B);
+        let t1b_gas_params =
+            crate::gas_params::tempo_gas_params(TempoHardfork::T1B, TempoHardfork::T1B.is_t4());
         let sstore =
             t1b_gas_params.get(revm::context_interface::cfg::GasId::sstore_set_without_load_cost());
         let sload =
@@ -2951,7 +2959,8 @@ mod tests {
             assert_eq!(state_gas, 0, "T1B has no state gas");
         }
 
-        let t3_gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T3);
+        let t3_gas_params =
+            crate::gas_params::tempo_gas_params(TempoHardfork::T3, TempoHardfork::T3.is_t4());
         let t3_sstore =
             t3_gas_params.get(revm::context_interface::cfg::GasId::sstore_set_without_load_cost());
         let t3_sload =
@@ -2970,7 +2979,8 @@ mod tests {
         }
 
         // T4 with T4 gas params: regular sstore = 19,900, state gas = 230,000 per SSTORE
-        let t4_gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T4);
+        let t4_gas_params =
+            crate::gas_params::tempo_gas_params(TempoHardfork::T4, TempoHardfork::T4.is_t4());
         let t4_sstore =
             t4_gas_params.get(revm::context_interface::cfg::GasId::sstore_set_without_load_cost());
         let t4_sload =
@@ -3100,7 +3110,8 @@ mod tests {
             signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
         };
 
-        let gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T4);
+        let gas_params =
+            crate::gas_params::tempo_gas_params(TempoHardfork::T4, TempoHardfork::T4.is_t4());
 
         let sig_gas = ECRECOVER_GAS + primitive_signature_verification_gas(&key_auth.signature);
         let sload = gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
@@ -3276,7 +3287,7 @@ mod tests {
             TempoHardfork::T1B,
             TempoHardfork::T2,
         ] {
-            let gas_params = tempo_gas_params(spec);
+            let gas_params = tempo_gas_params(spec, spec.is_t4());
 
             let make_evm = |nonce: u64, nonce_key: U256| {
                 let journal = Journal::new(CacheDB::new(EmptyDB::default()));
@@ -3363,7 +3374,7 @@ mod tests {
             TempoHardfork::T1,
             TempoHardfork::T2,
         ] {
-            let gas_params = tempo_gas_params(spec);
+            let gas_params = tempo_gas_params(spec, spec.is_t4());
 
             // Build spec-specific test cases: (gas_limit, nonce, expected_result)
             let nonce_zero_gas = if spec.is_t1() {
@@ -4179,7 +4190,7 @@ mod tests {
             // Test both pre-T1B and T1B branches
             for (gas_params, spec) in [
                 (GasParams::default(), tempo_chainspec::hardfork::TempoHardfork::default()),
-                (crate::gas_params::tempo_gas_params(TempoHardfork::T1B), TempoHardfork::T1B),
+                (crate::gas_params::tempo_gas_params(TempoHardfork::T1B, TempoHardfork::T1B.is_t4()), TempoHardfork::T1B),
             ] {
                 let (gas1, _) = calculate_key_authorization_gas(&make_key_auth(num_limits1), &gas_params, spec);
                 let (gas2, _) = calculate_key_authorization_gas(&make_key_auth(num_limits2), &gas_params, spec);
@@ -4240,7 +4251,7 @@ mod tests {
                 "Pre-T1B: Key auth gas should be at least {min_gas}, got {gas}");
 
             // T1B: minimum is ECRECOVER_GAS + sload + sstore (0 limits)
-            let t1b_params = crate::gas_params::tempo_gas_params(TempoHardfork::T1B);
+            let t1b_params = crate::gas_params::tempo_gas_params(TempoHardfork::T1B, TempoHardfork::T1B.is_t4());
             let (gas_t1b, _) = calculate_key_authorization_gas(&key_auth, &t1b_params, TempoHardfork::T1B);
             let sstore = t1b_params.get(revm::context_interface::cfg::GasId::sstore_set_without_load_cost());
             let sload = t1b_params.warm_storage_read_cost() + t1b_params.cold_storage_additional_cost();
@@ -4274,7 +4285,7 @@ mod tests {
         // Create T1 config with TIP-1000 gas params
         let mut cfg = CfgEnv::<TempoHardfork>::default();
         cfg.spec = SPEC;
-        cfg.gas_params = tempo_gas_params(TempoHardfork::T1);
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T1, TempoHardfork::T1.is_t4());
 
         // Get the expected new_account_cost dynamically from gas params
         let new_account_cost = cfg.gas_params.get(GasId::new_account_cost());
@@ -4375,7 +4386,7 @@ mod tests {
 
         let mut cfg = CfgEnv::<TempoHardfork>::default();
         cfg.spec = SPEC;
-        cfg.gas_params = tempo_gas_params(TempoHardfork::T1);
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T1, TempoHardfork::T1.is_t4());
 
         let make_evm = |cfg: CfgEnv<TempoHardfork>, nonce: u64, nonce_key: U256| {
             let journal = Journal::new(CacheDB::new(EmptyDB::default()));
@@ -4760,7 +4771,7 @@ mod tests {
     /// later in validate_against_state_and_deduct_caller, not in upstream initial_tx_gas.
     #[test]
     fn test_state_gas_standard_create_tx_populates_initial_state_gas() {
-        let gas_params = tempo_gas_params(TempoHardfork::T4);
+        let gas_params = tempo_gas_params(TempoHardfork::T4, TempoHardfork::T4.is_t4());
         let initcode = Bytes::from(vec![0x60, 0x80]);
 
         let init_gas = gas_params.initial_tx_gas(
@@ -4785,7 +4796,7 @@ mod tests {
     /// TIP-1016: Standard CALL tx should have zero initial_state_gas.
     #[test]
     fn test_state_gas_standard_call_tx_zero_initial_state_gas() {
-        let gas_params = tempo_gas_params(TempoHardfork::T4);
+        let gas_params = tempo_gas_params(TempoHardfork::T4, TempoHardfork::T4.is_t4());
         let calldata = Bytes::from(vec![1, 2, 3]);
 
         let init_gas = gas_params.initial_tx_gas(
@@ -4802,7 +4813,7 @@ mod tests {
     /// TIP-1016: AA CREATE tx should populate initial_state_gas.
     #[test]
     fn test_state_gas_aa_create_tx_populates_initial_state_gas() {
-        let gas_params = tempo_gas_params(TempoHardfork::T4);
+        let gas_params = tempo_gas_params(TempoHardfork::T4, TempoHardfork::T4.is_t4());
         let initcode = Bytes::from(vec![0x60, 0x80]);
 
         let call = Call {
@@ -4840,7 +4851,7 @@ mod tests {
     /// TIP-1016: AA CALL tx should have zero initial_state_gas.
     #[test]
     fn test_state_gas_aa_call_tx_zero_initial_state_gas() {
-        let gas_params = tempo_gas_params(TempoHardfork::T4);
+        let gas_params = tempo_gas_params(TempoHardfork::T4, TempoHardfork::T4.is_t4());
         let calldata = Bytes::from(vec![1, 2, 3]);
 
         let call = Call {
@@ -4959,7 +4970,7 @@ mod tests {
     fn test_state_gas_backward_compat_t1_no_state_gas_enabled() {
         let mut cfg = CfgEnv::<TempoHardfork>::default();
         cfg.spec = TempoHardfork::T1;
-        cfg.gas_params = tempo_gas_params(TempoHardfork::T1);
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T1, TempoHardfork::T1.is_t4());
 
         assert!(
             !cfg.enable_amsterdam_eip8037,
@@ -4998,7 +5009,7 @@ mod tests {
     /// state gas for the CREATE call only.
     #[test]
     fn test_state_gas_aa_mixed_batch_create_and_call() {
-        let gas_params = tempo_gas_params(TempoHardfork::T4);
+        let gas_params = tempo_gas_params(TempoHardfork::T4, TempoHardfork::T4.is_t4());
         let calldata = Bytes::from(vec![1, 2, 3]);
         let initcode = Bytes::from(vec![0x60, 0x80]);
 
@@ -5045,7 +5056,7 @@ mod tests {
     /// TIP-1016: AA batch with multiple CREATE calls accumulates state gas.
     #[test]
     fn test_state_gas_aa_multiple_create_calls() {
-        let gas_params = tempo_gas_params(TempoHardfork::T4);
+        let gas_params = tempo_gas_params(TempoHardfork::T4, TempoHardfork::T4.is_t4());
         let initcode = Bytes::from(vec![0x60, 0x80]);
 
         let calls = vec![
@@ -5143,7 +5154,7 @@ mod tests {
     /// TIP-1016: AA auth list entries with nonce==0 should track state gas.
     #[test]
     fn test_state_gas_aa_auth_list_nonce_zero() {
-        let gas_params = tempo_gas_params(TempoHardfork::T4);
+        let gas_params = tempo_gas_params(TempoHardfork::T4, TempoHardfork::T4.is_t4());
 
         let aa_env = TempoBatchCallEnv {
             signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
@@ -5218,7 +5229,7 @@ mod tests {
     /// TIP-1016: Auth list state gas (GasId 254) must be zero on T1.
     #[test]
     fn test_state_gas_auth_list_zero_on_t1() {
-        let gas_params = tempo_gas_params(TempoHardfork::T1);
+        let gas_params = tempo_gas_params(TempoHardfork::T1, TempoHardfork::T1.is_t4());
         assert_eq!(
             gas_params.tx_tip1000_auth_account_creation_state_gas(),
             0,
@@ -5307,7 +5318,7 @@ mod tests {
     /// giving the transaction its full gas_limit for free.
     #[test]
     fn test_state_gas_aa_create_total_gas_includes_state_gas() {
-        let gas_params = tempo_gas_params(TempoHardfork::T4);
+        let gas_params = tempo_gas_params(TempoHardfork::T4, TempoHardfork::T4.is_t4());
         let initcode = Bytes::from(vec![0x60, 0x80]);
 
         let call = Call {
@@ -5346,7 +5357,7 @@ mod tests {
     /// AA auth list entries with nonce==0.
     #[test]
     fn test_state_gas_aa_auth_nonce_zero_total_gas_includes_state_gas() {
-        let gas_params = tempo_gas_params(TempoHardfork::T4);
+        let gas_params = tempo_gas_params(TempoHardfork::T4, TempoHardfork::T4.is_t4());
 
         let aa_env = TempoBatchCallEnv {
             signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(

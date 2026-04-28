@@ -138,16 +138,16 @@ impl ConfigureEvm for TempoEvmConfig {
         let spec = self.chain_spec().tempo_hardfork_at(header.timestamp());
 
         // Apply TIP-1000 gas params for T1 hardfork.
-        let mut cfg_env = cfg_env.with_spec_and_gas_params(spec, tempo_gas_params(spec));
+        //
+        // TIP-1016 (EIP-8037 state gas split) is gated by `cfg_env.enable_amsterdam_eip8037`
+        // and is independent of the T4 hardfork. The flag is currently left at its default
+        // (`false`) so TIP-1016 is disabled even on T4; flipping it on enables the regular/
+        // state gas split everywhere it is checked downstream.
+        let amsterdam_eip8037_enabled = cfg_env.enable_amsterdam_eip8037;
+        let mut cfg_env = cfg_env
+            .with_spec_and_gas_params(spec, tempo_gas_params(spec, amsterdam_eip8037_enabled));
         cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
 
-        // TIP-1016 (T4): Enable EIP-8037 state gas charging. All Tempo hardforks map to
-        // SpecId::OSAKA, but revm's AMSTERDAM (which gates record_state_cost in SSTORE/CREATE)
-        // comes after OSAKA in the SpecId enum. Without this flag, state gas overrides
-        // (sstore_set_state_gas, new_account_state_gas, etc.) are configured but never charged.
-        if spec.is_t4() {
-            cfg_env.enable_amsterdam_eip8037 = true;
-        }
         Ok(EvmEnv {
             cfg_env,
             block_env: TempoBlockEnv {
@@ -182,17 +182,14 @@ impl ConfigureEvm for TempoEvmConfig {
 
         let spec = self.chain_spec().tempo_hardfork_at(attributes.timestamp);
 
-        // Apply TIP-1000 gas params for T1 hardfork.
-        let mut cfg_env = cfg_env.with_spec_and_gas_params(spec, tempo_gas_params(spec));
+        // Apply TIP-1000 gas params for T1 hardfork. TIP-1016 is gated by
+        // `cfg_env.enable_amsterdam_eip8037`, independent of the T4 hardfork
+        // (see `evm_env_for_block` for details).
+        let amsterdam_eip8037_enabled = cfg_env.enable_amsterdam_eip8037;
+        let mut cfg_env = cfg_env
+            .with_spec_and_gas_params(spec, tempo_gas_params(spec, amsterdam_eip8037_enabled));
         cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
 
-        // TIP-1016 (T4): Enable EIP-8037 state gas charging. All Tempo hardforks map to
-        // SpecId::OSAKA, but revm's AMSTERDAM (which gates record_state_cost in SSTORE/CREATE)
-        // comes after OSAKA in the SpecId enum. Without this flag, state gas overrides
-        // (sstore_set_state_gas, new_account_state_gas, etc.) are configured but never charged.
-        if spec.is_t4() {
-            cfg_env.enable_amsterdam_eip8037 = true;
-        }
         Ok(EvmEnv {
             cfg_env,
             block_env: TempoBlockEnv {

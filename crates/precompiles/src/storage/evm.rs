@@ -17,6 +17,7 @@ pub struct EvmPrecompileStorageProvider<'a> {
     internals: EvmInternals<'a>,
     gas_tracker: GasTracker,
     spec: TempoHardfork,
+    amsterdam_eip8037_enabled: bool,
     is_static: bool,
     gas_params: GasParams,
     /// Debug-only LIFO checkpoint validator. See [`Self::assert_lifo`].
@@ -26,11 +27,13 @@ pub struct EvmPrecompileStorageProvider<'a> {
 
 impl<'a> EvmPrecompileStorageProvider<'a> {
     /// Creates a new storage provider with the given gas limit, hardfork, and static flag.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         internals: EvmInternals<'a>,
         gas_limit: u64,
         reservoir: u64,
         spec: TempoHardfork,
+        amsterdam_eip8037_enabled: bool,
         is_static: bool,
         gas_params: GasParams,
     ) -> Self {
@@ -38,6 +41,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             internals,
             gas_tracker: GasTracker::new(gas_limit, gas_limit, reservoir),
             spec,
+            amsterdam_eip8037_enabled,
             is_static,
             gas_params,
             #[cfg(debug_assertions)]
@@ -52,6 +56,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             u64::MAX,
             0,
             cfg.spec,
+            cfg.enable_amsterdam_eip8037,
             false,
             cfg.gas_params.clone(),
         )
@@ -69,6 +74,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             gas_limit,
             reservoir,
             cfg.spec,
+            cfg.enable_amsterdam_eip8037,
             false,
             cfg.gas_params.clone(),
         )
@@ -115,8 +121,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             was_empty
         };
 
-        // T4: charge TIP20 creations as CREATE
-        if self.spec.is_t4() && was_empty {
+        // TIP-1016: charge TIP20 creations as CREATE
+        if self.amsterdam_eip8037_enabled && was_empty {
             self.deduct_gas(self.gas_params.create_cost())?;
             self.deduct_state_gas(self.gas_params.create_state_gas())?;
         }
@@ -284,6 +290,11 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     }
 
     #[inline]
+    fn amsterdam_eip8037_enabled(&self) -> bool {
+        self.amsterdam_eip8037_enabled
+    }
+
+    #[inline]
     fn is_static(&self) -> bool {
         self.is_static
     }
@@ -372,7 +383,8 @@ mod tests {
             let db = CacheDB::new(EmptyDB::new());
             let mut cfg = revm::context::CfgEnv::<TempoHardfork>::default();
             cfg.spec = spec;
-            cfg.gas_params = tempo_gas_params(spec);
+            cfg.enable_amsterdam_eip8037 = spec.is_t4();
+            cfg.gas_params = tempo_gas_params(spec, cfg.enable_amsterdam_eip8037);
 
             Self(TempoEvmFactory::default().create_evm(
                 db,
@@ -390,6 +402,7 @@ mod tests {
         ) -> EvmPrecompileStorageProvider<'_> {
             let ctx = self.0.ctx_mut();
             let spec = ctx.cfg.spec;
+            let amsterdam_eip8037_enabled = ctx.cfg.enable_amsterdam_eip8037;
             let gas_params = ctx.cfg.gas_params.clone();
             let evm_internals =
                 EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
@@ -399,6 +412,7 @@ mod tests {
                 gas_limit,
                 reservoir,
                 spec,
+                amsterdam_eip8037_enabled,
                 false,
                 gas_params,
             )
