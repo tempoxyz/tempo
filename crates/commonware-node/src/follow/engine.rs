@@ -24,15 +24,14 @@ use commonware_consensus::{
     types::{Epoch, Epocher as _, FixedEpocher, Height, Round, View},
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
-use commonware_macros::select;
 use commonware_parallel::Sequential;
 use commonware_runtime::{
     BufferPooler, Clock, ContextCell, Handle, Metrics, Pacer, Spawner, Storage,
     buffer::paged::CacheRef, spawn_cell,
 };
 use commonware_utils::{NZUsize, channel::mpsc};
-use eyre::{OptionExt as _, WrapErr as _, bail, eyre};
-use futures::{StreamExt as _, future::join_all, stream::FuturesUnordered};
+use eyre::{OptionExt as _, WrapErr as _, eyre};
+use futures::{StreamExt as _, stream::FuturesUnordered};
 use rand_08::{CryptoRng, Rng};
 use reth_node_core::primitives::SealedBlock;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
