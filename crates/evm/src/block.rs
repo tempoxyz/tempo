@@ -571,8 +571,8 @@ where
             _ => false,
         };
 
-        // If subblocks metadata transaction was not seen, imply empty metadata.
-        if !seen_subblock_signatures {
+        // Post T4, if subblocks metadata transaction was not seen, imply empty metadata.
+        if !seen_subblock_signatures && self.evm().cfg.spec.is_t4() {
             self.validate_shared_gas(&[])?;
         }
 
