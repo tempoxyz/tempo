@@ -208,10 +208,7 @@ impl TipFeeManager {
                         .try_into()
                         .map_err(|_| TempoPrecompileError::under_overflow())?;
                     self.reserve_pool_liquidity(self.pool_id(user_token, intermediate), out1)?;
-                    self.reserve_pool_liquidity(
-                        self.pool_id(intermediate, validator_token),
-                        out2,
-                    )?;
+                    self.reserve_pool_liquidity(self.pool_id(intermediate, validator_token), out2)?;
                     self.two_hop_intermediate.t_write(intermediate)?;
                 }
             }
