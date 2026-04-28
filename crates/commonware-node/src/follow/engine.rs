@@ -39,13 +39,13 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{TempoFullNode, rpc::consensus::Query};
 use tracing::{info, info_span};
 
-use super::{driver, resolver::Resolver, stubs, upstream::UpstreamNode};
+use super::{driver, resolver, resolver::Resolver, stubs, upstream::UpstreamNode};
 use crate::{
     config::NAMESPACE,
     consensus::{Digest, block::Block},
     epoch::SchemeProvider,
-    executor, feed,
-    feed::FeedStateHandle,
+    executor,
+    feed::{self, FeedStateHandle},
     storage,
 };
 
@@ -62,7 +62,7 @@ pub struct Config<U: UpstreamNode> {
     pub partition_prefix: String,
 
     /// Upstream node to sync from.
-    pub upstream: Arc<U>,
+    pub upstream: U,
 
     /// Epoch strategy.
     pub epoch_strategy: FixedEpocher,
@@ -150,12 +150,13 @@ impl<U: UpstreamNode> Config<U> {
             )
         });
 
-        let (resolver_tx, resolver_rx) = mpsc::channel(self.mailbox_size);
-        let resolver = Resolver::new(
+        let (resolver, resolver_mailbox, resolver_rx) = resolver::try_init(
             context.with_label("resolver"),
-            self.upstream.clone(),
-            resolver_tx,
-            self.execution_node.clone(),
+            resolver::Config {
+                execution_node: Arc::new(self.execution_node.clone()),
+                upstream: self.upstream.clone(),
+                mailbox_size: self.mailbox_size,
+            },
         );
 
         let (feed_actor, feed_mailbox) = feed::init(
@@ -184,6 +185,7 @@ impl<U: UpstreamNode> Config<U> {
             context: ContextCell::new(context),
             upstream: self.upstream,
             resolver,
+            resolver_mailbox,
             resolver_rx,
             scheme_provider,
             epoch_strategy,
@@ -214,8 +216,9 @@ where
         + 'static,
 {
     context: ContextCell<TContext>,
-    upstream: Arc<U>,
+    upstream: U,
     resolver: Resolver<TContext, U>,
+    resolver_mailbox: resolver::Mailbox,
     resolver_rx: mpsc::Receiver<commonware_consensus::marshal::resolver::handler::Message<Digest>>,
     scheme_provider: SchemeProvider,
     epoch_strategy: FixedEpocher,
@@ -254,8 +257,9 @@ where
             self.marshal_actor.start(
                 self.executor_mailbox.clone(),
                 self.broadcast,
-                (self.resolver_rx, self.resolver),
+                (self.resolver_rx, self.resolver_mailbox),
             ),
+            self.resolver.start(),
         ]);
 
         let bootstrap = self.last_finalized_height == Height::zero();

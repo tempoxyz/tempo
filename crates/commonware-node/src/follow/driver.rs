@@ -4,7 +4,7 @@
 //! blocks for DKG scheme extraction. Non-boundary blocks are synced by Reth
 //! via P2P and fetched by marshal's gap-repair resolver on demand.
 
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 use alloy_consensus::BlockHeader as _;
 use commonware_codec::ReadExt as _;
@@ -28,7 +28,7 @@ use eyre::OptionExt;
 use reth_node_core::primitives::SealedBlock;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::rpc::consensus::{CertifiedBlock, Event, Query};
-use tracing::{debug, debug_span, info, info_span, warn, warn_span};
+use tracing::{debug, debug_span, info, info_span, instrument, warn, warn_span};
 
 use super::upstream::UpstreamNode;
 use crate::{
@@ -43,7 +43,7 @@ const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 
 pub(super) struct FollowDriver<C, U: UpstreamNode> {
     context: C,
-    upstream: Arc<U>,
+    upstream: U,
     scheme_provider: SchemeProvider,
     marshal_mailbox: marshal::Mailbox,
     feed_mailbox: feed::Mailbox,
@@ -54,7 +54,7 @@ pub(super) struct FollowDriver<C, U: UpstreamNode> {
 impl<C: Clock + Rng + CryptoRng, U: UpstreamNode> FollowDriver<C, U> {
     pub(super) fn new(
         context: C,
-        upstream: Arc<U>,
+        upstream: U,
         scheme_provider: SchemeProvider,
         marshal_mailbox: marshal::Mailbox,
         feed_mailbox: feed::Mailbox,
@@ -118,6 +118,7 @@ impl<C: Clock + Rng + CryptoRng, U: UpstreamNode> FollowDriver<C, U> {
         Ok(())
     }
 
+    #[instrument(skip_all, fields(%up_to))]
     async fn process_boundaries(&mut self, up_to: Height) -> eyre::Result<()> {
         let boundaries = boundary_heights_between(&self.epocher, self.last_seen, up_to);
         if boundaries.is_empty() {
@@ -175,11 +176,19 @@ impl<C: Clock + Rng + CryptoRng, U: UpstreamNode> FollowDriver<C, U> {
         Ok(())
     }
 
-    async fn process_finalization(&mut self, certified: &CertifiedBlock) -> eyre::Result<()> {
-        let sealed = SealedBlock::seal_slow(certified.block.clone());
+    #[instrument(
+        skip_all,
+        fields(
+            %block.epoch,
+            %block.view,
+            %block.digest,
+        ),
+    )]
+    async fn process_finalization(&mut self, block: &CertifiedBlock) -> eyre::Result<()> {
+        let sealed = SealedBlock::seal_slow(block.block.clone());
         let consensus_block = Block::from_execution_block(sealed);
 
-        let cert_bytes = alloy_primitives::hex::decode(&certified.certificate)?;
+        let cert_bytes = alloy_primitives::hex::decode(&block.certificate)?;
         let finalization: Finalization<Scheme<PublicKey, MinSig>, Digest> =
             Finalization::read(&mut &cert_bytes[..])?;
 
@@ -196,7 +205,7 @@ impl<C: Clock + Rng + CryptoRng, U: UpstreamNode> FollowDriver<C, U> {
         );
 
         // Store the Finalized Block
-        let round = Round::new(Epoch::new(certified.epoch), View::new(certified.view));
+        let round = Round::new(Epoch::new(block.epoch), View::new(block.view));
         let activity = Activity::Finalization(finalization);
         self.marshal_mailbox.verified(round, consensus_block).await;
         self.marshal_mailbox.report(activity.clone()).await;

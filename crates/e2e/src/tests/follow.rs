@@ -129,7 +129,7 @@ impl Follower {
 fn follower_bootstraps_from_validator() {
     let target_height = 15;
 
-    let setup = Setup::new().how_many_signers(4).epoch_length(EPOCH_LENGTH);
+    let setup = Setup::new().how_many_signers(1).epoch_length(EPOCH_LENGTH);
     let cfg = deterministic::Config::default().with_seed(setup.seed);
 
     let executor = Runner::from(cfg);
@@ -143,7 +143,6 @@ fn follower_bootstraps_from_validator() {
             .map(|v| v.execution_node.as_ref().unwrap())
             .collect::<Vec<_>>();
 
-        // -- Follower syncs from validator 2.
         let validator_feed_state = validators[0].consensus_config.feed_state.clone();
         let validator_full_node = validators[0].execution().clone();
 
