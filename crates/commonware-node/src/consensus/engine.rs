@@ -359,8 +359,8 @@ where
             },
         );
 
-        let application = crate::alias::marshal::Inline::new(
-            context.with_label("application"),
+        let automaton = crate::alias::marshal::Inline::new(
+            context.with_label("automaton"),
             tempo.clone(),
             marshal_mailbox.clone(),
             epoch_strategy.clone(),
@@ -369,7 +369,7 @@ where
         let (epoch_manager, epoch_manager_mailbox) = epoch::manager::init(
             context.with_label("epoch_manager"),
             epoch::manager::Config {
-                application: application.clone(),
+                automaton: automaton.clone(),
                 blocker: self.blocker.clone(),
                 page_cache: page_cache_ref,
                 epoch_strategy: epoch_strategy.clone(),
@@ -417,7 +417,7 @@ where
             dkg_manager,
             dkg_manager_mailbox,
 
-            application,
+            automaton,
 
             executor,
             executor_mailbox,
@@ -463,7 +463,7 @@ where
     dkg_manager: dkg::manager::Actor<TContext>,
     dkg_manager_mailbox: dkg::manager::Mailbox,
 
-    application: crate::alias::marshal::Inline<TContext>,
+    automaton: crate::alias::marshal::Inline<TContext>,
 
     /// Responsible for keeping the consensus layer state and execution layer
     /// states in sync. Drives the chain state of the execution layer by sending
@@ -606,7 +606,7 @@ where
                     self.executor_mailbox,
                     Reporters::from((
                         self.dkg_manager_mailbox.clone(),
-                        Reporters::from((self.peer_manager_mailbox, self.application)),
+                        Reporters::from((self.peer_manager_mailbox, self.automaton)),
                     )),
                 )),
             )),

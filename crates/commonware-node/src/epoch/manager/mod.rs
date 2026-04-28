@@ -20,8 +20,8 @@ use rand_08::{CryptoRng, Rng};
 
 use crate::{consensus::Digest, epoch::scheme_provider::SchemeProvider, feed, subblocks};
 
-pub(crate) struct Config<TBlocker, TApplication> {
-    pub(crate) application: TApplication,
+pub(crate) struct Config<TBlocker, TAutomaton> {
+    pub(crate) automaton: TAutomaton,
     pub(crate) blocker: TBlocker,
     pub(crate) page_cache: CacheRef,
     pub(crate) epoch_strategy: FixedEpocher,
@@ -39,13 +39,13 @@ pub(crate) struct Config<TBlocker, TApplication> {
     pub(crate) views_until_leader_skip: ViewDelta,
 }
 
-pub(crate) fn init<TContext, TBlocker, TApplication>(
+pub(crate) fn init<TContext, TBlocker, TAutomaton>(
     context: TContext,
-    config: Config<TBlocker, TApplication>,
-) -> (Actor<TContext, TBlocker, TApplication>, Mailbox)
+    config: Config<TBlocker, TAutomaton>,
+) -> (Actor<TContext, TBlocker, TAutomaton>, Mailbox)
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
-    TApplication: CertifiableAutomaton<Context = Context<Digest, PublicKey>, Digest = Digest>
+    TAutomaton: CertifiableAutomaton<Context = Context<Digest, PublicKey>, Digest = Digest>
         + Relay<Digest = Digest, PublicKey = PublicKey, Plan = Plan<PublicKey>>,
     TContext: BufferPooler
         + Spawner
