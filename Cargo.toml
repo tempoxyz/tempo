@@ -189,6 +189,7 @@ alloy-contract = { version = "2.0.1", default-features = false }
 alloy-eips = { version = "2.0.1", default-features = false }
 alloy-evm = { version = "0.33.0", default-features = false }
 revm-inspectors = "0.39.0"
+revmc = { git = "https://github.com/paradigmxyz/revmc", branch = "dani/runtime", default-features = false, features = ["llvm-prefer-static"] }
 alloy-genesis = { version = "2.0.1", default-features = false }
 alloy-hardforks = "0.4.7"
 alloy-json-abi = { version = "1.5.7", default-features = false }
@@ -245,6 +246,7 @@ futures = "0.3.31"
 governor = "0.10.4"
 indexmap = "2.13.0"
 indicatif = "0.18"
+humantime = "2"
 itertools = "0.14.0"
 jiff = { version = "0.2.18", default-features = false }
 jsonrpsee = { version = "0.26.0", features = ["server", "client", "macros"] }

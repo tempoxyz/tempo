@@ -52,6 +52,7 @@ alloy-primitives.workspace = true
 
 async-trait.workspace = true
 clap.workspace = true
+humantime = { workspace = true, optional = true }
 commonware-runtime = { workspace = true, features = ["external"] }
 eyre.workspace = true
 futures.workspace = true
@@ -141,3 +142,4 @@ trie-debug = [
 	"reth-node-core/trie-debug",
 	"tempo-payload-builder/trie-debug",
 ]
+jit = ["tempo-evm/jit", "dep:humantime"]

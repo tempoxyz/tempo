@@ -13,6 +13,8 @@ use reth_node_builder::{FullNode, NodeAdapter, RethFullAdapter};
 pub use tempo_transaction_pool::validator::DEFAULT_AA_VALID_AFTER_MAX_SECS;
 
 pub mod engine;
+#[cfg(feature = "jit")]
+pub mod jit;
 pub mod node;
 pub mod rpc;
 pub mod telemetry;
