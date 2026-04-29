@@ -18,9 +18,9 @@ pub const PRICE_SCALE: u32 = 100_000;
 
 /// Rounding direction for price conversions.
 ///
-/// Rounding should always favor the protocol to prevent insolvency:
-/// - When users deposit funds (escrow) → round UP (user pays more)
-/// - When users receive funds (settlement/refunds) → round DOWN (user receives less)
+/// Rounding prevents dust-level insolvency in maker/taker settlement:
+/// - When escrowing funds from a user → round UP (user pays more)
+/// - When releasing funds to a user → round DOWN (user receives less)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoundingDirection {
     /// Round down (floor division) - favors protocol when user receives funds

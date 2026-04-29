@@ -21,6 +21,8 @@ pub struct PrometheusMetricsConfig {
     pub auth_header: Option<String>,
     /// Consensus Identifier for this node.
     pub consensus_pubkey: Option<String>,
+    /// Peer Id for this node.
+    pub peer_id: String,
 }
 
 /// Spawns a task that periodically pushes both consensus and execution metrics to Victoria Metrics.
@@ -38,12 +40,15 @@ pub fn install_prometheus_metrics(
         .try_into()
         .wrap_err("invalid metrics duration")?;
 
-    let mut endpoint = config.endpoint;
+    let mut extra_label = format!("peer_id={}", config.peer_id);
     if let Some(pubkey) = config.consensus_pubkey {
-        endpoint
-            .query_pairs_mut()
-            .append_pair("extra_label", &format!("consensus_pubkey={pubkey}"));
+        extra_label.push_str(&format!(",consensus_pubkey={pubkey}"));
     }
+
+    let mut endpoint = config.endpoint;
+    endpoint
+        .query_pairs_mut()
+        .append_pair("extra_label", &extra_label);
 
     let url = endpoint.to_string();
     let client = reqwest::Client::new();

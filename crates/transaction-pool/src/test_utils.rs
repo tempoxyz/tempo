@@ -7,13 +7,15 @@ use crate::transaction::TempoPooledTransaction;
 use alloy_consensus::{Transaction, TxEip1559};
 use alloy_eips::eip2930::AccessList;
 use alloy_primitives::{Address, B256, Signature, TxKind, U256};
+use core::num::NonZeroU64;
 use reth_primitives_traits::Recovered;
-use reth_provider::test_utils::MockEthProvider;
+use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
 use reth_transaction_pool::{TransactionOrigin, ValidPoolTransaction};
 use std::time::Instant;
-use tempo_chainspec::{TempoChainSpec, spec::DEV};
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork, spec::DEV};
+use tempo_precompiles::storage::{StorageCtx, hashmap::HashMapStorageProvider};
 use tempo_primitives::{
-    TempoTxEnvelope,
+    TempoPrimitives, TempoTxEnvelope,
     transaction::{
         TempoSignedAuthorization, TempoTransaction,
         tempo_transaction::Call,
@@ -52,8 +54,8 @@ pub(crate) struct TxBuilder {
     max_priority_fee_per_gas: u128,
     max_fee_per_gas: u128,
     fee_token: Option<Address>,
-    valid_after: Option<u64>,
-    valid_before: Option<u64>,
+    valid_after: Option<NonZeroU64>,
+    valid_before: Option<NonZeroU64>,
     chain_id: u64,
     /// Custom calls for AA transactions. If None, a default call is created from `kind` and `value`.
     calls: Option<Vec<Call>>,
@@ -146,13 +148,13 @@ impl TxBuilder {
 
     /// Set the valid_after timestamp (AA transactions only).
     pub(crate) fn valid_after(mut self, valid_after: u64) -> Self {
-        self.valid_after = Some(valid_after);
+        self.valid_after = NonZeroU64::new(valid_after);
         self
     }
 
     /// Set the valid_before timestamp (AA transactions only).
     pub(crate) fn valid_before(mut self, valid_before: u64) -> Self {
-        self.valid_before = Some(valid_before);
+        self.valid_before = NonZeroU64::new(valid_before);
         self
     }
 
@@ -189,7 +191,7 @@ impl TxBuilder {
         });
 
         let tx = TempoTransaction {
-            chain_id: 1,
+            chain_id: self.chain_id,
             max_priority_fee_per_gas: self.max_priority_fee_per_gas,
             max_fee_per_gas: self.max_fee_per_gas,
             gas_limit: self.gas_limit,
@@ -245,7 +247,7 @@ impl TxBuilder {
         });
 
         let tx = TempoTransaction {
-            chain_id: 1,
+            chain_id: self.chain_id,
             max_priority_fee_per_gas: self.max_priority_fee_per_gas,
             max_fee_per_gas: self.max_fee_per_gas,
             gas_limit: self.gas_limit,
@@ -349,7 +351,44 @@ pub(crate) fn wrap_valid_tx(
 }
 
 /// Creates a mock provider with the DEV chain spec (all hardforks active at genesis).
-pub(crate) fn create_mock_provider()
--> MockEthProvider<reth_ethereum_primitives::EthPrimitives, TempoChainSpec> {
-    MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(DEV.clone()))
+pub(crate) fn create_mock_provider() -> MockEthProvider<TempoPrimitives, TempoChainSpec> {
+    MockEthProvider::new().with_chain_spec(std::sync::Arc::unwrap_or_clone(DEV.clone()))
+}
+
+/// Extension trait that lets tests populate `MockEthProvider` storage using the typed precompile
+/// handler API without relying on manual slot encoding.
+///
+/// # Example
+///
+/// ```ignore
+/// provider.setup_storage(TempoHardfork::T1C, || {
+///     AccountKeychain::new().keys[user][key_id].write(AuthorizedKey {
+///         signature_type: 0,
+///         expiry: u64::MAX,
+///         enforce_limits: false,
+///         is_revoked: false,
+///     })
+/// });
+/// ```
+pub(crate) trait MockProviderStorageExt {
+    fn setup_storage<R>(&self, spec: TempoHardfork, f: impl FnOnce() -> R) -> R;
+}
+
+impl<T: reth_primitives_traits::NodePrimitives> MockProviderStorageExt
+    for MockEthProvider<T, TempoChainSpec>
+{
+    fn setup_storage<R>(&self, spec: TempoHardfork, f: impl FnOnce() -> R) -> R {
+        let mut provider = HashMapStorageProvider::new_with_spec(1, spec);
+        let result = StorageCtx::enter(&mut provider, f);
+
+        for (address, slot, value) in provider.into_storage() {
+            let mut accounts = self.accounts.lock();
+            let account = accounts
+                .remove(&address)
+                .unwrap_or_else(|| ExtendedAccount::new(0, U256::ZERO));
+            accounts.insert(address, account.extend_storage([(B256::from(slot), value)]));
+        }
+
+        result
+    }
 }

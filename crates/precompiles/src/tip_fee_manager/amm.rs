@@ -58,9 +58,8 @@ pub struct PoolKey {
     pub validator_token: Address,
 }
 
-// TODO(rusowsky): remove this and create a read-only wrapper that is callable from read-only ctx with db access
 impl Pool {
-    /// Decodes a [`Pool`] directly from a raw EVM storage slot value.
+    /// Decodes a [`Pool`] from a raw EVM storage slot value (needed from changeset diffs).
     pub fn decode_from_slot(slot_value: U256) -> Self {
         use crate::storage::{LayoutCtx, Storable, packing::PackedSlot};
 
@@ -214,6 +213,11 @@ impl TipFeeManager {
     /// On first deposit the pool is initialized with equal reserves and [`MIN_LIQUIDITY`] is
     /// permanently locked. Subsequent deposits mint pro-rata to existing supply. Both tokens
     /// must be distinct, USD-denominated TIP-20s.
+    ///
+    /// NOTE: Validators who also provide liquidity have an information advantage over non-validator
+    /// LPs. Because validators choose their preferred fee token and control transaction inclusion
+    /// order as block producers, a validator-LP can predict which pool will receive fee-swap
+    /// revenue and position liquidity accordingly.
     ///
     /// # Errors
     /// - `IdenticalAddresses` — `user_token` equals `validator_token`

@@ -45,7 +45,10 @@ struct Config {
     init_at_height: u64,
     /// Number of V1 validators skipped during migration (bad pubkey, duplicate, etc).
     /// Packed alongside `is_init` and `init_at_height` since all are migration lifecycle state.
-    migration_skipped_count: u16,
+    migration_skipped_count: u8,
+    /// Snapshotted V1 validator count, captured on the first `migrateValidator` call.
+    /// Used for index validation so V1 mutations cannot break migration ordering.
+    v1_validator_count: u8,
 }
 
 impl Config {
@@ -55,6 +58,7 @@ impl Config {
             is_init,
             init_at_height,
             migration_skipped_count: 0,
+            v1_validator_count: 0,
         }
     }
 
@@ -286,23 +290,12 @@ impl ValidatorConfigV2 {
         self.read_validator_at(idx1 - 1)
     }
 
-    /// Returns all validators ever added, including deactivated entries and rotation snapshots,
-    /// ordered by their global index.
-    pub fn get_validators(&self) -> Result<Vec<IValidatorConfigV2::Validator>> {
-        let count = self.validator_count()?;
-        let mut out = Vec::with_capacity(count as usize);
-        for i in 0..count {
-            out.push(self.read_validator_at(i)?);
-        }
-        Ok(out)
-    }
-
     /// Returns only active validators (where `deactivatedAtHeight == 0`).
     ///
     /// NOTE: the order of returned validator records is NOT stable and should NOT be relied upon.
     pub fn get_active_validators(&self) -> Result<Vec<IValidatorConfigV2::Validator>> {
         let count = self.active_indices.len()?;
-        let mut out = Vec::with_capacity(count);
+        let mut out = Vec::new();
         for i in 0..count {
             let global_idx1 = self.active_indices[i].read()?;
             out.push(self.read_validator_at(global_idx1 - 1)?);
@@ -891,12 +884,19 @@ impl ValidatorConfigV2 {
         let mut config = self.config.read()?.require_not_init()?;
 
         if config.owner.is_zero() {
-            config.owner = v1().owner()?;
+            let v1 = v1();
+            config.owner = v1.owner()?;
+            let v1_count = v1.validator_count()?;
+            if v1_count == 0 {
+                Err(ValidatorConfigV2Error::empty_v1_validator_set())?
+            }
+            config.v1_validator_count = v1_count as u8;
             self.config.write(Config {
                 owner: config.owner,
                 is_init: false,
                 init_at_height: 0,
                 migration_skipped_count: 0,
+                v1_validator_count: config.v1_validator_count,
             })?;
         }
 
@@ -929,7 +929,7 @@ impl ValidatorConfigV2 {
         let block_height = self.storage.block_number();
 
         let v1 = v1();
-        let v1_count = v1.validator_count()?;
+        let v1_count = u64::from(config.v1_validator_count);
         let migrated = self.validator_count()?;
         let skipped = config.migration_skipped_count;
 
@@ -1025,16 +1025,17 @@ impl ValidatorConfigV2 {
     /// - `MigrationNotComplete` — `validator_count + skipped < v1.validator_count`
     pub fn initialize_if_migrated(&mut self, sender: Address) -> Result<()> {
         let mut config = self.require_migration_owner(sender)?;
-        let v1 = v1();
 
         // NOTE: this count comparison is sufficient because `add_validator` and
         // `rotate_validator` are blocked until the contract is initialized.
-        if self.validator_count()? + u64::from(config.migration_skipped_count)
-            < v1.validator_count()?
+        if config.v1_validator_count == 0
+            || self.validator_count()? + u64::from(config.migration_skipped_count)
+                < u64::from(config.v1_validator_count)
         {
             Err(ValidatorConfigV2Error::migration_not_complete())?
         }
 
+        let v1 = v1();
         let v1_next_dkg = v1.get_next_full_dkg_ceremony()?;
         self.next_network_identity_rotation_epoch
             .write(v1_next_dkg)?;
@@ -1550,7 +1551,7 @@ mod tests {
             assert_eq!(active.len(), 1);
             assert_eq!(active[0].validatorAddress, v2);
 
-            assert_eq!(vc.get_validators()?.len(), 2);
+            assert_eq!(vc.validator_count()?, 2);
 
             Ok(())
         })
