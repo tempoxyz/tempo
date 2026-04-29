@@ -9,7 +9,7 @@ use alloy_primitives::Address;
 use alloy_rlp::Decodable;
 pub use assemble::TempoBlockAssembler;
 mod block;
-pub use block::TempoReceiptBuilder;
+pub use block::{TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
 mod context;
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
 #[cfg(feature = "engine")]
@@ -23,7 +23,7 @@ use std::{borrow::Cow, sync::Arc};
 
 use alloy_evm::{
     self, EvmEnv,
-    block::{BlockExecutorFactory, BlockExecutorFor},
+    block::BlockExecutorFactory,
     eth::{EthBlockExecutionCtx, NextEvmEnvAttributes},
     revm::Inspector,
 };
@@ -36,7 +36,7 @@ use tempo_primitives::{
     subblock::PartialValidatorKey,
 };
 
-use crate::{block::TempoBlockExecutor, evm::TempoEvm};
+use crate::evm::TempoEvm;
 use reth_evm_ethereum::EthEvmConfig;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_revm::{evm::TempoContext, gas_params::tempo_gas_params};
@@ -93,6 +93,9 @@ impl BlockExecutorFactory for TempoEvmConfig {
     type ExecutionCtx<'a> = TempoBlockExecutionCtx<'a>;
     type Transaction = TempoTxEnvelope;
     type Receipt = TempoReceipt;
+    type TxExecutionResult = TempoTxResult<TempoHaltReason>;
+    type Executor<'a, DB: StateDB, I: Inspector<TempoContext<DB>>> =
+        TempoBlockExecutor<'a, DB, I>;
 
     fn evm_factory(&self) -> &Self::EvmFactory {
         self.inner.executor_factory.evm_factory()
@@ -102,10 +105,10 @@ impl BlockExecutorFactory for TempoEvmConfig {
         &'a self,
         evm: TempoEvm<DB, I>,
         ctx: Self::ExecutionCtx<'a>,
-    ) -> impl BlockExecutorFor<'a, Self, DB, I>
+    ) -> Self::Executor<'a, DB, I>
     where
-        DB: StateDB + 'a,
-        I: Inspector<TempoContext<DB>> + 'a,
+        DB: StateDB,
+        I: Inspector<TempoContext<DB>>,
     {
         TempoBlockExecutor::new(evm, ctx, self.chain_spec())
     }
