@@ -550,6 +550,9 @@ where
                     }
                 }
 
+                // Warm the global keccak cache with storage slot hashes for this transaction.
+                transaction.transaction().precalculate_keccak_slots();
+
                 TransactionValidationOutcome::Valid {
                     balance,
                     state_nonce,
