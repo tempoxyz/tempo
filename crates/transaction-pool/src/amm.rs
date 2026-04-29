@@ -22,7 +22,7 @@ use tempo_precompiles::{
     error::Result as TempoResult,
     tip_fee_manager::{
         TipFeeManager,
-        amm::{FeeSwapPlan, Pool, SwapInfo, compute_amount_out},
+        amm::{FeeRoute, Pool, compute_amount_out},
     },
     tip20,
 };
@@ -67,7 +67,7 @@ impl AmmLiquidityCache {
     ) -> Result<bool, ProviderError> {
         let amount_out = compute_amount_out(fee).map_err(ProviderError::other)?;
 
-        let mut deferred = Vec::new();
+        let mut missing_in_cache = Vec::new();
         let current_fork;
 
         // Hot path: decide each `(user, validator)` pair entirely from the primitive cache.
@@ -102,14 +102,14 @@ impl AmmLiquidityCache {
                                 (Some(_), Some(_)) => {} // Both cached and not enough liquidity.
                                 _ => {
                                     // A leg's reserve is missing: defer.
-                                    deferred.push(validator_token);
+                                    missing_in_cache.push(validator_token);
                                     continue;
                                 }
                             }
                         }
                         Some(_) => {} // Cached as zero / equal to validator: no two-hop path possible.
                         None => {
-                            deferred.push(validator_token);
+                            missing_in_cache.push(validator_token);
                             continue;
                         }
                     }
@@ -117,48 +117,36 @@ impl AmmLiquidityCache {
 
                 // Direct unknown and (pre-T5 || two-hop ruled out): defer.
                 if direct.is_none() {
-                    deferred.push(validator_token);
+                    missing_in_cache.push(validator_token);
                 }
             }
         }
 
-        if deferred.is_empty() {
+        if missing_in_cache.is_empty() {
             return Ok(false);
         }
 
-        // Slow path: check `plan_fee_swap` for deferred checks. This might race other fetches but we're OK with it.
+        // Slow path: ask the planner. Unconditionally warm all its reported `data.pools`.
+        // This might race other fetches but we're OK with it.
         state_provider
             .with_read_only_storage_ctx(current_fork, || -> TempoResult<bool> {
                 let manager = TipFeeManager::new();
-                for validator_token in deferred {
-                    let attempt = manager.plan_fee_swap(user_token, validator_token, fee)?;
-                    {
+                for validator_token in missing_in_cache {
+                    let plan = manager.plan_fee_route(user_token, validator_token, fee)?;
+                    if !plan.pools.is_empty() {
                         let mut inner = self.inner.write();
-                        let cache_pool =
-                            |inner: &mut AmmLiquidityCacheInner,
-                             pair: (Address, Address),
-                             swap: &SwapInfo| {
-                                let slot = manager.pools[swap.pool_id].base_slot();
-                                inner.pool_cache.insert(pair, U256::from(swap.reserves));
-                                inner.slot_to_pool.insert(slot, pair);
-                            };
-
-                        if let Some(swap) = attempt.direct_check() {
-                            cache_pool(&mut inner, (user_token, validator_token), swap);
+                        for &(pair, reserve) in &plan.pools {
+                            let id = manager.pool_id(pair.0, pair.1);
+                            let slot = manager.pools[id].base_slot();
+                            inner.pool_cache.insert(pair, U256::from(reserve));
+                            inner.slot_to_pool.insert(slot, pair);
                         }
-                        if let Some(FeeSwapPlan::TwoHop {
-                            intermediate,
-                            swap1,
-                            swap2,
-                        }) = &attempt.plan
-                        {
-                            inner.quote_token_cache.insert(user_token, *intermediate);
-                            cache_pool(&mut inner, (user_token, *intermediate), swap1);
-                            cache_pool(&mut inner, (*intermediate, validator_token), swap2);
+                        if let Some(FeeRoute::TwoHop(hop)) = plan.route {
+                            inner.quote_token_cache.insert(user_token, hop);
                         }
                     }
                     // If there is enough liquidity, short circuit and return `true`
-                    if attempt.is_sufficient() {
+                    if plan.route.is_some() {
                         return Ok(true);
                     }
                 }

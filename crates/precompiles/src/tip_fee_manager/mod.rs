@@ -8,7 +8,7 @@ pub mod dispatch;
 use crate::{
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
-    tip_fee_manager::amm::{FeeSwapPlan, Pool, compute_amount_out},
+    tip_fee_manager::amm::{FeeRoute, Pool, compute_amount_out},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
     tip20_factory::TIP20Factory,
 };
@@ -186,33 +186,35 @@ impl TipFeeManager {
         tip20_token.transfer_fee_pre_tx(fee_payer, max_amount)?;
 
         if !skip_liquidity_check {
-            let attempt = self.plan_fee_swap(user_token, validator_token, max_amount)?;
-            if !attempt.is_sufficient() {
-                return Err(TIPFeeAMMError::insufficient_liquidity().into());
-            }
-
-            match attempt.plan {
-                Some(FeeSwapPlan::SameToken) => {}
-                Some(FeeSwapPlan::Direct(swap)) => {
+            match self
+                .plan_fee_route(user_token, validator_token, max_amount)?
+                .route
+            {
+                None => return Err(TIPFeeAMMError::insufficient_liquidity().into()),
+                Some(FeeRoute::SameToken) => {}
+                Some(FeeRoute::Direct) => {
                     if self.storage.spec().is_t1c() {
-                        self.reserve_pool_liquidity(swap.pool_id, swap.amount_out)?;
+                        let amount_out: u128 = compute_amount_out(max_amount)?
+                            .try_into()
+                            .map_err(|_| TempoPrecompileError::under_overflow())?;
+                        self.reserve_pool_liquidity(
+                            self.pool_id(user_token, validator_token),
+                            amount_out,
+                        )?;
                     }
                 }
-                Some(FeeSwapPlan::TwoHop {
-                    intermediate,
-                    swap1,
-                    swap2,
-                }) => {
-                    debug_assert!(
-                        self.storage.spec().is_t1c(),
-                        "two-hop fallback is T5-gated and T5 implies T1C",
-                    );
-                    self.reserve_pool_liquidity(swap1.pool_id, swap1.amount_out)?;
-                    self.reserve_pool_liquidity(swap2.pool_id, swap2.amount_out)?;
+                Some(FeeRoute::TwoHop(intermediate)) => {
+                    // T5+ implies T1C+, so reservation is always required here.
+                    let out1: u128 = compute_amount_out(max_amount)?
+                        .try_into()
+                        .map_err(|_| TempoPrecompileError::under_overflow())?;
+                    let out2: u128 = compute_amount_out(U256::from(out1))?
+                        .try_into()
+                        .map_err(|_| TempoPrecompileError::under_overflow())?;
+                    self.reserve_pool_liquidity(self.pool_id(user_token, intermediate), out1)?;
+                    self.reserve_pool_liquidity(self.pool_id(intermediate, validator_token), out2)?;
                     self.two_hop_intermediate.t_write(intermediate)?;
                 }
-                // Unreachable: `is_sufficient()` above rejects `None`.
-                None => unreachable!("guarded by is_sufficient()"),
             }
         }
 
