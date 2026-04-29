@@ -8,7 +8,7 @@
 pub mod dispatch;
 
 use crate::{
-    ADDRESS_REGISTRY_ADDRESS,
+    ADDRESS_REGISTRY_ADDRESS, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     error::Result,
     storage::{Handler, Mapping},
 };
@@ -155,6 +155,13 @@ impl AddressRegistry {
             Some((master_id, _)) => Ok(self.get_master(master_id)?.unwrap_or(Address::ZERO)),
         }
     }
+
+    /// Returns true if `addr` is on the TIP-1035 Implicit Approval List for the
+    /// active hardfork.
+    pub fn is_implicitly_approved(&self, addr: Address) -> bool {
+        self.storage.spec().is_t5()
+            && matches!(addr, TIP_FEE_MANAGER_ADDRESS | STABLECOIN_DEX_ADDRESS)
+    }
 }
 
 #[cfg(test)]
@@ -271,6 +278,30 @@ mod tests {
                 result.unwrap_err(),
                 TempoPrecompileError::AddrRegistryError(AddrRegistryError::InvalidMasterAddress(_))
             ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_is_implicitly_approved_tracks_t5_activation() -> eyre::Result<()> {
+        let mut t4_storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+        StorageCtx::enter(&mut t4_storage, || {
+            let registry = AddressRegistry::new();
+
+            assert!(!registry.is_implicitly_approved(TIP_FEE_MANAGER_ADDRESS));
+            assert!(!registry.is_implicitly_approved(STABLECOIN_DEX_ADDRESS));
+
+            Ok(())
+        })?;
+
+        let mut t5_storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        StorageCtx::enter(&mut t5_storage, || {
+            let registry = AddressRegistry::new();
+
+            assert!(registry.is_implicitly_approved(TIP_FEE_MANAGER_ADDRESS));
+            assert!(registry.is_implicitly_approved(STABLECOIN_DEX_ADDRESS));
+            assert!(!registry.is_implicitly_approved(Address::random()));
 
             Ok(())
         })

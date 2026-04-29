@@ -31,6 +31,9 @@ impl Precompile for AddressRegistry {
                 IAddressRegistryCalls::resolveVirtualAddress(call) => {
                     view(call, |c| self.resolve_virtual_address(c.virtualAddr))
                 }
+                IAddressRegistryCalls::isImplicitlyApproved(call) => {
+                    view(call, |c| Ok(self.is_implicitly_approved(c.addr)))
+                }
                 // Pure functions
                 IAddressRegistryCalls::isVirtualAddress(call) => {
                     view(call, |c| Ok(c.addr.is_virtual()))
@@ -51,6 +54,7 @@ impl Precompile for AddressRegistry {
 mod tests {
     use super::*;
     use crate::{
+        TIP_FEE_MANAGER_ADDRESS,
         address_registry::IAddressRegistry,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
@@ -117,6 +121,28 @@ mod tests {
             };
             let result = registry.call(&call.abi_encode(), Address::ZERO)?;
             assert!(bool::abi_decode(&result.bytes).unwrap());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_is_implicitly_approved_precompile() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = AddressRegistry::new();
+
+            let call = IAddressRegistry::isImplicitlyApprovedCall {
+                addr: TIP_FEE_MANAGER_ADDRESS,
+            };
+            let result = registry.call(&call.abi_encode(), Address::ZERO)?;
+            assert!(bool::abi_decode(&result.bytes).unwrap());
+
+            let call = IAddressRegistry::isImplicitlyApprovedCall {
+                addr: Address::random(),
+            };
+            let result = registry.call(&call.abi_encode(), Address::ZERO)?;
+            assert!(!bool::abi_decode(&result.bytes).unwrap());
 
             Ok(())
         })
