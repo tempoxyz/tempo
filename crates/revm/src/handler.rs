@@ -3092,7 +3092,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "TODO: TIP-1016 deferred; re-enable when cfg_env.enable_amsterdam_eip8037 defaults to true"]
     fn test_t4_key_authorization_matches_tip1016_sstore_regular_cost() {
         use tempo_primitives::transaction::{
             KeyAuthorization, SignatureType, SignedKeyAuthorization,
@@ -3107,7 +3106,9 @@ mod tests {
             signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
         };
 
-        let gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T4);
+        // TIP-1016 is opt-in via amsterdam_eip8037; manually enable for this test.
+        let gas_params =
+            crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
 
         let sig_gas = ECRECOVER_GAS + primitive_signature_verification_gas(&key_auth.signature);
         let sload = gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
@@ -4766,9 +4767,10 @@ mod tests {
     /// Note: new_account_state_gas for the caller (nonce==0 with 2D nonce) is added
     /// later in validate_against_state_and_deduct_caller, not in upstream initial_tx_gas.
     #[test]
-    #[ignore = "TODO: TIP-1016 deferred; re-enable when cfg_env.enable_amsterdam_eip8037 defaults to true"]
     fn test_state_gas_standard_create_tx_populates_initial_state_gas() {
-        let gas_params = tempo_gas_params(TempoHardfork::T4);
+        // TIP-1016 is opt-in via amsterdam_eip8037; manually enable for this test.
+        let gas_params =
+            crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
         let initcode = Bytes::from(vec![0x60, 0x80]);
 
         let init_gas = gas_params.initial_tx_gas(
@@ -4907,7 +4909,6 @@ mod tests {
     /// TIP-1016: When enable_amsterdam_eip8037 is true, tx gas limit can exceed the cap
     /// (upstream revm validation skips the cap check).
     #[test]
-    #[ignore = "TODO: TIP-1016 deferred; re-enable when cfg_env.enable_amsterdam_eip8037 defaults to true"]
     fn test_state_gas_tx_gas_limit_above_cap_allowed() {
         let calldata = Bytes::from(vec![1, 2, 3]);
 
@@ -4921,8 +4922,12 @@ mod tests {
             ..Default::default()
         };
 
+        // TIP-1016 is opt-in via amsterdam_eip8037; manually enable for this test.
         let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T4, tx_env, |cfg| {
             cfg.tx_gas_limit_cap = Some(30_000_000);
+            cfg.enable_amsterdam_eip8037 = true;
+            cfg.gas_params =
+                crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
         });
 
         // validate_env should pass even though gas_limit > cap
@@ -5151,9 +5156,10 @@ mod tests {
 
     /// TIP-1016: AA auth list entries with nonce==0 should track state gas.
     #[test]
-    #[ignore = "TODO: TIP-1016 deferred; re-enable when cfg_env.enable_amsterdam_eip8037 defaults to true"]
     fn test_state_gas_aa_auth_list_nonce_zero() {
-        let gas_params = tempo_gas_params(TempoHardfork::T4);
+        // TIP-1016 is opt-in via amsterdam_eip8037; manually enable for this test.
+        let gas_params =
+            crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
 
         let aa_env = TempoBatchCallEnv {
             signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
