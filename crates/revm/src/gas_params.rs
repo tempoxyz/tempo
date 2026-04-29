@@ -140,8 +140,7 @@ mod tests {
 
     #[test]
     fn test_t1_gas_params_no_state_gas_split() {
-        let gas_params =
-            tempo_gas_params_with_amsterdam(TempoHardfork::T1, TempoHardfork::T1.is_t4());
+        let gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T1, false);
 
         // T1 has full 250k costs in regular gas, no state gas split
         assert_eq!(
@@ -185,8 +184,7 @@ mod tests {
     /// + cold slot surcharge (2,100) + state gas (230,000) = 252,200.
     #[test]
     fn test_t4_gas_params_splits_storage_costs() {
-        let gas_params =
-            tempo_gas_params_with_amsterdam(TempoHardfork::T4, TempoHardfork::T4.is_t4());
+        let gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
 
         // T4 execution gas (regular/computational overhead)
         // SSTORE keeps revm's decomposed accounting: static(100) + sstore_set_without_load(20,000),
@@ -287,7 +285,7 @@ mod tests {
     /// T4 cold SSTORE = warm path + cold_slot_access(2,100) = 252,200.
     #[test]
     fn test_t4_totals_match_spec() {
-        let t4 = tempo_gas_params_with_amsterdam(TempoHardfork::T4, TempoHardfork::T4.is_t4());
+        let t4 = tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
 
         // Warm SSTORE total: write component(20,000) + warm read(100) + state(230,000)
         let warm_sstore_regular =
