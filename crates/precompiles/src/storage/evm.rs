@@ -379,7 +379,7 @@ mod tests {
 
     impl TestEvm {
         fn new(spec: TempoHardfork) -> Self {
-            Self::new_with_amsterdam(spec, false)
+            Self::with_amsterdam(spec, false)
         }
 
         /// Constructs a [`TestEvm`] with TIP-1016 (EIP-8037) manually enabled.
@@ -387,7 +387,11 @@ mod tests {
         /// Used by tests that exercise TIP-1016 behavior (state gas split, reservoir
         /// accounting). TIP-1016 is otherwise opt-in via `cfg.enable_amsterdam_eip8037`,
         /// which defaults to `false` in production.
-        fn new_with_amsterdam(spec: TempoHardfork, amsterdam_eip8037_enabled: bool) -> Self {
+        fn new_with_tip1016(spec: TempoHardfork) -> Self {
+            Self::with_amsterdam(spec, true)
+        }
+
+        fn with_amsterdam(spec: TempoHardfork, amsterdam_eip8037_enabled: bool) -> Self {
             let db = CacheDB::new(EmptyDB::new());
             let mut cfg = revm::context::CfgEnv::<TempoHardfork>::default();
             cfg.spec = spec;
@@ -746,7 +750,7 @@ mod tests {
 
     #[test]
     fn test_state_gas_used_only_counts_state_creating_ops() -> eyre::Result<()> {
-        let mut evm = TestEvm::new_with_amsterdam(TempoHardfork::T4, true);
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
         let gas_params = evm.ctx().cfg.gas_params.clone();
         let mut provider = evm.provider_with_reservoir(0);
 
@@ -803,7 +807,7 @@ mod tests {
     /// spills into regular gas once the reservoir is exhausted.
     #[test]
     fn test_state_gas_spills_from_reservoir_to_regular_gas() -> eyre::Result<()> {
-        let mut evm = TestEvm::new_with_amsterdam(TempoHardfork::T4, true);
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
 
         // Reservoir = 500k: enough for 2 full SSTOREs (2 × 230k = 460k)
         // but the 3rd SSTORE (230k) must spill 190k into regular gas.
@@ -872,7 +876,7 @@ mod tests {
 
     #[test]
     fn test_t4_cold_sstore_matches_tip1016_spec() -> eyre::Result<()> {
-        let mut evm = TestEvm::new_with_amsterdam(TempoHardfork::T4, true);
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
         let mut provider = evm.provider_with_reservoir(460_000);
 
         let (address, cold_slot, warm_slot) = (Address::random(), U256::ONE, U256::from(2));
@@ -910,7 +914,7 @@ mod tests {
 
     #[test]
     fn test_t4_set_code_new_account_matches_tip1016_success_path() -> eyre::Result<()> {
-        let mut evm = TestEvm::new_with_amsterdam(TempoHardfork::T4, true);
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
         let gas_params = evm.ctx().cfg.gas_params.clone();
 
         let code = Bytecode::new_raw(vec![0xef].into());
