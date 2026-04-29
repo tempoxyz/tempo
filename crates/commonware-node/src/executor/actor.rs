@@ -147,12 +147,13 @@ where
                 |hash| hash.ok_or_eyre("execution layer does not have the block hash"),
             )
             .wrap_err("failed to read the last finalized block hash")?;
+        let last_execution_finalized_height = Height::new(last_execution_finalized_height);
         let fcu_heartbeat_timer = Box::pin(context.sleep(fcu_heartbeat_interval));
         Ok(Self {
             context: ContextCell::new(context),
             execution_node,
             last_consensus_finalized_height: last_finalized_height,
-            last_execution_finalized_height: Height::new(last_execution_finalized_height),
+            last_execution_finalized_height,
             mailbox,
             marshal,
             last_canonicalized: LastCanonicalized {
@@ -161,8 +162,8 @@ where
                     safe_block_hash: last_finalized_block_hash,
                     finalized_block_hash: last_finalized_block_hash,
                 },
-                head_height: Height::zero(),
-                finalized_height: Height::zero(),
+                head_height: last_execution_finalized_height,
+                finalized_height: last_execution_finalized_height,
             },
             fcu_heartbeat_interval,
             fcu_heartbeat_timer,
