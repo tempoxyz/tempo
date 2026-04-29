@@ -14,11 +14,10 @@ interface ITIP20ChannelEscrow {
     }
 
     struct ChannelState {
-        bool finalized;
-        uint32 closeRequestedAt;
-        uint32 expiresAt;
-        uint96 deposit;
         uint96 settled;
+        uint96 deposit;
+        uint32 expiresAt;
+        uint32 closeData;
     }
 
     struct Channel {
