@@ -254,7 +254,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
     use tempo_chainspec::{
         hardfork::TempoHardfork,
-        spec::{MODERATO, TempoChainSpec},
+        spec::{DEV, MODERATO, TempoChainSpec},
     };
 
     fn current_timestamp_millis() -> u64 {
@@ -827,7 +827,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_block_pre_execution_no_system_tx() {
+    fn test_validate_block_pre_execution_pre_t4_missing_system_tx() {
         let consensus = TempoConsensus::new(MODERATO.clone());
         let chain_id = MODERATO.chain().id();
 
@@ -850,6 +850,23 @@ mod tests {
                 )),
             "Expected MissingEndOfBlockSystemTxs, got: {err:?}"
         );
+    }
+
+    #[test]
+    fn test_validate_block_pre_execution_t4_allows_missing_system_tx() {
+        let consensus = TempoConsensus::new(DEV.clone());
+        let chain_id = DEV.chain().id();
+
+        let user_tx = create_tx(chain_id);
+
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(0)
+            .build();
+        let block = create_valid_block(header, vec![user_tx]);
+        let sealed = SealedBlock::seal_slow(block);
+
+        assert!(consensus.validate_block_pre_execution(&sealed).is_ok());
     }
 
     #[test]

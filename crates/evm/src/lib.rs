@@ -510,6 +510,40 @@ mod tests {
     }
 
     #[test]
+    fn test_context_for_block_t4_without_metadata_has_empty_fee_recipients() {
+        use tempo_chainspec::spec::DEV;
+
+        let chainspec = DEV.clone();
+        let evm_config = TempoEvmConfig::new(chainspec.clone());
+
+        let header = TempoHeader {
+            inner: alloy_consensus::Header {
+                number: 1,
+                timestamp: 1000,
+                gas_limit: 30_000_000,
+                parent_beacon_block_root: Some(B256::ZERO),
+                ..Default::default()
+            },
+            general_gas_limit: 10_000_000,
+            timestamp_millis_part: 500,
+            shared_gas_limit: 3_000_000,
+            ..Default::default()
+        };
+
+        let body = BlockBody {
+            transactions: vec![],
+            ommers: vec![],
+            withdrawals: None,
+        };
+
+        let block = Block { header, body };
+        let sealed_block = SealedBlock::seal_slow(block);
+
+        let context = evm_config.context_for_block(&sealed_block).unwrap();
+        assert!(context.subblock_fee_recipients.is_empty());
+    }
+
+    #[test]
     fn test_context_for_next_block() {
         let evm_config = TempoEvmConfig::new(test_chainspec());
 

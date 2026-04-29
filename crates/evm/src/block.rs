@@ -852,6 +852,28 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_system_tx_rejects_metadata_tx_in_t4() {
+        let chainspec = DEV.clone();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+
+        // TestExecutorBuilder seeds the default runtime spec, so force the T4 path explicitly.
+        executor.inner.evm.cfg.spec = tempo_chainspec::hardfork::TempoHardfork::T4;
+
+        let signer = PrivateKey::from_seed(0);
+        let metadata = vec![create_valid_subblock_metadata(B256::ZERO, &signer)];
+        let input = create_system_tx_input(metadata, 1);
+        let system_tx = create_system_tx(chainspec.chain().id(), input);
+
+        let result = executor.validate_system_tx(&system_tx);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "subblocks are disabled in T4+"
+        );
+    }
+
+    #[test]
     fn test_validate_shared_gas() {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
@@ -1230,6 +1252,40 @@ mod tests {
 
         let result = executor.finish();
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_finish_t4_without_metadata_passes_when_incentive_gas_is_zero() {
+        let chainspec = DEV.clone();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .with_validator_set(vec![B256::repeat_byte(0x01)])
+            .build(&mut db, &chainspec);
+
+        executor.inner.evm.cfg.spec = tempo_chainspec::hardfork::TempoHardfork::T4;
+        executor.apply_pre_execution_changes().unwrap();
+
+        assert!(executor.finish().is_ok());
+    }
+
+    #[test]
+    fn test_finish_t4_without_metadata_rejects_incentive_gas() {
+        let chainspec = DEV.clone();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .with_validator_set(vec![B256::repeat_byte(0x01)])
+            .with_incentive_gas_used(1)
+            .build(&mut db, &chainspec);
+
+        executor.inner.evm.cfg.spec = tempo_chainspec::hardfork::TempoHardfork::T4;
+        executor.apply_pre_execution_changes().unwrap();
+
+        match executor.finish() {
+            Err(err) => assert_eq!(err.to_string(), "incentive gas limit exceeded"),
+            Ok(_) => panic!("finish should fail when T4 block has incentive gas without metadata"),
+        }
     }
 
     #[test]
