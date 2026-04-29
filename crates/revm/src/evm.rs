@@ -218,7 +218,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::gas_params::tempo_gas_params_with_amsterdam;
+    use crate::gas_params::tempo_gas_params;
     use alloy_eips::eip7702::Authorization;
     use alloy_evm::FromRecoveredTx;
     use alloy_primitives::{Address, Bytes, TxKind, U256, bytes};
@@ -328,8 +328,7 @@ mod tests {
         let mut cfg = CfgEnv::<TempoHardfork>::default();
         cfg.spec = TempoHardfork::T1C;
         // Apply TIP-1000 gas params for T1C hardfork
-        cfg.gas_params =
-            tempo_gas_params_with_amsterdam(TempoHardfork::T1C, TempoHardfork::T1C.is_t4());
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T1C);
 
         let ctx = Context::mainnet()
             .with_db(db)
@@ -347,8 +346,7 @@ mod tests {
         let db = CacheDB::new(EmptyDB::new());
         let mut cfg = CfgEnv::<TempoHardfork>::default();
         cfg.spec = TempoHardfork::T3;
-        cfg.gas_params =
-            tempo_gas_params_with_amsterdam(TempoHardfork::T3, TempoHardfork::T3.is_t4());
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T3);
 
         let ctx = Context::mainnet()
             .with_db(db)
@@ -379,8 +377,7 @@ mod tests {
         let db = CacheDB::new(EmptyDB::new());
         let mut cfg = CfgEnv::<TempoHardfork>::default();
         cfg.spec = TempoHardfork::T1;
-        cfg.gas_params =
-            tempo_gas_params_with_amsterdam(TempoHardfork::T1, TempoHardfork::T1.is_t4());
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T1);
 
         let mut block = TempoBlockEnv::default();
         block.inner.timestamp = U256::from(timestamp);
@@ -2408,7 +2405,7 @@ mod tests {
             let db = CacheDB::new(EmptyDB::new());
             let mut cfg = CfgEnv::<TempoHardfork>::default();
             cfg.spec = spec;
-            cfg.gas_params = tempo_gas_params_with_amsterdam(spec, spec.is_t4());
+            cfg.gas_params = tempo_gas_params(spec);
 
             let ctx = Context::mainnet()
                 .with_db(db)
@@ -2526,7 +2523,7 @@ mod tests {
             let db = CacheDB::new(EmptyDB::new());
             let mut cfg = CfgEnv::<TempoHardfork>::default();
             cfg.spec = spec;
-            cfg.gas_params = tempo_gas_params_with_amsterdam(spec, spec.is_t4());
+            cfg.gas_params = tempo_gas_params(spec);
 
             let ctx = Context::mainnet()
                 .with_db(db)
