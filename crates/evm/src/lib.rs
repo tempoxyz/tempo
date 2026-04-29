@@ -94,8 +94,7 @@ impl BlockExecutorFactory for TempoEvmConfig {
     type Transaction = TempoTxEnvelope;
     type Receipt = TempoReceipt;
     type TxExecutionResult = TempoTxResult<TempoHaltReason>;
-    type Executor<'a, DB: StateDB, I: Inspector<TempoContext<DB>>> =
-        TempoBlockExecutor<'a, DB, I>;
+    type Executor<'a, DB: StateDB, I: Inspector<TempoContext<DB>>> = TempoBlockExecutor<'a, DB, I>;
 
     fn evm_factory(&self) -> &Self::EvmFactory {
         self.inner.executor_factory.evm_factory()
