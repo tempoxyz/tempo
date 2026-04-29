@@ -303,8 +303,6 @@ async fn run_p2p_network(
     config.sessions_config.session_event_buffer = cfg.max_concurrent_inbound;
 
     let (requests_tx, mut requests_rx) = tokio::sync::mpsc::channel(1024);
-    // 32 MiB memory budget for inbound transaction events; matches reth's default
-    // `tx_channel_memory_limit_bytes`.
     let (transactions_tx, mut transactions_rx) = reth_metrics::common::mpsc::memory_bounded_channel(
         config
             .transactions_manager_config
