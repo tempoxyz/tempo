@@ -436,7 +436,7 @@ impl Inner<Init> {
         parent_view: View,
         parent_digest: Digest,
         round: Round,
-        payload_id_rx_slot: &mut Option<oneshot::Receiver<eyre::Result<PayloadId>>>,
+        payload_id_rx: &mut Option<oneshot::Receiver<eyre::Result<PayloadId>>>,
         payload_id_slot: &mut Option<PayloadId>,
         leader: PublicKey,
     ) -> eyre::Result<Digest> {
@@ -620,13 +620,13 @@ impl Inner<Init> {
         // Share the dispatch receiver with the cancel branch so that, if cancellation
         // hits between dispatch send and receiving `payload_id`, the cancel branch can
         // still drain the rx, learn `payload_id`, and cancel the now-registered job.
-        *payload_id_rx_slot = Some(self.state.executor.canonicalize_and_build(
+        *payload_id_rx = Some(self.state.executor.canonicalize_and_build(
             parent.height(),
             parent.digest(),
             attrs,
         )?);
 
-        let payload_id = payload_id_rx_slot
+        let payload_id = payload_id_rx
             .as_mut()
             .expect("just set")
             .await
@@ -635,7 +635,7 @@ impl Inner<Init> {
 
         // Once we hold `payload_id`, the cancel branch no longer needs the rx;
         // it can cancel directly by id.
-        *payload_id_rx_slot = None;
+        *payload_id_rx = None;
         *payload_id_slot = Some(payload_id);
 
         let elapsed = propose_start.elapsed();
