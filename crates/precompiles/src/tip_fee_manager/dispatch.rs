@@ -1,7 +1,7 @@
 //! ABI dispatch for the [`TipFeeManager`] precompile.
 
 use crate::{
-    Precompile, dispatch_call, input_cost, metadata, mutate, mutate_void,
+    Precompile, charge_input_cost, dispatch_call, metadata, mutate, mutate_void,
     storage::Handler,
     tip_fee_manager::{
         ITIPFeeAMM, TipFeeManager,
@@ -10,7 +10,7 @@ use crate::{
     view,
 };
 use alloy::{primitives::Address, sol_types::SolInterface};
-use revm::precompile::{PrecompileError, PrecompileResult};
+use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::{IFeeManager::IFeeManagerCalls, ITIPFeeAMM::ITIPFeeAMMCalls};
 
 /// Unified calldata discriminant for both `IFeeManager` and `ITIPFeeAMM` selectors.
@@ -34,105 +34,102 @@ impl TipFeeManagerCall {
 
 impl Precompile for TipFeeManager {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
-        self.storage
-            .deduct_gas(input_cost(calldata.len()))
-            .map_err(|_| PrecompileError::OutOfGas)?;
+        if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
+            return err;
+        }
 
-        dispatch_call(calldata, TipFeeManagerCall::decode, |call| match call {
-            // IFeeManager view functions
-            TipFeeManagerCall::FeeManager(IFeeManagerCalls::userTokens(call)) => {
-                view(call, |c| self.user_tokens(c))
-            }
-            TipFeeManagerCall::FeeManager(IFeeManagerCalls::validatorTokens(call)) => {
-                view(call, |c| self.validator_tokens(c))
-            }
-            TipFeeManagerCall::FeeManager(IFeeManagerCalls::collectedFees(call)) => {
-                view(call, |c| self.collected_fees[c.validator][c.token].read())
-            }
+        dispatch_call(
+            calldata,
+            &[],
+            TipFeeManagerCall::decode,
+            |call| match call {
+                // IFeeManager view functions
+                TipFeeManagerCall::FeeManager(IFeeManagerCalls::userTokens(call)) => {
+                    view(call, |c| self.user_tokens(c))
+                }
+                TipFeeManagerCall::FeeManager(IFeeManagerCalls::validatorTokens(call)) => {
+                    view(call, |c| self.get_validator_token(c.validator))
+                }
+                TipFeeManagerCall::FeeManager(IFeeManagerCalls::collectedFees(call)) => {
+                    view(call, |c| self.collected_fees[c.validator][c.token].read())
+                }
 
-            // IFeeManager mutate functions
-            TipFeeManagerCall::FeeManager(IFeeManagerCalls::setValidatorToken(call)) => {
-                mutate_void(call, msg_sender, |s, c| {
-                    let beneficiary = self.storage.beneficiary();
-                    self.set_validator_token(s, c, beneficiary)
-                })
-            }
-            TipFeeManagerCall::FeeManager(IFeeManagerCalls::setUserToken(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.set_user_token(s, c))
-            }
-            TipFeeManagerCall::FeeManager(IFeeManagerCalls::distributeFees(call)) => {
-                mutate_void(call, msg_sender, |_, c| {
-                    self.distribute_fees(c.validator, c.token)
-                })
-            }
-
-            // ITIPFeeAMM metadata functions
-            TipFeeManagerCall::Amm(ITIPFeeAMMCalls::M(_)) => {
-                metadata::<ITIPFeeAMM::MCall>(|| Ok(M))
-            }
-            TipFeeManagerCall::Amm(ITIPFeeAMMCalls::N(_)) => {
-                metadata::<ITIPFeeAMM::NCall>(|| Ok(N))
-            }
-            TipFeeManagerCall::Amm(ITIPFeeAMMCalls::SCALE(_)) => {
-                metadata::<ITIPFeeAMM::SCALECall>(|| Ok(SCALE))
-            }
-            TipFeeManagerCall::Amm(ITIPFeeAMMCalls::MIN_LIQUIDITY(_)) => {
-                metadata::<ITIPFeeAMM::MIN_LIQUIDITYCall>(|| Ok(MIN_LIQUIDITY))
-            }
-
-            // ITIPFeeAMM view functions
-            TipFeeManagerCall::Amm(ITIPFeeAMMCalls::getPoolId(call)) => {
-                view(call, |c| Ok(self.pool_id(c.userToken, c.validatorToken)))
-            }
-            TipFeeManagerCall::Amm(ITIPFeeAMMCalls::getPool(call)) => view(call, |c| {
-                let pool = self.get_pool(c)?;
-                Ok(ITIPFeeAMM::Pool {
-                    reserveUserToken: pool.reserve_user_token,
-                    reserveValidatorToken: pool.reserve_validator_token,
-                })
-            }),
-            TipFeeManagerCall::Amm(ITIPFeeAMMCalls::pools(call)) => view(call, |c| {
-                let pool = self.pools[c.poolId].read()?;
-                Ok(ITIPFeeAMM::Pool {
-                    reserveUserToken: pool.reserve_user_token,
-                    reserveValidatorToken: pool.reserve_validator_token,
-                })
-            }),
-            TipFeeManagerCall::Amm(ITIPFeeAMMCalls::totalSupply(call)) => {
-                view(call, |c| self.total_supply[c.poolId].read())
-            }
-            TipFeeManagerCall::Amm(ITIPFeeAMMCalls::liquidityBalances(call)) => {
-                view(call, |c| self.liquidity_balances[c.poolId][c.user].read())
-            }
-
-            // ITIPFeeAMM mutate functions
-            TipFeeManagerCall::Amm(ITIPFeeAMMCalls::mint(call)) => {
-                mutate(call, msg_sender, |s, c| {
-                    self.mint(
-                        s,
-                        c.userToken,
-                        c.validatorToken,
-                        c.amountValidatorToken,
-                        c.to,
-                    )
-                })
-            }
-            TipFeeManagerCall::Amm(ITIPFeeAMMCalls::burn(call)) => {
-                mutate(call, msg_sender, |s, c| {
-                    let (amount_user_token, amount_validator_token) =
-                        self.burn(s, c.userToken, c.validatorToken, c.liquidity, c.to)?;
-                    Ok(ITIPFeeAMM::burnReturn {
-                        amountUserToken: amount_user_token,
-                        amountValidatorToken: amount_validator_token,
+                // IFeeManager mutate functions
+                TipFeeManagerCall::FeeManager(IFeeManagerCalls::setValidatorToken(call)) => {
+                    mutate_void(call, msg_sender, |s, c| {
+                        let beneficiary = self.storage.beneficiary();
+                        self.set_validator_token(s, c, beneficiary)
                     })
-                })
-            }
-            TipFeeManagerCall::Amm(ITIPFeeAMMCalls::rebalanceSwap(call)) => {
-                mutate(call, msg_sender, |s, c| {
-                    self.rebalance_swap(s, c.userToken, c.validatorToken, c.amountOut, c.to)
-                })
-            }
-        })
+                }
+                TipFeeManagerCall::FeeManager(IFeeManagerCalls::setUserToken(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.set_user_token(s, c))
+                }
+                TipFeeManagerCall::FeeManager(IFeeManagerCalls::distributeFees(call)) => {
+                    mutate_void(call, msg_sender, |_, c| {
+                        self.distribute_fees(c.validator, c.token)
+                    })
+                }
+
+                // ITIPFeeAMM metadata functions
+                TipFeeManagerCall::Amm(ITIPFeeAMMCalls::M(_)) => {
+                    metadata::<ITIPFeeAMM::MCall>(|| Ok(M))
+                }
+                TipFeeManagerCall::Amm(ITIPFeeAMMCalls::N(_)) => {
+                    metadata::<ITIPFeeAMM::NCall>(|| Ok(N))
+                }
+                TipFeeManagerCall::Amm(ITIPFeeAMMCalls::SCALE(_)) => {
+                    metadata::<ITIPFeeAMM::SCALECall>(|| Ok(SCALE))
+                }
+                TipFeeManagerCall::Amm(ITIPFeeAMMCalls::MIN_LIQUIDITY(_)) => {
+                    metadata::<ITIPFeeAMM::MIN_LIQUIDITYCall>(|| Ok(MIN_LIQUIDITY))
+                }
+
+                // ITIPFeeAMM view functions
+                TipFeeManagerCall::Amm(ITIPFeeAMMCalls::getPoolId(call)) => {
+                    view(call, |c| Ok(self.pool_id(c.userToken, c.validatorToken)))
+                }
+                TipFeeManagerCall::Amm(ITIPFeeAMMCalls::getPool(call)) => {
+                    view(call, |c| Ok(self.get_pool(c)?.into()))
+                }
+                TipFeeManagerCall::Amm(ITIPFeeAMMCalls::pools(call)) => {
+                    view(call, |c| Ok(self.pools[c.poolId].read()?.into()))
+                }
+                TipFeeManagerCall::Amm(ITIPFeeAMMCalls::totalSupply(call)) => {
+                    view(call, |c| self.total_supply[c.poolId].read())
+                }
+                TipFeeManagerCall::Amm(ITIPFeeAMMCalls::liquidityBalances(call)) => {
+                    view(call, |c| self.liquidity_balances[c.poolId][c.user].read())
+                }
+
+                // ITIPFeeAMM mutate functions
+                TipFeeManagerCall::Amm(ITIPFeeAMMCalls::mint(call)) => {
+                    mutate(call, msg_sender, |s, c| {
+                        self.mint(
+                            s,
+                            c.userToken,
+                            c.validatorToken,
+                            c.amountValidatorToken,
+                            c.to,
+                        )
+                    })
+                }
+                TipFeeManagerCall::Amm(ITIPFeeAMMCalls::burn(call)) => {
+                    mutate(call, msg_sender, |s, c| {
+                        let (amount_user_token, amount_validator_token) =
+                            self.burn(s, c.userToken, c.validatorToken, c.liquidity, c.to)?;
+                        Ok(ITIPFeeAMM::burnReturn {
+                            amountUserToken: amount_user_token,
+                            amountValidatorToken: amount_validator_token,
+                        })
+                    })
+                }
+                TipFeeManagerCall::Amm(ITIPFeeAMMCalls::rebalanceSwap(call)) => {
+                    mutate(call, msg_sender, |s, c| {
+                        self.rebalance_swap(s, c.userToken, c.validatorToken, c.amountOut, c.to)
+                    })
+                }
+            },
+        )
     }
 }
 
@@ -170,12 +167,12 @@ mod tests {
             }
             .abi_encode();
             let result = fee_manager.call(&calldata, validator)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
 
             // Verify token was set
             let calldata = IFeeManager::validatorTokensCall { validator }.abi_encode();
             let result = fee_manager.call(&calldata, validator)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
             let returned_token = Address::abi_decode(&result.bytes)?;
             assert_eq!(returned_token, token.address());
 
@@ -215,12 +212,12 @@ mod tests {
             }
             .abi_encode();
             let result = fee_manager.call(&calldata, user)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
 
             // Verify token was set
             let calldata = IFeeManager::userTokensCall { user }.abi_encode();
             let result = fee_manager.call(&calldata, user)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
             let returned_token = Address::abi_decode(&result.bytes)?;
             assert_eq!(returned_token, token.address());
 
@@ -261,7 +258,7 @@ mod tests {
             }
             .abi_encode();
             let result = fee_manager.call(&calldata, sender)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
 
             let returned_id = B256::abi_decode(&result.bytes)?;
             let expected_id = PoolKey::new(token_a, token_b).get_id();
@@ -287,7 +284,7 @@ mod tests {
             };
             let calldata = get_pool_call.abi_encode();
             let result = fee_manager.call(&calldata, sender)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
 
             // Decode and verify pool (should be empty initially)
             let pool = ITIPFeeAMM::Pool::abi_decode(&result.bytes)?;
@@ -367,7 +364,7 @@ mod tests {
 
             let result =
                 fee_manager.call(&ITIPFeeAMM::MIN_LIQUIDITYCall {}.abi_encode(), sender)?;
-            assert!(!result.reverted);
+            assert!(!result.is_revert());
             assert_eq!(U256::abi_decode(&result.bytes)?, MIN_LIQUIDITY);
 
             let result = fee_manager.call(&ITIPFeeAMM::MCall {}.abi_encode(), sender)?;

@@ -22,7 +22,7 @@ use std::{
 };
 use tempo_precompiles::{DEFAULT_FEE_TOKEN, nonce::NonceManager};
 use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
-use tempo_revm::TempoTxEnv;
+use tempo_revm::{TempoInvalidTransaction, TempoTxEnv};
 use thiserror::Error;
 
 /// Tempo pooled transaction representation.
@@ -37,6 +37,8 @@ pub struct TempoPooledTransaction {
     is_expiring_nonce: bool,
     /// Cached slot of the 2D nonce, if any.
     nonce_key_slot: OnceLock<Option<U256>>,
+    /// Cached `expiring_nonce_seen` storage slot for expiring nonce transactions.
+    expiring_nonce_slot: OnceLock<Option<U256>>,
     /// Cached prepared [`TempoTxEnv`] for payload building.
     tx_env: OnceLock<TempoTxEnv>,
     /// Keychain key expiry timestamp (set during validation for keychain-signed txs).
@@ -73,6 +75,7 @@ impl TempoPooledTransaction {
             is_payment,
             is_expiring_nonce,
             nonce_key_slot: OnceLock::new(),
+            expiring_nonce_slot: OnceLock::new(),
             tx_env: OnceLock::new(),
             key_expiry: OnceLock::new(),
             resolved_fee_token: OnceLock::new(),
@@ -177,13 +180,13 @@ impl TempoPooledTransaction {
     ///
     /// This should be called during validation to prepare the transaction environment
     /// ahead of time, avoiding it during payload building.
-    pub fn prepare_tx_env(&self) {
-        self.tx_env.get_or_init(|| self.tx_env_slow());
+    pub fn tx_env(&self) -> &TempoTxEnv {
+        self.tx_env.get_or_init(|| self.tx_env_slow())
     }
 
     /// Returns a [`WithTxEnv`] wrapper containing the cached [`TempoTxEnv`].
     ///
-    /// If the [`TempoTxEnv`] was pre-computed via [`Self::prepare_tx_env`], the cached
+    /// If the [`TempoTxEnv`] was pre-computed via [`Self::tx_env`], the cached
     /// value is used. Otherwise, it is computed on-demand.
     pub fn into_with_tx_env(mut self) -> WithTxEnv<TempoTxEnv, Recovered<TempoTxEnvelope>> {
         let tx_env = self.tx_env.take().unwrap_or_else(|| self.tx_env_slow());
@@ -215,244 +218,241 @@ impl TempoPooledTransaction {
         let _ = self.resolved_fee_token.set(fee_token);
     }
 
+    /// Returns the resolved fee token cached during validation, if available.
+    pub fn resolved_fee_token(&self) -> Option<Address> {
+        self.resolved_fee_token.get().copied()
+    }
+
     /// Returns the expiring nonce hash for AA expiring nonce transactions.
     pub fn expiring_nonce_hash(&self) -> Option<B256> {
         let aa_tx = self.inner().as_aa()?;
         Some(aa_tx.expiring_nonce_hash(self.sender()))
     }
+
+    /// Returns the cached `expiring_nonce_seen` storage slot for this transaction.
+    pub fn expiring_nonce_slot(&self) -> Option<U256> {
+        *self.expiring_nonce_slot.get_or_init(|| {
+            let hash = self.expiring_nonce_hash()?;
+            Some(NonceManager::new().expiring_nonce_seen[hash].slot())
+        })
+    }
 }
 
+/// Tempo-specific transaction pool rejection reasons.
+///
+/// These errors can be returned by RPC after transaction submission when the
+/// transaction pool rejects a transaction. Variant docs describe when each
+/// rejection is thrown.
 #[derive(Debug, Error)]
 pub enum TempoPoolTransactionError {
+    /// A non-payment transaction no longer fits in the block's general gas lane.
+    ///
+    /// Thrown by the payload builder after the transaction is already in the pool,
+    /// when adding it would exceed the configured non-payment gas limit for the block.
     #[error(
         "Transaction exceeds non payment gas limit, please see https://docs.tempo.xyz/errors/tx/ExceedsNonPaymentLimit for more"
     )]
     ExceedsNonPaymentLimit,
 
-    #[error(
-        "Invalid fee token: {0}, please see https://docs.tempo.xyz/errors/tx/InvalidFeeToken for more"
-    )]
-    InvalidFeeToken(Address),
-
-    #[error(
-        "Fee token {0} is paused, please see https://docs.tempo.xyz/errors/tx/PausedFeeToken for more"
-    )]
-    PausedFeeToken(Address),
-
-    #[error("No fee token preference configured")]
-    MissingFeeToken,
-
+    /// An AA transaction's `valid_before` is too close to the current pool tip.
+    ///
+    /// Thrown during pool admission when `valid_before` is less than or equal to
+    /// the latest tip timestamp plus the pool's propagation buffer.
     #[error(
         "'valid_before' {valid_before} is too close to current time (min allowed: {min_allowed})"
     )]
-    InvalidValidBefore { valid_before: u64, min_allowed: u64 },
-
-    #[error("'valid_after' {valid_after} is too far in the future (max allowed: {max_allowed})")]
-    InvalidValidAfter { valid_after: u64, max_allowed: u64 },
-
-    #[error(
-        "max_fee_per_gas {max_fee_per_gas} is below the minimum base fee {min_base_fee} for the current hardfork"
-    )]
-    FeeCapBelowMinBaseFee {
-        max_fee_per_gas: u128,
-        min_base_fee: u64,
+    InvalidValidBefore {
+        /// The transaction's `valid_before` timestamp.
+        valid_before: u64,
+        /// The minimum timestamp accepted by the pool.
+        min_allowed: u64,
     },
 
+    /// An AA transaction's `valid_after` is too far in the future.
+    ///
+    /// Thrown during pool admission when `valid_after` exceeds the wall-clock time
+    /// plus the pool's configured future-validity window.
+    #[error("'valid_after' {valid_after} is too far in the future (max allowed: {max_allowed})")]
+    InvalidValidAfter {
+        /// The transaction's `valid_after` timestamp.
+        valid_after: u64,
+        /// The maximum timestamp accepted by the pool.
+        max_allowed: u64,
+    },
+
+    /// A pool-only keychain authorization limit failed.
+    ///
+    /// Thrown during AA field-limit validation for key authorizations whose call
+    /// scopes, selector rules, or selector recipients exceed pool DoS limits. The
+    /// static string identifies the specific exceeded limit.
     #[error(
         "Keychain signature validation failed: {0}, please see https://docs.tempo.xyz/errors/tx/Keychain for more"
     )]
     Keychain(&'static str),
 
-    #[error("Fee payer signature recovery failed")]
-    InvalidFeePayerSignature,
-
-    #[error(
-        "Native transfers are not supported, if you were trying to transfer a stablecoin, please call TIP20::Transfer"
-    )]
-    NonZeroValue,
-
-    /// Thrown if a Tempo Transaction with a nonce key prefixed with the sub-block prefix marker added to the pool
+    /// A pool transaction attempted to use the subblock nonce-key prefix.
+    ///
+    /// Thrown after validation when a transaction has a non-zero nonce key whose
+    /// prefix is reserved for validator subblock transactions, which are
+    /// not accepted from the public pool.
     #[error("Tempo Transaction with subblock nonce key prefix aren't supported in the pool")]
     SubblockNonceKey,
 
-    /// Thrown if the fee payer of a transaction cannot transfer (is blacklisted) the fee token, thus making the payment impossible.
-    #[error("Fee payer {fee_payer} is blacklisted by fee token: {fee_token}")]
-    BlackListedFeePayer {
-        fee_token: Address,
-        fee_payer: Address,
-    },
-
-    /// Thrown when we couldn't find a recently used validator token that has enough liquidity
-    /// in fee AMM pair with the user token this transaction will pay fees in.
-    #[error(
-        "Insufficient liquidity for fee token: {0}, please see https://docs.tempo.xyz/protocol/fees for more"
-    )]
-    InsufficientLiquidity(Address),
-
-    /// Thrown when an AA transaction's gas limit is insufficient for the calculated intrinsic gas.
-    /// This includes per-call costs, signature verification, and other AA-specific gas costs.
-    #[error(
-        "Insufficient gas for AA transaction: gas limit {gas_limit} is less than intrinsic gas {intrinsic_gas}"
-    )]
-    InsufficientGasForAAIntrinsicCost { gas_limit: u64, intrinsic_gas: u64 },
-
-    /// Thrown when an AA transaction has too many authorizations in its authorization list.
+    /// An AA transaction has too many Tempo authorizations.
+    ///
+    /// Thrown during pool admission when the AA transaction's authorization list
+    /// exceeds the validator's configured maximum.
     #[error(
         "Too many authorizations in AA transaction: {count} exceeds maximum allowed {max_allowed}"
     )]
-    TooManyAuthorizations { count: usize, max_allowed: usize },
+    TooManyAuthorizations {
+        /// The number of authorizations in the transaction.
+        count: usize,
+        /// The maximum number of authorizations accepted by the pool.
+        max_allowed: usize,
+    },
 
-    /// Thrown when an AA transaction has too many calls.
+    /// An AA transaction contains too many calls.
+    ///
+    /// Thrown during AA field-limit validation when `calls.len()` exceeds the
+    /// pool's hard cap.
     #[error("Too many calls in AA transaction: {count} exceeds maximum allowed {max_allowed}")]
-    TooManyCalls { count: usize, max_allowed: usize },
+    TooManyCalls {
+        /// The number of calls in the transaction.
+        count: usize,
+        /// The maximum number of calls accepted by the pool.
+        max_allowed: usize,
+    },
 
-    /// Thrown when an AA transaction has no calls.
-    #[error("AA transaction has no calls")]
-    NoCalls,
-
-    /// Thrown when a call in an AA transaction is the second call and is a CREATE.
-    #[error("CREATE calls must be the first call in an AA transaction")]
-    CreateCallNotFirst,
-
-    /// Thrown when an AA transaction contains both a CREATE call and an authorization list.
-    #[error("CREATE calls are not allowed in the same transaction that has an authorization list")]
-    CreateCallWithAuthorizationList,
-
-    /// Thrown when a call in an AA transaction has input data exceeding the maximum allowed size.
+    /// An AA call input is larger than the pool accepts.
+    ///
+    /// Thrown during AA field-limit validation for the first call whose input
+    /// data exceeds the per-call byte limit.
     #[error(
         "Call input size {size} exceeds maximum allowed {max_allowed} bytes (call index: {call_index})"
     )]
     CallInputTooLarge {
+        /// Index of the rejected call in the AA transaction.
         call_index: usize,
+        /// Input byte length for the rejected call.
         size: usize,
+        /// The maximum input byte length accepted by the pool.
         max_allowed: usize,
     },
 
-    /// Thrown when an AA transaction has too many accounts in its access list.
+    /// An AA transaction access list contains too many accounts.
+    ///
+    /// Thrown during AA field-limit validation when the number of access-list
+    /// entries exceeds the pool's hard cap.
     #[error("Too many access list accounts: {count} exceeds maximum allowed {max_allowed}")]
-    TooManyAccessListAccounts { count: usize, max_allowed: usize },
+    TooManyAccessListAccounts {
+        /// The number of access-list entries in the transaction.
+        count: usize,
+        /// The maximum number of access-list entries accepted by the pool.
+        max_allowed: usize,
+    },
 
-    /// Thrown when an access list entry has too many storage keys.
+    /// An AA access-list entry contains too many storage keys.
+    ///
+    /// Thrown during AA field-limit validation for the first access-list entry
+    /// whose storage-key count exceeds the per-account cap.
     #[error(
         "Too many storage keys in access list entry {account_index}: {count} exceeds maximum allowed {max_allowed}"
     )]
     TooManyStorageKeysPerAccount {
+        /// Index of the rejected access-list entry.
         account_index: usize,
+        /// The number of storage keys on the rejected entry.
         count: usize,
+        /// The maximum number of storage keys accepted per access-list entry.
         max_allowed: usize,
     },
 
-    /// Thrown when the total number of storage keys across all access list entries is too large.
+    /// An AA transaction access list contains too many storage keys in total.
+    ///
+    /// Thrown during AA field-limit validation when the sum of storage keys across
+    /// all access-list entries exceeds the pool's total cap.
     #[error(
         "Too many total storage keys in access list: {count} exceeds maximum allowed {max_allowed}"
     )]
-    TooManyTotalStorageKeys { count: usize, max_allowed: usize },
+    TooManyTotalStorageKeys {
+        /// Total number of storage keys across all access-list entries.
+        count: usize,
+        /// The maximum total number of storage keys accepted by the pool.
+        max_allowed: usize,
+    },
 
-    /// Thrown when a key authorization has too many token limits.
+    /// A key authorization contains too many token limits.
+    ///
+    /// Thrown during AA field-limit validation when `key_authorization.limits`
+    /// exceeds the pool's hard cap.
     #[error(
         "Too many token limits in key authorization: {count} exceeds maximum allowed {max_allowed}"
     )]
-    TooManyTokenLimits { count: usize, max_allowed: usize },
-
-    /// Thrown when an expiring nonce transaction's valid_before is too far in the future.
-    #[error(
-        "Expiring nonce 'valid_before' {valid_before} exceeds max allowed {max_allowed} (must be within 30s)"
-    )]
-    ExpiringNonceValidBeforeTooFar { valid_before: u64, max_allowed: u64 },
-
-    /// Thrown when an expiring nonce transaction's hash has already been seen (replay).
-    #[error("Expiring nonce transaction replay: tx hash already seen and not expired")]
-    ExpiringNonceReplay,
-
-    /// Thrown when an expiring nonce transaction is missing the required valid_before field.
-    #[error("Expiring nonce transactions must have 'valid_before' set")]
-    ExpiringNonceMissingValidBefore,
-
-    /// Thrown when an expiring nonce transaction has a non-zero nonce.
-    #[error("Expiring nonce transactions must have nonce == 0")]
-    ExpiringNonceNonceNotZero,
-
-    /// Thrown when an access key has expired or is expiring within the propagation buffer.
-    #[error("Access key expired: expiry {expiry} <= min allowed {min_allowed}")]
-    AccessKeyExpired { expiry: u64, min_allowed: u64 },
-
-    /// Thrown when a KeyAuthorization has expired or is expiring within the propagation buffer.
-    #[error("KeyAuthorization expired: expiry {expiry} <= min allowed {min_allowed}")]
-    KeyAuthorizationExpired { expiry: u64, min_allowed: u64 },
-
-    /// Thrown when a keychain transaction's fee token cost exceeds the spending limit.
-    #[error(
-        "Fee token spending limit exceeded: cost {cost} exceeds remaining limit {remaining} for token {fee_token}"
-    )]
-    SpendingLimitExceeded {
-        fee_token: Address,
-        cost: U256,
-        remaining: U256,
+    TooManyTokenLimits {
+        /// The number of token limits in the key authorization.
+        count: usize,
+        /// The maximum number of token limits accepted by the pool.
+        max_allowed: usize,
     },
 
-    /// Legacy V1 keychain signature rejected post-T1C (permanently invalid).
-    #[error("legacy V1 keychain signature is no longer accepted, use V2 (type 0x04)")]
-    LegacyKeychainPostT1C,
+    /// The access key used by a keychain transaction expires too soon.
+    ///
+    /// Thrown after EVM validation when the effective access-key expiry is less
+    /// than or equal to the latest tip timestamp plus the pool's propagation buffer.
+    #[error("Access key expired: expiry {expiry} <= min allowed {min_allowed}")]
+    AccessKeyExpired {
+        /// The effective access-key expiry timestamp returned by EVM validation.
+        expiry: u64,
+        /// The minimum expiry timestamp accepted by the pool.
+        min_allowed: u64,
+    },
 
-    /// V2 keychain signature rejected pre-T1C (not yet valid).
-    #[error("V2 keychain signature (type 0x04) is not valid before T1C activation")]
-    V2KeychainPreT1C,
+    /// A key authorization expiry is too close to the current pool tip.
+    ///
+    /// This variant is not currently thrown on the active validation path;
+    /// key expiry returned by EVM validation is reported as [`Self::AccessKeyExpired`].
+    #[error("KeyAuthorization expired: expiry {expiry} <= min allowed {min_allowed}")]
+    KeyAuthorizationExpired {
+        /// The key authorization expiry timestamp.
+        expiry: u64,
+        /// The minimum expiry timestamp accepted by the pool.
+        min_allowed: u64,
+    },
+
+    /// A Tempo EVM validation error returned by the transaction pool.
+    ///
+    /// Thrown when `TempoEvm::validate_transaction` rejects the transaction with
+    /// a [`TempoInvalidTransaction`] that is not mapped to a standard reth
+    /// pool error. The pool also uses this wrapper for AMM liquidity failures
+    /// detected after EVM validation, as `CollectFeePreTx(InsufficientAmmLiquidity)`.
+    #[error(transparent)]
+    Evm(TempoInvalidTransaction),
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
     fn is_bad_transaction(&self) -> bool {
         match self {
+            Self::Evm(err) => err.is_bad_transaction(),
             Self::ExceedsNonPaymentLimit
-            | Self::InvalidFeeToken(_)
-            | Self::PausedFeeToken(_)
-            | Self::MissingFeeToken
-            | Self::BlackListedFeePayer { .. }
             | Self::InvalidValidBefore { .. }
             | Self::InvalidValidAfter { .. }
-            | Self::ExpiringNonceValidBeforeTooFar { .. }
-            | Self::ExpiringNonceReplay
             | Self::AccessKeyExpired { .. }
             | Self::KeyAuthorizationExpired { .. }
-            | Self::Keychain(_)
-            | Self::InsufficientLiquidity(_)
-            | Self::SpendingLimitExceeded { .. }
-            | Self::V2KeychainPreT1C => false,
-            Self::NonZeroValue
-            | Self::SubblockNonceKey
-            | Self::InsufficientGasForAAIntrinsicCost { .. }
+            | Self::Keychain(_) => false,
+            Self::SubblockNonceKey
             | Self::TooManyAuthorizations { .. }
             | Self::TooManyCalls { .. }
             | Self::CallInputTooLarge { .. }
             | Self::TooManyAccessListAccounts { .. }
             | Self::TooManyStorageKeysPerAccount { .. }
             | Self::TooManyTotalStorageKeys { .. }
-            | Self::TooManyTokenLimits { .. }
-            | Self::ExpiringNonceMissingValidBefore
-            | Self::ExpiringNonceNonceNotZero
-            | Self::InvalidFeePayerSignature
-            | Self::NoCalls
-            | Self::CreateCallWithAuthorizationList
-            | Self::CreateCallNotFirst
-            | Self::FeeCapBelowMinBaseFee { .. }
-            | Self::LegacyKeychainPostT1C => true,
+            | Self::TooManyTokenLimits { .. } => true,
         }
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
-    }
-}
-
-impl From<tempo_primitives::transaction::KeychainVersionError> for TempoPoolTransactionError {
-    fn from(err: tempo_primitives::transaction::KeychainVersionError) -> Self {
-        match err {
-            tempo_primitives::transaction::KeychainVersionError::LegacyPostT1C => {
-                Self::LegacyKeychainPostT1C
-            }
-            tempo_primitives::transaction::KeychainVersionError::V2BeforeActivation => {
-                Self::V2KeychainPreT1C
-            }
-        }
     }
 }
 
@@ -831,11 +831,6 @@ mod tests {
         let cases: &[(TempoPoolTransactionError, bool)] = &[
             (TempoPoolTransactionError::ExceedsNonPaymentLimit, false),
             (
-                TempoPoolTransactionError::InvalidFeeToken(Address::ZERO),
-                false,
-            ),
-            (TempoPoolTransactionError::MissingFeeToken, false),
-            (
                 TempoPoolTransactionError::InvalidValidBefore {
                     valid_before: 100,
                     min_allowed: 200,
@@ -850,17 +845,10 @@ mod tests {
                 false,
             ),
             (TempoPoolTransactionError::Keychain("test error"), false),
-            (TempoPoolTransactionError::LegacyKeychainPostT1C, true),
-            (TempoPoolTransactionError::V2KeychainPreT1C, false),
             (
-                TempoPoolTransactionError::InsufficientLiquidity(Address::ZERO),
-                false,
-            ),
-            (
-                TempoPoolTransactionError::BlackListedFeePayer {
-                    fee_token: Address::ZERO,
-                    fee_payer: Address::ZERO,
-                },
+                TempoPoolTransactionError::Evm(TempoInvalidTransaction::NonceManagerError(
+                    "nonce error".to_string(),
+                )),
                 false,
             ),
             (
@@ -877,14 +865,11 @@ mod tests {
                 },
                 false,
             ),
-            (TempoPoolTransactionError::InvalidFeePayerSignature, true),
-            (TempoPoolTransactionError::NonZeroValue, true),
             (TempoPoolTransactionError::SubblockNonceKey, true),
             (
-                TempoPoolTransactionError::InsufficientGasForAAIntrinsicCost {
-                    gas_limit: 21000,
-                    intrinsic_gas: 50000,
-                },
+                TempoPoolTransactionError::Evm(TempoInvalidTransaction::CallsValidation(
+                    "calls error",
+                )),
                 true,
             ),
         ];
@@ -1028,7 +1013,7 @@ mod tests {
             .build();
 
         // Test various Transaction trait methods
-        assert_eq!(tx.chain_id(), Some(1));
+        assert_eq!(tx.chain_id(), Some(42431));
         assert_eq!(tx.nonce(), 0);
         assert_eq!(tx.gas_limit(), 1_000_000);
         assert_eq!(tx.max_fee_per_gas(), 20_000_000_000);

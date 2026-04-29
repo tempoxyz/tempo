@@ -1,11 +1,12 @@
 [package]
 name = "tempo-primitives"
+description = "Tempo primitive types"
 
-version.workspace = true
+version = "1.6.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-publish.workspace = true
+publish = true
 
 [lints]
 workspace = true
@@ -40,10 +41,12 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 once_cell = { version = "1.21", default-features = false }
 
-# Cryptography for P256 and WebAuthn signature verification
+# Cryptography
+aws-lc-rs = { version = "1.16.2", optional = true, default-features = false, features = ["alloc", "non-fips", "ring-sig-verify"] }
+base64.workspace = true
+ed25519-consensus = { workspace = true, default-features = false }
 p256 = { workspace = true, features = ["ecdsa"] }
 sha2.workspace = true
-base64.workspace = true
 
 [dev-dependencies]
 arbitrary.workspace = true
@@ -71,6 +74,8 @@ std = [
 	"alloy-primitives/std",
 	"alloy-rlp/std",
 	"alloy-serde?/std",
+	"dep:aws-lc-rs",
+	"ed25519-consensus/std",
 	"base64/std",
 	"derive_more/std",
 	"once_cell/std",
@@ -83,6 +88,7 @@ std = [
 	"sha2/std",
 	"alloy-sol-types/std",
 	"tempo-contracts/std",
+	"reth-codecs?/std"
 ]
 reth = ["dep:reth-ethereum-primitives", "dep:reth-primitives-traits", "serde"]
 serde = [
@@ -93,11 +99,11 @@ serde = [
 	"alloy-eips/serde",
 	"alloy-primitives/serde",
 	"reth-codecs?/serde",
-	"rand/serde",
 	"p256/serde",
+	"rand/serde",
 	"tracing-subscriber/serde",
 	"revm/serde",
-	"tempo-contracts/serde"
+	"tempo-contracts/serde",
 ]
 reth-codec = [
 	"reth",
@@ -113,8 +119,6 @@ serde-bincode-compat = [
 	"reth",
 	"serde",
 	"alloy-consensus/serde-bincode-compat",
-	"reth-primitives-traits?/serde-bincode-compat",
-	"reth-ethereum-primitives?/serde-bincode-compat",
 	"alloy-eips/serde-bincode-compat",
 	"alloy-rpc-types-eth?/serde-bincode-compat",
 ]

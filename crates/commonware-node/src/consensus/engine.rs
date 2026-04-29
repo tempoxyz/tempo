@@ -69,7 +69,7 @@ const MAX_PENDING_ACKS: NonZeroUsize = NZUsize!(1);
 // because there doesn't really seem to be a point putting it into an extra initializer.
 #[derive(Clone)]
 pub struct Builder<TBlocker, TPeerManager> {
-    pub fee_recipient: alloy_primitives::Address,
+    pub fee_recipient: Option<alloy_primitives::Address>,
 
     pub execution_node: Option<TempoFullNode>,
 
@@ -290,7 +290,6 @@ where
             context.with_label("peer_manager"),
             peer_manager::Config {
                 execution_node: execution_node.clone(),
-                executor: executor_mailbox.clone(),
                 oracle: self.peer_manager.clone(),
                 epoch_strategy: epoch_strategy.clone(),
                 last_finalized_height,
@@ -330,7 +329,7 @@ where
                 signer: self.signer.clone(),
                 scheme_provider: scheme_provider.clone(),
                 node: execution_node.clone(),
-                fee_recipient: self.fee_recipient,
+                fee_recipient: self.fee_recipient.unwrap_or_default(),
                 time_to_build_subblock: self.time_to_build_subblock,
                 subblock_broadcast_interval: self.subblock_broadcast_interval,
                 epoch_strategy: epoch_strategy.clone(),
@@ -347,6 +346,7 @@ where
 
         let (application, application_mailbox) = application::init(super::application::Config {
             context: context.with_label("application"),
+            public_key: self.signer.public_key(),
             fee_recipient: self.fee_recipient,
             mailbox_size: self.mailbox_size,
             marshal: marshal_mailbox.clone(),
@@ -544,7 +544,6 @@ where
                 dkg_channel,
                 subblocks_channel,
             )
-            .await
         )
     }
 

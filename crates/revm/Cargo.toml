@@ -31,12 +31,15 @@ auto_impl.workspace = true
 derive_more.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
+serde = { workspace = true, optional = true }
 
 [dev-dependencies]
 eyre.workspace = true
 alloy-primitives = { workspace = true, features = ["rand"] }
 alloy-eips.workspace = true
 alloy-rlp.workspace = true
+alloy-signer.workspace = true
+alloy-signer-local.workspace = true
 base64.workspace = true
 p256.workspace = true
 proptest.workspace = true
@@ -48,3 +51,15 @@ test-case.workspace = true
 [features]
 reth = ["dep:reth-storage-api"]
 rpc = ["dep:reth-rpc-eth-types"]
+serde = [
+	"dep:serde",
+	"revm/serde",
+	"alloy-consensus/serde",
+	"alloy-eips/serde",
+	"alloy-primitives/serde",
+	"p256/serde",
+	"reth-storage-api?/serde",
+	"tempo-chainspec/serde",
+	"tempo-contracts/serde",
+	"tempo-primitives/serde"
+]

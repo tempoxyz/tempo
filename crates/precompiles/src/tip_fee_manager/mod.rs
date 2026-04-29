@@ -12,13 +12,11 @@ use crate::{
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
     tip20_factory::TIP20Factory,
 };
-use alloy::primitives::B256;
+use alloy::primitives::{Address, B256, U256, uint};
 pub use tempo_contracts::precompiles::{
     DEFAULT_FEE_TOKEN, FeeManagerError, FeeManagerEvent, IFeeManager, ITIPFeeAMM,
     TIP_FEE_MANAGER_ADDRESS, TIPFeeAMMError, TIPFeeAMMEvent,
 };
-// Re-export PoolKey for backward compatibility with tests
-use alloy::primitives::{Address, U256, uint};
 use tempo_precompiles_macros::contract;
 
 /// Fee manager precompile that handles transaction fee collection and distribution.
@@ -128,6 +126,15 @@ impl TipFeeManager {
         // Validate that the fee token is USD
         validate_usd_currency(call.token)?;
 
+        // T3+: skip write and event if the token is already set to the requested value.
+        // Prevents permissionless callers from forcing redundant pool invalidation scans.
+        if self.storage.spec().is_t3() {
+            let current = self.user_tokens[sender].read()?;
+            if current == call.token {
+                return Ok(());
+            }
+        }
+
         self.user_tokens[sender].write(call.token)?;
 
         // Emit UserTokenSet event
@@ -153,6 +160,7 @@ impl TipFeeManager {
         user_token: Address,
         max_amount: U256,
         beneficiary: Address,
+        skip_liquidity_check: bool,
     ) -> Result<Address> {
         // Get the validator's token preference
         let validator_token = self.get_validator_token(beneficiary)?;
@@ -163,7 +171,7 @@ impl TipFeeManager {
         tip20_token.ensure_transfer_authorized(fee_payer, self.address)?;
         tip20_token.transfer_fee_pre_tx(fee_payer, max_amount)?;
 
-        if user_token != validator_token {
+        if user_token != validator_token && !skip_liquidity_check {
             let pool_id = PoolKey::new(user_token, validator_token).get_id();
             let amount_out_needed = self.check_sufficient_liquidity(pool_id, max_amount)?;
 
@@ -200,12 +208,9 @@ impl TipFeeManager {
         // Execute fee swap and track collected fees
         let validator_token = self.get_validator_token(beneficiary)?;
 
-        if fee_token != validator_token {
-            // Record the pool if there was a non-zero swap
-            if !actual_spending.is_zero() {
-                // Execute fee swap immediately and accumulate fees
-                self.execute_fee_swap(fee_token, validator_token, actual_spending)?;
-            }
+        if fee_token != validator_token && !actual_spending.is_zero() {
+            // Execute fee swap immediately and accumulate fees
+            self.execute_fee_swap(fee_token, validator_token, actual_spending)?;
         }
 
         let amount = if fee_token == validator_token {
@@ -278,21 +283,11 @@ impl TipFeeManager {
     pub fn user_tokens(&self, call: IFeeManager::userTokensCall) -> Result<Address> {
         self.user_tokens[call.user].read()
     }
-
-    /// Reads the stored fee token preference for a validator, defaulting to [`DEFAULT_FEE_TOKEN`].
-    pub fn validator_tokens(&self, call: IFeeManager::validatorTokensCall) -> Result<Address> {
-        let token = self.validator_tokens[call.validator].read()?;
-
-        if token.is_zero() {
-            Ok(DEFAULT_FEE_TOKEN)
-        } else {
-            Ok(token)
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::TIP20Error;
 
     use super::*;
@@ -329,6 +324,57 @@ mod tests {
     }
 
     #[test]
+    fn test_set_user_token_noop_when_unchanged_pre_t3() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let user = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let token = TIP20Setup::create("Test", "TST", user).apply()?;
+            let mut fee_manager = TipFeeManager::new();
+
+            let call = IFeeManager::setUserTokenCall {
+                token: token.address(),
+            };
+
+            fee_manager.set_user_token(user, call.clone())?;
+            fee_manager.set_user_token(user, call)?;
+            let event_count = StorageCtx.get_events(TIP_FEE_MANAGER_ADDRESS).len();
+            assert_eq!(
+                event_count, 2,
+                "pre-T3: event emitted even when token unchanged"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_user_token_noop_when_unchanged_t3() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let user = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let token = TIP20Setup::create("Test", "TST", user).apply()?;
+            let mut fee_manager = TipFeeManager::new();
+
+            let call = IFeeManager::setUserTokenCall {
+                token: token.address(),
+            };
+
+            fee_manager.set_user_token(user, call.clone())?;
+            let event_count = StorageCtx.get_events(TIP_FEE_MANAGER_ADDRESS).len();
+            assert_eq!(event_count, 1, "first set_user_token should emit event");
+
+            fee_manager.set_user_token(user, call)?;
+            let event_count = StorageCtx.get_events(TIP_FEE_MANAGER_ADDRESS).len();
+            assert_eq!(
+                event_count, 1,
+                "T3+: repeated set_user_token with same token should not emit event"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_set_validator_token() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let validator = Address::random();
@@ -355,8 +401,7 @@ mod tests {
             let result = fee_manager.set_validator_token(validator, call, beneficiary);
             assert!(result.is_ok());
 
-            let query_call = IFeeManager::validatorTokensCall { validator };
-            let returned_token = fee_manager.validator_tokens(query_call)?;
+            let returned_token = fee_manager.get_validator_token(validator)?;
             assert_eq!(returned_token, token.address());
 
             Ok(())
@@ -430,7 +475,7 @@ mod tests {
 
             // Call collect_fee_pre_tx directly
             let result =
-                fee_manager.collect_fee_pre_tx(user, token.address(), max_amount, validator);
+                fee_manager.collect_fee_pre_tx(user, token.address(), max_amount, validator, false);
             assert!(result.is_ok());
             assert_eq!(result?, token.address());
 
@@ -578,7 +623,13 @@ mod tests {
             let max_amount = U256::from(1000);
 
             // Call collect_fee_pre_tx
-            fee_manager.collect_fee_pre_tx(user, user_token.address(), max_amount, validator)?;
+            fee_manager.collect_fee_pre_tx(
+                user,
+                user_token.address(),
+                max_amount,
+                validator,
+                false,
+            )?;
 
             // With different tokens:
             // - Liquidity is checked (not reserved)
@@ -648,7 +699,13 @@ mod tests {
             let refund_amount = U256::from(200);
 
             // First call collect_fee_pre_tx (checks liquidity)
-            fee_manager.collect_fee_pre_tx(user, user_token.address(), max_amount, validator)?;
+            fee_manager.collect_fee_pre_tx(
+                user,
+                user_token.address(),
+                max_amount,
+                validator,
+                false,
+            )?;
 
             // Then call collect_fee_post_tx (executes swap immediately)
             fee_manager.collect_fee_post_tx(
@@ -720,10 +777,72 @@ mod tests {
             // 1000 * 0.997 = 997 output needed, but only 100 available
             let max_amount = U256::from(1000);
 
-            let result =
-                fee_manager.collect_fee_pre_tx(user, user_token.address(), max_amount, validator);
+            let result = fee_manager.collect_fee_pre_tx(
+                user,
+                user_token.address(),
+                max_amount,
+                validator,
+                false,
+            );
 
             assert!(result.is_err(), "Should fail with insufficient liquidity");
+
+            Ok(())
+        })
+    }
+
+    /// Test that `skip_liquidity_check = true` bypasses the insufficient-liquidity error
+    /// when `user_token != validator_token`.
+    #[test]
+    fn test_collect_fee_pre_tx_skip_liquidity_check() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let user = Address::random();
+        let validator = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                .with_issuer(admin)
+                .with_mint(user, U256::from(10000))
+                .with_approval(user, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
+                .apply()?;
+
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .with_issuer(admin)
+                .apply()?;
+
+            let mut fee_manager = TipFeeManager::new();
+            fee_manager.set_validator_token(
+                validator,
+                IFeeManager::setValidatorTokenCall {
+                    token: validator_token.address(),
+                },
+                Address::random(),
+            )?;
+
+            // Skip liquidity check = false should fail
+            let result = fee_manager.collect_fee_pre_tx(
+                user,
+                user_token.address(),
+                U256::from(1000),
+                validator,
+                false,
+            );
+            assert!(
+                result.is_err(),
+                "Should fail without liquidity, got: {result:?}"
+            );
+
+            // Skip liquidity check = true should pass
+            let result = fee_manager.collect_fee_pre_tx(
+                user,
+                user_token.address(),
+                U256::from(1000),
+                validator,
+                true,
+            );
+            assert!(result.is_ok());
+            assert_eq!(result?, user_token.address());
 
             Ok(())
         })

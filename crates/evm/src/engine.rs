@@ -39,9 +39,17 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         payload: &TempoExecutionData,
     ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
         let block = payload.block.clone();
-        let transactions: Vec<_> = (0..payload.block.body().transactions.len())
-            .map(move |i| (block.clone(), i))
-            .collect();
+        let mut transactions = Vec::with_capacity(payload.block.body().transactions.len());
+        let mut expiring_nonce_idx = 0;
+
+        for (idx, tx) in payload.block.body().transactions.iter().enumerate() {
+            if tx.is_expiring_nonce() {
+                transactions.push((block.clone(), idx, Some(expiring_nonce_idx)));
+                expiring_nonce_idx += 1;
+            } else {
+                transactions.push((block.clone(), idx, None));
+            }
+        }
 
         Ok((transactions, RecoveredInBlock::new))
     }
@@ -55,15 +63,19 @@ struct RecoveredInBlock {
     block: Arc<SealedBlock<Block>>,
     index: usize,
     sender: Address,
+    expiring_nonce_idx: Option<usize>,
 }
 
 impl RecoveredInBlock {
-    fn new((block, index): (Arc<SealedBlock<Block>>, usize)) -> Result<Self, RecoveryError> {
+    fn new(
+        (block, index, expiring_nonce_idx): (Arc<SealedBlock<Block>>, usize, Option<usize>),
+    ) -> Result<Self, RecoveryError> {
         let sender = block.body().transactions[index].try_recover()?;
         Ok(Self {
             block,
             index,
             sender,
+            expiring_nonce_idx,
         })
     }
 }
@@ -80,7 +92,12 @@ impl RecoveredTx<TempoTxEnvelope> for RecoveredInBlock {
 
 impl ToTxEnv<TempoTxEnv> for RecoveredInBlock {
     fn to_tx_env(&self) -> TempoTxEnv {
-        TempoTxEnv::from_recovered_tx(self.tx(), *self.signer())
+        let mut tx_env = TempoTxEnv::from_recovered_tx(self.tx(), *self.signer());
+        if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
+            tempo_tx_env.expiring_nonce_idx = self.expiring_nonce_idx;
+        }
+
+        tx_env
     }
 }
 
@@ -101,7 +118,7 @@ mod tests {
     use rayon::iter::{IntoParallelIterator, ParallelIterator};
     use reth_chainspec::EthChainSpec;
     use reth_evm::{ConfigureEngineEvm, ConvertTx, ExecutableTxTuple};
-    use tempo_chainspec::{TempoChainSpec, spec::ANDANTINO};
+    use tempo_chainspec::{TempoChainSpec, spec::MODERATO};
     use tempo_primitives::{
         BlockBody, SubBlockMetadata, TempoHeader, transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
     };
@@ -151,6 +168,7 @@ mod tests {
             general_gas_limit: 10_000_000,
             timestamp_millis_part: 500,
             shared_gas_limit: 3_000_000,
+            ..Default::default()
         };
 
         let body = BlockBody {
@@ -165,7 +183,7 @@ mod tests {
 
     #[test]
     fn test_tx_iterator_for_payload() {
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(ANDANTINO.genesis().clone()));
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()));
         let evm_config = TempoEvmConfig::new(chainspec.clone());
 
         let tx1 = create_legacy_tx();
@@ -198,7 +216,7 @@ mod tests {
 
     #[test]
     fn test_context_for_payload() {
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(ANDANTINO.genesis().clone()));
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()));
         let evm_config = TempoEvmConfig::new(chainspec.clone());
 
         let system_tx = create_subblock_metadata_tx(chainspec.chain().id(), 1);
@@ -224,7 +242,7 @@ mod tests {
 
     #[test]
     fn test_evm_env_for_payload() {
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(ANDANTINO.genesis().clone()));
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()));
         let evm_config = TempoEvmConfig::new(chainspec.clone());
 
         let system_tx = create_subblock_metadata_tx(chainspec.chain().id(), 1);

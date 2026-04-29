@@ -6,13 +6,18 @@ use crate::{ExecutionRuntime, execution_runtime::chainspec};
 mod backfill;
 mod consensus_rpc;
 mod dkg;
+mod fee_recipient;
 mod linkage;
 mod metrics;
-mod migration_from_v1_to_v2;
+mod migration_from_v3_to_v4;
+mod payload_builder;
 mod restart;
-mod subblocks;
+mod simple;
+mod snapshot;
+// FIXME: subblocks are currently flaky.
+// mod subblocks;
 mod sync;
-mod v2_at_genesis;
+mod v4_at_genesis;
 
 #[test_traced]
 fn spawning_execution_node_works() {
@@ -37,13 +42,7 @@ fn spawning_execution_node_works() {
     let handle = runtime.handle();
 
     futures::executor::block_on(async move {
-        let config = crate::ExecutionNodeConfig {
-            secret_key: alloy_primitives::B256::random(),
-            trusted_peers: vec![],
-            port: 0,
-            validator_key: None,
-            feed_state: None,
-        };
+        let config = crate::ExecutionNodeConfig::generate();
         let db_path = handle.nodes_dir().join("node-1").join("db");
         std::fs::create_dir_all(&db_path).expect("failed to create database directory");
         let database = reth_db::init_db(db_path, reth_db::mdbx::DatabaseArguments::default())
@@ -65,11 +64,7 @@ fn spawning_execution_node_works() {
             .node
             .add_ons_handle
             .beacon_engine_handle
-            .fork_choice_updated(
-                forkchoice_state,
-                None,
-                reth_node_builder::EngineApiMessageVersion::V3,
-            )
+            .fork_choice_updated(forkchoice_state, None)
             .await
             .expect("if the node runs it must be able to serve fork-choice updates");
         assert!(

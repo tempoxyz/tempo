@@ -12,7 +12,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-tempo-chainspec.workspace = true
+tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-contracts.workspace = true
 tempo-evm.workspace = true
 tempo-primitives = { workspace = true, features = ["serde", "reth-codec"] }
@@ -23,6 +23,7 @@ reth-transaction-pool.workspace = true
 reth-evm.workspace = true
 reth-chainspec.workspace = true
 reth-primitives-traits.workspace = true
+reth-revm.workspace = true
 reth-storage-api.workspace = true
 reth-provider.workspace = true
 reth-eth-wire-types.workspace = true
@@ -48,19 +49,21 @@ metrics.workspace = true
 [features]
 default = []
 test-utils = [
-  "reth-chainspec/test-utils",
-  "reth-ethereum-primitives/test-utils",
-  "reth-evm/test-utils",
-  "reth-primitives-traits/test-utils",
-  "reth-provider/test-utils",
-  "reth-transaction-pool/test-utils",
-  "tempo-precompiles/test-utils",
+	"reth-chainspec/test-utils",
+	"reth-ethereum-primitives/test-utils",
+	"reth-evm/test-utils",
+	"reth-primitives-traits/test-utils",
+	"reth-provider/test-utils",
+	"reth-transaction-pool/test-utils",
+	"tempo-precompiles/test-utils",
+	"reth-revm/test-utils"
 ]
 
 [dev-dependencies]
 reth-ethereum-primitives = { workspace = true, features = ["test-utils"] }
 reth-transaction-pool = { workspace = true, features = ["test-utils"] }
 reth-provider = { workspace = true, features = ["test-utils"] }
+tempo-precompiles = { workspace = true, features = ["test-utils"] }
 alloy-eips.workspace = true
 alloy-consensus.workspace = true
 alloy-signer.workspace = true

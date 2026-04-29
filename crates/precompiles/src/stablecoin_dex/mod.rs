@@ -23,12 +23,13 @@ use crate::{
     error::{Result, TempoPrecompileError},
     stablecoin_dex::orderbook::{MAX_PRICE, MIN_PRICE, compute_book_key},
     storage::{Handler, Mapping},
-    tip20::{ITIP20, TIP20Token, is_tip20_prefix, validate_usd_currency},
+    tip20::{ITIP20, TIP20Token, validate_usd_currency},
     tip20_factory::TIP20Factory,
     tip403_registry::{AuthRole, TIP403Registry, is_policy_lookup_error},
 };
 use alloy::primitives::{Address, B256, U256};
 use tempo_precompiles_macros::contract;
+use tempo_primitives::TempoAddressExt;
 
 /// Minimum order size of $100 USD
 pub const MIN_ORDER_AMOUNT: u128 = 100_000_000;
@@ -92,7 +93,7 @@ impl StablecoinDEX {
 
     /// Validates that a trading pair exists or creates the pair
     fn validate_or_create_pair(&mut self, book: &Orderbook, token: Address) -> Result<()> {
-        if book.base.is_zero() {
+        if !book.is_initialized() {
             self.create_pair(token)?;
         }
         Ok(())
@@ -197,6 +198,7 @@ impl StablecoinDEX {
         token: Address,
         amount: u128,
     ) -> Result<()> {
+        // Ensure that the token can be transferred
         TIP20Token::from_address(token)?.ensure_transfer_authorized(user, self.address)?;
 
         let user_balance = self.balance_of(user, token)?;
@@ -766,6 +768,10 @@ impl StablecoinDEX {
     }
 
     /// Fill an order and delete from storage. Returns the next best order and price level.
+    ///
+    /// NOTE: Maker transfer policy is not enforced here to not block swaps on the pair.
+    /// Note that TIP403 checks on order placement and withdraws are enforced.
+    /// [`cancel_stale_order`](Self::cancel_stale_order) can be used to remove orders.
     fn fill_order(
         &mut self,
         book_key: B256,
@@ -1169,7 +1175,8 @@ impl StablecoinDEX {
     /// Cancels an order whose maker is blocked by [`TIP403Registry`] policy, allowing anyone to
     /// clean up stale liquidity.
     ///
-    /// [TIP-1015]: T2+ checks sender authorization (maker must be able to send escrowed tokens)
+    /// [TIP-1015]: T4+ checks sender authorization on the escrow token and recipient
+    /// authorization on the payout token. An order is stale if the maker fails either check.
     ///
     /// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
     ///
@@ -1183,21 +1190,34 @@ impl StablecoinDEX {
             return Err(StablecoinDEXError::order_does_not_exist().into());
         }
 
-        let book = self.books[order.book_key()].read()?;
-        let token = if order.is_bid() {
-            book.quote
+        if self.is_maker_authorized(&order)? {
+            Err(StablecoinDEXError::order_not_stale().into())
         } else {
-            book.base
+            self.cancel_active_order(order)
+        }
+    }
+
+    /// Returns `true` if the maker is authorized to keep the order open.
+    ///
+    /// Checks sender authorization on the escrow token (bid=quote, ask=base).
+    /// T4+: also checks recipient authorization on the payout token (bid=base, ask=quote).
+    fn is_maker_authorized(&self, order: &Order) -> Result<bool> {
+        let book = self.books[order.book_key()].read()?;
+
+        let (token_in, token_out) = if order.is_bid() {
+            (book.quote, book.base)
+        } else {
+            (book.base, book.quote)
         };
 
-        let policy_id = TIP20Token::from_address(token)?.transfer_policy_id()?;
-        // If the policy lookup fails because the policy is invalid or missing, the order is stale.
-        // Pre-T2 this surfaces as Panic(UnderOverflow); T2+ returns TIP403RegistryError variants.
-        match TIP403Registry::new().is_authorized_as(policy_id, order.maker(), AuthRole::sender()) {
-            Ok(true) => Err(StablecoinDEXError::order_not_stale().into()),
-            Ok(false) => self.cancel_active_order(order),
-            Err(e) if is_policy_lookup_error(&e) => self.cancel_active_order(order),
-            Err(e) => Err(e),
+        if !is_authorized_for_token(token_in, order.maker(), AuthRole::sender())? {
+            return Ok(false);
+        }
+
+        if self.storage.spec().is_t4() {
+            is_authorized_for_token(token_out, order.maker(), AuthRole::recipient())
+        } else {
+            Ok(true)
         }
     }
 
@@ -1320,7 +1340,7 @@ impl StablecoinDEX {
         }
 
         // Validate that both tokens are TIP20 tokens
-        if !is_tip20_prefix(token_in) || !is_tip20_prefix(token_out) {
+        if !token_in.is_tip20() || !token_out.is_tip20() {
             return Err(StablecoinDEXError::invalid_token().into());
         }
 
@@ -1373,7 +1393,12 @@ impl StablecoinDEX {
         self.validate_and_build_route(&trade_path)
     }
 
-    /// Validates that all pairs in the path exist and returns book keys with direction info
+    /// Validates that all pairs in the path exist and returns book keys with direction info.
+    ///
+    /// # Errors
+    /// - `InvalidToken` — a token address does not have a valid TIP-20 prefix
+    /// - `PairDoesNotExist` — no orderbook exists for a hop in the route
+    /// - `Paused` — a token in the route is paused (T3+)
     fn validate_and_build_route(&self, path: &[Address]) -> Result<Vec<(B256, bool)>> {
         let mut route = Vec::new();
 
@@ -1383,6 +1408,13 @@ impl StablecoinDEX {
 
             let (base, quote) = {
                 let token_in_tip20 = TIP20Token::from_address(token_in)?;
+
+                // Ensure that the token is not paused (spec: T3+)
+                // Necessary because TIP20 transfer checks don't cover internal DEX balance updates
+                if self.storage.spec().is_t3() {
+                    token_in_tip20.check_not_paused()?;
+                }
+
                 if token_in_tip20.quote_token()? == token_out {
                     (token_in, token_out)
                 } else {
@@ -1501,6 +1533,18 @@ impl StablecoinDEX {
     }
 }
 
+/// Checks whether `address` is authorized under the transfer policy of `token` for the given
+/// `role`. Returns `false` instead of erroring when the policy lookup fails.
+fn is_authorized_for_token(token: Address, address: Address, role: AuthRole) -> Result<bool> {
+    let policy_id = TIP20Token::from_address(token)?.transfer_policy_id()?;
+    let registry = TIP403Registry::new();
+    match registry.is_authorized_as(policy_id, address, role) {
+        Ok(authorized) => Ok(authorized),
+        Err(e) if is_policy_lookup_error(&e) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloy::{primitives::IntoLogData, sol_types::SolEvent};
@@ -1511,6 +1555,7 @@ mod tests {
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
+        tip20::PAUSE_ROLE,
         tip403_registry::{ITIP403Registry, TIP403Registry},
     };
 
@@ -4143,6 +4188,111 @@ mod tests {
     }
 
     #[test]
+    fn test_cancel_stale_order_recipient_blacklisted_on_payout_token_pre_t4() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let admin = Address::random();
+
+            let mut registry = TIP403Registry::new();
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
+
+            let (base_addr, quote_addr) =
+                setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 2)?;
+
+            exchange.create_pair(base_addr)?;
+            let order_id = exchange.place(alice, base_addr, MIN_ORDER_AMOUNT, false, 0)?;
+
+            let mut quote = TIP20Token::from_address(quote_addr)?;
+            quote.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy_id,
+                },
+            )?;
+
+            registry.modify_policy_blacklist(
+                admin,
+                ITIP403Registry::modifyPolicyBlacklistCall {
+                    policyId: policy_id,
+                    account: alice,
+                    restricted: true,
+                },
+            )?;
+
+            // Pre-T4: recipient check on payout token is not performed, order is not stale
+            let result = exchange.cancel_stale_order(order_id);
+            assert!(result.is_err());
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::StablecoinDEX(StablecoinDEXError::OrderNotStale(_))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_cancel_stale_order_recipient_blacklisted_on_payout_token_t4() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let admin = Address::random();
+
+            let mut registry = TIP403Registry::new();
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
+
+            let (base_addr, quote_addr) =
+                setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 2)?;
+
+            exchange.create_pair(base_addr)?;
+            let order_id = exchange.place(alice, base_addr, MIN_ORDER_AMOUNT, false, 0)?;
+
+            let mut quote = TIP20Token::from_address(quote_addr)?;
+            quote.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy_id,
+                },
+            )?;
+
+            registry.modify_policy_blacklist(
+                admin,
+                ITIP403Registry::modifyPolicyBlacklistCall {
+                    policyId: policy_id,
+                    account: alice,
+                    restricted: true,
+                },
+            )?;
+
+            // T4+: recipient check on payout token kicks in, order is stale
+            exchange.cancel_stale_order(order_id)?;
+
+            assert_eq!(exchange.balance_of(alice, base_addr)?, MIN_ORDER_AMOUNT);
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_place_when_base_blacklisted() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
@@ -4943,6 +5093,132 @@ mod tests {
                         |e| e.topics()[0] != IStablecoinDEX::OrderPlaced::SIGNATURE_HASH
                     )
                 );
+
+                Ok::<_, eyre::Report>(())
+            })?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_swap_paused_token_allowed_pre_t3_blocked_on_t3() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T2, TempoHardfork::T3] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || {
+                let mut exchange = StablecoinDEX::new();
+                exchange.initialize()?;
+
+                let (alice, bob, admin) = (Address::random(), Address::random(), Address::random());
+                let amount_in = 500_000u128;
+                let tick = 10;
+
+                let (base_token, quote_token) =
+                    setup_test_tokens(admin, alice, exchange.address, 500_000_000u128)?;
+                exchange.create_pair(base_token)?;
+
+                // Alice places orders so Bob can swap base→quote (enough for both swaps)
+                exchange.place(alice, base_token, MIN_ORDER_AMOUNT * 2, true, tick)?;
+
+                // Give Bob internal DEX balance (enough for both swaps)
+                exchange.set_balance(bob, base_token, amount_in * 2)?;
+
+                // Pause the base token
+                let mut base_tip20 = TIP20Token::from_address(base_token)?;
+                base_tip20.grant_role_internal(admin, *PAUSE_ROLE)?;
+                base_tip20.pause(admin, ITIP20::pauseCall {})?;
+
+                let res_in =
+                    exchange.swap_exact_amount_in(bob, base_token, quote_token, amount_in, 0);
+                let res_out = exchange.swap_exact_amount_out(
+                    bob,
+                    base_token,
+                    quote_token,
+                    amount_in,
+                    u128::MAX,
+                );
+
+                if spec.is_t3() {
+                    assert_eq!(res_in, res_out);
+                    assert_eq!(res_in.unwrap_err(), TIP20Error::contract_paused().into());
+                } else {
+                    assert!(res_in.is_ok());
+                    assert!(res_out.is_ok());
+                }
+
+                Ok::<_, eyre::Report>(())
+            })?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_swap_paused_intermediate_token_allowed_pre_t3_blocked_on_t3() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T2, TempoHardfork::T3] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || {
+                let mut exchange = StablecoinDEX::new();
+                exchange.initialize()?;
+
+                let admin = Address::random();
+                let alice = Address::random();
+                let bob = Address::random();
+
+                let amount = MIN_ORDER_AMOUNT * 10;
+                let amount_u256 = U256::from(amount);
+
+                // Setup: pathUSD <- USDC, pathUSD <- EURC
+                let path_usd = TIP20Setup::path_usd(admin)
+                    .with_issuer(admin)
+                    .with_mint(alice, amount_u256)
+                    .with_approval(alice, exchange.address, amount_u256)
+                    .apply()?;
+
+                let usdc = TIP20Setup::create("USDC", "USDC", admin)
+                    .with_issuer(admin)
+                    .with_mint(alice, amount_u256)
+                    .with_approval(alice, exchange.address, amount_u256)
+                    .with_mint(bob, amount_u256)
+                    .with_approval(bob, exchange.address, amount_u256)
+                    .apply()?;
+
+                let eurc = TIP20Setup::create("EURC", "EURC", admin)
+                    .with_issuer(admin)
+                    .with_mint(alice, amount_u256)
+                    .with_approval(alice, exchange.address, amount_u256)
+                    .apply()?;
+
+                // Alice provides liquidity on both books
+                exchange.place(alice, usdc.address(), MIN_ORDER_AMOUNT * 5, true, 0)?;
+                exchange.place(alice, eurc.address(), MIN_ORDER_AMOUNT * 5, false, 0)?;
+
+                // Pause pathUSD (the intermediate token)
+                let mut path_usd_tip20 = TIP20Token::from_address(path_usd.address())?;
+                path_usd_tip20.grant_role_internal(admin, *PAUSE_ROLE)?;
+                path_usd_tip20.pause(admin, ITIP20::pauseCall {})?;
+
+                // Bob tries multi-hop swap: USDC -> pathUSD -> EURC
+                let res_in = exchange.swap_exact_amount_in(
+                    bob,
+                    usdc.address(),
+                    eurc.address(),
+                    MIN_ORDER_AMOUNT,
+                    0,
+                );
+                let res_out = exchange.swap_exact_amount_out(
+                    bob,
+                    usdc.address(),
+                    eurc.address(),
+                    MIN_ORDER_AMOUNT,
+                    u128::MAX,
+                );
+
+                if spec.is_t3() {
+                    assert_eq!(res_in, res_out);
+                    assert_eq!(res_in.unwrap_err(), TIP20Error::contract_paused().into());
+                } else {
+                    assert!(res_in.is_ok());
+                    assert!(res_out.is_ok());
+                }
 
                 Ok::<_, eyre::Report>(())
             })?;
