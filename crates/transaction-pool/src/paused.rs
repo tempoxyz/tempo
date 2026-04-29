@@ -195,8 +195,7 @@ impl PausedFeeTokenPool {
     ///
     /// This handles revoked keys, spending limit updates, and spending limit spends
     /// in a single pass. The `spending_limit_spends` parameter captures (account, key_id,
-    /// fee_token) combos from keychain txs that were included in the block and decremented
-    /// limits via `verify_and_update_spending()`.
+    /// fee_token) triples from `AccessKeySpend` events emitted during execution.
     /// Uses account-keyed indexes for O(1) account lookup per transaction.
     /// Returns the number of transactions removed.
     pub fn evict_invalidated(

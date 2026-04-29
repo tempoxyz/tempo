@@ -36,12 +36,12 @@ impl Mailbox {
     }
 
     /// Canonicalizes the given head and requests a new payload to be built.
-    pub(crate) async fn canonicalize_and_build(
+    pub(crate) fn canonicalize_and_build(
         &self,
         height: Height,
         digest: Digest,
         attributes: TempoPayloadAttributes,
-    ) -> eyre::Result<PayloadId> {
+    ) -> eyre::Result<oneshot::Receiver<eyre::Result<PayloadId>>> {
         let (response, rx) = oneshot::channel();
         self.inner
             .unbounded_send(Message::in_current_span(CanonicalizeAndBuild {
@@ -53,9 +53,7 @@ impl Mailbox {
             .wrap_err(
                 "failed sending canonicalize and build request to agent, this means it exited",
             )?;
-        rx.await
-            .wrap_err("executor dropped response")
-            .and_then(|res| res)
+        Ok(rx)
     }
 }
 

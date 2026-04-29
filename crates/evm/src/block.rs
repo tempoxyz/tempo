@@ -84,7 +84,7 @@ impl ReceiptBuilder for TempoReceiptBuilder {
 ///
 /// This is an extension of [`EthTxResult`] with context necessary for committing a Tempo transaction.
 #[derive(Debug)]
-pub(crate) struct TempoTxResult<H> {
+pub struct TempoTxResult<H> {
     /// Inner transaction execution result.
     inner: EthTxResult<H, TempoTxType>,
     /// Next section of the block.
@@ -98,7 +98,7 @@ pub(crate) struct TempoTxResult<H> {
     tx: Option<TempoTxEnvelope>,
 }
 
-impl<H> TxResult for TempoTxResult<H> {
+impl<H: Send + 'static> TxResult for TempoTxResult<H> {
     type HaltReason = H;
 
     fn result(&self) -> &ResultAndState<Self::HaltReason> {
@@ -113,9 +113,9 @@ impl<H> TxResult for TempoTxResult<H> {
 /// Block executor for Tempo.
 ///
 /// Wraps an inner [`EthBlockExecutor`] and layers Tempo-specific block execution
-/// logic on top: section-based transaction ordering ([`BlockSection`]), subblock
+/// logic on top: section-based transaction ordering (`BlockSection`), subblock
 /// validation, shared/non-shared gas accounting, and gas incentive tracking.
-pub(crate) struct TempoBlockExecutor<'a, DB: Database, I> {
+pub struct TempoBlockExecutor<'a, DB: Database, I> {
     pub(crate) inner:
         EthBlockExecutor<'a, TempoEvm<DB, I>, &'a TempoChainSpec, TempoReceiptBuilder>,
 
@@ -504,10 +504,7 @@ where
         })
     }
 
-    fn commit_transaction(
-        &mut self,
-        output: Self::Result,
-    ) -> Result<GasOutput, BlockExecutionError> {
+    fn commit_transaction(&mut self, output: Self::Result) -> GasOutput {
         let TempoTxResult {
             inner,
             next_section,
@@ -524,7 +521,7 @@ where
             inner.result.result.tx_gas_used()
         };
 
-        let gas_output = self.inner.commit_transaction(inner)?;
+        let gas_output = self.inner.commit_transaction(inner);
 
         self.section = next_section;
 
@@ -550,9 +547,9 @@ where
                     self.seen_subblocks.last_mut().unwrap()
                 };
 
-                last_subblock.1.push(tx.ok_or_else(|| {
-                    BlockExecutionError::msg("missing tx for subblock transaction")
-                })?);
+                last_subblock
+                    .1
+                    .push(tx.expect("missing tx for subblock transaction"));
             }
             BlockSection::GasIncentive => {
                 self.incentive_gas_used += gas_used;
@@ -562,7 +559,7 @@ where
             }
         }
 
-        Ok(gas_output)
+        gas_output
     }
 
     fn finish(
@@ -1219,7 +1216,7 @@ mod tests {
             tx: None,
         };
 
-        let gas_output = executor.commit_transaction(output).unwrap();
+        let gas_output = executor.commit_transaction(output);
 
         assert_eq!(gas_output.tx_gas_used(), 21000);
         assert_eq!(executor.section(), BlockSection::NonShared);
@@ -1266,7 +1263,7 @@ mod tests {
             tx: None,
         };
 
-        let gas_output = executor.commit_transaction(output).unwrap();
+        let gas_output = executor.commit_transaction(output);
 
         // With zero storage creation gas, execution gas equals total gas
         assert_eq!(gas_output.tx_gas_used(), 21000);
@@ -1303,7 +1300,7 @@ mod tests {
             is_payment: false,
             tx: None,
         };
-        executor.commit_transaction(output1).unwrap();
+        executor.commit_transaction(output1);
 
         // Commit second transaction (50000 gas)
         let tx2 = create_legacy_tx();
@@ -1325,7 +1322,7 @@ mod tests {
             is_payment: false,
             tx: None,
         };
-        executor.commit_transaction(output2).unwrap();
+        executor.commit_transaction(output2);
 
         // Receipts should have cumulative total gas (tracked by inner executor)
         let receipts = executor.receipts();
@@ -1386,7 +1383,7 @@ mod tests {
             is_payment: false,
             tx: None,
         };
-        executor.commit_transaction(output).unwrap();
+        executor.commit_transaction(output);
 
         assert_eq!(executor.non_shared_gas_left, initial_non_shared - 50_000);
     }
@@ -1429,7 +1426,7 @@ mod tests {
             is_payment: false,
             tx: None,
         };
-        executor.commit_transaction(output).unwrap();
+        executor.commit_transaction(output);
 
         // non_shared_gas_left should decrease by regular gas (200k), not total (300k)
         assert_eq!(
@@ -1475,7 +1472,7 @@ mod tests {
             is_payment: false,
             tx: None,
         };
-        executor.commit_transaction(output).unwrap();
+        executor.commit_transaction(output);
 
         assert_eq!(
             executor.incentive_gas_used, 200_000,
