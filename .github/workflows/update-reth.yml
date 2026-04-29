@@ -479,6 +479,8 @@ jobs:
                   done < <(gh run list --branch "$PR_BRANCH" --commit "$HEAD_SHA" --status in_progress --json databaseId --jq '.[].databaseId')
                 } > /tmp/amp-prompt.txt
 
+                PRE_SHA=$(git rev-parse HEAD)
+
                 echo "::group::Amp stuck CI investigation"
                 amp-run --dangerously-allow-all -x < /tmp/amp-prompt.txt
                 echo "::endgroup::"
@@ -487,7 +489,7 @@ jobs:
                   git add -A
                   git commit -m "fix: resolve stuck CI jobs from reth update ($(date -u +%Y-%m-%d))"
                   git push origin "$PR_BRANCH"
-                else
+                elif [ "$(git rev-parse HEAD)" = "$PRE_SHA" ]; then
                   echo "Amp made no changes for stuck jobs — giving up"
                   exit 1
                 fi
@@ -525,16 +527,18 @@ jobs:
               done < <(gh run list --branch "$PR_BRANCH" --commit "$HEAD_SHA" --status failure --json databaseId --jq '.[].databaseId')
             } > /tmp/amp-prompt.txt
 
+            PRE_SHA=$(git rev-parse HEAD)
+
             echo "::group::Amp CI fix"
             amp-run --dangerously-allow-all -x < /tmp/amp-prompt.txt
             echo "::endgroup::"
 
-            # Commit and push fixes
+            # Amp may have committed+pushed already; also handle uncommitted changes
             if [ -n "$(git status --porcelain)" ]; then
               git add -A
               git commit -m "fix: resolve CI failures from reth update ($(date -u +%Y-%m-%d))"
               git push origin "$PR_BRANCH"
-            else
+            elif [ "$(git rev-parse HEAD)" = "$PRE_SHA" ]; then
               echo "Amp made no changes but CI is still failing — giving up"
               exit 1
             fi
