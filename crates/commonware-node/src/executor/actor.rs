@@ -132,7 +132,7 @@ pub(crate) struct Actor<TContext> {
     pending_backfill: OptionFuture<BoxFuture<'static, (u64, Option<Block>)>>,
 
     /// Blocks received from the marshal actor that are awaiting execution and
-    /// acknowedgement. FuturesOrdered because it is nicer to use as a stream
+    /// acknowledgement. FuturesOrdered because it is nicer to use as a stream
     /// in a select-loop.
     pending_finalizations: FuturesOrdered<Ready<(Span, Block, Exact)>>,
 
