@@ -8,10 +8,6 @@ ignore = [
   "RUSTSEC-2024-0436",
   # https://rustsec.org/advisories/RUSTSEC-2025-0141 bincode is unmaintained
   "RUSTSEC-2025-0141",
-  # https://rustsec.org/advisories/RUSTSEC-2026-0098 rustls-webpki upgrade is pending
-  "RUSTSEC-2026-0098",
-  # https://rustsec.org/advisories/RUSTSEC-2026-0099 rustls-webpki upgrade is pending
-  "RUSTSEC-2026-0099",
 ]
 
 # This section is considered when running `cargo deny check bans`.
@@ -88,13 +84,7 @@ unknown-registry = "warn"
 # in the allow list is encountered
 unknown-git = "deny"
 allow-git = [
-  "https://github.com/alloy-rs/evm",
-  "https://github.com/bluealloy/revm.git",
   "https://github.com/commonwarexyz/monorepo",
-  "https://github.com/foundry-rs/foundry",
   "https://github.com/paradigmxyz/reth",
-  "https://github.com/paradigmxyz/reth-core",
-  "https://github.com/paradigmxyz/revm-inspectors",
   "https://github.com/sigp/discv5",
-  "https://github.com/DaniPopes/slotmap.git",
 ]
