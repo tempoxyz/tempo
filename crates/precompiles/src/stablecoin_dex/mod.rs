@@ -509,8 +509,15 @@ impl StablecoinDEX {
 
         // Check policy on non-escrow token (escrow token is checked in decrement_balance_or_transfer_from)
         // Direction: DEX → sender (order placer receives non-escrow token when filled)
-        TIP20Token::from_address(non_escrow_token)?
-            .ensure_transfer_authorized(self.address, sender)?;
+        let non_escrow_tip20 = TIP20Token::from_address(non_escrow_token)?;
+        non_escrow_tip20.ensure_transfer_authorized(self.address, sender)?;
+
+        // On T4+, reject if the non-escrow token is paused. When this order fills, the
+        // non-escrow token may be moved via internal-balance updates that bypass TIP-20's
+        // pause check, so we enforce it at placement.
+        if self.storage.spec().is_t4() {
+            non_escrow_tip20.check_not_paused()?;
+        }
 
         // Debit from user's balance or transfer from wallet
         self.decrement_balance_or_transfer_from(sender, escrow_token, escrow_amount, true)?;
@@ -678,8 +685,15 @@ impl StablecoinDEX {
 
         // Check policy on non-escrow token (escrow token is checked in decrement_balance_or_transfer_from or below)
         // Direction: DEX → sender (order placer receives non-escrow token when filled)
-        TIP20Token::from_address(non_escrow_token)?
-            .ensure_transfer_authorized(self.address, sender)?;
+        let non_escrow_tip20 = TIP20Token::from_address(non_escrow_token)?;
+        non_escrow_tip20.ensure_transfer_authorized(self.address, sender)?;
+
+        // On T4+, reject if the non-escrow token is paused. When this order fills, the
+        // non-escrow token may be moved via internal-balance updates that bypass TIP-20's
+        // pause check, so we enforce it at placement.
+        if self.storage.spec().is_t4() {
+            non_escrow_tip20.check_not_paused()?;
+        }
 
         // Debit from user's balance only. This is set to true after a flip order is filled and the
         // subsequent flip order is being placed.
@@ -5633,6 +5647,98 @@ mod tests {
             true,
             |exchange, alice, base_token, amount| {
                 exchange.place_flip(alice, base_token, amount, true, 0, 100, false)
+            },
+        )
+    }
+
+    #[test]
+    fn test_place_orders_on_paused_non_escrow_token_blocked_on_t4() -> eyre::Result<()> {
+        fn assert_paused_non_escrow_token_order<F>(
+            is_bid: bool,
+            internal_balance_amount: u128,
+            mut place_order: F,
+        ) -> eyre::Result<()>
+        where
+            F: FnMut(&mut StablecoinDEX, Address, Address, u128) -> Result<u128>,
+        {
+            for spec in [TempoHardfork::T3, TempoHardfork::T4] {
+                let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+                StorageCtx::enter(&mut storage, || {
+                    let mut exchange = StablecoinDEX::new();
+                    exchange.initialize()?;
+
+                    let (alice, admin) = (Address::random(), Address::random());
+                    let amount = MIN_ORDER_AMOUNT;
+
+                    let (base_token, quote_token) =
+                        setup_test_tokens(admin, alice, exchange.address, 500_000_000u128)?;
+                    exchange.create_pair(base_token)?;
+
+                    // Pre-fund alice's internal escrow balance so we exercise both the
+                    // internal-only and transferFrom paths cleanly.
+                    let escrow_token = if is_bid { quote_token } else { base_token };
+                    if internal_balance_amount > 0 {
+                        exchange.set_balance(alice, escrow_token, internal_balance_amount)?;
+                    }
+
+                    // Pause the non-escrow side of the pair (escrow stays unpaused).
+                    let non_escrow_token = if is_bid { base_token } else { quote_token };
+                    let mut non_escrow_tip20 = TIP20Token::from_address(non_escrow_token)?;
+                    non_escrow_tip20.grant_role_internal(admin, *PAUSE_ROLE)?;
+                    non_escrow_tip20.pause(admin, ITIP20::pauseCall {})?;
+
+                    let next_order_id_before = exchange.next_order_id()?;
+                    let escrow_balance_before = exchange.balance_of(alice, escrow_token)?;
+                    let res = place_order(&mut exchange, alice, base_token, amount);
+
+                    if spec.is_t4() {
+                        assert_eq!(res.unwrap_err(), TIP20Error::contract_paused().into());
+                        assert_eq!(exchange.next_order_id()?, next_order_id_before);
+                        assert_eq!(
+                            exchange.balance_of(alice, escrow_token)?,
+                            escrow_balance_before
+                        );
+                    } else {
+                        let order_id = res?;
+                        assert_eq!(order_id, next_order_id_before);
+                        assert_eq!(exchange.next_order_id()?, next_order_id_before + 1);
+                    }
+
+                    Ok::<_, eyre::Report>(())
+                })?;
+            }
+            Ok(())
+        }
+
+        // place: ask + bid (transferFrom path covers both internal and external escrow)
+        assert_paused_non_escrow_token_order(false, 0, |exchange, alice, base, amount| {
+            exchange.place(alice, base, amount, false, 0)
+        })?;
+        assert_paused_non_escrow_token_order(true, 0, |exchange, alice, base, amount| {
+            exchange.place(alice, base, amount, true, 0)
+        })?;
+
+        // place_flip non-internal-only: ask + bid
+        assert_paused_non_escrow_token_order(false, 0, |exchange, alice, base, amount| {
+            exchange.place_flip(alice, base, amount, false, 100, 0, false)
+        })?;
+        assert_paused_non_escrow_token_order(true, 0, |exchange, alice, base, amount| {
+            exchange.place_flip(alice, base, amount, true, 0, 100, false)
+        })?;
+
+        // place_flip internal-only: ask + bid (requires escrow internal balance)
+        assert_paused_non_escrow_token_order(
+            false,
+            MIN_ORDER_AMOUNT,
+            |exchange, alice, base, amount| {
+                exchange.place_flip(alice, base, amount, false, 100, 0, true)
+            },
+        )?;
+        assert_paused_non_escrow_token_order(
+            true,
+            MIN_ORDER_AMOUNT,
+            |exchange, alice, base, amount| {
+                exchange.place_flip(alice, base, amount, true, 0, 100, true)
             },
         )
     }
