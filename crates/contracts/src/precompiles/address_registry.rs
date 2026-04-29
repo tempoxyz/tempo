@@ -7,8 +7,8 @@ crate::sol! {
     /// [TIP-1022] virtual address registry interface.
     ///
     /// Allows EOAs and contracts to register as virtual-address masters via a
-    /// 32-bit proof-of-work, provides resolution of virtual addresses back to
-    /// their registered master, and exposes hardfork-aware protocol queries.
+    /// 32-bit proof-of-work and provides resolution of virtual addresses back to
+    /// their registered master.
     ///
     /// [TIP-1022]: <https://docs.tempo.xyz/protocol/tip1022>
     #[derive(Debug, PartialEq, Eq)]
@@ -21,7 +21,6 @@ crate::sol! {
         function getMaster(bytes4 masterId) external view returns (address);
         function resolveRecipient(address to) external view returns (address effectiveRecipient);
         function resolveVirtualAddress(address virtualAddr) external view returns (address master);
-        function isImplicitlyApproved(address addr) external view returns (bool);
 
         // Pure functions
         function isVirtualAddress(address addr) external pure returns (bool);
