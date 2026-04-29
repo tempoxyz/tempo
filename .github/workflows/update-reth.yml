@@ -36,12 +36,12 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
-          token: ${{ secrets.DEREK_PAT }}
+          token: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
 
       # ── git identity (use Derek's account) ─────────────────────
       - name: Configure git
         env:
-          GH_TOKEN: ${{ secrets.DEREK_PAT }}
+          GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
         run: |
           USER_JSON=$(gh api /user)
           GIT_NAME=$(echo "$USER_JSON" | jq -r '.name // .login')
@@ -54,7 +54,7 @@ jobs:
       - name: Setup working branch
         id: detect
         env:
-          GH_TOKEN: ${{ secrets.DEREK_PAT }}
+          GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
         run: |
           EXISTING_PR=$(gh pr list --head reth-auto-bump --base main --state open --json number --jq '.[0].number // empty')
           if [ -n "$EXISTING_PR" ]; then
@@ -134,7 +134,7 @@ jobs:
       - name: Update reth rev in Cargo.toml
         id: update
         env:
-          GH_TOKEN: ${{ secrets.DEREK_PAT }}
+          GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
         run: |
           # Base rev from main branch (what we're upgrading FROM)
           BASE_REV=$(git show origin/main:Cargo.toml | grep -m1 'paradigmxyz/reth' | sed 's/.*rev = "\([^"]*\)".*/\1/')
@@ -330,7 +330,7 @@ jobs:
       # ── create / update PR ─────────────────────────────────────
       - name: Create or update PR
         env:
-          GH_TOKEN: ${{ secrets.DEREK_PAT }}
+          GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
         run: |
           DATE=$(date -u +%Y-%m-%d)
@@ -408,7 +408,7 @@ jobs:
       # ── wait for CI and fix failures ─────────────────────────
       - name: Wait for CI and fix failures
         env:
-          GH_TOKEN: ${{ secrets.DEREK_PAT }}
+          GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
         run: |
           PR_BRANCH="reth-auto-bump"
@@ -544,7 +544,7 @@ jobs:
       - name: Notify Slack
         if: always()
         env:
-          GH_TOKEN: ${{ secrets.DEREK_PAT }}
+          GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_ENG_TEMPO_WORKFLOWS_WEBHOOK_URL }}
         run: |
           PR_BRANCH="reth-auto-bump"
