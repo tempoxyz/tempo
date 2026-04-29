@@ -279,6 +279,10 @@ where
 
                 msg = self.mailbox.next() => {
                     let Some(msg) = msg else { break; };
+
+                    // CanonicalizeAndBuild will fail when the EL is in a syncing state during backfill.
+                    // CanonicalizeHead is safe to ignore for parents which will be forward finalized and
+                    // verification requests will also fail when the EL is syncing during backfill.
                     if let Command::Finalize(update) = msg.command {
                         pending_finalizations.push_back((msg.cause, update));
                     }
