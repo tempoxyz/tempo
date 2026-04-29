@@ -279,6 +279,10 @@ impl TIP20ChannelEscrow {
             return Ok(());
         }
 
+        // `close_data` reserves 0 and 1 as sentinels, so tests and local fixtures that run
+        // with synthetic block timestamps of 0 or 1 can encode inconsistent channel state.
+        // Mainnet/testnet timestamps are guaranteed to be > 1, so this only matters outside
+        // real network execution.
         let close_requested_at = self.now_u32();
         let batch = self.storage.checkpoint();
         state.close_data = close_requested_at;
