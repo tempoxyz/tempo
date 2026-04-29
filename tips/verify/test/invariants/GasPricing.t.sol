@@ -3,10 +3,10 @@ pragma solidity >=0.8.13 <0.9.0;
 
 import { Test } from "forge-std/Test.sol";
 
-import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 import { InvariantBase } from "../helpers/InvariantBase.sol";
 import { Counter, InitcodeHelper, SimpleStorage } from "../helpers/TestContracts.sol";
 import { TxBuilder } from "../helpers/TxBuilder.sol";
+import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 
 import { VmExecuteTransaction, VmRlp } from "tempo-std/StdVm.sol";
 import { LegacyTransaction, LegacyTransactionLib } from "tempo-std/tx/LegacyTransactionLib.sol";
