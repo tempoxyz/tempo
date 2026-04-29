@@ -314,21 +314,14 @@ impl Inner<Init> {
         } = request;
 
         let mut payload_id_rx: Option<oneshot::Receiver<eyre::Result<PayloadId>>> = None;
-        let mut payload_id: Option<PayloadId> = None;
 
         let proposal_digest = select!(
             () = response.closed() => {
-                let id = if let Some(id) = payload_id {
-                    Some(id)
-                } else if let Some(rx) = payload_id_rx.as_mut() {
-                    Some(rx
+                if let Some(rx) = payload_id_rx.as_mut() {
+                    let id = rx
                         .await
                         .wrap_err("executor dropped response")?
-                        .wrap_err("failed requesting a new payload build")?)
-                } else {
-                    None
-                };
-                if let Some(id) = id {
+                        .wrap_err("failed requesting a new payload build")?;
                     let fut = self
                         .execution_node
                         .payload_builder_handle
@@ -350,7 +343,6 @@ impl Inner<Init> {
                 parent_digest,
                 round,
                 &mut payload_id_rx,
-                &mut payload_id,
                 leader,
             ) => {
                 res.wrap_err("failed creating a proposal")
@@ -426,10 +418,6 @@ impl Inner<Init> {
         Ok(())
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "internal helper used in one place"
-    )]
     async fn propose<TContext: Pacer>(
         self,
         context: TContext,
@@ -437,7 +425,6 @@ impl Inner<Init> {
         parent_digest: Digest,
         round: Round,
         payload_id_rx: &mut Option<oneshot::Receiver<eyre::Result<PayloadId>>>,
-        payload_id_slot: &mut Option<PayloadId>,
         leader: PublicKey,
     ) -> eyre::Result<Digest> {
         let propose_start = Instant::now();
@@ -633,10 +620,11 @@ impl Inner<Init> {
             .wrap_err("executor dropped response")?
             .wrap_err("failed requesting a new payload build")?;
 
-        // Once we hold `payload_id`, the cancel branch no longer needs the rx;
-        // it can cancel directly by id.
-        *payload_id_rx = None;
-        *payload_id_slot = Some(payload_id);
+        // Replace the slot with a pre-filled oneshot so the cancel branch can keep
+        // unconditionally awaiting `payload_id_rx` and immediately get back `payload_id`.
+        let (tx, rx) = oneshot::channel();
+        let _ = tx.send(Ok(payload_id));
+        *payload_id_rx = Some(rx);
 
         let elapsed = propose_start.elapsed();
         let remaining_resolve = self.payload_resolve_time.saturating_sub(elapsed);
