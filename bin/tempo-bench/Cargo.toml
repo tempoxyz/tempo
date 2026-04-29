@@ -41,7 +41,7 @@ tokio.workspace = true
 
 # Bespoke dependencies
 indicatif = { workspace = true, features = ["rayon", "futures"] }
-mimalloc = "0.1.48"
+mimalloc = "0.1.49"
 rayon.workspace = true
 rlimit = "0.11.0"
 governor = "0.10.4"
