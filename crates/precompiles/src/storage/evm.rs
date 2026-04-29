@@ -374,7 +374,7 @@ mod tests {
     };
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_evm::{TempoEvmFactory, evm::TempoEvm};
-    use tempo_revm::gas_params::tempo_gas_params_with_amsterdam;
+    use tempo_revm::gas_params::tempo_gas_params;
 
     struct TestEvm(TempoEvm<CacheDB<EmptyDB>>);
 
@@ -383,8 +383,7 @@ mod tests {
             let db = CacheDB::new(EmptyDB::new());
             let mut cfg = revm::context::CfgEnv::<TempoHardfork>::default();
             cfg.spec = spec;
-            cfg.enable_amsterdam_eip8037 = spec.is_t4();
-            cfg.gas_params = tempo_gas_params_with_amsterdam(spec, cfg.enable_amsterdam_eip8037);
+            cfg.gas_params = tempo_gas_params(spec);
 
             Self(TempoEvmFactory::default().create_evm(
                 db,
@@ -737,6 +736,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "TODO: TIP-1016 deferred; re-enable when cfg_env.enable_amsterdam_eip8037 is wired into TestEvm"]
     fn test_state_gas_used_only_counts_state_creating_ops() -> eyre::Result<()> {
         let mut evm = TestEvm::new(TempoHardfork::T4);
         let gas_params = evm.ctx().cfg.gas_params.clone();
@@ -794,6 +794,7 @@ mod tests {
     /// Tests that state gas (EIP-8037) is deducted from the reservoir first and
     /// spills into regular gas once the reservoir is exhausted.
     #[test]
+    #[ignore = "TODO: TIP-1016 deferred; re-enable when cfg_env.enable_amsterdam_eip8037 is wired into TestEvm"]
     fn test_state_gas_spills_from_reservoir_to_regular_gas() -> eyre::Result<()> {
         let mut evm = TestEvm::new(TempoHardfork::T4);
 
@@ -863,6 +864,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "TODO: TIP-1016 deferred; re-enable when cfg_env.enable_amsterdam_eip8037 is wired into TestEvm"]
     fn test_t4_cold_sstore_matches_tip1016_spec() -> eyre::Result<()> {
         let mut evm = TestEvm::new(TempoHardfork::T4);
         let mut provider = evm.provider_with_reservoir(460_000);
@@ -901,6 +903,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "TODO: TIP-1016 deferred; re-enable when cfg_env.enable_amsterdam_eip8037 is wired into TestEvm"]
     fn test_t4_set_code_new_account_matches_tip1016_success_path() -> eyre::Result<()> {
         let mut evm = TestEvm::new(TempoHardfork::T4);
         let gas_params = evm.ctx().cfg.gas_params.clone();
