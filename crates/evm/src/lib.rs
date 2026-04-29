@@ -216,7 +216,7 @@ impl ConfigureEvm for TempoEvmConfig {
             .rev()
             .filter(|tx| (*tx).to() == Some(Address::ZERO))
             .find_map(|tx| Vec::<SubBlockMetadata>::decode(&mut tx.input().as_ref()).ok())
-            .ok_or(TempoEvmError::NoSubblockMetadataFound)?
+            .unwrap_or_default()
             .into_iter()
             .map(|metadata| {
                 (
@@ -285,7 +285,7 @@ mod tests {
     use super::*;
     use crate::test_utils::test_chainspec;
     use alloy_consensus::{BlockHeader, Signed, TxLegacy};
-    use alloy_primitives::{B256, Bytes, Signature, TxKind, U256};
+    use alloy_primitives::{B256, Bytes, TxKind, U256};
     use alloy_rlp::{Encodable, bytes::BytesMut};
     use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
     use std::collections::HashMap;
@@ -510,28 +510,18 @@ mod tests {
     }
 
     #[test]
-    fn test_context_for_block_no_subblock_metadata() {
-        let evm_config = TempoEvmConfig::new(test_chainspec());
+    fn test_context_for_block_t4_without_metadata_has_empty_fee_recipients() {
+        use tempo_chainspec::spec::DEV;
 
-        // Create a block without subblock metadata system tx
-        let regular_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
-            TxLegacy {
-                chain_id: Some(1),
-                nonce: 0,
-                gas_price: 1,
-                gas_limit: 21000,
-                to: TxKind::Call(alloy_primitives::Address::repeat_byte(0x01)),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            },
-            Signature::test_signature(),
-        ));
+        let chainspec = DEV.clone();
+        let evm_config = TempoEvmConfig::new(chainspec);
 
         let header = TempoHeader {
             inner: alloy_consensus::Header {
                 number: 1,
                 timestamp: 1000,
                 gas_limit: 30_000_000,
+                parent_beacon_block_root: Some(B256::ZERO),
                 ..Default::default()
             },
             general_gas_limit: 10_000_000,
@@ -541,7 +531,7 @@ mod tests {
         };
 
         let body = BlockBody {
-            transactions: vec![regular_tx],
+            transactions: vec![],
             ommers: vec![],
             withdrawals: None,
         };
@@ -549,14 +539,8 @@ mod tests {
         let block = Block { header, body };
         let sealed_block = SealedBlock::seal_slow(block);
 
-        let result = evm_config.context_for_block(&sealed_block);
-
-        // Should fail because no subblock metadata tx was found
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            TempoEvmError::NoSubblockMetadataFound
-        ));
+        let context = evm_config.context_for_block(&sealed_block).unwrap();
+        assert!(context.subblock_fee_recipients.is_empty());
     }
 
     #[test]
