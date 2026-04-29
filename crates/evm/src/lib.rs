@@ -514,7 +514,7 @@ mod tests {
         use tempo_chainspec::spec::DEV;
 
         let chainspec = DEV.clone();
-        let evm_config = TempoEvmConfig::new(chainspec.clone());
+        let evm_config = TempoEvmConfig::new(chainspec);
 
         let header = TempoHeader {
             inner: alloy_consensus::Header {
