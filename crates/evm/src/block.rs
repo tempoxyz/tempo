@@ -113,7 +113,7 @@ impl<H: Send + 'static> TxResult for TempoTxResult<H> {
 /// Block executor for Tempo.
 ///
 /// Wraps an inner [`EthBlockExecutor`] and layers Tempo-specific block execution
-/// logic on top: section-based transaction ordering ([`BlockSection`]), subblock
+/// logic on top: section-based transaction ordering (`BlockSection`), subblock
 /// validation, shared/non-shared gas accounting, and gas incentive tracking.
 pub struct TempoBlockExecutor<'a, DB: Database, I> {
     pub(crate) inner:
