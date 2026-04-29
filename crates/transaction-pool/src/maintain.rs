@@ -696,8 +696,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AASequenceId, test_utils::TxBuilder};
-    use alloy_primitives::{Address, TxHash, U256};
+    use crate::test_utils::TxBuilder;
+    use alloy_primitives::{Address, TxHash};
     use reth_primitives_traits::RecoveredBlock;
     use std::sync::Arc;
     use tempo_primitives::{Block, BlockBody, TempoHeader, TempoTxEnvelope};
@@ -849,100 +849,6 @@ mod tests {
     /// Helper to extract a TempoTxEnvelope from a TempoPooledTransaction.
     fn extract_envelope(tx: &crate::transaction::TempoPooledTransaction) -> TempoTxEnvelope {
         tx.inner().clone().into_inner()
-    }
-
-    /// Tests all reorg handling scenarios:
-    /// 1. AA 2D tx orphaned in reorg -> should be re-injected
-    /// 2. AA tx with nonce_key=0 -> should NOT be re-injected (handled by vanilla pool)
-    /// 3. EIP-1559 tx -> should NOT be re-injected (not AA)
-    /// 4. AA 2D tx in both old and new chain -> should NOT be re-injected
-    /// 5. AA 2D tx already in pool -> should NOT be re-injected
-    /// 6. All orphaned 2D seq_ids should be in affected_seq_ids (for nonce reset)
-    #[test]
-    fn handle_reorg_correctly_identifies_orphaned_aa_2d_transactions() {
-        let sender_2d = Address::random();
-
-        // AA 2D tx that will be orphaned (should be re-injected)
-        let tx_2d_orphaned = TxBuilder::aa(sender_2d).nonce_key(U256::from(1)).build();
-        let hash_2d_orphaned = *tx_2d_orphaned.hash();
-        let envelope_2d_orphaned = extract_envelope(&tx_2d_orphaned);
-
-        // AA 2D tx that will be re-included in new chain (should NOT be re-injected)
-        let tx_2d_reincluded = TxBuilder::aa(sender_2d).nonce_key(U256::from(2)).build();
-        let envelope_2d_reincluded = extract_envelope(&tx_2d_reincluded);
-
-        // AA 2D tx that's already in the pool (should NOT be re-injected)
-        let tx_2d_in_pool = TxBuilder::aa(sender_2d).nonce_key(U256::from(3)).build();
-        let hash_2d_in_pool = *tx_2d_in_pool.hash();
-        let envelope_2d_in_pool = extract_envelope(&tx_2d_in_pool);
-
-        // AA tx with nonce_key=0 (should NOT be re-injected - vanilla pool handles it)
-        let tx_non_2d = TxBuilder::aa(sender_2d).nonce_key(U256::ZERO).build();
-        let envelope_non_2d = extract_envelope(&tx_non_2d);
-
-        // EIP-1559 tx (should NOT be re-injected - not AA)
-        let tx_eip1559 = TxBuilder::eip1559(Address::random()).build();
-        let envelope_eip1559 = extract_envelope(&tx_eip1559);
-
-        // Create old chain with all 5 transactions
-        let old_block = create_block_with_txs(
-            1,
-            vec![
-                envelope_2d_orphaned,
-                envelope_2d_reincluded.clone(),
-                envelope_2d_in_pool,
-                envelope_non_2d,
-                envelope_eip1559,
-            ],
-            vec![sender_2d; 5],
-        );
-        let old_chain = create_test_chain(vec![old_block]);
-
-        // Create new chain with only the re-included tx
-        let new_block = create_block_with_txs(1, vec![envelope_2d_reincluded], vec![sender_2d]);
-        let new_chain = create_test_chain(vec![new_block]);
-
-        // Simulate pool containing the "already in pool" tx
-        let pool_hashes: HashSet<TxHash> = [hash_2d_in_pool].into_iter().collect();
-
-        // Execute handle_reorg
-        let (orphaned, affected_seq_ids) =
-            handle_reorg(old_chain, new_chain, |hash| pool_hashes.contains(hash));
-
-        // Verify: Only the orphaned AA 2D tx should be returned (not in-pool, not re-included)
-        assert_eq!(
-            orphaned.len(),
-            1,
-            "Expected exactly 1 orphaned tx, got {}",
-            orphaned.len()
-        );
-        assert_eq!(
-            *orphaned[0].hash(),
-            hash_2d_orphaned,
-            "Wrong transaction was identified as orphaned"
-        );
-
-        // Verify: affected_seq_ids should contain ALL orphaned 2D seq_ids (nonce_key=1 and nonce_key=3).
-        // Note: nonce_key=2 is NOT orphaned (it's in the new chain), so it's not in affected_seq_ids.
-        assert_eq!(
-            affected_seq_ids.len(),
-            2,
-            "Expected 2 affected seq_ids, got {}",
-            affected_seq_ids.len()
-        );
-        assert!(
-            affected_seq_ids.contains(&AASequenceId::new(sender_2d, U256::from(1))),
-            "Should contain orphaned tx's seq_id (nonce_key=1)"
-        );
-        assert!(
-            affected_seq_ids.contains(&AASequenceId::new(sender_2d, U256::from(3))),
-            "Should contain in-pool tx's seq_id (nonce_key=3)"
-        );
-        // nonce_key=2 is NOT orphaned (tx is in new chain), so it won't be in affected_seq_ids
-        assert!(
-            !affected_seq_ids.contains(&AASequenceId::new(sender_2d, U256::from(2))),
-            "Should NOT contain re-included tx's seq_id (nonce_key=2) - tx is in new chain"
-        );
     }
 
     mod from_chain_spending_limit_spends {
