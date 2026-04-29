@@ -1,4 +1,4 @@
-use super::tt_signed::AASigned;
+use super::{TempoSignature, tt_signed::AASigned};
 use crate::{TempoTransaction, subblock::PartialValidatorKey};
 use alloy_consensus::{
     EthereumTxEnvelope, SignableTransaction, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702,
@@ -8,8 +8,9 @@ use alloy_consensus::{
     transaction::Either,
 };
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, hex};
+use alloy_sol_types::{SolCall, SolInterface, SolType};
 use core::fmt;
-use tempo_contracts::precompiles::ITIP20;
+use tempo_contracts::precompiles::{ITIP20, ITIP20ChannelEscrow, TIP20_CHANNEL_ESCROW_ADDRESS};
 
 /// TIP20 payment address prefix (12 bytes for payment classification)
 /// Same as TIP20_TOKEN_PREFIX
@@ -163,21 +164,27 @@ impl TempoTxEnvelope {
 
     /// [TIP-20 payment] classification: `to` address has the `0x20c0` prefix.
     ///
-    /// A transaction is considered a payment if its `to` address carries the TIP-20 prefix.
-    /// For AA transactions, every call must target a TIP-20 address.
+    /// A transaction is considered a payment if every call is either a TIP-20 payment target or a
+    /// valid TIP-1034 channel escrow operation, and the transaction carries no authorization side
+    /// effects.
     ///
     /// # NOTE
     /// Consensus-level classifier, used during block validation, against `general_gas_limit`.
     /// See [`is_payment_v2`](Self::is_payment_v2) for the stricter builder-level variant.
     ///
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
-    pub fn is_payment_v1(&self) -> bool {
+    pub fn is_payment_v1(&self, t5_active: bool) -> bool {
         match self {
-            Self::Legacy(tx) => is_tip20_call(tx.tx().to.to()),
-            Self::Eip2930(tx) => is_tip20_call(tx.tx().to.to()),
-            Self::Eip1559(tx) => is_tip20_call(tx.tx().to.to()),
-            Self::Eip7702(tx) => is_tip20_call(Some(&tx.tx().to)),
-            Self::AA(tx) => tx.tx().calls.iter().all(|call| is_tip20_call(call.to.to())),
+            Self::Legacy(tx) => is_payment_call_v1(tx.tx().to.to(), &tx.tx().input, t5_active),
+            Self::Eip2930(tx) => is_payment_call_v1(tx.tx().to.to(), &tx.tx().input, t5_active),
+            Self::Eip1559(tx) => is_payment_call_v1(tx.tx().to.to(), &tx.tx().input, t5_active),
+            Self::Eip7702(tx) => {
+                tx.tx().authorization_list.is_empty()
+                    && is_payment_call_v1(Some(&tx.tx().to), &tx.tx().input, t5_active)
+            }
+            Self::AA(tx) => aa_is_payment(tx.tx(), |to, input| {
+                is_payment_call_v2(to, input, t5_active)
+            }),
         }
     }
 
@@ -194,33 +201,27 @@ impl TempoTxEnvelope {
     /// stricter classification at the protocol level.
     ///
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
-    pub fn is_payment_v2(&self) -> bool {
+    pub fn is_payment_v2(&self, t5_active: bool) -> bool {
         match self {
-            Self::Legacy(tx) => is_tip20_payment(tx.tx().to.to(), &tx.tx().input),
+            Self::Legacy(tx) => is_payment_call_v2(tx.tx().to.to(), &tx.tx().input, t5_active),
             Self::Eip2930(tx) => {
                 let tx = tx.tx();
-                tx.access_list.is_empty() && is_tip20_payment(tx.to.to(), &tx.input)
+                tx.access_list.is_empty() && is_payment_call_v2(tx.to.to(), &tx.input, t5_active)
             }
             Self::Eip1559(tx) => {
                 let tx = tx.tx();
-                tx.access_list.is_empty() && is_tip20_payment(tx.to.to(), &tx.input)
+                tx.access_list.is_empty() && is_payment_call_v2(tx.to.to(), &tx.input, t5_active)
             }
             Self::Eip7702(tx) => {
                 let tx = tx.tx();
                 tx.access_list.is_empty()
                     && tx.authorization_list.is_empty()
-                    && is_tip20_payment(Some(&tx.to), &tx.input)
+                    && is_payment_call_v2(Some(&tx.to), &tx.input, t5_active)
             }
             Self::AA(tx) => {
                 let tx = tx.tx();
-                !tx.calls.is_empty()
-                    && tx.key_authorization.is_none()
-                    && tx.access_list.is_empty()
-                    && tx.tempo_authorization_list.is_empty()
-                    && tx
-                        .calls
-                        .iter()
-                        .all(|call| is_tip20_payment(call.to.to(), &call.input))
+                tx.access_list.is_empty()
+                    && aa_is_payment(tx, |to, input| is_payment_call_v2(to, input, t5_active))
             }
         }
     }
@@ -485,6 +486,62 @@ fn is_tip20_payment(to: Option<&Address>, input: &[u8]) -> bool {
     is_tip20_call(to) && ITIP20::ITIP20Calls::is_payment(input)
 }
 
+/// Returns `true` if `to` is the TIP-1034 channel escrow precompile and `input` is a recognized
+/// payment-lane escrow call.
+fn is_channel_escrow_payment(to: Option<&Address>, input: &[u8], t5_active: bool) -> bool {
+    t5_active
+        && to == Some(&TIP20_CHANNEL_ESCROW_ADDRESS)
+        && is_channel_escrow_payment_calldata(input)
+}
+
+/// Returns `true` if `input` matches a channel escrow payment-lane selector and its calldata is
+/// well-formed. `settle` and `close` also require a valid Tempo signature encoding.
+fn is_channel_escrow_payment_calldata(input: &[u8]) -> bool {
+    fn is_static_call<C: SolCall>(input: &[u8]) -> bool {
+        input.first_chunk::<4>() == Some(&C::SELECTOR)
+            && input.len() == 4 + <C::Parameters<'_> as SolType>::ENCODED_SIZE.unwrap_or_default()
+    }
+
+    if is_static_call::<ITIP20ChannelEscrow::openCall>(input)
+        || is_static_call::<ITIP20ChannelEscrow::topUpCall>(input)
+        || is_static_call::<ITIP20ChannelEscrow::requestCloseCall>(input)
+        || is_static_call::<ITIP20ChannelEscrow::withdrawCall>(input)
+    {
+        return true;
+    }
+
+    match ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls::abi_decode(input) {
+        Ok(ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls::settle(call)) => {
+            TempoSignature::from_bytes(&call.signature).is_ok()
+        }
+        Ok(ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls::close(call)) => {
+            TempoSignature::from_bytes(&call.signature).is_ok()
+        }
+        _ => false,
+    }
+}
+
+fn is_payment_call_v1(to: Option<&Address>, input: &[u8], t5_active: bool) -> bool {
+    is_tip20_call(to) || is_channel_escrow_payment(to, input, t5_active)
+}
+
+fn is_payment_call_v2(to: Option<&Address>, input: &[u8], t5_active: bool) -> bool {
+    is_tip20_payment(to, input) || is_channel_escrow_payment(to, input, t5_active)
+}
+
+fn aa_is_payment(
+    tx: &TempoTransaction,
+    is_payment_call: impl Fn(Option<&Address>, &[u8]) -> bool,
+) -> bool {
+    tx.key_authorization.is_none()
+        && tx.tempo_authorization_list.is_empty()
+        && !tx.calls.is_empty()
+        && tx
+            .calls
+            .iter()
+            .all(|call| is_payment_call(call.to.to(), &call.input))
+}
+
 #[cfg(feature = "rpc")]
 impl reth_rpc_convert::SignableTxRequest<TempoTxEnvelope>
     for alloy_rpc_types_eth::TransactionRequest
@@ -517,19 +574,26 @@ impl reth_rpc_convert::TryIntoSimTx<TempoTxEnvelope> for alloy_rpc_types_eth::Tr
 mod tests {
     use super::*;
     use crate::transaction::{
-        Call, TempoSignedAuthorization, TempoTransaction,
+        Call, TempoSignature, TempoSignedAuthorization, TempoTransaction,
         key_authorization::{KeyAuthorization, SignedKeyAuthorization},
         tt_signature::PrimitiveSignature,
     };
     use alloy_consensus::{TxEip1559, TxEip2930, TxEip7702};
     use alloy_eips::{
         eip2930::{AccessList, AccessListItem},
-        eip7702::SignedAuthorization,
+        eip7702::{Authorization, SignedAuthorization},
     };
     use alloy_primitives::{Bytes, Signature, TxKind, U256, address};
     use alloy_sol_types::SolCall;
 
     const PAYMENT_TKN: Address = address!("20c0000000000000000000000000000000000001");
+    const CHANNEL_ESCROW: Address = TIP20_CHANNEL_ESCROW_ADDRESS;
+    const PRE_T5: bool = false;
+    const T5_ACTIVE: bool = true;
+
+    fn abi_u96(value: u128) -> alloy_primitives::Uint<96, 2> {
+        alloy_primitives::Uint::from(value)
+    }
 
     #[rustfmt::skip]
     /// Returns valid ABI-encoded calldata for every recognized TIP-20 payment selector.
@@ -588,6 +652,119 @@ mod tests {
         ]
     }
 
+    fn channel_descriptor() -> ITIP20ChannelEscrow::ChannelDescriptor {
+        ITIP20ChannelEscrow::ChannelDescriptor {
+            payer: Address::random(),
+            payee: Address::random(),
+            token: PAYMENT_TKN,
+            salt: B256::random(),
+            authorizedSigner: Address::ZERO,
+        }
+    }
+
+    fn primitive_signature_bytes() -> Bytes {
+        Bytes::copy_from_slice(&Signature::test_signature().as_bytes())
+    }
+
+    fn keychain_signature_bytes() -> Bytes {
+        let mut bytes = Vec::with_capacity(1 + 20 + 65);
+        bytes.push(0x03);
+        bytes.extend_from_slice(Address::random().as_slice());
+        bytes.extend_from_slice(Signature::test_signature().as_bytes().as_slice());
+        bytes.into()
+    }
+
+    #[rustfmt::skip]
+    fn channel_escrow_calldatas() -> [Bytes; 6] {
+        let descriptor = channel_descriptor();
+        let signature = primitive_signature_bytes();
+        [
+            ITIP20ChannelEscrow::openCall {
+                payee: descriptor.payee,
+                token: descriptor.token,
+                deposit: abi_u96(100),
+                salt: descriptor.salt,
+                authorizedSigner: descriptor.authorizedSigner,
+                expiresAt: 1000,
+            }.abi_encode().into(),
+            ITIP20ChannelEscrow::settleCall {
+                descriptor: descriptor.clone(),
+                cumulativeAmount: abi_u96(10),
+                signature: signature.clone(),
+            }.abi_encode().into(),
+            ITIP20ChannelEscrow::topUpCall {
+                descriptor: descriptor.clone(),
+                additionalDeposit: abi_u96(25),
+                newExpiresAt: 2000,
+            }.abi_encode().into(),
+            ITIP20ChannelEscrow::closeCall {
+                descriptor: descriptor.clone(),
+                cumulativeAmount: abi_u96(10),
+                captureAmount: abi_u96(10),
+                signature,
+            }.abi_encode().into(),
+            ITIP20ChannelEscrow::requestCloseCall {
+                descriptor: descriptor.clone(),
+            }.abi_encode().into(),
+            ITIP20ChannelEscrow::withdrawCall { descriptor }.abi_encode().into(),
+        ]
+    }
+
+    fn invalid_channel_signature_calldata() -> [Bytes; 2] {
+        let descriptor = channel_descriptor();
+        let invalid_signature = Bytes::from(vec![0x03; 21]);
+        [
+            ITIP20ChannelEscrow::settleCall {
+                descriptor: descriptor.clone(),
+                cumulativeAmount: abi_u96(10),
+                signature: invalid_signature.clone(),
+            }
+            .abi_encode()
+            .into(),
+            ITIP20ChannelEscrow::closeCall {
+                descriptor,
+                cumulativeAmount: abi_u96(10),
+                captureAmount: abi_u96(10),
+                signature: invalid_signature,
+            }
+            .abi_encode()
+            .into(),
+        ]
+    }
+
+    fn keychain_channel_signature_calldata() -> [Bytes; 2] {
+        let descriptor = channel_descriptor();
+        let keychain_signature = keychain_signature_bytes();
+        [
+            ITIP20ChannelEscrow::settleCall {
+                descriptor: descriptor.clone(),
+                cumulativeAmount: abi_u96(10),
+                signature: keychain_signature.clone(),
+            }
+            .abi_encode()
+            .into(),
+            ITIP20ChannelEscrow::closeCall {
+                descriptor,
+                cumulativeAmount: abi_u96(10),
+                captureAmount: abi_u96(10),
+                signature: keychain_signature,
+            }
+            .abi_encode()
+            .into(),
+        ]
+    }
+
+    fn dummy_tempo_authorization() -> TempoSignedAuthorization {
+        TempoSignedAuthorization::new_unchecked(
+            Authorization {
+                chain_id: U256::from(1u128),
+                address: Address::random(),
+                nonce: 0,
+            },
+            TempoSignature::default(),
+        )
+    }
+
     #[test]
     fn test_non_fee_token_access() {
         let legacy_tx = TxLegacy::default();
@@ -616,7 +793,7 @@ mod tests {
         let signed = Signed::new_unhashed(tx, Signature::test_signature());
         let envelope = TempoTxEnvelope::Legacy(signed);
 
-        assert!(envelope.is_payment_v1());
+        assert!(envelope.is_payment_v1(PRE_T5));
     }
 
     #[test]
@@ -630,7 +807,7 @@ mod tests {
         let signed = Signed::new_unhashed(tx, Signature::test_signature());
         let envelope = TempoTxEnvelope::Legacy(signed);
 
-        assert!(!envelope.is_payment_v1());
+        assert!(!envelope.is_payment_v1(PRE_T5));
     }
 
     fn create_aa_envelope(call: Call) -> TempoTxEnvelope {
@@ -648,10 +825,29 @@ mod tests {
         let call = Call {
             to: TxKind::Call(payment_addr),
             value: U256::ZERO,
+            input: ITIP20::transferCall {
+                to: Address::random(),
+                amount: U256::from(1u64),
+            }
+            .abi_encode()
+            .into(),
+        };
+        let envelope = create_aa_envelope(call);
+        assert!(envelope.is_payment_v1(PRE_T5));
+        assert!(envelope.is_payment_v2(PRE_T5));
+    }
+
+    #[test]
+    fn test_payment_classification_aa_requires_strict_tip20_calldata() {
+        let payment_addr = address!("20c0000000000000000000000000000000000001");
+        let call = Call {
+            to: TxKind::Call(payment_addr),
+            value: U256::ZERO,
             input: Bytes::new(),
         };
         let envelope = create_aa_envelope(call);
-        assert!(envelope.is_payment_v1());
+        assert!(!envelope.is_payment_v1(PRE_T5));
+        assert!(!envelope.is_payment_v2(PRE_T5));
     }
 
     #[test]
@@ -663,7 +859,61 @@ mod tests {
             input: Bytes::new(),
         };
         let envelope = create_aa_envelope(call);
-        assert!(!envelope.is_payment_v1());
+        assert!(!envelope.is_payment_v1(PRE_T5));
+    }
+
+    #[test]
+    fn test_channel_escrow_payment_classification() {
+        for calldata in channel_escrow_calldatas() {
+            let tx = TxLegacy {
+                to: TxKind::Call(CHANNEL_ESCROW),
+                gas_limit: 21_000,
+                input: calldata,
+                ..Default::default()
+            };
+            let envelope =
+                TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()));
+            assert!(!envelope.is_payment_v1(PRE_T5));
+            assert!(!envelope.is_payment_v2(PRE_T5));
+            assert!(envelope.is_payment_v1(T5_ACTIVE));
+            assert!(envelope.is_payment_v2(T5_ACTIVE));
+        }
+    }
+
+    #[test]
+    fn test_channel_escrow_rejects_invalid_signature_encoding() {
+        for calldata in invalid_channel_signature_calldata() {
+            let tx = TxLegacy {
+                to: TxKind::Call(CHANNEL_ESCROW),
+                gas_limit: 21_000,
+                input: calldata,
+                ..Default::default()
+            };
+            let envelope =
+                TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()));
+            assert!(!envelope.is_payment_v1(PRE_T5));
+            assert!(!envelope.is_payment_v1(T5_ACTIVE));
+            assert!(!envelope.is_payment_v2(PRE_T5));
+            assert!(!envelope.is_payment_v2(T5_ACTIVE));
+        }
+    }
+
+    #[test]
+    fn test_channel_escrow_accepts_keychain_signature_encoding_for_classification() {
+        for calldata in keychain_channel_signature_calldata() {
+            let tx = TxLegacy {
+                to: TxKind::Call(CHANNEL_ESCROW),
+                gas_limit: 21_000,
+                input: calldata,
+                ..Default::default()
+            };
+            let envelope =
+                TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()));
+            assert!(!envelope.is_payment_v1(PRE_T5));
+            assert!(!envelope.is_payment_v2(PRE_T5));
+            assert!(envelope.is_payment_v1(T5_ACTIVE));
+            assert!(envelope.is_payment_v2(T5_ACTIVE));
+        }
     }
 
     #[test]
@@ -674,12 +924,13 @@ mod tests {
             input: Bytes::new(),
         };
         let envelope = create_aa_envelope(call);
-        assert!(!envelope.is_payment_v1());
+        assert!(!envelope.is_payment_v1(PRE_T5));
     }
 
     #[test]
     fn test_payment_classification_aa_partial_match() {
-        // First 12 bytes match TIP20_PAYMENT_PREFIX, remaining 8 bytes differ
+        // AA classification still treats TIP-20 vanity addresses as payment targets, but only when
+        // the calldata is a recognized TIP-20 payment ABI.
         let payment_addr = address!("20c0000000000000000000001111111111111111");
         let call = Call {
             to: TxKind::Call(payment_addr),
@@ -687,7 +938,8 @@ mod tests {
             input: Bytes::new(),
         };
         let envelope = create_aa_envelope(call);
-        assert!(envelope.is_payment_v1());
+        assert!(!envelope.is_payment_v1(PRE_T5));
+        assert!(!envelope.is_payment_v2(PRE_T5));
     }
 
     #[test]
@@ -700,7 +952,7 @@ mod tests {
             input: Bytes::new(),
         };
         let envelope = create_aa_envelope(call);
-        assert!(!envelope.is_payment_v1());
+        assert!(!envelope.is_payment_v1(PRE_T5));
     }
 
     #[test]
@@ -712,7 +964,7 @@ mod tests {
         };
         let envelope =
             TempoTxEnvelope::Eip2930(Signed::new_unhashed(tx, Signature::test_signature()));
-        assert!(envelope.is_payment_v1());
+        assert!(envelope.is_payment_v1(PRE_T5));
 
         // Eip2930 non-payment
         let tx = TxEip2930 {
@@ -721,7 +973,7 @@ mod tests {
         };
         let envelope =
             TempoTxEnvelope::Eip2930(Signed::new_unhashed(tx, Signature::test_signature()));
-        assert!(!envelope.is_payment_v1());
+        assert!(!envelope.is_payment_v1(PRE_T5));
 
         // Eip1559 payment
         let tx = TxEip1559 {
@@ -730,7 +982,7 @@ mod tests {
         };
         let envelope =
             TempoTxEnvelope::Eip1559(Signed::new_unhashed(tx, Signature::test_signature()));
-        assert!(envelope.is_payment_v1());
+        assert!(envelope.is_payment_v1(PRE_T5));
 
         // Eip1559 non-payment
         let tx = TxEip1559 {
@@ -739,7 +991,7 @@ mod tests {
         };
         let envelope =
             TempoTxEnvelope::Eip1559(Signed::new_unhashed(tx, Signature::test_signature()));
-        assert!(!envelope.is_payment_v1());
+        assert!(!envelope.is_payment_v1(PRE_T5));
 
         // Eip7702 payment (note: Eip7702 has direct `to` address, not TxKind)
         let tx = TxEip7702 {
@@ -748,7 +1000,7 @@ mod tests {
         };
         let envelope =
             TempoTxEnvelope::Eip7702(Signed::new_unhashed(tx, Signature::test_signature()));
-        assert!(envelope.is_payment_v1());
+        assert!(envelope.is_payment_v1(PRE_T5));
 
         // Eip7702 non-payment
         let tx = TxEip7702 {
@@ -757,25 +1009,42 @@ mod tests {
         };
         let envelope =
             TempoTxEnvelope::Eip7702(Signed::new_unhashed(tx, Signature::test_signature()));
-        assert!(!envelope.is_payment_v1());
+        assert!(!envelope.is_payment_v1(PRE_T5));
     }
 
     #[test]
     fn test_payment_v2_accepts_valid_calldata() {
         for calldata in payment_calldatas() {
             for envelope in payment_envelopes(calldata) {
-                assert!(envelope.is_payment_v1(), "V1 must accept valid calldata");
-                assert!(envelope.is_payment_v2(), "V2 must accept valid calldata");
+                assert!(
+                    envelope.is_payment_v1(PRE_T5),
+                    "V1 must accept valid calldata"
+                );
+                assert!(
+                    envelope.is_payment_v2(PRE_T5),
+                    "V2 must accept valid calldata"
+                );
             }
         }
     }
 
     #[test]
     fn test_payment_v2_rejects_empty_calldata() {
-        for envelope in payment_envelopes(Bytes::new()) {
-            assert!(envelope.is_payment_v1(), "V1 must accept (prefix-only)");
-            assert!(!envelope.is_payment_v2(), "V2 must reject empty calldata");
-        }
+        let tx = TxLegacy {
+            to: TxKind::Call(PAYMENT_TKN),
+            gas_limit: 21_000,
+            ..Default::default()
+        };
+        let envelope =
+            TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()));
+        assert!(
+            envelope.is_payment_v1(PRE_T5),
+            "V1 must accept (prefix-only)"
+        );
+        assert!(
+            !envelope.is_payment_v2(PRE_T5),
+            "V2 must reject empty calldata"
+        );
     }
 
     #[test]
@@ -783,10 +1052,22 @@ mod tests {
         for calldata in payment_calldatas() {
             let mut data = calldata.to_vec();
             data.extend_from_slice(&[0u8; 32]);
-            for envelope in payment_envelopes(Bytes::from(data)) {
-                assert!(envelope.is_payment_v1(), "V1 must accept (prefix-only)");
-                assert!(!envelope.is_payment_v2(), "V2 must reject excess calldata");
-            }
+            let tx = TxLegacy {
+                to: TxKind::Call(PAYMENT_TKN),
+                gas_limit: 21_000,
+                input: Bytes::from(data),
+                ..Default::default()
+            };
+            let envelope =
+                TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()));
+            assert!(
+                envelope.is_payment_v1(PRE_T5),
+                "V1 must accept (prefix-only)"
+            );
+            assert!(
+                !envelope.is_payment_v2(PRE_T5),
+                "V2 must reject excess calldata"
+            );
         }
     }
 
@@ -795,10 +1076,22 @@ mod tests {
         for calldata in payment_calldatas() {
             let mut data = calldata.to_vec();
             data[..4].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
-            for envelope in payment_envelopes(Bytes::from(data)) {
-                assert!(envelope.is_payment_v1(), "V1 must accept (prefix-only)");
-                assert!(!envelope.is_payment_v2(), "V2 must reject unknown selector");
-            }
+            let tx = TxLegacy {
+                to: TxKind::Call(PAYMENT_TKN),
+                gas_limit: 21_000,
+                input: Bytes::from(data),
+                ..Default::default()
+            };
+            let envelope =
+                TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()));
+            assert!(
+                envelope.is_payment_v1(PRE_T5),
+                "V1 must accept (prefix-only)"
+            );
+            assert!(
+                !envelope.is_payment_v2(PRE_T5),
+                "V2 must reject unknown selector"
+            );
         }
     }
 
@@ -810,9 +1103,10 @@ mod tests {
             ..Default::default()
         };
         let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
+        assert!(!envelope.is_payment_v1(PRE_T5));
         assert!(
-            !envelope.is_payment_v2(),
-            "AA with empty calls should not be V2 payment"
+            !envelope.is_payment_v2(PRE_T5),
+            "AA with empty calls should not be strict payment"
         );
     }
 
@@ -841,11 +1135,11 @@ mod tests {
         let envelope =
             TempoTxEnvelope::Eip7702(Signed::new_unhashed(tx, Signature::test_signature()));
         assert!(
-            envelope.is_payment_v1(),
-            "V1 ignores authorization_list (backwards compat)"
+            !envelope.is_payment_v1(PRE_T5),
+            "V1 must reject authorization-bearing EIP-7702 transactions"
         );
         assert!(
-            !envelope.is_payment_v2(),
+            !envelope.is_payment_v2(PRE_T5),
             "V2 must reject EIP-7702 tx with non-empty authorization_list"
         );
     }
@@ -879,11 +1173,11 @@ mod tests {
         };
         let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
         assert!(
-            envelope.is_payment_v1(),
-            "V1 ignores side-effect fields (backwards compat)"
+            !envelope.is_payment_v1(PRE_T5),
+            "V1 must reject AA tx with key_authorization"
         );
         assert!(
-            !envelope.is_payment_v2(),
+            !envelope.is_payment_v2(PRE_T5),
             "V2 must reject AA tx with key_authorization"
         );
     }
@@ -914,11 +1208,11 @@ mod tests {
         };
         let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
         assert!(
-            envelope.is_payment_v1(),
-            "V1 ignores side-effect fields (backwards compat)"
+            !envelope.is_payment_v1(PRE_T5),
+            "V1 must reject AA tx with tempo_authorization_list"
         );
         assert!(
-            !envelope.is_payment_v2(),
+            !envelope.is_payment_v2(PRE_T5),
             "V2 must reject AA tx with tempo_authorization_list"
         );
     }
@@ -937,9 +1231,29 @@ mod tests {
         }]);
 
         for envelope in payment_envelopes_with_access_list(calldata, access_list) {
-            assert!(envelope.is_payment_v1(), "V1 must ignore access_list");
-            assert!(!envelope.is_payment_v2(), "V2 must reject access_list");
+            assert!(envelope.is_payment_v1(PRE_T5), "V1 must ignore access_list");
+            assert!(
+                !envelope.is_payment_v2(PRE_T5),
+                "V2 must reject access_list"
+            );
         }
+    }
+
+    #[test]
+    fn test_payment_classification_rejects_aa_authorization_side_effects() {
+        let tx = TempoTransaction {
+            fee_token: Some(PAYMENT_TKN),
+            calls: vec![Call {
+                to: TxKind::Call(PAYMENT_TKN),
+                value: U256::ZERO,
+                input: payment_calldatas()[0].clone(),
+            }],
+            tempo_authorization_list: vec![dummy_tempo_authorization()],
+            ..Default::default()
+        };
+        let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
+        assert!(!envelope.is_payment_v1(PRE_T5));
+        assert!(!envelope.is_payment_v2(PRE_T5));
     }
 
     #[test]
@@ -1099,7 +1413,13 @@ mod tests {
             ..Default::default()
         };
         let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
-        assert!(envelope.is_payment_v1(), "V1 must accept AA without calls");
-        assert!(!envelope.is_payment_v2(), "V2 must reject AA without calls");
+        assert!(
+            !envelope.is_payment_v1(PRE_T5),
+            "V1 must reject AA without calls"
+        );
+        assert!(
+            !envelope.is_payment_v2(PRE_T5),
+            "V2 must reject AA without calls"
+        );
     }
 }
