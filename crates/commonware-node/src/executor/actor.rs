@@ -13,7 +13,7 @@ use commonware_runtime::{
     Clock, ContextCell, FutureExt, Handle, Metrics, Pacer, Spawner, spawn_cell,
 };
 use commonware_utils::{Acknowledgement, acknowledgement::Exact};
-use eyre::{OptionExt as _, Report, WrapErr as _, ensure};
+use eyre::{Report, WrapErr as _, ensure};
 use futures::{
     FutureExt as _, StreamExt as _,
     channel::{
@@ -23,7 +23,8 @@ use futures::{
     future::{BoxFuture, Ready, ready},
     stream::FuturesOrdered,
 };
-use reth_provider::{BlockHashReader, BlockNumReader as _};
+use reth_ethereum::{chainspec::EthChainSpec, rpc::eth::primitives::BlockNumHash};
+use reth_provider::BlockNumReader as _;
 use tempo_node::{TempoExecutionData, TempoFullNode};
 use tempo_payload_types::TempoPayloadAttributes;
 use tokio::select;
@@ -157,14 +158,13 @@ where
             .provider
             .last_block_number()
             .wrap_err("unable to read latest block number from execution layer")?;
-        let last_finalized_block_hash = execution_node
-            .provider
-            .block_hash(last_execution_finalized_height)
-            .map_or_else(
-                |e| Err(Report::new(e)),
-                |hash| hash.ok_or_eyre("execution layer does not have the block hash"),
-            )
-            .wrap_err("failed to read the last finalized block hash")?;
+
+        let canonical_state = execution_node.provider.canonical_in_memory_state();
+        let finalized_num_hash = canonical_state
+            .get_finalized_num_hash()
+            .unwrap_or_else(|| BlockNumHash::new(0, execution_node.chain_spec().genesis_hash()));
+        let head_num_hash: BlockNumHash = canonical_state.chain_info().into();
+
         let fcu_heartbeat_timer = Box::pin(context.sleep(fcu_heartbeat_interval));
         let finalized_heights_to_backfill =
             (last_execution_finalized_height + 1)..=last_finalized_height.get();
@@ -178,12 +178,12 @@ where
             marshal,
             last_canonicalized: LastCanonicalized {
                 forkchoice: ForkchoiceState {
-                    head_block_hash: last_finalized_block_hash,
-                    safe_block_hash: last_finalized_block_hash,
-                    finalized_block_hash: last_finalized_block_hash,
+                    head_block_hash: head_num_hash.hash,
+                    safe_block_hash: finalized_num_hash.hash,
+                    finalized_block_hash: finalized_num_hash.hash,
                 },
-                head_height: last_execution_finalized_height,
-                finalized_height: last_execution_finalized_height,
+                head_height: Height::new(head_num_hash.number),
+                finalized_height: Height::new(finalized_num_hash.number),
             },
             fcu_heartbeat_interval,
             fcu_heartbeat_timer,
@@ -257,8 +257,13 @@ where
                 , if self.pending_backfill.is_none()
                 => {
                     // Error is emitted on function return.
-                    if self.forward_finalized( cause, block, ack).await.is_err()
+                    if let Err(error) = self.forward_finalized(cause, block, ack).await
                     {
+                        error_span!("shutdown").in_scope(|| error!(
+                            %error,
+                            "executor encountered fatal fork choice update error; \
+                            shutting down to prevent consensus-execution divergence"
+                        ));
                         break;
                     }
                 }
@@ -266,6 +271,7 @@ where
                 // Update the finalized tip if it has moved.
                 Some((height, digest)) = ready(self.latest_observed_finalized_tip)
                 , if finalized_tip_has_moved
+                && self.pending_backfill.is_none()
                 => {
                     let (response, _rx) = oneshot::channel();
                     self.canonicalize(
