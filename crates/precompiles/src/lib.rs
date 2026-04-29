@@ -321,22 +321,25 @@ pub(crate) fn charge_input_cost(
 
 /// Fills state gas accounting on a [`PrecompileOutput`] from the storage context.
 ///
-/// State gas is only set when TIP-1016 (EIP-8037) is enabled, where the state gas /
-/// reservoir model is active. When disabled, `state_gas_used` must remain 0 to avoid
-/// leaking into revm's reservoir accounting and corrupting `tx_gas_used()` via
-/// `handle_reservoir_remaining_gas`.
+/// State gas / reservoir tracking is only set when TIP-1016 (EIP-8037) is enabled.
+/// When disabled, `state_gas_used` must remain 0 to avoid leaking into revm's reservoir
+/// accounting and corrupting `tx_gas_used()` via `handle_reservoir_remaining_gas`.
+///
+/// SSTORE refund propagation is activated unconditionally at T4 so the
+/// `TempoPrecompileProvider` wrapper can apply refunds with `record_refund`. Pre-T4
+/// blocks were executed without refund propagation, so we cannot change their gas
+/// accounting.
 #[inline]
 fn fill_state_gas(output: &mut PrecompileOutput, storage: &StorageCtx) {
+    if storage.spec().is_t4() && output.is_success() {
+        output.gas_refunded = storage.gas_refunded();
+    }
+
     if storage.amsterdam_eip8037_enabled() {
         if output.is_success() {
             // On success: parent takes the child's final reservoir.
             output.reservoir = storage.reservoir();
             output.state_gas_used = storage.state_gas_used();
-
-            // TIP-1016: propagate SSTORE refunds via reservoir so the TempoPrecompileProvider
-            // wrapper can apply them with record_refund. When disabled, blocks were executed
-            // without refund propagation, so we cannot change their gas accounting.
-            output.gas_refunded = storage.gas_refunded();
         } else {
             // On revert or halt: state changes are undone, so ALL state gas returns
             // to the parent's reservoir.
