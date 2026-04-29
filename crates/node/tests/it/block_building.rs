@@ -204,10 +204,7 @@ async fn sign_and_inject(
 
 /// Helper to count payment and non-payment transactions
 fn count_transaction_types(transactions: &[TempoTxEnvelope]) -> (usize, usize) {
-    let payment_count = transactions
-        .iter()
-        .filter(|tx| tx.is_payment_v2(false))
-        .count();
+    let payment_count = transactions.iter().filter(|tx| tx.is_payment_v2()).count();
     (payment_count, transactions.len() - payment_count)
 }
 
@@ -356,7 +353,7 @@ async fn test_block_building_only_payment_txs() -> eyre::Result<()> {
 
     for tx in &user_txs {
         assert!(
-            tx.is_payment_v2(false),
+            tx.is_payment_v2(),
             "All transactions should be payment transactions"
         );
     }
@@ -426,7 +423,7 @@ async fn test_block_building_only_non_payment_txs() -> eyre::Result<()> {
 
     for tx in &user_txs {
         assert!(
-            !tx.is_payment_v2(false),
+            !tx.is_payment_v2(),
             "All transactions should be non-payment transactions"
         );
     }
