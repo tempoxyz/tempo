@@ -220,12 +220,7 @@ where
         }
     }
 
-    // TODO: There is a backfill hole now in those cases where
-    // self.config.last_finalized_height has crossed self.last_boundary.
-    //
-    // In these cases marshal.hint_finalized will not deliver a block.
-    //
-    // Solution: detect that event and fetch the block ourselves.
+    /// Fills in the missing scheme if the execution layer did not persist.
     #[instrument(skip_all, err(Display))]
     async fn heal_gap(&mut self) -> eyre::Result<()> {
         let current_consensus_epoch = self
