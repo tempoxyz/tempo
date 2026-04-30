@@ -13,7 +13,6 @@ use revm::context::{
         AccessList, AccessListItem, RecoveredAuthority, RecoveredAuthorization, SignedAuthorization,
     },
 };
-use tempo_precompiles::storage::CurrentTxHash;
 use tempo_primitives::{
     AASigned, TempoSignature, TempoTransaction, TempoTxEnvelope,
     transaction::{
@@ -270,12 +269,6 @@ impl TransactionEnvMut for TempoTxEnv {
 impl IntoTxEnv<Self> for TempoTxEnv {
     fn into_tx_env(self) -> Self {
         self
-    }
-}
-
-impl CurrentTxHash for TempoTxEnv {
-    fn current_tx_hash(&self) -> Option<B256> {
-        self.tx_hash()
     }
 }
 

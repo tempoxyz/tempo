@@ -62,11 +62,25 @@ impl PackedChannelState {
 #[contract(addr = TIP20_CHANNEL_ESCROW_ADDRESS)]
 pub struct TIP20ChannelEscrow {
     channel_states: Mapping<B256, PackedChannelState>,
+
+    // WARNING(rusowsky): transient storage slots must always be placed at the very end until the
+    // `contract` macro is refactored and has 2 independent layouts (persistent and transient).
+    // If new (persistent) storage fields need to be added to the precompile, they must go above
+    // this one.
+    current_tx_hash: B256,
 }
 
 impl TIP20ChannelEscrow {
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
+    }
+
+    /// Sets the current top-level transaction hash for the active execution.
+    ///
+    /// Called by the handler before transaction execution. Uses transient storage, so it is
+    /// automatically cleared after the transaction.
+    pub fn set_current_tx_hash(&mut self, tx_hash: B256) -> Result<()> {
+        self.current_tx_hash.t_write(tx_hash)
     }
 
     pub fn open(
@@ -88,9 +102,12 @@ impl TIP20ChannelEscrow {
         if call.expiresAt as u64 <= self.now() {
             return Err(TIP20ChannelEscrowError::invalid_expiry().into());
         }
-        let open_tx_hash = self.storage.tx_hash().ok_or_else(|| {
-            crate::error::TempoPrecompileError::Fatal("current tx hash unavailable".into())
-        })?;
+        let open_tx_hash = self.current_tx_hash.t_read()?;
+        if open_tx_hash.is_zero() {
+            return Err(
+                crate::error::TempoPrecompileError::Fatal("current tx hash unavailable".into())
+            );
+        }
 
         let channel_id = self.compute_channel_id_inner(
             msg_sender,
@@ -637,7 +654,7 @@ mod tests {
         let open_tx_hash = B256::repeat_byte(0x11);
         let reopen_tx_hash = B256::repeat_byte(0x22);
 
-        StorageCtx::enter_with_tx_hash(&mut storage, Some(open_tx_hash), || {
+        StorageCtx::enter(&mut storage, || {
             let token = TIP20Setup::path_usd(payer)
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(1_000u128))
@@ -645,6 +662,7 @@ mod tests {
 
             let mut escrow = TIP20ChannelEscrow::new();
             escrow.initialize()?;
+            escrow.set_current_tx_hash(open_tx_hash)?;
             let now = StorageCtx::default().timestamp().to::<u32>();
 
             let channel_id = escrow.open(
@@ -699,21 +717,55 @@ mod tests {
             assert_eq!(state.deposit, 0);
             assert_eq!(state.settled, 0);
 
-            let reopened_channel_id =
-                StorageCtx::with_current_tx_hash(Some(reopen_tx_hash), || {
-                    escrow.open(
-                        payer,
-                        ITIP20ChannelEscrow::openCall {
-                            payee,
-                            token: token.address(),
-                            deposit: abi_u96(1),
-                            salt,
-                            authorizedSigner: Address::ZERO,
-                            expiresAt: now + 2_000,
-                        },
-                    )
-                })?;
+            escrow.set_current_tx_hash(reopen_tx_hash)?;
+            let reopened_channel_id = escrow.open(
+                payer,
+                ITIP20ChannelEscrow::openCall {
+                    payee,
+                    token: token.address(),
+                    deposit: abi_u96(1),
+                    salt,
+                    authorizedSigner: Address::ZERO,
+                    expiresAt: now + 2_000,
+                },
+            )?;
             assert_ne!(reopened_channel_id, channel_id);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_open_rejects_missing_tx_hash_context() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let payer = Address::random();
+        let payee = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let token = TIP20Setup::path_usd(payer)
+                .with_issuer(payer)
+                .with_mint(payer, U256::from(1_000u128))
+                .apply()?;
+            let mut escrow = TIP20ChannelEscrow::new();
+            escrow.initialize()?;
+
+            let err = escrow
+                .open(
+                    payer,
+                    ITIP20ChannelEscrow::openCall {
+                        payee,
+                        token: token.address(),
+                        deposit: abi_u96(1),
+                        salt: B256::random(),
+                        authorizedSigner: Address::ZERO,
+                        expiresAt: StorageCtx::default().timestamp().to::<u32>() + 1_000,
+                    },
+                )
+                .unwrap_err();
+            assert_eq!(
+                err,
+                crate::error::TempoPrecompileError::Fatal("current tx hash unavailable".into())
+            );
 
             Ok(())
         })
@@ -727,13 +779,14 @@ mod tests {
         let salt = B256::random();
 
         let open_tx_hash = B256::repeat_byte(0x33);
-        StorageCtx::enter_with_tx_hash(&mut storage, Some(open_tx_hash), || {
+        StorageCtx::enter(&mut storage, || {
             let token = TIP20Setup::path_usd(payer)
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(1_000u128))
                 .apply()?;
             let mut escrow = TIP20ChannelEscrow::new();
             escrow.initialize()?;
+            escrow.set_current_tx_hash(open_tx_hash)?;
 
             let expires_at = StorageCtx::default().timestamp().to::<u32>() + 1_000;
             let descriptor = descriptor(
@@ -783,8 +836,9 @@ mod tests {
     #[test]
     fn test_dispatch_rejects_static_mutation() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
-        StorageCtx::enter_with_tx_hash(&mut storage, Some(B256::repeat_byte(0x44)), || {
+        StorageCtx::enter(&mut storage, || {
             let mut escrow = TIP20ChannelEscrow::new();
+            escrow.set_current_tx_hash(B256::repeat_byte(0x44))?;
             let result = escrow.call(
                 &ITIP20ChannelEscrow::openCall {
                     payee: Address::random(),
@@ -810,13 +864,14 @@ mod tests {
         let salt = B256::random();
 
         let open_tx_hash = B256::repeat_byte(0x55);
-        StorageCtx::enter_with_tx_hash(&mut storage, Some(open_tx_hash), || {
+        StorageCtx::enter(&mut storage, || {
             let token = TIP20Setup::path_usd(payer)
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(100u128))
                 .apply()?;
             let mut escrow = TIP20ChannelEscrow::new();
             escrow.initialize()?;
+            escrow.set_current_tx_hash(open_tx_hash)?;
             let now = StorageCtx::default().timestamp().to::<u32>();
             escrow.open(
                 payer,
@@ -863,13 +918,14 @@ mod tests {
         let salt = B256::random();
 
         let open_tx_hash = B256::repeat_byte(0x66);
-        StorageCtx::enter_with_tx_hash(&mut storage, Some(open_tx_hash), || {
+        StorageCtx::enter(&mut storage, || {
             let token = TIP20Setup::path_usd(payer)
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(100u128))
                 .apply()?;
             let mut escrow = TIP20ChannelEscrow::new();
             escrow.initialize()?;
+            escrow.set_current_tx_hash(open_tx_hash)?;
             let now = StorageCtx::default().timestamp().to::<u32>();
             escrow.open(
                 payer,
