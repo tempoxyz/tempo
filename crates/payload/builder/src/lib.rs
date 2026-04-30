@@ -527,7 +527,7 @@ where
             if let Err(err) =
                 builder.execute_transaction_with_result_closure(tx_with_env, |result| {
                     cumulative_gas_used += result.block_gas_used();
-                    cumulative_state_gas_used += result.result().result.gas().state_gas_spent();
+                    cumulative_state_gas_used += result.state_gas_used();
                     if !is_payment {
                         non_payment_gas_used += result.block_gas_used();
                     }
