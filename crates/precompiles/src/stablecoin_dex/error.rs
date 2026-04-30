@@ -4,9 +4,7 @@ pub enum OrderError {
     /// Flip tick constraint violated for a bid flip order.
     /// Pre-T5: `flip_tick` must be `> tick`.
     /// T5+ (TIP-1030): `flip_tick` must be `>= tick`.
-    #[error(
-        "invalid flip tick for bid order: flip_tick ({flip_tick}) must be >= tick ({tick}) (> tick before T5)"
-    )]
+    #[error("invalid flip tick for bid order: flip_tick ({flip_tick}) must be >= tick ({tick})")]
     InvalidBidFlipTick {
         /// The order's tick
         tick: i16,
@@ -17,9 +15,7 @@ pub enum OrderError {
     /// Flip tick constraint violated for an ask flip order.
     /// Pre-T5: `flip_tick` must be `< tick`.
     /// T5+ (TIP-1030): `flip_tick` must be `<= tick`.
-    #[error(
-        "invalid flip tick for ask order: flip_tick ({flip_tick}) must be <= tick ({tick}) (< tick before T5)"
-    )]
+    #[error("invalid flip tick for ask order: flip_tick ({flip_tick}) must be <= tick ({tick})")]
     InvalidAskFlipTick {
         /// The order's tick
         tick: i16,
