@@ -170,16 +170,17 @@ pub async fn run_follow_stack(
         .epoch_length()
         .ok_or_eyre("chainspec did not contain epochLength")?;
 
-    let upstream = std::sync::Arc::new(follow::WsUpstream::new(
-        context.with_label("upstream"),
-        upstream_url,
-    ));
+    // TODO: figure out how to make this work with tests.
+    // let upstream = std::sync::Arc::new(follow::WsUpstream::new(
+    //     context.with_label("upstream"),
+    //     upstream_url,
+    // ));
 
     let config = follow::Config {
         execution_node,
         feed_state,
         partition_prefix: PARTITION_PREFIX.into(),
-        upstream,
+        upstream_url,
         epoch_strategy: FixedEpocher::new(NZU64!(epoch_length)),
         mailbox_size: config.mailbox_size,
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),

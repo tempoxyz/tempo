@@ -27,6 +27,16 @@ pub(crate) fn public_key_to_b256(key: &PublicKey) -> B256 {
 #[pin_project]
 pub(crate) struct OptionFuture<F>(#[pin] Option<F>);
 
+impl<F> OptionFuture<F> {
+    pub(crate) fn new(maybe_fut: Option<F>) -> Self {
+        Self(maybe_fut)
+    }
+
+    pub(crate) fn none() -> Self {
+        Self::new(None)
+    }
+}
+
 impl<F: Future> Default for OptionFuture<F> {
     fn default() -> Self {
         Self(None)
@@ -35,7 +45,7 @@ impl<F: Future> Default for OptionFuture<F> {
 
 impl<F: Future> From<Option<F>> for OptionFuture<F> {
     fn from(opt: Option<F>) -> Self {
-        Self(opt)
+        Self::new(opt)
     }
 }
 
