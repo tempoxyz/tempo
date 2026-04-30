@@ -16,6 +16,7 @@ use std::{
 
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{B256, Bytes};
+use alloy_rpc_types_engine::PayloadId;
 use commonware_codec::{Encode as _, ReadExt as _};
 use commonware_consensus::{
     Heightable as _, Reporter,
@@ -32,7 +33,7 @@ use commonware_cryptography::{
 use commonware_runtime::{Clock, FutureExt as _, Metrics, Pacer, Spawner};
 use commonware_utils::{Acknowledgement as _, SystemTimeExt};
 use eyre::{OptionExt as _, WrapErr as _};
-use futures::StreamExt as _;
+use futures::{StreamExt as _, channel::oneshot};
 use prometheus_client::metrics::counter::Counter;
 use rand_08::{CryptoRng, Rng};
 use reth_node_builder::{Block as _, BuiltPayload, PayloadKind};
@@ -298,7 +299,6 @@ where
 
         let interrupt_handle = attrs.interrupt_handle().clone();
 
-        // NOTE(hamdi): Revisit compared to the application actor which handled cancellation
         let payload_id_rx = match self.config.executor.canonicalize_and_build(
             parent.height(),
             parent.digest(),
@@ -311,14 +311,17 @@ where
             }
         };
 
-        let payload_id = match payload_id_rx.await {
-            Ok(Ok(id)) => id,
-            Ok(Err(error)) => {
-                warn!(%error, "failed requesting a new payload build");
-                return None;
-            }
-            Err(_) => {
-                warn!("executor dropped payload build response");
+        // The guard ensures that any in-flight triggers cancellation if dropped prior to resolving the payload
+        let mut payload_id_guard = CancellablePayloadReceiver::new(
+            runtime.clone(),
+            self.config.execution_node.clone(),
+            payload_id_rx,
+        );
+
+        let payload_id = match payload_id_guard.payload_id().await {
+            Ok(id) => id,
+            Err(error) => {
+                warn!(%error, "failed obtaining payload id from executor");
                 return None;
             }
         };
@@ -361,6 +364,7 @@ where
         runtime.sleep_until(payload_return_time).await;
         info!(proposal.digest = %proposal.digest(), "constructed proposal");
 
+        payload_id_guard.disarm();
         Some(proposal)
     }
 }
@@ -665,4 +669,90 @@ async fn verify_header(
     }
 
     Ok(())
+}
+
+struct CancellablePayloadReceiver<E: Spawner> {
+    ctx: E,
+    execution_node: TempoFullNode,
+    state: PayloadState,
+    armed: bool,
+}
+
+enum PayloadState {
+    Pending(oneshot::Receiver<eyre::Result<PayloadId>>),
+    Known(PayloadId),
+    Empty,
+}
+
+impl<E: Spawner> CancellablePayloadReceiver<E> {
+    fn new(
+        ctx: E,
+        execution_node: TempoFullNode,
+        payload_id_rx: oneshot::Receiver<eyre::Result<PayloadId>>,
+    ) -> Self {
+        Self {
+            ctx,
+            execution_node,
+            state: PayloadState::Pending(payload_id_rx),
+            armed: true,
+        }
+    }
+
+    async fn payload_id(&mut self) -> eyre::Result<PayloadId> {
+        let PayloadState::Pending(rx) = std::mem::replace(&mut self.state, PayloadState::Empty)
+        else {
+            eyre::bail!("payload id already retrieved");
+        };
+
+        let id = rx
+            .await
+            .wrap_err("executor dropped payload build response")?
+            .wrap_err("failed requesting a new payload build")?;
+
+        self.state = PayloadState::Known(id);
+        Ok(id)
+    }
+
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl<E: Spawner> Drop for CancellablePayloadReceiver<E> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+
+        let state = std::mem::replace(&mut self.state, PayloadState::Empty);
+        let execution_node = self.execution_node.clone();
+        self.ctx.clone().spawn(|_| async move {
+            let id = match state {
+                PayloadState::Empty => return,
+                PayloadState::Known(id) => id,
+                PayloadState::Pending(rx) => match rx.await {
+                    Ok(Ok(id)) => id,
+                    Ok(Err(error)) => {
+                        debug!(%error, "executor reported error after propose cancellation");
+                        return;
+                    }
+                    Err(_) => {
+                        debug!("executor dropped response after propose cancellation");
+                        return;
+                    }
+                },
+            };
+
+            // We drop the future for this payload id since if still armed, the constructed proposal for this
+            // this payload id was not returned to the application and we want to cancel any in-flight jobs.
+            match execution_node
+                .payload_builder_handle
+                .resolve_kind_fut(id, PayloadKind::WaitForPending)
+                .await
+            {
+                Ok(fut) => drop(fut),
+                Err(error) => debug!(%error, ?id, "failed cancelling in-flight payload"),
+            }
+        });
+    }
 }
