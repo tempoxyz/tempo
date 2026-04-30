@@ -1459,9 +1459,9 @@ impl StablecoinDEX {
             let (base, quote) = {
                 let token_in_tip20 = TIP20Token::from_address(token_in)?;
 
-                // Ensure that the token is not paused (spec: T4+)
+                // Ensure that the token is not paused (spec: T3+)
                 // Necessary because TIP20 transfer checks don't cover internal DEX balance updates
-                if self.storage.spec().is_t4() {
+                if self.storage.spec().is_t3() {
                     token_in_tip20.check_not_paused()?;
                 }
 
@@ -5474,8 +5474,8 @@ mod tests {
     }
 
     #[test]
-    fn test_swap_paused_token_allowed_pre_t4_blocked_on_t4() -> eyre::Result<()> {
-        for spec in [TempoHardfork::T3, TempoHardfork::T4] {
+    fn test_swap_paused_token_allowed_pre_t3_blocked_on_t3() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T2, TempoHardfork::T3] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinDEX::new();
@@ -5510,7 +5510,7 @@ mod tests {
                     u128::MAX,
                 );
 
-                if spec.is_t4() {
+                if spec.is_t3() {
                     assert_eq!(res_in, res_out);
                     assert_eq!(res_in.unwrap_err(), TIP20Error::contract_paused().into());
                 } else {
@@ -5744,8 +5744,8 @@ mod tests {
     }
 
     #[test]
-    fn test_swap_paused_intermediate_token_allowed_pre_t4_blocked_on_t4() -> eyre::Result<()> {
-        for spec in [TempoHardfork::T3, TempoHardfork::T4] {
+    fn test_swap_paused_intermediate_token_allowed_pre_t3_blocked_on_t3() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T2, TempoHardfork::T3] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinDEX::new();
@@ -5804,7 +5804,7 @@ mod tests {
                     u128::MAX,
                 );
 
-                if spec.is_t4() {
+                if spec.is_t3() {
                     assert_eq!(res_in, res_out);
                     assert_eq!(res_in.unwrap_err(), TIP20Error::contract_paused().into());
                 } else {
