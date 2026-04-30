@@ -9,7 +9,7 @@ pub mod token;
 
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
 use alloy_primitives::B256;
-use alloy_rpc_types_eth::{Log, ReceiptWithBloom};
+use alloy_rpc_types_eth::{Log, ReceiptWithBloom, TransactionInfo};
 pub use consensus::{TempoConsensusApiServer, TempoConsensusRpc};
 pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
 pub use fork_schedule::{TempoForkScheduleApiServer, TempoForkScheduleRpc};
@@ -20,7 +20,7 @@ use reth_primitives_traits::{Recovered, TransactionMeta, WithEncoded, transactio
 use reth_rpc_eth_api::{FromEthApiError, IntoEthApiError, RpcTxReq};
 use reth_transaction_pool::{PoolPooledTx, TransactionOrigin};
 pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Response};
-use std::sync::Arc;
+use std::{convert::Infallible, sync::Arc};
 pub use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::TempoChainSpec;
 use tempo_evm::TempoStateAccess;
@@ -46,7 +46,7 @@ use reth_node_builder::{
 use reth_provider::{ChainSpecProvider, ProviderError};
 use reth_rpc::{DynRpcConverter, eth::EthApi};
 use reth_rpc_eth_api::{
-    EthApiTypes, RpcConverter, RpcNodeCore, RpcNodeCoreExt,
+    EthApiTypes, RpcConverter, RpcNodeCore, RpcNodeCoreExt, TxInfoMapper,
     helpers::{
         Call, EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthTransactions, LoadBlock,
         LoadFee, LoadPendingBlock, LoadReceipt, LoadState, LoadTransaction, SpawnBlocking, Trace,
@@ -103,6 +103,23 @@ pub struct TempoEthApi<N: FullNodeTypes<Types = TempoNode>> {
     /// This prevents DoS attacks via channel flooding with transactions
     /// targeting other validators.
     validator_key: Option<B256>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct TempoTxInfoMapper;
+
+impl TxInfoMapper<TempoTxEnvelope> for TempoTxInfoMapper {
+    type Out = TransactionInfo;
+    type Err = Infallible;
+
+    fn try_map(
+        &self,
+        _tx: &TempoTxEnvelope,
+        mut tx_info: TransactionInfo,
+    ) -> Result<Self::Out, Self::Err> {
+        tx_info.block_timestamp = None;
+        Ok(tx_info)
+    }
 }
 
 impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
@@ -510,7 +527,11 @@ where
         let eth_api = ctx
             .eth_api_builder()
             .modify_gas_oracle_config(|config| config.default_suggested_fee = Some(U256::ZERO))
-            .map_converter(|_| RpcConverter::new(TempoReceiptConverter::new(chain_spec)).erased())
+            .map_converter(|_| {
+                RpcConverter::new(TempoReceiptConverter::new(chain_spec))
+                    .with_mapper(TempoTxInfoMapper)
+                    .erased()
+            })
             .build();
 
         Ok(TempoEthApi::new(eth_api, self.validator_key))

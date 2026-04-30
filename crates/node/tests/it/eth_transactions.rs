@@ -35,6 +35,14 @@ async fn test_get_transaction_by_sender_and_nonce() -> eyre::Result<()> {
     let receipt = pending_tx.get_receipt().await?;
     assert!(receipt.status());
 
+    let raw_tx: serde_json::Value = provider
+        .raw_request("eth_getTransactionByHash".into(), [tx_hash])
+        .await?;
+    assert!(
+        raw_tx.get("blockTimestamp").is_none(),
+        "transaction RPC response should not include blockTimestamp"
+    );
+
     let nonce_after = provider.get_transaction_count(caller).await?;
     assert_eq!(nonce_after, nonce_before + 1);
 
