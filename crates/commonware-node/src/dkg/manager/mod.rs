@@ -12,7 +12,7 @@ mod ingress;
 pub(crate) use actor::Actor;
 pub(crate) use ingress::Mailbox;
 
-use crate::epoch;
+use crate::epoch::{self, SchemeProvider};
 
 use ingress::{Command, Message};
 
@@ -62,4 +62,10 @@ pub(crate) struct Config {
 
     /// This node's initial share of the bls12381 private key.
     pub(crate) initial_share: Option<Share>,
+
+    /// The shared scheme provider. Bootstrap reads on-chain DKG outcomes from
+    /// EL state and registers the scheme for the boundary's signing epoch
+    /// before issuing a `hint_finalized`, so the marshal can verify the
+    /// resulting delivery.
+    pub(crate) scheme_provider: SchemeProvider,
 }

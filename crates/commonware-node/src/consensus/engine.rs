@@ -400,6 +400,7 @@ where
                 namespace: crate::config::NAMESPACE.to_vec(),
                 me: self.signer.clone(),
                 partition_prefix: format!("{}_dkg_manager", self.partition_prefix),
+                scheme_provider: scheme_provider.clone(),
             },
         )
         .await
