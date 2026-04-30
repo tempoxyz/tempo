@@ -6,7 +6,7 @@
 use alloy::primitives::FixedBytes;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
-    storage::{packing::insert_into_word, FromWord, Layout, StorableType, StorageCtx},
+    storage::{FromWord, Layout, StorableType, StorageCtx, packing::insert_into_word},
     test_util::gen_word_from,
 };
 
