@@ -32,7 +32,7 @@ use tempo_precompiles_macros::Storable;
 /// # Onchain Storage
 /// Orders are stored onchain in doubly linked lists organized by tick.
 /// Each tick maintains a FIFO queue of orders using `prev` and `next` pointers.
-#[derive(Debug, Clone, PartialEq, Eq, Storable)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Storable)]
 pub struct Order {
     /// Unique identifier for this order
     pub order_id: u128,
@@ -258,25 +258,11 @@ impl Order {
     /// - New flip_tick = original tick
     /// - Amount is the same as original
     /// - Linked list pointers are reset to 0 (will be set by orderbook on insertion)
-    ///
-    /// # Errors
-    /// - `NotAFlipOrder` — called on a non-flip order
-    /// - `OrderNotFullyFilled` — `remaining` is not zero
-    pub fn create_flipped_order(&self, new_order_id: u128) -> Result<Self, OrderError> {
-        // Check if this is a flip order
-        if !self.is_flip {
-            return Err(OrderError::NotAFlipOrder);
-        }
-
-        // Check if fully filled
-        if self.remaining != 0 {
-            return Err(OrderError::OrderNotFullyFilled {
-                remaining: self.remaining,
-            });
-        }
+    pub fn create_flipped_order(&self, new_order_id: u128) -> Self {
+        debug_assert!(self.is_flip());
 
         // Create flipped order
-        Ok(Self {
+        Self {
             order_id: new_order_id,
             maker: self.maker,
             book_key: self.book_key,
@@ -288,7 +274,7 @@ impl Order {
             next: 0,
             is_flip: true,        // Keep as flip order
             flip_tick: self.tick, // Old tick becomes new flip_tick
-        })
+        }
     }
 }
 
@@ -580,7 +566,7 @@ mod tests {
         assert!(order.is_fully_filled());
 
         // Create flipped order
-        let flipped = order.create_flipped_order(2).unwrap();
+        let flipped = order.create_flipped_order(2);
 
         assert_eq!(flipped.order_id(), 2);
         assert_eq!(flipped.maker(), order.maker());
@@ -609,42 +595,12 @@ mod tests {
         .unwrap();
 
         order.fill(1000).unwrap();
-        let flipped = order.create_flipped_order(2).unwrap();
+        let flipped = order.create_flipped_order(2);
 
         assert!(flipped.is_bid()); // Flipped from ask to bid
         assert!(!flipped.is_ask());
         assert_eq!(flipped.tick(), 5); // Old flip_tick
         assert_eq!(flipped.flip_tick(), 10); // Old tick
-    }
-
-    #[test]
-    fn test_create_flipped_order_non_flip() {
-        let mut order = Order::new_bid(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 5);
-
-        order.fill(1000).unwrap();
-        let result = order.create_flipped_order(2);
-        assert!(matches!(result, Err(OrderError::NotAFlipOrder)));
-    }
-
-    #[test]
-    fn test_create_flipped_order_not_filled() {
-        let order = Order::new_flip(
-            1,
-            TEST_MAKER,
-            TEST_BOOK_KEY,
-            1000,
-            5,
-            true,
-            10,
-            TempoHardfork::T4,
-        )
-        .unwrap();
-
-        let result = order.create_flipped_order(2);
-        assert!(matches!(
-            result,
-            Err(OrderError::OrderNotFullyFilled { .. })
-        ));
     }
 
     #[test]
@@ -680,7 +636,7 @@ mod tests {
 
         // First flip: bid -> ask
         order.fill(1000).unwrap();
-        let mut flipped1 = order.create_flipped_order(2).unwrap();
+        let mut flipped1 = order.create_flipped_order(2);
 
         assert!(!flipped1.is_bid());
         assert!(flipped1.is_ask());
@@ -689,7 +645,7 @@ mod tests {
 
         // Second flip: ask -> bid
         flipped1.fill(1000).unwrap();
-        let flipped2 = flipped1.create_flipped_order(3).unwrap();
+        let flipped2 = flipped1.create_flipped_order(3);
 
         assert!(flipped2.is_bid());
         assert!(!flipped2.is_ask());
@@ -753,7 +709,7 @@ mod tests {
         order.fill(1000).unwrap();
 
         // Create flipped order
-        let flipped = order.create_flipped_order(2).unwrap();
+        let flipped = order.create_flipped_order(2);
 
         // Flipped order should have reset pointers
         assert_eq!(flipped.prev(), 0);

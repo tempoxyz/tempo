@@ -757,6 +757,70 @@ impl StablecoinDEX {
         Ok(order_id)
     }
 
+    fn flip_in_place(
+        &mut self,
+        order: &Order,
+        base_token: Address,
+        quote_token: Address,
+    ) -> Result<()> {
+        // CHECKPOINT START: `flip_in_place` performs multiple state mutations that
+        // must succeed or fail as a unit. The guard auto-reverts on drop.
+        let batch = self.storage.checkpoint();
+
+        // Prepare the flipped order
+        let flipped = order.create_flipped_order(order.order_id);
+
+        // Calculate escrow amount and token based on order side
+        let (escrow_token, escrow_amount, non_escrow_token) = if flipped.is_bid {
+            // For bids, escrow quote tokens based on price
+            let quote_amount = base_to_quote(flipped.amount, flipped.tick, RoundingDirection::Up)
+                .ok_or(StablecoinDEXError::insufficient_balance())?;
+            (quote_token, quote_amount, base_token)
+        } else {
+            // For asks, escrow base tokens
+            (base_token, flipped.amount, quote_token)
+        };
+
+        // Check policy and pause state on escrow token
+        // Direction: maker → DEX
+        let escrow_tip20 = TIP20Token::from_address(escrow_token)?;
+        escrow_tip20.check_not_paused()?;
+        escrow_tip20.ensure_transfer_authorized(flipped.maker, self.address)?;
+
+        // Check policy and pause state on non-escrow token
+        // Direction: DEX → maker (order placer receives non-escrow token when filled)
+        let non_escrow_tip20 = TIP20Token::from_address(non_escrow_token)?;
+        non_escrow_tip20.check_not_paused()?;
+        non_escrow_tip20.ensure_transfer_authorized(self.address, flipped.maker)?;
+
+        let user_balance = self.balance_of(flipped.maker, escrow_token)?;
+        if user_balance < escrow_amount {
+            return Err(StablecoinDEXError::insufficient_balance().into());
+        }
+        self.sub_balance(flipped.maker, escrow_token, escrow_amount)?;
+
+        self.commit_order_to_book(flipped)?;
+
+        // Emit OrderFlipped event for flip order
+        self.emit_event(StablecoinDEXEvents::OrderFlipped(
+            IStablecoinDEX::OrderFlipped {
+                orderId: flipped.order_id,
+                maker: flipped.maker,
+                token: base_token,
+                amount: flipped.amount,
+                isBid: flipped.is_bid,
+                tick: flipped.tick,
+                isFlipOrder: true,
+                flipTick: flipped.flip_tick,
+            },
+        ))?;
+
+        // CHECKPOINT END: commit the state-changing batch
+        batch.commit();
+
+        Ok(())
+    }
+
     /// Partially fill an order with the specified amount. Fill amount is denominated in base token.
     fn partial_fill_order(
         &mut self,
@@ -860,26 +924,41 @@ impl StablecoinDEX {
             // Bid becomes Ask, Ask becomes Bid.
             // The current tick becomes the new flip_tick, and flip_tick becomes the new tick.
             // Uses internal balance only, does not transfer from wallet.
-            //
+            let res = if self.storage.spec().is_t5() {
+                // Post T5: flip the order in place, without creating a new one.
+                self.flip_in_place(order, orderbook.base, orderbook.quote)
+            } else {
+                self.place_flip(
+                    order.maker(),
+                    orderbook.base,
+                    order.amount(),
+                    !order.is_bid(),
+                    order.flip_tick(),
+                    order.tick(),
+                    true,
+                )
+                .map(|_| ())
+            };
+
             // Business logic errors are ignored so that flip failure does not block the swap.
             // System errors (OOG, DB errors, panics) propagate because state may be inconsistent.
-            if let Err(e) = self.place_flip(
-                order.maker(),
-                orderbook.base,
-                order.amount(),
-                !order.is_bid(),
-                order.flip_tick(),
-                order.tick(),
-                true,
-            ) && e.is_system_error()
-                && self.storage.spec().is_t1a()
+            if res.as_ref().is_err_and(|err| err.is_system_error()) && self.storage.spec().is_t1a()
             {
-                return Err(e);
+                return Err(res.unwrap_err());
             }
-        }
 
-        // Delete the filled order
-        self.orders[order.order_id()].delete()?;
+            // T5+: a successful `flip_in_place` already rewrote the order
+            // record under the same `orderId` (TIP-1056). In every other case
+            // (pre-T5, or T5 with a swallowed flip failure) the filled order
+            // record must be deleted to avoid leaving an orphan in storage.
+            let keep_record = self.storage.spec().is_t5() && res.is_ok();
+            if !keep_record {
+                self.orders[order.order_id()].delete()?;
+            }
+        } else {
+            // Non-flip filled order: always delete.
+            self.orders[order.order_id()].delete()?;
+        }
 
         // Advance tick if liquidity is exhausted
         let next_tick_info = if order.next() == 0 {
