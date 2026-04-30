@@ -2169,60 +2169,51 @@ mod tests {
         })
     }
 
+    /// TIP-1030: at the `place_flip` precompile entrypoint, `flip_tick == tick`
+    /// is rejected pre-T5 and accepted on T5+ (with the order stored verbatim).
     #[test]
-    fn test_place_flip_same_tick_rejected_pre_t5() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+    fn test_place_flip_same_tick_per_hardfork() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T4, TempoHardfork::T5] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || {
+                let mut exchange = StablecoinDEX::new();
+                exchange.initialize()?;
 
-            let alice = Address::random();
-            let admin = Address::random();
-            let tick = 100i16;
+                let alice = Address::random();
+                let admin = Address::random();
+                let tick = 100i16;
 
-            let price = orderbook::tick_to_price(tick);
-            let escrow = (MIN_ORDER_AMOUNT * price as u128) / orderbook::PRICE_SCALE as u128;
+                let price = orderbook::tick_to_price(tick);
+                let escrow = (MIN_ORDER_AMOUNT * price as u128) / orderbook::PRICE_SCALE as u128;
 
-            let (base_token, _) = setup_test_tokens(admin, alice, exchange.address, escrow)?;
-            exchange.create_pair(base_token)?;
+                let (base_token, _) = setup_test_tokens(admin, alice, exchange.address, escrow)?;
+                exchange.create_pair(base_token)?;
 
-            let result =
-                exchange.place_flip(alice, base_token, MIN_ORDER_AMOUNT, true, tick, tick, false);
-            assert_eq!(result, Err(StablecoinDEXError::invalid_flip_tick().into()));
+                let result = exchange.place_flip(
+                    alice,
+                    base_token,
+                    MIN_ORDER_AMOUNT,
+                    true,
+                    tick,
+                    tick,
+                    false,
+                );
 
-            Ok(())
-        })
-    }
+                if spec.is_t5() {
+                    let order_id = result.expect("same-tick flip should succeed on T5+");
+                    let stored = exchange.orders[order_id].read()?;
+                    assert_eq!(stored.tick(), tick);
+                    assert_eq!(stored.flip_tick(), tick);
+                    assert!(stored.is_bid());
+                    assert!(stored.is_flip());
+                } else {
+                    assert_eq!(result, Err(StablecoinDEXError::invalid_flip_tick().into()));
+                }
 
-    #[test]
-    fn test_place_flip_same_tick_accepted_t5() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
-
-            let alice = Address::random();
-            let admin = Address::random();
-            let tick = 100i16;
-
-            let price = orderbook::tick_to_price(tick);
-            let escrow = (MIN_ORDER_AMOUNT * price as u128) / orderbook::PRICE_SCALE as u128;
-
-            let (base_token, _) = setup_test_tokens(admin, alice, exchange.address, escrow)?;
-            exchange.create_pair(base_token)?;
-
-            let order_id = exchange
-                .place_flip(alice, base_token, MIN_ORDER_AMOUNT, true, tick, tick, false)
-                .expect("same-tick flip should succeed on T5");
-
-            let stored = exchange.orders[order_id].read()?;
-            assert_eq!(stored.tick(), tick);
-            assert_eq!(stored.flip_tick(), tick);
-            assert!(stored.is_bid());
-            assert!(stored.is_flip());
-
-            Ok(())
-        })
+                Ok::<_, eyre::Report>(())
+            })?;
+        }
+        Ok(())
     }
 
     /// TIP-1030 invariant: even on T5, `flip_tick` strictly on the wrong side
