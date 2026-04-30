@@ -1,0 +1,490 @@
+# Migration and Upgrade Guide
+
+This guide covers upgrading Tempo nodes through network upgrades and major releases. Node operators should review the relevant sections before each upgrade to ensure smooth transitions.
+
+## Overview
+
+Tempo undergoes periodic network upgrades that introduce new features, fix bugs, and improve performance. These upgrades may require node operators to update binaries, modify configurations, or reset data directories.
+
+Always check the [changelog](https://docs.tempo.xyz/changelog) before upgrading to understand what changes are included in each release.
+
+## Prerequisites
+
+Before performing any upgrade:
+
+- Backup validator keys and important configuration files
+- Note your current node version (`tempo --version`)
+- Review the specific upgrade requirements in the changelog
+- Ensure sufficient disk space for snapshots and data directories
+- Plan for potential downtime during the upgrade process
+
+## Binary Version Management
+
+### Checking Current Version
+
+```bash /dev/null/version.sh#L1-2
+tempo --version
+```
+
+### Updating to Latest Release
+
+For nodes installed via the installation script:
+
+```bash /dev/null/update.sh#L1-5
+# Update using tempoup
+tempoup
+
+# Verify new version
+tempo --version
+```
+
+For Docker-based deployments:
+
+```bash /dev/null/docker-update.sh#L1-8
+# Pull latest image
+docker pull ghcr.io/tempoxyz/tempo:latest
+
+# Stop current container
+docker stop tempo
+
+# Start with new image
+docker run -d --name tempo ghcr.io/tempoxyz/tempo:latest node --follow
+```
+
+For source builds:
+
+```bash /dev/null/source-update.sh#L1-8
+# Pull latest changes
+cd tempo
+git pull origin main
+
+# Rebuild and install
+cargo install --path bin/tempo --root /usr/local/bin
+
+# Verify
+tempo --version
+```
+
+## Datadir Management
+
+### When to Reset Datadir
+
+You must reset your datadir when:
+
+- Upgrading across breaking consensus changes (noted in changelog)
+- Migrating between networks (testnet ↔ mainnet)
+- Recovering from database corruption
+- The upgrade notes explicitly require it
+
+You should **not** reset datadir for standard patch releases unless specifically instructed.
+
+### Backup Before Reset
+
+```bash /dev/null/backup.sh#L1-8
+# Backup validator keys (if running validator)
+cp -r ~/.tempo/validators ~/tempo-validators-backup
+
+# Backup node configuration
+cp ~/.tempo/config.toml ~/tempo-config-backup.toml
+
+# Note: Blockchain data cannot be easily backed up due to size
+# Use snapshots instead for faster resync
+```
+
+### Performing Datadir Reset
+
+```bash /dev/null/reset-datadir.sh#L1-11
+# Stop the node
+sudo systemctl stop tempo
+
+# Remove datadir (adjust path as needed)
+rm -rf ~/.tempo/datadir
+
+# Download fresh snapshot for faster sync
+tempo download
+
+# Restart node
+sudo systemctl start tempo
+```
+
+## Network Upgrade Procedures
+
+### T1C Network Upgrade
+
+The T1C upgrade introduced keychain signature migration and precompile changes.
+
+**Required actions:**
+- Update to v1.4.0 or later **before** T1C activation
+- No datadir reset required
+- Nodes not updated will fall out of sync
+
+**Key changes:**
+- Keychain signatures migrated from V1 to V2 (type 0x04)
+- Precompiles switched from Prague to Osaka
+- KeyAuthorization wildcards removed (chain_id=0 no longer valid)
+
+```bash /dev/null/t1c-upgrade.sh#L1-8
+# Update to v1.4.0+
+tempoup
+
+# Verify version
+tempo --version
+
+# Restart node
+sudo systemctl restart tempo
+```
+
+### T2 Network Upgrade
+
+The T2 upgrade introduced ValidatorConfig V2 and fee recipient migration.
+
+**Required actions for validators:**
+- Update to v1.5.0 or later
+- Migrate fee recipient to validator contract
+- No manual intervention needed for ValidatorConfig migration (automatic)
+
+**Deprecated flags:**
+- `--consensus.fee-recipient` (being removed, use onchain config instead)
+
+```bash /dev/null/t2-validator-migration.sh#L1-15
+# Update binary
+tempoup
+
+# Note: Fee recipient migration to onchain validator contract
+# is automatic for existing validators
+
+# After migration, update fee recipient through validator contract
+# instead of CLI flags
+
+# Remove deprecated flag from systemd config:
+# Edit /etc/systemd/system/tempo.service
+# Remove: --consensus.fee-recipient=<address>
+
+sudo systemctl daemon-reload
+sudo systemctl restart tempo
+```
+
+### Moderato Testnet Upgrades
+
+Moderato testnet may undergo more frequent upgrades for testing purposes.
+
+**Best practices:**
+- Monitor the [Tempo Discord](https://discord.gg/tempo) for upgrade announcements
+- Review changelog before each testnet upgrade
+- Expect potential breaking changes and datadir resets
+- Use snapshots for faster resync after resets
+
+```bash /dev/null/moderato-upgrade.sh#L1-13
+# Stop node
+sudo systemctl stop tempo
+
+# Update binary
+tempoup
+
+# Reset datadir if required (check upgrade notes)
+# rm -rf ~/.tempo/datadir
+
+# Download latest snapshot
+tempo download
+
+# Restart
+sudo systemctl start tempo
+```
+
+## Consensus Configuration
+
+### Default Ports
+
+- **RPC:** 8545
+- **P2P Discovery:** 30303
+- **Metrics:** 9000
+- **Consensus P2P:** (varies by configuration)
+
+### Configuring Consensus Ports
+
+```bash /dev/null/consensus-ports.sh#L1-10
+tempo node \
+  --follow \
+  --port 30303 \
+  --discovery.port 30303 \
+  --http.port 8545 \
+  --metrics 9000
+```
+
+For systemd configurations, update `/etc/systemd/system/tempo.service`:
+
+```bash /dev/null/systemd-ports.sh#L1-25
+ExecStart=/usr/local/bin/tempo node \
+  --datadir /var/lib/tempo \
+  --follow \
+  --port 30303 \
+  --discovery.addr 0.0.0.0 \
+  --discovery.port 30303 \
+  --http \
+  --http.addr 0.0.0.0 \
+  --http.port 8545 \
+  --http.api eth,net,web3,txpool,trace \
+  --metrics 9000
+```
+
+### Firewall Configuration
+
+Ensure the following ports are accessible:
+
+```bash /dev/null/firewall.sh#L1-11
+# Allow P2P connections
+sudo ufw allow 30303/tcp
+sudo ufw allow 30303/udp
+
+# Allow RPC (only from trusted sources)
+sudo ufw allow from <trusted-ip> to any port 8545
+
+# Allow metrics (only from monitoring systems)
+sudo ufw allow from <monitoring-ip> to any port 9000
+
+sudo ufw reload
+```
+
+## Post-Migration Validation
+
+After upgrading, verify your node is operating correctly:
+
+### Check Node Status
+
+```bash /dev/null/verify.sh#L1-23
+# Check service status
+sudo systemctl status tempo
+
+# Verify version
+tempo --version
+
+# Check peer count (should be non-zero)
+cast rpc net_peerCount --rpc-url http://localhost:8545
+
+# Check sync status
+cast block-number --rpc-url http://localhost:8545
+
+# Compare with network block height
+# Visit https://explorer.tempo.xyz to see current height
+
+# Check recent blocks
+cast block latest --rpc-url http://localhost:8545
+
+# For validators: verify validator status
+# (requires access to validator contract)
+
+# Monitor logs for errors
+sudo journalctl -u tempo -n 100 --no-pager
+sudo journalctl -u tempo -f | grep -i error
+```
+
+### Common Post-Upgrade Checks
+
+- **Sync status:** Block height should match network
+- **Peer connections:** Should have 10+ peers
+- **No error logs:** Check for critical errors in logs
+- **RPC responsive:** `cast block-number` returns current height
+- **For validators:** Validator should be in active set and signing blocks
+
+## Troubleshooting
+
+### Node Won't Start After Upgrade
+
+**Symptoms:** Service fails to start, crashes immediately
+
+**Solutions:**
+
+```bash /dev/null/troubleshoot-start.sh#L1-20
+# Check systemd status and logs
+sudo systemctl status tempo
+sudo journalctl -u tempo -n 100 --no-pager
+
+# Common issues:
+# 1. Datadir incompatibility - may need reset
+# 2. Missing dependencies - verify Rust version
+# 3. Port conflicts - check if ports are available
+
+# Check port availability
+sudo lsof -i :8545
+sudo lsof -i :30303
+
+# Verify binary permissions
+which tempo
+ls -la $(which tempo)
+
+# Test run manually (not as systemd)
+tempo node --follow --http --http.port 8545
+```
+
+### Node Stuck, Not Syncing
+
+**Symptoms:** Block height not increasing, low peer count
+
+**Solutions:**
+
+```bash /dev/null/troubleshoot-sync.sh#L1-18
+# Check peer count
+cast rpc net_peerCount --rpc-url http://localhost:8545
+
+# Restart to reconnect peers
+sudo systemctl restart tempo
+
+# If still stuck, try fresh datadir + snapshot
+sudo systemctl stop tempo
+rm -rf ~/.tempo/datadir
+tempo download
+sudo systemctl start tempo
+
+# Check firewall isn't blocking P2P
+sudo ufw status
+
+# Verify discovery port is accessible
+sudo netstat -tulnp | grep 30303
+```
+
+### Database Corruption
+
+**Symptoms:** Errors about "corrupt database" or "invalid state"
+
+**Solutions:**
+
+```bash /dev/null/troubleshoot-db.sh#L1-10
+# Stop node
+sudo systemctl stop tempo
+
+# Reset datadir
+rm -rf ~/.tempo/datadir
+
+# Download fresh snapshot
+tempo download
+
+# Restart
+sudo systemctl start tempo
+```
+
+### Validator Not Signing Blocks
+
+**Symptoms:** Validator in active set but not producing blocks
+
+**Solutions:**
+
+```bash /dev/null/troubleshoot-validator.sh#L1-15
+# Verify validator keys are accessible
+ls -la ~/.tempo/validators
+
+# Check consensus logs for errors
+sudo journalctl -u tempo | grep -i consensus
+
+# Verify validator is registered onchain
+# (requires contract interaction)
+
+# Ensure fee recipient is configured correctly
+# Check /etc/systemd/system/tempo.service for config
+
+# Restart validator
+sudo systemctl restart tempo
+```
+
+### Out of Sync After Network Upgrade
+
+**Symptoms:** Node version is current but block height is behind
+
+**Solutions:**
+
+```bash /dev/null/troubleshoot-upgrade-sync.sh#L1-14
+# Verify you're on the correct version
+tempo --version
+
+# Check if datadir reset was required (review changelog)
+# If yes and not done:
+sudo systemctl stop tempo
+rm -rf ~/.tempo/datadir
+tempo download
+sudo systemctl start tempo
+
+# If no reset required, simply restart
+sudo systemctl restart tempo
+
+# Monitor sync progress
+sudo journalctl -u tempo -f
+```
+
+### RPC Connection Refused
+
+**Symptoms:** Cannot connect to RPC endpoint
+
+**Solutions:**
+
+```bash /dev/null/troubleshoot-rpc.sh#L1-20
+# Verify HTTP is enabled in config
+sudo systemctl status tempo | grep http
+
+# Check HTTP flags in systemd config
+cat /etc/systemd/system/tempo.service | grep http
+
+# Ensure should include:
+# --http
+# --http.addr 0.0.0.0
+# --http.port 8545
+
+# Test local connection
+curl -X POST http://localhost:8545 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
+
+# Check firewall
+sudo ufw status | grep 8545
+```
+
+## Migration Checklist
+
+Use this checklist for each upgrade:
+
+**Pre-Upgrade:**
+- [ ] Read changelog for the target version
+- [ ] Backup validator keys (if applicable)
+- [ ] Backup configuration files
+- [ ] Note current node version and block height
+- [ ] Identify if datadir reset is required
+- [ ] Schedule maintenance window if running validator
+
+**During Upgrade:**
+- [ ] Stop node service
+- [ ] Update binary (via tempoup, Docker, or source)
+- [ ] Verify new version installed
+- [ ] Reset datadir if required
+- [ ] Download fresh snapshot if resetting
+- [ ] Update systemd config if needed
+- [ ] Update firewall rules if ports changed
+
+**Post-Upgrade:**
+- [ ] Start node service
+- [ ] Verify service is running
+- [ ] Check peer count (>10 preferred)
+- [ ] Monitor sync progress
+- [ ] Verify block height matches network
+- [ ] Check logs for errors
+- [ ] For validators: confirm signing blocks
+- [ ] Test RPC endpoint responsiveness
+
+## Additional Resources
+
+- [Tempo Changelog](https://docs.tempo.xyz/changelog) - Detailed release notes
+- [System Requirements](/guide/node/system-requirements) - Hardware specs
+- [Node Installation](/guide/node/installation) - Initial setup
+- [Running a Node](/guide/node/usage) - Operating procedures
+- [Tempo Discord](https://discord.gg/tempo) - Community support
+- [GitHub Releases](https://github.com/tempoxyz/tempo/releases) - Download binaries
+
+## Getting Help
+
+If you encounter issues not covered in this guide:
+
+1. Check the [changelog](https://docs.tempo.xyz/changelog) for known issues
+2. Search existing GitHub issues: https://github.com/tempoxyz/tempo/issues
+3. Ask in the [Tempo Discord](https://discord.gg/tempo) #node-operators channel
+4. For critical issues, open a GitHub issue with:
+   - Node version (`tempo --version`)
+   - Operating system and version
+   - Relevant logs (`journalctl -u tempo -n 200`)
+   - Steps to reproduce the issue
