@@ -5,13 +5,13 @@
 # and the Argo invariant-tests workflow.
 #
 # Usage:
-#   scripts/patch-foundry-cargo.sh <tempo_root> <foundry_root>
+#   scripts/foundry-patch.sh <tempo_root> <foundry_root>
 #
 # Example (GHA – repos side-by-side):
-#   scripts/patch-foundry-cargo.sh "$GITHUB_WORKSPACE/tempo" "$GITHUB_WORKSPACE/foundry"
+#   scripts/foundry-patch.sh "$GITHUB_WORKSPACE/tempo" "$GITHUB_WORKSPACE/foundry"
 #
 # Example (Argo – /workspace layout):
-#   /workspace/scripts/patch-foundry-cargo.sh /workspace /workspace/foundry
+#   /workspace/scripts/foundry-patch.sh /workspace /workspace/foundry
 
 set -euo pipefail
 
@@ -79,8 +79,10 @@ done <<< "$PATCHES"
 echo "Updated Cargo.toml patch sections:"
 sed -n '/^\[patch\./,$p' "$FOUNDRY_CARGO"
 
-# ── 4. Re-resolve the lockfile ──────────────────────────────────────────────
-(cd "$FOUNDRY_ROOT" && cargo update)
+# ── 4. Re-resolve the lockfile without upgrading unrelated crates ──────────
+# `cargo update` can pull newer upstream deps from Foundry's workspace, which is non-deterministic.
+# A normal resolver pass is enough to rewrite the lockfile entries for the tempo path overrides.
+(cd "$FOUNDRY_ROOT" && cargo metadata --format-version=1 >/dev/null)
 
 if grep -q '^source = "git+https://github.com/tempoxyz/tempo?rev=' "$FOUNDRY_ROOT/Cargo.lock"; then
   echo "ERROR: Tempo git sources still present in Cargo.lock after patching:" >&2

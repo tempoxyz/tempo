@@ -28,6 +28,7 @@
     "t2Time": 0,
     "t3Time": 0,
     "t4Time": 0,
+    "t5Time": 0,
     "depositContractAddress": "0x0000000000000000000000000000000000000000"
   },
   "nonce": "0x42",

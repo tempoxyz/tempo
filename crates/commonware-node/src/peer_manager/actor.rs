@@ -113,7 +113,7 @@ where
         info_span!("peer_manager").in_scope(|| error!(%reason,"agent shutting down"));
     }
     pub(crate) fn start(mut self) -> commonware_runtime::Handle<()> {
-        spawn_cell!(self.context, self.run().await)
+        spawn_cell!(self.context, self.run())
     }
 
     #[instrument(parent = &cause, skip_all)]

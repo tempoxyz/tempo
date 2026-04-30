@@ -152,8 +152,7 @@ impl commonware_consensus::CertifiableBlock for Block {
             },
             None => {
                 // Pre-T4: Unused deterministic sentinel.
-                // Post-T4: Panic, all blocks where this is called must have a context.
-                //          Historical Pre-T4 blocks are never replayed in consensus
+                // Post-T4: This dummy context will fail verification with consensus values
                 let leader = PublicKey::from(PrivateKey::from_seed(0));
                 Context {
                     leader,

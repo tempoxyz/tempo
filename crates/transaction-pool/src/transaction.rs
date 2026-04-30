@@ -238,85 +238,194 @@ impl TempoPooledTransaction {
     }
 }
 
+/// Tempo-specific transaction pool rejection reasons.
+///
+/// These errors can be returned by RPC after transaction submission when the
+/// transaction pool rejects a transaction. Variant docs describe when each
+/// rejection is thrown.
 #[derive(Debug, Error)]
 pub enum TempoPoolTransactionError {
+    /// A non-payment transaction no longer fits in the block's general gas lane.
+    ///
+    /// Thrown by the payload builder after the transaction is already in the pool,
+    /// when adding it would exceed the configured non-payment gas limit for the block.
     #[error(
         "Transaction exceeds non payment gas limit, please see https://docs.tempo.xyz/errors/tx/ExceedsNonPaymentLimit for more"
     )]
     ExceedsNonPaymentLimit,
 
+    /// An AA transaction's `valid_before` is too close to the current pool tip.
+    ///
+    /// Thrown during pool admission when `valid_before` is less than or equal to
+    /// the latest tip timestamp plus the pool's propagation buffer.
     #[error(
         "'valid_before' {valid_before} is too close to current time (min allowed: {min_allowed})"
     )]
-    InvalidValidBefore { valid_before: u64, min_allowed: u64 },
+    InvalidValidBefore {
+        /// The transaction's `valid_before` timestamp.
+        valid_before: u64,
+        /// The minimum timestamp accepted by the pool.
+        min_allowed: u64,
+    },
 
+    /// An AA transaction's `valid_after` is too far in the future.
+    ///
+    /// Thrown during pool admission when `valid_after` exceeds the wall-clock time
+    /// plus the pool's configured future-validity window.
     #[error("'valid_after' {valid_after} is too far in the future (max allowed: {max_allowed})")]
-    InvalidValidAfter { valid_after: u64, max_allowed: u64 },
+    InvalidValidAfter {
+        /// The transaction's `valid_after` timestamp.
+        valid_after: u64,
+        /// The maximum timestamp accepted by the pool.
+        max_allowed: u64,
+    },
 
+    /// A pool-only keychain authorization limit failed.
+    ///
+    /// Thrown during AA field-limit validation for key authorizations whose call
+    /// scopes, selector rules, or selector recipients exceed pool DoS limits. The
+    /// static string identifies the specific exceeded limit.
     #[error(
         "Keychain signature validation failed: {0}, please see https://docs.tempo.xyz/errors/tx/Keychain for more"
     )]
     Keychain(&'static str),
 
-    /// Thrown if a Tempo Transaction with a nonce key prefixed with the sub-block prefix marker added to the pool
+    /// A pool transaction attempted to use the subblock nonce-key prefix.
+    ///
+    /// Thrown after validation when a transaction has a non-zero nonce key whose
+    /// prefix is reserved for validator subblock transactions, which are
+    /// not accepted from the public pool.
     #[error("Tempo Transaction with subblock nonce key prefix aren't supported in the pool")]
     SubblockNonceKey,
 
-    /// Thrown when an AA transaction has too many authorizations in its authorization list.
+    /// An AA transaction has too many Tempo authorizations.
+    ///
+    /// Thrown during pool admission when the AA transaction's authorization list
+    /// exceeds the validator's configured maximum.
     #[error(
         "Too many authorizations in AA transaction: {count} exceeds maximum allowed {max_allowed}"
     )]
-    TooManyAuthorizations { count: usize, max_allowed: usize },
+    TooManyAuthorizations {
+        /// The number of authorizations in the transaction.
+        count: usize,
+        /// The maximum number of authorizations accepted by the pool.
+        max_allowed: usize,
+    },
 
-    /// Thrown when an AA transaction has too many calls.
+    /// An AA transaction contains too many calls.
+    ///
+    /// Thrown during AA field-limit validation when `calls.len()` exceeds the
+    /// pool's hard cap.
     #[error("Too many calls in AA transaction: {count} exceeds maximum allowed {max_allowed}")]
-    TooManyCalls { count: usize, max_allowed: usize },
+    TooManyCalls {
+        /// The number of calls in the transaction.
+        count: usize,
+        /// The maximum number of calls accepted by the pool.
+        max_allowed: usize,
+    },
 
-    /// Thrown when a call in an AA transaction has input data exceeding the maximum allowed size.
+    /// An AA call input is larger than the pool accepts.
+    ///
+    /// Thrown during AA field-limit validation for the first call whose input
+    /// data exceeds the per-call byte limit.
     #[error(
         "Call input size {size} exceeds maximum allowed {max_allowed} bytes (call index: {call_index})"
     )]
     CallInputTooLarge {
+        /// Index of the rejected call in the AA transaction.
         call_index: usize,
+        /// Input byte length for the rejected call.
         size: usize,
+        /// The maximum input byte length accepted by the pool.
         max_allowed: usize,
     },
 
-    /// Thrown when an AA transaction has too many accounts in its access list.
+    /// An AA transaction access list contains too many accounts.
+    ///
+    /// Thrown during AA field-limit validation when the number of access-list
+    /// entries exceeds the pool's hard cap.
     #[error("Too many access list accounts: {count} exceeds maximum allowed {max_allowed}")]
-    TooManyAccessListAccounts { count: usize, max_allowed: usize },
+    TooManyAccessListAccounts {
+        /// The number of access-list entries in the transaction.
+        count: usize,
+        /// The maximum number of access-list entries accepted by the pool.
+        max_allowed: usize,
+    },
 
-    /// Thrown when an access list entry has too many storage keys.
+    /// An AA access-list entry contains too many storage keys.
+    ///
+    /// Thrown during AA field-limit validation for the first access-list entry
+    /// whose storage-key count exceeds the per-account cap.
     #[error(
         "Too many storage keys in access list entry {account_index}: {count} exceeds maximum allowed {max_allowed}"
     )]
     TooManyStorageKeysPerAccount {
+        /// Index of the rejected access-list entry.
         account_index: usize,
+        /// The number of storage keys on the rejected entry.
         count: usize,
+        /// The maximum number of storage keys accepted per access-list entry.
         max_allowed: usize,
     },
 
-    /// Thrown when the total number of storage keys across all access list entries is too large.
+    /// An AA transaction access list contains too many storage keys in total.
+    ///
+    /// Thrown during AA field-limit validation when the sum of storage keys across
+    /// all access-list entries exceeds the pool's total cap.
     #[error(
         "Too many total storage keys in access list: {count} exceeds maximum allowed {max_allowed}"
     )]
-    TooManyTotalStorageKeys { count: usize, max_allowed: usize },
+    TooManyTotalStorageKeys {
+        /// Total number of storage keys across all access-list entries.
+        count: usize,
+        /// The maximum total number of storage keys accepted by the pool.
+        max_allowed: usize,
+    },
 
-    /// Thrown when a key authorization has too many token limits.
+    /// A key authorization contains too many token limits.
+    ///
+    /// Thrown during AA field-limit validation when `key_authorization.limits`
+    /// exceeds the pool's hard cap.
     #[error(
         "Too many token limits in key authorization: {count} exceeds maximum allowed {max_allowed}"
     )]
-    TooManyTokenLimits { count: usize, max_allowed: usize },
+    TooManyTokenLimits {
+        /// The number of token limits in the key authorization.
+        count: usize,
+        /// The maximum number of token limits accepted by the pool.
+        max_allowed: usize,
+    },
 
-    /// Thrown when an access key has expired or is expiring within the propagation buffer.
+    /// The access key used by a keychain transaction expires too soon.
+    ///
+    /// Thrown after EVM validation when the effective access-key expiry is less
+    /// than or equal to the latest tip timestamp plus the pool's propagation buffer.
     #[error("Access key expired: expiry {expiry} <= min allowed {min_allowed}")]
-    AccessKeyExpired { expiry: u64, min_allowed: u64 },
+    AccessKeyExpired {
+        /// The effective access-key expiry timestamp returned by EVM validation.
+        expiry: u64,
+        /// The minimum expiry timestamp accepted by the pool.
+        min_allowed: u64,
+    },
 
-    /// Thrown when a KeyAuthorization has expired or is expiring within the propagation buffer.
+    /// A key authorization expiry is too close to the current pool tip.
+    ///
+    /// This variant is not currently thrown on the active validation path;
+    /// key expiry returned by EVM validation is reported as [`Self::AccessKeyExpired`].
     #[error("KeyAuthorization expired: expiry {expiry} <= min allowed {min_allowed}")]
-    KeyAuthorizationExpired { expiry: u64, min_allowed: u64 },
+    KeyAuthorizationExpired {
+        /// The key authorization expiry timestamp.
+        expiry: u64,
+        /// The minimum expiry timestamp accepted by the pool.
+        min_allowed: u64,
+    },
 
-    /// EVM validation pipeline error.
+    /// A Tempo EVM validation error returned by the transaction pool.
+    ///
+    /// Thrown when `TempoEvm::validate_transaction` rejects the transaction with
+    /// a [`TempoInvalidTransaction`] that is not mapped to a standard reth
+    /// pool error. The pool also uses this wrapper for AMM liquidity failures
+    /// detected after EVM validation, as `CollectFeePreTx(InsufficientAmmLiquidity)`.
     #[error(transparent)]
     Evm(TempoInvalidTransaction),
 }

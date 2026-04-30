@@ -862,7 +862,16 @@ impl AccountKeychain {
                 .selectors
                 .insert(selector)?;
 
-            if !rule.recipients.is_empty() {
+            if rule.recipients.is_empty() {
+                if !self.storage.spec().is_t4() {
+                    // Keep the pre-T4 empty-set delete to preserve the original storage-touch
+                    // pattern. Removing it earlier changes same-tx call-scope warmness without
+                    // changing persisted state.
+                    self.key_scopes[account_key].target_scopes[target].selector_scopes[selector]
+                        .recipients
+                        .delete()?;
+                }
+            } else {
                 // `validate_selector_rules` already rejected duplicates.
                 self.key_scopes[account_key].target_scopes[target].selector_scopes[selector]
                     .recipients
@@ -4202,6 +4211,78 @@ mod tests {
 
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_empty_recipient_selector_delete_is_gated_at_t4() -> eyre::Result<()> {
+        let account = Address::random();
+        let key_id = Address::random();
+        let target = Address::random();
+
+        let mut t3_sstores = 0;
+        let mut t4_sstores = 0;
+
+        for (hardfork, writes) in [
+            (TempoHardfork::T3, &mut t3_sstores),
+            (TempoHardfork::T4, &mut t4_sstores),
+        ] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
+            StorageCtx::enter(&mut storage, || {
+                let mut keychain = AccountKeychain::new();
+                keychain.initialize()?;
+                keychain.set_transaction_key(Address::ZERO)?;
+                keychain.set_tx_origin(account)?;
+
+                keychain.authorize_key(
+                    account,
+                    authorizeKeyCall {
+                        keyId: key_id,
+                        signatureType: SignatureType::Secp256k1,
+                        config: KeyRestrictions {
+                            expiry: u64::MAX,
+                            enforceLimits: false,
+                            limits: vec![],
+                            allowAnyCalls: true,
+                            allowedCalls: vec![],
+                        },
+                    },
+                )?;
+
+                let before = StorageCtx.counter_sstore();
+                keychain.set_allowed_calls(
+                    account,
+                    setAllowedCallsCall {
+                        keyId: key_id,
+                        scopes: vec![CallScope {
+                            target,
+                            selectorRules: vec![SelectorRule {
+                                selector: TIP20_TRANSFER_SELECTOR.into(),
+                                recipients: vec![],
+                            }],
+                        }],
+                    },
+                )?;
+                *writes = StorageCtx.counter_sstore() - before;
+
+                let scopes = keychain.get_allowed_calls(getAllowedCallsCall {
+                    account,
+                    keyId: key_id,
+                })?;
+                assert!(scopes.isScoped);
+                assert_eq!(scopes.scopes.len(), 1);
+                assert!(scopes.scopes[0].selectorRules[0].recipients.is_empty());
+
+                Ok::<_, eyre::Report>(())
+            })?;
+        }
+
+        assert_eq!(
+            t3_sstores,
+            t4_sstores + 1,
+            "pre-T4 should retain the redundant empty-recipient delete"
+        );
+
+        Ok(())
     }
 
     #[test]
