@@ -2,13 +2,14 @@
 
 use crate::transaction::TempoPooledTransaction;
 use alloy_primitives::{Address, U256, map::HashMap};
+use reth_evm::block::TxResult;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
     BestTransactions, CoinbaseTipOrdering, Priority, TransactionOrdering, ValidPoolTransaction,
     error::InvalidPoolTransactionError,
 };
-use revm::state::EvmState;
 use std::sync::Arc;
+use tempo_evm::TempoTxResult;
 use tempo_precompiles::tip20::is_tip20_prefix;
 
 /// An extension trait for [`BestTransactions`] that in addition to the transaction also yields the priority value.
@@ -188,13 +189,10 @@ where
         }
     }
 
-    /// Ingests execution state changes from a committed transaction.
-    ///
-    /// Scans the [`EvmState`] for TIP20 balance decreases and records the new
-    /// balance so that candidate transactions whose fee payer can no longer
-    /// cover their fee cost are skipped.
-    pub fn on_new_state(&mut self, state: &EvmState) {
-        for (&address, account) in state {
+    /// Processes a new transaction execution result and collects any relevant
+    /// state changes that might affect other transactions validity.
+    pub fn on_new_result(&mut self, result: &TempoTxResult) {
+        for (&address, account) in &result.result().state {
             if !is_tip20_prefix(address) {
                 continue;
             }
@@ -224,18 +222,18 @@ where
                 continue;
             };
 
-            if let Some(&balance) = self.decreased_balances.get(&key) {
-                if balance < tx.transaction.fee_token_cost() {
-                    self.inner.mark_invalid(
-                        &tx,
-                        &InvalidPoolTransactionError::Consensus(
-                            InvalidTransactionError::InsufficientFunds(
-                                (balance, tx.transaction.fee_token_cost()).into(),
-                            ),
+            if let Some(&balance) = self.decreased_balances.get(&key)
+                && balance < tx.transaction.fee_token_cost()
+            {
+                self.inner.mark_invalid(
+                    &tx,
+                    &InvalidPoolTransactionError::Consensus(
+                        InvalidTransactionError::InsufficientFunds(
+                            (balance, tx.transaction.fee_token_cost()).into(),
                         ),
-                    );
-                    continue;
-                }
+                    ),
+                );
+                continue;
             }
 
             return Some(tx);
