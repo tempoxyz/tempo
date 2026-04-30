@@ -1329,11 +1329,11 @@ mod tests {
             "832f98b5000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000f424000000000000000000000000020c0000000000000000000000000000000000000"
         );
         let expected_revert_hex = hex::encode(expected_revert_bytes);
-        let revert_data = TIP20Error::InsufficientBalance(ITIP20::InsufficientBalance {
-            available: U256::ZERO,
-            required: U256::from(1_000_000u64),
-            token: DEFAULT_FEE_TOKEN,
-        })
+        let revert_data = TIP20Error::insufficient_balance(
+            U256::ZERO,
+            U256::from(1_000_000u64),
+            DEFAULT_FEE_TOKEN,
+        )
         .abi_encode();
         assert_eq!(
             revert_data.as_slice(),

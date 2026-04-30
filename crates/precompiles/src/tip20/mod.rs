@@ -238,11 +238,9 @@ impl TIP20Token {
 
         self.transfer_policy_id.write(call.newPolicyId)?;
 
-        self.emit_event(TIP20Event::TransferPolicyUpdate(
-            ITIP20::TransferPolicyUpdate {
-                updater: msg_sender,
-                newPolicyId: call.newPolicyId,
-            },
+        self.emit_event(TIP20Event::transfer_policy_update(
+            msg_sender,
+            call.newPolicyId,
         ))
     }
 
@@ -268,10 +266,7 @@ impl TIP20Token {
 
         self.supply_cap.write(call.newSupplyCap)?;
 
-        self.emit_event(TIP20Event::SupplyCapUpdate(ITIP20::SupplyCapUpdate {
-            updater: msg_sender,
-            newSupplyCap: call.newSupplyCap,
-        }))
+        self.emit_event(TIP20Event::supply_cap_update(msg_sender, call.newSupplyCap))
     }
 
     /// Pauses all token transfers.
@@ -282,10 +277,7 @@ impl TIP20Token {
         self.check_role(msg_sender, *PAUSE_ROLE)?;
         self.paused.write(true)?;
 
-        self.emit_event(TIP20Event::PauseStateUpdate(ITIP20::PauseStateUpdate {
-            updater: msg_sender,
-            isPaused: true,
-        }))
+        self.emit_event(TIP20Event::pause_state_update(msg_sender, true))
     }
 
     /// Unpauses token transfers.
@@ -296,10 +288,7 @@ impl TIP20Token {
         self.check_role(msg_sender, *UNPAUSE_ROLE)?;
         self.paused.write(false)?;
 
-        self.emit_event(TIP20Event::PauseStateUpdate(ITIP20::PauseStateUpdate {
-            updater: msg_sender,
-            isPaused: false,
-        }))
+        self.emit_event(TIP20Event::pause_state_update(msg_sender, false))
     }
 
     /// Stages a new quote token. Must be finalized via [`Self::complete_quote_token_update`].
@@ -338,10 +327,10 @@ impl TIP20Token {
 
         self.next_quote_token.write(call.newQuoteToken)?;
 
-        self.emit_event(TIP20Event::NextQuoteTokenSet(ITIP20::NextQuoteTokenSet {
-            updater: msg_sender,
-            nextQuoteToken: call.newQuoteToken,
-        }))
+        self.emit_event(TIP20Event::next_quote_token_set(
+            msg_sender,
+            call.newQuoteToken,
+        ))
     }
 
     /// Finalizes the staged quote token update. Walks the quote-token chain to detect cycles
@@ -373,10 +362,7 @@ impl TIP20Token {
         // Update the quote token
         self.quote_token.write(next_quote_token)?;
 
-        self.emit_event(TIP20Event::QuoteTokenUpdate(ITIP20::QuoteTokenUpdate {
-            updater: msg_sender,
-            newQuoteToken: next_quote_token,
-        }))
+        self.emit_event(TIP20Event::quote_token_update(msg_sender, next_quote_token))
     }
 
     // Token operations
@@ -396,10 +382,7 @@ impl TIP20Token {
         let to = Recipient::resolve(call.to)?;
         self._mint(msg_sender, &to, call.amount)?;
 
-        self.emit_event(TIP20Event::Mint(ITIP20::Mint {
-            to: call.to,
-            amount: call.amount,
-        }))?;
+        self.emit_event(TIP20Event::mint(call.to, call.amount))?;
         if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
             self.emit_event(hop)?;
         }
@@ -416,16 +399,13 @@ impl TIP20Token {
         let to = Recipient::resolve(call.to)?;
         self._mint(msg_sender, &to, call.amount)?;
 
-        self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
-            from: Address::ZERO,
-            to: call.to,
-            amount: call.amount,
-            memo: call.memo,
-        }))?;
-        self.emit_event(TIP20Event::Mint(ITIP20::Mint {
-            to: call.to,
-            amount: call.amount,
-        }))?;
+        self.emit_event(TIP20Event::transfer_with_memo(
+            Address::ZERO,
+            call.to,
+            call.amount,
+            call.memo,
+        ))?;
+        self.emit_event(TIP20Event::mint(call.to, call.amount))?;
         if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
             self.emit_event(hop)?;
         }
@@ -469,10 +449,7 @@ impl TIP20Token {
     /// - `InsufficientBalance` — caller balance lower than burn amount
     pub fn burn(&mut self, msg_sender: Address, call: ITIP20::burnCall) -> Result<()> {
         self._burn(msg_sender, call.amount)?;
-        self.emit_event(TIP20Event::Burn(ITIP20::Burn {
-            from: msg_sender,
-            amount: call.amount,
-        }))
+        self.emit_event(TIP20Event::burn(msg_sender, call.amount))
     }
 
     /// Like [`Self::burn`], but attaches a 32-byte memo.
@@ -483,16 +460,13 @@ impl TIP20Token {
     ) -> Result<()> {
         self._burn(msg_sender, call.amount)?;
 
-        self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
-            from: msg_sender,
-            to: Address::ZERO,
-            amount: call.amount,
-            memo: call.memo,
-        }))?;
-        self.emit_event(TIP20Event::Burn(ITIP20::Burn {
-            from: msg_sender,
-            amount: call.amount,
-        }))
+        self.emit_event(TIP20Event::transfer_with_memo(
+            msg_sender,
+            Address::ZERO,
+            call.amount,
+            call.memo,
+        ))?;
+        self.emit_event(TIP20Event::burn(msg_sender, call.amount))
     }
 
     /// Burns tokens from addresses blocked by [`TIP403Registry`] policy.
@@ -538,10 +512,7 @@ impl TIP20Token {
                 ))?;
         self.set_total_supply(new_supply)?;
 
-        self.emit_event(TIP20Event::BurnBlocked(ITIP20::BurnBlocked {
-            from: call.from,
-            amount: call.amount,
-        }))
+        self.emit_event(TIP20Event::burn_blocked(call.from, call.amount))
     }
 
     fn _burn(&mut self, msg_sender: Address, amount: U256) -> Result<()> {
@@ -583,11 +554,7 @@ impl TIP20Token {
         // Set the new allowance
         self.set_allowance(msg_sender, call.spender, call.amount)?;
 
-        self.emit_event(TIP20Event::Approval(ITIP20::Approval {
-            owner: msg_sender,
-            spender: call.spender,
-            amount: call.amount,
-        }))?;
+        self.emit_event(TIP20Event::approval(msg_sender, call.spender, call.amount))?;
 
         Ok(true)
     }
@@ -677,11 +644,7 @@ impl TIP20Token {
         self.set_allowance(call.owner, call.spender, call.value)?;
 
         // 7. Emit Approval event
-        self.emit_event(TIP20Event::Approval(ITIP20::Approval {
-            owner: call.owner,
-            spender: call.spender,
-            amount: call.value,
-        }))
+        self.emit_event(TIP20Event::approval(call.owner, call.spender, call.value))
     }
 
     /// Transfers `amount` tokens from the caller to `to`. Enforces compliance via the
@@ -737,12 +700,12 @@ impl TIP20Token {
         let to = Recipient::resolve(call.to)?;
         self._transfer_from(msg_sender, call.from, &to, call.amount)?;
 
-        self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
-            from: call.from,
-            to: call.to,
-            amount: call.amount,
-            memo: call.memo,
-        }))?;
+        self.emit_event(TIP20Event::transfer_with_memo(
+            call.from,
+            call.to,
+            call.amount,
+            call.memo,
+        ))?;
         if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
             self.emit_event(hop)?;
         }
@@ -815,12 +778,12 @@ impl TIP20Token {
 
         self._transfer(msg_sender, &to, call.amount)?;
 
-        self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
-            from: msg_sender,
-            to: call.to,
-            amount: call.amount,
-            memo: call.memo,
-        }))?;
+        self.emit_event(TIP20Event::transfer_with_memo(
+            msg_sender,
+            call.to,
+            call.amount,
+            call.memo,
+        ))?;
         if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
             self.emit_event(hop)?;
         }
@@ -1074,11 +1037,11 @@ impl TIP20Token {
         refund: U256,
         actual_spending: U256,
     ) -> Result<()> {
-        self.emit_event(TIP20Event::Transfer(ITIP20::Transfer {
-            from: to,
-            to: TIP_FEE_MANAGER_ADDRESS,
-            amount: actual_spending,
-        }))?;
+        self.emit_event(TIP20Event::transfer(
+            to,
+            TIP_FEE_MANAGER_ADDRESS,
+            actual_spending,
+        ))?;
 
         // Exit early if there is no refund
         if refund.is_zero() {
@@ -1179,23 +1142,14 @@ impl Recipient {
     /// For virtual recipients `to` is the virtual address (first hop); for regular
     /// recipients this is the only `Transfer` event needed.
     pub(crate) fn build_transfer_event(&self, from: Address, amount: U256) -> TIP20Event {
-        TIP20Event::Transfer(ITIP20::Transfer {
-            from,
-            to: self.virtual_addr.unwrap_or(self.target),
-            amount,
-        })
+        TIP20Event::transfer(from, self.virtual_addr.unwrap_or(self.target), amount)
     }
 
     /// Builds the forwarding `Transfer(virtual, master, amount)` event for virtual recipients.
     /// Returns `None` for non-virtual recipients.
     pub(crate) fn build_virtual_transfer_event(&self, amount: U256) -> Option<TIP20Event> {
-        self.virtual_addr.map(|virtual_addr| {
-            TIP20Event::Transfer(ITIP20::Transfer {
-                from: virtual_addr,
-                to: self.target,
-                amount,
-            })
-        })
+        self.virtual_addr
+            .map(|virtual_addr| TIP20Event::transfer(virtual_addr, self.target, amount))
     }
 }
 
@@ -1352,12 +1306,8 @@ pub(crate) mod tests {
             assert_eq!(token.total_supply()?, amount);
 
             token.assert_emitted_events(vec![
-                TIP20Event::Transfer(ITIP20::Transfer {
-                    from: Address::ZERO,
-                    to: addr,
-                    amount,
-                }),
-                TIP20Event::Mint(ITIP20::Mint { to: addr, amount }),
+                TIP20Event::transfer(Address::ZERO, addr, amount),
+                TIP20Event::mint(addr, amount),
             ]);
 
             Ok(())
@@ -1384,11 +1334,7 @@ pub(crate) mod tests {
             assert_eq!(token.get_balance(to)?, amount);
             assert_eq!(token.total_supply()?, amount); // Supply unchanged
 
-            token.assert_emitted_events(vec![TIP20Event::Transfer(ITIP20::Transfer {
-                from,
-                to,
-                amount,
-            })]);
+            token.assert_emitted_events(vec![TIP20Event::transfer(from, to, amount)]);
 
             Ok(())
         })
@@ -1434,18 +1380,9 @@ pub(crate) mod tests {
 
             // TransferWithMemo event should have Address::ZERO as from for mint
             token.assert_emitted_events(vec![
-                TIP20Event::Transfer(ITIP20::Transfer {
-                    from: Address::ZERO,
-                    to,
-                    amount,
-                }),
-                TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
-                    from: Address::ZERO,
-                    to,
-                    amount,
-                    memo,
-                }),
-                TIP20Event::Mint(ITIP20::Mint { to, amount }),
+                TIP20Event::transfer(Address::ZERO, to, amount),
+                TIP20Event::transfer_with_memo(Address::ZERO, to, amount, memo),
+                TIP20Event::mint(to, amount),
             ]);
 
             Ok(())
@@ -1468,21 +1405,9 @@ pub(crate) mod tests {
 
             token.burn_with_memo(admin, ITIP20::burnWithMemoCall { amount, memo })?;
             token.assert_emitted_events(vec![
-                TIP20Event::Transfer(ITIP20::Transfer {
-                    from: admin,
-                    to: Address::ZERO,
-                    amount,
-                }),
-                TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
-                    from: admin,
-                    to: Address::ZERO,
-                    amount,
-                    memo,
-                }),
-                TIP20Event::Burn(ITIP20::Burn {
-                    from: admin,
-                    amount,
-                }),
+                TIP20Event::transfer(admin, Address::ZERO, amount),
+                TIP20Event::transfer_with_memo(admin, Address::ZERO, amount, memo),
+                TIP20Event::burn(admin, amount),
             ]);
 
             Ok(())
@@ -1519,17 +1444,8 @@ pub(crate) mod tests {
 
             // TransferWithMemo event should have use call.from in transfer event
             token.assert_emitted_events(vec![
-                TIP20Event::Transfer(ITIP20::Transfer {
-                    from: owner,
-                    to,
-                    amount,
-                }),
-                TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
-                    from: owner,
-                    to,
-                    amount,
-                    memo,
-                }),
+                TIP20Event::transfer(owner, to, amount),
+                TIP20Event::transfer_with_memo(owner, to, amount, memo),
             ]);
 
             Ok(())
@@ -1633,12 +1549,7 @@ pub(crate) mod tests {
             );
             assert_eq!(
                 token.emitted_events().last().unwrap(),
-                &TIP20Event::Transfer(ITIP20::Transfer {
-                    from: user,
-                    to: TIP_FEE_MANAGER_ADDRESS,
-                    amount: gas_used
-                })
-                .into_log_data()
+                &TIP20Event::transfer(user, TIP_FEE_MANAGER_ADDRESS, gas_used).into_log_data()
             );
 
             Ok(())
@@ -1830,7 +1741,7 @@ pub(crate) mod tests {
             assert!(token.system_transfer_from(from, to, amount).is_ok());
             assert_eq!(
                 token.emitted_events().last().unwrap(),
-                &TIP20Event::Transfer(ITIP20::Transfer { from, to, amount }).into_log_data()
+                &TIP20Event::transfer(from, to, amount).into_log_data()
             );
 
             Ok(())
@@ -1882,11 +1793,7 @@ pub(crate) mod tests {
             // Verify event was emitted
             assert_eq!(
                 token.emitted_events().last().unwrap(),
-                &TIP20Event::NextQuoteTokenSet(ITIP20::NextQuoteTokenSet {
-                    updater: admin,
-                    nextQuoteToken: new_quote_token_address,
-                })
-                .into_log_data()
+                &TIP20Event::next_quote_token_set(admin, new_quote_token_address).into_log_data()
             );
 
             Ok(())
@@ -2008,11 +1915,7 @@ pub(crate) mod tests {
             // Verify event was emitted
             assert_eq!(
                 token.emitted_events().last().unwrap(),
-                &TIP20Event::QuoteTokenUpdate(ITIP20::QuoteTokenUpdate {
-                    updater: admin,
-                    newQuoteToken: quote_token_address,
-                })
-                .into_log_data()
+                &TIP20Event::quote_token_update(admin, quote_token_address).into_log_data()
             );
 
             Ok(())
@@ -2711,20 +2614,9 @@ pub(crate) mod tests {
 
                     // Events: Transfer(0→virtual) + Mint(virtual) + Transfer(virtual→master)
                     token.assert_emitted_events(vec![
-                        TIP20Event::Transfer(ITIP20::Transfer {
-                            from: Address::ZERO,
-                            to: virtual_addr,
-                            amount,
-                        }),
-                        TIP20Event::Mint(ITIP20::Mint {
-                            to: virtual_addr,
-                            amount,
-                        }),
-                        TIP20Event::Transfer(ITIP20::Transfer {
-                            from: virtual_addr,
-                            to: VIRTUAL_MASTER,
-                            amount,
-                        }),
+                        TIP20Event::transfer(Address::ZERO, virtual_addr, amount),
+                        TIP20Event::mint(virtual_addr, amount),
+                        TIP20Event::transfer(virtual_addr, VIRTUAL_MASTER, amount),
                     ]);
                 } else {
                     // Pre-T3: virtual address treated as literal, balance goes there
@@ -2789,16 +2681,8 @@ pub(crate) mod tests {
 
                     // Events: Transfer(sender→virtual) + Transfer(virtual→master)
                     token.assert_emitted_events(vec![
-                        TIP20Event::Transfer(ITIP20::Transfer {
-                            from: sender,
-                            to: virtual_addr,
-                            amount,
-                        }),
-                        TIP20Event::Transfer(ITIP20::Transfer {
-                            from: virtual_addr,
-                            to: VIRTUAL_MASTER,
-                            amount,
-                        }),
+                        TIP20Event::transfer(sender, virtual_addr, amount),
+                        TIP20Event::transfer(virtual_addr, VIRTUAL_MASTER, amount),
                     ]);
                 } else {
                     assert_eq!(token.get_balance(virtual_addr)?, amount);

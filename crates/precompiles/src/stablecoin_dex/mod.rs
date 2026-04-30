@@ -153,14 +153,12 @@ impl StablecoinDEX {
         amount_filled: u128,
         partial_fill: bool,
     ) -> Result<()> {
-        self.emit_event(StablecoinDEXEvents::OrderFilled(
-            IStablecoinDEX::OrderFilled {
-                orderId: order_id,
-                maker,
-                taker,
-                amountFilled: amount_filled,
-                partialFill: partial_fill,
-            },
+        self.emit_event(StablecoinDEXEvents::order_filled(
+            order_id,
+            maker,
+            taker,
+            amount_filled,
+            partial_fill,
         ))?;
 
         Ok(())
@@ -426,13 +424,7 @@ impl StablecoinDEX {
         self.book_keys.push(book_key)?;
 
         // Emit PairCreated event
-        self.emit_event(StablecoinDEXEvents::PairCreated(
-            IStablecoinDEX::PairCreated {
-                key: book_key,
-                base,
-                quote,
-            },
-        ))?;
+        self.emit_event(StablecoinDEXEvents::pair_created(book_key, base, quote))?;
 
         Ok(book_key)
     }
@@ -512,17 +504,8 @@ impl StablecoinDEX {
         self.commit_order_to_book(order)?;
 
         // Emit OrderPlaced event
-        self.emit_event(StablecoinDEXEvents::OrderPlaced(
-            IStablecoinDEX::OrderPlaced {
-                orderId: order_id,
-                maker: sender,
-                token,
-                amount,
-                isBid: is_bid,
-                tick,
-                isFlipOrder: false,
-                flipTick: 0,
-            },
+        self.emit_event(StablecoinDEXEvents::order_placed(
+            order_id, sender, token, amount, is_bid, tick, false, 0,
         ))?;
 
         Ok(order_id)
@@ -688,17 +671,8 @@ impl StablecoinDEX {
         self.commit_order_to_book(order)?;
 
         // Emit OrderPlaced event for flip order
-        self.emit_event(StablecoinDEXEvents::OrderPlaced(
-            IStablecoinDEX::OrderPlaced {
-                orderId: order_id,
-                maker: sender,
-                token,
-                amount,
-                isBid: is_bid,
-                tick,
-                isFlipOrder: true,
-                flipTick: flip_tick,
-            },
+        self.emit_event(StablecoinDEXEvents::order_placed(
+            order_id, sender, token, amount, is_bid, tick, true, flip_tick,
         ))?;
 
         // CHECKPOINT END: commit the state-changing batch
@@ -1165,11 +1139,7 @@ impl StablecoinDEX {
         self.orders[order.order_id()].delete()?;
 
         // Emit OrderCancelled event
-        self.emit_event(StablecoinDEXEvents::OrderCancelled(
-            IStablecoinDEX::OrderCancelled {
-                orderId: order.order_id(),
-            },
-        ))
+        self.emit_event(StablecoinDEXEvents::order_cancelled(order.order_id()))
     }
 
     /// Cancels an order whose maker is blocked by [`TIP403Registry`] policy, allowing anyone to
@@ -2066,12 +2036,8 @@ mod tests {
             assert_eq!(events.len(), 2);
             assert_eq!(
                 events[0],
-                StablecoinDEXEvents::PairCreated(IStablecoinDEX::PairCreated {
-                    key: book_key,
-                    base: base_token,
-                    quote: quote_token,
-                })
-                .into_log_data()
+                StablecoinDEXEvents::pair_created(book_key, base_token, quote_token)
+                    .into_log_data()
             );
 
             Ok(())
@@ -2561,12 +2527,10 @@ mod tests {
                 .expect("Could not create pair");
 
             // Verify PairCreated event was emitted
-            exchange.assert_emitted_events(vec![StablecoinDEXEvents::PairCreated(
-                IStablecoinDEX::PairCreated {
-                    key,
-                    base: base_token,
-                    quote: quote_token,
-                },
+            exchange.assert_emitted_events(vec![StablecoinDEXEvents::pair_created(
+                key,
+                base_token,
+                quote_token,
             )]);
 
             Ok(())
@@ -3710,12 +3674,8 @@ mod tests {
             assert_eq!(events.len(), 2);
             assert_eq!(
                 events[0],
-                StablecoinDEXEvents::PairCreated(IStablecoinDEX::PairCreated {
-                    key: book_key,
-                    base: base_token,
-                    quote: quote_token,
-                })
-                .into_log_data()
+                StablecoinDEXEvents::pair_created(book_key, base_token, quote_token)
+                    .into_log_data()
             );
 
             Ok(())

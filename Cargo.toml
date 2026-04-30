@@ -363,6 +363,18 @@ vergen-git2 = "9.1.0"
 # reth-trie-sparse = { path = "../reth/crates/trie/sparse" }
 
 [patch.crates-io]
+# alloy-core at HEAD for feat(sol-macro): helper builders for errors and events (#1080)
+alloy-core = { git = "https://github.com/alloy-rs/core", rev = "68b1c44e1ba0fdedc6aec38e02e646825658e69a" }
+alloy-primitives = { git = "https://github.com/alloy-rs/core", rev = "68b1c44e1ba0fdedc6aec38e02e646825658e69a" }
+alloy-sol-types = { git = "https://github.com/alloy-rs/core", rev = "68b1c44e1ba0fdedc6aec38e02e646825658e69a" }
+alloy-sol-macro = { git = "https://github.com/alloy-rs/core", rev = "68b1c44e1ba0fdedc6aec38e02e646825658e69a" }
+alloy-sol-macro-expander = { git = "https://github.com/alloy-rs/core", rev = "68b1c44e1ba0fdedc6aec38e02e646825658e69a" }
+alloy-sol-macro-input = { git = "https://github.com/alloy-rs/core", rev = "68b1c44e1ba0fdedc6aec38e02e646825658e69a" }
+alloy-json-abi = { git = "https://github.com/alloy-rs/core", rev = "68b1c44e1ba0fdedc6aec38e02e646825658e69a" }
+alloy-dyn-abi = { git = "https://github.com/alloy-rs/core", rev = "68b1c44e1ba0fdedc6aec38e02e646825658e69a" }
+alloy-sol-type-parser = { git = "https://github.com/alloy-rs/core", rev = "68b1c44e1ba0fdedc6aec38e02e646825658e69a" }
+syn-solidity = { git = "https://github.com/alloy-rs/core", rev = "68b1c44e1ba0fdedc6aec38e02e646825658e69a" }
+
 # Commonware at HEAD after PR #3588 was merged
 commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
 commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }

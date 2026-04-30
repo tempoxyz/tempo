@@ -99,12 +99,7 @@ impl TipFeeManager {
         self.validator_tokens[sender].write(call.token)?;
 
         // Emit ValidatorTokenSet event
-        self.emit_event(FeeManagerEvent::ValidatorTokenSet(
-            IFeeManager::ValidatorTokenSet {
-                validator: sender,
-                token: call.token,
-            },
-        ))
+        self.emit_event(FeeManagerEvent::validator_token_set(sender, call.token))
     }
 
     /// Sets the caller's preferred fee token as a user. Must be a valid USD-denominated TIP-20
@@ -138,10 +133,7 @@ impl TipFeeManager {
         self.user_tokens[sender].write(call.token)?;
 
         // Emit UserTokenSet event
-        self.emit_event(FeeManagerEvent::UserTokenSet(IFeeManager::UserTokenSet {
-            user: sender,
-            token: call.token,
-        }))
+        self.emit_event(FeeManagerEvent::user_token_set(sender, call.token))
     }
 
     /// Collects fees from `fee_payer` before transaction execution.
@@ -268,13 +260,7 @@ impl TipFeeManager {
         )?;
 
         // Emit FeesDistributed event
-        self.emit_event(FeeManagerEvent::FeesDistributed(
-            IFeeManager::FeesDistributed {
-                validator,
-                token,
-                amount,
-            },
-        ))?;
+        self.emit_event(FeeManagerEvent::fees_distributed(validator, token, amount))?;
 
         Ok(())
     }

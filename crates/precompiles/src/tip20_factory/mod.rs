@@ -145,16 +145,14 @@ impl TIP20Factory {
             call.admin,
         )?;
 
-        self.emit_event(TIP20FactoryEvent::TokenCreated(
-            ITIP20Factory::TokenCreated {
-                token: token_address,
-                name: call.name,
-                symbol: call.symbol,
-                currency: call.currency,
-                quoteToken: call.quoteToken,
-                admin: call.admin,
-                salt: call.salt,
-            },
+        self.emit_event(TIP20FactoryEvent::token_created(
+            token_address,
+            call.name,
+            call.symbol,
+            call.currency,
+            call.quoteToken,
+            call.admin,
+            call.salt,
         ))?;
 
         Ok(token_address)
@@ -219,16 +217,14 @@ impl TIP20Factory {
         let mut token = TIP20Token::from_address(address)?;
         token.initialize(admin, name, symbol, currency, quote_token, admin)?;
 
-        self.emit_event(TIP20FactoryEvent::TokenCreated(
-            ITIP20Factory::TokenCreated {
-                token: address,
-                name: name.into(),
-                symbol: symbol.into(),
-                currency: currency.into(),
-                quoteToken: quote_token,
-                admin,
-                salt: B256::ZERO,
-            },
+        self.emit_event(TIP20FactoryEvent::token_created(
+            address,
+            name.into(),
+            symbol.into(),
+            currency.into(),
+            quote_token,
+            admin,
+            B256::ZERO,
         ))?;
 
         Ok(address)
@@ -396,24 +392,24 @@ mod tests {
 
             // Verify event emission
             factory.assert_emitted_events(vec![
-                TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
-                    token: token_addr_1,
-                    name: call1.name,
-                    symbol: call1.symbol,
-                    currency: call1.currency,
-                    quoteToken: call1.quoteToken,
-                    admin: call1.admin,
-                    salt: call1.salt,
-                }),
-                TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
-                    token: token_addr_2,
-                    name: call2.name,
-                    symbol: call2.symbol,
-                    currency: call2.currency,
-                    quoteToken: call2.quoteToken,
-                    admin: call2.admin,
-                    salt: call2.salt,
-                }),
+                TIP20FactoryEvent::token_created(
+                    token_addr_1,
+                    call1.name,
+                    call1.symbol,
+                    call1.currency,
+                    call1.quoteToken,
+                    call1.admin,
+                    call1.salt,
+                ),
+                TIP20FactoryEvent::token_created(
+                    token_addr_2,
+                    call2.name,
+                    call2.symbol,
+                    call2.currency,
+                    call2.quoteToken,
+                    call2.admin,
+                    call2.salt,
+                ),
             ]);
 
             Ok(())
