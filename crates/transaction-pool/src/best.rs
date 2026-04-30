@@ -163,12 +163,8 @@ where
 }
 
 /// A [`BestTransactions`] wrapper that tracks execution state changes and skips
-/// transactions that would obviously fail due to state mutations from previously
+/// transactions that would fail due to state mutations from previously
 /// included transactions.
-///
-/// Currently tracks fee payer balance changes: when a transaction is executed and
-/// modifies a TIP20 balance slot, subsequent transactions sharing the same
-/// `(fee_token, fee_payer)` pair are skipped since they may no longer be solvent.
 pub struct StateAwareBestTransactions<I> {
     inner: I,
     /// Tracks decreased TIP20 balance slots: `(token_address, slot) -> new_balance`.
