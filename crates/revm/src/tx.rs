@@ -1,5 +1,7 @@
 use crate::TempoInvalidTransaction;
-use alloy_consensus::{EthereumTxEnvelope, TxEip4844, Typed2718, crypto::secp256k1};
+use alloy_consensus::{
+    EthereumTxEnvelope, TxEip4844, Typed2718, crypto::secp256k1, transaction::TxHashRef,
+};
 use alloy_evm::{FromRecoveredTx, FromTxWithEncoded, IntoTxEnv, TransactionEnvMut};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use core::num::NonZeroU64;
@@ -93,6 +95,9 @@ pub struct TempoTxEnv {
 
     /// AA-specific transaction environment (boxed to keep TempoTxEnv lean for non-AA tx)
     pub tempo_tx_env: Option<Box<TempoBatchCallEnv>>,
+
+    /// Transaction hash for the current top-level transaction.
+    pub tx_hash: Option<B256>,
 }
 
 impl TempoTxEnv {
@@ -145,6 +150,11 @@ impl TempoTxEnv {
                 self.inner.input().as_ref(),
             )))
         }
+    }
+
+    /// Returns the top-level transaction hash when available.
+    pub fn tx_hash(&self) -> Option<B256> {
+        self.tx_hash
     }
 }
 
@@ -264,7 +274,10 @@ impl IntoTxEnv<Self> for TempoTxEnv {
 
 impl FromRecoveredTx<EthereumTxEnvelope<TxEip4844>> for TempoTxEnv {
     fn from_recovered_tx(tx: &EthereumTxEnvelope<TxEip4844>, sender: Address) -> Self {
-        TxEnv::from_recovered_tx(tx, sender).into()
+        Self {
+            tx_hash: Some(*tx.tx_hash()),
+            ..TxEnv::from_recovered_tx(tx, sender).into()
+        }
     }
 }
 
@@ -365,6 +378,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 // can only be derived when given an entire block
                 expiring_nonce_idx: None,
             })),
+            tx_hash: Some(*aa_signed.hash()),
         }
     }
 }
@@ -378,10 +392,20 @@ impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
                 is_system_tx: tx.is_system_tx(),
                 fee_payer: None,
                 tempo_tx_env: None, // Non-AA transaction
+                tx_hash: Some(*tx.tx_hash()),
             },
-            TempoTxEnvelope::Eip2930(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
-            TempoTxEnvelope::Eip1559(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
-            TempoTxEnvelope::Eip7702(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
+            TempoTxEnvelope::Eip2930(tx) => Self {
+                tx_hash: Some(*tx.tx_hash()),
+                ..TxEnv::from_recovered_tx(tx.tx(), sender).into()
+            },
+            TempoTxEnvelope::Eip1559(tx) => Self {
+                tx_hash: Some(*tx.tx_hash()),
+                ..TxEnv::from_recovered_tx(tx.tx(), sender).into()
+            },
+            TempoTxEnvelope::Eip7702(tx) => Self {
+                tx_hash: Some(*tx.tx_hash()),
+                ..TxEnv::from_recovered_tx(tx.tx(), sender).into()
+            },
             TempoTxEnvelope::AA(tx) => Self::from_recovered_tx(tx, sender),
         }
     }

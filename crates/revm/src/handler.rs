@@ -50,6 +50,7 @@ use tempo_precompiles::{
     storage::{
         Handler as _, PrecompileStorageProvider, StorageCtx, evm::EvmPrecompileStorageProvider,
     },
+    tip20_channel_escrow::TIP20ChannelEscrow,
     tip_fee_manager::TipFeeManager,
     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
 };
@@ -412,6 +413,26 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
             || {
                 let mut keychain = AccountKeychain::new();
                 keychain.set_tx_origin(ctx.tx.caller())
+            },
+        )
+        .map_err(|e| EVMError::Custom(e.to_string()))
+    }
+
+    fn seed_channel_escrow_tx_hash(
+        &self,
+        evm: &mut TempoEvm<DB, I>,
+    ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
+        let ctx = evm.ctx_mut();
+        let tx_hash = ctx.tx.tx_hash().unwrap_or_default();
+
+        StorageCtx::enter_evm(
+            &mut ctx.journaled_state,
+            &ctx.block,
+            &ctx.cfg,
+            &ctx.tx,
+            || {
+                let mut escrow = TIP20ChannelEscrow::new();
+                escrow.set_current_tx_hash(tx_hash)
             },
         )
         .map_err(|e| EVMError::Custom(e.to_string()))
@@ -869,6 +890,7 @@ where
         init_gas: &mut InitialAndFloorGas,
     ) -> Result<(), Self::Error> {
         self.seed_tx_origin(evm)?;
+        self.seed_channel_escrow_tx_hash(evm)?;
 
         let block = &evm.inner.ctx.block;
         let tx = &evm.inner.ctx.tx;

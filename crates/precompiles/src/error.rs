@@ -21,8 +21,9 @@ use revm::{
 };
 use tempo_contracts::precompiles::{
     AccountKeychainError, AddrRegistryError, FeeManagerError, NonceError, RolesAuthError,
-    SignatureVerifierError, StablecoinDEXError, TIP20ChannelEscrowError, TIP20FactoryError, TIP403RegistryError,
-    TIPFeeAMMError, UnknownFunctionSelector, ValidatorConfigError, ValidatorConfigV2Error,
+    SignatureVerifierError, StablecoinDEXError, TIP20ChannelEscrowError, TIP20FactoryError,
+    TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector, ValidatorConfigError,
+    ValidatorConfigV2Error,
 };
 
 /// Top-level error type for all Tempo precompile operations
