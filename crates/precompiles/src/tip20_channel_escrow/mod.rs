@@ -40,6 +40,17 @@ struct PackedChannelState {
     close_data: u32,
 }
 
+impl From<PackedChannelState> for ITIP20ChannelEscrow::ChannelState {
+    fn from(state: PackedChannelState) -> Self {
+        Self {
+            settled: state.settled,
+            deposit: state.deposit,
+            expiresAt: state.expires_at,
+            closeData: state.close_data,
+        }
+    }
+}
+
 impl PackedChannelState {
     fn exists(self) -> bool {
         !self.deposit.is_zero()
@@ -51,15 +62,6 @@ impl PackedChannelState {
 
     fn close_requested_at(self) -> Option<u32> {
         (self.close_data >= 2).then_some(self.close_data)
-    }
-
-    fn to_sol(self) -> ITIP20ChannelEscrow::ChannelState {
-        ITIP20ChannelEscrow::ChannelState {
-            settled: self.settled,
-            deposit: self.deposit,
-            expiresAt: self.expires_at,
-            closeData: self.close_data,
-        }
     }
 }
 
@@ -445,7 +447,7 @@ impl TIP20ChannelEscrow {
         let channel_id = self.channel_id(&call.descriptor)?;
         Ok(ITIP20ChannelEscrow::Channel {
             descriptor: call.descriptor,
-            state: self.channel_states[channel_id].read()?.to_sol(),
+            state: self.channel_states[channel_id].read()?.into(),
         })
     }
 
@@ -453,7 +455,7 @@ impl TIP20ChannelEscrow {
         &self,
         call: ITIP20ChannelEscrow::getChannelStateCall,
     ) -> Result<ITIP20ChannelEscrow::ChannelState> {
-        Ok(self.channel_states[call.channelId].read()?.to_sol())
+        Ok(self.channel_states[call.channelId].read()?.into())
     }
 
     pub fn get_channel_states_batch(
@@ -465,7 +467,7 @@ impl TIP20ChannelEscrow {
             .map(|channel_id| {
                 self.channel_states[channel_id]
                     .read()
-                    .map(PackedChannelState::to_sol)
+                    .map(Into::into)
             })
             .collect()
     }
