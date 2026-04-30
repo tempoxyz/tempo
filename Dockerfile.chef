@@ -1,6 +1,7 @@
-FROM rust:1.93-bookworm AS chef
+FROM rust:1.93-bookworm@sha256:7c4ae649a84014c467d79319bbf17ce2632ae8b8be123ac2fb2ea5be46823f31 AS chef
 
-RUN cargo install cargo-chef sccache
+RUN cargo install cargo-chef --version 0.1.77 --locked \
+ && cargo install sccache --version 0.14.0 --locked
 
 WORKDIR /app
 

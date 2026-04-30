@@ -1,6 +1,7 @@
 use crate::utils::TestNodeBuilder;
 use alloy::providers::{Provider, ProviderBuilder};
 use reth_chainspec::Hardfork;
+use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderExt};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_node::rpc::fork_schedule::ForkSchedule;
 
@@ -59,6 +60,24 @@ async fn test_fork_schedule() -> eyre::Result<()> {
         active_entry.fork_id.as_deref().unwrap(),
         eth_config["current"]["forkId"].as_str().unwrap()
     );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_is_hardfork_active() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let provider = ProviderBuilder::new_with_network::<TempoNetwork>().connect_http(setup.http_url);
+
+    // Devnet activates all forks at t=0, so every known hardfork should be active.
+    for fork in TempoHardfork::VARIANTS {
+        assert!(
+            provider.is_hardfork_active(*fork).await?,
+            "{fork:?} should be active on devnet",
+        );
+    }
 
     Ok(())
 }

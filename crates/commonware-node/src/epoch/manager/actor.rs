@@ -170,7 +170,7 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) -> Handle<()> {
-        spawn_cell!(self.context, self.run(votes, certificates, resolver).await)
+        spawn_cell!(self.context, self.run(votes, certificates, resolver))
     }
 
     async fn run(
@@ -359,6 +359,8 @@ where
                 skip_timeout: self.config.views_until_leader_skip,
 
                 fetch_concurrent: crate::config::NUMBER_CONCURRENT_FETCHES,
+
+                forwarding: commonware_consensus::simplex::config::ForwardingPolicy::Disabled,
 
                 strategy: Sequential,
             },

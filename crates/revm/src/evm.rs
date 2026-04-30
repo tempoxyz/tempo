@@ -3,12 +3,12 @@ use alloy_evm::{Database, precompiles::PrecompilesMap};
 use alloy_primitives::{Address, U256};
 use revm::{
     Context, Inspector,
-    context::{CfgEnv, ContextError, Evm, FrameStack},
+    context::{Cfg, CfgEnv, ContextError, Evm, FrameStack},
     handler::{
         EthFrame, EvmTr, FrameInitOrResult, FrameTr, ItemOrResult, instructions::EthInstructions,
     },
     inspector::InspectorEvmTr,
-    interpreter::interpreter::EthInterpreter,
+    interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 
@@ -31,10 +31,6 @@ pub struct TempoEvm<DB: Database, I> {
     >,
     /// The fee collected in `collectFeePreTx` call.
     pub(crate) collected_fee: U256,
-    /// Initial gas cost. Used for key_authorization validation in collectFeePreTx.
-    ///
-    /// Additional initial gas cost is added for authorization_key setting in pre execution.
-    pub(crate) initial_gas: u64,
     /// The fee token used to pay fees for the current transaction.
     pub(crate) fee_token: Option<Address>,
     /// The expiry timestamp of the access key used by the current transaction.
@@ -81,11 +77,29 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         Self {
             inner,
             collected_fee: U256::ZERO,
-            initial_gas: 0,
             fee_token: None,
             key_expiry: None,
             skip_valid_after_check: false,
             skip_liquidity_check: false,
+        }
+    }
+
+    /// Computes initial gas limit and reservoir for a transaction given its initial gas spending.
+    pub(crate) fn initial_gas_and_reservoir(
+        &self,
+        init_and_floor_gas: &InitialAndFloorGas,
+    ) -> (u64, u64) {
+        // Pre-T0 it could happen that the initial gas spending is greater than the gas limit due to faulty validation.
+        //
+        // Before that it would overflow, so we are reproducing this behavior here by setting the gas limit to u64::MAX and the reservoir to 0.
+        if !self.cfg.spec.is_t0() && init_and_floor_gas.initial_total_gas > self.tx.gas_limit {
+            (u64::MAX, 0)
+        } else {
+            init_and_floor_gas.initial_gas_and_reservoir(
+                self.tx.gas_limit,
+                self.cfg.tx_gas_limit_cap(),
+                self.cfg.is_amsterdam_eip8037_enabled(),
+            )
         }
     }
 }
@@ -108,7 +122,6 @@ impl<DB: Database, I> TempoEvm<DB, I> {
 
     /// Clears all intermediate state from the EVM.
     pub fn clear(&mut self) {
-        self.initial_gas = 0;
         self.fee_token = None;
         self.key_expiry = None;
     }
@@ -923,7 +936,7 @@ mod tests {
 
         let result1 = evm.transact_commit(tx_env1)?;
         assert!(result1.is_success());
-        assert_eq!(result1.gas_used(), 28_671);
+        assert_eq!(result1.tx_gas_used(), 28_671);
 
         let ctx = &mut evm.ctx;
         let internals = EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
@@ -952,7 +965,7 @@ mod tests {
 
         let result2 = evm.transact_commit(tx_env2)?;
         assert!(result2.is_success());
-        assert_eq!(result2.gas_used(), 31_286);
+        assert_eq!(result2.tx_gas_used(), 31_286);
 
         let ctx = &mut evm.ctx;
         let internals = EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
@@ -1156,18 +1169,14 @@ mod tests {
         let signed_tx = key_pair.sign_tx_keychain(tx)?;
         let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
 
-        let err = evm
-            .transact_commit(tx_env)
-            .expect_err("deny-all scope should reject the call");
-
+        let result = evm.transact_commit(tx_env)?;
         assert!(
-            matches!(
-                err,
-                revm::context::result::EVMError::Transaction(
-                    TempoInvalidTransaction::KeychainValidationFailed { .. }
-                )
-            ),
-            "expected KeychainValidationFailed, got: {err:?}"
+            !result.is_success(),
+            "deny-all scope should now fail during paid execution"
+        );
+        assert!(
+            result.tx_gas_used() > 0,
+            "failed execution should still consume gas"
         );
 
         Ok(())
@@ -1643,12 +1652,12 @@ mod tests {
             );
 
             let gas = result.unwrap();
-            // Verify floor_gas > initial_gas for this calldata (EIP-7623 scenario)
+            // Verify floor_gas > initial_total_gas for this calldata (EIP-7623 scenario)
             assert!(
-                gas.floor_gas > gas.initial_gas,
-                "Expected floor_gas ({}) > initial_gas ({}) for large calldata",
+                gas.floor_gas > gas.initial_total_gas,
+                "Expected floor_gas ({}) > initial_total_gas ({}) for large calldata",
                 gas.floor_gas,
-                gas.initial_gas
+                gas.initial_total_gas
             );
         }
 
@@ -1666,7 +1675,7 @@ mod tests {
 
             let gas = result.unwrap();
             assert!(
-                gas.initial_gas >= 21_000,
+                gas.initial_total_gas >= 21_000,
                 "Initial gas should be at least 21k base"
             );
         }
@@ -1675,21 +1684,6 @@ mod tests {
     }
 
     // ==================== TIP-1000 EVM Configuration Tests ====================
-
-    /// Test that TempoEvm preserves initial fields when using with_inspector.
-    #[test]
-    fn test_tempo_evm_with_inspector_preserves_fields() {
-        let evm = create_evm();
-
-        // Use with_inspector to get a new EVM with CountInspector
-        let evm_with_inspector = evm.with_inspector(CountInspector::new());
-
-        // Verify fields are still initialized correctly
-        assert_eq!(
-            evm_with_inspector.initial_gas, 0,
-            "initial_gas should be 0 after with_inspector"
-        );
-    }
 
     /// Test AA transaction gas usage for simple identity precompile call.
     /// This establishes a baseline for gas comparison.
@@ -1715,7 +1709,7 @@ mod tests {
         assert!(result.is_success());
 
         // With T1 TIP-1000: new account cost (250k) + base intrinsic (21k) + WebAuthn (~3.4k) + calldata
-        let gas_used = result.gas_used();
+        let gas_used = result.tx_gas_used();
         assert_eq!(
             gas_used, 278738,
             "T1 baseline identity call gas should be exact"
@@ -1760,7 +1754,7 @@ mod tests {
         assert!(result.is_success(), "SSTORE transaction should succeed");
 
         // With TIP-1000: new account (250k) + SSTORE to new slot (250k) + base costs
-        let gas_used = result.gas_used();
+        let gas_used = result.tx_gas_used();
         assert_eq!(
             gas_used, 530863,
             "T1 SSTORE to new slot gas should be exact"
@@ -1814,7 +1808,7 @@ mod tests {
 
         // SSTORE to existing non-zero slot (reset) doesn't trigger the 250k new slot cost
         // But still has new account cost (250k) + cold SLOAD (2100) + warm SSTORE reset (~2900)
-        let gas_used = result.gas_used();
+        let gas_used = result.tx_gas_used();
         assert_eq!(
             gas_used, 283663,
             "T1 SSTORE to existing slot gas should be exact"
@@ -1862,7 +1856,7 @@ mod tests {
         );
 
         // With TIP-1000: new account (250k) + 2 SSTOREs to new slots (2 * 250k) = 750k + base
-        let gas_used = result.gas_used();
+        let gas_used = result.tx_gas_used();
         assert_eq!(gas_used, 783069, "T1 multiple SSTOREs gas should be exact");
 
         Ok(())
@@ -1894,7 +1888,7 @@ mod tests {
         assert!(result.is_success(), "CREATE transaction should succeed");
 
         // With TIP-1000: CREATE cost (500k) + new account for sender (250k) + base costs
-        let gas_used = result.gas_used();
+        let gas_used = result.tx_gas_used();
         assert_eq!(gas_used, 778720, "T1 CREATE contract gas should be exact");
 
         Ok(())
@@ -1943,7 +1937,7 @@ mod tests {
 
         // With TIP-1000: CREATE cost (500k) + new account (250k) + 2D nonce sender creation (250k) + base
         assert_eq!(
-            result1.gas_used(),
+            result1.tx_gas_used(),
             1028720,
             "T1 CREATE with 2D nonce (caller.nonce=0) gas should be exact"
         );
@@ -1971,13 +1965,13 @@ mod tests {
 
         // With TIP-1000: CREATE cost (500k) + new account (250k) + base (no extra 250k since caller.nonce != 0)
         assert_eq!(
-            result2.gas_used(),
+            result2.tx_gas_used(),
             778720,
             "T1 CREATE with 2D nonce (caller.nonce=1) gas should be exact"
         );
 
         // Verify the gas difference is exactly 250,000 (new_account_cost)
-        let gas_difference = result1.gas_used() - result2.gas_used();
+        let gas_difference = result1.tx_gas_used() - result2.tx_gas_used();
         assert_eq!(
             gas_difference, 250_000,
             "Gas difference should be exactly new_account_cost (250,000), got {gas_difference:?}",
@@ -2011,7 +2005,7 @@ mod tests {
             caller,
         ))?;
         assert!(result1.is_success());
-        let gas_nonce_zero = result1.gas_used();
+        let gas_nonce_zero = result1.tx_gas_used();
 
         // CREATE with caller.nonce == 1 (no extra 250k)
         let mut evm2 = create_funded_evm_t1_with_timestamp(caller, timestamp);
@@ -2034,7 +2028,7 @@ mod tests {
             caller,
         ))?;
         assert!(result2.is_success());
-        let gas_nonce_one = result2.gas_used();
+        let gas_nonce_one = result2.tx_gas_used();
 
         // The fix adds 250k when caller.nonce == 0 for CREATE with non-zero nonce_key
         assert_eq!(
@@ -2065,7 +2059,7 @@ mod tests {
         let tx_env1 = TempoTxEnv::from_recovered_tx(&signed_tx1, caller);
         let result1 = evm1.transact_commit(tx_env1)?;
         assert!(result1.is_success());
-        let gas_single = result1.gas_used();
+        let gas_single = result1.tx_gas_used();
 
         // Test 2: Three calls
         // T1 costs: new account (250k) + 3 calls overhead
@@ -2081,7 +2075,7 @@ mod tests {
         let tx_env2 = TempoTxEnv::from_recovered_tx(&signed_tx2, caller);
         let result2 = evm2.transact_commit(tx_env2)?;
         assert!(result2.is_success());
-        let gas_triple = result2.gas_used();
+        let gas_triple = result2.tx_gas_used();
 
         // Three calls should cost more than single call
         assert_eq!(gas_single, 278738, "T1 single call gas should be exact");
@@ -2140,7 +2134,7 @@ mod tests {
         assert!(result.is_success(), "SLOAD transaction should succeed");
 
         // T1 costs: new account (250k) + cold SLOAD (2100) + warm SLOAD (100) + cold account (~2.6k)
-        let gas_used = result.gas_used();
+        let gas_used = result.tx_gas_used();
         assert_eq!(gas_used, 280866, "T1 SLOAD cold/warm gas should be exact");
 
         Ok(())
@@ -2286,7 +2280,11 @@ mod tests {
         // Track whether the nonce was incremented (committed OOG vs validation rejection).
         let nonce_incremented = match &result_low {
             Ok(result) => {
-                assert_eq!(result.gas_used(), 589_000, "Gas used should be gas limit");
+                assert_eq!(
+                    result.tx_gas_used(),
+                    589_000,
+                    "Gas used should be gas limit"
+                );
                 assert!(
                     !result.is_success(),
                     "Transaction with insufficient gas should fail"
@@ -2567,7 +2565,7 @@ mod tests {
             let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
             let result = evm.transact_commit(tx_env)?;
             assert!(result.is_success());
-            Ok(result.gas_used())
+            Ok(result.tx_gas_used())
         }
 
         let t1_gas = run_call_with_key_auth(TempoHardfork::T1)?;
@@ -2626,7 +2624,7 @@ mod tests {
             result_baseline.is_success(),
             "baseline transfer should succeed"
         );
-        let gas_baseline = result_baseline.gas_used();
+        let gas_baseline = result_baseline.tx_gas_used();
 
         // Issue #3178 scenario: calls-format transfer with nonce_key != 0, caller.nonce == 0.
         // validate_aa_initial_tx_gas still charges the same 250k (nonce==0 branch).
@@ -2648,7 +2646,7 @@ mod tests {
             result_2d.is_success(),
             "calls-format transfer with 2D nonce should succeed"
         );
-        let gas_2d = result_2d.gas_used();
+        let gas_2d = result_2d.tx_gas_used();
 
         // After the fix the gas should be nearly identical for both cases because
         // both go through the same validate_aa_initial_tx_gas branch and handler.rs

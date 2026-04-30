@@ -7,7 +7,7 @@ use alloy::{
     },
 };
 use alloy_eips::{Decodable2718, Encodable2718};
-use alloy_primitives::{Address, TxKind, U256};
+use alloy_primitives::{Address, TxKind, U64, U256};
 use reth_chainspec::EthChainSpec;
 use reth_ethereum::{
     evm::revm::primitives::hex,
@@ -104,7 +104,7 @@ async fn test_insufficient_funds() -> eyre::Result<()> {
 
     let tx = TempoTransaction {
         chain_id: chain_spec.chain_id(),
-        nonce: U256::random().saturating_to(),
+        nonce: U64::random().to(),
         fee_token: Some(DEFAULT_FEE_TOKEN),
         max_priority_fee_per_gas: 74982851675,
         max_fee_per_gas: 74982851675,

@@ -14,7 +14,7 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           token: ${{ secrets.TEMPO_GITHUB_PAT }}
           persist-credentials: true
@@ -25,7 +25,7 @@ jobs:
           from pathlib import Path
           import re
 
-          targets = {"tempo-alloy", "tempo-primitives", "tempo-contracts"}
+          targets = {"tempo-alloy", "tempo-primitives", "tempo-chainspec", "tempo-contracts"}
 
           for path in Path(".changelog").glob("*.md"):
               text = path.read_text(encoding="utf-8")
@@ -57,8 +57,21 @@ jobs:
               path.write_text("---\n" + "".join(kept) + "---\n" + body, encoding="utf-8")
           PY
 
-      - uses: tempoxyz/changelogs@master
+      - uses: tempoxyz/changelogs@b0179e7300997dfa5a631a6a7a2de248bf63310f # master
+        id: changelogs
         with:
           conventional-commit: true
           post-version-command: cargo update -w
           github-token: ${{ secrets.TEMPO_GITHUB_PAT }}
+
+      - name: Demote non-v* releases from latest
+        if: steps.changelogs.outputs.published == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.TEMPO_GITHUB_PAT }}
+        run: |
+          for tag in $(git tag --points-at HEAD); do
+            if [[ "$tag" != v* ]]; then
+              echo "Setting $tag as non-latest"
+              gh release edit "$tag" --latest=false || true
+            fi
+          done
