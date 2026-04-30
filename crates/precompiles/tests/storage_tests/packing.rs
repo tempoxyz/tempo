@@ -6,7 +6,7 @@
 use alloy::primitives::FixedBytes;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
-    storage::{FromWord, Layout, StorableType, StorageCtx, packing::insert_into_word},
+    storage::{packing::insert_into_word, FromWord, Layout, StorableType, StorageCtx},
     test_util::gen_word_from,
 };
 
@@ -802,12 +802,12 @@ fn test_fixed_bytes_multi_field_packing() {
     assert_eq!(slot, expected, "slot layout should match expected pattern");
 }
 
-/// On T3, storing a struct with packed fields skips the SLOAD for the first packed slot
+/// On T4, storing a struct with packed fields skips the SLOAD for the first packed slot
 /// (starts from `U256::ZERO` instead). This verifies both:
-/// - The SLOAD counter: T3 issues 0 SLOADs for the store, pre-T3 issues 1.
-/// - The slot contents: T3 zeroes unused bytes, pre-T3 preserves them from the SLOAD.
+/// - The SLOAD counter: T4 issues 0 SLOADs for the store, pre-T4 issues 1.
+/// - The slot contents: T4 zeroes unused bytes, pre-T4 preserves them from the SLOAD.
 #[test]
-fn test_t3_store_packed_struct_skips_sload() -> eyre::Result<()> {
+fn test_t4_store_packed_struct_skips_sload() -> eyre::Result<()> {
     let garbage = U256::MAX;
     let base_slot = U256::from(42);
     let address = Address::random();
@@ -823,7 +823,7 @@ fn test_t3_store_packed_struct_skips_sload() -> eyre::Result<()> {
         "0x1111111111111111111111111111111111111111", // offset 0 (20 bytes)
     ]);
 
-    // -- Pre-T3: SLOAD is performed, so unused bytes retain the garbage --
+    // -- Pre-T4: SLOAD is performed, so unused bytes retain the garbage --
     let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
     StorageCtx::enter(&mut storage, || {
         // Pre-fill the slot with garbage
@@ -845,8 +845,8 @@ fn test_t3_store_packed_struct_skips_sload() -> eyre::Result<()> {
         Ok::<(), error::TempoPrecompileError>(())
     })?;
 
-    // -- T3: SLOAD is skipped, so unused bytes are zero (not garbage) --
-    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+    // -- T4: SLOAD is skipped, so unused bytes are zero (not garbage) --
+    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
     StorageCtx::enter(&mut storage, || {
         // Pre-fill the slot with garbage
         U256::handle(base_slot, LayoutCtx::FULL, address).write(garbage)?;
@@ -867,18 +867,18 @@ fn test_t3_store_packed_struct_skips_sload() -> eyre::Result<()> {
     })
 }
 
-/// Verifies that on T3, the SLOAD elision for packed struct fields doesn't corrupt neighbor slots.
+/// Verifies that on T4, the SLOAD elision for packed struct fields doesn't corrupt neighbor slots.
 ///
 /// Even though `Rule4Test { before: u8, nested: PackedTwo, after: u8 }` has:
 ///   - `before` (1 byte) + `nested` (28 bytes) = 29 bytes < 32 (could theoretically pack)
 ///   - `nested` (28 bytes) + `after` (1 byte)  = 29 bytes < 32 (could theoretically pack)
 ///
 /// Structs always start a new slot, so neighbors are isolated. Starting from `U256::ZERO`
-/// on T3 doesn't bleed into adjacent slots.
+/// on T4 doesn't bleed into adjacent slots.
 #[test]
-fn test_t3_struct_store_preserves_neighbor_slots() -> eyre::Result<()> {
+fn test_t4_struct_store_preserves_neighbor_slots() -> eyre::Result<()> {
     let address = Address::random();
-    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
 
     StorageCtx::enter(&mut storage, || {
         let base_slot = U256::from(100);
@@ -931,14 +931,14 @@ fn test_t3_struct_store_preserves_neighbor_slots() -> eyre::Result<()> {
     })
 }
 
-/// On T3, storing a multi-slot struct with packed fields in *different* slots
+/// On T4, storing a multi-slot struct with packed fields in *different* slots
 /// skips the SLOAD for each new packed slot (the "else if IS_PACKABLE" branch).
 ///
 /// `Rule3TestPartial { a: u128, b: u128, c: u8 }` packs `a` and `b` in slot 0,
-/// then `c` starts a new slot 1. The T3 optimisation should skip the SLOAD for
+/// then `c` starts a new slot 1. The T4 optimisation should skip the SLOAD for
 /// both slot 0 (first-field branch) *and* slot 1 (new-slot-but-packable branch).
 #[test]
-fn test_t3_store_multi_slot_packed_skips_sload() -> eyre::Result<()> {
+fn test_t4_store_multi_slot_packed_skips_sload() -> eyre::Result<()> {
     let garbage = U256::MAX;
     let base_slot = U256::from(50);
     let address = Address::random();
@@ -949,7 +949,7 @@ fn test_t3_store_multi_slot_packed_skips_sload() -> eyre::Result<()> {
         c: 0x42,
     };
 
-    // -- Pre-T3: SLOADs are performed for each packed slot --
+    // -- Pre-T4: SLOADs are performed for each packed slot --
     let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
     StorageCtx::enter(&mut storage, || {
         // Pre-fill both slots with garbage
@@ -959,11 +959,11 @@ fn test_t3_store_multi_slot_packed_skips_sload() -> eyre::Result<()> {
 
         Rule3TestPartial::handle(base_slot, LayoutCtx::FULL, address).write(value.clone())?;
 
-        // Pre-T3: 2 SLOADs (one per packed slot), 2 SSTOREs
+        // Pre-T4: 2 SLOADs (one per packed slot), 2 SSTOREs
         assert_eq!(
             StorageCtx.counter_sload(),
             2,
-            "pre-T3 should SLOAD both packed slots"
+            "pre-T4 should SLOAD both packed slots"
         );
         assert_eq!(StorageCtx.counter_sstore(), 2);
 
@@ -972,14 +972,14 @@ fn test_t3_store_multi_slot_packed_skips_sload() -> eyre::Result<()> {
         assert_ne!(
             slot1,
             U256::from(0x42u8),
-            "pre-T3 should preserve garbage in unused bytes"
+            "pre-T4 should preserve garbage in unused bytes"
         );
 
         Ok::<(), error::TempoPrecompileError>(())
     })?;
 
-    // -- T3: SLOADs are skipped for both packed slots --
-    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+    // -- T4: SLOADs are skipped for both packed slots --
+    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
     StorageCtx::enter(&mut storage, || {
         // Pre-fill both slots with garbage
         U256::handle(base_slot, LayoutCtx::FULL, address).write(garbage)?;
@@ -988,11 +988,11 @@ fn test_t3_store_multi_slot_packed_skips_sload() -> eyre::Result<()> {
 
         Rule3TestPartial::handle(base_slot, LayoutCtx::FULL, address).write(value)?;
 
-        // T3: 0 SLOADs (elided for both slots), 2 SSTOREs
+        // T4: 0 SLOADs (elided for both slots), 2 SSTOREs
         assert_eq!(
             StorageCtx.counter_sload(),
             0,
-            "T3 should elide SLOADs for all packed slots"
+            "T4 should elide SLOADs for all packed slots"
         );
         assert_eq!(StorageCtx.counter_sstore(), 2);
 
@@ -1001,19 +1001,19 @@ fn test_t3_store_multi_slot_packed_skips_sload() -> eyre::Result<()> {
         assert_eq!(
             slot1,
             U256::from(0x42u8),
-            "T3 should zero unused bytes in new packed slot"
+            "T4 should zero unused bytes in new packed slot"
         );
 
         Ok(())
     })
 }
 
-/// Verifies that on T3, the SLOAD elision on non-first packed slots doesn't corrupt
+/// Verifies that on T4, the SLOAD elision on non-first packed slots doesn't corrupt
 /// neighbor slots. Uses `PackedThreeSlot` which spans 3 slots with packing on slots 1 and 2.
 #[test]
-fn test_t3_multi_slot_packed_preserves_neighbor_slots() -> eyre::Result<()> {
+fn test_t4_multi_slot_packed_preserves_neighbor_slots() -> eyre::Result<()> {
     let address = Address::random();
-    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
 
     StorageCtx::enter(&mut storage, || {
         let base_slot = U256::from(200);
