@@ -456,7 +456,7 @@ impl ValidatorConfigV2 {
     /// Constructs the message according to the validator config v2 specification and verifies
     /// the Ed25519 signature using the appropriate namespace.
     fn verify_validator_signature(
-        &self,
+        &mut self,
         kind: SignatureKind,
         pubkey: &B256,
         signature: &[u8],
@@ -464,6 +464,10 @@ impl ValidatorConfigV2 {
         ingress: &str,
         egress: &str,
     ) -> Result<()> {
+        if self.storage.spec().is_t4() {
+            self.storage.deduct_gas(crate::ED25519_VERIFY_GAS)?;
+        }
+
         let sig = Signature::decode(signature)
             .map_err(|_| ValidatorConfigV2Error::invalid_signature_format())?;
 
