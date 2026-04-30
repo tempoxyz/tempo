@@ -8,9 +8,10 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     IAccountKeychain::{IAccountKeychainInstance, KeyInfo},
-    getAllowedCallsReturn, getRemainingLimitReturn,
+    INonce::INonceInstance,
+    NONCE_PRECOMPILE_ADDRESS, getAllowedCallsReturn, getRemainingLimitReturn,
 };
-use tempo_primitives::transaction::CallScope;
+use tempo_primitives::transaction::{CallScope, TEMPO_EXPIRING_NONCE_KEY};
 
 use crate::{
     TempoFillers, TempoNetwork,
@@ -27,6 +28,43 @@ pub trait TempoProviderExt: Provider<TempoNetwork> {
         Self: Sized,
     {
         IAccountKeychainInstance::new(ACCOUNT_KEYCHAIN_ADDRESS, self)
+    }
+
+    /// Returns a typed instance for the Nonce Manager precompile.
+    fn nonce_manager(&self) -> INonceInstance<&Self, TempoNetwork>
+    where
+        Self: Sized,
+    {
+        INonceInstance::new(NONCE_PRECOMPILE_ADDRESS, self)
+    }
+
+    /// Returns the current nonce for an account and nonce key.
+    ///
+    /// Protocol nonce key `0` uses `eth_getTransactionCount`. Expiring nonce transactions always
+    /// use nonce `0`; all other nonce keys are read from the Nonce Manager precompile.
+    async fn get_transaction_count_with_nonce_key(
+        &self,
+        account: Address,
+        nonce_key: U256,
+    ) -> ContractResult<u64>
+    where
+        Self: Sized,
+    {
+        if nonce_key.is_zero() {
+            return self
+                .get_transaction_count(account)
+                .await
+                .map_err(Into::into);
+        }
+
+        if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+            return Ok(0);
+        }
+
+        self.nonce_manager()
+            .getNonce(account, nonce_key)
+            .call()
+            .await
     }
 
     /// Returns information about a key authorized for an account.
@@ -199,7 +237,7 @@ impl TempoProviderBuilderExt
 #[cfg(test)]
 mod tests {
     use alloy::sol_types::SolCall;
-    use alloy_primitives::{Address, Bytes, U256};
+    use alloy_primitives::{Address, Bytes, U64, U256};
     use alloy_provider::{Identity, ProviderBuilder, fillers::JoinFill, mock::Asserter};
     use tempo_contracts::precompiles::{
         IAccountKeychain::{
@@ -207,9 +245,10 @@ mod tests {
             getAllowedCallsCall, getKeyCall, getRemainingLimitWithPeriodCall,
             getTransactionKeyCall,
         },
+        INonce::getNonceCall,
         getAllowedCallsReturn, getRemainingLimitReturn,
     };
-    use tempo_primitives::transaction::{CallScope, SelectorRule};
+    use tempo_primitives::transaction::{CallScope, SelectorRule, TEMPO_EXPIRING_NONCE_KEY};
 
     use crate::{
         TempoFillers, TempoNetwork,
@@ -259,6 +298,76 @@ mod tests {
             .get_keychain_key(account, key_id)
             .await
             .expect("key info call succeeds");
+
+        assert_eq!(actual, expected);
+    }
+
+    #[tokio::test]
+    async fn test_get_transaction_count_with_protocol_nonce_key() {
+        let asserter = Asserter::new();
+        let provider = mock_provider(asserter.clone());
+        let account = Address::repeat_byte(0x11);
+        let expected = 42_u64;
+
+        asserter.push_success(&U64::from(expected));
+
+        let actual = provider
+            .get_transaction_count_with_nonce_key(account, U256::ZERO)
+            .await
+            .expect("protocol nonce query succeeds");
+
+        assert_eq!(actual, expected);
+    }
+
+    #[tokio::test]
+    async fn test_get_transaction_count_with_expiring_nonce_key() {
+        let provider = mock_provider(Asserter::new());
+
+        let actual = provider
+            .get_transaction_count_with_nonce_key(
+                Address::repeat_byte(0x11),
+                TEMPO_EXPIRING_NONCE_KEY,
+            )
+            .await
+            .expect("expiring nonce query succeeds");
+
+        assert_eq!(actual, 0);
+    }
+
+    #[tokio::test]
+    async fn test_get_transaction_count_with_2d_nonce_key() {
+        let asserter = Asserter::new();
+        let provider = mock_provider(asserter.clone());
+        let account = Address::repeat_byte(0x11);
+        let nonce_key = U256::from(7_u64);
+        let expected = 42_u64;
+
+        asserter.push_success(&Bytes::from(getNonceCall::abi_encode_returns(&expected)));
+
+        let actual = provider
+            .get_transaction_count_with_nonce_key(account, nonce_key)
+            .await
+            .expect("2D nonce query succeeds");
+
+        assert_eq!(actual, expected);
+    }
+
+    #[tokio::test]
+    async fn test_nonce_manager_accessor() {
+        let asserter = Asserter::new();
+        let provider = mock_provider(asserter.clone());
+        let account = Address::repeat_byte(0x11);
+        let nonce_key = U256::from(7_u64);
+        let expected = 42_u64;
+
+        asserter.push_success(&Bytes::from(getNonceCall::abi_encode_returns(&expected)));
+
+        let actual = provider
+            .nonce_manager()
+            .getNonce(account, nonce_key)
+            .call()
+            .await
+            .expect("typed nonce manager call succeeds");
 
         assert_eq!(actual, expected);
     }
