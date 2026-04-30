@@ -21,6 +21,7 @@ use crate::{
 };
 
 scoped_thread_local!(static STORAGE: RefCell<&mut dyn PrecompileStorageProvider>);
+scoped_thread_local!(static MSG_SENDER: Address);
 
 /// Thread-local storage accessor that implements `PrecompileStorageProvider` without the trait bound.
 ///
@@ -40,6 +41,18 @@ scoped_thread_local!(static STORAGE: RefCell<&mut dyn PrecompileStorageProvider>
 pub struct StorageCtx;
 
 impl StorageCtx {
+    fn enter_storage<S, R>(storage: &mut S, f: impl FnOnce() -> R) -> R
+    where
+        S: PrecompileStorageProvider,
+    {
+        // SAFETY: `scoped_tls` ensures the pointer is only accessible within the closure scope.
+        let storage: &mut dyn PrecompileStorageProvider = storage;
+        let storage_static: &mut (dyn PrecompileStorageProvider + 'static) =
+            unsafe { std::mem::transmute(storage) };
+        let cell = RefCell::new(storage_static);
+        STORAGE.set(&cell, f)
+    }
+
     /// Enter storage context. All storage operations must happen within the closure.
     ///
     /// # IMPORTANT
@@ -52,12 +65,24 @@ impl StorageCtx {
     where
         S: PrecompileStorageProvider,
     {
-        // SAFETY: `scoped_tls` ensures the pointer is only accessible within the closure scope.
-        let storage: &mut dyn PrecompileStorageProvider = storage;
-        let storage_static: &mut (dyn PrecompileStorageProvider + 'static) =
-            unsafe { std::mem::transmute(storage) };
-        let cell = RefCell::new(storage_static);
-        STORAGE.set(&cell, f)
+        Self::enter_storage(storage, f)
+    }
+
+    /// Enter storage context with the external caller available as `msg.sender`.
+    pub fn enter_with_msg_sender<S, R>(
+        storage: &mut S,
+        msg_sender: Address,
+        f: impl FnOnce() -> R,
+    ) -> R
+    where
+        S: PrecompileStorageProvider,
+    {
+        Self::enter_storage(storage, || Self::with_msg_sender(msg_sender, f))
+    }
+
+    /// Execute a closure with `msg.sender` bound for nested internal precompile calls.
+    pub fn with_msg_sender<R>(msg_sender: Address, f: impl FnOnce() -> R) -> R {
+        MSG_SENDER.set(&msg_sender, f)
     }
 
     /// Execute an infallible function with access to the current thread-local storage provider.
@@ -96,6 +121,15 @@ impl StorageCtx {
             let mut guard = cell.borrow_mut();
             f(&mut **guard)
         })
+    }
+
+    /// Returns the current call's external sender.
+    pub fn msg_sender(&self) -> Address {
+        assert!(
+            MSG_SENDER.is_set(),
+            "No msg sender context. 'StorageCtx::enter_with_msg_sender' or 'StorageCtx::with_msg_sender' must be called first"
+        );
+        MSG_SENDER.with(|msg_sender| *msg_sender)
     }
 
     // `PrecompileStorageProvider` methods (with modified mutability for read-only methods)
@@ -600,6 +634,17 @@ mod tests {
             }
             // state is NOT reverted because checkpoints are disabled pre-T1C
             assert_eq!(ctx.sload(addr, key).unwrap(), U256::from(99));
+        });
+    }
+
+    #[test]
+    fn test_msg_sender_context() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let sender = Address::random();
+
+        StorageCtx::enter_with_msg_sender(&mut storage, sender, || {
+            let ctx = StorageCtx;
+            assert_eq!(ctx.msg_sender(), sender);
         });
     }
 }

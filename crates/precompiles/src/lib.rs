@@ -169,7 +169,7 @@ macro_rules! tempo_precompile {
                 $input.is_static,
                 gas_params.clone(),
             );
-            crate::storage::StorageCtx::enter(&mut storage, || {
+            crate::storage::StorageCtx::enter_with_msg_sender(&mut storage, $input.caller, || {
                 $impl.call($input.data, $input.caller)
             })
         })

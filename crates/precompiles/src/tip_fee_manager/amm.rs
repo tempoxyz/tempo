@@ -1,6 +1,6 @@
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::Handler,
+    storage::{Handler, StorageCtx},
     tip_fee_manager::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent, TipFeeManager},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
 };
@@ -183,11 +183,9 @@ impl TipFeeManager {
 
         let amount_in = U256::from(amount_in);
         let amount_out = U256::from(amount_out);
-        TIP20Token::from_address(validator_token)?.system_transfer_from(
-            msg_sender,
-            self.address,
-            amount_in,
-        )?;
+        StorageCtx::with_msg_sender(msg_sender, || {
+            TIP20Token::from_address(validator_token)?.system_transfer_from(self.address, amount_in)
+        })?;
 
         TIP20Token::from_address(user_token)?.transfer(
             self.address,
@@ -294,11 +292,10 @@ impl TipFeeManager {
         }
 
         // Transfer validator tokens from user
-        let _ = TIP20Token::from_address(validator_token)?.system_transfer_from(
-            msg_sender,
-            self.address,
-            amount_validator_token,
-        )?;
+        let _ = StorageCtx::with_msg_sender(msg_sender, || {
+            TIP20Token::from_address(validator_token)?
+                .system_transfer_from(self.address, amount_validator_token)
+        })?;
 
         // Update reserves
         let validator_amount: u128 = amount_validator_token
