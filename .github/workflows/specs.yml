@@ -6,7 +6,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "tips/ref-impls/**"
+      - "tips/verify/**"
       - "crates/contracts/**"
       - "crates/precompiles/**"
       - ".github/workflows/specs.yml"
@@ -35,7 +35,7 @@ jobs:
         with:
           filters: |
             specs:
-              - 'tips/ref-impls/**'
+              - 'tips/verify/**'
               - 'crates/contracts/**'
               - 'crates/precompiles/**'
               - '.github/workflows/specs.yml'
@@ -64,7 +64,7 @@ jobs:
           if [[ "$EVENT_NAME" != "pull_request" ]]; then
             echo "coverage=false" >> "$GITHUB_OUTPUT"
             echo "Skipping coverage: not a pull_request event (event: $EVENT_NAME)"
-          elif git diff --name-only origin/"$BASE_REF"...HEAD | grep -qE '^(crates/(precompiles|contracts)/|tips/ref-impls/)'; then
+          elif git diff --name-only origin/"$BASE_REF"...HEAD | grep -qE '^(crates/(precompiles|contracts)/|tips/verify/)'; then
             echo "coverage=true" >> "$GITHUB_OUTPUT"
             echo "Running coverage: precompiles/contracts changed"
           else
@@ -91,7 +91,7 @@ jobs:
           version: nightly
 
       - name: Run Forge build
-        working-directory: tips/ref-impls
+        working-directory: tips/verify
         run: forge build --sizes
 
   abi-alignment-check:
@@ -119,7 +119,7 @@ jobs:
           version: nightly
 
       - name: Build tempo-std interfaces
-        working-directory: tips/ref-impls/lib/tempo-std
+        working-directory: tips/verify/lib/tempo-std
         run: forge build --sizes
 
       - name: Run ABI alignment check
@@ -144,7 +144,7 @@ jobs:
           version: nightly
 
       - name: Run Forge fmt check
-        working-directory: tips/ref-impls
+        working-directory: tips/verify
         run: forge fmt --check
 
   foundry-test:
@@ -196,7 +196,7 @@ jobs:
 
       - name: Run Forge tests with Rust precompiles (with coverage)
         if: needs.check-precompiles.outputs.coverage == 'true'
-        working-directory: tempo/tips/ref-impls
+        working-directory: tempo/tips/verify
         run: |
           echo "Running forge test with Rust precompiles"
           LLVM_PROFILE_FILE="$(pwd)/forge-coverage-%p.profraw" ../../../foundry/target/release/forge test -vvv
@@ -209,7 +209,7 @@ jobs:
 
       - name: Run Forge tests with Rust precompiles
         if: needs.check-precompiles.outputs.coverage != 'true'
-        working-directory: tempo/tips/ref-impls
+        working-directory: tempo/tips/verify
         run: |
           echo "Running forge test with Rust precompiles"
           ../../../foundry/target/release/forge test -vvv
@@ -219,7 +219,7 @@ jobs:
         run: |
           LLVM_BIN="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | grep host | cut -d' ' -f2)/bin"
           mkdir -p coverage
-          "$LLVM_BIN/llvm-profdata" merge -sparse tempo/tips/ref-impls/*.profraw -o coverage/forge-test.profdata
+          "$LLVM_BIN/llvm-profdata" merge -sparse tempo/tips/verify/*.profraw -o coverage/forge-test.profdata
 
       - name: Upload forge coverage artifacts
         if: needs.check-precompiles.outputs.coverage == 'true'

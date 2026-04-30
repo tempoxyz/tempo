@@ -1,15 +1,18 @@
 //! A testing node that can start and stop both consensus and execution layers.
 
 use crate::execution_runtime::{self, ExecutionNode, ExecutionNodeConfig, ExecutionRuntimeHandle};
-use alloy_primitives::Address;
+use alloy_primitives::{Address, B256};
 use commonware_cryptography::{
     Signer as _,
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_p2p::simulated::{Control, Oracle, SocketManager};
 use commonware_runtime::{Handle, Metrics as _, deterministic::Context};
+use reth_config::config::StageConfig;
 use reth_db::{Database, DatabaseEnv, mdbx::DatabaseArguments, open_db_read_only};
+use reth_downloaders::{bodies::noop::NoopBodiesDownloader, headers::noop::NoopHeaderDownloader};
 use reth_ethereum::{
+    consensus::noop::NoopConsensus,
     provider::{
         DatabaseProviderFactory, ProviderFactory, RocksDBProviderFactory,
         providers::{BlockchainProvider, RocksDBProvider, StaticFileProvider},
@@ -17,6 +20,9 @@ use reth_ethereum::{
     storage::BlockNumReader,
 };
 use reth_node_builder::NodeTypesWithDBAdapter;
+use reth_prune_types::PruneModes;
+use reth_stages::{Pipeline, sets::DefaultStages};
+use reth_static_file::StaticFileProducer;
 use std::{
     net::{IpAddr, SocketAddr},
     path::PathBuf,
@@ -28,6 +34,7 @@ use tempo_commonware_node::{
     RESOLVER_LIMIT, SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, VOTES_CHANNEL_IDENT, VOTES_LIMIT,
     consensus,
 };
+use tempo_evm::TempoEvmConfig;
 use tempo_node::node::TempoNode;
 use tracing::{debug, instrument};
 
@@ -491,6 +498,91 @@ where
         .expect("failed to create provider factory");
 
         BlockchainProvider::new(provider_factory).expect("failed to create blockchain provider")
+    }
+
+    /// Simulates a crash by unwinding the execution layer database by `n` blocks.
+    /// This creates a gap between CL (untouched) and EL state, triggering
+    /// `backfill_on_start` on the next restart.
+    ///
+    /// Returns `(height_before, height_after)`.
+    ///
+    /// # Panics
+    /// Panics if the execution node is currently running.
+    pub fn unwind(&mut self, n: u64) -> (u64, u64) {
+        assert!(
+            self.execution_node.is_none(),
+            "execution node must be stopped before unwinding for {}",
+            self.uid
+        );
+
+        let db = self
+            .execution_database
+            .as_ref()
+            .expect("database should exist")
+            .clone();
+
+        let static_file_provider =
+            StaticFileProvider::read_write(self.execution_node_datadir.join("static_files"))
+                .expect("failed to open static files for rw");
+
+        let rocksdb = self
+            .execution_rocksdb
+            .as_ref()
+            .expect("rocksdb should exist")
+            .clone();
+
+        let provider_factory = ProviderFactory::<NodeTypesWithDBAdapter<TempoNode, _>>::new(
+            db,
+            Arc::new(execution_runtime::chainspec()),
+            static_file_provider,
+            rocksdb,
+            reth_ethereum::tasks::Runtime::test(),
+        )
+        .expect("failed to create provider factory");
+
+        let current = provider_factory
+            .provider()
+            .expect("failed to get provider")
+            .last_block_number()
+            .expect("failed to get last block number");
+
+        let target = current.saturating_sub(n);
+        debug!(
+            %self.uid, current, target, n,
+            "unwinding execution layer to simulate crash"
+        );
+
+        let evm_config = TempoEvmConfig::new(Arc::new(execution_runtime::chainspec()));
+        let prune_modes = PruneModes::default();
+        let (_tip_tx, tip_rx) = tokio::sync::watch::channel(B256::ZERO);
+
+        let mut pipeline = Pipeline::<NodeTypesWithDBAdapter<TempoNode, _>>::builder()
+            .add_stages(DefaultStages::new(
+                provider_factory.clone(),
+                tip_rx,
+                NoopConsensus::arc(),
+                NoopHeaderDownloader::default(),
+                NoopBodiesDownloader::default(),
+                evm_config,
+                StageConfig::default(),
+                prune_modes.clone(),
+                None,
+            ))
+            .build(
+                provider_factory.clone(),
+                StaticFileProducer::new(provider_factory, prune_modes),
+            );
+
+        pipeline
+            .unwind(target, None)
+            .expect("failed to unwind pipeline");
+
+        // Update to the unwound height so the restart assertion still checks
+        // that the DB didn't regress further.
+        self.last_db_block_on_stop = Some(target);
+
+        debug!(%self.uid, target, "execution layer unwound successfully");
+        (current, target)
     }
 }
 

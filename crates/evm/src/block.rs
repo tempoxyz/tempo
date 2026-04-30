@@ -84,7 +84,7 @@ impl ReceiptBuilder for TempoReceiptBuilder {
 ///
 /// This is an extension of [`EthTxResult`] with context necessary for committing a Tempo transaction.
 #[derive(Debug)]
-pub(crate) struct TempoTxResult<H> {
+pub struct TempoTxResult<H> {
     /// Inner transaction execution result.
     inner: EthTxResult<H, TempoTxType>,
     /// Next section of the block.
@@ -98,7 +98,7 @@ pub(crate) struct TempoTxResult<H> {
     tx: Option<TempoTxEnvelope>,
 }
 
-impl<H> TxResult for TempoTxResult<H> {
+impl<H: Send + 'static> TxResult for TempoTxResult<H> {
     type HaltReason = H;
 
     fn result(&self) -> &ResultAndState<Self::HaltReason> {
@@ -113,9 +113,9 @@ impl<H> TxResult for TempoTxResult<H> {
 /// Block executor for Tempo.
 ///
 /// Wraps an inner [`EthBlockExecutor`] and layers Tempo-specific block execution
-/// logic on top: section-based transaction ordering ([`BlockSection`]), subblock
+/// logic on top: section-based transaction ordering (`BlockSection`), subblock
 /// validation, shared/non-shared gas accounting, and gas incentive tracking.
-pub(crate) struct TempoBlockExecutor<'a, DB: Database, I> {
+pub struct TempoBlockExecutor<'a, DB: Database, I> {
     pub(crate) inner:
         EthBlockExecutor<'a, TempoEvm<DB, I>, &'a TempoChainSpec, TempoReceiptBuilder>,
 
@@ -212,6 +212,10 @@ where
                 return Err(BlockValidationError::msg(
                     "duplicate subblocks metadata system transaction",
                 ));
+            }
+
+            if self.evm().cfg.spec.is_t4() {
+                return Err(BlockValidationError::msg("subblocks are disabled in T4+"));
             }
 
             if tx.input().len() < U256::BYTES
@@ -500,10 +504,7 @@ where
         })
     }
 
-    fn commit_transaction(
-        &mut self,
-        output: Self::Result,
-    ) -> Result<GasOutput, BlockExecutionError> {
+    fn commit_transaction(&mut self, output: Self::Result) -> GasOutput {
         let TempoTxResult {
             inner,
             next_section,
@@ -520,7 +521,7 @@ where
             inner.result.result.tx_gas_used()
         };
 
-        let gas_output = self.inner.commit_transaction(inner)?;
+        let gas_output = self.inner.commit_transaction(inner);
 
         self.section = next_section;
 
@@ -546,9 +547,9 @@ where
                     self.seen_subblocks.last_mut().unwrap()
                 };
 
-                last_subblock.1.push(tx.ok_or_else(|| {
-                    BlockExecutionError::msg("missing tx for subblock transaction")
-                })?);
+                last_subblock
+                    .1
+                    .push(tx.expect("missing tx for subblock transaction"));
             }
             BlockSection::GasIncentive => {
                 self.incentive_gas_used += gas_used;
@@ -558,12 +559,24 @@ where
             }
         }
 
-        Ok(gas_output)
+        gas_output
     }
 
     fn finish(
         self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
+        let seen_subblock_signatures = match self.section {
+            BlockSection::System {
+                seen_subblocks_signatures,
+            } => seen_subblocks_signatures,
+            _ => false,
+        };
+
+        // Post T4, if subblocks metadata transaction was not seen, imply empty metadata.
+        if !seen_subblock_signatures && self.evm().cfg.spec.is_t4() {
+            self.validate_shared_gas(&[])?;
+        }
+
         let timestamp = self.evm().block().timestamp.to::<u64>();
         let is_t4 = self.inner.spec.is_t4_active_at_timestamp(timestamp);
 
@@ -835,6 +848,28 @@ mod tests {
         assert_eq!(
             result.unwrap_err().to_string(),
             "invalid system transaction"
+        );
+    }
+
+    #[test]
+    fn test_validate_system_tx_rejects_metadata_tx_in_t4() {
+        let chainspec = DEV.clone();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+
+        // TestExecutorBuilder seeds the default runtime spec, so force the T4 path explicitly.
+        executor.inner.evm.cfg.spec = tempo_chainspec::hardfork::TempoHardfork::T4;
+
+        let signer = PrivateKey::from_seed(0);
+        let metadata = vec![create_valid_subblock_metadata(B256::ZERO, &signer)];
+        let input = create_system_tx_input(metadata, 1);
+        let system_tx = create_system_tx(chainspec.chain().id(), input);
+
+        let result = executor.validate_system_tx(&system_tx);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "subblocks are disabled in T4+"
         );
     }
 
@@ -1203,7 +1238,7 @@ mod tests {
             tx: None,
         };
 
-        let gas_output = executor.commit_transaction(output).unwrap();
+        let gas_output = executor.commit_transaction(output);
 
         assert_eq!(gas_output.tx_gas_used(), 21000);
         assert_eq!(executor.section(), BlockSection::NonShared);
@@ -1217,6 +1252,40 @@ mod tests {
 
         let result = executor.finish();
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_finish_t4_without_metadata_passes_when_incentive_gas_is_zero() {
+        let chainspec = DEV.clone();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .with_validator_set(vec![B256::repeat_byte(0x01)])
+            .build(&mut db, &chainspec);
+
+        executor.inner.evm.cfg.spec = tempo_chainspec::hardfork::TempoHardfork::T4;
+        executor.apply_pre_execution_changes().unwrap();
+
+        assert!(executor.finish().is_ok());
+    }
+
+    #[test]
+    fn test_finish_t4_without_metadata_rejects_incentive_gas() {
+        let chainspec = DEV.clone();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .with_validator_set(vec![B256::repeat_byte(0x01)])
+            .with_incentive_gas_used(1)
+            .build(&mut db, &chainspec);
+
+        executor.inner.evm.cfg.spec = tempo_chainspec::hardfork::TempoHardfork::T4;
+        executor.apply_pre_execution_changes().unwrap();
+
+        match executor.finish() {
+            Err(err) => assert_eq!(err.to_string(), "incentive gas limit exceeded"),
+            Ok(_) => panic!("finish should fail when T4 block has incentive gas without metadata"),
+        }
     }
 
     #[test]
@@ -1250,7 +1319,7 @@ mod tests {
             tx: None,
         };
 
-        let gas_output = executor.commit_transaction(output).unwrap();
+        let gas_output = executor.commit_transaction(output);
 
         // With zero storage creation gas, execution gas equals total gas
         assert_eq!(gas_output.tx_gas_used(), 21000);
@@ -1287,7 +1356,7 @@ mod tests {
             is_payment: false,
             tx: None,
         };
-        executor.commit_transaction(output1).unwrap();
+        executor.commit_transaction(output1);
 
         // Commit second transaction (50000 gas)
         let tx2 = create_legacy_tx();
@@ -1309,7 +1378,7 @@ mod tests {
             is_payment: false,
             tx: None,
         };
-        executor.commit_transaction(output2).unwrap();
+        executor.commit_transaction(output2);
 
         // Receipts should have cumulative total gas (tracked by inner executor)
         let receipts = executor.receipts();
@@ -1370,7 +1439,7 @@ mod tests {
             is_payment: false,
             tx: None,
         };
-        executor.commit_transaction(output).unwrap();
+        executor.commit_transaction(output);
 
         assert_eq!(executor.non_shared_gas_left, initial_non_shared - 50_000);
     }
@@ -1413,7 +1482,7 @@ mod tests {
             is_payment: false,
             tx: None,
         };
-        executor.commit_transaction(output).unwrap();
+        executor.commit_transaction(output);
 
         // non_shared_gas_left should decrease by regular gas (200k), not total (300k)
         assert_eq!(
@@ -1459,7 +1528,7 @@ mod tests {
             is_payment: false,
             tx: None,
         };
-        executor.commit_transaction(output).unwrap();
+        executor.commit_transaction(output);
 
         assert_eq!(
             executor.incentive_gas_used, 200_000,
