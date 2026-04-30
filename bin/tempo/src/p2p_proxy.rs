@@ -590,10 +590,11 @@ fn requested_header_numbers(
     mut current: u64,
     request: &reth_eth_wire_types::GetBlockHeaders,
 ) -> Vec<u64> {
-    let mut numbers = Vec::with_capacity(request.limit.min(HEADER_BATCH_SIZE as u64) as usize);
+    let limit = request.limit.min(HEADER_BATCH_SIZE as u64) as usize;
+    let mut numbers = Vec::with_capacity(limit);
     let step = u64::from(request.skip) + 1;
 
-    for _ in 0..request.limit {
+    for _ in 0..limit {
         numbers.push(current);
 
         match request.direction {
