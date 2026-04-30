@@ -1,13 +1,40 @@
 pub use IRolesAuth::{IRolesAuthErrors as RolesAuthError, IRolesAuthEvents as RolesAuthEvent};
 pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
-use alloy::{
-    primitives::{Address, U256},
-    sol,
-};
+use alloy_primitives::{Address, U256};
+use alloy_sol_types::{SolCall, SolType};
 
-sol! {
+/// Decimal precision for all TIP-20 tokens.
+pub const DECIMALS: u8 = 6;
+
+/// USD currency string constant.
+pub const USD_CURRENCY: &str = "USD";
+
+/// Full list of ISO 4217 currency codes.
+pub const ISO4217_CODES: &[&str] = &[
+    "AED", "AFN", "ALL", "AMD", "ANG", "AOA", "ARS", "AUD", "AWG", "AZN", "BAM", "BBD", "BDT",
+    "BGN", "BHD", "BIF", "BMD", "BND", "BOB", "BOV", "BRL", "BSD", "BTN", "BWP", "BYN", "BZD",
+    "CAD", "CDF", "CHE", "CHF", "CHW", "CLP", "CLF", "CNY", "COP", "COU", "CRC", "CUP", "CVE",
+    "CZK", "DJF", "DKK", "DOP", "DZD", "EGP", "ERN", "ETB", "EUR", "FJD", "FKP", "GBP", "GEL",
+    "GHS", "GIP", "GMD", "GNF", "GTQ", "GYD", "HKD", "HNL", "HRK", "HTG", "HUF", "IDR", "ILS",
+    "INR", "IQD", "IRR", "ISK", "JMD", "JOD", "JPY", "KES", "KGS", "KHR", "KMF", "KPW", "KRW",
+    "KWD", "KYD", "KZT", "LAK", "LBP", "LKR", "LRD", "LSL", "LYD", "MAD", "MDL", "MGA", "MKD",
+    "MMK", "MNT", "MOP", "MRU", "MUR", "MVR", "MWK", "MXN", "MXV", "MYR", "MZN", "NAD", "NGN",
+    "NIO", "NOK", "NPR", "NZD", "OMR", "PAB", "PEN", "PGK", "PHP", "PKR", "PLN", "PYG", "QAR",
+    "RON", "RSD", "RUB", "RWF", "SAR", "SBD", "SCR", "SDG", "SEK", "SGD", "SHP", "SLE", "SOS",
+    "SRD", "SSP", "STN", "SVC", "SYP", "SZL", "THB", "TJS", "TMT", "TND", "TOP", "TRY", "TTD",
+    "TWD", "TZS", "UAH", "UGX", "USD", "USN", "UYI", "UYU", "UYW", "UZS", "VED", "VES", "VND",
+    "VUV", "WST", "XAF", "XAG", "XAU", "XBA", "XBB", "XBC", "XBD", "XCD", "XDR", "XOF", "XPD",
+    "XPF", "XPT", "XSU", "XTS", "XUA", "XXX", "YER", "ZAR", "ZMW", "ZWL",
+];
+
+/// Returns `true` if the given code is a recognized ISO 4217 currency code.
+pub fn is_iso4217_currency(code: &str) -> bool {
+    ISO4217_CODES.binary_search(&code).is_ok()
+}
+
+crate::sol! {
     #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc, abi)]
+    #[sol(abi)]
     interface IRolesAuth {
         function hasRole(address account, bytes32 role) external view returns (bool);
         function getRoleAdmin(bytes32 role) external view returns (bytes32);
@@ -21,7 +48,9 @@ sol! {
 
         error Unauthorized();
     }
+}
 
+crate::sol! {
     /// TIP20 token interface providing standard ERC20 functionality with Tempo-specific extensions.
     ///
     /// TIP20 tokens extend the ERC20 standard with:
@@ -33,13 +62,13 @@ sol! {
     /// The interface supports both standard token operations and administrative functions
     /// for managing token behavior and compliance requirements.
     #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc, abi)]
+    #[sol(abi)]
     #[allow(clippy::too_many_arguments)]
     interface ITIP20 {
         // Standard token functions
         function name() external view returns (string memory);
         function symbol() external view returns (string memory);
-        function decimals() external view returns (uint8);
+        function decimals() external pure returns (uint8);
         function totalSupply() external view returns (uint256);
         function quoteToken() external view returns (address);
         function nextQuoteToken() external view returns (address);
@@ -61,8 +90,6 @@ sol! {
         function burnWithMemo(uint256 amount, bytes32 memo) external;
         function transferWithMemo(address to, uint256 amount, bytes32 memo) external;
         function transferFromWithMemo(address from, address to, uint256 amount, bytes32 memo) external returns (bool);
-        function feeRecipient() external view returns (address);
-        function setFeeRecipient(address newRecipient) external view returns (address);
 
         // Admin Functions
         function changeTransferPolicyId(uint64 newPolicyId) external;
@@ -88,13 +115,10 @@ sol! {
         /// @return The burn blocked role identifier
         function BURN_BLOCKED_ROLE() external view returns (bytes32);
 
-        struct RewardStream {
-            address funder;
-            uint64 startTime;
-            uint64 endTime;
-            uint256 ratePerSecondScaled;
-            uint256 amountTotal;
-        }
+        // EIP-2612 Permit Functions
+        function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external;
+        function nonces(address owner) external view returns (uint256);
+        function DOMAIN_SEPARATOR() external view returns (bytes32);
 
         struct UserRewardInfo {
             address rewardRecipient;
@@ -103,16 +127,13 @@ sol! {
         }
 
         // Reward Functions
-        function startReward(uint256 amount, uint32 secs) external returns (uint64);
+        function distributeReward(uint256 amount) external;
         function setRewardRecipient(address recipient) external;
-        function cancelReward(uint64 id) external returns (uint256);
         function claimRewards() external returns (uint256);
-        function finalizeStreams(uint64 timestamp) external;
-        function getStream(uint64 id) external view returns (RewardStream memory);
-        function totalRewardPerSecond() external view returns (uint256);
         function optedInSupply() external view returns (uint128);
-        function nextStreamId() external view returns (uint64);
+        function globalRewardPerToken() external view returns (uint256);
         function userRewardInfo(address account) external view returns (UserRewardInfo memory);
+        function getPendingRewards(address account) external view returns (uint128);
 
         // Events
         event Transfer(address indexed from, address indexed to, uint256 amount);
@@ -126,10 +147,8 @@ sol! {
         event PauseStateUpdate(address indexed updater, bool isPaused);
         event NextQuoteTokenSet(address indexed updater, address indexed nextQuoteToken);
         event QuoteTokenUpdate(address indexed updater, address indexed newQuoteToken);
-        event RewardScheduled(address indexed funder, uint64 indexed id, uint256 amount, uint32 durationSeconds);
-        event RewardCanceled(address indexed funder, uint64 indexed id, uint256 refund);
+        event RewardDistributed(address indexed funder, uint256 amount);
         event RewardRecipientSet(address indexed holder, address indexed recipient);
-        event FeeRecipientUpdated(address indexed updater, address indexed newRecipient);
 
         // Errors
         error InsufficientBalance(uint256 available, uint256 required, address token);
@@ -137,22 +156,51 @@ sol! {
         error SupplyCapExceeded();
         error InvalidSupplyCap();
         error InvalidPayload();
-        error StringTooLong();
         error PolicyForbids();
         error InvalidRecipient();
         error ContractPaused();
         error InvalidCurrency();
         error InvalidQuoteToken();
-        error TransfersDisabled();
         error InvalidAmount();
-        error NotStreamFunder();
-        error StreamInactive();
         error NoOptedInSupply();
         error Unauthorized();
-        error RewardsDisabled();
-        error ScheduledRewardsDisabled();
         error ProtectedAddress();
         error InvalidToken();
+        error Uninitialized();
+        error InvalidTransferPolicyId();
+        error PermitExpired();
+        error InvalidSignature();
+    }
+}
+
+impl ITIP20::ITIP20Calls {
+    /// Returns `true` if `input` matches one of the recognized [TIP-20 payment] selectors:
+    /// - `transfer` / `transferWithMemo`
+    /// - `transferFrom` / `transferFromWithMemo`
+    /// - `mint` / `mintWithMemo`
+    /// - `burn` / `burnWithMemo`
+    ///
+    /// # NOTES
+    /// - Only validates calldata; the caller must check the TIP-20 address prefix on `to`.
+    /// - Only selector and exact ABI-encoded length match, no decoding (better performance).
+    ///
+    /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
+    pub fn is_payment(input: &[u8]) -> bool {
+        fn is_call<C: SolCall>(input: &[u8]) -> bool {
+            input.first_chunk::<4>() == Some(&C::SELECTOR)
+                && input.len()
+                    == 4 + <C::Parameters<'_> as SolType>::ENCODED_SIZE.unwrap_or_default()
+        }
+
+        is_call::<ITIP20::transferCall>(input)
+            || is_call::<ITIP20::transferWithMemoCall>(input)
+            || is_call::<ITIP20::transferFromCall>(input)
+            || is_call::<ITIP20::transferFromWithMemoCall>(input)
+            || is_call::<ITIP20::approveCall>(input)
+            || is_call::<ITIP20::mintCall>(input)
+            || is_call::<ITIP20::mintWithMemoCall>(input)
+            || is_call::<ITIP20::burnCall>(input)
+            || is_call::<ITIP20::burnWithMemoCall>(input)
     }
 }
 
@@ -203,11 +251,6 @@ impl TIP20Error {
         Self::InvalidQuoteToken(ITIP20::InvalidQuoteToken {})
     }
 
-    /// Creates an error when string parameter exceeds maximum length.
-    pub const fn string_too_long() -> Self {
-        Self::StringTooLong(ITIP20::StringTooLong {})
-    }
-
     /// Creates an error when transfer is forbidden by policy.
     pub const fn policy_forbids() -> Self {
         Self::PolicyForbids(ITIP20::PolicyForbids {})
@@ -228,39 +271,14 @@ impl TIP20Error {
         Self::InvalidCurrency(ITIP20::InvalidCurrency {})
     }
 
-    /// Creates an error for transfers being disabled.
-    pub const fn transfers_disabled() -> Self {
-        Self::TransfersDisabled(ITIP20::TransfersDisabled {})
-    }
-
     /// Creates an error for invalid amount.
     pub const fn invalid_amount() -> Self {
         Self::InvalidAmount(ITIP20::InvalidAmount {})
     }
 
-    /// Error for when stream does not exist
-    pub const fn stream_inactive() -> Self {
-        Self::StreamInactive(ITIP20::StreamInactive {})
-    }
-
-    /// Error for when msg.sedner is not stream funder
-    pub const fn not_stream_funder() -> Self {
-        Self::NotStreamFunder(ITIP20::NotStreamFunder {})
-    }
-
     /// Error for when opted in supply is 0
     pub const fn no_opted_in_supply() -> Self {
         Self::NoOptedInSupply(ITIP20::NoOptedInSupply {})
-    }
-
-    /// Error for when rewards are disabled
-    pub const fn rewards_disabled() -> Self {
-        Self::RewardsDisabled(ITIP20::RewardsDisabled {})
-    }
-
-    /// Error for when scheduled rewards are disabled post-moderato
-    pub const fn scheduled_rewards_disabled() -> Self {
-        Self::ScheduledRewardsDisabled(ITIP20::ScheduledRewardsDisabled {})
     }
 
     /// Error for operations on protected addresses (like burning `FeeManager` tokens)
@@ -271,5 +289,78 @@ impl TIP20Error {
     /// Error when an address is not a valid TIP20 token
     pub const fn invalid_token() -> Self {
         Self::InvalidToken(ITIP20::InvalidToken {})
+    }
+
+    /// Error when transfer policy ID does not exist
+    pub const fn invalid_transfer_policy_id() -> Self {
+        Self::InvalidTransferPolicyId(ITIP20::InvalidTransferPolicyId {})
+    }
+
+    /// Error when token is uninitialized (has no bytecode)
+    pub const fn uninitialized() -> Self {
+        Self::Uninitialized(ITIP20::Uninitialized {})
+    }
+
+    /// Error when permit signature has expired (block.timestamp > deadline)
+    pub const fn permit_expired() -> Self {
+        Self::PermitExpired(ITIP20::PermitExpired {})
+    }
+
+    /// Error when permit signature is invalid
+    pub const fn invalid_signature() -> Self {
+        Self::InvalidSignature(ITIP20::InvalidSignature {})
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use alloc::vec::Vec;
+    use alloy_primitives::{Address, B256, U256};
+
+    #[rustfmt::skip]
+    /// Returns valid ABI-encoded calldata for every recognized TIP-20 payment selector.
+    fn payment_calldatas() -> [Vec<u8>; 9] {
+        let (to, from, amount, memo) = (Address::random(), Address::random(), U256::random(), B256::random());
+
+        [
+            ITIP20::transferCall { to, amount }.abi_encode(),
+            ITIP20::transferWithMemoCall { to, amount, memo }.abi_encode(),
+            ITIP20::transferFromCall { from, to, amount }.abi_encode(),
+            ITIP20::transferFromWithMemoCall { from, to, amount, memo }.abi_encode(),
+            ITIP20::approveCall { spender: to, amount }.abi_encode(),
+            ITIP20::mintCall { to, amount }.abi_encode(),
+            ITIP20::mintWithMemoCall { to, amount, memo }.abi_encode(),
+            ITIP20::burnCall { amount }.abi_encode(),
+            ITIP20::burnWithMemoCall { amount, memo }.abi_encode(),
+        ]
+    }
+
+    #[rustfmt::skip]
+    /// Returns ABI-encoded calldata for TIP-20 selectors NOT recognized as payments.
+    fn non_payment_calldatas() -> [Vec<u8>; 3] {
+        let mut data = ITIP20::transferCall { to: Address::random(), amount: U256::random() }.abi_encode();
+        data[..4].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+
+        [
+            // non-payment TIP20 calls with known selectors
+            ITIP20::claimRewardsCall {}.abi_encode(),
+            ITIP20::permitCall {
+                owner: Address::random(), spender: Address::random(), value: U256::random(), deadline: U256::random(),
+                v: u8::MAX, r: B256::random(), s: B256::random() }.abi_encode(),
+            // non-payment TIP20 calls with unknown selectors
+            data,
+        ]
+    }
+
+    #[test]
+    fn test_is_payment() {
+        for calldata in payment_calldatas() {
+            assert!(ITIP20::ITIP20Calls::is_payment(&calldata))
+        }
+
+        for calldata in non_payment_calldatas() {
+            assert!(!ITIP20::ITIP20Calls::is_payment(&calldata))
+        }
     }
 }

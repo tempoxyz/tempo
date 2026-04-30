@@ -6,11 +6,17 @@
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::B256;
 use bytes::{Buf, BufMut};
-use commonware_codec::{DecodeExt as _, EncodeSize, Read, Write};
-use commonware_cryptography::{Committable, Digestible};
-use eyre::WrapErr as _;
+use commonware_codec::{EncodeSize, Read, Write};
+use commonware_consensus::{
+    Heightable,
+    simplex::types::Context,
+    types::{Epoch, Height, Round, View},
+};
+use commonware_cryptography::{
+    Committable, Digestible, Signer as _,
+    ed25519::{PrivateKey, PublicKey},
+};
 use reth_node_core::primitives::SealedBlock;
-use tempo_dkg_onchain_artifacts::IntermediateOutcome;
 
 use crate::consensus::Digest;
 
@@ -24,11 +30,6 @@ use crate::consensus::Digest;
 pub(crate) struct Block(SealedBlock<tempo_primitives::Block>);
 
 impl Block {
-    pub(crate) fn try_read_ceremony_deal_outcome(&self) -> eyre::Result<IntermediateOutcome> {
-        IntermediateOutcome::decode(&mut self.header().extra_data().as_ref())
-            .wrap_err("failed reading ceremony deal outcome from header extra data field")
-    }
-
     pub(crate) fn from_execution_block(block: SealedBlock<tempo_primitives::Block>) -> Self {
         Self(block)
     }
@@ -127,13 +128,39 @@ impl Digestible for Block {
     }
 }
 
+impl Heightable for Block {
+    fn height(&self) -> Height {
+        Height::new(self.0.number())
+    }
+}
+
 impl commonware_consensus::Block for Block {
     fn parent(&self) -> Digest {
         self.parent_digest()
     }
+}
 
-    fn height(&self) -> u64 {
-        self.0.number()
+impl commonware_consensus::CertifiableBlock for Block {
+    type Context = Context<Digest, PublicKey>;
+
+    fn context(&self) -> Self::Context {
+        match self.consensus_context {
+            Some(ctx) => Context {
+                leader: ctx.proposer.get().into(),
+                round: Round::new(Epoch::new(ctx.epoch), View::new(ctx.view)),
+                parent: (View::new(ctx.parent_view), self.parent_digest()),
+            },
+            None => {
+                // Pre-T4: Unused deterministic sentinel.
+                // Post-T4: This dummy context will fail verification with consensus values
+                let leader = PublicKey::from(PrivateKey::from_seed(0));
+                Context {
+                    leader,
+                    round: Round::new(Epoch::new(0), View::new(0)),
+                    parent: (View::new(0), Digest(B256::ZERO)),
+                }
+            }
+        }
     }
 }
 

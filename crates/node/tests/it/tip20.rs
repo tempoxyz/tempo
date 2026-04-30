@@ -1,26 +1,26 @@
 use alloy::{
     primitives::{Address, FixedBytes, U256},
-    providers::ProviderBuilder,
+    providers::{Provider, ProviderBuilder},
     signers::local::MnemonicBuilder,
     sol_types::SolEvent,
+    transports::http::reqwest::Url,
 };
 use futures::future::try_join_all;
-use tempo_chainspec::spec::TEMPO_BASE_FEE;
-use tempo_contracts::precompiles::{ITIP20, ITIP403Registry, TIP20Error};
-use tempo_precompiles::TIP403_REGISTRY_ADDRESS;
-
-use crate::utils::{
-    TestNodeBuilder, await_receipts, setup_test_token, setup_test_token_pre_allegretto,
+use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
+use tempo_contracts::precompiles::{IAddressRegistry, ITIP20, ITIP403Registry, TIP20Error};
+use tempo_precompiles::{
+    ADDRESS_REGISTRY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    test_util::{VIRTUAL_MASTER, VIRTUAL_SALT},
 };
+use tempo_primitives::TempoAddressExt;
+
+use crate::utils::{TestNodeBuilder, await_receipts, setup_test_token};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip20_transfer() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -51,8 +51,8 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
         pending_txs.push(
             token
                 .mint(*account, *balance)
-                .gas_price(TEMPO_BASE_FEE as u128)
-                .gas(300_000)
+                .gas_price(TEMPO_T1_BASE_FEE as u128)
+                .gas(1_000_000)
                 .send()
                 .await?,
         );
@@ -111,8 +111,8 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
         assert!(success);
         let pending_tx = token
             .transfer(recipient, sender_balance)
-            .gas_price(TEMPO_BASE_FEE as u128)
-            .gas(300_000)
+            .gas_price(TEMPO_T1_BASE_FEE as u128)
+            .gas(1_000_000)
             .send()
             .await?;
 
@@ -152,10 +152,7 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
 async fn test_tip20_mint() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -180,8 +177,8 @@ async fn test_tip20_mint() -> eyre::Result<()> {
         pending_txs.push(
             token
                 .mint(*account, *balance)
-                .gas_price(TEMPO_BASE_FEE as u128)
-                .gas(300_000)
+                .gas_price(TEMPO_T1_BASE_FEE as u128)
+                .gas(1_000_000)
                 .send()
                 .await?,
         );
@@ -235,10 +232,7 @@ async fn test_tip20_mint() -> eyre::Result<()> {
 async fn test_tip20_transfer_from() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let owner = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -265,8 +259,8 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
     let total_balance: U256 = account_data.iter().map(|(_, balance)| *balance).sum();
     token
         .mint(caller, total_balance)
-        .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(300_000)
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(1_000_000)
         .send()
         .await?
         .get_receipt()
@@ -280,8 +274,8 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
         pending_txs.push(
             token
                 .approve(signer.address(), *balance)
-                .gas_price(TEMPO_BASE_FEE as u128)
-                .gas(300_000)
+                .gas_price(TEMPO_T1_BASE_FEE as u128)
+                .gas(1_000_000)
                 .send()
                 .await?,
         );
@@ -320,8 +314,8 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
 
         let pending_tx = spender_token
             .transferFrom(caller, recipient, *allowance)
-            .gas_price(TEMPO_BASE_FEE as u128)
-            .gas(300_000)
+            .gas_price(TEMPO_T1_BASE_FEE as u128)
+            .gas(1_000_000)
             .send()
             .await?;
 
@@ -347,10 +341,7 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
 async fn test_tip20_transfer_with_memo() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -363,8 +354,8 @@ async fn test_tip20_transfer_with_memo() -> eyre::Result<()> {
     let recipient = Address::random();
     token
         .mint(caller, transfer_amount)
-        .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(300_000)
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(1_000_000)
         .send()
         .await?
         .get_receipt()
@@ -374,8 +365,8 @@ async fn test_tip20_transfer_with_memo() -> eyre::Result<()> {
     let memo = FixedBytes::<32>::random();
     let receipt = token
         .transferWithMemo(recipient, transfer_amount, memo)
-        .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(300_000)
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(1_000_000)
         .send()
         .await?
         .get_receipt()
@@ -405,10 +396,7 @@ async fn test_tip20_transfer_with_memo() -> eyre::Result<()> {
 async fn test_tip20_blacklist() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -423,8 +411,8 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
     // Create a blacklist policy
     let policy_receipt = registry
         .createPolicy(admin, ITIP403Registry::PolicyType::BLACKLIST)
-        .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(300_000)
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(1_000_000)
         .send()
         .await?
         .get_receipt()
@@ -441,8 +429,8 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
     // Update the token policy to the blacklist
     token
         .changeTransferPolicyId(policy_id)
-        .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(300_000)
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(1_000_000)
         .send()
         .await?
         .get_receipt()
@@ -464,8 +452,8 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
     for account in blacklisted_accounts {
         let pending_tx = registry
             .modifyPolicyBlacklist(policy_id, account.address(), true)
-            .gas_price(TEMPO_BASE_FEE as u128)
-            .gas(300_000)
+            .gas_price(TEMPO_T1_BASE_FEE as u128)
+            .gas(1_000_000)
             .send()
             .await?;
 
@@ -476,8 +464,8 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
     try_join_all(accounts.iter().map(|account| async {
         token
             .mint(account.address(), U256::from(1000))
-            .gas_price(TEMPO_BASE_FEE as u128)
-            .gas(300_000)
+            .gas_price(TEMPO_T1_BASE_FEE as u128)
+            .gas(1_000_000)
             .send()
             .await
             .expect("Could not send tx")
@@ -516,8 +504,8 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
 
             token
                 .transfer(Address::random(), U256::ONE)
-                .gas_price(TEMPO_BASE_FEE as u128)
-                .gas(300_000)
+                .gas_price(TEMPO_T1_BASE_FEE as u128)
+                .gas(1_000_000)
                 .send()
                 .await
                 .expect("Could not send tx")
@@ -534,10 +522,7 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
 async fn test_tip20_whitelist() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -552,8 +537,8 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
     // Create a whitelist policy
     let policy_receipt = registry
         .createPolicy(admin, ITIP403Registry::PolicyType::WHITELIST)
-        .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(300_000)
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(1_000_000)
         .send()
         .await?
         .get_receipt()
@@ -570,8 +555,8 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
     // Update the token policy to the whitelist
     token
         .changeTransferPolicyId(policy_id)
-        .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(300_000)
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(1_000_000)
         .send()
         .await?
         .get_receipt()
@@ -603,8 +588,8 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
     for account in whitelisted_accounts {
         let pending_tx = registry
             .modifyPolicyWhitelist(policy_id, account, true)
-            .gas_price(TEMPO_BASE_FEE as u128)
-            .gas(300_000)
+            .gas_price(TEMPO_T1_BASE_FEE as u128)
+            .gas(1_000_000)
             .send()
             .await?;
 
@@ -617,8 +602,8 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
     try_join_all(accounts.iter().map(|account| async {
         token
             .mint(account.address(), U256::from(1000))
-            .gas_price(TEMPO_BASE_FEE as u128)
-            .gas(300_000)
+            .gas_price(TEMPO_T1_BASE_FEE as u128)
+            .gas(1_000_000)
             .send()
             .await
             .expect("Could not send tx")
@@ -664,7 +649,7 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
             .map(|(token, recipient)| async {
                 token
                     .transfer(*recipient, U256::ONE)
-                    .gas_price(TEMPO_BASE_FEE as u128)
+                    .gas_price(TEMPO_T1_BASE_FEE as u128)
                     .send()
                     .await
                     .expect("Could not send tx")
@@ -677,13 +662,11 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Test scheduled rewards functionality.
-/// Note: This test runs without Moderato since scheduled rewards are disabled post-Moderato.
+/// Test immediate reward distribution functionality.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip20_rewards() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // Run without Moderato since scheduled rewards are disabled post-Moderato
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
@@ -693,78 +676,710 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
         .wallet(admin_wallet)
         .connect_http(http_url.clone());
 
-    let token = setup_test_token_pre_allegretto(admin_provider.clone(), admin).await?;
+    let token = setup_test_token(admin_provider.clone(), admin).await?;
 
     let alice_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(1)
-        .unwrap()
-        .build()
-        .unwrap();
+        .index(1)?
+        .build()?;
     let alice = alice_wallet.address();
     let alice_provider = ProviderBuilder::new()
         .wallet(alice_wallet)
         .connect_http(http_url.clone());
     let alice_token = ITIP20::new(*token.address(), alice_provider);
 
-    let mut pending = vec![];
-
-    let mint_amount = U256::from(1000e18);
-    let reward_amount = U256::from(300e18);
-
     let bob_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(2)
-        .unwrap()
-        .build()
-        .unwrap();
+        .index(2)?
+        .build()?;
     let bob = bob_wallet.address();
     let bob_provider = ProviderBuilder::new()
         .wallet(bob_wallet)
         .connect_http(http_url.clone());
     let bob_token = ITIP20::new(*token.address(), bob_provider);
 
-    pending.push(token.mint(alice, mint_amount).send().await?);
-    pending.push(token.mint(admin, reward_amount).send().await?);
-    pending.push(alice_token.setRewardRecipient(bob).send().await?);
-    await_receipts(&mut pending).await?;
+    let mint_amount = U256::from(1000e18);
+    let reward_amount = U256::from(300e18);
 
-    // Start reward stream
-    let start_receipt = token
-        .startReward(reward_amount, 0)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
+    // TIP-1000 increased state creation costs significantly (SSTORE 250k, new account 250k)
+    let gas = 2_000_000;
+    let gas_price = TEMPO_T1_BASE_FEE as u128;
 
-    let _reward_started_event = start_receipt
-        .logs()
-        .iter()
-        .filter_map(|log| ITIP20::RewardScheduled::decode_log(&log.inner).ok())
-        .next()
-        .expect("RewardStarted event should be emitted");
-
-    // Wait for reward stream duration to elapse
-    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-
-    // Transfer some tokens to trigger reward distribution calculations
+    let mut pending = vec![];
+    pending.push(
+        token
+            .mint(alice, mint_amount)
+            .gas(gas)
+            .gas_price(gas_price)
+            .send()
+            .await?,
+    );
+    pending.push(
+        token
+            .mint(admin, reward_amount)
+            .gas(gas)
+            .gas_price(gas_price)
+            .send()
+            .await?,
+    );
     pending.push(
         alice_token
-            .transfer(Address::random(), U256::from(100e18))
+            .setRewardRecipient(bob)
+            .gas(gas)
+            .gas_price(gas_price)
             .send()
             .await?,
     );
     await_receipts(&mut pending).await?;
 
-    let alice_balance_after = token.balanceOf(alice).call().await?;
-    let bob_balance_after = token.balanceOf(bob).call().await?;
-    let contract_balance = token.balanceOf(*token.address()).call().await?;
+    // Distribute reward (immediate distribution)
+    let distribute_receipt = token
+        .distributeReward(reward_amount)
+        .gas(gas)
+        .gas_price(gas_price)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
 
-    assert_eq!(alice_balance_after, U256::from(900e18));
-    assert_eq!(bob_balance_after, U256::ZERO);
-    assert_eq!(contract_balance, reward_amount);
+    distribute_receipt
+        .logs()
+        .iter()
+        .filter_map(|log| ITIP20::RewardDistributed::decode_log(&log.inner).ok())
+        .next()
+        .expect("RewardDistributed event should be emitted");
 
-    bob_token.claimRewards().send().await?.get_receipt().await?;
-    let bob_balance_after_claim = token.balanceOf(bob).call().await?;
-    assert_eq!(bob_balance_after_claim, reward_amount);
+    // Transfer to trigger reward update (use authorized address, not random)
+    pending.push(
+        alice_token
+            .transfer(admin, U256::from(100e18))
+            .gas(gas)
+            .gas_price(gas_price)
+            .send()
+            .await?,
+    );
+    await_receipts(&mut pending).await?;
+
+    assert_eq!(token.balanceOf(alice).call().await?, U256::from(900e18));
+    assert_eq!(token.balanceOf(bob).call().await?, U256::ZERO);
+    assert_eq!(
+        token.balanceOf(*token.address()).call().await?,
+        reward_amount
+    );
+
+    bob_token
+        .claimRewards()
+        .gas(gas)
+        .gas_price(gas_price)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert_eq!(token.balanceOf(bob).call().await?, reward_amount);
+
+    Ok(())
+}
+
+/// E2E test: Fee collection fails when the user's fee token is already paused.
+/// Also tests that a transaction which pauses a token can complete successfully
+/// (because transfer_fee_post_tx is allowed even when paused for refunds),
+/// and subsequent transactions fail at fee collection.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip20_pause_blocks_fee_collection() -> eyre::Result<()> {
+    use tempo_contracts::precompiles::{IFeeManager, IRolesAuth, ITIPFeeAMM};
+    use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, tip20::PAUSE_ROLE};
+
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let http_url = setup.http_url;
+
+    // Admin creates and controls the token
+    let admin_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let admin = admin_wallet.address();
+    let admin_provider = ProviderBuilder::new()
+        .wallet(admin_wallet)
+        .connect_http(http_url.clone());
+
+    // User who will have their fee token paused
+    let user_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+        .index(1)?
+        .build()?;
+    let user = user_wallet.address();
+    let user_provider = ProviderBuilder::new()
+        .wallet(user_wallet)
+        .connect_http(http_url.clone());
+
+    // Create and setup token
+    let token = setup_test_token(admin_provider.clone(), admin).await?;
+    let user_token = ITIP20::new(*token.address(), user_provider.clone());
+    let roles = IRolesAuth::new(*token.address(), admin_provider.clone());
+
+    let gas = 2_000_000u64;
+    let gas_price = TEMPO_T1_BASE_FEE as u128;
+
+    // Mint tokens to user
+    token
+        .mint(user, U256::from(1_000_000e18))
+        .gas(gas)
+        .gas_price(gas_price)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    // Add liquidity to the AMM pool so the token can be used for fees
+    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, admin_provider.clone());
+    fee_amm
+        .mint(*token.address(), PATH_USD_ADDRESS, U256::from(1e18), admin)
+        .gas(gas)
+        .gas_price(gas_price)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    // Set user's fee token to our test token
+    let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, user_provider.clone());
+    fee_manager
+        .setUserToken(*token.address())
+        .gas(gas)
+        .gas_price(gas_price)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    // Grant PAUSE_ROLE to admin and user
+    roles
+        .grantRole(*PAUSE_ROLE, admin)
+        .gas(gas)
+        .gas_price(gas_price)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    roles
+        .grantRole(*PAUSE_ROLE, user)
+        .gas(gas)
+        .gas_price(gas_price)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    // Verify user can transact before pause
+    let transfer_result = user_token
+        .transfer(Address::random(), U256::from(100))
+        .gas(gas)
+        .gas_price(gas_price)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(
+        transfer_result.status(),
+        "Transfer should succeed before pause"
+    );
+
+    // ===== Test 1: User pauses the token in their transaction =====
+    // This should succeed because:
+    // - transfer_fee_pre_tx happens before pause (token not paused yet)
+    // - user's tx executes and pauses the token
+    // - transfer_fee_post_tx is allowed even when paused (for refunds)
+
+    let balance_before_pause_tx = token.balanceOf(user).call().await?;
+
+    let pause_receipt = user_token
+        .pause()
+        .gas(gas)
+        .gas_price(gas_price)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    assert!(
+        pause_receipt.status(),
+        "Pause transaction should succeed - post_tx refund allowed even when paused"
+    );
+
+    // Verify token is now paused
+    assert!(token.paused().call().await?, "Token should be paused");
+
+    // Verify user paid fees (balance decreased due to gas fees)
+    let balance_after_pause_tx = token.balanceOf(user).call().await?;
+    assert!(
+        balance_after_pause_tx < balance_before_pause_tx,
+        "User should have paid fees for the pause tx"
+    );
+
+    // ===== Test 2: Subsequent transactions fail at fee collection =====
+    // Now that the token is paused, any new transaction attempting to use
+    // this token for fees should fail at collect_fee_pre_tx
+
+    // Try to send another transaction - should fail because fee token is paused
+    let transfer_result = user_token
+        .transfer(Address::random(), U256::from(100))
+        .call()
+        .await;
+
+    assert!(
+        transfer_result.is_err(),
+        "Transaction should fail when fee token is paused"
+    );
+
+    // Verify balance unchanged after failed attempt
+    let balance_after_failed = token.balanceOf(user).call().await?;
+    assert_eq!(
+        balance_after_failed, balance_after_pause_tx,
+        "Balance should be unchanged after failed tx"
+    );
+
+    Ok(())
+}
+
+/// Deploys a token, registers a virtual master, and returns all handles.
+async fn setup_virtual_test() -> eyre::Result<(
+    crate::utils::HttpOnlySetup,
+    Url,
+    Address,
+    ITIP20::ITIP20Instance<impl Provider + Clone>,
+    Address,
+)> {
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let http_url = setup.http_url.clone();
+
+    let admin_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let admin = admin_wallet.address();
+    assert_eq!(admin, VIRTUAL_MASTER);
+
+    let admin_provider = ProviderBuilder::new()
+        .wallet(admin_wallet)
+        .connect_http(http_url.clone());
+
+    let token = setup_test_token(admin_provider.clone(), admin).await?;
+    let registry = IAddressRegistry::new(ADDRESS_REGISTRY_ADDRESS, admin_provider);
+
+    let register_receipt = registry
+        .registerVirtualMaster(VIRTUAL_SALT.into())
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let master_event = register_receipt
+        .logs()
+        .iter()
+        .filter_map(|log| IAddressRegistry::MasterRegistered::decode_log(&log.inner).ok())
+        .next()
+        .expect("MasterRegistered event should be emitted");
+    assert_eq!(master_event.masterAddress, VIRTUAL_MASTER);
+
+    let virtual_addr = Address::new_virtual(master_event.masterId, FixedBytes::random());
+
+    Ok((setup, http_url, admin, token, virtual_addr))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip20_virtual_mint() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+    let (_setup, _http_url, admin, token, virtual_addr) = setup_virtual_test().await?;
+
+    let mint_amount = U256::from(5000);
+    let mint_receipt = token
+        .mint(virtual_addr, mint_amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(mint_receipt.status());
+
+    assert_eq!(token.balanceOf(admin).call().await?, mint_amount);
+    assert_eq!(token.balanceOf(virtual_addr).call().await?, U256::ZERO);
+
+    // Verify two-hop Transfer events: (0→virtual) then (virtual→master)
+    let token_addr = *token.address();
+    let transfers: Vec<_> = mint_receipt
+        .logs()
+        .iter()
+        .filter(|log| log.address() == token_addr)
+        .filter_map(|log| ITIP20::Transfer::decode_log(&log.inner).ok())
+        .collect();
+    assert_eq!(transfers.len(), 2);
+    assert_eq!(
+        transfers[0].data,
+        ITIP20::Transfer {
+            from: Address::ZERO,
+            to: virtual_addr,
+            amount: mint_amount
+        }
+    );
+    assert_eq!(
+        transfers[1].data,
+        ITIP20::Transfer {
+            from: virtual_addr,
+            to: admin,
+            amount: mint_amount
+        }
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip20_virtual_transfer() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+    let (_setup, http_url, master, token, virtual_addr) = setup_virtual_test().await?;
+
+    let sender_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+        .index(1)?
+        .build()?;
+    let sender = sender_wallet.address();
+    let sender_provider = ProviderBuilder::new()
+        .wallet(sender_wallet)
+        .connect_http(http_url);
+
+    let amount = U256::from(1000);
+    token
+        .mint(sender, amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let master_balance_before = token.balanceOf(master).call().await?;
+    let sender_token = ITIP20::new(*token.address(), sender_provider);
+    let receipt = sender_token
+        .transfer(virtual_addr, amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(receipt.status());
+
+    assert_eq!(token.balanceOf(sender).call().await?, U256::ZERO);
+    assert_eq!(
+        token.balanceOf(master).call().await?,
+        master_balance_before + amount
+    );
+    assert_eq!(token.balanceOf(virtual_addr).call().await?, U256::ZERO);
+
+    let token_addr = *token.address();
+    let transfers: Vec<_> = receipt
+        .logs()
+        .iter()
+        .filter(|log| log.address() == token_addr)
+        .filter_map(|log| ITIP20::Transfer::decode_log(&log.inner).ok())
+        .collect();
+    assert_eq!(transfers.len(), 2);
+    assert_eq!(
+        transfers[0].data,
+        ITIP20::Transfer {
+            from: sender,
+            to: virtual_addr,
+            amount
+        }
+    );
+    assert_eq!(
+        transfers[1].data,
+        ITIP20::Transfer {
+            from: virtual_addr,
+            to: master,
+            amount
+        }
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip20_virtual_transfer_from() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+    let (_setup, http_url, master, token, virtual_addr) = setup_virtual_test().await?;
+
+    let sender_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+        .index(1)?
+        .build()?;
+    let sender = sender_wallet.address();
+    let sender_provider = ProviderBuilder::new()
+        .wallet(sender_wallet)
+        .connect_http(http_url);
+
+    let amount = U256::from(500);
+    token
+        .mint(sender, amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let sender_token = ITIP20::new(*token.address(), sender_provider);
+    sender_token
+        .approve(master, amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let master_balance_before = token.balanceOf(master).call().await?;
+    let receipt = token
+        .transferFrom(sender, virtual_addr, amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(receipt.status());
+
+    assert_eq!(token.balanceOf(sender).call().await?, U256::ZERO);
+    assert_eq!(
+        token.balanceOf(master).call().await?,
+        master_balance_before + amount
+    );
+    assert_eq!(token.balanceOf(virtual_addr).call().await?, U256::ZERO);
+    assert_eq!(token.allowance(sender, master).call().await?, U256::ZERO);
+
+    let token_addr = *token.address();
+    let transfers: Vec<_> = receipt
+        .logs()
+        .iter()
+        .filter(|log| log.address() == token_addr)
+        .filter_map(|log| ITIP20::Transfer::decode_log(&log.inner).ok())
+        .collect();
+    assert_eq!(transfers.len(), 2);
+    assert_eq!(
+        transfers[0].data,
+        ITIP20::Transfer {
+            from: sender,
+            to: virtual_addr,
+            amount
+        }
+    );
+    assert_eq!(
+        transfers[1].data,
+        ITIP20::Transfer {
+            from: virtual_addr,
+            to: master,
+            amount
+        }
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip20_virtual_transfer_with_memo() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+    let (_setup, http_url, master, token, virtual_addr) = setup_virtual_test().await?;
+
+    let sender_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+        .index(1)?
+        .build()?;
+    let sender = sender_wallet.address();
+    let sender_provider = ProviderBuilder::new()
+        .wallet(sender_wallet)
+        .connect_http(http_url);
+
+    let amount = U256::from(750);
+    let memo = FixedBytes::from([7; 32]);
+    token
+        .mint(sender, amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let master_balance_before = token.balanceOf(master).call().await?;
+    let sender_token = ITIP20::new(*token.address(), sender_provider);
+    let receipt = sender_token
+        .transferWithMemo(virtual_addr, amount, memo)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(receipt.status());
+
+    assert_eq!(token.balanceOf(sender).call().await?, U256::ZERO);
+    assert_eq!(
+        token.balanceOf(master).call().await?,
+        master_balance_before + amount
+    );
+    assert_eq!(token.balanceOf(virtual_addr).call().await?, U256::ZERO);
+
+    let token_addr = *token.address();
+    let transfers: Vec<_> = receipt
+        .logs()
+        .iter()
+        .filter(|log| log.address() == token_addr)
+        .filter_map(|log| ITIP20::Transfer::decode_log(&log.inner).ok())
+        .collect();
+    assert_eq!(transfers.len(), 2);
+    assert_eq!(
+        transfers[0].data,
+        ITIP20::Transfer {
+            from: sender,
+            to: virtual_addr,
+            amount
+        }
+    );
+    assert_eq!(
+        transfers[1].data,
+        ITIP20::Transfer {
+            from: virtual_addr,
+            to: master,
+            amount
+        }
+    );
+
+    let memo_event = receipt
+        .logs()
+        .iter()
+        .filter(|log| log.address() == token_addr)
+        .filter_map(|log| ITIP20::TransferWithMemo::decode_log(&log.inner).ok())
+        .next()
+        .expect("TransferWithMemo event should be emitted");
+    assert_eq!(
+        memo_event.data,
+        ITIP20::TransferWithMemo {
+            from: sender,
+            to: virtual_addr,
+            amount,
+            memo,
+        }
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip20_virtual_transfer_from_with_memo() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+    let (_setup, http_url, master, token, virtual_addr) = setup_virtual_test().await?;
+
+    let sender_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+        .index(1)?
+        .build()?;
+    let sender = sender_wallet.address();
+    let sender_provider = ProviderBuilder::new()
+        .wallet(sender_wallet)
+        .connect_http(http_url);
+
+    let amount = U256::from(375);
+    let memo = FixedBytes::from([9; 32]);
+    token
+        .mint(sender, amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let sender_token = ITIP20::new(*token.address(), sender_provider);
+    sender_token
+        .approve(master, amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let master_balance_before = token.balanceOf(master).call().await?;
+    let receipt = token
+        .transferFromWithMemo(sender, virtual_addr, amount, memo)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(receipt.status());
+
+    assert_eq!(token.balanceOf(sender).call().await?, U256::ZERO);
+    assert_eq!(
+        token.balanceOf(master).call().await?,
+        master_balance_before + amount
+    );
+    assert_eq!(token.balanceOf(virtual_addr).call().await?, U256::ZERO);
+    assert_eq!(token.allowance(sender, master).call().await?, U256::ZERO);
+
+    let token_addr = *token.address();
+    let transfers: Vec<_> = receipt
+        .logs()
+        .iter()
+        .filter(|log| log.address() == token_addr)
+        .filter_map(|log| ITIP20::Transfer::decode_log(&log.inner).ok())
+        .collect();
+    assert_eq!(transfers.len(), 2);
+    assert_eq!(
+        transfers[0].data,
+        ITIP20::Transfer {
+            from: sender,
+            to: virtual_addr,
+            amount
+        }
+    );
+    assert_eq!(
+        transfers[1].data,
+        ITIP20::Transfer {
+            from: virtual_addr,
+            to: master,
+            amount
+        }
+    );
+
+    let memo_event = receipt
+        .logs()
+        .iter()
+        .filter(|log| log.address() == token_addr)
+        .filter_map(|log| ITIP20::TransferWithMemo::decode_log(&log.inner).ok())
+        .next()
+        .expect("TransferWithMemo event should be emitted");
+    assert_eq!(
+        memo_event.data,
+        ITIP20::TransferWithMemo {
+            from: sender,
+            to: virtual_addr,
+            amount,
+            memo,
+        }
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip20_registry_deployed_at_t3_activation() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    // Set t3Time into the future and remove the registry from genesis alloc
+    // so the 0xEF marker is only deployed by the block executor at T3.
+    let genesis_str = include_str!("../assets/test-genesis.json");
+    let mut genesis: serde_json::Value = serde_json::from_str(genesis_str)?;
+    genesis["config"].as_object_mut().unwrap().insert(
+        "t3Time".to_string(),
+        serde_json::Value::Number(serde_json::Number::from(2u64)),
+    );
+    let registry_key = format!("{ADDRESS_REGISTRY_ADDRESS:#x}");
+    genesis["alloc"]
+        .as_object_mut()
+        .unwrap()
+        .remove(&registry_key);
+
+    let mut setup = TestNodeBuilder::new()
+        .with_genesis(serde_json::to_string(&genesis)?)
+        .build_with_node_access()
+        .await?;
+    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
+
+    // Pre-T3: registry should have no code.
+    let code = provider.get_code_at(ADDRESS_REGISTRY_ADDRESS).await?;
+    assert!(code.is_empty(), "registry should have no code before T3");
+
+    // Advance past t3Time to trigger T3 activation.
+    setup.node.advance_block().await?;
+    setup.node.advance_block().await?;
+
+    // Post-T3: registry should have 0xEF marker bytecode.
+    let code = provider.get_code_at(ADDRESS_REGISTRY_ADDRESS).await?;
+    assert_eq!(
+        code.as_ref(),
+        &[0xef],
+        "registry should have 0xEF marker after T3"
+    );
 
     Ok(())
 }

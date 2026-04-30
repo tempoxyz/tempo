@@ -1,18 +1,14 @@
 use commonware_consensus::{
-    Automaton, Relay, Reporter,
-    marshal::Update,
-    simplex::types::Context,
+    Automaton, CertifiableAutomaton, Relay,
+    simplex::{Plan, types::Context},
     types::{Epoch, Round, View},
 };
 
 use commonware_cryptography::ed25519::PublicKey;
-use commonware_utils::acknowledgement::Exact;
-use futures::{
-    SinkExt as _,
-    channel::{mpsc, oneshot},
-};
+use commonware_utils::channel::oneshot;
+use futures::{SinkExt as _, channel::mpsc};
 
-use crate::consensus::{Digest, block::Block};
+use crate::consensus::Digest;
 
 #[derive(Clone)]
 pub(crate) struct Mailbox {
@@ -28,10 +24,9 @@ impl Mailbox {
 /// Messages forwarded from consensus to application.
 // TODO: add trace spans into all of these messages.
 pub(super) enum Message {
-    Broadcast(Broadcast),
-    Finalized(Box<Finalized>),
+    Broadcast(Box<Broadcast>),
     Genesis(Genesis),
-    Propose(Propose),
+    Propose(Box<Propose>),
     Verify(Box<Verify>),
 }
 
@@ -50,21 +45,23 @@ pub(super) struct Propose {
     pub(super) parent: (View, Digest),
     pub(super) response: oneshot::Sender<Digest>,
     pub(super) round: Round,
+    pub(super) leader: PublicKey,
 }
 
 impl From<Propose> for Message {
     fn from(value: Propose) -> Self {
-        Self::Propose(value)
+        Self::Propose(Box::new(value))
     }
 }
 
 pub(super) struct Broadcast {
-    pub(super) payload: Digest,
+    pub(super) digest: Digest,
+    pub(super) plan: Plan<PublicKey>,
 }
 
 impl From<Broadcast> for Message {
     fn from(value: Broadcast) -> Self {
-        Self::Broadcast(value)
+        Self::Broadcast(Box::new(value))
     }
 }
 
@@ -82,27 +79,6 @@ impl From<Verify> for Message {
     }
 }
 
-/// A finalization forwarded from the marshal actor to the application's
-/// executor actor.
-///
-/// This enum unwraps `Update<Block>` into this `Finalized` enum so that
-/// a `response` channel is attached to a block-finalization.
-///
-/// The reason is that the marshal actor expects blocks finzalitions to be
-/// acknowledged by the application.
-///
-/// Updated tips on the other hand are fire-and-forget.
-#[derive(Debug)]
-pub(super) struct Finalized {
-    pub(super) inner: Update<Block, Exact>,
-}
-
-impl From<Finalized> for Message {
-    fn from(value: Finalized) -> Self {
-        Self::Finalized(value.into())
-    }
-}
-
 impl Automaton for Mailbox {
     type Context = Context<Self::Digest, PublicKey>;
 
@@ -110,8 +86,8 @@ impl Automaton for Mailbox {
 
     async fn genesis(&mut self, epoch: Epoch) -> Self::Digest {
         let (tx, rx) = oneshot::channel();
-        // TODO: panicking here really is not good. there's actually no requirement on `Self::Context` nor `Self::Digest` to fulfill
-        // any invariants, so we could just turn them into `Result<Context, Error>` and be happy.
+        // XXX: Cannot propagate the error upstream because of the trait def.
+        // But if the actor no longer responds the application is dead.
         self.inner
             .send(
                 Genesis {
@@ -127,12 +103,8 @@ impl Automaton for Mailbox {
     }
 
     async fn propose(&mut self, context: Self::Context) -> oneshot::Receiver<Self::Digest> {
-        // TODO: panicking here really is not good. there's actually no requirement on `Self::Context` nor `Self::Digest` to fulfill
-        // any invariants, so we could just turn them into `Result<Context, Error>` and be happy.
-        //
-        // XXX: comment taken from alto - what does this mean? is this relevant to us?
-        // > If we linked payloads to their parent, we would verify
-        // > the parent included in the payload matches the provided `Context`.
+        // XXX: Cannot propagate the error upstream because of the trait def.
+        // But if the actor no longer responds the application is dead.
         let (tx, rx) = oneshot::channel();
         self.inner
             .send(
@@ -140,6 +112,7 @@ impl Automaton for Mailbox {
                     parent: context.parent,
                     response: tx,
                     round: context.round,
+                    leader: context.leader,
                 }
                 .into(),
             )
@@ -153,12 +126,8 @@ impl Automaton for Mailbox {
         context: Self::Context,
         payload: Self::Digest,
     ) -> oneshot::Receiver<bool> {
-        // TODO: panicking here really is not good. there's actually no requirement on `Self::Context` nor `Self::Digest` to fulfill
-        // any invariants, so we could just turn them into `Result<Context, Error>` and be happy.
-        //
-        // XXX: comment taken from alto - what does this mean? is this relevant to us?
-        // > If we linked payloads to their parent, we would verify
-        // > the parent included in the payload matches the provided `Context`.
+        // XXX: Cannot propagate the error upstream because of the trait def.
+        // But if the actor no longer responds the application is dead.
         let (tx, rx) = oneshot::channel();
         self.inner
             .send(
@@ -177,25 +146,25 @@ impl Automaton for Mailbox {
     }
 }
 
-impl Relay for Mailbox {
-    type Digest = Digest;
-
-    async fn broadcast(&mut self, digest: Self::Digest) {
-        // TODO: panicking here is really not necessary. Just log at the ERROR or WARN levels instead?
-        self.inner
-            .send(Broadcast { payload: digest }.into())
-            .await
-            .expect("application is present and ready to receive broadcasts");
-    }
+// TODO: figure out if this can be useful for tempo. The original PR implementing
+// this trait:
+// https://github.com/commonwarexyz/monorepo/pull/2565
+// Associated issue:
+// https://github.com/commonwarexyz/monorepo/issues/1767
+impl CertifiableAutomaton for Mailbox {
+    // NOTE: uses the default impl for CertifiableAutomaton which always
+    // returns true.
 }
 
-impl Reporter for Mailbox {
-    type Activity = Update<Block>;
+impl Relay for Mailbox {
+    type Digest = Digest;
+    type PublicKey = PublicKey;
+    type Plan = commonware_consensus::simplex::Plan<PublicKey>;
 
-    async fn report(&mut self, update: Self::Activity) {
+    async fn broadcast(&mut self, digest: Self::Digest, plan: Self::Plan) {
         // TODO: panicking here is really not necessary. Just log at the ERROR or WARN levels instead?
         self.inner
-            .send(Finalized { inner: update }.into())
+            .send(Broadcast { digest, plan }.into())
             .await
             .expect("application is present and ready to receive broadcasts");
     }

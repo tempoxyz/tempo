@@ -1,36 +1,37 @@
 pub mod admin;
-pub mod amm;
-pub mod dex;
+pub mod consensus;
 pub mod error;
 pub mod eth_ext;
-pub mod policy;
+pub mod fork_schedule;
+pub mod operator;
+pub mod simulate;
 pub mod token;
 
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
-use alloy_primitives::{Address, B256};
+use alloy_primitives::B256;
 use alloy_rpc_types_eth::{Log, ReceiptWithBloom};
-pub use amm::{TempoAmm, TempoAmmApiServer};
-pub use dex::{TempoDex, api::TempoDexApiServer};
+pub use consensus::{TempoConsensusApiServer, TempoConsensusRpc};
 pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
+pub use fork_schedule::{TempoForkScheduleApiServer, TempoForkScheduleRpc};
 use futures::{TryFutureExt, future::Either};
-pub use policy::{TempoPolicy, TempoPolicyApiServer};
+pub use operator::{TempoOperatorApiServer, TempoOperatorRpc};
 use reth_errors::RethError;
 use reth_primitives_traits::{Recovered, TransactionMeta, WithEncoded, transaction::TxHashRef};
-use reth_transaction_pool::PoolPooledTx;
+use reth_rpc_eth_api::{FromEthApiError, IntoEthApiError, RpcTxReq};
+use reth_transaction_pool::{PoolPooledTx, TransactionOrigin};
+pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Response};
 use std::sync::Arc;
 pub use tempo_alloy::rpc::TempoTransactionRequest;
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
+use tempo_chainspec::TempoChainSpec;
 use tempo_evm::TempoStateAccess;
-use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce, storage::double_mapping_slot};
+use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager};
+use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
 pub use token::{TempoToken, TempoTokenApiServer};
 
 use crate::{node::TempoNode, rpc::error::TempoEthApiError};
-use alloy::{
-    consensus::TxReceipt,
-    primitives::{U256, uint},
-};
+use alloy::primitives::{U256, uint};
 use reth_ethereum::tasks::{
-    TaskSpawner,
+    Runtime,
     pool::{BlockingTaskGuard, BlockingTaskPool},
 };
 use reth_evm::{
@@ -49,18 +50,20 @@ use reth_rpc_eth_api::{
     helpers::{
         Call, EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthTransactions, LoadBlock,
         LoadFee, LoadPendingBlock, LoadReceipt, LoadState, LoadTransaction, SpawnBlocking, Trace,
-        estimate::EstimateCall, pending_block::PendingEnvBuilder, spec::SignersForRpc,
+        bal::GetBlockAccessList, estimate::EstimateCall, pending_block::PendingEnvBuilder,
+        spec::SignersForRpc,
     },
     transaction::{ConvertReceiptInput, ReceiptConverter},
 };
 use reth_rpc_eth_types::{
-    EthApiError, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock,
+    EthApiError, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock, SignError,
     builder::config::PendingBlockKind, receipt::EthReceiptConverter,
 };
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
 use tempo_evm::TempoEvmConfig;
 use tempo_primitives::{
     TEMPO_GAS_PRICE_SCALING_FACTOR, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
+    subblock::PartialValidatorKey,
 };
 use tokio::sync::{Mutex, broadcast};
 
@@ -68,6 +71,13 @@ use tokio::sync::{Mutex, broadcast};
 /// Tempo.
 pub const NATIVE_BALANCE_PLACEHOLDER: U256 =
     uint!(4242424242424242424242424242424242424242424242424242424242424242424242424242_U256);
+
+/// Capacity of the subblock transactions broadcast channel.
+///
+/// This is set high enough to prevent legitimate transactions from being evicted
+/// during high-load scenarios. Transactions are filtered by validator key before
+/// being added to the channel to prevent DoS attacks.
+pub const SUBBLOCK_TX_CHANNEL_CAPACITY: usize = 10_000;
 
 /// Tempo `Eth` API implementation.
 ///
@@ -79,29 +89,47 @@ pub const NATIVE_BALANCE_PLACEHOLDER: U256 =
 ///
 /// This type implements the [`FullEthApi`](reth_rpc_eth_api::helpers::FullEthApi) by implemented
 /// all the `Eth` helper traits and prerequisite traits.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct TempoEthApi<N: FullNodeTypes<Types = TempoNode>> {
     /// Gateway to node's core components.
     inner: EthApi<NodeAdapter<N>, DynRpcConverter<TempoEvmConfig, TempoNetwork>>,
 
     /// Channel for sending subblock transactions to the subblocks service.
     subblock_transactions_tx: broadcast::Sender<Recovered<TempoTxEnvelope>>,
+
+    /// Validator public key used to filter subblock transactions.
+    ///
+    /// Only subblock transactions targeting this validator will be accepted.
+    /// This prevents DoS attacks via channel flooding with transactions
+    /// targeting other validators.
+    validator_key: Option<B256>,
 }
 
 impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
     /// Creates a new `TempoEthApi`.
     pub fn new(
         eth_api: EthApi<NodeAdapter<N>, DynRpcConverter<TempoEvmConfig, TempoNetwork>>,
+        validator_key: Option<B256>,
     ) -> Self {
         Self {
             inner: eth_api,
-            subblock_transactions_tx: broadcast::channel(100).0,
+            subblock_transactions_tx: broadcast::channel(SUBBLOCK_TX_CHANNEL_CAPACITY).0,
+            validator_key,
         }
     }
 
     /// Returns a [`broadcast::Receiver`] for subblock transactions.
     pub fn subblock_transactions_rx(&self) -> broadcast::Receiver<Recovered<TempoTxEnvelope>> {
         self.subblock_transactions_tx.subscribe()
+    }
+
+    /// Returns `true` if the given partial validator key matches this node's validator key.
+    ///
+    /// Returns `false` if no validator key is configured (non-validator nodes reject
+    /// all subblock transactions).
+    fn matches_validator_key(&self, partial_key: &PartialValidatorKey) -> bool {
+        self.validator_key
+            .is_some_and(|key| partial_key.matches(key.as_slice()))
     }
 }
 
@@ -159,7 +187,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthApiSpec for TempoEthApi<N> {
 
 impl<N: FullNodeTypes<Types = TempoNode>> SpawnBlocking for TempoEthApi<N> {
     #[inline]
-    fn io_task_spawner(&self) -> impl TaskSpawner {
+    fn io_task_spawner(&self) -> &Runtime {
         self.inner.task_spawner()
     }
 
@@ -171,6 +199,11 @@ impl<N: FullNodeTypes<Types = TempoNode>> SpawnBlocking for TempoEthApi<N> {
     #[inline]
     fn tracing_task_guard(&self) -> &BlockingTaskGuard {
         self.inner.blocking_task_guard()
+    }
+
+    #[inline]
+    fn blocking_io_task_guard(&self) -> &Arc<tokio::sync::Semaphore> {
+        self.inner.blocking_io_task_guard()
     }
 }
 
@@ -187,7 +220,8 @@ impl<N: FullNodeTypes<Types = TempoNode>> LoadPendingBlock for TempoEthApi<N> {
 
     #[inline]
     fn pending_block_kind(&self) -> PendingBlockKind {
-        self.inner.pending_block_kind()
+        // don't build a local pending block because we can't build a block without consensus data (system transaction)
+        PendingBlockKind::None
     }
 }
 
@@ -203,7 +237,40 @@ impl<N: FullNodeTypes<Types = TempoNode>> LoadFee for TempoEthApi<N> {
     }
 }
 
-impl<N: FullNodeTypes<Types = TempoNode>> LoadState for TempoEthApi<N> {}
+impl<N: FullNodeTypes<Types = TempoNode>> LoadState for TempoEthApi<N> {
+    async fn next_available_nonce_for(
+        &self,
+        request: &RpcTxReq<Self::NetworkTypes>,
+    ) -> Result<u64, Self::Error> {
+        if let Some(nonce_key) = request.nonce_key
+            && !nonce_key.is_zero()
+        {
+            let nonce = if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+                0 // expiring nonce must be 0
+            } else {
+                // 2D nonce: fetch from storage
+                let from = if let Some(from) = request.from {
+                    from
+                } else {
+                    return Err(SignError::NoAccount.into_eth_err());
+                };
+                let slot = NonceManager::new().nonces[from][nonce_key].slot();
+                self.spawn_blocking_io(move |this| {
+                    this.latest_state()?
+                        .storage(NONCE_PRECOMPILE_ADDRESS, slot.into())
+                        .map_err(Self::Error::from_eth_err)
+                })
+                .await?
+                .unwrap_or_default()
+                .saturating_to()
+            };
+
+            Ok(nonce)
+        } else {
+            Ok(self.inner.next_available_nonce_for(request).await?)
+        }
+    }
+}
 
 impl<N: FullNodeTypes<Types = TempoNode>> EthState for TempoEthApi<N> {
     #[inline]
@@ -227,6 +294,8 @@ impl<N: FullNodeTypes<Types = TempoNode>> Trace for TempoEthApi<N> {}
 
 impl<N: FullNodeTypes<Types = TempoNode>> EthCall for TempoEthApi<N> {}
 
+impl<N: FullNodeTypes<Types = TempoNode>> GetBlockAccessList for TempoEthApi<N> {}
+
 impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
     #[inline]
     fn call_gas_limit(&self) -> u64 {
@@ -247,18 +316,19 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
     fn caller_gas_allowance(
         &self,
         mut db: impl Database<Error: Into<EthApiError>>,
-        _evm_env: &EvmEnvFor<Self::Evm>,
+        evm_env: &EvmEnvFor<Self::Evm>,
         tx_env: &TxEnvFor<Self::Evm>,
     ) -> Result<u64, Self::Error> {
         let fee_payer = tx_env
             .fee_payer()
             .map_err(EVMError::<ProviderError, _>::from)?;
+
         let fee_token = db
-            .get_fee_token(tx_env, Address::ZERO, fee_payer, TempoHardfork::default())
-            .map_err(Into::into)?;
+            .get_fee_token(tx_env, fee_payer, evm_env.cfg_env.spec)
+            .map_err(ProviderError::other)?;
         let fee_token_balance = db
-            .get_token_balance(fee_token, fee_payer)
-            .map_err(Into::into)?;
+            .get_token_balance(fee_token, fee_payer, evm_env.cfg_env.spec)
+            .map_err(ProviderError::other)?;
 
         Ok(fee_token_balance
             // multiply by the scaling factor
@@ -276,21 +346,21 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
         mut request: TempoTransactionRequest,
         mut db: impl Database<Error: Into<EthApiError>>,
     ) -> Result<TxEnvFor<Self::Evm>, Self::Error> {
-        // if non zero nonce key is provided, fetch nonce from nonce manager's storage.
         if let Some(nonce_key) = request.nonce_key
-            && request.nonce.is_none()
             && !nonce_key.is_zero()
+            && request.nonce.is_none()
         {
-            let slot = double_mapping_slot(
-                request.from.unwrap_or_default().as_slice(),
-                nonce_key.to_be_bytes::<32>(),
-                nonce::slots::NONCES,
-            );
-            request.nonce = Some(
+            let nonce = if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+                0 // expiring nonce must be 0
+            } else {
+                // 2D nonce: fetch from storage
+                let slot =
+                    NonceManager::new().nonces[request.from.unwrap_or_default()][nonce_key].slot();
                 db.storage(NONCE_PRECOMPILE_ADDRESS, slot)
                     .map_err(Into::into)?
-                    .saturating_to(),
-            );
+                    .saturating_to()
+            };
+            request.nonce = Some(nonce);
         }
 
         Ok(self.inner.create_txn_env(evm_env, request, db)?)
@@ -314,24 +384,29 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthTransactions for TempoEthApi<N> {
 
     fn send_transaction(
         &self,
+        origin: TransactionOrigin,
         tx: WithEncoded<Recovered<PoolPooledTx<Self::Pool>>>,
     ) -> impl Future<Output = Result<B256, Self::Error>> + Send {
-        if tx.value().inner().subblock_proposer().is_some() {
-            // Send subblock transactions to the subblocks service.
-            Either::Left(async move {
-                let tx_hash = *tx.value().tx_hash();
+        match tx.value().inner().subblock_proposer() {
+            Some(proposer) if self.matches_validator_key(&proposer) => {
+                let subblock_tx = self.subblock_transactions_tx.clone();
+                Either::Left(Either::Left(async move {
+                    let tx_hash = *tx.value().tx_hash();
 
-                self.subblock_transactions_tx
-                    .send(tx.into_value())
-                    .map_err(|_| {
+                    subblock_tx.send(tx.into_value()).map_err(|_| {
                         EthApiError::from(RethError::msg("subblocks service channel closed"))
                     })?;
 
-                Ok(tx_hash)
-            })
-        } else {
-            // Send regular transactions to the transaction pool.
-            Either::Right(self.inner.send_transaction(tx).map_err(Into::into))
+                    Ok(tx_hash)
+                }))
+            }
+            Some(_) => Either::Left(Either::Right(futures::future::err(
+                EthApiError::from(RethError::msg(
+                    "subblock transaction rejected: target validator mismatch",
+                ))
+                .into(),
+            ))),
+            None => Either::Right(self.inner.send_transaction(origin, tx).map_err(Into::into)),
         }
     }
 }
@@ -351,7 +426,23 @@ impl TempoReceiptConverter {
         Self {
             inner: EthReceiptConverter::new(chain_spec).with_builder(
                 |receipt: TempoReceipt, next_log_index, meta| {
-                    receipt.into_rpc(next_log_index, meta).into_with_bloom()
+                    let mut log_index = next_log_index;
+                    receipt
+                        .map_logs(|log| {
+                            let idx = log_index;
+                            log_index += 1;
+                            Log {
+                                inner: log,
+                                block_hash: Some(meta.block_hash),
+                                block_number: Some(meta.block_number),
+                                block_timestamp: Some(meta.timestamp),
+                                transaction_hash: Some(meta.tx_hash),
+                                transaction_index: Some(meta.index),
+                                log_index: Some(idx as u64),
+                                removed: false,
+                            }
+                        })
+                        .into()
                 },
             ),
         }
@@ -396,7 +487,17 @@ impl ReceiptConverter<TempoPrimitives> for TempoReceiptConverter {
 }
 
 #[derive(Debug, Default)]
-pub struct TempoEthApiBuilder;
+pub struct TempoEthApiBuilder {
+    /// Validator public key used to filter subblock transactions.
+    pub validator_key: Option<B256>,
+}
+
+impl TempoEthApiBuilder {
+    /// Creates a new builder with the given validator key.
+    pub fn new(validator_key: Option<B256>) -> Self {
+        Self { validator_key }
+    }
+}
 
 impl<N> EthApiBuilder<NodeAdapter<N>> for TempoEthApiBuilder
 where
@@ -412,6 +513,6 @@ where
             .map_converter(|_| RpcConverter::new(TempoReceiptConverter::new(chain_spec)).erased())
             .build();
 
-        Ok(TempoEthApi::new(eth_api))
+        Ok(TempoEthApi::new(eth_api, self.validator_key))
     }
 }

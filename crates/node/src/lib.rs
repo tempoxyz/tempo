@@ -6,22 +6,24 @@
 pub use tempo_payload_types::{TempoExecutionData, TempoPayloadTypes};
 pub use version::{init_version_metadata, version_metadata};
 
-pub use crate::node::{DEFAULT_AA_VALID_AFTER_MAX_SECS, TempoNodeArgs, TempoPoolBuilder};
 use crate::node::{TempoAddOns, TempoNode};
+pub use crate::node::{TempoNodeArgs, TempoPoolBuilder};
 use reth_ethereum::provider::db::DatabaseEnv;
 use reth_node_builder::{FullNode, NodeAdapter, RethFullAdapter};
-use std::sync::Arc;
+pub use tempo_transaction_pool::validator::DEFAULT_AA_VALID_AFTER_MAX_SECS;
 
 pub mod engine;
 pub mod node;
 pub mod rpc;
+pub mod telemetry;
 pub use tempo_consensus as consensus;
 pub use tempo_evm as evm;
 pub use tempo_primitives as primitives;
 
 mod version;
 
-type TempoNodeAdapter = NodeAdapter<RethFullAdapter<Arc<DatabaseEnv>, TempoNode>>;
+type TempoFullNodeTypes = RethFullAdapter<DatabaseEnv, TempoNode>;
+type TempoNodeAdapter = NodeAdapter<TempoFullNodeTypes>;
 
 /// Type alias for a launched tempo node.
-pub type TempoFullNode = FullNode<TempoNodeAdapter, TempoAddOns<TempoNodeAdapter>>;
+pub type TempoFullNode = FullNode<TempoNodeAdapter, TempoAddOns<TempoFullNodeTypes>>;

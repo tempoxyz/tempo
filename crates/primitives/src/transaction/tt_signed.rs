@@ -2,27 +2,30 @@ use super::{
     tempo_transaction::{TEMPO_TX_TYPE_ID, TempoTransaction},
     tt_signature::TempoSignature,
 };
-use alloy_consensus::{Transaction, transaction::TxHashRef};
+use alloc::vec::Vec;
+use alloy_consensus::{SignableTransaction, Transaction, transaction::TxHashRef};
 use alloy_eips::{
     Decodable2718, Encodable2718, Typed2718,
     eip2718::{Eip2718Error, Eip2718Result},
     eip2930::AccessList,
     eip7702::SignedAuthorization,
 };
-use alloy_primitives::{B256, Bytes, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use alloy_rlp::{BufMut, Decodable, Encodable};
 use core::{
     fmt::Debug,
     hash::{Hash, Hasher},
-    mem,
 };
-use reth_primitives_traits::InMemorySize;
+
+#[cfg(not(feature = "std"))]
+use once_cell::race::OnceBox as OnceLock;
+#[cfg(feature = "std")]
 use std::sync::OnceLock;
 
 /// A transaction with an AA signature and hash seal.
 ///
 /// This wraps a TempoTransaction transaction with its multi-signature-type signature
-/// (secp256k1, P256, Webauthn, Keychain) and provides a cached transaction hash.
+/// (secp256k1, P256, Webauthn, Keychain) and provides cached hashes.
 #[derive(Clone, Debug)]
 pub struct AASigned {
     /// The inner Tempo transaction
@@ -82,7 +85,8 @@ impl AASigned {
     /// Returns a reference to the transaction hash, computing it if needed.
     #[doc(alias = "tx_hash", alias = "transaction_hash")]
     pub fn hash(&self) -> &B256 {
-        self.hash.get_or_init(|| self.compute_hash())
+        #[allow(clippy::useless_conversion)]
+        self.hash.get_or_init(|| self.compute_hash().into())
     }
 
     /// Calculate the transaction hash
@@ -95,6 +99,25 @@ impl AASigned {
     /// Calculate the signing hash for the transaction.
     pub fn signature_hash(&self) -> B256 {
         self.tx.signature_hash()
+    }
+
+    /// Calculate the expiring nonce dedup hash for replay protection.
+    ///
+    /// This hash is `keccak256(encode_for_signing || sender)`. It is:
+    /// - **Invariant to fee payer changes**: the fee payer signature and fee token are excluded
+    ///   (since `encode_for_signing` doesn't commit to them when a fee payer is present).
+    /// - **Unique per sender**: different signers produce different recovered addresses, so the
+    ///   hash differs even for identical transaction payloads.
+    ///
+    /// This prevents a replay attack where two different fee payers sign the same sender-signed
+    /// transaction, producing different `tx_hash` values that would bypass `tx_hash`-based
+    /// replay protection.
+    pub fn expiring_nonce_hash(&self, sender: Address) -> B256 {
+        let mut buf =
+            Vec::with_capacity(self.tx.payload_len_for_signature() + sender.as_slice().len());
+        self.tx.encode_for_signing(&mut buf);
+        buf.extend_from_slice(sender.as_slice());
+        alloy_primitives::keccak256(&buf)
     }
 
     /// Returns the RLP header for the transaction and signature, encapsulating both
@@ -304,15 +327,6 @@ impl PartialEq for AASigned {
 
 impl Eq for AASigned {}
 
-impl InMemorySize for AASigned {
-    fn size(&self) -> usize {
-        mem::size_of::<Self>()
-            + self.tx.size()
-            + self.signature.encoded_length()
-            + mem::size_of::<B256>()
-    }
-}
-
 impl alloy_consensus::transaction::SignerRecoverable for AASigned {
     fn recover_signer(
         &self,
@@ -369,8 +383,8 @@ impl<'a> arbitrary::Arbitrary<'a> for AASigned {
 #[cfg(feature = "serde")]
 mod serde_impl {
     use super::*;
+    use alloc::borrow::Cow;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use std::borrow::Cow;
 
     #[derive(Serialize, Deserialize)]
     struct AASignedHelper<'a> {
@@ -458,5 +472,238 @@ mod serde_impl {
             let deserialized: super::super::AASigned = serde_json::from_str(&json).unwrap();
             assert_eq!(aa_signed.tx(), deserialized.tx());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transaction::{
+        tempo_transaction::Call,
+        tt_authorization::tests::{generate_secp256k1_keypair, sign_hash},
+        tt_signature::PrimitiveSignature,
+    };
+    use alloy_consensus::transaction::SignerRecoverable;
+    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
+
+    fn make_tx() -> TempoTransaction {
+        TempoTransaction {
+            chain_id: 1,
+            gas_limit: 21000,
+            calls: vec![Call {
+                to: TxKind::Call(Address::repeat_byte(0x42)),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_hash_and_transaction_trait() {
+        let tx = make_tx();
+        let sig =
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+
+        // new_unhashed: hash not computed yet
+        let signed = AASigned::new_unhashed(tx.clone(), sig.clone());
+
+        // First call computes hash
+        let hash1 = *signed.hash();
+        // Second call returns cached hash (same reference)
+        let hash2 = *signed.hash();
+        assert_eq!(hash1, hash2, "hash should be deterministic");
+        assert_ne!(hash1, B256::ZERO);
+
+        // new_unchecked: hash provided directly
+        let known_hash = B256::random();
+        let signed_unchecked = AASigned::new_unchecked(tx.clone(), sig.clone(), known_hash);
+        assert_eq!(
+            *signed_unchecked.hash(),
+            known_hash,
+            "new_unchecked should use provided hash"
+        );
+
+        // into_parts returns the hash
+        let signed_for_parts = AASigned::new_unhashed(tx.clone(), sig.clone());
+        let (returned_tx, returned_sig, returned_hash) = signed_for_parts.into_parts();
+        assert_eq!(returned_tx, tx);
+        assert_eq!(returned_sig, sig);
+        assert_eq!(returned_hash, hash1);
+    }
+
+    #[test]
+    fn test_rlp_encode_decode_roundtrip() {
+        use alloy_eips::eip2718::Encodable2718;
+
+        let tx = make_tx();
+        let sig =
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let signed = AASigned::new_unhashed(tx, sig);
+
+        // Encode
+        let mut buf = Vec::new();
+        signed.rlp_encode(&mut buf);
+
+        // Decode
+        let decoded = AASigned::rlp_decode(&mut buf.as_slice()).unwrap();
+        assert_eq!(decoded.tx(), signed.tx());
+        assert_eq!(decoded.signature(), signed.signature());
+
+        // EIP-2718 encode/decode
+        let mut eip_buf = Vec::new();
+        signed.eip2718_encode(&mut eip_buf);
+        assert_eq!(eip_buf[0], TEMPO_TX_TYPE_ID);
+
+        let decoded_2718 =
+            AASigned::typed_decode(TEMPO_TX_TYPE_ID, &mut eip_buf[1..].as_ref()).unwrap();
+        assert_eq!(decoded_2718.tx(), signed.tx());
+
+        // trie_hash equals hash
+        assert_eq!(signed.trie_hash(), *signed.hash());
+
+        // fallback_decode returns error (Tempo txs must be typed)
+        let fallback_result = AASigned::fallback_decode(&mut [].as_ref());
+        assert!(fallback_result.is_err());
+
+        // encode_2718_len matches actual encoded length
+        assert_eq!(signed.encode_2718_len(), eip_buf.len());
+    }
+
+    #[test]
+    fn test_rlp_decode_error_paths() {
+        // Empty buffer
+        let result = AASigned::rlp_decode(&mut [].as_ref());
+        assert!(result.is_err());
+
+        // Not a list (string header)
+        let result = AASigned::rlp_decode(&mut [0x80].as_ref());
+        assert!(result.is_err());
+
+        // Payload length exceeds buffer
+        let result = AASigned::rlp_decode(&mut [0xc1, 0x00].as_ref()); // list of 1 byte but only 0 available
+        assert!(result.is_err());
+
+        // Wrong type for typed_decode
+        let result = AASigned::typed_decode(0x00, &mut [].as_ref());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_expiring_nonce_hash_invariant_to_fee_payer() {
+        let sender = Address::repeat_byte(0x01);
+
+        let make_sponsored_tx = |fee_payer_sig: Signature| -> TempoTransaction {
+            TempoTransaction {
+                chain_id: 1,
+                gas_limit: 1_000_000,
+                nonce_key: U256::MAX, // TEMPO_EXPIRING_NONCE_KEY
+                nonce: 0,
+                fee_token: Some(Address::repeat_byte(0xFE)),
+                fee_payer_signature: Some(fee_payer_sig),
+                valid_before: Some(core::num::NonZeroU64::new(100).unwrap()),
+                calls: vec![Call {
+                    to: TxKind::Call(Address::repeat_byte(0x42)),
+                    value: U256::ZERO,
+                    input: Bytes::new(),
+                }],
+                ..Default::default()
+            }
+        };
+
+        let sig =
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+
+        // Two txs identical except for fee_payer_signature
+        let tx1 = make_sponsored_tx(Signature::new(U256::from(1), U256::from(2), false));
+        let tx2 = make_sponsored_tx(Signature::new(U256::from(3), U256::from(4), true));
+
+        let signed1 = AASigned::new_unhashed(tx1, sig.clone());
+        let signed2 = AASigned::new_unhashed(tx2, sig);
+
+        // tx_hash MUST differ (fee_payer_signature is part of the envelope)
+        assert_ne!(signed1.hash(), signed2.hash(), "tx hashes must differ");
+
+        // expiring_nonce_hash MUST be identical (invariant to fee payer)
+        let hash1 = signed1.expiring_nonce_hash(sender);
+        let hash2 = signed2.expiring_nonce_hash(sender);
+        assert_eq!(
+            hash1, hash2,
+            "expiring_nonce_hash must be invariant to fee payer signature changes"
+        );
+        assert_ne!(hash1, B256::ZERO);
+    }
+
+    #[test]
+    fn test_expiring_nonce_hash_unique_per_sender() {
+        let tx = TempoTransaction {
+            chain_id: 1,
+            gas_limit: 1_000_000,
+            nonce_key: U256::MAX,
+            nonce: 0,
+            valid_before: Some(core::num::NonZeroU64::new(100).unwrap()),
+            calls: vec![Call {
+                to: TxKind::Call(Address::repeat_byte(0x42)),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            ..Default::default()
+        };
+        let sig =
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let signed = AASigned::new_unhashed(tx, sig);
+
+        let sender_a = Address::repeat_byte(0x01);
+        let sender_b = Address::repeat_byte(0x02);
+
+        assert_ne!(
+            signed.expiring_nonce_hash(sender_a),
+            signed.expiring_nonce_hash(sender_b),
+            "different senders must produce different expiring_nonce_hash"
+        );
+    }
+
+    #[test]
+    fn test_expiring_nonce_hash_deterministic() {
+        let tx = make_tx();
+        let sig =
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let signed = AASigned::new_unhashed(tx, sig);
+        let sender = Address::repeat_byte(0xAB);
+
+        let h1 = signed.expiring_nonce_hash(sender);
+        let h2 = signed.expiring_nonce_hash(sender);
+        assert_eq!(h1, h2, "expiring_nonce_hash must be deterministic");
+    }
+
+    #[test]
+    fn test_recover_signer() {
+        let (signing_key, expected_address) = generate_secp256k1_keypair();
+
+        let tx = make_tx();
+
+        // Create signed transaction with placeholder sig to get sig_hash
+        let placeholder =
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let temp_signed = AASigned::new_unhashed(tx.clone(), placeholder);
+        let sig_hash = temp_signed.signature_hash();
+
+        // Sign the correct hash
+        let signature = sign_hash(&signing_key, &sig_hash);
+        let signed = AASigned::new_unhashed(tx.clone(), signature);
+
+        // Recovery should succeed with correct address
+        let recovered = signed.recover_signer().unwrap();
+        assert_eq!(recovered, expected_address);
+
+        // recover_signer_unchecked should give same result
+        let recovered_unchecked = signed.recover_signer_unchecked().unwrap();
+        assert_eq!(recovered_unchecked, expected_address);
+
+        // Wrong signature yields wrong address
+        let wrong_sig = sign_hash(&signing_key, &B256::random());
+        let bad_signed = AASigned::new_unhashed(tx, wrong_sig);
+        let bad_recovered = bad_signed.recover_signer().unwrap();
+        assert_ne!(bad_recovered, expected_address);
     }
 }

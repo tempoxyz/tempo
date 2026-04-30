@@ -1,7 +1,13 @@
+use alloc::vec::Vec;
 use alloy_eips::eip7702::{Authorization, RecoveredAuthority, RecoveredAuthorization};
-use alloy_primitives::{Address, B256, keccak256};
+use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::{BufMut, Decodable, Encodable, Header, Result as RlpResult, length_of_length};
 use core::ops::Deref;
+use revm::context::transaction::AuthorizationTr;
+
+#[cfg(not(feature = "std"))]
+use once_cell::race::OnceBox as OnceLock;
+#[cfg(feature = "std")]
 use std::sync::OnceLock;
 
 use crate::TempoSignature;
@@ -108,7 +114,7 @@ impl TempoSignedAuthorization {
 
     /// Calculates a heuristic for the in-memory size of this authorization
     pub fn size(&self) -> usize {
-        core::mem::size_of::<Authorization>() + self.signature.size()
+        size_of::<Self>()
     }
 }
 
@@ -161,26 +167,6 @@ impl Deref for TempoSignedAuthorization {
     }
 }
 
-// Compact implementation for reth storage
-#[cfg(feature = "reth-codec")]
-impl reth_codecs::Compact for TempoSignedAuthorization {
-    fn to_compact<B>(&self, buf: &mut B) -> usize
-    where
-        B: alloy_rlp::BufMut + AsMut<[u8]>,
-    {
-        // Encode using RLP
-        let start_len = buf.remaining_mut();
-        self.encode(buf);
-        start_len - buf.remaining_mut()
-    }
-
-    fn from_compact(buf: &[u8], len: usize) -> (Self, &[u8]) {
-        let mut buf_slice = &buf[..len];
-        let auth = Self::decode(&mut buf_slice).expect("valid RLP encoding");
-        (auth, &buf[len..])
-    }
-}
-
 /// A recovered EIP-7702 authorization with AA signature support.
 ///
 /// This wraps an `TempoSignedAuthorization` with lazy authority recovery.
@@ -214,7 +200,12 @@ impl RecoveredTempoAuthorization {
     pub fn new_unchecked(signed: TempoSignedAuthorization, authority: RecoveredAuthority) -> Self {
         Self {
             signed,
-            authority: authority.into(),
+            authority: {
+                let value = OnceLock::new();
+                #[allow(clippy::useless_conversion)]
+                let _ = value.set(authority.into());
+                value
+            },
         }
     }
 
@@ -257,10 +248,12 @@ impl RecoveredTempoAuthorization {
     ///
     /// Recovers the authority on first access and caches the result.
     pub fn authority_status(&self) -> &RecoveredAuthority {
+        #[allow(clippy::useless_conversion)]
         self.authority.get_or_init(|| {
             self.signed
                 .recover_authority()
                 .map_or(RecoveredAuthority::Invalid, RecoveredAuthority::Valid)
+                .into()
         })
     }
 
@@ -293,11 +286,29 @@ impl Deref for RecoveredTempoAuthorization {
     }
 }
 
+impl AuthorizationTr for RecoveredTempoAuthorization {
+    fn chain_id(&self) -> U256 {
+        self.chain_id
+    }
+    fn address(&self) -> Address {
+        self.address
+    }
+    fn nonce(&self) -> u64 {
+        self.nonce
+    }
+
+    fn authority(&self) -> Option<Address> {
+        self.authority()
+    }
+}
+
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
     use crate::TempoSignature;
     use alloy_primitives::{U256, address};
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
 
     #[test]
     fn test_aa_signed_auth_encode_decode_roundtrip() {
@@ -308,7 +319,7 @@ mod tests {
         };
 
         let signature = TempoSignature::default(); // Use secp256k1 test signature
-        let signed = TempoSignedAuthorization::new_unchecked(auth, signature);
+        let signed = TempoSignedAuthorization::new_unchecked(auth.clone(), signature.clone());
 
         let mut buf = Vec::new();
         signed.encode(&mut buf);
@@ -316,6 +327,20 @@ mod tests {
         let decoded = TempoSignedAuthorization::decode(&mut buf.as_slice()).unwrap();
         assert_eq!(buf.len(), signed.length());
         assert_eq!(decoded, signed);
+
+        // Test accessors
+        assert_eq!(signed.inner(), &auth);
+        assert_eq!(signed.signature(), &signature);
+        assert!(signed.size() > 0);
+
+        // Test Deref to Authorization
+        assert_eq!(signed.chain_id, auth.chain_id);
+        assert_eq!(signed.address, auth.address);
+        assert_eq!(signed.nonce, auth.nonce);
+
+        // Test strip_signature
+        let stripped = signed.strip_signature();
+        assert_eq!(stripped, auth);
     }
 
     #[test]
@@ -338,5 +363,86 @@ mod tests {
         };
 
         assert_eq!(signed.signature_hash(), expected_hash);
+    }
+
+    pub fn generate_secp256k1_keypair() -> (PrivateKeySigner, Address) {
+        let signer = PrivateKeySigner::random();
+        let address = signer.address();
+        (signer, address)
+    }
+
+    pub fn sign_hash(signer: &PrivateKeySigner, hash: &B256) -> TempoSignature {
+        let signature = signer.sign_hash_sync(hash).expect("signing failed");
+        TempoSignature::from(signature)
+    }
+
+    #[test]
+    fn test_recover_authority() {
+        let (signing_key, expected_address) = generate_secp256k1_keypair();
+
+        let auth = Authorization {
+            chain_id: U256::ONE,
+            address: Address::random(),
+            nonce: 1,
+        };
+
+        // Create and sign auth
+        let placeholder_sig = TempoSignature::default();
+        let temp_signed = TempoSignedAuthorization::new_unchecked(auth.clone(), placeholder_sig);
+        let signature = sign_hash(&signing_key, &temp_signed.signature_hash());
+        let signed = TempoSignedAuthorization::new_unchecked(auth.clone(), signature.clone());
+
+        // Recovery should succeed
+        let recovered = signed.recover_authority();
+        assert!(recovered.is_ok());
+        assert_eq!(recovered.unwrap(), expected_address);
+
+        // into_recovered() returns RecoveredAuthorization
+        let signed_for_into =
+            TempoSignedAuthorization::new_unchecked(auth.clone(), signature.clone());
+        let std_recovered = signed_for_into.into_recovered();
+        assert_eq!(std_recovered.authority(), Some(expected_address));
+
+        // RecoveredTempoAuthorization - lazy recovery
+        let signed_for_lazy =
+            TempoSignedAuthorization::new_unchecked(auth.clone(), signature.clone());
+        let lazy_recovered = RecoveredTempoAuthorization::new(signed_for_lazy);
+        assert_eq!(lazy_recovered.authority(), Some(expected_address));
+        assert!(matches!(
+            lazy_recovered.authority_status(),
+            RecoveredAuthority::Valid(_)
+        ));
+
+        // RecoveredTempoAuthorization::recover() - eager recovery
+        let signed_for_eager =
+            TempoSignedAuthorization::new_unchecked(auth.clone(), signature.clone());
+        let eager_recovered = RecoveredTempoAuthorization::recover(signed_for_eager);
+        assert_eq!(eager_recovered.authority(), Some(expected_address));
+
+        // Accessors on RecoveredTempoAuthorization
+        assert_eq!(eager_recovered.signed().inner(), &auth);
+        assert_eq!(eager_recovered.inner(), &auth);
+        assert_eq!(eager_recovered.signature(), &signature);
+
+        // into_recovered_authorization()
+        let signed_for_convert = TempoSignedAuthorization::new_unchecked(auth.clone(), signature);
+        let converted = RecoveredTempoAuthorization::new(signed_for_convert);
+        let std_auth = converted.into_recovered_authorization();
+        assert_eq!(std_auth.authority(), Some(expected_address));
+
+        // Sign a different hash - invalid recovery
+        let wrong_hash = B256::random();
+        let wrong_signature = sign_hash(&signing_key, &wrong_hash);
+        let bad_signed = TempoSignedAuthorization::new_unchecked(auth, wrong_signature);
+
+        // Recovery succeeds but yields wrong address
+        let recovered = bad_signed.recover_authority();
+        assert!(recovered.is_ok());
+        assert_ne!(recovered.unwrap(), expected_address);
+
+        // RecoveredTempoAuthorization with wrong sig still recovers (to wrong address)
+        let bad_lazy = RecoveredTempoAuthorization::new(bad_signed);
+        assert!(bad_lazy.authority().is_some());
+        assert_ne!(bad_lazy.authority().unwrap(), expected_address);
     }
 }

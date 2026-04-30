@@ -2,7 +2,7 @@
 //!
 //! This crate provides:
 //! - `#[contract]` macro that transforms a storage schema into a fully-functional contract
-//! - `#[derive(Storable)]` macro for multi-slot storage structs
+//! - `#[derive(Storable)]` macro for storage structs and `#[repr(u8)]` unit enums
 //! - `storable_alloy_ints!` macro for generating alloy integer storage implementations
 //! - `storable_alloy_bytes!` macro for generating alloy FixedBytes storage implementations
 //! - `storable_rust_ints!` macro for generating standard Rust integer storage implementations
@@ -19,12 +19,41 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{
     Data, DeriveInput, Expr, Fields, Ident, Token, Type, Visibility,
-    parse::{ParseStream, Parser},
+    parse::{Parse, ParseStream, Parser},
     parse_macro_input,
     punctuated::Punctuated,
 };
 
 use crate::utils::extract_attributes;
+
+/// Configuration parsed from `#[contract(...)]` attribute arguments.
+struct ContractConfig {
+    /// Optional address expression for generating `Self::new()` and `Default`.
+    address: Option<Expr>,
+}
+
+impl Parse for ContractConfig {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        if input.is_empty() {
+            return Ok(Self { address: None });
+        }
+
+        let ident: Ident = input.parse()?;
+        if ident != "addr" && ident != "address" {
+            return Err(syn::Error::new(
+                ident.span(),
+                "only `addr` attribute is supported",
+            ));
+        }
+
+        input.parse::<Token![=]>()?;
+        let address: Expr = input.parse()?;
+
+        Ok(Self {
+            address: Some(address),
+        })
+    }
+}
 
 const RESERVED: &[&str] = &["address", "storage", "msg_sender"];
 
@@ -51,7 +80,7 @@ const RESERVED: &[&str] = &["address", "storage", "msg_sender"];
 ///
 /// The macro generates:
 /// 1. Transformed struct with generic parameters and runtime fields
-/// 2. Constructor: `_new(address, storage)`
+/// 2. Constructor: `__new(address, storage)`
 /// 3. Type-safe (private) getter and setter methods
 ///
 /// # Requirements
@@ -60,21 +89,25 @@ const RESERVED: &[&str] = &["address", "storage", "msg_sender"];
 /// - Unique field names, excluding the reserved ones: `address`, `storage`, `msg_sender`.
 /// - All field types must implement `Storable`, and mapping keys must implement `StorageKey`.
 #[proc_macro_attribute]
-pub fn contract(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let config = parse_macro_input!(attr as ContractConfig);
     let input = parse_macro_input!(item as DeriveInput);
 
-    match gen_contract_output(input) {
+    match gen_contract_output(input, config.address.as_ref()) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }
 }
 
 /// Main code generation function with optional call trait generation
-fn gen_contract_output(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
+fn gen_contract_output(
+    input: DeriveInput,
+    address: Option<&Expr>,
+) -> syn::Result<proc_macro2::TokenStream> {
     let (ident, vis) = (input.ident.clone(), input.vis.clone());
     let fields = parse_fields(input)?;
 
-    let storage_output = gen_contract_storage(&ident, &vis, &fields)?;
+    let storage_output = gen_contract_storage(&ident, &vis, &fields, address)?;
     Ok(quote! { #storage_output })
 }
 
@@ -91,15 +124,9 @@ struct FieldInfo {
 #[derive(Debug, Clone, Copy)]
 enum FieldKind<'a> {
     /// Fields with a direct slot allocation, either single or multi (`Slot<V>`).
-    Slot(&'a Type),
-    /// Single-level mapping (`Mapping<K, V>`)
+    Direct(&'a Type),
+    /// Mapping fields. Handles all nesting levels via recursive types.
     Mapping { key: &'a Type, value: &'a Type },
-    /// Nested mapping (`Mapping<K1, Mapping<K2, V>>`)
-    NestedMapping {
-        key1: &'a Type,
-        key2: &'a Type,
-        value: &'a Type,
-    },
 }
 
 fn parse_fields(input: DeriveInput) -> syn::Result<Vec<FieldInfo>> {
@@ -155,62 +182,53 @@ fn gen_contract_storage(
     ident: &Ident,
     vis: &Visibility,
     fields: &[FieldInfo],
+    address: Option<&Expr>,
 ) -> syn::Result<proc_macro2::TokenStream> {
     // Generate the complete output
     let allocated_fields = packing::allocate_slots(fields)?;
-    let transformed_struct = layout::gen_struct(ident, vis);
+    let transformed_struct = layout::gen_struct(ident, vis, &allocated_fields);
     let storage_trait = layout::gen_contract_storage_impl(ident);
-    let constructor = layout::gen_constructor(ident);
-    let methods: Vec<_> = allocated_fields
-        .iter()
-        .enumerate()
-        .map(|(idx, allocated)| {
-            let prev_field = if idx > 0 {
-                Some(&allocated_fields[idx - 1])
-            } else {
-                None
-            };
-            let next_field = if idx + 1 < allocated_fields.len() {
-                Some(&allocated_fields[idx + 1])
-            } else {
-                None
-            };
-            layout::gen_getters_and_setters(ident, allocated, prev_field, next_field)
-        })
-        .collect();
-
+    let constructor = layout::gen_constructor(ident, &allocated_fields, address);
     let slots_module = layout::gen_slots_module(&allocated_fields);
+    let default_impl = if address.is_some() {
+        layout::gen_default_impl(ident)
+    } else {
+        proc_macro2::TokenStream::new()
+    };
 
     let output = quote! {
         #slots_module
         #transformed_struct
         #constructor
         #storage_trait
-        #(#methods)*
+        #default_impl
     };
 
     Ok(output)
 }
 
-/// Derives the `Storable` trait for structs with named fields.
+/// Derives the `Storable` trait for structs with named fields and `#[repr(u8)]` unit enums.
 ///
 /// This macro generates implementations for loading and storing multi-slot
-/// struct layout in EVM storage.
+/// struct layouts and single-byte unit enums in EVM storage.
 /// Its packing and encoding schemes aim to be an exact representation of
 /// the storage model used by Solidity.
 ///
 /// # Requirements
 ///
-/// - The struct must have named fields (not tuple structs or unit structs)
-/// - All fields must implement the `Storable` trait
+/// - Structs must have named fields (not tuple structs or unit structs)
+/// - Unit enums must be annotated with `#[repr(u8)]`
+/// - Unit enums must include a zero-valued variant so fresh or deleted storage stays readable
+/// - All stored field types must implement the `Storable` trait
 ///
 /// # Generated Code
 ///
-/// For each struct field, the macro generates sequential slot offsets.
-/// It implements the `Storable` trait methods:
+/// For structs, the macro generates sequential slot offsets for each field.
+/// For `#[repr(u8)]` unit enums, it loads and stores the enum through `u8`.
+/// In both cases it implements the `Storable` trait methods:
 /// - `load` - Loads the struct from storage
 /// - `store` - Stores the struct to storage
-/// - `delete` - Uses default implementation (sets all slots to zero)
+/// - `delete` - Removes the value from storage using the type-specific semantics
 ///
 /// # Example
 ///
@@ -239,14 +257,14 @@ pub fn derive_storage_block(input: TokenStream) -> TokenStream {
 
 // -- STORAGE PRIMITIVES TRAIT IMPLEMENTATIONS -------------------------------------------
 
-/// Generate `StorableType` and `Storable<1>` implementations for all standard integer types.
+/// Generate `StorableType` and `Storable` implementations for all standard integer types.
 ///
 /// Generates implementations for all standard Rust integer types:
 /// u8/i8, u16/i16, u32/i32, u64/i64, u128/i128.
 ///
 /// Each type gets:
 /// - `StorableType` impl with `BYTE_COUNT` constant
-/// - `Storable<1>` impl with `load()`, `store()`, `to_evm_words()`, `from_evm_words()` methods
+/// - `Storable` impl with `load()`, `store()` methods
 /// - `StorageKey` impl for use as mapping keys
 /// - Auto-generated tests that verify round-trip conversions with random values
 #[proc_macro]
@@ -254,14 +272,14 @@ pub fn storable_rust_ints(_input: TokenStream) -> TokenStream {
     storable_primitives::gen_storable_rust_ints().into()
 }
 
-/// Generate `StorableType` and `Storable<1>` implementations for alloy integer types.
+/// Generate `StorableType` and `Storable` implementations for alloy integer types.
 ///
 /// Generates implementations for all alloy integer types (both signed and unsigned):
 /// U8/I8, U16/I16, U32/I32, U64/I64, U128/I128, U256/I256.
 ///
 /// Each type gets:
 /// - `StorableType` impl with `BYTE_COUNT` constant
-/// - `Storable<1>` impl with `load()`, `store()`, `to_evm_words()`, `from_evm_words()` methods
+/// - `Storable` impl with `load()`, `store()` methods
 /// - `StorageKey` impl for use as mapping keys
 /// - Auto-generated tests that verify round-trip conversions using alloy's `.random()` method
 #[proc_macro]
@@ -269,14 +287,14 @@ pub fn storable_alloy_ints(_input: TokenStream) -> TokenStream {
     storable_primitives::gen_storable_alloy_ints().into()
 }
 
-/// Generate `StorableType` and `Storable<1>` implementations for alloy `FixedBytes<N>` types.
+/// Generate `StorableType` and `Storable` implementations for alloy `FixedBytes<N>` types.
 ///
 /// Generates implementations for all fixed-size byte arrays from `N = 1..32`
 /// All sizes fit within a single storage slot.
 ///
 /// Each type gets:
 /// - `StorableType` impl with `BYTE_COUNT` constant
-/// - `Storable<1>` impl with `load()`, `store()`, `to_evm_words()`, `from_evm_words()` methods
+/// - `Storable` impl with `load()`, `store()` methods
 /// - `StorageKey` impl for use as mapping keys
 /// - Auto-generated tests that verify round-trip conversions using alloy's `.random()` method
 ///
@@ -310,7 +328,7 @@ pub fn gen_storable_tests(_input: TokenStream) -> TokenStream {
 ///
 /// Each array gets:
 /// - `StorableType` impl with `LAYOUT = Layout::Slot`
-/// - `Storable<SLOTS>` impl where `SLOTS` is computed from element packing
+/// - `Storable`
 #[proc_macro]
 pub fn storable_arrays(_input: TokenStream) -> TokenStream {
     storable_primitives::gen_storable_arrays().into()

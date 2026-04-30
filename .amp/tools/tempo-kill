@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Amp toolbox tool: Kill running tempo processes and cleanup
+
+if [ "$TOOLBOX_ACTION" = "describe" ]; then
+    cat <<'EOF'
+name: tempo-kill
+description: Kill any running tempo processes and cleanup stale IPC sockets. Use this instead of manually running nu tempo.nu kill.
+EOF
+    exit 0
+fi
+
+if [ "$TOOLBOX_ACTION" = "execute" ]; then
+    echo "Running: nu tempo.nu kill"
+    nu tempo.nu kill
+fi

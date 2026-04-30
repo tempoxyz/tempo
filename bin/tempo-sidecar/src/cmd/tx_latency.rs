@@ -1,6 +1,6 @@
 use crate::monitor::prometheus_metrics;
 use alloy::{
-    primitives::B256,
+    primitives::map::{B256Map, B256Set},
     providers::{Provider, ProviderBuilder, WsConnect},
 };
 use clap::Parser;
@@ -10,10 +10,7 @@ use metrics::{describe_gauge, describe_histogram, gauge, histogram};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use poem::{EndpointExt, Route, Server, get, listener::TcpListener};
 use reqwest::Url;
-use std::{
-    collections::{HashMap, HashSet},
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tempo_alloy::{TempoNetwork, primitives::TempoHeader};
 use tokio::signal;
 use tracing::{debug, error, warn};
@@ -42,7 +39,7 @@ struct TransactionLatencyMonitor {
     rpc_url: Url,
     max_pending_age: Duration,
     /// Keeps track of the transactions that were emitted over the pending event stream.
-    pending: HashMap<B256, u128>,
+    pending: B256Map<u128>,
 }
 
 impl TransactionLatencyMonitor {
@@ -50,7 +47,7 @@ impl TransactionLatencyMonitor {
         Self {
             rpc_url,
             max_pending_age,
-            pending: HashMap::new(),
+            pending: Default::default(),
         }
     }
 
@@ -103,7 +100,7 @@ impl TransactionLatencyMonitor {
         }
     }
 
-    fn on_mined_block(&mut self, header: TempoHeader, mined_txs: HashSet<B256>) {
+    fn on_mined_block(&mut self, header: TempoHeader, mined_txs: B256Set) {
         gauge!("tempo_tx_latency_pending_observed").set(self.pending.len() as f64);
         if self.pending.is_empty() {
             return;

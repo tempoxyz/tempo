@@ -7,19 +7,26 @@ use commonware_runtime::{
 };
 use futures::future::join_all;
 
-use crate::{Setup, setup_validators};
+use crate::{CONSENSUS_NODE_PREFIX, Setup, connect_execution_peers, setup_validators};
 
-#[test_traced]
-fn pre_hardfork_validator_lost_key_but_gets_key_in_next_epoch() {
-    assert_validator_lost_key_but_gets_key_in_next_epoch(false)
+fn metric_value(metrics: &str, uid: &str, metric_suffix: &str) -> Option<u64> {
+    metrics.lines().find_map(|line| {
+        if !line.starts_with(CONSENSUS_NODE_PREFIX) {
+            return None;
+        }
+        let mut parts = line.split_whitespace();
+        let metric = parts.next()?;
+        let value = parts.next()?;
+        if metric.contains(uid) && metric.ends_with(metric_suffix) {
+            value.parse::<u64>().ok()
+        } else {
+            None
+        }
+    })
 }
 
 #[test_traced]
-fn allegretto_at_genesis_validator_lost_key_but_gets_key_in_next_epoch() {
-    assert_validator_lost_key_but_gets_key_in_next_epoch(true)
-}
-
-fn assert_validator_lost_key_but_gets_key_in_next_epoch(allegretto_at_genesis: bool) {
+fn validator_lost_share_but_gets_share_in_next_epoch() {
     let _ = tempo_eyre::install();
 
     let seed = 0;
@@ -27,18 +34,14 @@ fn assert_validator_lost_key_but_gets_key_in_next_epoch(allegretto_at_genesis: b
     let cfg = Config::default().with_seed(seed);
     let executor = Runner::from(cfg);
 
-    executor.start(|context| async move {
-        let epoch_length = 30;
+    executor.start(|mut context| async move {
+        let epoch_length = 20;
         let setup = Setup::new().seed(seed).epoch_length(epoch_length);
-        let setup = if allegretto_at_genesis {
-            setup.allegretto_time(0)
-        } else {
-            setup
-        };
 
         let (mut validators, _execution_runtime) =
-            setup_validators(context.clone(), setup.clone()).await;
-        let last_node = {
+            setup_validators(&mut context, setup.clone()).await;
+
+        let uid = {
             let last_node = validators
                 .last_mut()
                 .expect("we just asked for a couple of validators");
@@ -50,102 +53,118 @@ fn assert_validator_lost_key_but_gets_key_in_next_epoch(allegretto_at_genesis: b
             last_node.uid().to_string()
         };
 
-        join_all(validators.iter_mut().map(|v| v.start())).await;
-
-        let mut epoch_reached = false;
-        let mut height_reached = false;
-        let mut dkg_successful = false;
+        join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+        connect_execution_peers(&validators).await;
 
         let mut node_forgot_share = false;
-        let mut node_is_not_signer = true;
-        let mut node_got_new_share = false;
 
-        let pat = format!("{}-", crate::CONSENSUS_NODE_PREFIX);
-
-        let mut success = false;
-        while !success {
+        'acquire_share: loop {
             context.sleep(Duration::from_secs(1)).await;
-
             let metrics = context.encode();
 
-            'metrics: for line in metrics.lines() {
-                if !line.starts_with(&pat) {
-                    continue 'metrics;
-                }
-
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
-
-                if metrics.ends_with("_peers_blocked") {
-                    let value = value.parse::<u64>().unwrap();
-                    assert_eq!(value, 0);
-                }
-
-                if metric.ends_with("_epoch_manager_latest_epoch") {
-                    let value = value.parse::<u64>().unwrap();
-                    if value > 1 {
-                        assert!(
-                            node_forgot_share && node_got_new_share,
-                            "reached 2nd epoch without recovering new share",
-                        );
-                    }
-                }
-
-                // Ensures that node has no share.
-                if !node_forgot_share
-                    && metric.ends_with(&format!(
-                        "{last_node}_epoch_manager_how_often_verifier_total"
-                    ))
-                {
-                    let value = value.parse::<u64>().unwrap();
-                    node_forgot_share = value > 0;
-                }
-
-                // Double check that the node is indeed not a signer.
-                if !node_is_not_signer
-                    && metric
-                        .ends_with(&format!("{last_node}_epoch_manager_how_often_signer_total"))
-                {
-                    let value = value.parse::<u64>().unwrap();
-                    node_is_not_signer = value == 0;
-                }
-
-                // Ensure that the node gets a share by becoming a signer.
-                if node_forgot_share
-                    && node_is_not_signer
-                    && !node_got_new_share
-                    && metric
-                        .ends_with(&format!("{last_node}_epoch_manager_how_often_signer_total"))
-                {
-                    let value = value.parse::<u64>().unwrap();
-                    node_got_new_share = value > 0;
-                }
-
-                if metric.ends_with("_dkg_manager_ceremony_failures_total") {
-                    let value = value.parse::<u64>().unwrap();
-                    assert!(value < 1);
-                }
-
-                if metric.ends_with("_epoch_manager_latest_epoch") {
-                    let value = value.parse::<u64>().unwrap();
-                    epoch_reached |= value >= 1;
-                }
-                if metric.ends_with("_marshal_processed_height") {
-                    let value = value.parse::<u64>().unwrap();
-                    height_reached |= value >= epoch_length;
-                }
-                if metric.ends_with("_dkg_manager_ceremony_successes_total") {
-                    let value = value.parse::<u64>().unwrap();
-                    dkg_successful |= value >= 1;
-                }
+            if let Some(v) = metric_value(&metrics, &uid, "peers_blocked") {
+                assert_eq!(v, 0);
             }
 
-            success = epoch_reached
-                && height_reached
-                && dkg_successful
-                && node_forgot_share
-                && node_got_new_share;
+            if let Some(epoch) = metric_value(&metrics, &uid, "_epoch_manager_latest_epoch") {
+                assert!(epoch < 2, "reached 2nd epoch without recovering new share");
+            }
+
+            // Ensures that node has no share.
+            if !node_forgot_share
+                && let Some(v) =
+                    metric_value(&metrics, &uid, "_epoch_manager_how_often_verifier_total")
+            {
+                node_forgot_share = v > 0;
+            }
+
+            // Ensure that the node gets a share by becoming a signer.
+            if node_forgot_share
+                && let Some(v) =
+                    metric_value(&metrics, &uid, "_epoch_manager_how_often_signer_total")
+                && v > 0
+            {
+                break 'acquire_share;
+            }
+        }
+    });
+}
+
+#[test_traced]
+fn validator_loses_consensus_state_becomes_observer() {
+    let _ = tempo_eyre::install();
+
+    let seed = 0;
+
+    let cfg = Config::default().with_seed(seed);
+    let executor = Runner::from(cfg);
+
+    executor.start(|mut context| async move {
+        let epoch_length = 20;
+        let setup = Setup::new().seed(seed).epoch_length(epoch_length);
+
+        let (mut validators, _execution_runtime) =
+            setup_validators(&mut context, setup.clone()).await;
+
+        let target_idx = validators.len() - 1;
+        let uid = validators[target_idx].uid().to_string();
+
+        join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+
+        'setup: loop {
+            context.sleep(Duration::from_secs(1)).await;
+            let metrics = context.encode();
+
+            // Dealings in the first epoch.
+            if let Some(epoch) = metric_value(&metrics, &uid, "_epoch_manager_latest_epoch") {
+                assert_eq!(epoch, 0);
+
+                if let Some(v) = metric_value(&metrics, &uid, "_dkg_manager_ceremony_acks_sent")
+                    && v > 0
+                {
+                    break 'setup;
+                }
+            }
+        }
+
+        validators[target_idx].stop().await;
+
+        let old_prefix = &validators[target_idx].consensus_config().partition_prefix;
+        let new_prefix = format!("{old_prefix}_wiped");
+        let cfg = validators[target_idx].consensus_config_mut();
+
+        // Also remove the share from config since post-setup we may still be in Epoch 0
+        cfg.partition_prefix = new_prefix;
+        cfg.share.take();
+
+        validators[target_idx].start(&context).await;
+
+        let uid = validators[target_idx].metric_prefix();
+
+        'recover: loop {
+            context.sleep(Duration::from_secs(1)).await;
+            let metrics = context.encode();
+
+            if let Some(epoch) = metric_value(&metrics, &uid, "_epoch_manager_latest_epoch") {
+                assert!(epoch < 3);
+
+                // Only receive shares in Epoch 1
+                if epoch == 1
+                    && let Some(v) =
+                        metric_value(&metrics, &uid, "_dkg_manager_how_often_dealer_total")
+                {
+                    assert_eq!(v, 0);
+                }
+
+                // Participate as a Dealer in Epoch 2
+                if let Some(v) = metric_value(&metrics, &uid, "_dkg_manager_how_often_dealer_total")
+                    && v > 0
+                {
+                    assert_eq!(v, 1);
+                    assert_eq!(epoch, 2);
+                    break 'recover;
+                }
+            }
         }
     });
 }

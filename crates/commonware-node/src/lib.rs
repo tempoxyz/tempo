@@ -9,11 +9,14 @@ pub(crate) mod config;
 pub mod consensus;
 pub(crate) mod dkg;
 pub(crate) mod epoch;
+pub(crate) mod executor;
+pub mod feed;
 pub mod metrics;
+pub(crate) mod peer_manager;
+pub(crate) mod utils;
+pub(crate) mod validators;
 
 pub(crate) mod subblocks;
-
-use std::net::SocketAddr;
 
 use commonware_cryptography::ed25519::{PrivateKey, PublicKey};
 use commonware_p2p::authenticated::lookup;
@@ -22,19 +25,20 @@ use eyre::{OptionExt, WrapErr as _, eyre};
 use tempo_commonware_node_config::SigningShare;
 use tempo_node::TempoFullNode;
 
-use crate::config::{
-    BOUNDARY_CERT_CHANNEL_IDENT, BOUNDARY_CERT_LIMIT, BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT,
-    DKG_CHANNEL_IDENT, DKG_LIMIT, MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, PEERSETS_TO_TRACK,
-    PENDING_CHANNEL_IDENT, PENDING_LIMIT, RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT,
+pub use crate::config::{
+    BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT,
+    DKG_CHANNEL_IDENT, DKG_LIMIT, MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, NAMESPACE,
     RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT, SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT,
+    VOTES_CHANNEL_IDENT, VOTES_LIMIT,
 };
 
-pub use args::Args;
+pub use args::{Args, PositiveDuration};
 
 pub async fn run_consensus_stack(
     context: &commonware_runtime::tokio::Context,
     config: Args,
     execution_node: TempoFullNode,
+    feed_state: feed::FeedStateHandle,
 ) -> eyre::Result<()> {
     let share = config
         .signing_share
@@ -54,99 +58,76 @@ pub async fn run_consensus_stack(
         .signing_key()?
         .ok_or_eyre("required option `consensus.signing-key` not set")?;
 
-    let (mut network, oracle) = instantiate_network(
-        context,
-        signing_key.clone().into_inner(),
-        config.listen_address,
-        config.mailbox_size,
-        config.max_message_size_bytes,
-        config.allow_unregistered_handshakes,
-    )
-    .await
-    .wrap_err("failed to start network")?;
+    let backfill_quota = commonware_runtime::Quota::per_second(config.backfill_frequency);
+
+    let (mut network, oracle) =
+        instantiate_network(context, &config, signing_key.clone().into_inner())
+            .await
+            .wrap_err("failed to start network")?;
 
     let message_backlog = config.message_backlog;
-    let pending = network.register(PENDING_CHANNEL_IDENT, PENDING_LIMIT, message_backlog);
-    let recovered = network.register(RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT, message_backlog);
+    let votes = network.register(VOTES_CHANNEL_IDENT, VOTES_LIMIT, message_backlog);
+    let certificates = network.register(
+        CERTIFICATES_CHANNEL_IDENT,
+        CERTIFICATES_LIMIT,
+        message_backlog,
+    );
     let resolver = network.register(RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT, message_backlog);
     let broadcaster = network.register(
         BROADCASTER_CHANNEL_IDENT,
         BROADCASTER_LIMIT,
         message_backlog,
     );
-    let marshal = network.register(MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, message_backlog);
+    let marshal = network.register(MARSHAL_CHANNEL_IDENT, backfill_quota, message_backlog);
     let dkg = network.register(DKG_CHANNEL_IDENT, DKG_LIMIT, message_backlog);
-    let boundary_certificates = network.register(
-        BOUNDARY_CERT_CHANNEL_IDENT,
-        BOUNDARY_CERT_LIMIT,
-        message_backlog,
-    );
+    // We create the subblocks channel even though it might not be used to make
+    // sure that we don't ban peers that activate subblocks and send messages
+    // through this subchannel.
     let subblocks = network.register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, message_backlog);
 
-    let fee_recipient = config
-        .fee_recipient
-        .ok_or_eyre("required option `consensus.fee-recipient` not set")?;
-
     let consensus_engine = crate::consensus::engine::Builder {
-        context: context.with_label("engine"),
-
-        fee_recipient,
+        fee_recipient: config.fee_recipient,
 
         execution_node: Some(execution_node),
         blocker: oracle.clone(),
         peer_manager: oracle.clone(),
+
         // TODO: Set this through config?
         partition_prefix: "engine".into(),
         signer: signing_key.into_inner(),
         share,
+
         mailbox_size: config.mailbox_size,
         deque_size: config.deque_size,
 
-        time_to_propose: config.wait_for_proposal.try_into().wrap_err(
-            "failed converting argument wait-for-proposal to regular duration; \
-            was it negative or chosen too large?",
-        )?,
-        time_to_collect_notarizations: config.wait_for_notarizations.try_into().wrap_err(
-            "failed converting argument wait-for-notarizations to regular \
-            duration; was it negative or chosen too large",
-        )?,
-        time_to_retry_nullify_broadcast: config.wait_to_rebroadcast_nullify.try_into().wrap_err(
-            "failed converting argument wait-to-rebroadcast-nullify to regular \
-            duration; was it negative or chosen too large",
-        )?,
-        time_for_peer_response: config.wait_for_peer_response.try_into().wrap_err(
-            "failed converting argument wait-for-peer-response to regular \
-            duration; was it negative or chosen too large",
-        )?,
+        time_to_propose: config.wait_for_proposal.into_duration(),
+        time_to_collect_notarizations: config.wait_for_notarizations.into_duration(),
+        time_to_retry_nullify_broadcast: config.wait_to_rebroadcast_nullify.into_duration(),
+        time_for_peer_response: config.wait_for_peer_response.into_duration(),
         views_to_track: config.views_to_track,
         views_until_leader_skip: config.inactive_views_until_leader_skip,
-        new_payload_wait_time: config.time_to_build_proposal.try_into().wrap_err(
-            "failed converting argument time-to-build-proposal to regular \
-            duration; was it negative or chosen too large",
-        )?,
-        time_to_build_subblock: config.time_to_build_subblock.try_into().wrap_err(
-            "failed converting argument time-to-build-subblock to regular \
-            duration; was it negative or chosen too large",
-        )?,
-        subblock_broadcast_interval: config.subblock_broadcast_interval.try_into().wrap_err(
-            "failed converting argument subblock-broadcast-interval to regular \
-            duration; was it negative or chosen too large",
-        )?,
+        payload_interrupt_time: config.time_to_prepare_proposal_transactions.into_duration(),
+        new_payload_wait_time: config.minimum_time_before_propose.into_duration(),
+        time_to_build_subblock: config.time_to_build_subblock.into_duration(),
+        subblock_broadcast_interval: config.subblock_broadcast_interval.into_duration(),
+        fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
+        with_subblocks: false,
+
+        feed_state,
     }
-    .try_init()
+    .try_init(context.with_label("engine"))
     .await
     .wrap_err("failed initializing consensus engine")?;
 
     let (network, consensus_engine) = (
         network.start(),
         consensus_engine.start(
-            pending,
-            recovered,
+            votes,
+            certificates,
             resolver,
             broadcaster,
             marshal,
             dkg,
-            boundary_certificates,
             subblocks,
         ),
     );
@@ -168,24 +149,43 @@ pub async fn run_consensus_stack(
 
 async fn instantiate_network(
     context: &commonware_runtime::tokio::Context,
+    config: &Args,
     signing_key: PrivateKey,
-    listen_addr: SocketAddr,
-    mailbox_size: usize,
-    max_message_size: usize,
-    allow_unregistered_handshakes: bool,
 ) -> eyre::Result<(
     lookup::Network<commonware_runtime::tokio::Context, PrivateKey>,
     lookup::Oracle<PublicKey>,
 )> {
-    // TODO: Find out why `union_unique` should be used at all. This is the only place
+    // TODO: Find out why `union_unique` should be used. This is the only place
     // where `NAMESPACE` is used at all. We follow alto's example for now.
-    let p2p_namespace = commonware_utils::union_unique(crate::config::NAMESPACE, b"_P2P");
-    let p2p_cfg = lookup::Config {
-        mailbox_size,
-        tracked_peer_sets: PEERSETS_TO_TRACK,
-        attempt_unregistered_handshakes: allow_unregistered_handshakes,
-        ..lookup::Config::local(signing_key, &p2p_namespace, listen_addr, max_message_size)
+    let namespace = commonware_utils::union_unique(crate::config::NAMESPACE, b"_P2P");
+    let cfg = lookup::Config {
+        namespace,
+        crypto: signing_key,
+        listen: config.listen_address,
+        max_message_size: config.max_message_size_bytes,
+        mailbox_size: config.mailbox_size,
+        send_batch_size: commonware_utils::NZUsize!(8),
+        bypass_ip_check: config.bypass_ip_check,
+        allow_private_ips: config.allow_private_ips,
+        allow_dns: config.allow_dns,
+        tracked_peer_sets: crate::config::PEERSETS_TO_TRACK,
+        synchrony_bound: config.synchrony_bound.into_duration(),
+        max_handshake_age: config.handshake_stale_after.into_duration(),
+        handshake_timeout: config.handshake_timeout.into_duration(),
+        max_concurrent_handshakes: config.max_concurrent_handshakes,
+        block_duration: config.time_to_unblock_byzantine_peer.into_duration(),
+        dial_frequency: config.wait_before_peers_redial.into_duration(),
+        ping_frequency: config.wait_before_peers_reping.into_duration(),
+        peer_connection_cooldown: config.connection_per_peer_min_period.into_duration(),
+        allowed_handshake_rate_per_ip: commonware_runtime::Quota::with_period(
+            config.handshake_per_ip_min_period.into_duration(),
+        )
+        .ok_or_eyre("handshake per ip min period must be non-zero")?,
+        allowed_handshake_rate_per_subnet: commonware_runtime::Quota::with_period(
+            config.handshake_per_subnet_min_period.into_duration(),
+        )
+        .ok_or_eyre("handshake per subnet min period must be non-zero")?,
     };
 
-    Ok(lookup::Network::new(context.with_label("network"), p2p_cfg))
+    Ok(lookup::Network::new(context.with_label("network"), cfg))
 }

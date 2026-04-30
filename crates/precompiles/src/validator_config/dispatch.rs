@@ -1,68 +1,74 @@
-use super::{IValidatorConfig, ValidatorConfig};
+//! ABI dispatch for the [`ValidatorConfig`] (V1) precompile.
+
+use super::ValidatorConfig;
 use crate::{
-    Precompile, fill_precompile_output, input_cost, mutate_void,
-    storage::PrecompileStorageProvider, unknown_selector, view,
+    Precompile, SelectorSchedule, charge_input_cost, dispatch_call, error::TempoPrecompileError,
+    mutate_void, view,
 };
-use alloy::{primitives::Address, sol_types::SolCall};
-use revm::precompile::{PrecompileError, PrecompileResult};
+use alloy::{
+    primitives::Address,
+    sol_types::{SolCall, SolInterface},
+};
+use revm::precompile::PrecompileResult;
+use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_contracts::precompiles::IValidatorConfig::{self, IValidatorConfigCalls};
 
-impl<'a, S: PrecompileStorageProvider> Precompile for ValidatorConfig<'a, S> {
+const T1_ADDED: &[[u8; 4]] = &[IValidatorConfig::changeValidatorStatusByIndexCall::SELECTOR];
+
+impl Precompile for ValidatorConfig {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
-        self.storage
-            .deduct_gas(input_cost(calldata.len()))
-            .map_err(|_| PrecompileError::OutOfGas)?;
+        if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
+            return err;
+        }
 
-        let selector: [u8; 4] = calldata
-            .get(..4)
-            .ok_or_else(|| {
-                PrecompileError::Other("Invalid input: missing function selector".into())
-            })?
-            .try_into()
-            .map_err(|_| PrecompileError::Other("Invalid function selector length".into()))?;
+        dispatch_call(
+            calldata,
+            &[SelectorSchedule::new(TempoHardfork::T1).with_added(T1_ADDED)],
+            IValidatorConfigCalls::abi_decode,
+            |call| match call {
+                // View functions
+                IValidatorConfigCalls::owner(call) => view(call, |_| self.owner()),
+                IValidatorConfigCalls::getValidators(call) => view(call, |_| self.get_validators()),
+                IValidatorConfigCalls::getNextFullDkgCeremony(call) => {
+                    view(call, |_| self.get_next_full_dkg_ceremony())
+                }
+                IValidatorConfigCalls::validatorsArray(call) => view(call, |c| {
+                    let index =
+                        u64::try_from(c.index).map_err(|_| TempoPrecompileError::array_oob())?;
+                    self.validators_array(index)
+                }),
+                IValidatorConfigCalls::validators(call) => {
+                    view(call, |c| self.validators(c.validator))
+                }
+                IValidatorConfigCalls::validatorCount(call) => {
+                    view(call, |_| self.validator_count())
+                }
 
-        let result = match selector {
-            // View functions
-            IValidatorConfig::ownerCall::SELECTOR => {
-                view::<IValidatorConfig::ownerCall>(calldata, |_call| self.owner())
-            }
-            IValidatorConfig::getValidatorsCall::SELECTOR => {
-                view::<IValidatorConfig::getValidatorsCall>(calldata, |call| {
-                    self.get_validators(call)
-                })
-            }
-
-            // Mutate functions
-            IValidatorConfig::addValidatorCall::SELECTOR => {
-                mutate_void::<IValidatorConfig::addValidatorCall>(
-                    calldata,
-                    msg_sender,
-                    |s, call| self.add_validator(s, call),
-                )
-            }
-            IValidatorConfig::updateValidatorCall::SELECTOR => {
-                mutate_void::<IValidatorConfig::updateValidatorCall>(
-                    calldata,
-                    msg_sender,
-                    |s, call| self.update_validator(s, call),
-                )
-            }
-            IValidatorConfig::changeValidatorStatusCall::SELECTOR => {
-                mutate_void::<IValidatorConfig::changeValidatorStatusCall>(
-                    calldata,
-                    msg_sender,
-                    |s, call| self.change_validator_status(s, call),
-                )
-            }
-            IValidatorConfig::changeOwnerCall::SELECTOR => {
-                mutate_void::<IValidatorConfig::changeOwnerCall>(calldata, msg_sender, |s, call| {
-                    self.change_owner(s, call)
-                })
-            }
-
-            _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
-        };
-
-        result.map(|res| fill_precompile_output(res, self.storage))
+                // Mutate functions
+                IValidatorConfigCalls::addValidator(call) => {
+                    mutate_void(call, msg_sender, |s, c| self.add_validator(s, c))
+                }
+                IValidatorConfigCalls::updateValidator(call) => {
+                    mutate_void(call, msg_sender, |s, c| self.update_validator(s, c))
+                }
+                IValidatorConfigCalls::changeValidatorStatus(call) => {
+                    mutate_void(call, msg_sender, |s, c| self.change_validator_status(s, c))
+                }
+                IValidatorConfigCalls::changeValidatorStatusByIndex(call) => {
+                    mutate_void(call, msg_sender, |s, c| {
+                        self.change_validator_status_by_index(s, c)
+                    })
+                }
+                IValidatorConfigCalls::changeOwner(call) => {
+                    mutate_void(call, msg_sender, |s, c| self.change_owner(s, c))
+                }
+                IValidatorConfigCalls::setNextFullDkgCeremony(call) => {
+                    mutate_void(call, msg_sender, |s, c| {
+                        self.set_next_full_dkg_ceremony(s, c)
+                    })
+                }
+            },
+        )
     }
 }
 
@@ -71,140 +77,251 @@ mod tests {
     use super::*;
     use crate::{
         expect_precompile_revert,
-        storage::hashmap::HashMapStorageProvider,
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
     };
     use alloy::{
-        primitives::{Bytes, FixedBytes},
-        sol_types::SolValue,
+        primitives::{Address, FixedBytes},
+        sol_types::{SolCall, SolValue},
     };
+
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
-        IValidatorConfig::IValidatorConfigCalls, ValidatorConfigError,
+        IValidatorConfig, IValidatorConfig::IValidatorConfigCalls, ValidatorConfigError,
     };
 
     #[test]
-    fn test_function_selector_dispatch() {
-        use tempo_chainspec::hardfork::TempoHardfork;
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Moderato);
-        let mut validator_config = ValidatorConfig::new(&mut storage);
-        let sender = Address::from([1u8; 20]);
+    fn test_function_selector_dispatch() -> eyre::Result<()> {
+        let sender = Address::random();
+        let owner = Address::random();
 
-        // Initialize with owner
-        let owner = Address::from([0u8; 20]);
-        validator_config.initialize(owner).unwrap();
+        // T1: invalid selector returns reverted output
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut validator_config = ValidatorConfig::new();
+            validator_config.initialize(owner)?;
 
-        // Test invalid selector - should return Ok with reverted status
-        let result = validator_config.call(&Bytes::from([0x12, 0x34, 0x56, 0x78]), sender);
-        assert!(result.is_ok());
-        assert!(result.unwrap().reverted);
+            let result = validator_config.call(&[0x12, 0x34, 0x56, 0x78], sender)?;
+            assert!(result.is_revert());
 
-        // Test insufficient calldata
-        let result = validator_config.call(&Bytes::from([0x12, 0x34]), sender);
-        assert!(matches!(result, Err(PrecompileError::Other(_))));
+            // T1: insufficient calldata also returns reverted output
+            let result = validator_config.call(&[0x12, 0x34], sender)?;
+            assert!(result.is_revert());
+
+            Ok(())
+        })?;
+
+        // Pre-T1 (T0): insufficient calldata returns halted output
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
+        StorageCtx::enter(&mut storage, || {
+            let mut validator_config = ValidatorConfig::new();
+            validator_config.initialize(owner)?;
+
+            let result = validator_config.call(&[0x12, 0x34], sender);
+            let output = result.expect("expected Ok(halt) for short calldata");
+            assert!(output.is_halt());
+
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_owner_view_dispatch() {
+    fn test_owner_view_dispatch() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut validator_config = ValidatorConfig::new(&mut storage);
-        let sender = Address::from([1u8; 20]);
+        let sender = Address::random();
+        let owner = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut validator_config = ValidatorConfig::new();
 
-        // Initialize with owner
-        let owner = Address::from([0u8; 20]);
-        validator_config.initialize(owner).unwrap();
+            // Initialize with owner
+            validator_config.initialize(owner)?;
 
-        // Call owner() via dispatch
-        let owner_call = IValidatorConfig::ownerCall {};
-        let calldata = owner_call.abi_encode();
+            // Call owner() via dispatch
+            let owner_call = IValidatorConfig::ownerCall {};
+            let calldata = owner_call.abi_encode();
 
-        let result = validator_config
-            .call(&Bytes::from(calldata), sender)
-            .unwrap();
-        // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
-        assert_eq!(result.gas_used, 0);
+            let result = validator_config.call(&calldata, sender)?;
+            // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
+            assert_eq!(result.gas_used, 0);
 
-        // Verify we get the correct owner
-        let decoded = Address::abi_decode(&result.bytes).unwrap();
-        assert_eq!(decoded, owner);
+            // Verify we get the correct owner
+            let decoded = Address::abi_decode(&result.bytes)?;
+            assert_eq!(decoded, owner);
+
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_add_validator_dispatch() {
+    fn test_add_validator_dispatch() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut validator_config = ValidatorConfig::new(&mut storage);
+        let owner = Address::random();
+        let validator_addr = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut validator_config = ValidatorConfig::new();
 
-        // Initialize with owner
-        let owner = Address::from([0u8; 20]);
-        validator_config.initialize(owner).unwrap();
+            // Initialize with owner
+            validator_config.initialize(owner)?;
 
-        // Add validator via dispatch
-        let validator_addr = Address::from([1u8; 20]);
+            // Add validator via dispatch
+            let public_key = FixedBytes::<32>::from([0x42; 32]);
+            let add_call = IValidatorConfig::addValidatorCall {
+                newValidatorAddress: validator_addr,
+                publicKey: public_key,
+                active: true,
+                inboundAddress: "192.168.1.1:8000".to_string(),
+                outboundAddress: "192.168.1.1:9000".to_string(),
+            };
+            let calldata = add_call.abi_encode();
+
+            let result = validator_config.call(&calldata, owner)?;
+
+            // HashMapStorageProvider does not have gas accounting, so we expect 0
+            assert_eq!(result.gas_used, 0);
+
+            // Verify validator was added by calling getValidators
+            let validators = validator_config.get_validators()?;
+            assert_eq!(validators.len(), 1);
+            assert_eq!(validators[0].validatorAddress, validator_addr);
+            assert_eq!(validators[0].publicKey, public_key);
+            assert_eq!(validators[0].inboundAddress, "192.168.1.1:8000");
+            assert_eq!(validators[0].outboundAddress, "192.168.1.1:9000");
+            assert!(validators[0].active);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_unauthorized_add_validator_dispatch() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let non_owner = Address::random();
+        let validator_addr = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut validator_config = ValidatorConfig::new();
+
+            // Initialize with owner
+            validator_config.initialize(owner)?;
+
+            // Try to add validator as non-owner
+            let public_key = FixedBytes::<32>::from([0x42; 32]);
+            let add_call = IValidatorConfig::addValidatorCall {
+                newValidatorAddress: validator_addr,
+                publicKey: public_key,
+                active: true,
+                inboundAddress: "192.168.1.1:8000".to_string(),
+                outboundAddress: "192.168.1.1:9000".to_string(),
+            };
+            let calldata = add_call.abi_encode();
+
+            let result = validator_config.call(&calldata, non_owner);
+            expect_precompile_revert(&result, ValidatorConfigError::unauthorized());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_selector_coverage() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        StorageCtx::enter(&mut storage, || {
+            let mut validator_config = ValidatorConfig::new();
+
+            let unsupported = check_selector_coverage(
+                &mut validator_config,
+                IValidatorConfigCalls::SELECTORS,
+                "IValidatorConfig",
+                IValidatorConfigCalls::name_by_selector,
+            );
+
+            assert_full_coverage([unsupported]);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_change_validator_status_by_index_t1_gating() -> eyre::Result<()> {
+        use alloy::sol_types::SolError;
+        use tempo_contracts::precompiles::UnknownFunctionSelector;
+
+        let owner = Address::random();
+        let validator = Address::random();
         let public_key = FixedBytes::<32>::from([0x42; 32]);
-        let add_call = IValidatorConfig::addValidatorCall {
-            newValidatorAddress: validator_addr,
-            publicKey: public_key,
-            active: true,
-            inboundAddress: "192.168.1.1:8000".to_string(),
-            outboundAddress: "192.168.1.1:9000".to_string(),
-        };
-        let calldata = add_call.abi_encode();
 
-        let result = validator_config
-            .call(&Bytes::from(calldata), owner)
-            .unwrap();
+        // T0: changeValidatorStatusByIndex returns UnknownFunctionSelector
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut validator_config = ValidatorConfig::new();
+            validator_config.initialize(owner)?;
 
-        // HashMapStorageProvider does not have gas accounting, so we expect 0
-        assert_eq!(result.gas_used, 0);
+            // Add a validator first
+            validator_config.add_validator(
+                owner,
+                IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: validator,
+                    publicKey: public_key,
+                    active: true,
+                    inboundAddress: "192.168.1.1:8000".to_string(),
+                    outboundAddress: "192.168.1.1:9000".to_string(),
+                },
+            )?;
 
-        // Verify validator was added by calling getValidators
-        let get_call = IValidatorConfig::getValidatorsCall {};
-        let validators = validator_config.get_validators(get_call).unwrap();
-        assert_eq!(validators.len(), 1);
-        assert_eq!(validators[0].validatorAddress, validator_addr);
-        assert_eq!(validators[0].publicKey, public_key);
-        assert_eq!(validators[0].inboundAddress, "192.168.1.1:8000");
-        assert_eq!(validators[0].outboundAddress, "192.168.1.1:9000");
-        assert!(validators[0].active);
-    }
+            // Try to call changeValidatorStatusByIndex in T0 - should return UnknownFunctionSelector
+            let call = IValidatorConfig::changeValidatorStatusByIndexCall {
+                index: 0,
+                active: false,
+            };
+            let calldata = call.abi_encode();
+            let result = validator_config.call(&calldata, owner)?;
 
-    #[test]
-    fn test_unauthorized_add_validator_dispatch() {
-        let mut storage = HashMapStorageProvider::new(1);
-        let mut validator_config = ValidatorConfig::new(&mut storage);
+            assert!(result.is_revert());
+            let decoded = UnknownFunctionSelector::abi_decode(&result.bytes)?;
+            assert_eq!(
+                decoded.selector.0,
+                IValidatorConfig::changeValidatorStatusByIndexCall::SELECTOR
+            );
 
-        // Initialize with owner
-        let owner = Address::from([0u8; 20]);
-        validator_config.initialize(owner).unwrap();
+            Ok(())
+        })?;
 
-        // Try to add validator as non-owner
-        let non_owner = Address::from([1u8; 20]);
-        let validator_addr = Address::from([2u8; 20]);
-        let public_key = FixedBytes::<32>::from([0x42; 32]);
-        let add_call = IValidatorConfig::addValidatorCall {
-            newValidatorAddress: validator_addr,
-            publicKey: public_key,
-            active: true,
-            inboundAddress: "192.168.1.1:8000".to_string(),
-            outboundAddress: "192.168.1.1:9000".to_string(),
-        };
-        let calldata = add_call.abi_encode();
+        // T1: changeValidatorStatusByIndex works
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut validator_config = ValidatorConfig::new();
+            validator_config.initialize(owner)?;
 
-        let result = validator_config.call(&Bytes::from(calldata), non_owner);
-        expect_precompile_revert(&result, ValidatorConfigError::unauthorized());
-    }
+            // Add a validator first
+            validator_config.add_validator(
+                owner,
+                IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: validator,
+                    publicKey: public_key,
+                    active: true,
+                    inboundAddress: "192.168.1.1:8000".to_string(),
+                    outboundAddress: "192.168.1.1:9000".to_string(),
+                },
+            )?;
 
-    #[test]
-    fn validator_config_test_selector_coverage() {
-        let mut storage = HashMapStorageProvider::new(1);
-        let mut validator_config = ValidatorConfig::new(&mut storage);
+            // changeValidatorStatusByIndex should work in T1
+            let call = IValidatorConfig::changeValidatorStatusByIndexCall {
+                index: 0,
+                active: false,
+            };
+            let calldata = call.abi_encode();
+            let result = validator_config.call(&calldata, owner)?;
 
-        let unsupported = check_selector_coverage(
-            &mut validator_config,
-            IValidatorConfigCalls::SELECTORS,
-            "IValidatorConfig",
-            IValidatorConfigCalls::name_by_selector,
-        );
+            assert!(
+                !result.is_revert(),
+                "changeValidatorStatusByIndex should succeed in T1"
+            );
 
-        assert_full_coverage([unsupported]);
+            // Verify the status was changed
+            let validators = validator_config.get_validators()?;
+            assert!(!validators[0].active, "Validator should be inactive");
+
+            Ok(())
+        })
     }
 }

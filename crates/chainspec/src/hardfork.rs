@@ -7,201 +7,354 @@
 //! When a new hardfork is needed (e.g., `Vivace`):
 //!
 //! ### In `hardfork.rs`:
-//! 1. Add a new variant to `TempoHardfork` enum
-//! 2. Add `is_vivace()` method to `TempoHardfork` impl
-//! 3. Add `is_vivace_active_at_timestamp()` to `TempoHardforks` trait
-//! 4. Update `tempo_hardfork_at()` to check for the new hardfork first (latest hardfork is checked first)
-//! 5. Add `TempoHardfork::Vivace => Self::OSAKA` (or appropriate SpecId) in `From<TempoHardfork> for SpecId`
-//! 6. Update `From<SpecId> for TempoHardfork` to check for the new hardfork first
-//! 7. Add test `test_is_vivace` and update existing `is_*` tests to include the new variant
+//! 1. Append a `Vivace` variant to `tempo_hardfork!` — automatically:
+//!    * defines the enum variant via [`hardfork!`]
+//!    * implements trait `TempoHardforks` by adding `is_vivace()`, `is_vivace_active_at_timestamp()`,
+//!      and updating `tempo_hardfork_at()`
+//!    * adds tests for each of the `TempoHardfork` methods
+//! 2. Update `From<TempoHardfork> for SpecId` if the hardfork requires a different Ethereum `SpecId`
 //!
 //! ### In `spec.rs`:
-//! 8. Add `vivace_time: Option<u64>` field to `TempoGenesisInfo`
-//! 9. Extract `vivace_time` in `TempoChainSpec::from_genesis`
-//! 10. Add `(TempoHardfork::Vivace, vivace_time)` to `tempo_forks` vec
-//! 11. Update tests to include `"vivaceTime": <timestamp>` in genesis JSON
+//! 3. Add `vivace_time: Option<u64>` field to `TempoGenesisInfo`
+//! 4. Add `TempoHardfork::Vivace => self.vivace_time` arm to `TempoGenesisInfo::fork_time()`
 //!
 //! ### In genesis files and generator:
-//! 12. Add `"vivaceTime": 0` to `genesis/dev.json`
-//! 13. Add `vivace_time: Option<u64>` arg to `xtask/src/genesis_args.rs`
-//! 14. Add insertion of `"vivaceTime"` to chain_config.extra_fields
-//!
-//! ## Current State
-//!
-//! The `Adagio` variant is a placeholder representing the pre-hardfork baseline.
+//! 5. Add `"vivaceTime": 0` to `genesis/dev.json`
+//! 6. Add `vivace_time: Option<u64>` arg to `xtask/src/genesis_args.rs`
+//! 7. Add insertion of `"vivaceTime"` to chain_config.extra_fields
 
+use crate::constants::gas;
+use alloy_eips::eip7825::MAX_TX_GAS_LIMIT_OSAKA;
+use alloy_evm::revm::primitives::hardfork::SpecId;
 use alloy_hardforks::hardfork;
-use reth_chainspec::{EthereumHardforks, ForkCondition};
-use reth_ethereum::evm::revm::primitives::hardfork::SpecId;
 
-hardfork!(
+/// Single-source hardfork definition macro. Append a new variant and everything else is generated:
+///
+/// * Defines the `TempoHardfork` enum via [`hardfork!`] (including `Display`, `FromStr`,
+///   `Hardfork` trait impl, and `VARIANTS` const)
+/// * Generates `is_<fork>()` inherent methods on `TempoHardfork` — returns `true` when
+///   `*self >= Self::<Fork>`
+/// * Generates the `TempoHardforks` trait with:
+///   - `tempo_fork_activation()` (required — the only method implementors provide)
+///   - `tempo_hardfork_at()` — walks `VARIANTS` in reverse to find the latest active fork
+///   - `is_<fork>_active_at_timestamp()` — per-fork convenience helpers
+///   - `general_gas_limit_at()` — gas limit lookup by timestamp
+/// * Generates a `#[cfg(test)] mod tests` with activation, naming, trait, and serde tests
+///
+/// `Genesis` (first variant) is treated as the baseline and does not get `is_*()` methods.
+///  All subsequent variants are considered post-Genesis hardforks.
+macro_rules! tempo_hardfork {
+    (
+        $(#[$enum_meta:meta])*
+        TempoHardfork {
+            $(#[$genesis_meta:meta])* Genesis,
+            $( $(#[$meta:meta])* $variant:ident ),* $(,)?
+        }
+    ) => {
+
+        // delegate to alloy's `hardfork!` macro
+        hardfork!(
+            $(#[$enum_meta])*
+            TempoHardfork {
+                $(#[$genesis_meta])* Genesis,
+                $( $(#[$meta])* $variant ),*
+            }
+        );
+
+        impl TempoHardfork {
+            paste::paste! {
+                $(
+                    #[doc = concat!("Returns true if this hardfork is ", stringify!($variant), " or later.")]
+                    pub const fn [<is_ $variant:lower>](&self) -> bool {
+                        *self as u64 >= Self::$variant as u64
+                    }
+                )*
+            }
+        }
+
+        /// Trait for querying Tempo-specific hardfork activations.
+        #[cfg(feature = "reth")]
+        pub trait TempoHardforks: reth_chainspec::EthereumHardforks {
+            /// Retrieves activation condition for a Tempo-specific hardfork.
+            fn tempo_fork_activation(&self, fork: TempoHardfork) -> reth_chainspec::ForkCondition;
+
+            /// Retrieves the Tempo hardfork active at a given timestamp.
+            fn tempo_hardfork_at(&self, timestamp: u64) -> TempoHardfork {
+                for &fork in TempoHardfork::VARIANTS.iter().rev() {
+                    if self.tempo_fork_activation(fork).active_at_timestamp(timestamp) {
+                        return fork;
+                    }
+                }
+                TempoHardfork::Genesis
+            }
+
+            paste::paste! {
+                $(
+                    #[doc = concat!("Returns true if ", stringify!($variant), " is active at the given timestamp.")]
+                    fn [<is_ $variant:lower _active_at_timestamp>](&self, timestamp: u64) -> bool {
+                        self.tempo_fork_activation(TempoHardfork::$variant)
+                            .active_at_timestamp(timestamp)
+                    }
+                )*
+            }
+
+            /// Returns the general (non-payment) gas limit for the given timestamp and block.
+            /// - T1+: fixed at 30M gas
+            /// - Pre-T1: calculated as (gas_limit - shared_gas_limit) / 2
+            fn general_gas_limit_at(&self, timestamp: u64, gas_limit: u64, shared_gas_limit: u64) -> u64 {
+                self.tempo_hardfork_at(timestamp)
+                    .general_gas_limit()
+                    .unwrap_or_else(|| (gas_limit - shared_gas_limit) / 2)
+            }
+        }
+
+        #[cfg(all(test, feature = "reth"))]
+        mod tests {
+            use super::*;
+            use TempoHardfork::*;
+            use reth_chainspec::Hardfork;
+
+            #[test]
+            fn test_hardfork_name() {
+                assert_eq!(Genesis.name(), "Genesis");
+                $(assert_eq!($variant.name(), stringify!($variant));)*
+            }
+
+            #[test]
+            fn test_hardfork_trait_implementation() {
+                for fork in TempoHardfork::VARIANTS {
+                    let _name: &str = Hardfork::name(fork);
+                }
+            }
+
+            #[test]
+            #[cfg(feature = "serde")]
+            fn test_tempo_hardfork_serde() {
+                for fork in TempoHardfork::VARIANTS {
+                    let json = serde_json::to_string(fork).expect("serialize");
+                    let deserialized: TempoHardfork = serde_json::from_str(&json).expect("deserialize");
+                    assert_eq!(deserialized, *fork);
+                }
+            }
+
+            paste::paste! {
+                $(
+                    #[test]
+                    fn [<test_is_ $variant:lower>]() {
+                        let idx = TempoHardfork::VARIANTS.iter().position(|v| *v == $variant)
+                            .expect(concat!(stringify!($variant), " missing from VARIANTS"));
+                        for (i, fork) in TempoHardfork::VARIANTS.iter().enumerate() {
+                            let active = TempoHardfork::[<is_ $variant:lower>](fork);
+                            if i >= idx {
+                                assert!(active, "{fork:?} should satisfy is_{}", stringify!([<$variant:lower>]));
+                            } else {
+                                assert!(!active, "{fork:?} should not satisfy is_{}", stringify!([<$variant:lower>]));
+                            }
+                        }
+                    }
+                )*
+            }
+        }
+    };
+}
+
+// -------------------------------------------------------------------------------------
+// Tempo hardfork definitions — append new variants here.
+// -------------------------------------------------------------------------------------
+tempo_hardfork! (
     /// Tempo-specific hardforks for network upgrades.
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[derive(Default)]
     TempoHardfork {
-        /// Placeholder representing the baseline (pre-hardfork) state.
-        Adagio,
-        /// Testnet hardforks for Andantino. To be removed before mainnet launch.
-        Moderato,
-        /// Allegretto hardfork.
+        /// Genesis hardfork
+        Genesis,
         #[default]
-        Allegretto,
-        /// Allegro-Moderato hardfork.
-        AllegroModerato,
+        /// T0 hardfork (default until T1 activates on mainnet)
+        T0,
+        /// T1 hardfork - adds expiring nonce transactions
+        T1,
+        /// T1.A hardfork - removes EIP-7825 per-transaction gas limit
+        T1A,
+        /// T1.B hardfork
+        T1B,
+        /// T1.C hardfork
+        T1C,
+        /// T2 hardfork - adds compound transfer policies ([TIP-1015])
+        ///
+        /// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
+        T2,
+        /// T3 hardfork
+        T3,
+        /// T4 hardfork
+        T4,
+        /// T5 hardfork
+        T5,
     }
 );
 
 impl TempoHardfork {
-    /// Returns `true` if this hardfork is Moderato or later.
-    #[inline]
-    pub fn is_moderato(self) -> bool {
-        self >= Self::Moderato
+    /// Returns the base fee for this hardfork in attodollars.
+    ///
+    /// Attodollars are the atomic gas accounting units at 10^-18 USD precision. Individual attodollars are not representable onchain (since TIP-20 tokens only have 6 decimals), but the unit is used for gas accounting.
+    /// - Pre-T1: 10 billion attodollars per gas
+    /// - T1+: 20 billion attodollars per gas (targets ~0.1 cent per TIP-20 transfer)
+    ///
+    /// Economic conversion: ceil(basefee × gas_used / 10^12) = cost in microdollars (TIP-20 tokens)
+    pub const fn base_fee(&self) -> u64 {
+        if self.is_t1() {
+            return gas::TEMPO_T1_BASE_FEE;
+        }
+        gas::TEMPO_T0_BASE_FEE
     }
 
-    /// Returns `true` if this hardfork is Allegretto or later.
-    pub fn is_allegretto(self) -> bool {
-        self >= Self::Allegretto
+    /// Returns the fixed general gas limit for T1+, or None for pre-T1.
+    /// - Pre-T1: None
+    /// - T1+: 30M gas (fixed)
+    pub const fn general_gas_limit(&self) -> Option<u64> {
+        if self.is_t1() {
+            return Some(gas::TEMPO_T1_GENERAL_GAS_LIMIT);
+        }
+        None
     }
 
-    /// Returns `true` if this hardfork is Allegro-Moderato or later.
-    pub fn is_allegro_moderato(self) -> bool {
-        self >= Self::AllegroModerato
-    }
-}
-
-/// Trait for querying Tempo-specific hardfork activations.
-pub trait TempoHardforks: EthereumHardforks {
-    /// Retrieves activation condition for a Tempo-specific hardfork
-    fn tempo_fork_activation(&self, fork: TempoHardfork) -> ForkCondition;
-
-    /// Convenience method to check if Adagio hardfork is active at a given timestamp
-    fn is_adagio_active_at_timestamp(&self, timestamp: u64) -> bool {
-        self.tempo_fork_activation(TempoHardfork::Adagio)
-            .active_at_timestamp(timestamp)
+    /// Returns the per-transaction gas limit cap.
+    /// - Pre-T1A: EIP-7825 Osaka limit (16,777,216 gas)
+    /// - T1A+: 30M gas (allows maximum-sized contract deployments under [TIP-1000] state creation)
+    ///
+    /// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
+    pub const fn tx_gas_limit_cap(&self) -> Option<u64> {
+        if self.is_t1a() {
+            return Some(gas::TEMPO_T1_TX_GAS_LIMIT_CAP);
+        }
+        Some(MAX_TX_GAS_LIMIT_OSAKA)
     }
 
-    /// Convenience method to check if Andantino hardfork is active at a given timestamp
-    fn is_moderato_active_at_timestamp(&self, timestamp: u64) -> bool {
-        self.tempo_fork_activation(TempoHardfork::Moderato)
-            .active_at_timestamp(timestamp)
+    /// Gas cost for using an existing 2D nonce key
+    pub const fn gas_existing_nonce_key(&self) -> u64 {
+        if self.is_t2() {
+            return gas::TEMPO_T2_EXISTING_NONCE_KEY_GAS;
+        }
+        gas::TEMPO_T1_EXISTING_NONCE_KEY_GAS
     }
 
-    /// Convenience method to check if Allegretto hardfork is active at a given timestamp
-    fn is_allegretto_active_at_timestamp(&self, timestamp: u64) -> bool {
-        self.tempo_fork_activation(TempoHardfork::Allegretto)
-            .active_at_timestamp(timestamp)
+    /// Gas cost for using a new 2D nonce key
+    pub const fn gas_new_nonce_key(&self) -> u64 {
+        if self.is_t2() {
+            return gas::TEMPO_T2_NEW_NONCE_KEY_GAS;
+        }
+        gas::TEMPO_T1_NEW_NONCE_KEY_GAS
     }
 
-    /// Convenience method to check if Allegro-Moderato hardfork is active at a given timestamp
-    fn is_allegro_moderato_active_at_timestamp(&self, timestamp: u64) -> bool {
-        self.tempo_fork_activation(TempoHardfork::AllegroModerato)
-            .active_at_timestamp(timestamp)
+    /// Returns the active hardfork at the given timestamp for the specified chain.
+    ///
+    /// Returns `None` if the chain ID is not a known Tempo chain.
+    pub const fn from_chain_and_timestamp(chain_id: u64, timestamp: u64) -> Option<Self> {
+        // Walk variants in reverse to find the latest active fork, mirroring
+        // `TempoHardforks::tempo_hardfork_at` but without needing a chainspec instance.
+        let variants = Self::VARIANTS;
+        let mut i = variants.len();
+        while i > 0 {
+            i -= 1;
+            let activation = match chain_id {
+                4217 => variants[i].mainnet_activation_timestamp(),
+                42431 => variants[i].moderato_activation_timestamp(),
+                _ => return None,
+            };
+            if let Some(ts) = activation
+                && timestamp >= ts
+            {
+                return Some(variants[i]);
+            }
+        }
+        Some(Self::Genesis)
     }
 
-    /// Retrieves the latest Tempo hardfork active at a given timestamp.
-    fn tempo_hardfork_at(&self, timestamp: u64) -> TempoHardfork {
-        if self.is_allegro_moderato_active_at_timestamp(timestamp) {
-            TempoHardfork::AllegroModerato
-        } else if self.is_allegretto_active_at_timestamp(timestamp) {
-            TempoHardfork::Allegretto
-        } else if self.is_moderato_active_at_timestamp(timestamp) {
-            TempoHardfork::Moderato
-        } else {
-            TempoHardfork::Adagio
+    /// Retrieves the activation block for this hardfork on mainnet.
+    pub const fn mainnet_activation_block(&self) -> Option<u64> {
+        use crate::constants::mainnet::*;
+        match self {
+            Self::Genesis => Some(MAINNET_GENESIS_BLOCK),
+            Self::T0 => Some(MAINNET_T0_BLOCK),
+            Self::T1 => Some(MAINNET_T1_BLOCK),
+            Self::T1A => Some(MAINNET_T1A_BLOCK),
+            Self::T1B => Some(MAINNET_T1B_BLOCK),
+            Self::T1C => Some(MAINNET_T1C_BLOCK),
+            Self::T2 => Some(MAINNET_T2_BLOCK),
+            Self::T3 => None, // not yet known
+            Self::T4 => None,
+            Self::T5 => None,
+        }
+    }
+
+    /// Retrieves the activation timestamp for this hardfork on mainnet.
+    pub const fn mainnet_activation_timestamp(&self) -> Option<u64> {
+        use crate::constants::mainnet::*;
+        match self {
+            Self::Genesis => Some(MAINNET_GENESIS_TIMESTAMP),
+            Self::T0 => Some(MAINNET_T0_TIMESTAMP),
+            Self::T1 => Some(MAINNET_T1_TIMESTAMP),
+            Self::T1A => Some(MAINNET_T1A_TIMESTAMP),
+            Self::T1B => Some(MAINNET_T1B_TIMESTAMP),
+            Self::T1C => Some(MAINNET_T1C_TIMESTAMP),
+            Self::T2 => Some(MAINNET_T2_TIMESTAMP),
+            Self::T3 => Some(MAINNET_T3_TIMESTAMP),
+            Self::T4 => None,
+            Self::T5 => None,
+        }
+    }
+
+    /// Retrieves the activation block for this hardfork on moderato testnet.
+    pub const fn moderato_activation_block(&self) -> Option<u64> {
+        use crate::constants::moderato::*;
+        match self {
+            Self::Genesis => Some(MODERATO_GENESIS_BLOCK),
+            Self::T0 => Some(MODERATO_T0_BLOCK),
+            Self::T1 => Some(MODERATO_T1_BLOCK),
+            Self::T1A => Some(MODERATO_T1A_BLOCK),
+            Self::T1B => Some(MODERATO_T1B_BLOCK),
+            Self::T1C => Some(MODERATO_T1C_BLOCK),
+            Self::T2 => Some(MODERATO_T2_BLOCK),
+            Self::T3 => None, // not yet known
+            Self::T4 => None,
+            Self::T5 => None,
+        }
+    }
+
+    /// Retrieves the activation timestamp for this hardfork on moderato testnet.
+    pub const fn moderato_activation_timestamp(&self) -> Option<u64> {
+        use crate::constants::moderato::*;
+        match self {
+            Self::Genesis => Some(MODERATO_GENESIS_TIMESTAMP),
+            Self::T0 => Some(MODERATO_T0_TIMESTAMP),
+            Self::T1 => Some(MODERATO_T1_TIMESTAMP),
+            Self::T1A => Some(MODERATO_T1A_TIMESTAMP),
+            Self::T1B => Some(MODERATO_T1B_TIMESTAMP),
+            Self::T1C => Some(MODERATO_T1C_TIMESTAMP),
+            Self::T2 => Some(MODERATO_T2_TIMESTAMP),
+            Self::T3 => Some(MODERATO_T3_TIMESTAMP),
+            Self::T4 => None,
+            Self::T5 => None,
         }
     }
 }
 
 impl From<TempoHardfork> for SpecId {
-    fn from(value: TempoHardfork) -> Self {
-        match value {
-            TempoHardfork::Adagio => Self::OSAKA,
-            TempoHardfork::Moderato => Self::OSAKA,
-            TempoHardfork::Allegretto => Self::OSAKA,
-            TempoHardfork::AllegroModerato => Self::OSAKA,
-        }
+    fn from(_value: TempoHardfork) -> Self {
+        Self::OSAKA
+    }
+}
+
+impl From<&TempoHardfork> for SpecId {
+    fn from(value: &TempoHardfork) -> Self {
+        Self::from(*value)
     }
 }
 
 impl From<SpecId> for TempoHardfork {
-    /// Maps a [`SpecId`] to the *latest compatible* [`TempoHardfork`].
-    ///
-    /// Note: this is intentionally not a strict inverse of
-    /// `From<TempoHardfork> for SpecId`, because multiple Tempo
-    /// hardforks may share the same underlying EVM spec.
-    fn from(spec: SpecId) -> Self {
-        if spec.is_enabled_in(SpecId::from(Self::AllegroModerato)) {
-            Self::AllegroModerato
-        } else if spec.is_enabled_in(SpecId::from(Self::Allegretto)) {
-            Self::Allegretto
-        } else if spec.is_enabled_in(SpecId::from(Self::Moderato)) {
-            Self::Moderato
-        } else {
-            Self::Adagio
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use reth_chainspec::Hardfork;
-
-    #[test]
-    fn test_adagio_hardfork_name() {
-        let fork = TempoHardfork::Adagio;
-        assert_eq!(fork.name(), "Adagio");
-    }
-
-    #[test]
-    fn test_hardfork_trait_implementation() {
-        let fork = TempoHardfork::Adagio;
-        // Should implement Hardfork trait
-        let _name: &str = Hardfork::name(&fork);
-    }
-
-    #[test]
-    #[cfg(feature = "serde")]
-    fn test_tempo_hardfork_serde() {
-        let fork = TempoHardfork::Adagio;
-
-        // Serialize to JSON
-        let json = serde_json::to_string(&fork).unwrap();
-        assert_eq!(json, "\"Adagio\"");
-
-        // Deserialize from JSON
-        let deserialized: TempoHardfork = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized, fork);
-    }
-
-    #[test]
-    fn test_is_moderato() {
-        assert!(!TempoHardfork::Adagio.is_moderato());
-        assert!(TempoHardfork::Moderato.is_moderato());
-        assert!(TempoHardfork::Allegretto.is_moderato());
-        assert!(TempoHardfork::AllegroModerato.is_moderato());
-    }
-
-    #[test]
-    fn test_is_allegretto() {
-        assert!(!TempoHardfork::Adagio.is_allegretto());
-        assert!(!TempoHardfork::Moderato.is_allegretto());
-
-        assert!(TempoHardfork::Allegretto.is_allegretto());
-        assert!(TempoHardfork::AllegroModerato.is_allegretto());
-
-        assert!(TempoHardfork::Allegretto.is_moderato());
-    }
-
-    #[test]
-    fn test_is_allegro_moderato() {
-        assert!(!TempoHardfork::Adagio.is_allegro_moderato());
-        assert!(!TempoHardfork::Moderato.is_allegro_moderato());
-        assert!(!TempoHardfork::Allegretto.is_allegro_moderato());
-
-        assert!(TempoHardfork::AllegroModerato.is_allegro_moderato());
-
-        assert!(TempoHardfork::AllegroModerato.is_allegretto());
-        assert!(TempoHardfork::AllegroModerato.is_moderato());
+    fn from(_spec: SpecId) -> Self {
+        // All Tempo hardforks map to SpecId::OSAKA, so we cannot derive the hardfork from SpecId.
+        // Default to the default hardfork when converting from SpecId.
+        // The actual hardfork should be passed explicitly where needed.
+        Self::default()
     }
 }

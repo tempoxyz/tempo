@@ -9,7 +9,7 @@ use commonware_utils::{Array, Span};
 /// Wrapper around [`B256`] to use it in places requiring [`commonware_cryptography::Digest`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 #[repr(transparent)]
-pub struct Digest(pub(crate) B256);
+pub struct Digest(pub B256);
 
 impl Array for Digest {}
 
@@ -27,18 +27,22 @@ impl Deref for Digest {
     }
 }
 
-impl commonware_cryptography::Digest for Digest {
+impl commonware_math::algebra::Random for Digest {
     /// Generate a random digest.
     ///
     /// # Note
     ///
     /// One-to-one copy of [`commonware_cryptography::Digest`]
     /// for [`commonware_cryptography::sha256::Digest`].
-    fn random<R: rand::RngCore + rand::CryptoRng>(rng: &mut R) -> Self {
+    fn random(mut rng: impl rand_core::CryptoRngCore) -> Self {
         let mut array = B256::ZERO;
         rng.fill_bytes(&mut *array);
         Self(array)
     }
+}
+
+impl commonware_cryptography::Digest for Digest {
+    const EMPTY: Self = Self(B256::ZERO);
 }
 
 impl FixedSize for Digest {

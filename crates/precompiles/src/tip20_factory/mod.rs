@@ -1,167 +1,237 @@
-// Module for tip20_factory precompile
+//! [TIP-20] token factory precompile — deploys new [TIP-20] tokens at deterministic addresses.
+//!
+//! [TIP-20]: <https://docs.tempo.xyz/protocol/tip20>
+
 pub mod dispatch;
 
-pub use tempo_contracts::precompiles::{ITIP20Factory, TIP20FactoryEvent};
+pub use tempo_contracts::precompiles::{ITIP20Factory, TIP20FactoryError, TIP20FactoryEvent};
 use tempo_precompiles_macros::contract;
 
 use crate::{
-    TIP20_FACTORY_ADDRESS,
+    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
     error::{Result, TempoPrecompileError},
-    storage::PrecompileStorageProvider,
-    tip20::{
-        TIP20Error, TIP20Token, address_to_token_id_unchecked, is_tip20_prefix, token_id_to_address,
-    },
+    tip20::{TIP20Error, TIP20Token, USD_CURRENCY},
 };
-use alloy::primitives::{Address, Bytes, IntoLogData, U256};
-use revm::state::Bytecode;
+use alloy::{
+    primitives::{Address, B256, keccak256},
+    sol_types::SolValue,
+};
+use tempo_primitives::TempoAddressExt;
 use tracing::trace;
 
-#[contract]
-pub struct TIP20Factory {
-    // TODO: It would be nice to have a `#[initial_value=`n`]` macro
-    // to mimic setting an initial value in solidity
-    token_id_counter: U256,
+/// Number of reserved addresses (0 to RESERVED_SIZE-1) that cannot be deployed via factory
+const RESERVED_SIZE: u64 = 1024;
+
+/// TIP20 token address prefix (12 bytes): 0x20C000000000000000000000
+const TIP20_PREFIX_BYTES: [u8; 12] = [
+    0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+];
+
+/// Factory contract for deploying new TIP-20 tokens at deterministic addresses.
+///
+/// Tokens are deployed at `TIP20_PREFIX || keccak256(sender, salt)[..8]`.
+/// The first 1024 addresses are reserved for protocol-deployed tokens.
+///
+/// The struct fields define the on-chain storage layout; the `#[contract]` macro generates the
+/// storage handlers which provide an ergonomic way to interact with the EVM state.
+#[contract(addr = TIP20_FACTORY_ADDRESS)]
+pub struct TIP20Factory {}
+
+/// Computes the deterministic TIP20 address from sender and salt.
+/// Returns the address and the lower bytes used for derivation.
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn compute_tip20_address(sender: Address, salt: B256) -> (Address, u64) {
+    let hash = keccak256((sender, salt).abi_encode());
+
+    // Take first 8 bytes of hash as lower bytes
+    let mut padded = [0u8; 8];
+    padded.copy_from_slice(&hash[..8]);
+    let lower_bytes = u64::from_be_bytes(padded);
+
+    // Construct the address: TIP20_PREFIX (12 bytes) || hash[..8] (8 bytes)
+    let mut address_bytes = [0u8; 20];
+    address_bytes[..12].copy_from_slice(&TIP20_PREFIX_BYTES);
+    address_bytes[12..].copy_from_slice(&hash[..8]);
+
+    (Address::from(address_bytes), lower_bytes)
 }
 
 // Precompile functions
-impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
-    /// Creates an instance of the precompile.
-    ///
-    /// Caution: This does not initialize the account, see [`Self::initialize`].
-    pub fn new(storage: &'a mut S) -> Self {
-        Self::_new(TIP20_FACTORY_ADDRESS, storage)
-    }
-
-    /// Initializes the TIP20 factory contract.
-    ///
-    /// Ensures the [`TIP20Factory`] account isn't empty and prevents state clear by setting
-    /// placeholder bytecode.
+impl TIP20Factory {
+    /// Initializes the TIP-20 factory precompile.
     pub fn initialize(&mut self) -> Result<()> {
-        // must ensure the account is not empty, by setting some code
-        self.storage.set_code(
-            TIP20_FACTORY_ADDRESS,
-            Bytecode::new_legacy(Bytes::from_static(&[0xef])),
-        )
+        self.__initialize()
     }
 
-    /// Returns true if the factory has been initialized (has code set).
-    pub fn is_initialized(&mut self) -> Result<bool> {
-        let info = self.storage.get_account_info(TIP20_FACTORY_ADDRESS)?;
-        Ok(info.code.is_some())
+    /// Computes the deterministic address for a token given `sender` and `salt`. Reverts if the
+    /// derived address falls within the reserved range (lower 8 bytes < `RESERVED_SIZE`).
+    ///
+    /// # Errors
+    /// - `AddressReserved` — the derived address is in the reserved range
+    pub fn get_token_address(&self, call: ITIP20Factory::getTokenAddressCall) -> Result<Address> {
+        let (address, lower_bytes) = compute_tip20_address(call.sender, call.salt);
+
+        // Check if address would be in reserved range
+        if lower_bytes < RESERVED_SIZE {
+            return Err(TempoPrecompileError::TIP20Factory(
+                TIP20FactoryError::address_reserved(),
+            ));
+        }
+
+        Ok(address)
     }
 
-    /// Returns true if the address is a valid TIP20 token.
-    ///
-    /// Post-AllegroModerato: Matches the Solidity implementation which checks both:
-    /// 1. The address has the correct TIP20 prefix
-    /// 2. The token ID (lower 8 bytes) is less than tokenIdCounter
-    ///
-    /// Pre-AllegroModerato: Only checks the address prefix for backwards compatibility.
-    pub fn is_tip20(&mut self, token: Address) -> Result<bool> {
-        if !is_tip20_prefix(token) {
+    /// Returns `true` if `token` has the correct TIP-20 prefix and has code deployed.
+    pub fn is_tip20(&self, token: Address) -> Result<bool> {
+        if !token.is_tip20() {
             return Ok(false);
         }
-        // Post-AllegroModerato: also check that token ID < tokenIdCounter
-        if self.storage.spec().is_allegro_moderato() {
-            let token_id = U256::from(address_to_token_id_unchecked(token));
-            return Ok(token_id < self.token_id_counter()?);
-        }
-        Ok(true)
+        // Check if the token has code deployed (non-empty code hash)
+        self.storage
+            .with_account_info(token, |info| Ok(!info.is_empty_code_hash()))
     }
 
+    /// Deploys a new TIP-20 token at a deterministic address derived from `sender` and `salt`.
+    ///
+    /// Validates that the token does not already exist, the quote token is a deployed TIP-20 of
+    /// a compatible currency, and the derived address is outside the reserved range. Initializes
+    /// the token via [`TIP20Token::initialize`].
+    ///
+    /// # Errors
+    /// - `TokenAlreadyExists` — a TIP-20 is already deployed at the derived address
+    /// - `InvalidQuoteToken` — quote token is not a deployed TIP-20 or has incompatible currency
+    /// - `AddressReserved` — the derived address is in the reserved range
     pub fn create_token(
         &mut self,
         sender: Address,
         call: ITIP20Factory::createTokenCall,
     ) -> Result<Address> {
-        // TODO: We should update `token_id_counter` to be u64 in storage if we assume we can cast
-        // to u64 here. Or we should update `token_id_to_address` to take a larger value
-        let token_id = self
-            .token_id_counter()?
-            .try_into()
-            .map_err(|_| TempoPrecompileError::under_overflow())?;
+        trace!(%sender, ?call, "Create token");
 
-        trace!(%sender, %token_id, ?call, "Create token");
+        // Compute the deterministic address from sender and salt
+        let (token_address, lower_bytes) = compute_tip20_address(sender, call.salt);
 
-        // Ensure that the quote token is a valid TIP20 that is currently deployed.
-        // Note that the token Id increments on each deployment.
-
-        // Post-Allegretto, require that the first TIP20 deployed has a quote token of address(0)
-        if self.storage.spec().is_allegretto() && token_id == 0 {
-            if !call.quoteToken.is_zero() {
-                return Err(TIP20Error::invalid_quote_token().into());
-            }
-        } else if self.storage.spec().is_moderato() {
-            // Post-Moderato: Fixed validation - quote token id must be < current token_id (strictly less than).
-            if !is_tip20_prefix(call.quoteToken)
-                || address_to_token_id_unchecked(call.quoteToken) >= token_id
-            {
-                return Err(TIP20Error::invalid_quote_token().into());
-            }
-        } else {
-            // Pre-Moderato: Original validation with off-by-one bug for consensus compatibility.
-            // The buggy check allowed quote_token_id == token_id to pass.
-            if !is_tip20_prefix(call.quoteToken)
-                || address_to_token_id_unchecked(call.quoteToken) > token_id
-            {
-                return Err(TIP20Error::invalid_quote_token().into());
-            }
+        if self.is_tip20(token_address)? {
+            return Err(TempoPrecompileError::TIP20Factory(
+                TIP20FactoryError::token_already_exists(token_address),
+            ));
         }
 
-        // Initialize with default fee_recipient (Address::ZERO)
-        // Fee recipient can be set later via setFeeRecipient()
-        TIP20Token::new(token_id, self.storage).initialize(
+        // Ensure that the quote token is a valid TIP20 that is currently deployed.
+        if !self.is_tip20(call.quoteToken)? {
+            return Err(TIP20Error::invalid_quote_token().into());
+        }
+
+        // If token is USD, its quote token must also be USD
+        if call.currency == USD_CURRENCY
+            && TIP20Token::from_address(call.quoteToken)?.currency()? != USD_CURRENCY
+        {
+            return Err(TIP20Error::invalid_quote_token().into());
+        }
+
+        // Check if address is in reserved range
+        if lower_bytes < RESERVED_SIZE {
+            return Err(TempoPrecompileError::TIP20Factory(
+                TIP20FactoryError::address_reserved(),
+            ));
+        }
+
+        TIP20Token::from_address(token_address)?.initialize(
+            sender,
             &call.name,
             &call.symbol,
             &call.currency,
             call.quoteToken,
             call.admin,
-            Address::ZERO,
         )?;
 
-        let token_address = token_id_to_address(token_id);
-        let token_id = U256::from(token_id);
-        self.storage.emit_event(
-            TIP20_FACTORY_ADDRESS,
-            TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
+        self.emit_event(TIP20FactoryEvent::TokenCreated(
+            ITIP20Factory::TokenCreated {
                 token: token_address,
-                tokenId: token_id,
                 name: call.name,
                 symbol: call.symbol,
                 currency: call.currency,
                 quoteToken: call.quoteToken,
                 admin: call.admin,
-            })
-            .into_log_data(),
-        )?;
-
-        // increase the token counter
-        self.sstore_token_id_counter(
-            token_id
-                .checked_add(U256::ONE)
-                .ok_or(TempoPrecompileError::under_overflow())?,
-        )?;
+                salt: call.salt,
+            },
+        ))?;
 
         Ok(token_address)
     }
 
-    pub fn token_id_counter(&mut self) -> Result<U256> {
-        let counter = self.sload_token_id_counter()?;
-
-        // Pre Allegreto, start the counter at 1
-        if !self.storage.spec().is_allegretto() && counter.is_zero() {
-            Ok(U256::ONE)
-        } else {
-            Ok(counter)
-        }
-    }
-
-    /// Sets the token ID counter.
+    /// Deploys a TIP-20 token at a reserved address (lower 8 bytes < `RESERVED_SIZE`). Used
+    /// during genesis or hardforks to bootstrap protocol tokens like pathUSD.
     ///
-    /// This is primarily used in tests to simulate tokens created outside the factory.
-    #[cfg(test)]
-    pub fn set_token_id_counter(&mut self, value: U256) -> Result<()> {
-        self.sstore_token_id_counter(value)
+    /// # Errors
+    /// - `InvalidToken` — `address` does not have the TIP-20 prefix
+    /// - `TokenAlreadyExists` — a TIP-20 is already deployed at `address`
+    /// - `InvalidQuoteToken` — quote token is invalid, not deployed, or has incompatible
+    ///   currency; pathUSD must use `Address::ZERO` as quote token
+    /// - `AddressNotReserved` — the address is outside the reserved range
+    pub fn create_token_reserved_address(
+        &mut self,
+        address: Address,
+        name: &str,
+        symbol: &str,
+        currency: &str,
+        quote_token: Address,
+        admin: Address,
+    ) -> Result<Address> {
+        // Validate that the address has a TIP20 prefix
+        if !address.is_tip20() {
+            return Err(TIP20Error::invalid_token().into());
+        }
+
+        // Validate that the address is not already deployed
+        if self.is_tip20(address)? {
+            return Err(TempoPrecompileError::TIP20Factory(
+                TIP20FactoryError::token_already_exists(address),
+            ));
+        }
+
+        // quote_token must be address(0) or a valid TIP20
+        if !quote_token.is_zero() {
+            // pathUSD must set address(0) as the quote token
+            // or the tip20 must be a valid deployed token
+            if address == PATH_USD_ADDRESS || !self.is_tip20(quote_token)? {
+                return Err(TIP20Error::invalid_quote_token().into());
+            }
+            // If token is USD, its quote token must also be USD
+            if currency == USD_CURRENCY
+                && TIP20Token::from_address(quote_token)?.currency()? != USD_CURRENCY
+            {
+                return Err(TIP20Error::invalid_quote_token().into());
+            }
+        }
+
+        // Validate that the address is within the reserved range
+        // Reserved addresses have their last 8 bytes represent a value < RESERVED_SIZE
+        let mut padded = [0u8; 8];
+        padded.copy_from_slice(&address.as_slice()[12..]);
+        let lower_bytes = u64::from_be_bytes(padded);
+        if lower_bytes >= RESERVED_SIZE {
+            return Err(TempoPrecompileError::TIP20Factory(
+                TIP20FactoryError::address_not_reserved(),
+            ));
+        }
+
+        let mut token = TIP20Token::from_address(address)?;
+        token.initialize(admin, name, symbol, currency, quote_token, admin)?;
+
+        self.emit_event(TIP20FactoryEvent::TokenCreated(
+            ITIP20Factory::TokenCreated {
+                token: address,
+                name: name.into(),
+                symbol: symbol.into(),
+                currency: currency.into(),
+                quoteToken: quote_token,
+                admin,
+                salt: B256::ZERO,
+            },
+        ))?;
+
+        Ok(address)
     }
 }
 
@@ -169,345 +239,613 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
 mod tests {
     use super::*;
     use crate::{
-        error::TempoPrecompileError, storage::hashmap::HashMapStorageProvider,
-        tip20::tests::initialize_path_usd,
+        PATH_USD_ADDRESS,
+        error::TempoPrecompileError,
+        storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
+        test_util::TIP20Setup,
     };
-    use tempo_chainspec::hardfork::TempoHardfork;
+    use alloy::primitives::{Address, address};
 
     #[test]
-    fn test_create_token() {
+    fn test_is_initialized() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Factory::new();
+
+            // Factory should not be initialized before initialize() call
+            assert!(!factory.is_initialized()?);
+
+            // After initialize(), factory should be initialized
+            factory.initialize()?;
+            assert!(factory.is_initialized()?);
+
+            // Creating a new handle should still see initialized state
+            let factory2 = TIP20Factory::new();
+            assert!(factory2.is_initialized()?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_is_tip20() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
-        initialize_path_usd(&mut storage, sender).unwrap();
 
-        let mut factory = TIP20Factory::new(&mut storage);
+        StorageCtx::enter(&mut storage, || {
+            // Initialize pathUSD
+            let _path_usd = TIP20Setup::path_usd(sender).apply()?;
 
-        factory
-            .initialize()
-            .expect("Factory initialization should succeed");
-        let call = ITIP20Factory::createTokenCall {
-            name: "Test Token".to_string(),
-            symbol: "TEST".to_string(),
-            currency: "USD".to_string(),
-            quoteToken: crate::PATH_USD_ADDRESS,
-            admin: sender,
-        };
+            let factory = TIP20Factory::new();
 
-        let token_addr_0 = factory
-            .create_token(sender, call.clone())
-            .expect("Token creation should succeed");
+            // PATH_USD should be valid (has code deployed)
+            assert!(factory.is_tip20(PATH_USD_ADDRESS)?);
 
-        let token_addr_1 = factory
-            .create_token(sender, call)
-            .expect("Token creation should succeed");
+            // Address with TIP20 prefix but no code should be invalid
+            let no_code_tip20 = address!("20C0000000000000000000000000000000000002");
+            assert!(!factory.is_tip20(no_code_tip20)?);
 
-        let factory_events = storage.events.get(&TIP20_FACTORY_ADDRESS).unwrap();
-        // Note that we expect 3 events including the initial token creation event when deploying
-        // PathUSD
-        assert_eq!(factory_events.len(), 3);
+            // Random address (wrong prefix) should be invalid
+            assert!(!factory.is_tip20(Address::random())?);
 
-        let token_id_0 = address_to_token_id_unchecked(token_addr_0);
-        let expected_event_0 = TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
-            token: token_addr_0,
-            tokenId: U256::from(token_id_0),
-            name: "Test Token".to_string(),
-            symbol: "TEST".to_string(),
-            currency: "USD".to_string(),
-            quoteToken: crate::PATH_USD_ADDRESS,
-            admin: sender,
-        });
-        assert_eq!(factory_events[1], expected_event_0.into_log_data());
+            // Create a token via factory and verify it's valid
+            let token = TIP20Setup::create("Test", "TST", sender).apply()?;
+            assert!(factory.is_tip20(token.address())?);
 
-        let token_id_1 = address_to_token_id_unchecked(token_addr_1);
-        let expected_event_1 = TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
-            token: token_addr_1,
-            tokenId: U256::from(token_id_1),
-            name: "Test Token".to_string(),
-            symbol: "TEST".to_string(),
-            currency: "USD".to_string(),
-            quoteToken: crate::PATH_USD_ADDRESS,
-            admin: sender,
-        });
-
-        assert_eq!(factory_events[2], expected_event_1.into_log_data());
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_create_token_invalid_quote_token_post_moderato() {
-        // Test with Moderato hardfork (validation should be enforced)
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
-        let mut factory = TIP20Factory::new(&mut storage);
+    fn test_get_token_address() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
 
-        factory
-            .initialize()
-            .expect("Factory initialization should succeed");
+        StorageCtx::enter(&mut storage, || {
+            let factory = TIP20Factory::new();
+            let sender = Address::random();
+            let salt = B256::random();
 
-        let sender = Address::random();
+            // get_token_address should return same address as compute_tip20_address
+            let call = ITIP20Factory::getTokenAddressCall { sender, salt };
+            let address = factory.get_token_address(call)?;
+            let (expected, _) = compute_tip20_address(sender, salt);
+            assert_eq!(address, expected);
 
-        let invalid_call = ITIP20Factory::createTokenCall {
-            name: "Test Token".to_string(),
-            symbol: "TEST".to_string(),
-            currency: "USD".to_string(),
-            quoteToken: Address::random(),
-            admin: sender,
-        };
+            // Calling with same params should be deterministic
+            let call2 = ITIP20Factory::getTokenAddressCall { sender, salt };
+            assert_eq!(factory.get_token_address(call2)?, address);
 
-        let result = factory.create_token(sender, invalid_call);
-        assert_eq!(
-            result.unwrap_err(),
-            TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
-        );
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_create_token_quote_token_not_deployed_post_moderato() {
-        // Test with Moderato hardfork (validation should be enforced)
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
-        let mut factory = TIP20Factory::new(&mut storage);
+    fn test_compute_tip20_address_deterministic() {
+        let sender1 = Address::random();
+        let sender2 = Address::random();
+        let salt1 = B256::random();
+        let salt2 = B256::random();
 
-        factory
-            .initialize()
-            .expect("Factory initialization should succeed");
+        let (addr0, lower0) = compute_tip20_address(sender1, salt1);
+        let (addr1, lower1) = compute_tip20_address(sender1, salt1);
+        assert_eq!(addr0, addr1);
+        assert_eq!(lower0, lower1);
 
-        let sender = Address::random();
-        let non_existent_tip20 = token_id_to_address(5);
-        let invalid_call = ITIP20Factory::createTokenCall {
-            name: "Test Token".to_string(),
-            symbol: "TEST".to_string(),
-            currency: "USD".to_string(),
-            quoteToken: non_existent_tip20,
-            admin: sender,
-        };
+        // Same salt with different senders should produce different addresses
+        let (addr2, lower2) = compute_tip20_address(sender1, salt1);
+        let (addr3, lower3) = compute_tip20_address(sender2, salt1);
+        assert_ne!(addr2, addr3);
+        assert_ne!(lower2, lower3);
 
-        let result = factory.create_token(sender, invalid_call);
-        assert_eq!(
-            result.unwrap_err(),
-            TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
-        );
+        // Same sender with different salts should produce different addresses
+        let (addr4, lower4) = compute_tip20_address(sender1, salt1);
+        let (addr5, lower5) = compute_tip20_address(sender1, salt2);
+        assert_ne!(addr4, addr5);
+        assert_ne!(lower4, lower5);
+
+        // All addresses should have TIP20 prefix
+        assert!(addr1.is_tip20());
+        assert!(addr2.is_tip20());
+        assert!(addr3.is_tip20());
+        assert!(addr4.is_tip20());
+        assert!(addr5.is_tip20());
     }
 
     #[test]
-    fn test_create_token_off_by_one_rejected_post_moderato() {
-        // Test the off-by-one bug fix: using token_id as quote token should be rejected post-Moderato
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+    fn test_create_token() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
-        initialize_path_usd(&mut storage, sender).unwrap();
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Setup::factory()?;
+            let path_usd = TIP20Setup::path_usd(sender).apply()?;
+            factory.clear_emitted_events();
 
-        let mut factory = TIP20Factory::new(&mut storage);
-        factory
-            .initialize()
-            .expect("Factory initialization should succeed");
+            let salt1 = B256::random();
+            let salt2 = B256::random();
+            let call1 = ITIP20Factory::createTokenCall {
+                name: "Test Token 1".to_string(),
+                symbol: "TEST1".to_string(),
+                currency: "USD".to_string(),
+                quoteToken: path_usd.address(),
+                admin: sender,
+                salt: salt1,
+            };
+            let call2 = ITIP20Factory::createTokenCall {
+                name: "Test Token 2".to_string(),
+                symbol: "TEST2".to_string(),
+                currency: "USD".to_string(),
+                quoteToken: path_usd.address(),
+                admin: sender,
+                salt: salt2,
+            };
 
-        // Get the current token_id (should be 1)
-        let current_token_id = factory.token_id_counter().unwrap();
-        assert_eq!(current_token_id, U256::from(1));
+            let token_addr_1 = factory.create_token(sender, call1.clone())?;
+            let token_addr_2 = factory.create_token(sender, call2.clone())?;
 
-        // Try to use token_id 1 (the token being created) as the quote token
-        // This should be rejected because token 1 doesn't exist yet
-        let same_id_quote_token = token_id_to_address(1);
-        let call = ITIP20Factory::createTokenCall {
-            name: "Test Token".to_string(),
-            symbol: "TEST".to_string(),
-            currency: "USD".to_string(),
-            quoteToken: same_id_quote_token,
-            admin: sender,
-        };
+            // Verify addresses are different
+            assert_ne!(token_addr_1, token_addr_2);
 
-        let result = factory.create_token(sender, call);
-        // Should fail with InvalidQuoteToken error because token 1 doesn't exist yet (off-by-one)
-        assert_eq!(
-            result.unwrap_err(),
-            TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
-        );
+            // Verify addresses have TIP20 prefix
+            assert!(token_addr_1.is_tip20());
+            assert!(token_addr_2.is_tip20());
+
+            // Verify tokens are valid TIP20s
+            assert!(factory.is_tip20(token_addr_1)?);
+            assert!(factory.is_tip20(token_addr_2)?);
+
+            // Verify event emission
+            factory.assert_emitted_events(vec![
+                TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
+                    token: token_addr_1,
+                    name: call1.name,
+                    symbol: call1.symbol,
+                    currency: call1.currency,
+                    quoteToken: call1.quoteToken,
+                    admin: call1.admin,
+                    salt: call1.salt,
+                }),
+                TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
+                    token: token_addr_2,
+                    name: call2.name,
+                    symbol: call2.symbol,
+                    currency: call2.currency,
+                    quoteToken: call2.quoteToken,
+                    admin: call2.admin,
+                    salt: call2.salt,
+                }),
+            ]);
+
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_create_token_future_quote_token_pre_moderato() {
-        // Test that pre-Moderato SHOULD still validate that quote tokens exist
-        // Using a TIP20 address with ID > current token_id should fail (not yet created)
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+    fn test_create_token_invalid_quote_token() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
-        initialize_path_usd(&mut storage, sender).unwrap();
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Setup::factory()?;
+            TIP20Setup::path_usd(sender).apply()?;
 
-        let mut factory = TIP20Factory::new(&mut storage);
-        factory
-            .initialize()
-            .expect("Factory initialization should succeed");
+            let invalid_call = ITIP20Factory::createTokenCall {
+                name: "Test Token".to_string(),
+                symbol: "TEST".to_string(),
+                currency: "USD".to_string(),
+                quoteToken: Address::random(),
+                admin: sender,
+                salt: B256::random(),
+            };
 
-        // Current token_id should be 1
-        assert_eq!(factory.token_id_counter().unwrap(), U256::from(1));
-
-        // Try to use token ID 5 as quote token (doesn't exist yet)
-        // This should fail factory validation even pre-Moderato
-        let future_quote_token = token_id_to_address(5);
-        let call = ITIP20Factory::createTokenCall {
-            name: "Test Token".to_string(),
-            symbol: "TEST".to_string(),
-            currency: "EUR".to_string(), // Use non-USD to avoid TIP20Token::initialize validation
-            quoteToken: future_quote_token,
-            admin: sender,
-        };
-
-        let result = factory.create_token(sender, call);
-
-        // This should fail with InvalidQuoteToken from factory validation
-        // Currently this test will PASS (not fail) because factory validation is skipped pre-Moderato
-        assert!(
-            result.is_err(),
-            "Should fail when using a not-yet-created token as quote token"
-        );
-        if let Err(e) = result {
+            let result = factory.create_token(sender, invalid_call);
             assert_eq!(
-                e,
-                TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token()),
-                "Should fail with InvalidQuoteToken from factory validation"
+                result.unwrap_err(),
+                TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
             );
-        }
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_create_token_off_by_one_allowed_pre_moderato() {
-        // Test the off-by-one bug: using token_id as quote token is allowed pre-Moderato (buggy behavior)
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+    fn test_create_token_usd_with_non_usd_quote() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
-        initialize_path_usd(&mut storage, sender).unwrap();
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Setup::factory()?;
+            let _path_usd = TIP20Setup::path_usd(sender).apply()?;
+            let eur_token = TIP20Setup::create("EUR Token", "EUR", sender)
+                .currency("EUR")
+                .apply()?;
 
-        let mut factory = TIP20Factory::new(&mut storage);
-        factory
-            .initialize()
-            .expect("Factory initialization should succeed");
+            let invalid_call = ITIP20Factory::createTokenCall {
+                name: "USD Token".to_string(),
+                symbol: "USDT".to_string(),
+                currency: "USD".to_string(),
+                quoteToken: eur_token.address(),
+                admin: sender,
+                salt: B256::random(),
+            };
 
-        // Get the current token_id (should be 1)
-        let current_token_id = factory.token_id_counter().unwrap();
-        assert_eq!(current_token_id, U256::from(1));
-
-        // Try to use token_id 1 (the token being created) as the quote token
-        // Pre-Moderato, the old buggy validation (> instead of >=) allows this to pass
-        let same_id_quote_token = token_id_to_address(1);
-        let call = ITIP20Factory::createTokenCall {
-            name: "Test Token".to_string(),
-            symbol: "TEST".to_string(),
-            currency: "USD".to_string(),
-            quoteToken: same_id_quote_token,
-            admin: sender,
-        };
-
-        let result = factory.create_token(sender, call);
-
-        // Pre-Moderato: the old buggy validation (> token_id) allows quote_token_id == token_id
-        // The operation may succeed or fail with a different error later, but it should NOT
-        // fail with InvalidQuoteToken from validation
-        match result {
-            Ok(_) => {
-                // Operation succeeded - the buggy validation allowed it through
-            }
-            Err(e) => {
-                // If it fails, it should NOT be due to InvalidQuoteToken validation
-                assert!(
-                    !matches!(
-                        e,
-                        TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(_))
-                    ),
-                    "Pre-Moderato should not reject with InvalidQuoteToken when quote_token_id == token_id (buggy > logic)"
-                );
-            }
-        }
+            let result = factory.create_token(sender, invalid_call);
+            assert_eq!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
+            );
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_token_id_post_allegretto() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
-        let mut factory = TIP20Factory::new(&mut storage);
-        factory.initialize()?;
-
-        let current_token_id = factory.token_id_counter()?;
-        assert_eq!(current_token_id, U256::ZERO);
-        Ok(())
-    }
-
-    #[test]
-    fn test_create_token_post_allegretto() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+    fn test_create_token_quote_token_not_deployed() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
-        let mut factory = TIP20Factory::new(&mut storage);
-        factory.initialize()?;
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Setup::factory()?;
+            TIP20Setup::path_usd(sender).apply()?;
 
-        let call_fail = ITIP20Factory::createTokenCall {
-            name: "Test".to_string(),
-            symbol: "Test".to_string(),
-            currency: "USD".to_string(),
-            quoteToken: token_id_to_address(0),
-            admin: sender,
-        };
+            // Create an address with TIP20 prefix but no code
+            let non_existent_tip20 =
+                Address::from(alloy::hex!("20C0000000000000000000000000000000009999"));
+            let invalid_call = ITIP20Factory::createTokenCall {
+                name: "Test Token".to_string(),
+                symbol: "TEST".to_string(),
+                currency: "USD".to_string(),
+                quoteToken: non_existent_tip20,
+                admin: sender,
+                salt: B256::random(),
+            };
 
-        let result = factory.create_token(sender, call_fail);
-        assert_eq!(
-            result.unwrap_err(),
-            TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
-        );
-
-        let call = ITIP20Factory::createTokenCall {
-            name: "Test".to_string(),
-            symbol: "Test".to_string(),
-            currency: "USD".to_string(),
-            quoteToken: Address::ZERO,
-            admin: sender,
-        };
-
-        factory.create_token(sender, call)?;
-        Ok(())
+            let result = factory.create_token(sender, invalid_call);
+            assert_eq!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
+            );
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_is_tip20_post_allegro_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+    fn test_create_token_already_deployed() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
-        initialize_path_usd(&mut storage, sender)?;
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Setup::factory()?;
+            TIP20Setup::path_usd(sender).apply()?;
 
-        let mut factory = TIP20Factory::new(&mut storage);
-        factory.initialize()?;
+            let salt = B256::random();
+            let create_token_call = ITIP20Factory::createTokenCall {
+                name: "Test Token".to_string(),
+                symbol: "TEST".to_string(),
+                currency: "USD".to_string(),
+                quoteToken: PATH_USD_ADDRESS,
+                admin: sender,
+                salt,
+            };
 
-        // Set tokenIdCounter to 1 (simulating PATH_USD was created through factory)
-        factory.sstore_token_id_counter(U256::from(1))?;
+            let token = factory.create_token(sender, create_token_call.clone())?;
+            let result = factory.create_token(sender, create_token_call);
+            assert_eq!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP20Factory(TIP20FactoryError::TokenAlreadyExists(
+                    ITIP20Factory::TokenAlreadyExists { token }
+                ))
+            );
 
-        // PATH_USD (token ID 0) should be valid since 0 < 1
-        assert!(factory.is_tip20(crate::PATH_USD_ADDRESS)?);
-
-        // Token ID >= tokenIdCounter should be invalid
-        let token_id_counter: u64 = factory.token_id_counter()?.to();
-        let non_existent_tip20 = token_id_to_address(token_id_counter + 100);
-        assert!(!factory.is_tip20(non_existent_tip20)?);
-
-        // Non-TIP20 address should be invalid
-        assert!(!factory.is_tip20(Address::random())?);
-
-        Ok(())
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_is_tip20_pre_allegro_moderato() -> eyre::Result<()> {
-        // Pre-AllegroModerato: only check prefix, not tokenIdCounter
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+    fn test_create_token_reserved_address_rejects_invalid_prefix() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Factory::new();
+            factory.initialize()?;
+
+            let result = factory.create_token_reserved_address(
+                Address::random(), // No TIP20 prefix
+                "Test",
+                "TST",
+                "USD",
+                Address::ZERO,
+                admin,
+            );
+
+            assert_eq!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP20(TIP20Error::invalid_token())
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_create_token_reserved_address_rejects_already_deployed() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Factory::new();
+            factory.initialize()?;
+
+            factory.create_token_reserved_address(
+                PATH_USD_ADDRESS,
+                "pathUSD",
+                "pathUSD",
+                "USD",
+                Address::ZERO,
+                admin,
+            )?;
+
+            let result = factory.create_token_reserved_address(
+                PATH_USD_ADDRESS,
+                "pathUSD",
+                "pathUSD",
+                "USD",
+                Address::ZERO,
+                admin,
+            );
+
+            assert_eq!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP20Factory(TIP20FactoryError::token_already_exists(
+                    PATH_USD_ADDRESS
+                ))
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_create_token_reserved_address_rejects_non_usd_quote_for_usd_token() -> eyre::Result<()>
+    {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let eur_token = TIP20Setup::create("EUR Token", "EUR", admin)
+                .currency("EUR")
+                .apply()?;
+
+            let mut factory = TIP20Factory::new();
+
+            let result = factory.create_token_reserved_address(
+                address!("20C0000000000000000000000000000000000001"), // reserved address
+                "Test USD",
+                "TUSD",
+                "USD",
+                eur_token.address(),
+                admin,
+            );
+
+            assert_eq!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_create_token_reserved_address_rejects_non_reserved_address() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let _path_usd = TIP20Setup::path_usd(admin).apply()?;
+            let mut factory = TIP20Factory::new();
+
+            // 0x9999 = 39321 > 1024 (RESERVED_SIZE)
+            let non_reserved = address!("20C0000000000000000000000000000000009999");
+
+            let result = factory.create_token_reserved_address(
+                non_reserved,
+                "Test",
+                "TST",
+                "USD",
+                PATH_USD_ADDRESS,
+                admin,
+            );
+
+            assert_eq!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP20Factory(TIP20FactoryError::address_not_reserved())
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_create_token_reserved_address_requires_zero_addr_as_first_quote() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Factory::new();
+            factory.initialize()?;
+
+            // Try to create PATH_USD with a non-deployed TIP20 as quote_token
+            let result = factory.create_token_reserved_address(
+                PATH_USD_ADDRESS,
+                "pathUSD",
+                "pathUSD",
+                "USD",
+                address!("20C0000000000000000000000000000000000001"),
+                admin,
+            );
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
+                    _
+                )))
+            ));
+
+            // Only possible to deploy PATH_USD (the first token) without a quote token
+            factory.create_token_reserved_address(
+                PATH_USD_ADDRESS,
+                "pathUSD",
+                "pathUSD",
+                "USD",
+                Address::ZERO,
+                admin,
+            )?;
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_path_usd_requires_zero_quote_token() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Factory::new();
+            factory.initialize()?;
+
+            let other_usd = factory.create_token_reserved_address(
+                address!("20C0000000000000000000000000000000000001"),
+                "testUSD",
+                "testUSD",
+                "USD",
+                Address::ZERO,
+                admin,
+            )?;
+
+            let result = factory.create_token_reserved_address(
+                PATH_USD_ADDRESS,
+                "pathUSD",
+                "pathUSD",
+                "USD",
+                other_usd,
+                admin,
+            );
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
+                    _
+                )))
+            ));
+
+            factory.create_token_reserved_address(
+                PATH_USD_ADDRESS,
+                "pathUSD",
+                "pathUSD",
+                "USD",
+                Address::ZERO,
+                admin,
+            )?;
+
+            assert!(TIP20Token::from_address(PATH_USD_ADDRESS)?.is_initialized()?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_compute_tip20_address_returns_non_default() {
         let sender = Address::random();
-        initialize_path_usd(&mut storage, sender)?;
+        let salt = B256::random();
 
-        let mut factory = TIP20Factory::new(&mut storage);
-        factory.initialize()?;
+        let (address, lower_bytes) = compute_tip20_address(sender, salt);
 
-        // PATH_USD (token ID 0) should be valid
-        assert!(factory.is_tip20(crate::PATH_USD_ADDRESS)?);
+        // Address should NOT be default
+        assert_ne!(address, Address::ZERO);
 
-        // Token ID >= tokenIdCounter should still be valid (only checks prefix pre-AllegroModerato)
-        let token_id_counter: u64 = factory.token_id_counter()?.to();
-        let non_existent_tip20 = token_id_to_address(token_id_counter + 100);
+        // Address should have TIP20 prefix
+        assert!(address.is_tip20());
+
+        // Same inputs should produce same outputs (deterministic)
+        let (address2, lower_bytes2) = compute_tip20_address(sender, salt);
+        assert_eq!(address, address2);
+        assert_eq!(lower_bytes, lower_bytes2);
+
+        // Different sender should produce different outputs
+        let (address3, _) = compute_tip20_address(Address::random(), salt);
+        assert_ne!(address, address3);
+
+        // Different salt should produce different outputs
+        let (address4, _) = compute_tip20_address(sender, B256::random());
+        assert_ne!(address, address4);
+    }
+
+    #[test]
+    fn test_get_token_address_returns_correct_address() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let sender = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let factory = TIP20Factory::new();
+
+            // Use a salt that produces non-reserved address
+            let salt = B256::repeat_byte(0xFF);
+
+            let address =
+                factory.get_token_address(ITIP20Factory::getTokenAddressCall { sender, salt })?;
+
+            // Address should NOT be default
+            assert_ne!(address, Address::ZERO);
+
+            // Should have TIP20 prefix
+            assert!(address.is_tip20());
+
+            // Should be deterministic
+            let address2 =
+                factory.get_token_address(ITIP20Factory::getTokenAddressCall { sender, salt })?;
+            assert_eq!(address, address2);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_is_tip20_returns_correct_boolean() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let factory = TIP20Factory::new();
+
+            // Non-TIP20 address should return false
+            let non_tip20 = Address::random();
+            assert!(
+                !factory.is_tip20(non_tip20)?,
+                "Non-TIP20 address should return false"
+            );
+
+            // PATH_USD before deployment should return false (no code)
+            assert!(
+                !factory.is_tip20(PATH_USD_ADDRESS)?,
+                "Undeployed TIP20 should return false"
+            );
+
+            // Deploy pathUSD
+            TIP20Setup::path_usd(admin).apply()?;
+
+            // Now PATH_USD should return true
+            assert!(
+                factory.is_tip20(PATH_USD_ADDRESS)?,
+                "Deployed TIP20 should return true"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_get_token_address_reserved_boundary() {
+        let sender = Address::ZERO;
+        let salt = B256::repeat_byte(0xAB);
+        let (_, lower_bytes) = compute_tip20_address(sender, salt);
         assert!(
-            factory.is_tip20(non_existent_tip20)?,
-            "Pre-AllegroModerato: should only check prefix"
+            lower_bytes >= RESERVED_SIZE,
+            "compute_tip20_address should produce non-reserved addresses for typical salts"
         );
-
-        // Non-TIP20 address should still be invalid (wrong prefix)
-        assert!(!factory.is_tip20(Address::random())?);
-
-        Ok(())
     }
 }

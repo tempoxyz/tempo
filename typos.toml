@@ -6,18 +6,19 @@ extend-exclude = [
     "Cargo.toml",
     "Cargo.lock",
     "*.json",
+    "**/ph.js",
     "**/tests/**",
     "**/test/**",
     "**/*_test.*",
     "**/*_tests.*",
-    "docs/specs/lib/**",
+    "tips/verify/lib/**",
 ]
 
 [default.extend-words]
 ba = "ba"
-DAA = "DAA"
 multline = "multline"
 froms = "froms"
 Nam = "Nam"
 prool = "prool"
 Prool = "Prool"
+JOD = "JOD"

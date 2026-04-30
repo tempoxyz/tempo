@@ -52,9 +52,14 @@ impl GenerateGenesis {
                     )
                 })?;
                 let signing_key_dst = validator.dst_signing_key(&output);
-                validator
-                    .signing_key
-                    .write_to_file(&signing_key_dst)
+                std::fs::File::create(&signing_key_dst)
+                    .map_err(eyre::Report::new)
+                    .and_then(|f| {
+                        validator
+                            .signing_key
+                            .to_writer(f)
+                            .map_err(eyre::Report::new)
+                    })
                     .wrap_err_with(|| {
                         format!(
                             "failed writing ed25519 signing key to `{}`",

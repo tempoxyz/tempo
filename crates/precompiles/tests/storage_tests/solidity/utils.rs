@@ -216,8 +216,6 @@ pub(super) fn compare_struct_members(
     struct_field_name: &str,
     rust_member_slots: &[RustStorageField],
 ) -> Result<(), Vec<String>> {
-    let mut errors = Vec::new();
-
     // Find the struct field in the top-level storage
     let struct_var = solc_layout
         .storage
@@ -279,62 +277,122 @@ pub(super) fn compare_struct_members(
         type_def
     };
 
+    compare_type_members(
+        solc_layout,
+        struct_type_def,
+        struct_field_name,
+        rust_member_slots,
+        Some(struct_base_slot),
+    )
+}
+
+/// Compares a nested struct type's members against Rust field definitions.
+///
+/// This is used to validate nested structs (e.g., `PolicyData` inside `PolicyRecord`)
+/// by looking up the type definition directly in the Solidity types map.
+///
+/// # Arguments
+/// * `solc_layout` - The parsed Solidity storage layout
+/// * `type_name_pattern` - A substring to match against type names (e.g., "PolicyData")
+/// * `rust_member_fields` - The expected Rust member layout from `struct_fields!`
+pub(super) fn compare_nested_struct_type(
+    solc_layout: &StorageLayout,
+    type_name_pattern: &str,
+    rust_member_fields: &[RustStorageField],
+) -> Result<(), Vec<String>> {
+    let type_def = solc_layout
+        .types
+        .values()
+        .find(|t| {
+            // Extract type name after last dot (e.g., "struct TIP403Registry.PolicyData" -> "PolicyData")
+            let type_name = t.label.rsplit('.').next().unwrap_or(&t.label);
+            type_name == type_name_pattern
+        })
+        .ok_or_else(|| {
+            vec![format!(
+                "Type '{}' not found in Solidity layout",
+                type_name_pattern
+            )]
+        })?;
+
+    compare_type_members(
+        solc_layout,
+        type_def,
+        type_name_pattern,
+        rust_member_fields,
+        None, // Nested types don't validate absolute slots
+    )
+}
+
+/// Core helper that compares struct type members against Rust field definitions.
+///
+/// # Arguments
+/// * `solc_layout` - The parsed Solidity storage layout (for type lookups)
+/// * `type_def` - The resolved Solidity type definition to compare
+/// * `context_name` - Name used in error messages (struct field name or type pattern)
+/// * `rust_member_fields` - The expected Rust member layout from `struct_fields!`
+/// * `base_slot` - If Some, also validates absolute slot positions; if None, only validates offsets/bytes
+fn compare_type_members(
+    solc_layout: &StorageLayout,
+    type_def: &TypeDefinition,
+    context_name: &str,
+    rust_member_fields: &[RustStorageField],
+    base_slot: Option<U256>,
+) -> Result<(), Vec<String>> {
+    let mut errors = Vec::new();
+
     // Get the struct members
-    let members = struct_type_def.members.as_ref().ok_or_else(|| {
+    let members = type_def.members.as_ref().ok_or_else(|| {
         vec![format!(
             "Type '{}' does not have members (not a struct?)",
-            struct_type_def.label
+            type_def.label
         )]
     })?;
 
-    // Build a map of Solidity member names to their storage info
-    let solc_member_info: HashMap<String, (&StorageVariable, U256)> = members
-        .iter()
-        .filter_map(|member| {
-            parse_slot(&member.slot).ok().map(|relative_slot| {
-                (
-                    member.label.clone(),
-                    (member, struct_base_slot + relative_slot),
-                )
-            })
-        })
-        .collect();
+    // Build a map of Solidity member names to their info
+    let solc_member_info: HashMap<String, &StorageVariable> =
+        members.iter().map(|m| (m.label.clone(), m)).collect();
 
-    // Compare Rust member slots against Solidity
-    for rust_member in rust_member_slots {
+    // Compare Rust member fields against Solidity
+    for rust_member in rust_member_fields {
         match solc_member_info.get(rust_member.name) {
-            Some((solc_member, solc_slot)) => {
-                // Compare slot
-                if *solc_slot != rust_member.slot {
-                    errors.push(format!(
-                        "Struct member '{}.{}': Solidity slot {} != Rust slot {}",
-                        struct_field_name, rust_member.name, solc_slot, rust_member.slot
-                    ));
+            Some(solc_member) => {
+                // Compare absolute slot if base_slot is provided
+                if let Some(base) = base_slot
+                    && let Ok(relative_slot) = parse_slot(&solc_member.slot)
+                {
+                    let solc_slot = base + relative_slot;
+                    if solc_slot != rust_member.slot {
+                        errors.push(format!(
+                            "{}.{}: Solidity slot {} != Rust slot {}",
+                            context_name, rust_member.name, solc_slot, rust_member.slot
+                        ));
+                    }
                 }
 
-                // Compare offset
+                // Compare offset within the struct
                 if solc_member.offset as usize != rust_member.offset {
                     errors.push(format!(
-                        "Struct member '{}.{}': Solidity offset {} != Rust offset {}",
-                        struct_field_name, rust_member.name, solc_member.offset, rust_member.offset
+                        "{}.{}: Solidity offset {} != Rust offset {}",
+                        context_name, rust_member.name, solc_member.offset, rust_member.offset
                     ));
                 }
 
-                // Compare bytes
+                // Compare bytes if available
                 if let Some(member_type_def) = solc_layout.types.get(&solc_member.ty)
                     && let Ok(solc_bytes) = member_type_def.number_of_bytes.parse::<usize>()
                     && solc_bytes != rust_member.bytes
                 {
                     errors.push(format!(
-                        "Struct member '{}.{}': Solidity bytes {} != Rust bytes {}",
-                        struct_field_name, rust_member.name, solc_bytes, rust_member.bytes
+                        "{}.{}: Solidity bytes {} != Rust bytes {}",
+                        context_name, rust_member.name, solc_bytes, rust_member.bytes
                     ));
                 }
             }
             None => {
                 errors.push(format!(
-                    "Struct member '{}.{}' exists in Rust but not in Solidity",
-                    struct_field_name, rust_member.name
+                    "{}.{} exists in Rust but not in Solidity",
+                    context_name, rust_member.name
                 ));
             }
         }
@@ -342,12 +400,12 @@ pub(super) fn compare_struct_members(
 
     // Check for Solidity members missing in Rust
     for solc_member_name in solc_member_info.keys() {
-        if !rust_member_slots
+        if !rust_member_fields
             .iter()
             .any(|rm| rm.name == solc_member_name)
         {
             errors.push(format!(
-                "Struct member '{struct_field_name}.{solc_member_name}' exists in Solidity but not in Rust"
+                "{context_name}.{solc_member_name} exists in Solidity but not in Rust"
             ));
         }
     }

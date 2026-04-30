@@ -1,0 +1,394 @@
+//! Shared test utilities for the transaction-pool crate.
+//!
+//! This module provides common helpers for creating test transactions,
+//! wrapping them in pool structures, and setting up mock providers.
+
+use crate::transaction::TempoPooledTransaction;
+use alloy_consensus::{Transaction, TxEip1559};
+use alloy_eips::eip2930::AccessList;
+use alloy_primitives::{Address, B256, Signature, TxKind, U256};
+use core::num::NonZeroU64;
+use reth_primitives_traits::Recovered;
+use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
+use reth_transaction_pool::{TransactionOrigin, ValidPoolTransaction};
+use std::time::Instant;
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork, spec::DEV};
+use tempo_precompiles::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+use tempo_primitives::{
+    TempoPrimitives, TempoTxEnvelope,
+    transaction::{
+        TempoSignedAuthorization, TempoTransaction,
+        tempo_transaction::Call,
+        tt_signature::{KeychainVersion, PrimitiveSignature, TempoSignature},
+        tt_signed::AASigned,
+    },
+};
+
+/// Builder for creating test transactions.
+///
+/// Supports building both EIP-1559 and AA transactions with a fluent API.
+///
+/// # Examples
+///
+/// ```ignore
+/// // Create a simple AA transaction
+/// let tx = TxBuilder::aa(sender).build();
+///
+/// // Create an AA transaction with custom nonce key and nonce
+/// let tx = TxBuilder::aa(sender)
+///     .nonce_key(U256::from(1))
+///     .nonce(5)
+///     .build();
+///
+/// // Create an EIP-1559 transaction
+/// let tx = TxBuilder::eip1559(to_address).build();
+/// ```
+#[derive(Debug, Clone)]
+pub(crate) struct TxBuilder {
+    kind: TxKind,
+    sender: Address,
+    nonce_key: U256,
+    nonce: u64,
+    gas_limit: u64,
+    value: U256,
+    max_priority_fee_per_gas: u128,
+    max_fee_per_gas: u128,
+    fee_token: Option<Address>,
+    valid_after: Option<NonZeroU64>,
+    valid_before: Option<NonZeroU64>,
+    chain_id: u64,
+    /// Custom calls for AA transactions. If None, a default call is created from `kind` and `value`.
+    calls: Option<Vec<Call>>,
+    /// Authorization list for AA transactions.
+    authorization_list: Option<Vec<TempoSignedAuthorization>>,
+    /// Access list for AA transactions.
+    access_list: AccessList,
+}
+
+impl Default for TxBuilder {
+    fn default() -> Self {
+        Self {
+            kind: TxKind::Call(Address::random()),
+            sender: Address::random(),
+            nonce_key: U256::ZERO,
+            nonce: 0,
+            gas_limit: 1_000_000,
+            value: U256::ZERO,
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 20_000_000_000, // 20 gwei, above T1's 20 gwei minimum
+            fee_token: None,
+            valid_after: None,
+            valid_before: None,
+            chain_id: 42431, // MODERATO chain_id
+            calls: None,
+            authorization_list: None,
+            access_list: Default::default(),
+        }
+    }
+}
+
+impl TxBuilder {
+    /// Create a builder for an AA transaction with the given sender.
+    pub(crate) fn aa(sender: Address) -> Self {
+        Self {
+            sender,
+            ..Default::default()
+        }
+    }
+
+    /// Create a builder for an EIP-1559 transaction to the given address.
+    pub(crate) fn eip1559(to: Address) -> Self {
+        Self {
+            kind: TxKind::Call(to),
+            ..Default::default()
+        }
+    }
+
+    /// Set the nonce key (AA transactions only).
+    pub(crate) fn nonce_key(mut self, nonce_key: U256) -> Self {
+        self.nonce_key = nonce_key;
+        self
+    }
+
+    /// Set the transaction nonce.
+    pub(crate) fn nonce(mut self, nonce: u64) -> Self {
+        self.nonce = nonce;
+        self
+    }
+
+    /// Set the gas limit.
+    pub(crate) fn gas_limit(mut self, gas_limit: u64) -> Self {
+        self.gas_limit = gas_limit;
+        self
+    }
+
+    /// Set the transaction value.
+    pub(crate) fn value(mut self, value: U256) -> Self {
+        self.value = value;
+        self
+    }
+
+    /// Set the max priority fee per gas.
+    pub(crate) fn max_priority_fee(mut self, fee: u128) -> Self {
+        self.max_priority_fee_per_gas = fee;
+        self
+    }
+
+    /// Set the max fee per gas.
+    pub(crate) fn max_fee(mut self, fee: u128) -> Self {
+        self.max_fee_per_gas = fee;
+        self
+    }
+
+    /// Set the fee token (AA transactions only).
+    pub(crate) fn fee_token(mut self, fee_token: Address) -> Self {
+        self.fee_token = Some(fee_token);
+        self
+    }
+
+    /// Set the valid_after timestamp (AA transactions only).
+    pub(crate) fn valid_after(mut self, valid_after: u64) -> Self {
+        self.valid_after = NonZeroU64::new(valid_after);
+        self
+    }
+
+    /// Set the valid_before timestamp (AA transactions only).
+    pub(crate) fn valid_before(mut self, valid_before: u64) -> Self {
+        self.valid_before = NonZeroU64::new(valid_before);
+        self
+    }
+
+    /// Set custom calls for the AA transaction.
+    /// If not set, a default call is created from `kind` and `value`.
+    pub(crate) fn calls(mut self, calls: Vec<Call>) -> Self {
+        self.calls = Some(calls);
+        self
+    }
+
+    /// Set the authorization list for the AA transaction.
+    pub(crate) fn authorization_list(
+        mut self,
+        authorization_list: Vec<TempoSignedAuthorization>,
+    ) -> Self {
+        self.authorization_list = Some(authorization_list);
+        self
+    }
+
+    /// Set the access list for the AA transaction.
+    pub(crate) fn access_list(mut self, access_list: AccessList) -> Self {
+        self.access_list = access_list;
+        self
+    }
+
+    /// Build an AA transaction.
+    pub(crate) fn build(self) -> TempoPooledTransaction {
+        let calls = self.calls.unwrap_or_else(|| {
+            vec![Call {
+                to: self.kind,
+                value: self.value,
+                input: Default::default(),
+            }]
+        });
+
+        let tx = TempoTransaction {
+            chain_id: self.chain_id,
+            max_priority_fee_per_gas: self.max_priority_fee_per_gas,
+            max_fee_per_gas: self.max_fee_per_gas,
+            gas_limit: self.gas_limit,
+            calls,
+            nonce_key: self.nonce_key,
+            nonce: self.nonce,
+            fee_token: self.fee_token,
+            fee_payer_signature: None,
+            valid_after: self.valid_after,
+            valid_before: self.valid_before,
+            access_list: self.access_list,
+            tempo_authorization_list: self.authorization_list.unwrap_or_default(),
+            key_authorization: None,
+        };
+
+        let signature =
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let aa_signed = AASigned::new_unhashed(tx, signature);
+        let envelope: TempoTxEnvelope = aa_signed.into();
+
+        let recovered = Recovered::new_unchecked(envelope, self.sender);
+        TempoPooledTransaction::new(recovered)
+    }
+
+    /// Build an AA transaction with a V2 keychain signature.
+    ///
+    /// The `user_address` is the account that owns the keychain key,
+    /// and `access_key_signer` is the private key used to sign (whose address becomes key_id).
+    pub(crate) fn build_keychain(
+        self,
+        user_address: Address,
+        access_key_signer: &alloy_signer_local::PrivateKeySigner,
+    ) -> TempoPooledTransaction {
+        self.build_keychain_with_version(user_address, access_key_signer, KeychainVersion::V2)
+    }
+
+    /// Build an AA transaction with a keychain signature of the specified version.
+    pub(crate) fn build_keychain_with_version(
+        self,
+        user_address: Address,
+        access_key_signer: &alloy_signer_local::PrivateKeySigner,
+        version: KeychainVersion,
+    ) -> TempoPooledTransaction {
+        use alloy_signer::SignerSync;
+        use tempo_primitives::transaction::tt_signature::KeychainSignature;
+
+        let calls = self.calls.unwrap_or_else(|| {
+            vec![Call {
+                to: self.kind,
+                value: self.value,
+                input: Default::default(),
+            }]
+        });
+
+        let tx = TempoTransaction {
+            chain_id: self.chain_id,
+            max_priority_fee_per_gas: self.max_priority_fee_per_gas,
+            max_fee_per_gas: self.max_fee_per_gas,
+            gas_limit: self.gas_limit,
+            calls,
+            nonce_key: self.nonce_key,
+            nonce: self.nonce,
+            fee_token: self.fee_token,
+            fee_payer_signature: None,
+            valid_after: self.valid_after,
+            valid_before: self.valid_before,
+            access_list: self.access_list,
+            tempo_authorization_list: self.authorization_list.unwrap_or_default(),
+            key_authorization: None,
+        };
+
+        // Create a temp AASigned to get the signature hash
+        let temp_sig =
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let unsigned = AASigned::new_unhashed(tx.clone(), temp_sig);
+        let sig_hash = unsigned.signature_hash();
+
+        let (effective_hash, keychain_sig) = match version {
+            KeychainVersion::V1 => {
+                // V1: sign raw sig_hash directly
+                let signature = access_key_signer
+                    .sign_hash_sync(&sig_hash)
+                    .expect("signing failed");
+                (
+                    sig_hash,
+                    TempoSignature::Keychain(KeychainSignature::new_v1(
+                        user_address,
+                        PrimitiveSignature::Secp256k1(signature),
+                    )),
+                )
+            }
+            KeychainVersion::V2 => {
+                // V2: sign keccak256(0x04 || sig_hash || user_address)
+                let hash = KeychainSignature::signing_hash(sig_hash, user_address);
+                let signature = access_key_signer
+                    .sign_hash_sync(&hash)
+                    .expect("signing failed");
+                (
+                    hash,
+                    TempoSignature::Keychain(KeychainSignature::new(
+                        user_address,
+                        PrimitiveSignature::Secp256k1(signature),
+                    )),
+                )
+            }
+        };
+        let _ = effective_hash;
+
+        let signed_tx = AASigned::new_unhashed(tx, keychain_sig);
+        let envelope: TempoTxEnvelope = signed_tx.into();
+        let recovered = {
+            use reth_primitives_traits::SignerRecoverable;
+            envelope.try_into_recovered().unwrap()
+        };
+        TempoPooledTransaction::new(recovered)
+    }
+
+    /// Build an EIP-1559 transaction.
+    pub(crate) fn build_eip1559(self) -> TempoPooledTransaction {
+        let tx = TxEip1559 {
+            chain_id: self.chain_id,
+            to: self.kind,
+            gas_limit: self.gas_limit,
+            value: self.value,
+            max_fee_per_gas: self.max_fee_per_gas,
+            max_priority_fee_per_gas: self.max_priority_fee_per_gas,
+            ..Default::default()
+        };
+
+        let envelope = TempoTxEnvelope::Eip1559(alloy_consensus::Signed::new_unchecked(
+            tx,
+            Signature::test_signature(),
+            B256::ZERO,
+        ));
+
+        let recovered = Recovered::new_unchecked(envelope, self.sender);
+        TempoPooledTransaction::new(recovered)
+    }
+}
+
+/// Helper to wrap a transaction in ValidPoolTransaction.
+///
+/// Note: Creates a dummy SenderId for testing since the AA2dPool doesn't use it.
+pub(crate) fn wrap_valid_tx(
+    tx: TempoPooledTransaction,
+    origin: TransactionOrigin,
+) -> ValidPoolTransaction<TempoPooledTransaction> {
+    let tx_id = reth_transaction_pool::identifier::TransactionId::new(0u64.into(), tx.nonce());
+    ValidPoolTransaction {
+        transaction: tx,
+        transaction_id: tx_id,
+        propagate: true,
+        timestamp: Instant::now(),
+        origin,
+        authority_ids: None,
+    }
+}
+
+/// Creates a mock provider with the DEV chain spec (all hardforks active at genesis).
+pub(crate) fn create_mock_provider() -> MockEthProvider<TempoPrimitives, TempoChainSpec> {
+    MockEthProvider::new().with_chain_spec(std::sync::Arc::unwrap_or_clone(DEV.clone()))
+}
+
+/// Extension trait that lets tests populate `MockEthProvider` storage using the typed precompile
+/// handler API without relying on manual slot encoding.
+///
+/// # Example
+///
+/// ```ignore
+/// provider.setup_storage(TempoHardfork::T1C, || {
+///     AccountKeychain::new().keys[user][key_id].write(AuthorizedKey {
+///         signature_type: 0,
+///         expiry: u64::MAX,
+///         enforce_limits: false,
+///         is_revoked: false,
+///     })
+/// });
+/// ```
+pub(crate) trait MockProviderStorageExt {
+    fn setup_storage<R>(&self, spec: TempoHardfork, f: impl FnOnce() -> R) -> R;
+}
+
+impl<T: reth_primitives_traits::NodePrimitives> MockProviderStorageExt
+    for MockEthProvider<T, TempoChainSpec>
+{
+    fn setup_storage<R>(&self, spec: TempoHardfork, f: impl FnOnce() -> R) -> R {
+        let mut provider = HashMapStorageProvider::new_with_spec(1, spec);
+        let result = StorageCtx::enter(&mut provider, f);
+
+        for (address, slot, value) in provider.into_storage() {
+            let mut accounts = self.accounts.lock();
+            let account = accounts
+                .remove(&address)
+                .unwrap_or_else(|| ExtendedAccount::new(0, U256::ZERO));
+            accounts.insert(address, account.extend_storage([(B256::from(slot), value)]));
+        }
+
+        result
+    }
+}

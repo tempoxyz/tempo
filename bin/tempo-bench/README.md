@@ -90,17 +90,22 @@ Options:
       --tip20-weight <TIP20_WEIGHT>
           A weight that determines the likelihood of generating a TIP-20 transfer transaction
 
-          [default: 0.8]
+          [default: 1]
 
       --place-order-weight <PLACE_ORDER_WEIGHT>
           A weight that determines the likelihood of generating a DEX place transaction
 
-          [default: 0.01]
+          [default: 0]
 
       --swap-weight <SWAP_WEIGHT>
           A weight that determines the likelihood of generating a DEX swapExactAmountIn transaction
 
-          [default: 0.19]
+          [default: 0]
+
+      --erc20-weight <ERC20_WEIGHT>
+          A weight that determines the likelihood of generating an ERC-20 transfer transaction
+
+          [default: 0]
 
       --sample-size <SAMPLE_SIZE>
           An amount of receipts to wait for after sending all the transactions
@@ -116,6 +121,18 @@ Options:
           Clear the transaction pool before running the benchmark.
 
           Calls admin_clearTxpool.
+
+      --use-2d-nonces
+          Use 2D nonces instead of expiring nonces.
+
+          By default, tempo-bench uses expiring nonces (TIP-1009) which use a circular buffer
+          for replay protection, avoiding state bloat. Use this flag to switch to 2D nonces.
+
+      --use-standard-nonces
+          Use standard sequential nonces instead of expiring nonces.
+
+      --expiring-batch-secs <SECS>
+          Batch size for signing transactions when using expiring nonces.
 
   -h, --help
           Print help (see a summary with '-h')

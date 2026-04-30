@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: MIT OR Apache-2.0
 pragma solidity ^0.8.0;
 
 /// Test contract for TIP20 token storage layout.
@@ -33,6 +33,7 @@ contract TIP20 {
     string public name;
     string public symbol;
     string public currency;
+    // Unused slot, kept for storage layout compatibility
     bytes32 public domainSeparator;
     address public quoteToken;
     address public nextQuoteToken;
@@ -43,24 +44,16 @@ contract TIP20 {
     uint256 public totalSupply;
     mapping(address => uint256) public balances;
     mapping(address => mapping(address => uint256)) public allowances;
-    mapping(address => uint256) public nonces;
+    mapping(address => uint256) public permitNonces;
     bool public paused;
     uint256 public supplyCap;
+    // Unused slot, kept for storage layout compatibility
     mapping(bytes32 => bool) public salts;
 
     // ========== Rewards Storage ==========
 
     uint256 public globalRewardPerToken;
-    uint64 public lastUpdateTime;
-    uint256 public totalRewardPerSecond;
     uint128 public optedInSupply;
-    uint64 public nextStreamId;
-
-    /// Mapping of stream ID to reward stream data
-    mapping(uint64 => RewardStream) public streams;
-
-    /// Mapping of timestamp to scheduled rate decrease
-    mapping(uint128 => uint256) public scheduledRateDecrease;
 
     /// Mapping of user address to their reward info
     mapping(address => UserRewardInfo) public userRewardInfo;

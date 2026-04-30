@@ -19,128 +19,146 @@ fn test_array_storage() {
         pub field_d: U256, // Auto: slot 6 (after multi-slot array)
     }
 
-    let mut s = setup_storage();
+    let (mut storage, address) = setup_storage();
+    let mut layout = Layout::__new(address);
 
-    let small_array = [42u8; 32];
-    let large_array = [
-        U256::from(100),
-        U256::from(200),
-        U256::from(300),
-        U256::from(400),
-        U256::from(500),
-    ];
-    let auto_array = [
-        address!("0x0000000000000000000000000000000000000011"),
-        address!("0x0000000000000000000000000000000000000022"),
-        address!("0x0000000000000000000000000000000000000033"),
-    ];
+    StorageCtx::enter(&mut storage, || {
+        // Verify actual slot assignments
+        assert_eq!(layout.field_a.slot(), U256::ZERO);
+        assert_eq!(layout.small_array.base_slot(), U256::from(10));
+        assert_eq!(layout.field_b.slot(), U256::ONE);
+        assert_eq!(layout.large_array.base_slot(), U256::from(20));
+        assert_eq!(layout.field_b.slot(), U256::ONE);
+        assert_eq!(layout.field_c.slot(), U256::from(2));
+        assert_eq!(layout.auto_array.base_slot(), U256::from(3));
+        assert_eq!(layout.field_d.slot(), U256::from(6));
 
-    // Store data
-    {
-        let mut layout = Layout::_new(s.address, s.storage());
-        layout.sstore_field_a(U256::ONE).unwrap();
-        layout.sstore_small_array(small_array).unwrap();
-        layout.sstore_field_b(U256::from(2)).unwrap();
-        layout.sstore_large_array(large_array).unwrap();
-        layout.sstore_field_c(U256::from(3)).unwrap();
-        layout.sstore_auto_array(auto_array).unwrap();
-        layout.sstore_field_d(U256::from(4)).unwrap();
+        // Verify slots module
+        assert_eq!(slots::FIELD_A, U256::from(0));
+        assert_eq!(slots::SMALL_ARRAY, U256::from(10));
+        assert_eq!(slots::FIELD_B, U256::ONE);
+        assert_eq!(slots::LARGE_ARRAY, U256::from(20));
+        assert_eq!(slots::FIELD_C, U256::from(2));
+        assert_eq!(slots::AUTO_ARRAY, U256::from(3));
+        assert_eq!(slots::FIELD_D, U256::from(6));
 
-        // Verify getters
-        assert_eq!(layout.sload_field_a().unwrap(), U256::ONE);
-        assert_eq!(layout.sload_small_array().unwrap(), small_array);
-        assert_eq!(layout.sload_field_b().unwrap(), U256::from(2));
-        assert_eq!(layout.sload_large_array().unwrap(), large_array);
-        assert_eq!(layout.sload_field_c().unwrap(), U256::from(3));
-        assert_eq!(layout.sload_auto_array().unwrap(), auto_array);
-        assert_eq!(layout.sload_field_d().unwrap(), U256::from(4));
+        // Store data
+        let small_array = [42u8; 32];
+        let large_array = [
+            U256::from(100),
+            U256::from(200),
+            U256::from(300),
+            U256::from(400),
+            U256::from(500),
+        ];
+        let auto_array = [
+            address!("0x0000000000000000000000000000000000000011"),
+            address!("0x0000000000000000000000000000000000000022"),
+            address!("0x0000000000000000000000000000000000000033"),
+        ];
+
+        layout.field_a.write(U256::ONE).unwrap();
+        layout.small_array.write(small_array).unwrap();
+        layout.field_b.write(U256::from(2)).unwrap();
+        layout.large_array.write(large_array).unwrap();
+        layout.field_c.write(U256::from(3)).unwrap();
+        layout.auto_array.write(auto_array).unwrap();
+        layout.field_d.write(U256::from(4)).unwrap();
+
+        // Verify data is properly stored
+        assert_eq!(layout.field_a.read().unwrap(), U256::ONE);
+        assert_eq!(layout.small_array.read().unwrap(), small_array);
+        assert_eq!(layout.field_b.read().unwrap(), U256::from(2));
+        assert_eq!(layout.large_array.read().unwrap(), large_array);
+        assert_eq!(layout.field_c.read().unwrap(), U256::from(3));
+        assert_eq!(layout.auto_array.read().unwrap(), auto_array);
+        assert_eq!(layout.field_d.read().unwrap(), U256::from(4));
+
+        // Test individual element access
+        layout.large_array[1].delete().unwrap();
+        layout.large_array[2].write(U256::from(222)).unwrap();
+        assert_eq!(layout.large_array[0].read().unwrap(), U256::from(100));
+        assert_eq!(layout.large_array[1].read().unwrap(), U256::ZERO);
+        assert_eq!(layout.large_array[2].read().unwrap(), U256::from(222));
+
+        // Test delete
+        layout.large_array.delete().unwrap();
+        layout.auto_array.delete().unwrap();
+
+        // Verify array slots are zeroed
+        assert_eq!(layout.large_array.read().unwrap(), <[U256; 5]>::default());
+        assert_eq!(layout.auto_array.read().unwrap(), <[Address; 3]>::default());
+
+        // Verify other fields unchanged
+        assert_eq!(layout.field_a.read().unwrap(), U256::ONE);
+        assert_eq!(layout.small_array.read().unwrap(), small_array);
+        assert_eq!(layout.field_b.read().unwrap(), U256::from(2));
+        assert_eq!(layout.field_c.read().unwrap(), U256::from(3));
+        assert_eq!(layout.field_d.read().unwrap(), U256::from(4));
+
+        Ok::<(), tempo_precompiles::error::TempoPrecompileError>(())
+    })
+    .unwrap()
+}
+
+#[test]
+fn test_array_element_access() {
+    #[contract]
+    pub struct Layout {
+        pub small_array: [u8; 32],  // Packed storage
+        pub large_array: [U256; 5], // Unpacked storage
     }
 
-    // Verify actual slot assignments
-    assert_eq!(s.storage.sload(s.address, U256::from(0)), Ok(U256::ONE)); // field_a
+    let (mut storage, address) = setup_storage();
+    let mut layout = Layout::__new(address);
 
-    // small_array is packed into slot 10
-    let expected_small = U256::from_be_bytes(small_array);
-    assert_eq!(
-        s.storage.sload(s.address, U256::from(10)),
-        Ok(expected_small)
-    );
+    StorageCtx::enter(&mut storage, || {
+        // Test packed array element access (u8 elements, T::BYTES = 1 <= 16)
+        let small_data = [42u8; 32];
+        layout.small_array.write(small_data).unwrap();
 
-    assert_eq!(s.storage.sload(s.address, U256::ONE), Ok(U256::from(2))); // field_b
+        // Read individual elements from packed array
+        assert_eq!(layout.small_array[0].read().unwrap(), 42_u8);
+        assert_eq!(layout.small_array[15].read().unwrap(), 42_u8);
+        assert_eq!(layout.small_array[31].read().unwrap(), 42_u8);
 
-    // large_array occupies slots 20-24
-    assert_eq!(
-        s.storage.sload(s.address, U256::from(20)),
-        Ok(U256::from(100))
-    );
-    assert_eq!(
-        s.storage.sload(s.address, U256::from(21)),
-        Ok(U256::from(200))
-    );
-    assert_eq!(
-        s.storage.sload(s.address, U256::from(22)),
-        Ok(U256::from(300))
-    );
-    assert_eq!(
-        s.storage.sload(s.address, U256::from(23)),
-        Ok(U256::from(400))
-    );
-    assert_eq!(
-        s.storage.sload(s.address, U256::from(24)),
-        Ok(U256::from(500))
-    );
+        // Write individual element in packed array
+        layout.small_array[10].write(99u8).unwrap();
+        layout.small_array[11].delete().unwrap();
+        assert_eq!(layout.small_array[9].read().unwrap(), 42_u8);
+        assert_eq!(layout.small_array[10].read().unwrap(), 99_u8);
+        assert_eq!(layout.small_array[11].read().unwrap(), 0_u8);
 
-    assert_eq!(s.storage.sload(s.address, U256::from(2)), Ok(U256::from(3))); // field_c
+        // Test unpacked array element access (U256 elements, T::BYTES = 32 > 16)
+        let large_data = [
+            U256::from(100),
+            U256::from(200),
+            U256::from(300),
+            U256::from(400),
+            U256::from(500),
+        ];
+        layout.large_array.write(large_data).unwrap();
 
-    // auto_array occupies slots 3-5
-    assert_eq!(
-        s.storage.sload(s.address, U256::from(3)),
-        Ok(U256::from(0x11))
-    );
-    assert_eq!(
-        s.storage.sload(s.address, U256::from(4)),
-        Ok(U256::from(0x22))
-    );
-    assert_eq!(
-        s.storage.sload(s.address, U256::from(5)),
-        Ok(U256::from(0x33))
-    );
+        // Read individual elements from unpacked array
+        assert_eq!(layout.large_array[0].read().unwrap(), U256::from(100));
+        assert_eq!(layout.large_array[2].read().unwrap(), U256::from(300));
+        assert_eq!(layout.large_array[4].read().unwrap(), U256::from(500));
 
-    assert_eq!(s.storage.sload(s.address, U256::from(6)), Ok(U256::from(4))); // field_d
+        // Write individual element in unpacked array
+        layout.large_array[2].write(U256::from(999)).unwrap();
+        assert_eq!(layout.large_array[2].read().unwrap(), U256::from(999));
+        // Verify other elements unchanged
+        assert_eq!(layout.large_array[1].read().unwrap(), U256::from(200));
+        assert_eq!(layout.large_array[3].read().unwrap(), U256::from(400));
 
-    // Verify slots module
-    assert_eq!(slots::FIELD_A, U256::from(0));
-    assert_eq!(slots::SMALL_ARRAY, U256::from(10));
-    assert_eq!(slots::FIELD_B, U256::ONE);
-    assert_eq!(slots::LARGE_ARRAY, U256::from(20));
-    assert_eq!(slots::FIELD_C, U256::from(2));
-    assert_eq!(slots::AUTO_ARRAY, U256::from(3));
-    assert_eq!(slots::FIELD_D, U256::from(6));
+        // Delete individual element in unpacked array
+        layout.large_array[2].delete().unwrap();
+        assert_eq!(layout.large_array[2].read().unwrap(), U256::ZERO);
+        assert_eq!(layout.large_array[1].read().unwrap(), U256::from(200));
 
-    // Test delete
-    {
-        let mut layout = Layout::_new(s.address, s.storage());
-        layout.clear_large_array().unwrap();
-        layout.clear_auto_array().unwrap();
-    }
-
-    // Verify array slots are zeroed
-    for slot in 20..=24 {
-        assert_eq!(s.storage.sload(s.address, U256::from(slot)), Ok(U256::ZERO));
-    }
-    for slot in 3..=5 {
-        assert_eq!(s.storage.sload(s.address, U256::from(slot)), Ok(U256::ZERO));
-    }
-
-    // Verify other fields unchanged
-    assert_eq!(s.storage.sload(s.address, U256::from(0)), Ok(U256::ONE)); // field_a
-    assert_eq!(
-        s.storage.sload(s.address, U256::from(10)),
-        Ok(expected_small)
-    ); // small_array
-    assert_eq!(s.storage.sload(s.address, U256::ONE), Ok(U256::from(2))); // field_b
-    assert_eq!(s.storage.sload(s.address, U256::from(2)), Ok(U256::from(3))); // field_c
-    assert_eq!(s.storage.sload(s.address, U256::from(6)), Ok(U256::from(4))); // field_d
+        Ok::<(), tempo_precompiles::error::TempoPrecompileError>(())
+    })
+    .unwrap()
 }
 
 proptest! {
@@ -166,40 +184,41 @@ proptest! {
             pub field_c: U256, // Auto: slot 2
         }
 
-        let mut s = setup_storage();
+        let (mut storage, address) = setup_storage();
+        let mut layout = Layout::__new(address);
 
-        {
-            let mut layout = Layout::_new(s.address, s.storage());
-
+        StorageCtx::enter(&mut storage, || {
             // Store random values
-            layout.sstore_field_a(field_a_val)?;
-            layout.sstore_small_array(small_array)?;
-            layout.sstore_field_b(field_b_val)?;
-            layout.sstore_large_array(large_array)?;
-            layout.sstore_field_c(field_c_val)?;
+            layout.field_a.write(field_a_val)?;
+        layout.small_array.write(small_array)?;
+        layout.field_b.write(field_b_val)?;
+        layout.large_array.write(large_array)?;
+        layout.field_c.write(field_c_val)?;
 
-            // Roundtrip property
-            prop_assert_eq!(layout.sload_field_a()?, field_a_val);
-            prop_assert_eq!(layout.sload_small_array()?, small_array);
-            prop_assert_eq!(layout.sload_field_b()?, field_b_val);
-            prop_assert_eq!(layout.sload_large_array()?, large_array);
-            prop_assert_eq!(layout.sload_field_c()?, field_c_val);
+        // Roundtrip property
+        prop_assert_eq!(layout.field_a.read()?, field_a_val);
+        prop_assert_eq!(layout.small_array.read()?, small_array);
+        prop_assert_eq!(layout.field_b.read()?, field_b_val);
+        prop_assert_eq!(layout.large_array.read()?, large_array);
+        prop_assert_eq!(layout.field_c.read()?, field_c_val);
 
-            // Delete property for large_array
-            layout.clear_large_array()?;
-            let default_array = [U256::ZERO; 5];
-            prop_assert_eq!(layout.sload_large_array()?, default_array);
+        // Test individual element access
+        prop_assert_eq!(layout.large_array[2].read()?, large_array[2]);
+        layout.small_array[5].write(small_array[5])?;
+        prop_assert_eq!(layout.small_array[5].read()?, small_array[5]);
+
+        // Delete property for large_array
+        layout.large_array.delete()?;
+        let default_array = [U256::ZERO; 5];
+        prop_assert_eq!(layout.large_array.read()?, default_array);
 
             // Isolation: other fields unchanged
-            prop_assert_eq!(layout.sload_field_a()?, field_a_val);
-            prop_assert_eq!(layout.sload_small_array()?, small_array);
-            prop_assert_eq!(layout.sload_field_b()?, field_b_val);
-            prop_assert_eq!(layout.sload_field_c()?, field_c_val);
-        }
+            prop_assert_eq!(layout.field_a.read()?, field_a_val);
+            prop_assert_eq!(layout.small_array.read()?, small_array);
+            prop_assert_eq!(layout.field_b.read()?, field_b_val);
+            prop_assert_eq!(layout.field_c.read()?, field_c_val);
 
-        // Verify large_array slots are zeroed (slots 20-24)
-        for slot in 20..=24 {
-            prop_assert_eq!(s.storage.sload(s.address, U256::from(slot))?, U256::ZERO);
-        }
+            Ok(())
+        })?;
     }
 }

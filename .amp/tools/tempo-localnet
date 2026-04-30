@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Amp toolbox tool: Run Tempo node(s) for benchmarking
+
+if [ "$TOOLBOX_ACTION" = "describe" ]; then
+    cat <<'EOF'
+name: tempo-localnet
+description: Run Tempo node(s) for benchmarking. Supports dev mode (single node) or consensus mode (multiple validators). Use this instead of manually running nu tempo.nu localnet.
+mode: string Mode: dev or consensus (default: dev)
+nodes: number Number of validators for consensus mode (default: 3)
+accounts: number Number of genesis accounts (default: 1000)
+genesis: string Custom genesis file path (skips generation)
+reset: boolean Wipe and regenerate localnet data (default: false)
+loud: boolean Show all node logs (default: false, only WARN/ERROR shown)
+samply: boolean Enable samply profiling for foreground node (default: false)
+samply_args: string Additional samply arguments (space-separated)
+profile: string Cargo build profile (default: profiling)
+features: string Cargo features (default: jemalloc,asm-keccak)
+node_args: string Additional node arguments (space-separated)
+skip_build: boolean Skip building the binary (default: false)
+force: boolean Kill dangling processes without prompting (default: false)
+EOF
+    exit 0
+fi
+
+if [ "$TOOLBOX_ACTION" = "execute" ]; then
+    input=$(cat)
+    
+    mode=$(echo "$input" | grep -E '^mode:' | sed 's/^mode: *//')
+    nodes=$(echo "$input" | grep -E '^nodes:' | sed 's/^nodes: *//')
+    accounts=$(echo "$input" | grep -E '^accounts:' | sed 's/^accounts: *//')
+    genesis=$(echo "$input" | grep -E '^genesis:' | sed 's/^genesis: *//')
+    reset=$(echo "$input" | grep -E '^reset:' | sed 's/^reset: *//')
+    loud=$(echo "$input" | grep -E '^loud:' | sed 's/^loud: *//')
+    samply=$(echo "$input" | grep -E '^samply:' | sed 's/^samply: *//')
+    samply_args=$(echo "$input" | grep -E '^samply_args:' | sed 's/^samply_args: *//')
+    profile=$(echo "$input" | grep -E '^profile:' | sed 's/^profile: *//')
+    features=$(echo "$input" | grep -E '^features:' | sed 's/^features: *//')
+    node_args=$(echo "$input" | grep -E '^node_args:' | sed 's/^node_args: *//')
+    skip_build=$(echo "$input" | grep -E '^skip_build:' | sed 's/^skip_build: *//')
+    force=$(echo "$input" | grep -E '^force:' | sed 's/^force: *//')
+    
+    cmd="nu tempo.nu localnet"
+    
+    [ -n "$mode" ] && cmd="$cmd --mode $mode"
+    [ -n "$nodes" ] && cmd="$cmd --nodes $nodes"
+    [ -n "$accounts" ] && cmd="$cmd --accounts $accounts"
+    [ -n "$genesis" ] && cmd="$cmd --genesis $genesis"
+    [ "$reset" = "true" ] && cmd="$cmd --reset"
+    [ "$loud" = "true" ] && cmd="$cmd --loud"
+    [ "$samply" = "true" ] && cmd="$cmd --samply"
+    [ -n "$samply_args" ] && cmd="$cmd --samply-args=\"$samply_args\""
+    [ -n "$profile" ] && cmd="$cmd --profile $profile"
+    [ -n "$features" ] && cmd="$cmd --features $features"
+    [ -n "$node_args" ] && cmd="$cmd --node-args=\"$node_args\""
+    [ "$skip_build" = "true" ] && cmd="$cmd --skip-build"
+    [ "$force" = "true" ] && cmd="$cmd --force"
+    
+    echo "Running: $cmd"
+    eval "$cmd"
+fi

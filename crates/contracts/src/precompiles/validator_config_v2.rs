@@ -1,0 +1,245 @@
+use alloc::string::String;
+
+pub use IValidatorConfigV2::{
+    IValidatorConfigV2Errors as ValidatorConfigV2Error,
+    IValidatorConfigV2Events as ValidatorConfigV2Event,
+};
+
+crate::sol! {
+    /// Validator Config V2 interface for managing consensus validators with append-only,
+    /// delete-once semantics.
+    ///
+    /// V2 uses an append-only design that eliminates the need for historical state access
+    /// during node recovery. Validators are immutable after creation and can only be deleted once.
+    ///
+    /// Key differences from V1:
+    /// - `active` bool replaced by `addedAtHeight` and `deactivatedAtHeight`
+    /// - No `updateValidator` - validators are immutable after creation
+    /// - Requires Ed25519 signature on `addValidator` to prove key ownership
+    /// - Both address and public key must be unique across all validators (including deleted)
+    #[derive(Debug, PartialEq, Eq)]
+    #[sol(abi)]
+    interface IValidatorConfigV2 {
+        /// Validator information
+        struct Validator {
+            bytes32 publicKey;
+            address validatorAddress;
+            string ingress;
+            string egress;
+            address feeRecipient;
+            uint64 index;
+            uint64 addedAtHeight;
+            uint64 deactivatedAtHeight;
+        }
+
+        // =====================================================================
+        // View functions
+        // =====================================================================
+
+        /// Get only active validators (deactivatedAtHeight == 0)
+        function getActiveValidators() external view returns (Validator[] memory validators);
+
+        /// Get the block height at which the contract was initialized
+        function getInitializedAtHeight() external view returns (uint64);
+
+        /// Get the contract owner
+        function owner() external view returns (address);
+
+        /// Get total count of validators ever added (including deactivated)
+        function validatorCount() external view returns (uint64);
+
+        /// Get validator by index
+        function validatorByIndex(uint64 index) external view returns (Validator memory);
+
+        /// Get validator by address
+        function validatorByAddress(address validatorAddress) external view returns (Validator memory);
+
+        /// Get validator by public key
+        function validatorByPublicKey(bytes32 publicKey) external view returns (Validator memory);
+
+        /// Get the epoch for next network identity rotation (full DKG ceremony)
+        function getNextNetworkIdentityRotationEpoch() external view returns (uint64);
+
+        /// Check if V2 has been initialized
+        function isInitialized() external view returns (bool);
+
+        // =====================================================================
+        // Mutate functions
+        // =====================================================================
+
+        /// Add a new validator (owner only)
+        function addValidator(
+            address validatorAddress,
+            bytes32 publicKey,
+            string calldata ingress,
+            string calldata egress,
+            address feeRecipient,
+            bytes calldata signature
+        ) external returns (uint64 index);
+
+        /// Deactivate a validator (owner or validator)
+        function deactivateValidator(uint64 idx) external;
+
+        /// Rotate a validator to new identity (owner or validator)
+        function rotateValidator(
+            uint64 idx,
+            bytes32 publicKey,
+            string calldata ingress,
+            string calldata egress,
+            bytes calldata signature
+        ) external;
+
+        /// Update fee recipient.
+        function setFeeRecipient(
+            uint64 idx,
+            address feeRecipient
+        ) external;
+
+        /// Update IP addresses (owner or validator)
+        function setIpAddresses(
+            uint64 idx,
+            string calldata ingress,
+            string calldata egress
+        ) external;
+
+        /// Transfer validator ownership to new address (owner or validator)
+        function transferValidatorOwnership(
+            uint64 idx,
+            address newAddress
+        ) external;
+
+        /// Transfer contract ownership (owner only)
+        function transferOwnership(address newOwner) external;
+
+        /// Set the epoch for next network identity rotation via full DKG ceremony (owner only)
+        function setNetworkIdentityRotationEpoch(uint64 epoch) external;
+
+        /// Migrate a single validator from V1 (owner only)
+        function migrateValidator(uint64 idx) external;
+
+        /// Initialize V2 after migration (owner only)
+        function initializeIfMigrated() external;
+
+        // =====================================================================
+        // Events
+        // =====================================================================
+
+        event ValidatorAdded(uint64 indexed index, address indexed validatorAddress, bytes32 publicKey, string ingress, string egress, address feeRecipient);
+        event ValidatorDeactivated(uint64 indexed index, address indexed validatorAddress);
+        event ValidatorRotated(
+            uint64 indexed index,
+            uint64 indexed deactivatedIndex,
+            address indexed validatorAddress,
+            bytes32 oldPublicKey,
+            bytes32 newPublicKey,
+            string ingress,
+            string egress,
+            address caller
+        );
+        event FeeRecipientUpdated(uint64 indexed index, address feeRecipient, address caller);
+        event IpAddressesUpdated(uint64 indexed index, string ingress, string egress, address caller);
+        event ValidatorOwnershipTransferred(uint64 indexed index, address indexed oldAddress, address indexed newAddress, address caller);
+        event OwnershipTransferred(address indexed oldOwner, address indexed newOwner);
+        event ValidatorMigrated(uint64 indexed index, address indexed validatorAddress, bytes32 publicKey);
+        event NetworkIdentityRotationEpochSet(uint64 indexed previousEpoch, uint64 indexed nextEpoch);
+        event Initialized(uint64 height);
+        event SkippedValidatorMigration(uint64 indexed index, address indexed validatorAddress, bytes32 publicKey);
+
+        // =====================================================================
+        // Errors
+        // =====================================================================
+
+        error AlreadyInitialized();
+        error IngressAlreadyExists(string ingress);
+        error EmptyV1ValidatorSet();
+        error InvalidMigrationIndex();
+        error InvalidOwner();
+        error InvalidPublicKey();
+        error InvalidSignature();
+        error InvalidSignatureFormat();
+        error InvalidValidatorAddress();
+        error MigrationNotComplete();
+        error NotInitialized();
+        error NotIp(string input, string backtrace);
+        error NotIpPort(string input, string backtrace);
+        error PublicKeyAlreadyExists();
+        error Unauthorized();
+        error AddressAlreadyHasValidator();
+        error ValidatorAlreadyDeactivated();
+        error ValidatorNotFound();
+    }
+}
+
+impl ValidatorConfigV2Error {
+    pub const fn unauthorized() -> Self {
+        Self::Unauthorized(IValidatorConfigV2::Unauthorized {})
+    }
+
+    pub const fn address_already_has_validator() -> Self {
+        Self::AddressAlreadyHasValidator(IValidatorConfigV2::AddressAlreadyHasValidator {})
+    }
+
+    pub const fn public_key_already_exists() -> Self {
+        Self::PublicKeyAlreadyExists(IValidatorConfigV2::PublicKeyAlreadyExists {})
+    }
+
+    pub const fn validator_not_found() -> Self {
+        Self::ValidatorNotFound(IValidatorConfigV2::ValidatorNotFound {})
+    }
+
+    pub const fn validator_already_deactivated() -> Self {
+        Self::ValidatorAlreadyDeactivated(IValidatorConfigV2::ValidatorAlreadyDeactivated {})
+    }
+
+    pub const fn invalid_public_key() -> Self {
+        Self::InvalidPublicKey(IValidatorConfigV2::InvalidPublicKey {})
+    }
+
+    pub const fn invalid_signature() -> Self {
+        Self::InvalidSignature(IValidatorConfigV2::InvalidSignature {})
+    }
+
+    pub const fn invalid_signature_format() -> Self {
+        Self::InvalidSignatureFormat(IValidatorConfigV2::InvalidSignatureFormat {})
+    }
+
+    pub const fn invalid_validator_address() -> Self {
+        Self::InvalidValidatorAddress(IValidatorConfigV2::InvalidValidatorAddress {})
+    }
+
+    pub const fn not_initialized() -> Self {
+        Self::NotInitialized(IValidatorConfigV2::NotInitialized {})
+    }
+
+    pub const fn already_initialized() -> Self {
+        Self::AlreadyInitialized(IValidatorConfigV2::AlreadyInitialized {})
+    }
+
+    pub const fn migration_not_complete() -> Self {
+        Self::MigrationNotComplete(IValidatorConfigV2::MigrationNotComplete {})
+    }
+
+    pub const fn empty_v1_validator_set() -> Self {
+        Self::EmptyV1ValidatorSet(IValidatorConfigV2::EmptyV1ValidatorSet {})
+    }
+
+    pub const fn invalid_migration_index() -> Self {
+        Self::InvalidMigrationIndex(IValidatorConfigV2::InvalidMigrationIndex {})
+    }
+
+    pub const fn invalid_owner() -> Self {
+        Self::InvalidOwner(IValidatorConfigV2::InvalidOwner {})
+    }
+
+    pub fn not_ip(input: String, backtrace: String) -> Self {
+        Self::NotIp(IValidatorConfigV2::NotIp { input, backtrace })
+    }
+
+    pub fn not_ip_port(input: String, backtrace: String) -> Self {
+        Self::NotIpPort(IValidatorConfigV2::NotIpPort { input, backtrace })
+    }
+
+    pub fn ingress_already_exists(ingress: String) -> Self {
+        Self::IngressAlreadyExists(IValidatorConfigV2::IngressAlreadyExists { ingress })
+    }
+}

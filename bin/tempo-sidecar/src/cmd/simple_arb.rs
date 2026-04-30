@@ -2,7 +2,9 @@ use alloy::{
     network::EthereumWallet,
     primitives::{Address, U256},
     providers::{Provider, ProviderBuilder},
+    rpc::types::Filter,
     signers::local::PrivateKeySigner,
+    sol_types::SolEvent,
 };
 use clap::Parser;
 use eyre::Context;
@@ -13,7 +15,7 @@ use poem::{EndpointExt as _, Route, Server, get, listener::TcpListener};
 use std::{collections::HashSet, time::Duration};
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, tip_fee_manager::ITIPFeeAMM,
-    tip20::token_id_to_address, tip20_factory::ITIP20Factory,
+    tip20_factory::ITIP20Factory,
 };
 use tempo_telemetry_util::error_field;
 use tracing::{debug, error, info, instrument};
@@ -42,12 +44,20 @@ pub struct SimpleArbArgs {
 
 #[instrument(skip(provider))]
 async fn fetch_all_pairs<P: Provider>(provider: P) -> eyre::Result<HashSet<(Address, Address)>> {
-    let tip20_factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider);
-    let last_token_id = tip20_factory.tokenIdCounter().call().await?.to::<u64>();
+    let filter = Filter::new()
+        .address(TIP20_FACTORY_ADDRESS)
+        .event_signature(ITIP20Factory::TokenCreated::SIGNATURE_HASH);
 
-    let tokens = (0..last_token_id)
-        .map(token_id_to_address)
-        .collect::<Vec<_>>();
+    let logs = provider.get_logs(&filter).await?;
+
+    let tokens: Vec<Address> = logs
+        .iter()
+        .filter_map(|log| {
+            log.log_decode::<ITIP20Factory::TokenCreated>()
+                .ok()
+                .map(|event| event.inner.token)
+        })
+        .collect();
 
     let mut pairs = HashSet::new();
     for pair in tokens.iter().permutations(2) {

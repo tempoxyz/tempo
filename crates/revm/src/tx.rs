@@ -1,8 +1,8 @@
 use crate::TempoInvalidTransaction;
 use alloy_consensus::{EthereumTxEnvelope, TxEip4844, Typed2718, crypto::secp256k1};
-use alloy_evm::{FromRecoveredTx, FromTxWithEncoded, IntoTxEnv};
+use alloy_evm::{FromRecoveredTx, FromTxWithEncoded, IntoTxEnv, TransactionEnvMut};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
-use reth_evm::TransactionEnv;
+use core::num::NonZeroU64;
 use revm::context::{
     Transaction, TxEnv,
     either::Either,
@@ -12,7 +12,7 @@ use revm::context::{
     },
 };
 use tempo_primitives::{
-    AASigned, TempoSignature, TempoTransaction, TempoTxEnvelope, TxFeeToken,
+    AASigned, TempoSignature, TempoTransaction, TempoTxEnvelope,
     transaction::{
         Call, RecoveredTempoAuthorization, SignedKeyAuthorization, calc_gas_balance_spending,
     },
@@ -50,6 +50,25 @@ pub struct TempoBatchCallEnv {
 
     /// Transaction signature hash (for signature verification)
     pub signature_hash: B256,
+
+    /// Transaction hash
+    pub tx_hash: B256,
+
+    /// Expiring nonce hash for replay protection.
+    /// Computed as `keccak256(encode_for_signing || sender)`, which is invariant to fee
+    /// payer changes but unique per sender. Used instead of `tx_hash` for expiring nonce replay
+    /// protection to prevent replay via different fee payer signatures.
+    pub expiring_nonce_hash: Option<B256>,
+
+    /// Optional access key ID override for gas estimation.
+    /// When provided in eth_call/eth_estimateGas, enables spending limits simulation
+    /// This is not used in actual transaction execution - the key_id is recovered from the signature.
+    pub override_key_id: Option<Address>,
+
+    /// Perf optimization for expiring nonce transactions.
+    ///
+    /// Stores how many other expiring nonce transactions are there in the block before this one.
+    pub expiring_nonce_idx: Option<usize>,
 }
 /// Tempo transaction environment.
 #[derive(Debug, Clone, Default, derive_more::Deref, derive_more::DerefMut)]
@@ -86,6 +105,11 @@ impl TempoTxEnv {
         }
     }
 
+    /// Returns true if transaction carries a fee payer signature.
+    pub fn has_fee_payer_signature(&self) -> bool {
+        self.fee_payer.is_some()
+    }
+
     /// Returns true if the transaction is a subblock transaction.
     pub fn is_subblock_transaction(&self) -> bool {
         self.tempo_tx_env
@@ -104,8 +128,10 @@ impl TempoTxEnv {
         }
     }
 
-    /// Invokes the given closure for each top-level call in the transaction and
-    /// returns true if all calls returned true.
+    /// Returns an iterator over the top-level calls in the transaction.
+    ///
+    /// For AA transactions, iterates over `aa_calls`. For non-AA transactions,
+    /// returns a single-element iterator with the inner transaction's kind and data.
     pub fn calls(&self) -> impl Iterator<Item = (&TxKind, &[u8])> {
         if let Some(aa) = self.tempo_tx_env.as_ref() {
             Either::Left(
@@ -216,13 +242,9 @@ impl Transaction for TempoTxEnv {
     }
 }
 
-impl TransactionEnv for TempoTxEnv {
+impl TransactionEnvMut for TempoTxEnv {
     fn set_gas_limit(&mut self, gas_limit: u64) {
         self.inner.set_gas_limit(gas_limit);
-    }
-
-    fn nonce(&self) -> u64 {
-        Transaction::nonce(&self.inner)
     }
 
     fn set_nonce(&mut self, nonce: u64) {
@@ -243,63 +265,6 @@ impl IntoTxEnv<Self> for TempoTxEnv {
 impl FromRecoveredTx<EthereumTxEnvelope<TxEip4844>> for TempoTxEnv {
     fn from_recovered_tx(tx: &EthereumTxEnvelope<TxEip4844>, sender: Address) -> Self {
         TxEnv::from_recovered_tx(tx, sender).into()
-    }
-}
-
-impl FromRecoveredTx<TxFeeToken> for TempoTxEnv {
-    fn from_recovered_tx(tx: &TxFeeToken, caller: Address) -> Self {
-        let TxFeeToken {
-            chain_id,
-            nonce,
-            gas_limit,
-            to,
-            value,
-            input,
-            max_fee_per_gas,
-            max_priority_fee_per_gas,
-            access_list,
-            authorization_list,
-            fee_token,
-            fee_payer_signature,
-        } = tx;
-        Self {
-            inner: TxEnv {
-                tx_type: tx.ty(),
-                caller,
-                gas_limit: *gas_limit,
-                gas_price: *max_fee_per_gas,
-                kind: *to,
-                value: *value,
-                data: input.clone(),
-                nonce: *nonce,
-                chain_id: Some(*chain_id),
-                gas_priority_fee: Some(*max_priority_fee_per_gas),
-                access_list: access_list.clone(),
-                authorization_list: authorization_list
-                    .iter()
-                    .map(|auth| {
-                        Either::Right(RecoveredAuthorization::new_unchecked(
-                            auth.inner().clone(),
-                            auth.signature()
-                                .ok()
-                                .and_then(|signature| {
-                                    secp256k1::recover_signer(&signature, auth.signature_hash())
-                                        .ok()
-                                })
-                                .map_or(RecoveredAuthority::Invalid, RecoveredAuthority::Valid),
-                        ))
-                    })
-                    .collect(),
-                ..Default::default()
-            },
-            fee_token: *fee_token,
-            is_system_tx: false,
-            fee_payer: fee_payer_signature.map(|sig| {
-                sig.recover_address_from_prehash(&tx.fee_payer_signature_hash(caller))
-                    .ok()
-            }),
-            tempo_tx_env: None, // Non-AA transaction
-        }
     }
 }
 
@@ -373,14 +338,13 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             fee_token: *fee_token,
             is_system_tx: false,
             fee_payer: fee_payer_signature.map(|sig| {
-                sig.recover_address_from_prehash(&tx.fee_payer_signature_hash(caller))
-                    .ok()
+                secp256k1::recover_signer(&sig, tx.fee_payer_signature_hash(caller)).ok()
             }),
             // Bundle AA-specific fields into TempoBatchCallEnv
             tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
                 signature: signature.clone(),
-                valid_before: *valid_before,
-                valid_after: *valid_after,
+                valid_before: valid_before.map(NonZeroU64::get),
+                valid_after: valid_after.map(NonZeroU64::get),
                 aa_calls: calls.clone(),
                 // Recover authorizations upfront to avoid recovery during execution
                 tempo_authorization_list: tempo_authorization_list
@@ -391,6 +355,15 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 subblock_transaction: aa_signed.tx().subblock_proposer().is_some(),
                 key_authorization: key_authorization.clone(),
                 signature_hash: aa_signed.signature_hash(),
+                tx_hash: *aa_signed.hash(),
+                expiring_nonce_hash: aa_signed
+                    .tx()
+                    .is_expiring_nonce_tx()
+                    .then(|| aa_signed.expiring_nonce_hash(caller)),
+                // override_key_id is only used for gas estimation, not actual execution
+                override_key_id: None,
+                // can only be derived when given an entire block
+                expiring_nonce_idx: None,
             })),
         }
     }
@@ -410,7 +383,6 @@ impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
             TempoTxEnvelope::Eip1559(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
             TempoTxEnvelope::Eip7702(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
             TempoTxEnvelope::AA(tx) => Self::from_recovered_tx(tx, sender),
-            TempoTxEnvelope::FeeToken(tx) => Self::from_recovered_tx(tx.tx(), sender),
         }
     }
 }
@@ -425,12 +397,6 @@ impl FromTxWithEncoded<EthereumTxEnvelope<TxEip4844>> for TempoTxEnv {
     }
 }
 
-impl FromTxWithEncoded<TxFeeToken> for TempoTxEnv {
-    fn from_encoded_tx(tx: &TxFeeToken, sender: Address, _encoded: Bytes) -> Self {
-        Self::from_recovered_tx(tx, sender)
-    }
-}
-
 impl FromTxWithEncoded<AASigned> for TempoTxEnv {
     fn from_encoded_tx(tx: &AASigned, sender: Address, _encoded: Bytes) -> Self {
         Self::from_recovered_tx(tx, sender)
@@ -440,5 +406,613 @@ impl FromTxWithEncoded<AASigned> for TempoTxEnv {
 impl FromTxWithEncoded<TempoTxEnvelope> for TempoTxEnv {
     fn from_encoded_tx(tx: &TempoTxEnvelope, sender: Address, _encoded: Bytes) -> Self {
         Self::from_recovered_tx(tx, sender)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy_evm::FromRecoveredTx;
+    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
+    use core::num::NonZeroU64;
+    use proptest::prelude::*;
+    use revm::context::{Transaction, TxEnv, result::InvalidTransaction};
+    use tempo_primitives::transaction::{
+        Call, calc_gas_balance_spending,
+        tempo_transaction::TEMPO_EXPIRING_NONCE_KEY,
+        tt_signature::{PrimitiveSignature, TempoSignature},
+        tt_signed::AASigned,
+        validate_calls,
+    };
+
+    use crate::{TempoInvalidTransaction, TempoTxEnv};
+
+    fn create_call(to: TxKind) -> Call {
+        Call {
+            to,
+            value: alloy_primitives::U256::ZERO,
+            input: alloy_primitives::Bytes::new(),
+        }
+    }
+
+    #[test]
+    fn test_validate_empty_calls_list() {
+        let result = validate_calls(&[], false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("empty"));
+    }
+
+    #[test]
+    fn test_validate_single_call_ok() {
+        let calls = vec![create_call(TxKind::Call(alloy_primitives::Address::ZERO))];
+        assert!(validate_calls(&calls, false).is_ok());
+    }
+
+    #[test]
+    fn test_validate_single_create_ok() {
+        let calls = vec![create_call(TxKind::Create)];
+        assert!(validate_calls(&calls, false).is_ok());
+    }
+
+    #[test]
+    fn test_validate_create_with_authorization_list_fails() {
+        let calls = vec![create_call(TxKind::Create)];
+        let result = validate_calls(&calls, true); // has_authorization_list = true
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("CREATE"));
+    }
+
+    #[test]
+    fn test_validate_create_not_first_call_fails() {
+        let calls = vec![
+            create_call(TxKind::Call(alloy_primitives::Address::ZERO)),
+            create_call(TxKind::Create), // CREATE as second call - should fail
+        ];
+        let result = validate_calls(&calls, false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("first call"));
+    }
+
+    #[test]
+    fn test_validate_multiple_creates_fails() {
+        let calls = vec![
+            create_call(TxKind::Create),
+            create_call(TxKind::Create), // Second CREATE - should fail
+        ];
+        let result = validate_calls(&calls, false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("first call"));
+    }
+
+    #[test]
+    fn test_validate_create_first_then_calls_ok() {
+        let calls = vec![
+            create_call(TxKind::Create),
+            create_call(TxKind::Call(alloy_primitives::Address::ZERO)),
+            create_call(TxKind::Call(alloy_primitives::Address::random())),
+        ];
+        // No auth list, so CREATE is allowed
+        assert!(validate_calls(&calls, false).is_ok());
+    }
+
+    #[test]
+    fn test_validate_multiple_calls_ok() {
+        let calls = vec![
+            create_call(TxKind::Call(alloy_primitives::Address::ZERO)),
+            create_call(TxKind::Call(alloy_primitives::Address::random())),
+            create_call(TxKind::Call(alloy_primitives::Address::random())),
+        ];
+        assert!(validate_calls(&calls, false).is_ok());
+    }
+
+    #[test]
+    fn test_from_recovered_tx_expiring_nonce_hash() {
+        let caller = Address::repeat_byte(0xAA);
+
+        let make_aa_signed = |nonce_key: U256| -> AASigned {
+            let tx = tempo_primitives::transaction::TempoTransaction {
+                chain_id: 1,
+                gas_limit: 1_000_000,
+                nonce_key,
+                nonce: 0,
+                valid_before: Some(NonZeroU64::new(100).unwrap()),
+                calls: vec![Call {
+                    to: TxKind::Call(Address::repeat_byte(0x42)),
+                    value: U256::ZERO,
+                    input: Bytes::new(),
+                }],
+                ..Default::default()
+            };
+            let sig = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                Signature::test_signature(),
+            ));
+            AASigned::new_unhashed(tx, sig)
+        };
+
+        // Expiring nonce tx: expiring_nonce_hash should be Some and match direct computation
+        let expiring_signed = make_aa_signed(TEMPO_EXPIRING_NONCE_KEY);
+        let expiring_env = TempoTxEnv::from_recovered_tx(&expiring_signed, caller);
+        let tempo_env = expiring_env.tempo_tx_env.as_ref().unwrap();
+        let expected_hash = expiring_signed.expiring_nonce_hash(caller);
+        assert_eq!(
+            tempo_env.expiring_nonce_hash,
+            Some(expected_hash),
+            "expiring nonce tx must have expiring_nonce_hash set"
+        );
+
+        // Regular 2D nonce tx: expiring_nonce_hash should be None
+        let regular_signed = make_aa_signed(U256::from(42));
+        let regular_env = super::TempoTxEnv::from_recovered_tx(&regular_signed, caller);
+        let regular_tempo_env = regular_env.tempo_tx_env.as_ref().unwrap();
+        assert_eq!(
+            regular_tempo_env.expiring_nonce_hash, None,
+            "regular 2D nonce tx must NOT have expiring_nonce_hash"
+        );
+    }
+
+    #[test]
+    fn test_tx_env() {
+        let tx_env = super::TempoTxEnv::default();
+
+        // Test default values
+        assert_eq!(tx_env.inner.nonce, 0);
+        assert!(tx_env.inner.access_list.is_empty());
+        assert!(tx_env.fee_token.is_none());
+        assert!(!tx_env.is_system_tx);
+        assert!(tx_env.fee_payer.is_none());
+        assert!(tx_env.tempo_tx_env.is_none());
+    }
+
+    #[test]
+    fn test_fee_payer_without_signature_uses_caller() {
+        let caller = Address::repeat_byte(0xAB);
+        let tx_env = super::TempoTxEnv {
+            inner: TxEnv {
+                caller,
+                ..Default::default()
+            },
+            fee_payer: None,
+            ..Default::default()
+        };
+
+        assert_eq!(tx_env.fee_payer(), Ok(caller));
+    }
+
+    #[test]
+    fn test_fee_payer_invalid_signature_rejected() {
+        let tx_env = super::TempoTxEnv {
+            fee_payer: Some(None),
+            ..Default::default()
+        };
+
+        assert!(matches!(
+            tx_env.fee_payer(),
+            Err(TempoInvalidTransaction::InvalidFeePayerSignature)
+        ));
+    }
+
+    #[test]
+    fn test_fee_payer_resolving_to_sender_is_allowed_in_tx_env() {
+        let caller = Address::repeat_byte(0xAB);
+        let tx_env = super::TempoTxEnv {
+            inner: TxEnv {
+                caller,
+                ..Default::default()
+            },
+            fee_payer: Some(Some(caller)),
+            ..Default::default()
+        };
+
+        assert_eq!(tx_env.fee_payer(), Ok(caller));
+    }
+
+    #[test]
+    fn test_has_fee_payer_signature() {
+        let without_sig = super::TempoTxEnv {
+            fee_payer: None,
+            ..Default::default()
+        };
+        assert!(!without_sig.has_fee_payer_signature());
+
+        let with_sig = super::TempoTxEnv {
+            fee_payer: Some(Some(Address::repeat_byte(0xAB))),
+            ..Default::default()
+        };
+        assert!(with_sig.has_fee_payer_signature());
+    }
+
+    #[test]
+    fn test_transaction_env_set_gas_limit() {
+        use alloy_evm::TransactionEnvMut;
+
+        let mut tx_env = super::TempoTxEnv::default();
+
+        tx_env.set_gas_limit(21000);
+        assert_eq!(tx_env.inner.gas_limit, 21000);
+
+        tx_env.set_gas_limit(1_000_000);
+        assert_eq!(tx_env.inner.gas_limit, 1_000_000);
+    }
+
+    #[test]
+    fn test_transaction_env_nonce() {
+        use alloy_evm::TransactionEnvMut;
+        use revm::context::Transaction;
+
+        let mut tx_env = super::TempoTxEnv::default();
+        assert_eq!(Transaction::nonce(&tx_env), 0);
+
+        tx_env.set_nonce(42);
+        assert_eq!(Transaction::nonce(&tx_env), 42);
+
+        tx_env.set_nonce(u64::MAX);
+        assert_eq!(Transaction::nonce(&tx_env), u64::MAX);
+    }
+
+    #[test]
+    fn test_transaction_env_set_access_list() {
+        use alloy_evm::TransactionEnvMut;
+        use revm::context::transaction::{AccessList, AccessListItem};
+
+        let mut tx_env = super::TempoTxEnv::default();
+        assert!(tx_env.inner.access_list.is_empty());
+
+        let access_list = AccessList(vec![
+            AccessListItem {
+                address: alloy_primitives::Address::ZERO,
+                storage_keys: vec![alloy_primitives::B256::ZERO],
+            },
+            AccessListItem {
+                address: alloy_primitives::Address::repeat_byte(0x01),
+                storage_keys: vec![
+                    alloy_primitives::B256::repeat_byte(0x01),
+                    alloy_primitives::B256::repeat_byte(0x02),
+                ],
+            },
+        ]);
+
+        tx_env.set_access_list(access_list);
+        assert_eq!(tx_env.inner.access_list.0.len(), 2);
+        assert_eq!(
+            tx_env.inner.access_list.0[0].address,
+            alloy_primitives::Address::ZERO
+        );
+        assert_eq!(tx_env.inner.access_list.0[0].storage_keys.len(), 1);
+        assert_eq!(tx_env.inner.access_list.0[1].storage_keys.len(), 2);
+    }
+
+    #[test]
+    fn test_transaction_env_combined_operations() {
+        use alloy_evm::TransactionEnvMut;
+        use revm::context::transaction::{AccessList, AccessListItem};
+
+        let mut tx_env = super::TempoTxEnv::default();
+
+        // Set all values
+        tx_env.set_gas_limit(50_000);
+        tx_env.set_nonce(100);
+        tx_env.set_access_list(AccessList(vec![AccessListItem {
+            address: alloy_primitives::Address::repeat_byte(0xAB),
+            storage_keys: vec![],
+        }]));
+
+        // Verify all values are set correctly
+        assert_eq!(tx_env.inner.gas_limit, 50_000);
+        assert_eq!(revm::context::Transaction::nonce(&tx_env), 100);
+        assert_eq!(tx_env.inner.access_list.0.len(), 1);
+        assert_eq!(
+            tx_env.inner.access_list.0[0].address,
+            alloy_primitives::Address::repeat_byte(0xAB)
+        );
+    }
+
+    #[test]
+    fn test_transaction_env_from_tx_env() {
+        use revm::context::{Transaction, TxEnv};
+
+        let inner = TxEnv {
+            gas_limit: 75_000,
+            nonce: 55,
+            ..Default::default()
+        };
+
+        let tx_env: super::TempoTxEnv = inner.into();
+
+        assert_eq!(tx_env.inner.gas_limit, 75_000);
+        assert_eq!(Transaction::nonce(&tx_env), 55);
+        assert!(tx_env.fee_token.is_none());
+        assert!(!tx_env.is_system_tx);
+        assert!(tx_env.fee_payer.is_none());
+        assert!(tx_env.tempo_tx_env.is_none());
+    }
+
+    #[test]
+    fn test_first_call_without_aa() {
+        use alloy_primitives::{Address, Bytes};
+        use revm::context::TxEnv;
+
+        // Test without tempo_tx_env (non-AA transaction)
+        let addr = Address::repeat_byte(0x42);
+        let data = Bytes::from(vec![0x01, 0x02, 0x03]);
+
+        let tx_env = super::TempoTxEnv {
+            inner: TxEnv {
+                kind: TxKind::Call(addr),
+                data: data.clone(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let first_call = tx_env.first_call();
+        assert!(first_call.is_some());
+        let (kind, input) = first_call.unwrap();
+        assert_eq!(*kind, TxKind::Call(addr));
+        assert_eq!(input, data.as_ref());
+    }
+
+    #[test]
+    fn test_first_call_with_aa() {
+        use alloy_primitives::{Address, Bytes, U256};
+        use tempo_primitives::transaction::Call;
+
+        // Test with tempo_tx_env (AA transaction)
+        let addr1 = Address::repeat_byte(0x11);
+        let addr2 = Address::repeat_byte(0x22);
+        let input1 = Bytes::from(vec![0xAA, 0xBB]);
+        let input2 = Bytes::from(vec![0xCC, 0xDD]);
+
+        let tx_env = super::TempoTxEnv {
+            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
+                aa_calls: vec![
+                    Call {
+                        to: TxKind::Call(addr1),
+                        value: U256::ZERO,
+                        input: input1.clone(),
+                    },
+                    Call {
+                        to: TxKind::Call(addr2),
+                        value: U256::from(100),
+                        input: input2,
+                    },
+                ],
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+
+        let first_call = tx_env.first_call();
+        assert!(first_call.is_some());
+        let (kind, input) = first_call.unwrap();
+        assert_eq!(*kind, TxKind::Call(addr1));
+        assert_eq!(input, input1.as_ref());
+    }
+
+    #[test]
+    fn test_first_call_with_empty_aa_calls() {
+        // Test with tempo_tx_env but empty calls list
+        let tx_env = super::TempoTxEnv {
+            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
+                aa_calls: vec![],
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+
+        assert!(tx_env.first_call().is_none());
+    }
+
+    #[test]
+    fn test_calls() {
+        use alloy_primitives::{Address, Bytes, U256};
+        use revm::context::TxEnv;
+        use tempo_primitives::transaction::Call;
+
+        let addr1 = Address::repeat_byte(0x11);
+        let addr2 = Address::repeat_byte(0x22);
+        let input1 = Bytes::from(vec![0x01]);
+        let input2 = Bytes::from(vec![0x02, 0x03]);
+        let input3 = Bytes::from(vec![0x04, 0x05, 0x06]);
+
+        // Non-AA transaction: returns single call from inner TxEnv
+        let non_aa_tx = super::TempoTxEnv {
+            inner: TxEnv {
+                kind: TxKind::Call(addr1),
+                data: input1.clone(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let calls: Vec<_> = non_aa_tx.calls().collect();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(*calls[0].0, TxKind::Call(addr1));
+        assert_eq!(calls[0].1, input1.as_ref());
+
+        // AA transaction with multiple calls
+        let aa_tx = super::TempoTxEnv {
+            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
+                aa_calls: vec![
+                    Call {
+                        to: TxKind::Call(addr1),
+                        value: U256::ZERO,
+                        input: input1.clone(),
+                    },
+                    Call {
+                        to: TxKind::Call(addr2),
+                        value: U256::from(50),
+                        input: input2.clone(),
+                    },
+                    Call {
+                        to: TxKind::Create,
+                        value: U256::from(100),
+                        input: input3.clone(),
+                    },
+                ],
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let calls: Vec<_> = aa_tx.calls().collect();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(*calls[0].0, TxKind::Call(addr1));
+        assert_eq!(calls[0].1, input1.as_ref());
+        assert_eq!(*calls[1].0, TxKind::Call(addr2));
+        assert_eq!(calls[1].1, input2.as_ref());
+        assert_eq!(*calls[2].0, TxKind::Create);
+        assert_eq!(calls[2].1, input3.as_ref());
+
+        // AA transaction with empty calls list
+        let empty_aa_tx = super::TempoTxEnv {
+            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
+                aa_calls: vec![],
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let calls: Vec<_> = empty_aa_tx.calls().collect();
+        assert!(calls.is_empty());
+    }
+
+    /// Strategy for random U256 values.
+    fn arb_u256() -> impl Strategy<Value = alloy_primitives::U256> {
+        any::<[u64; 4]>().prop_map(alloy_primitives::U256::from_limbs)
+    }
+
+    /// Helper to create a TempoTxEnv with the given gas/fee/value parameters.
+    fn make_tx_env(
+        gas_limit: u64,
+        gas_price: u128,
+        value: alloy_primitives::U256,
+    ) -> super::TempoTxEnv {
+        super::TempoTxEnv {
+            inner: revm::context::TxEnv {
+                gas_limit,
+                gas_price,
+                value,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(500))]
+
+        /// Property: max_balance_spending never panics, returns Ok or OverflowPaymentInTransaction
+        #[test]
+        fn proptest_max_balance_spending_no_panic(
+            gas_limit in any::<u64>(),
+            max_fee_per_gas in any::<u128>(),
+            value in arb_u256(),
+        ) {
+            let tx_env = make_tx_env(gas_limit, max_fee_per_gas, value);
+            let result = tx_env.max_balance_spending();
+            prop_assert!(
+                result.is_ok()
+                    || result == Err(InvalidTransaction::OverflowPaymentInTransaction)
+            );
+        }
+
+        /// Property: max_balance_spending returns overflow when gas*price + value overflows U256
+        #[test]
+        fn proptest_max_balance_spending_overflow_detection(
+            gas_limit in any::<u64>(),
+            max_fee_per_gas in any::<u128>(),
+            value in arb_u256(),
+        ) {
+            let tx_env = make_tx_env(gas_limit, max_fee_per_gas, value);
+            let gas_spending = calc_gas_balance_spending(gas_limit, max_fee_per_gas);
+            let result = tx_env.max_balance_spending();
+
+            match gas_spending.checked_add(value) {
+                Some(expected) => prop_assert_eq!(result, Ok(expected)),
+                None => prop_assert_eq!(result, Err(InvalidTransaction::OverflowPaymentInTransaction)),
+            }
+        }
+
+        /// Property: effective_balance_spending <= max_balance_spending (when both succeed)
+        /// Uses constrained ranges to ensure we don't overflow and actually test the property.
+        #[test]
+        fn proptest_effective_le_max_balance_spending(
+            gas_limit in 0u64..30_000_000u64,  // realistic gas limits
+            max_fee_per_gas in 0u128..1_000_000_000_000u128,  // up to 1000 gwei
+            max_priority_fee in 0u128..100_000_000_000u128,   // up to 100 gwei
+            base_fee in 0u128..500_000_000_000u128,           // up to 500 gwei
+            value in 0u128..10_000_000_000_000_000_000_000u128,  // up to 10k ETH in wei
+        ) {
+            let mut tx_env = make_tx_env(gas_limit, max_fee_per_gas, alloy_primitives::U256::from(value));
+            tx_env.inner.gas_priority_fee = Some(max_priority_fee);
+
+            let max_result = tx_env.max_balance_spending();
+            let effective_result = tx_env.effective_balance_spending(base_fee, 0);
+
+            // With constrained inputs, both should succeed
+            let max_spending = max_result.expect("max_balance_spending should succeed with constrained inputs");
+            let effective_spending = effective_result.expect("effective_balance_spending should succeed with constrained inputs");
+
+            prop_assert!(
+                effective_spending <= max_spending,
+                "effective_balance_spending ({}) should be <= max_balance_spending ({})",
+                effective_spending,
+                max_spending
+            );
+        }
+
+        /// Property: effective_balance_spending with base_fee=0 uses only priority fee (EIP-1559)
+        ///
+        /// For EIP-1559 transactions with base_fee=0:
+        /// effective_gas_price = min(max_fee_per_gas, base_fee + priority_fee) = min(max_fee, priority_fee)
+        /// This test verifies the computation matches expectations.
+        #[test]
+        fn proptest_effective_balance_spending_zero_base_fee(
+            gas_limit in 0u64..30_000_000u64,
+            max_fee_per_gas in 0u128..1_000_000_000_000u128,
+            priority_fee in 0u128..500_000_000_000u128,
+            value in 0u128..10_000_000_000_000_000_000_000u128,
+        ) {
+            use revm::context::Transaction;
+
+            let mut tx_env = make_tx_env(gas_limit, max_fee_per_gas, alloy_primitives::U256::from(value));
+            // Set tx_type to EIP-1559 and priority fee
+            tx_env.inner.tx_type = 2; // EIP-1559
+            tx_env.inner.gas_priority_fee = Some(priority_fee);
+
+            let result = tx_env.effective_balance_spending(0, 0);
+
+            // For EIP-1559: effective_gas_price = min(max_fee, 0 + priority_fee) = min(max_fee, priority_fee)
+            let effective_price = std::cmp::min(max_fee_per_gas, priority_fee);
+            let expected_gas_spending = calc_gas_balance_spending(gas_limit, effective_price);
+            let expected = expected_gas_spending.checked_add(alloy_primitives::U256::from(value));
+
+            match expected {
+                Some(expected_val) => prop_assert_eq!(result, Ok(expected_val)),
+                None => prop_assert_eq!(result, Err(InvalidTransaction::OverflowPaymentInTransaction)),
+            }
+        }
+
+        /// Property: calls() returns exactly aa_calls.len() for AA transactions
+        #[test]
+        fn proptest_calls_count_aa_tx(num_calls in 0usize..20) {
+            let aa_tx = super::TempoTxEnv {
+                tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
+                    aa_calls: (0..num_calls)
+                        .map(|_| Call {
+                            to: TxKind::Call(alloy_primitives::Address::ZERO),
+                            value: alloy_primitives::U256::ZERO,
+                            input: alloy_primitives::Bytes::new(),
+                        })
+                        .collect(),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            };
+            prop_assert_eq!(aa_tx.calls().count(), num_calls);
+        }
+
+    }
+
+    #[test]
+    fn test_calls_count_non_aa_tx() {
+        let non_aa_tx = make_tx_env(21_000, 0, alloy_primitives::U256::ZERO);
+        assert_eq!(non_aa_tx.calls().count(), 1);
     }
 }

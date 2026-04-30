@@ -71,10 +71,7 @@ async fn test_fee_in_stable() -> eyre::Result<()> {
 async fn test_default_fee_token() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -166,7 +163,7 @@ async fn test_fee_transfer_logs() -> eyre::Result<()> {
     let tx = TransactionRequest::default()
         .into_create()
         .input(Bytes::from_static(&[0xef]).into())
-        .gas_limit(100000);
+        .gas_limit(1_000_000);
     let pending_tx = provider.send_transaction(tx).await?;
     let tx_hash = pending_tx.watch().await?;
     let receipt = provider

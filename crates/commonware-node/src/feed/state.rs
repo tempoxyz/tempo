@@ -1,0 +1,488 @@
+//! Shared state for the feed module.
+
+use crate::alias::marshal;
+use alloy_consensus::BlockHeader as _;
+use alloy_primitives::hex;
+use commonware_codec::{Encode, ReadExt as _};
+use commonware_consensus::{
+    marshal::Identifier,
+    types::{Epoch, Epocher as _, FixedEpocher, Height, Round, View},
+};
+use commonware_cryptography::bls12381::primitives::variant::{MinSig, Variant};
+use parking_lot::RwLock;
+use reth_node_core::rpc::compat::FromConsensusHeader;
+use reth_provider::HeaderProvider as _;
+use std::sync::{Arc, OnceLock};
+use tempo_alloy::rpc::TempoHeaderResponse;
+use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+use tempo_node::{
+    TempoFullNode,
+    rpc::consensus::{
+        CertifiedBlock, ConsensusFeed, ConsensusState, Event, IdentityProofError,
+        IdentityTransition, IdentityTransitionResponse, Query, TransitionProofData,
+    },
+};
+use tokio::sync::broadcast;
+use tracing::instrument;
+
+const BROADCAST_CHANNEL_SIZE: usize = 1024;
+
+/// Internal shared state for the feed.
+pub(super) struct FeedState {
+    /// Latest notarized block.
+    pub(super) latest_notarized: Option<CertifiedBlock>,
+    /// Latest finalized block.
+    pub(super) latest_finalized: Option<CertifiedBlock>,
+}
+
+/// Cached identity transition chain.
+///
+/// Stores transitions from a starting epoch back towards genesis.
+/// Can be extended for newer epochs or subsectioned for older queries.
+#[derive(Clone)]
+struct IdentityTransitionCache {
+    /// The epoch from which the chain was built (inclusive).
+    from_epoch: u64,
+    /// Public key at `from_epoch`.
+    from_pubkey: <MinSig as Variant>::Public,
+    /// The earliest epoch we walked to (0 if we reached genesis).
+    to_epoch: u64,
+    /// The public key at `to_epoch`.
+    to_pubkey: <MinSig as Variant>::Public,
+    /// Cached transitions, ordered newest to oldest.
+    transitions: Arc<Vec<IdentityTransition>>,
+}
+
+/// Handle to shared feed state.
+///
+/// This handle can be cloned and used by both:
+/// - The feed actor (to update state when processing Activity)
+/// - RPC handlers (implements `ConsensusFeed`)
+#[derive(Clone)]
+pub struct FeedStateHandle {
+    state: Arc<RwLock<FeedState>>,
+    marshal: Arc<OnceLock<marshal::Mailbox>>,
+    epocher: Arc<OnceLock<FixedEpocher>>,
+    execution_node: Arc<OnceLock<TempoFullNode>>,
+    events_tx: broadcast::Sender<Event>,
+    /// Cache for identity transition proofs to avoid re-walking the chain.
+    identity_cache: Arc<RwLock<Option<IdentityTransitionCache>>>,
+}
+
+impl FeedStateHandle {
+    /// Create a new feed state handle.
+    ///
+    /// The marshal mailbox can be set later using `set_marshal`.
+    /// Until set, historical finalization lookups will return `None`.
+    pub fn new() -> Self {
+        let (events_tx, _) = broadcast::channel(BROADCAST_CHANNEL_SIZE);
+        Self {
+            state: Arc::new(RwLock::new(FeedState {
+                latest_notarized: None,
+                latest_finalized: None,
+            })),
+            marshal: Arc::new(OnceLock::new()),
+            epocher: Arc::new(OnceLock::new()),
+            execution_node: Arc::new(OnceLock::new()),
+            events_tx,
+            identity_cache: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    /// Set the marshal mailbox for historical finalization lookups. Should only be called once.
+    pub(crate) fn set_marshal(&self, marshal: marshal::Mailbox) {
+        let _ = self.marshal.set(marshal);
+    }
+
+    /// Set the epocher for epoch boundary calculations. Should only be called once.
+    pub(crate) fn set_epocher(&self, epocher: FixedEpocher) {
+        let _ = self.epocher.set(epocher);
+    }
+
+    /// Set the execution node for header lookups. Should only be called once.
+    pub(crate) fn set_execution_node(&self, execution_node: TempoFullNode) {
+        let _ = self.execution_node.set(execution_node);
+    }
+
+    /// Get the broadcast sender for events.
+    pub(super) fn events_tx(&self) -> &broadcast::Sender<Event> {
+        &self.events_tx
+    }
+
+    /// Get read access to the internal state.
+    pub(super) fn read(&self) -> parking_lot::RwLockReadGuard<'_, FeedState> {
+        self.state.read()
+    }
+
+    /// Get write access to the internal state.
+    pub(super) fn write(&self) -> parking_lot::RwLockWriteGuard<'_, FeedState> {
+        self.state.write()
+    }
+
+    /// Get the marshal mailbox, logging if not yet set.
+    fn marshal(&self) -> Option<marshal::Mailbox> {
+        let marshal = self.marshal.get().cloned();
+        if marshal.is_none() {
+            tracing::debug!("marshal not yet set");
+        }
+        marshal
+    }
+
+    /// Get the epocher, logging if not yet set.
+    fn epocher(&self) -> Option<FixedEpocher> {
+        let epocher = self.epocher.get().cloned();
+        if epocher.is_none() {
+            tracing::debug!("epocher not yet set");
+        }
+        epocher
+    }
+
+    /// Ensure the identity cache covers `start_epoch` by walking backwards
+    /// if needed. After this returns, the cache is guaranteed to contain
+    /// transition data covering `start_epoch` (as far back as available data allows).
+    #[instrument(skip_all, fields(start_epoch), err)]
+    async fn try_fill_transitions(
+        &self,
+        marshal: &mut marshal::Mailbox,
+        execution: &TempoFullNode,
+        epocher: &FixedEpocher,
+        start_epoch: u64,
+    ) -> Result<(), IdentityProofError> {
+        // Check if the cache already covers this epoch.
+        // If the cache is incomplete, skip the early return so we re-attempt
+        // the walk from where it previously stopped.
+        let cached = self.identity_cache.read().clone();
+        if let Some(cache) = &cached
+            && cache.to_epoch == 0
+            && (cache.to_epoch..=cache.from_epoch).contains(&start_epoch)
+        {
+            return Ok(());
+        }
+
+        // Identity active at epoch N is set by the last block of epoch N-1
+        let epoch_outcome = get_outcome(execution, epocher, start_epoch.saturating_sub(1))?;
+        let epoch_pubkey = *epoch_outcome.sharing().public();
+
+        // Fast path: if the identity matches the cached one and the cache is
+        // complete, just extend the upper bound — no new transitions needed.
+        if let Some(cache) = &cached
+            && start_epoch > cache.from_epoch
+            && cache.to_epoch == 0
+            && cache.from_pubkey == epoch_pubkey
+        {
+            let mut updated = cache.clone();
+            updated.from_epoch = start_epoch;
+            *self.identity_cache.write() = Some(updated);
+            return Ok(());
+        }
+
+        // Walk backwards to find all identity transitions
+        let mut transitions = Vec::new();
+        let mut pubkey = epoch_pubkey;
+        let mut search_epoch = start_epoch.saturating_sub(1);
+        while search_epoch > 0 {
+            // Absorb cached transitions. If the cache reached genesis we can
+            // stop; otherwise update pubkey and fall through to continue the
+            // walk from where the cache left off.
+            if let Some(cache) = &cached
+                && search_epoch < cache.from_epoch
+                && search_epoch > cache.to_epoch
+            {
+                transitions.extend(cache.transitions.iter().cloned());
+                search_epoch = cache.to_epoch;
+                if cache.to_epoch == 0 {
+                    break;
+                }
+
+                pubkey = cache.to_pubkey;
+            }
+
+            let prev_outcome = match get_outcome(execution, epocher, search_epoch - 1) {
+                Ok(outcome) => outcome,
+                Err(IdentityProofError::PrunedData(height)) => {
+                    tracing::info!(
+                        %height,
+                        search_epoch = search_epoch - 1,
+                        "stopping identity transition walk early (header not available)"
+                    );
+                    break;
+                }
+                Err(e) => return Err(e),
+            };
+
+            // If keys differ, there was a full DKG at search_epoch
+            let prev_pubkey = *prev_outcome.sharing().public();
+            if pubkey != prev_pubkey {
+                let height = epocher
+                    .last(Epoch::new(search_epoch))
+                    .expect("fixed epocher is valid for all epochs");
+
+                let Some(header) = execution
+                    .provider
+                    .sealed_header(height.get())
+                    .ok()
+                    .flatten()
+                else {
+                    tracing::info!(
+                        height = height.get(),
+                        search_epoch,
+                        "stopping identity transition walk early (header not available)"
+                    );
+                    break;
+                };
+
+                let Some(finalization) = marshal.get_finalization(height).await else {
+                    tracing::info!(
+                        height = height.get(),
+                        search_epoch,
+                        "stopping identity transition walk early (finalization pruned)"
+                    );
+                    break;
+                };
+
+                if finalization.proposal.payload.0 != header.hash() {
+                    return Err(IdentityProofError::MalformedData(height.get()));
+                }
+
+                transitions.push(IdentityTransition {
+                    transition_epoch: search_epoch,
+                    old_identity: hex::encode(prev_pubkey.encode()),
+                    new_identity: hex::encode(pubkey.encode()),
+                    proof: Some(TransitionProofData {
+                        header: TempoHeaderResponse::from_consensus_header(header, 0),
+                        finalization_certificate: hex::encode(finalization.encode()),
+                    }),
+                });
+            }
+
+            pubkey = prev_pubkey;
+            search_epoch -= 1;
+        }
+
+        // Append genesis identity as terminal marker when we reached it.
+        if search_epoch == 0 {
+            let has_genesis = transitions
+                .last()
+                .is_some_and(|t| t.transition_epoch == 0 && t.proof.is_none());
+
+            if !has_genesis {
+                match get_outcome(execution, epocher, 0) {
+                    Ok(genesis_outcome) => {
+                        let genesis_pubkey = *genesis_outcome.sharing().public();
+                        let genesis_identity = hex::encode(genesis_pubkey.encode());
+                        transitions.push(IdentityTransition {
+                            transition_epoch: 0,
+                            old_identity: genesis_identity.clone(),
+                            new_identity: genesis_identity,
+                            proof: None,
+                        });
+                    }
+                    Err(err) => {
+                        tracing::debug!(
+                            ?err,
+                            "failed to fetch genesis outcome; omitting genesis marker"
+                        );
+                    }
+                }
+            }
+        }
+
+        // Build updated cache. The walk absorbs cached transitions in the correct order.
+        // `pubkey` is the identity at the point where the walk stopped.
+        let new_cache = if let Some(c) = &cached {
+            let (from, from_pk) = if start_epoch >= c.from_epoch {
+                (start_epoch, epoch_pubkey)
+            } else {
+                (c.from_epoch, c.from_pubkey)
+            };
+
+            IdentityTransitionCache {
+                from_epoch: from,
+                from_pubkey: from_pk,
+                to_epoch: search_epoch,
+                to_pubkey: pubkey,
+                transitions: Arc::new(transitions),
+            }
+        } else {
+            IdentityTransitionCache {
+                from_epoch: start_epoch,
+                from_pubkey: epoch_pubkey,
+                to_epoch: search_epoch,
+                to_pubkey: pubkey,
+                transitions: Arc::new(transitions),
+            }
+        };
+
+        *self.identity_cache.write() = Some(new_cache);
+        Ok(())
+    }
+}
+
+impl Default for FeedStateHandle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Debug for FeedStateHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let state = self.state.read();
+        f.debug_struct("FeedStateHandle")
+            .field("latest_notarized", &state.latest_notarized)
+            .field("latest_finalized", &state.latest_finalized)
+            .field("marshal_set", &self.marshal.get().is_some())
+            .field("execution_node_set", &self.execution_node.get().is_some())
+            .field("subscriber_count", &self.events_tx.receiver_count())
+            .finish()
+    }
+}
+
+impl ConsensusFeed for FeedStateHandle {
+    async fn get_finalization(&self, query: Query) -> Option<CertifiedBlock> {
+        match query {
+            Query::Latest => {
+                let block = self.state.read().latest_finalized.clone()?;
+                Some(block)
+            }
+            Query::Height(height) => {
+                let height = Height::new(height);
+                let marshal = self.marshal()?;
+
+                let finalization = marshal.get_finalization(height).await?;
+                let block = marshal.get_block(height).await?;
+
+                Some(CertifiedBlock {
+                    epoch: finalization.proposal.round.epoch().get(),
+                    view: finalization.proposal.round.view().get(),
+                    block: block.into_inner().into_block(),
+                    digest: finalization.proposal.payload.0,
+                    certificate: hex::encode(finalization.encode()),
+                })
+            }
+        }
+    }
+
+    async fn get_latest(&self) -> ConsensusState {
+        let (finalized, mut notarized) = {
+            let state = self.state.read();
+            (
+                state.latest_finalized.clone(),
+                state.latest_notarized.clone(),
+            )
+        };
+
+        let finalized_round = finalized
+            .as_ref()
+            .map(|f| Round::new(Epoch::new(f.epoch), View::new(f.view)));
+
+        let notarized_round = notarized
+            .as_ref()
+            .map(|n| Round::new(Epoch::new(n.epoch), View::new(n.view)));
+
+        // Only include the notarization if it is ahead.
+        if finalized_round.is_some_and(|f| notarized_round.is_none_or(|n| n <= f)) {
+            notarized = None;
+        }
+
+        ConsensusState {
+            finalized,
+            notarized,
+        }
+    }
+
+    async fn subscribe(&self) -> Option<broadcast::Receiver<Event>> {
+        Some(self.events_tx.subscribe())
+    }
+
+    async fn get_identity_transition_proof(
+        &self,
+        from_epoch: Option<u64>,
+        full: bool,
+    ) -> Result<IdentityTransitionResponse, IdentityProofError> {
+        let Some((mut marshal, epocher)) = self.marshal().zip(self.epocher()) else {
+            return Err(IdentityProofError::NotReady);
+        };
+        let Some(execution_node) = self.execution_node.get() else {
+            return Err(IdentityProofError::NotReady);
+        };
+
+        // Determine starting epoch (from param, or latest finalized)
+        let start_epoch = if let Some(epoch) = from_epoch {
+            epoch
+        } else {
+            marshal
+                .get_info(Identifier::Latest)
+                .await
+                .and_then(|(h, _)| epocher.containing(h))
+                .ok_or(IdentityProofError::NotReady)?
+                .epoch()
+                .get()
+        };
+
+        // Ensure cached transitions are up to date
+        self.try_fill_transitions(&mut marshal, execution_node, &epocher, start_epoch)
+            .await?;
+
+        let cache = self
+            .identity_cache
+            .read()
+            .clone()
+            .ok_or(IdentityProofError::NotReady)?;
+
+        // Filter transitions to only include those at or before start_epoch
+        let transitions: Vec<_> = cache
+            .transitions
+            .iter()
+            .filter(|t| t.transition_epoch <= start_epoch)
+            .cloned()
+            .collect();
+
+        // Determine identity at start_epoch by finding the closest transition
+        // AFTER start_epoch and using its old_identity (the key before that change).
+        // Transitions are newest-to-oldest, so the last match is the closest.
+        let identity = cache
+            .transitions
+            .iter()
+            .filter(|t| t.transition_epoch > start_epoch)
+            .last()
+            .map(|t| t.old_identity.clone())
+            .unwrap_or_else(|| hex::encode(cache.from_pubkey.encode()));
+
+        // If not full, only return the most recent real transition (exclude genesis marker)
+        let transitions = if full {
+            transitions
+        } else {
+            transitions
+                .into_iter()
+                .filter(|t| t.transition_epoch > 0)
+                .take(1)
+                .collect()
+        };
+
+        Ok(IdentityTransitionResponse {
+            identity,
+            transitions,
+        })
+    }
+}
+
+/// Fetch last block of epoch and decode DKG outcome.
+fn get_outcome(
+    execution: &TempoFullNode,
+    epocher: &FixedEpocher,
+    epoch: u64,
+) -> Result<OnchainDkgOutcome, IdentityProofError> {
+    let height = epocher
+        .last(Epoch::new(epoch))
+        .expect("fixed epocher is valid for all epochs");
+
+    let header = execution
+        .provider
+        .header_by_number(height.get())
+        .ok()
+        .flatten()
+        .ok_or(IdentityProofError::PrunedData(height.get()))?;
+
+    OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
+        .map_err(|_| IdentityProofError::MalformedData(height.get()))
+}

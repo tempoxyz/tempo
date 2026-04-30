@@ -1,4 +1,4 @@
-use crate::utils::{TestNodeBuilder, setup_test_token};
+use crate::utils::{ForkSchedule, TestNodeBuilder, setup_test_token};
 use alloy::{
     primitives::{Address, B256, Bytes, U256},
     providers::{Provider, ProviderBuilder, ext::TraceApi},
@@ -10,24 +10,62 @@ use alloy::{
     sol_types::{SolCall, SolError, SolEvent},
 };
 use alloy_eips::BlockId;
-use alloy_rpc_types_eth::TransactionInput;
+use alloy_rpc_types_eth::{
+    TransactionInput,
+    state::{AccountOverride, StateOverride},
+};
 use reth_evm::revm::interpreter::instructions::utility::IntoU256;
-use tempo_chainspec::spec::TEMPO_BASE_FEE;
+use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{
     IFeeManager,
     ITIP20::{self, transferCall},
-    ITIPFeeAMM, UnknownFunctionSelector,
+    ITIPFeeAMM, IValidatorConfig, UnknownFunctionSelector,
 };
 use tempo_precompiles::{
-    PATH_USD_ADDRESS, TIP_ACCOUNT_REGISTRAR, storage::slots::mapping_slot, tip20,
+    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, error::TempoPrecompileError, storage::ContractStorage,
+    tip20::TIP20Token, validator_config::ValidatorConfig,
 };
+use test_case::test_case;
 
+/// Extracts ABI-encoded revert data from an RPC error response.
+fn extract_revert_data(
+    err: &alloy::transports::RpcError<alloy::transports::TransportErrorKind>,
+) -> Bytes {
+    serde_json::from_str(err.as_error_resp().unwrap().data.as_ref().unwrap().get()).unwrap()
+}
+
+/// Expected revert bytes for `Panic(UnderOverflow)`.
+fn under_overflow_revert() -> Bytes {
+    TempoPrecompileError::under_overflow()
+        .into_precompile_result(0, 0)
+        .unwrap()
+        .bytes
+}
+
+/// Builds a `StateOverride` targeting `address` with the given slot→value diffs.
+fn state_diff(address: Address, diffs: &[(B256, U256)]) -> StateOverride {
+    [(
+        address,
+        AccountOverride::default().with_state_diff(
+            diffs
+                .iter()
+                .map(|(slot, val)| (*slot, B256::from(*val)))
+                .collect::<Vec<_>>(),
+        ),
+    )]
+    .into_iter()
+    .collect()
+}
+
+#[test_case(ForkSchedule::Devnet ; "devnet")]
+#[test_case(ForkSchedule::Testnet ; "testnet")]
+#[test_case(ForkSchedule::Mainnet ; "mainnet")]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_eth_call() -> eyre::Result<()> {
+async fn test_eth_call(schedule: ForkSchedule) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        .with_schedule(schedule)
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
@@ -40,12 +78,11 @@ async fn test_eth_call() -> eyre::Result<()> {
     let token = setup_test_token(provider.clone(), caller).await?;
 
     // First, mint some tokens to the caller for testing
-    // Use u128 range since supply cap is u128::MAX with allegretto
     let mint_amount = U256::from(rand::random::<u128>());
     token
         .mint(caller, mint_amount)
-        .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(300_000)
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(1_000_000)
         .send()
         .await?
         .get_receipt()
@@ -65,12 +102,15 @@ async fn test_eth_call() -> eyre::Result<()> {
     Ok(())
 }
 
+#[test_case(ForkSchedule::Devnet ; "devnet")]
+#[test_case(ForkSchedule::Testnet ; "testnet")]
+#[test_case(ForkSchedule::Mainnet ; "mainnet")]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_eth_trace_call() -> eyre::Result<()> {
+async fn test_eth_trace_call(schedule: ForkSchedule) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        .with_schedule(schedule)
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
@@ -81,14 +121,14 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
 
     // Setup test token
     let token = setup_test_token(provider.clone(), caller).await?;
+    let token_address = *token.address();
 
     // First, mint some tokens to the caller for testing
-    // Use u128 range since supply cap is u128::MAX with allegretto
     let mint_amount = U256::from(rand::random::<u128>());
     token
         .mint(caller, mint_amount)
-        .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(300_000)
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(1_000_000)
         .send()
         .await?
         .get_receipt()
@@ -127,7 +167,10 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
 
     let token_storage_diff = token_diff.storage.clone();
     // Assert sender token balance has changed
-    let slot = mapping_slot(caller, tip20::slots::BALANCES);
+    let slot = TIP20Token::from_address(token_address)
+        .expect("valid TIP20 address")
+        .balances[caller]
+        .slot();
     let sender_balance = token_storage_diff
         .get(&B256::from(slot))
         .expect("Could not get recipient balance delta");
@@ -141,7 +184,10 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
     assert_eq!(to.into_u256(), U256::ZERO);
 
     // Assert recipient token balance is changed
-    let slot = mapping_slot(recipient, tip20::slots::BALANCES);
+    let slot = TIP20Token::from_address(token_address)
+        .expect("valid TIP20 address")
+        .balances[recipient]
+        .slot();
     let recipient_balance = token_storage_diff
         .get(&B256::from(slot))
         .expect("Could not get recipient balance delta");
@@ -156,12 +202,15 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
     Ok(())
 }
 
+#[test_case(ForkSchedule::Devnet ; "devnet")]
+#[test_case(ForkSchedule::Testnet ; "testnet")]
+#[test_case(ForkSchedule::Mainnet ; "mainnet")]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_eth_get_logs() -> eyre::Result<()> {
+async fn test_eth_get_logs(schedule: ForkSchedule) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        .with_schedule(schedule)
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
@@ -173,12 +222,11 @@ async fn test_eth_get_logs() -> eyre::Result<()> {
     // Setup test token
     let token = setup_test_token(provider.clone(), caller).await?;
 
-    // Use u128 range since supply cap is u128::MAX with allegretto
     let mint_amount = U256::from(rand::random::<u128>());
     let mint_receipt = token
         .mint(caller, mint_amount)
-        .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(300_000)
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(1_000_000)
         .send()
         .await?
         .get_receipt()
@@ -187,8 +235,8 @@ async fn test_eth_get_logs() -> eyre::Result<()> {
     let recipient = Address::random();
     token
         .transfer(recipient, mint_amount)
-        .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(300_000)
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(1_000_000)
         .send()
         .await?
         .get_receipt()
@@ -219,12 +267,15 @@ async fn test_eth_get_logs() -> eyre::Result<()> {
     Ok(())
 }
 
+#[test_case(ForkSchedule::Devnet ; "devnet")]
+#[test_case(ForkSchedule::Testnet ; "testnet")]
+#[test_case(ForkSchedule::Mainnet ; "mainnet")]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_eth_estimate_gas() -> eyre::Result<()> {
+async fn test_eth_estimate_gas(schedule: ForkSchedule) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        .with_schedule(schedule)
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
@@ -241,7 +292,13 @@ async fn test_eth_estimate_gas() -> eyre::Result<()> {
 
     let gas = provider.estimate_gas(tx.clone()).await?;
     // gas estimation is calldata dependent, but should be consistent with same calldata
-    assert_eq!(gas, 109051);
+    // TIP-1000 (T1): gas includes 250k new account cost when nonce=0
+    let expected_gas = if schedule.is_active(TempoHardfork::T3) {
+        551540
+    } else {
+        549423
+    };
+    assert_eq!(gas, expected_gas);
 
     // ensure we can successfully send the tx with that gas
     let receipt = provider
@@ -258,10 +315,7 @@ async fn test_eth_estimate_gas() -> eyre::Result<()> {
 async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -297,10 +351,9 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
     let fee_amm = ITIPFeeAMM::new(tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     // Provide liquidity for the fee token pair
-    // Use mintWithValidatorToken as mint is disabled post-Moderato
     let liquidity_amount = U256::from(u32::MAX);
     fee_amm
-        .mintWithValidatorToken(
+        .mint(
             *user_fee_token.address(),
             validator_token_address,
             liquidity_amount,
@@ -312,7 +365,7 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
         .await?;
 
     // Set different fee tokens for user and validator
-    // Note that the validator defaults to the PathUSD
+    // Note that the validator defaults to the pathUSD
     fee_manager
         .setUserToken(*user_fee_token.address())
         .send()
@@ -363,13 +416,226 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
     Ok(())
 }
 
+/// Regression test: eth_estimateGas fails when the latest block's beneficiary
+/// (validator) has a fee token that differs from the user's fee token, and there's no direct
+/// AMM pool between them. The user has liquidity with the default fee token (PathUSD), so
+/// the call should succeed, but it fails because evm_env uses the block header's beneficiary
+/// to resolve the validator token instead of the default.
+///
+/// Uses a dynamic validator to switch block producers mid-test. In phase 1, blocks are
+/// produced by the genesis coinbase while the test wallet sets a custom validator token.
+/// In phase 2, the test wallet becomes the block producer, reproducing the bug scenario.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_unknown_selector_error_via_rpc() -> eyre::Result<()> {
+async fn test_eth_estimate_gas_validator_fee_token_mismatch() -> eyre::Result<()> {
+    use std::sync::{Arc, Mutex};
+
     reth_tracing::init_test_tracing();
 
-    // Note: This test uses moderato genesis (without allegretto) to test older behavior
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet_address = wallet.address();
+
+    let dynamic_validator = Arc::new(Mutex::new(Address::ZERO));
+
     let setup = TestNodeBuilder::new()
-        .with_genesis(include_str!("../assets/test-genesis-moderato.json").to_string())
+        .with_dynamic_validator(dynamic_validator.clone())
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
+
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
+
+    let fee_manager =
+        IFeeManager::new(tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    let fee_amm = ITIPFeeAMM::new(tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, provider.clone());
+
+    let validator_custom_token = setup_test_token(provider.clone(), wallet_address).await?;
+    let user_fee_token = setup_test_token(provider.clone(), wallet_address).await?;
+
+    user_fee_token
+        .mint(wallet_address, U256::from(u128::MAX))
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    fee_amm
+        .mint(
+            *user_fee_token.address(),
+            PATH_USD_ADDRESS,
+            U256::from(u32::MAX),
+            wallet_address,
+        )
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    fee_amm
+        .mint(
+            *validator_custom_token.address(),
+            PATH_USD_ADDRESS,
+            U256::from(u32::MAX),
+            wallet_address,
+        )
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    fee_manager
+        .setUserToken(*user_fee_token.address())
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    fee_manager
+        .setValidatorToken(*validator_custom_token.address())
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let on_chain_validator_token = fee_manager.validatorTokens(wallet_address).call().await?;
+    assert_eq!(on_chain_validator_token, *validator_custom_token.address());
+
+    *dynamic_validator.lock().unwrap() = wallet_address;
+
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let block = provider
+        .get_block(BlockId::latest())
+        .await?
+        .expect("Could not get latest block");
+    assert_eq!(block.header.beneficiary, wallet_address);
+
+    let recipient = Address::random();
+    let calldata = user_fee_token
+        .transfer(recipient, U256::ONE)
+        .calldata()
+        .clone();
+    let tx = TransactionRequest::default()
+        .from(wallet_address)
+        .to(*user_fee_token.address())
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .input(TransactionInput::new(calldata));
+
+    let gas = provider.estimate_gas(tx.clone()).await?;
+    assert!(gas > 0);
+
+    Ok(())
+}
+
+/// Regression test: on mainnet, `validatorTokens[address(0)]` was pre-seeded with a
+/// DONOTUSE token in genesis. The old code used `Address::ZERO` as beneficiary for RPC gas
+/// estimation, so `get_validator_token(Address::ZERO)` returned DONOTUSE instead of falling
+/// back to `DEFAULT_FEE_TOKEN` (PathUSD), causing gas estimation to fail.
+///
+/// The fix uses `TIP_FEE_MANAGER_ADDRESS` as the sentinel beneficiary, which is guaranteed to
+/// have no validator token set (its mapping is always zero → falls back to PathUSD).
+#[tokio::test(flavor = "multi_thread")]
+async fn test_eth_estimate_gas_preseeded_zero_address_validator_token() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    // Craft test genesis with mainnet's fee manager storage (pre-seeded with DONOTUSE token).
+    let mut test_genesis: serde_json::Value =
+        serde_json::from_str(include_str!("../assets/test-genesis.json"))?;
+    let presto_genesis: serde_json::Value =
+        serde_json::from_str(include_str!("../../../chainspec/src/genesis/presto.json"))?;
+
+    let fee_manager_addr = "0xfeec000000000000000000000000000000000000";
+    let presto_storage = presto_genesis["alloc"][fee_manager_addr]["storage"]
+        .as_object()
+        .expect("presto fee manager storage must exist");
+    let test_storage = test_genesis["alloc"][fee_manager_addr]["storage"]
+        .as_object_mut()
+        .expect("test fee manager storage must exist");
+    for (k, v) in presto_storage {
+        test_storage.insert(k.clone(), v.clone());
+    }
+
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet_address = wallet.address();
+
+    let setup = TestNodeBuilder::new()
+        .with_genesis(serde_json::to_string(&test_genesis)?)
+        .build_http_only()
+        .await?;
+
+    let provider = ProviderBuilder::new()
+        .wallet(wallet)
+        .connect_http(setup.http_url);
+
+    // Verify the pre-seeded state: validatorTokens[address(0)] should be non-PathUSD
+    let fee_manager =
+        IFeeManager::new(tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    let zero_addr_token = fee_manager.validatorTokens(Address::ZERO).call().await?;
+    assert_ne!(
+        zero_addr_token, PATH_USD_ADDRESS,
+        "validatorTokens[address(0)] should be the DONOTUSE token, not PathUSD"
+    );
+
+    // Setup a user fee token with liquidity so the user can pay fees
+    let user_fee_token = setup_test_token(provider.clone(), wallet_address).await?;
+
+    user_fee_token
+        .mint(wallet_address, U256::from(u128::MAX))
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let fee_amm = ITIPFeeAMM::new(tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    fee_amm
+        .mint(
+            *user_fee_token.address(),
+            PATH_USD_ADDRESS,
+            U256::from(u32::MAX),
+            wallet_address,
+        )
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    fee_manager
+        .setUserToken(*user_fee_token.address())
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    // Gas estimation should succeed because the fix uses TIP_FEE_MANAGER_ADDRESS as
+    // beneficiary, which has no validator token set and falls back to PathUSD.
+    let recipient = Address::random();
+    let calldata = user_fee_token
+        .transfer(recipient, U256::ONE)
+        .calldata()
+        .clone();
+    let tx = TransactionRequest::default()
+        .from(wallet_address)
+        .to(*user_fee_token.address())
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .input(TransactionInput::new(calldata));
+
+    let gas = provider.estimate_gas(tx).await?;
+    assert!(
+        gas > 0,
+        "gas estimation must succeed with pre-seeded validatorTokens[address(0)]"
+    );
+
+    Ok(())
+}
+
+#[test_case(ForkSchedule::Devnet ; "devnet")]
+#[test_case(ForkSchedule::Testnet ; "testnet")]
+#[test_case(ForkSchedule::Mainnet ; "mainnet")]
+#[tokio::test(flavor = "multi_thread")]
+async fn test_unknown_selector_error_via_rpc(schedule: ForkSchedule) -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new()
+        .with_schedule(schedule)
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
@@ -384,46 +650,102 @@ async fn test_unknown_selector_error_via_rpc() -> eyre::Result<()> {
     calldata.extend_from_slice(&[0u8; 64]);
 
     let tx = TransactionRequest::default()
-        .to(TIP_ACCOUNT_REGISTRAR)
+        .to(TIP20_FACTORY_ADDRESS)
         .input(TransactionInput::new(Bytes::from(calldata)));
 
-    // The call should fail with UnknownFunctionSelector error
-    let result = provider.call(tx).await;
-
-    assert!(
-        result.is_err(),
-        "Call should have failed with unknown selector"
+    // The call should fail with UnknownFunctionSelector containing the unknown selector
+    let err = provider.call(tx).await.unwrap_err();
+    let expected = Bytes::from(
+        UnknownFunctionSelector {
+            selector: unknown_selector.into(),
+        }
+        .abi_encode(),
     );
+    assert_eq!(extract_revert_data(&err), expected);
 
-    let err = result.unwrap_err();
+    Ok(())
+}
 
-    // Get the error response payload
-    let error_payload = err.as_error_resp();
-    assert!(
-        error_payload.is_some(),
-        "Should have error response payload"
+#[tokio::test(flavor = "multi_thread")]
+async fn test_get_validators_state_override_no_oom() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let provider = ProviderBuilder::new().connect_http(setup.http_url);
+    let val_config = ValidatorConfig::new();
+    let tx = TransactionRequest::default()
+        .to(val_config.address())
+        .input(TransactionInput::new(
+            IValidatorConfig::getValidatorsCall::SELECTOR.into(),
+        ));
+    let len_slot: B256 = val_config.validators_array.len_slot().into();
+
+    // -- overflow: length > u32::MAX → Panic(UnderOverflow) revert --
+    let overrides = state_diff(
+        val_config.address(),
+        &[(len_slot, U256::from(0x0004000000000000u64))],
     );
+    let err = provider
+        .call(tx.clone())
+        .overrides(overrides)
+        .await
+        .unwrap_err();
+    assert_eq!(extract_revert_data(&err), under_overflow_revert());
 
-    let payload = error_payload.unwrap();
-    assert!(payload.data.is_some(), "Should have error data");
-
-    // Deserialize the error data as Bytes
-    let error_bytes: Bytes = serde_json::from_str(payload.data.as_ref().unwrap().get())
-        .expect("Failed to deserialize error data as bytes");
-
-    // Decode UnknownFunctionSelector from the error data
-    let decoded_error = UnknownFunctionSelector::abi_decode(&error_bytes);
-    assert!(
-        decoded_error.is_ok(),
-        "Error should be decodable as UnknownFunctionSelector"
+    // -- OOG: length < u32::MAX but huge → gas exhaustion on SLOAD loop --
+    let overrides = state_diff(
+        val_config.address(),
+        &[(len_slot, U256::from(1_000_000u64))],
     );
+    let err = provider
+        .call(tx)
+        .overrides(overrides)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("out of gas"), "expected OOG, got: {err}");
 
-    // Verify it contains the correct selector
-    let error = decoded_error.unwrap();
-    assert_eq!(
-        error.selector, unknown_selector,
-        "Error should contain the correct unknown selector"
+    // Verify the node is still alive (didn't OOM)
+    provider.get_block_number().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip20_name_state_override_no_oom() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let provider = ProviderBuilder::new().connect_http(setup.http_url);
+    let tx = TransactionRequest::default()
+        .to(PATH_USD_ADDRESS)
+        .input(TransactionInput::new(ITIP20::nameCall::SELECTOR.into()));
+    let name_slot = B256::from(U256::from(2)); // slot 2 in TIP20Token layout
+
+    // -- overflow: decoded len > u32::MAX → Panic(UnderOverflow) revert --
+    // 0x0008000000000001 → LSB=1 (long string), decoded len = 0x0004000000000000
+    let overrides = state_diff(
+        PATH_USD_ADDRESS,
+        &[(name_slot, U256::from(0x0008000000000001u64))],
     );
+    let err = provider
+        .call(tx.clone())
+        .overrides(overrides)
+        .await
+        .unwrap_err();
+    assert_eq!(extract_revert_data(&err), under_overflow_revert());
 
+    // -- OOG: decoded len < u32::MAX but huge → gas exhaustion on SLOAD loop --
+    // length 1_000_000 encoded as long string: value = 1_000_000 * 2 + 1 = 2_000_001
+    let overrides = state_diff(PATH_USD_ADDRESS, &[(name_slot, U256::from(2_000_001u64))]);
+    let err = provider
+        .call(tx)
+        .overrides(overrides)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("out of gas"), "expected OOG, got: {err}");
+
+    // Verify the node is still alive (didn't OOM)
+    provider.get_block_number().await?;
     Ok(())
 }

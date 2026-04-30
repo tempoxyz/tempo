@@ -1,18 +1,35 @@
 use alloy_consensus::{BlockHeader, Header, Sealable};
-use alloy_primitives::{Address, B64, B256, BlockHash, BlockNumber, Bloom, Bytes, U256, keccak256};
+use alloy_primitives::{Address, B64, B256, BlockNumber, Bloom, Bytes, U256, keccak256};
 use alloy_rlp::{RlpDecodable, RlpEncodable};
-use reth_primitives_traits::InMemorySize;
 
-/// Tempo block header.
+use crate::ed25519::PublicKey;
+
+/// Consensus context metadata for a Tempo block.
 ///
-/// Encoded as `rlp([inner, general_gas_limit])` meaning that any new
-/// fields added to the inner header will only affect the first list element.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, RlpEncodable, RlpDecodable)]
+/// The `proposer` is validated as a valid Ed25519 public key during RLP
+/// decoding to reject malformed blocks at the network boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, RlpEncodable, RlpDecodable)]
 #[cfg_attr(feature = "reth-codec", derive(reth_codecs::Compact))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
-#[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact, rlp))]
+#[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact))]
+pub struct TempoConsensusContext {
+    pub epoch: u64,
+    pub view: u64,
+    pub parent_view: u64,
+    pub proposer: PublicKey,
+}
+
+/// Tempo block header.
+///
+/// RLP-encoded as `[general_gas_limit, shared_gas_limit, timestamp_millis_part, inner,
+/// consensus_context?]`. The `consensus_context` is trailing and omitted for pre-fork blocks.
+#[derive(Clone, Debug, Default, Eq, Hash, PartialEq, RlpEncodable, RlpDecodable)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
+#[rlp(trailing)]
 pub struct TempoHeader {
     /// Non-payment gas limit for the block.
     #[cfg_attr(
@@ -32,6 +49,13 @@ pub struct TempoHeader {
     /// Inner Ethereum [`Header`].
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub inner: Header,
+
+    /// Consensus metadata for the block. `None` for pre-fork blocks.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub consensus_context: Option<TempoConsensusContext>,
 }
 
 impl TempoHeader {
@@ -49,9 +73,6 @@ impl AsRef<Self> for TempoHeader {
         self
     }
 }
-
-#[cfg(feature = "serde-bincode-compat")]
-impl reth_primitives_traits::serde_bincode_compat::RlpBincode for TempoHeader {}
 
 impl BlockHeader for TempoHeader {
     fn parent_hash(&self) -> B256 {
@@ -134,23 +155,16 @@ impl BlockHeader for TempoHeader {
         self.inner.requests_hash()
     }
 
+    fn block_access_list_hash(&self) -> Option<B256> {
+        self.inner.block_access_list_hash()
+    }
+
+    fn slot_number(&self) -> Option<u64> {
+        self.inner.slot_number()
+    }
+
     fn extra_data(&self) -> &Bytes {
         self.inner.extra_data()
-    }
-}
-
-impl InMemorySize for TempoHeader {
-    fn size(&self) -> usize {
-        let Self {
-            inner,
-            general_gas_limit,
-            timestamp_millis_part,
-            shared_gas_limit,
-        } = self;
-        inner.size()
-            + general_gas_limit.size()
-            + timestamp_millis_part.size()
-            + shared_gas_limit.size()
     }
 }
 
@@ -160,43 +174,22 @@ impl Sealable for TempoHeader {
     }
 }
 
-impl reth_primitives_traits::BlockHeader for TempoHeader {}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_rlp::Decodable as _;
 
-impl reth_primitives_traits::header::HeaderMut for TempoHeader {
-    fn set_parent_hash(&mut self, hash: BlockHash) {
-        self.inner.set_parent_hash(hash);
-    }
+    #[test]
+    fn consensus_context_rlp_roundtrip() {
+        let ctx = TempoConsensusContext {
+            epoch: 1,
+            view: 5,
+            proposer: PublicKey::from_seed([0xab; 32]),
+            parent_view: 4,
+        };
 
-    fn set_block_number(&mut self, number: BlockNumber) {
-        self.inner.set_block_number(number);
-    }
-
-    fn set_timestamp(&mut self, timestamp: u64) {
-        self.inner.set_timestamp(timestamp);
-    }
-
-    fn set_state_root(&mut self, state_root: B256) {
-        self.inner.set_state_root(state_root);
-    }
-
-    fn set_difficulty(&mut self, difficulty: U256) {
-        self.inner.set_difficulty(difficulty);
-    }
-}
-
-#[cfg(feature = "reth-codec")]
-impl reth_db_api::table::Compress for TempoHeader {
-    type Compressed = Vec<u8>;
-
-    fn compress_to_buf<B: alloy_primitives::bytes::BufMut + AsMut<[u8]>>(&self, buf: &mut B) {
-        let _ = reth_codecs::Compact::to_compact(self, buf);
-    }
-}
-
-#[cfg(feature = "reth-codec")]
-impl reth_db_api::table::Decompress for TempoHeader {
-    fn decompress(value: &[u8]) -> Result<Self, reth_db_api::DatabaseError> {
-        let (obj, _) = reth_codecs::Compact::from_compact(value, value.len());
-        Ok(obj)
+        let encoded = alloy_rlp::encode(ctx);
+        let decoded = TempoConsensusContext::decode(&mut encoded.as_slice()).unwrap();
+        assert_eq!(ctx, decoded);
     }
 }

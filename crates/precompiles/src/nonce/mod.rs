@@ -1,7 +1,10 @@
+//! 2D nonce management precompile and expiring nonce replay protection,
+//! enabling concurrent transaction execution as part of [Tempo Transactions].
+//!
+//! [Tempo Transactions]: <https://docs.tempo.xyz/protocol/transactions>
+
 pub mod dispatch;
 
-use alloy::primitives::Bytes;
-use revm::state::Bytecode;
 pub use tempo_contracts::precompiles::INonce;
 use tempo_contracts::precompiles::{NonceError, NonceEvent};
 use tempo_precompiles_macros::contract;
@@ -9,9 +12,16 @@ use tempo_precompiles_macros::contract;
 use crate::{
     NONCE_PRECOMPILE_ADDRESS,
     error::Result,
-    storage::{Mapping, PrecompileStorageProvider},
+    storage::{Handler, Mapping},
 };
-use alloy::primitives::{Address, IntoLogData, U256};
+use alloy::primitives::{Address, B256, U256};
+
+/// Capacity of the expiring nonce seen set (supports 10k TPS for 30 seconds).
+pub const EXPIRING_NONCE_SET_CAPACITY: u32 = 300_000;
+
+/// Maximum allowed skew for expiring nonce transactions (30 seconds).
+/// Transactions must have valid_before in (now, now + MAX_EXPIRY_SECS].
+pub const EXPIRING_NONCE_MAX_EXPIRY_SECS: u64 = 30;
 
 /// NonceManager contract for managing 2D nonces as per the AA spec
 ///
@@ -19,37 +29,43 @@ use alloy::primitives::{Address, IntoLogData, U256};
 /// ```solidity
 /// contract Nonce {
 ///     mapping(address => mapping(uint256 => uint64)) public nonces;      // slot 0
-///     mapping(address => uint256) public activeKeyCount;                  // slot 1
+///
+///     // Expiring nonce storage (for hash-based replay protection)
+///     mapping(bytes32 => uint64) public expiringNonceSeen;               // slot 1: txHash => expiry
+///     mapping(uint32 => bytes32) public expiringNonceRing;               // slot 2: circular buffer of tx hashes
+///     uint32 public expiringNonceRingPtr;                                // slot 3: current position (wraps at CAPACITY)
 /// }
 /// ```
 ///
 /// - Slot 0: 2D nonce mapping - keccak256(abi.encode(nonce_key, keccak256(abi.encode(account, 0))))
-/// - Slot 1: Active key count - keccak256(abi.encode(account, 1))
+/// - Slot 1: Expiring nonce seen set - txHash => expiry timestamp
+/// - Slot 2: Expiring nonce circular buffer - index => txHash
+/// - Slot 3: Circular buffer pointer (current position, wraps at CAPACITY)
 ///
 /// Note: Protocol nonce (key 0) is stored directly in account state, not here.
 /// Only user nonce keys (1-N) are managed by this precompile.
-#[contract]
+///
+/// The struct fields define the on-chain storage layout; the `#[contract]` macro generates the
+/// storage handlers which provide an ergonomic way to interact with the EVM state.
+#[contract(addr = NONCE_PRECOMPILE_ADDRESS)]
 pub struct NonceManager {
     nonces: Mapping<Address, Mapping<U256, u64>>,
-    active_key_count: Mapping<Address, U256>,
+    expiring_nonce_seen: Mapping<B256, u64>,
+    expiring_nonce_ring: Mapping<u32, B256>,
+    expiring_nonce_ring_ptr: u32,
 }
 
-impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
-    pub fn new(storage: &'a mut S) -> Self {
-        Self::_new(NONCE_PRECOMPILE_ADDRESS, storage)
-    }
-
-    /// Initializes the nonce manager contract.
+impl NonceManager {
+    /// Initializes the nonce manager precompile storage layout.
     pub fn initialize(&mut self) -> Result<()> {
-        // must ensure the account is not empty, by setting some code
-        self.storage.set_code(
-            NONCE_PRECOMPILE_ADDRESS,
-            Bytecode::new_legacy(Bytes::from_static(&[0xef])),
-        )
+        self.__initialize()
     }
 
-    /// Get the nonce for a specific account and nonce key
-    pub fn get_nonce(&mut self, call: INonce::getNonceCall) -> Result<u64> {
+    /// Returns the current nonce for `account` at the given `nonceKey`.
+    ///
+    /// # Errors
+    /// - `ProtocolNonceNotSupported` — nonce key 0 is the protocol nonce and cannot be read here
+    pub fn get_nonce(&self, call: INonce::getNonceCall) -> Result<u64> {
         // Protocol nonce (key 0) is stored in account state, not in this precompile
         // Users should query account nonce directly, not through this precompile
         if call.nonceKey == 0 {
@@ -57,72 +73,112 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
         }
 
         // For user nonce keys, read from precompile storage
-        self.sload_nonces(call.account, call.nonceKey)
+        self.nonces[call.account][call.nonceKey].read()
     }
 
-    /// Get the number of active user nonce keys for an account
-    pub fn get_active_nonce_key_count(
-        &mut self,
-        call: INonce::getActiveNonceKeyCountCall,
-    ) -> Result<U256> {
-        self.sload_active_key_count(call.account)
-    }
-
-    /// Internal: Increment nonce for a specific account and nonce key
+    /// Increments the 2D nonce for `account` at `nonce_key` and returns the new value, enabling
+    /// concurrent transaction execution. Key `0` is reserved for the protocol nonce.
+    ///
+    /// # Errors
+    /// - `InvalidNonceKey` — `nonce_key` is 0, which is reserved for the protocol nonce
+    /// - `NonceOverflow` — the current nonce value is `u64::MAX` and cannot be incremented
     pub fn increment_nonce(&mut self, account: Address, nonce_key: U256) -> Result<u64> {
         if nonce_key == 0 {
             return Err(NonceError::invalid_nonce_key().into());
         }
 
-        let current = self.sload_nonces(account, nonce_key)?;
-
-        // If transitioning from 0 to 1, increment active key count
-        if current == 0 {
-            self.increment_active_key_count(account)?;
-        }
+        let current = self.nonces[account][nonce_key].read()?;
 
         let new_nonce = current
             .checked_add(1)
             .ok_or_else(NonceError::nonce_overflow)?;
 
-        self.sstore_nonces(account, nonce_key, new_nonce)?;
+        self.nonces[account][nonce_key].write(new_nonce)?;
 
-        if self.storage.spec().is_allegretto() {
-            self.storage.emit_event(
-                self.address,
-                NonceEvent::NonceIncremented(INonce::NonceIncremented {
-                    account,
-                    nonceKey: nonce_key,
-                    newNonce: new_nonce,
-                })
-                .into_log_data(),
-            )?;
-        }
+        self.emit_event(NonceEvent::NonceIncremented(INonce::NonceIncremented {
+            account,
+            nonceKey: nonce_key,
+            newNonce: new_nonce,
+        }))?;
 
         Ok(new_nonce)
     }
 
-    /// Increment the active key count for an account
-    fn increment_active_key_count(&mut self, account: Address) -> Result<()> {
-        let current = self.sload_active_key_count(account)?;
+    /// Checks if a hash has been seen and is still valid (not expired).
+    /// NOTE: internally used by the transaction pool.
+    pub fn is_expiring_nonce_seen(&self, hash: B256, now: u64) -> Result<bool> {
+        let expiry = self.expiring_nonce_seen[hash].read()?;
+        Ok(expiry != 0 && expiry > now)
+    }
 
-        let new_count = current
-            .checked_add(U256::ONE)
-            .ok_or_else(NonceError::nonce_overflow)?;
+    /// Validates and records an expiring nonce transaction. Uses a
+    /// circular buffer that overwrites expired entries as the pointer
+    /// advances. The hash is `keccak256(encode_for_signing || sender)`,
+    /// invariant to fee payer changes.
+    ///
+    /// Uses a circular buffer that overwrites expired entries as the pointer advances.
+    ///
+    /// The `expiring_nonce_hash` parameter is
+    /// (`keccak256(encode_for_signing || sender)`), which is invariant to fee payer changes.
+    ///
+    /// This is called during transaction execution to:
+    /// 1. Validate the expiry is within the allowed window
+    /// 2. Check for replay (hash already seen and not expired)
+    /// 3. Check if we can evict the entry at current pointer (must be expired or empty)
+    /// 4. Mark the hash as seen
+    ///
+    /// # Errors
+    /// - `InvalidExpiringNonceExpiry` — `valid_before` not in (now, now + EXPIRING_NONCE_MAX_EXPIRY_SECS]
+    /// - `ExpiringNonceReplay` — transaction hash is already recorded and has not yet expired
+    /// - `ExpiringNonceSetFull` — the circular buffer slot holds an unexpired entry that can't be evicted
+    pub fn check_and_mark_expiring_nonce(
+        &mut self,
+        expiring_nonce_hash: B256,
+        valid_before: u64,
+    ) -> Result<()> {
+        let now: u64 = self.storage.timestamp().saturating_to();
 
-        self.sstore_active_key_count(account, new_count)?;
-
-        // Emit ActiveKeyCountChanged event (only after Moderato hardfork)
-        if self.storage.spec().is_moderato() {
-            self.storage.emit_event(
-                self.address,
-                NonceEvent::ActiveKeyCountChanged(INonce::ActiveKeyCountChanged {
-                    account,
-                    newCount: new_count,
-                })
-                .into_log_data(),
-            )?;
+        // 1. Validate expiry window: must be in (now, now + EXPIRING_NONCE_MAX_EXPIRY_SECS]
+        if valid_before <= now || valid_before > now.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS)
+        {
+            return Err(NonceError::invalid_expiring_nonce_expiry().into());
         }
+
+        // 2. Replay check: reject if hash is already seen and not expired
+        let seen_expiry = self.expiring_nonce_seen[expiring_nonce_hash].read()?;
+        if seen_expiry != 0 && seen_expiry > now {
+            return Err(NonceError::expiring_nonce_replay().into());
+        }
+
+        // 3. Get current pointer (bounded in [0, CAPACITY)) and use directly as index
+        let ptr = self.expiring_nonce_ring_ptr.read()?;
+        let idx = ptr;
+        let old_hash = self.expiring_nonce_ring[idx].read()?;
+
+        // 4. If there's an existing entry, check if it's expired (can be evicted)
+        // Safety check: buffer is sized so entries should always be expired, but verify
+        // in case TPS exceeds expectations.
+        if old_hash != B256::ZERO {
+            let old_expiry = self.expiring_nonce_seen[old_hash].read()?;
+            if old_expiry != 0 && old_expiry > now {
+                // Entry is still valid, cannot evict - buffer is full
+                return Err(NonceError::expiring_nonce_set_full().into());
+            }
+            // Clear the old entry from seen set
+            self.expiring_nonce_seen[old_hash].write(0)?;
+        }
+
+        // 5. Insert new entry
+        self.expiring_nonce_ring[idx].write(expiring_nonce_hash)?;
+        self.expiring_nonce_seen[expiring_nonce_hash].write(valid_before)?;
+
+        // 6. Advance pointer (wraps at CAPACITY, not u32::MAX)
+        let next = if ptr + 1 >= EXPIRING_NONCE_SET_CAPACITY {
+            0
+        } else {
+            ptr + 1
+        };
+        self.expiring_nonce_ring_ptr.write(next)?;
 
         Ok(())
     }
@@ -130,244 +186,273 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{error::TempoPrecompileError, storage::hashmap::HashMapStorageProvider};
-    use tempo_chainspec::hardfork::TempoHardfork;
+    use crate::{
+        error::TempoPrecompileError,
+        storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
+    };
 
     use super::*;
     use alloy::primitives::address;
 
     #[test]
-    fn test_get_nonce_returns_zero_for_new_key() {
+    fn test_get_nonce_returns_zero_for_new_key() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut nonce_mgr = NonceManager::new(&mut storage);
+        StorageCtx::enter(&mut storage, || {
+            let mgr = NonceManager::new();
 
-        let account = address!("0x1111111111111111111111111111111111111111");
-        let nonce = nonce_mgr
-            .get_nonce(INonce::getNonceCall {
+            let account = address!("0x1111111111111111111111111111111111111111");
+            let nonce = mgr.get_nonce(INonce::getNonceCall {
                 account,
                 nonceKey: U256::from(5),
-            })
-            .unwrap();
+            })?;
 
-        assert_eq!(nonce, 0);
+            assert_eq!(nonce, 0);
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_get_nonce_rejects_protocol_nonce() {
+    fn test_get_nonce_rejects_protocol_nonce() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut nonce_mgr = NonceManager::new(&mut storage);
+        StorageCtx::enter(&mut storage, || {
+            let mgr = NonceManager::new();
 
-        let account = address!("0x1111111111111111111111111111111111111111");
-        let result = nonce_mgr.get_nonce(INonce::getNonceCall {
-            account,
-            nonceKey: U256::ZERO,
-        });
+            let account = address!("0x1111111111111111111111111111111111111111");
+            let result = mgr.get_nonce(INonce::getNonceCall {
+                account,
+                nonceKey: U256::ZERO,
+            });
 
-        assert_eq!(
-            result.unwrap_err(),
-            TempoPrecompileError::NonceError(NonceError::protocol_nonce_not_supported())
-        );
+            assert_eq!(
+                result.unwrap_err(),
+                TempoPrecompileError::NonceError(NonceError::protocol_nonce_not_supported())
+            );
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_increment_nonce() {
+    fn test_increment_nonce() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut nonce_mgr = NonceManager::new(&mut storage);
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
 
-        let account = address!("0x1111111111111111111111111111111111111111");
-        let nonce_key = U256::from(5);
+            let account = address!("0x1111111111111111111111111111111111111111");
+            let nonce_key = U256::from(5);
 
-        let new_nonce = nonce_mgr.increment_nonce(account, nonce_key).unwrap();
-        assert_eq!(new_nonce, 1);
+            let new_nonce = mgr.increment_nonce(account, nonce_key)?;
+            assert_eq!(new_nonce, 1);
+            assert_eq!(mgr.emitted_events().len(), 1);
 
-        let new_nonce = nonce_mgr.increment_nonce(account, nonce_key).unwrap();
-        assert_eq!(new_nonce, 2);
+            let new_nonce = mgr.increment_nonce(account, nonce_key)?;
+            assert_eq!(new_nonce, 2);
+            mgr.assert_emitted_events(vec![
+                INonce::NonceIncremented {
+                    account,
+                    nonceKey: nonce_key,
+                    newNonce: 1,
+                },
+                INonce::NonceIncremented {
+                    account,
+                    nonceKey: nonce_key,
+                    newNonce: 2,
+                },
+            ]);
+
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_active_key_count() {
+    fn test_different_accounts_independent() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut nonce_mgr = NonceManager::new(&mut storage);
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
 
-        let account = address!("0x1111111111111111111111111111111111111111");
+            let account1 = address!("0x1111111111111111111111111111111111111111");
+            let account2 = address!("0x2222222222222222222222222222222222222222");
+            let nonce_key = U256::from(5);
 
-        // Initially, no active keys
-        let count = nonce_mgr
-            .get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account })
-            .unwrap();
-        assert_eq!(count, U256::ZERO);
+            for _ in 0..10 {
+                mgr.increment_nonce(account1, nonce_key)?;
+            }
+            for _ in 0..20 {
+                mgr.increment_nonce(account2, nonce_key)?;
+            }
 
-        // Increment a nonce key - should increase active count
-        nonce_mgr.increment_nonce(account, U256::ONE).unwrap();
-        let count = nonce_mgr
-            .get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account })
-            .unwrap();
-        assert_eq!(count, U256::ONE);
-
-        // Increment same key again - count should stay the same
-        nonce_mgr.increment_nonce(account, U256::ONE).unwrap();
-        let count = nonce_mgr
-            .get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account })
-            .unwrap();
-        assert_eq!(count, U256::ONE);
-
-        // Increment a different key - count should increase
-        nonce_mgr.increment_nonce(account, U256::from(2)).unwrap();
-        let count = nonce_mgr
-            .get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account })
-            .unwrap();
-        assert_eq!(count, U256::from(2));
-    }
-
-    #[test]
-    fn test_different_accounts_independent() {
-        let mut storage = HashMapStorageProvider::new(1);
-        let mut nonce_mgr = NonceManager::new(&mut storage);
-
-        let account1 = address!("0x1111111111111111111111111111111111111111");
-        let account2 = address!("0x2222222222222222222222222222222222222222");
-        let nonce_key = U256::from(5);
-
-        for _ in 0..10 {
-            nonce_mgr.increment_nonce(account1, nonce_key).unwrap();
-        }
-        for _ in 0..20 {
-            nonce_mgr.increment_nonce(account2, nonce_key).unwrap();
-        }
-
-        let nonce1 = nonce_mgr
-            .get_nonce(INonce::getNonceCall {
+            let nonce1 = mgr.get_nonce(INonce::getNonceCall {
                 account: account1,
                 nonceKey: nonce_key,
-            })
-            .unwrap();
-        let nonce2 = nonce_mgr
-            .get_nonce(INonce::getNonceCall {
+            })?;
+            let nonce2 = mgr.get_nonce(INonce::getNonceCall {
                 account: account2,
                 nonceKey: nonce_key,
-            })
-            .unwrap();
+            })?;
 
-        assert_eq!(nonce1, 10);
-        assert_eq!(nonce2, 20);
+            assert_eq!(nonce1, 10);
+            assert_eq!(nonce2, 20);
+            Ok(())
+        })
+    }
+
+    // ========== Expiring Nonce Tests ==========
+
+    #[test]
+    fn test_expiring_nonce_basic_flow() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let now = 1000u64;
+        storage.set_timestamp(U256::from(now));
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
+
+            let tx_hash = B256::repeat_byte(0x11);
+            let valid_before = now + 20; // 20s in future, within 30s window
+
+            // First tx should succeed
+            mgr.check_and_mark_expiring_nonce(tx_hash, valid_before)?;
+
+            // Same tx hash should fail (replay)
+            let result = mgr.check_and_mark_expiring_nonce(tx_hash, valid_before);
+            assert_eq!(
+                result.unwrap_err(),
+                TempoPrecompileError::NonceError(NonceError::expiring_nonce_replay())
+            );
+
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_active_key_count_event_emitted_post_moderato() {
-        // Test with Moderato hardfork (event should be emitted)
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
-        let account = address!("0x1111111111111111111111111111111111111111");
-        let nonce_key = U256::from(5);
+    fn test_expiring_nonce_expiry_validation() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let now = 1000u64;
+        storage.set_timestamp(U256::from(now));
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
 
-        // First increment should emit ActiveKeyCountChanged event
-        {
-            let mut nonce_mgr = NonceManager::new(&mut storage);
-            nonce_mgr.increment_nonce(account, nonce_key).unwrap();
-        }
+            let tx_hash = B256::repeat_byte(0x22);
 
-        // Check that ActiveKeyCountChanged event was emitted
-        let events = storage.events.get(&NONCE_PRECOMPILE_ADDRESS);
-        assert!(events.is_some(), "No events emitted");
-        let events = events.unwrap();
-        assert_eq!(events.len(), 1, "Should emit ActiveKeyCountChanged");
+            // valid_before in the past should fail
+            let result = mgr.check_and_mark_expiring_nonce(tx_hash, now - 1);
+            assert_eq!(
+                result.unwrap_err(),
+                TempoPrecompileError::NonceError(NonceError::invalid_expiring_nonce_expiry())
+            );
 
-        // Check the ActiveKeyCountChanged event
-        let expected_event = NonceEvent::ActiveKeyCountChanged(INonce::ActiveKeyCountChanged {
-            account,
-            newCount: U256::ONE,
-        });
-        assert_eq!(events[0], expected_event.into_log_data());
+            // valid_before exactly at now should fail
+            let result = mgr.check_and_mark_expiring_nonce(tx_hash, now);
+            assert_eq!(
+                result.unwrap_err(),
+                TempoPrecompileError::NonceError(NonceError::invalid_expiring_nonce_expiry())
+            );
 
-        // Second increment on same key should NOT emit ActiveKeyCountChanged
-        {
-            let mut nonce_mgr = NonceManager::new(&mut storage);
-            nonce_mgr.increment_nonce(account, nonce_key).unwrap();
-        }
-        let events = storage.events.get(&NONCE_PRECOMPILE_ADDRESS).unwrap();
-        assert_eq!(events.len(), 1); // Still only one event
+            // valid_before too far in future should fail (uses EXPIRING_NONCE_MAX_EXPIRY_SECS = 30)
+            let result = mgr.check_and_mark_expiring_nonce(tx_hash, now + 31);
+            assert_eq!(
+                result.unwrap_err(),
+                TempoPrecompileError::NonceError(NonceError::invalid_expiring_nonce_expiry())
+            );
 
-        // Increment on different key SHOULD emit ActiveKeyCountChanged again
-        let nonce_key2 = U256::from(10);
-        {
-            let mut nonce_mgr = NonceManager::new(&mut storage);
-            nonce_mgr.increment_nonce(account, nonce_key2).unwrap();
-        }
-        let events = storage.events.get(&NONCE_PRECOMPILE_ADDRESS).unwrap();
-        assert_eq!(events.len(), 2); // Second ActiveKeyCountChanged
+            // valid_before at exactly EXPIRING_NONCE_MAX_EXPIRY_SECS should succeed
+            mgr.check_and_mark_expiring_nonce(tx_hash, now + 30)?;
 
-        let expected_event2 = NonceEvent::ActiveKeyCountChanged(INonce::ActiveKeyCountChanged {
-            account,
-            newCount: U256::from(2),
-        });
-        assert_eq!(events[1], expected_event2.into_log_data());
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_active_key_count_event_not_emitted_pre_moderato() {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
-        let account = address!("0x1111111111111111111111111111111111111111");
-        let nonce_key = U256::from(5);
+    fn test_expiring_nonce_expired_entry_eviction() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let now = 1000u64;
+        let valid_before = now + 20;
+        storage.set_timestamp(U256::from(now));
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
 
-        {
-            let mut nonce_mgr = NonceManager::new(&mut storage);
-            nonce_mgr.increment_nonce(account, nonce_key).unwrap();
-        }
+            let tx_hash1 = B256::repeat_byte(0x33);
 
-        let events = storage.events.get(&NONCE_PRECOMPILE_ADDRESS);
-        assert!(
-            events.is_none() || events.unwrap().is_empty(),
-            "No events should be emitted pre-Moderato"
-        );
+            // Insert first tx
+            mgr.check_and_mark_expiring_nonce(tx_hash1, valid_before)?;
 
-        let nonce_key2 = U256::from(10);
-        {
-            let mut nonce_mgr = NonceManager::new(&mut storage);
-            nonce_mgr.increment_nonce(account, nonce_key2).unwrap();
-        }
+            // Verify it's seen
+            assert!(mgr.is_expiring_nonce_seen(tx_hash1, now)?);
 
-        let events = storage.events.get(&NONCE_PRECOMPILE_ADDRESS);
-        assert!(
-            events.is_none() || events.unwrap().is_empty(),
-            "No events should be emitted pre-Moderato"
-        );
+            // After expiry, it should no longer be "seen" (expired)
+            assert!(!mgr.is_expiring_nonce_seen(tx_hash1, valid_before + 1)?);
+
+            Ok::<_, eyre::Report>(())
+        })?;
+
+        // Insert second tx after first has expired - should evict first
+        let new_now = valid_before + 1;
+        let new_valid_before = new_now + 20;
+        storage.set_timestamp(U256::from(new_now));
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
+
+            let tx_hash2 = B256::repeat_byte(0x44);
+            mgr.check_and_mark_expiring_nonce(tx_hash2, new_valid_before)?;
+
+            // tx_hash1 should now be fully evicted (since it was at ring position 0)
+            // and tx_hash2 replaces it
+            assert!(mgr.is_expiring_nonce_seen(tx_hash2, new_now)?);
+
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_increment_nonce_post_allegretto() {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
-        let account = address!("0x1111111111111111111111111111111111111111");
-        let nonce_key = U256::from(5);
+    fn test_ring_buffer_pointer_wraps_at_capacity() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let now = 1000u64;
+        storage.set_timestamp(U256::from(now));
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
 
-        {
-            let mut nonce_mgr = NonceManager::new(&mut storage);
-            nonce_mgr.increment_nonce(account, nonce_key).unwrap();
-        }
+            // Manually set pointer to just before capacity to test wrap
+            mgr.expiring_nonce_ring_ptr
+                .write(EXPIRING_NONCE_SET_CAPACITY - 1)?;
 
-        let events = storage
-            .events
-            .get(&NONCE_PRECOMPILE_ADDRESS)
-            .expect("Could not get events");
-        assert_eq!(events.len(), 2,);
+            // Insert a tx - pointer should wrap to 0
+            let tx_hash = B256::repeat_byte(0x77);
+            let valid_before = now + 20;
+            mgr.check_and_mark_expiring_nonce(tx_hash, valid_before)?;
 
-        let expected_nonce_event = NonceEvent::NonceIncremented(INonce::NonceIncremented {
-            account,
-            nonceKey: nonce_key,
-            newNonce: 1,
-        });
-        assert_eq!(events[1], expected_nonce_event.into_log_data());
+            // Pointer should now be 0 (wrapped at capacity)
+            let ptr = mgr.expiring_nonce_ring_ptr.read()?;
+            assert_eq!(ptr, 0, "Pointer should wrap to 0 at capacity");
 
-        {
-            let mut nonce_mgr = NonceManager::new(&mut storage);
-            nonce_mgr.increment_nonce(account, nonce_key).unwrap();
-        }
-        let events = storage.events.get(&NONCE_PRECOMPILE_ADDRESS).unwrap();
-        assert_eq!(events.len(), 3);
+            // Insert another tx - pointer should be 1
+            let tx_hash2 = B256::repeat_byte(0x88);
+            mgr.check_and_mark_expiring_nonce(tx_hash2, valid_before)?;
 
-        let expected_nonce_event2 = NonceEvent::NonceIncremented(INonce::NonceIncremented {
-            account,
-            nonceKey: nonce_key,
-            newNonce: 2,
-        });
-        assert_eq!(events[2], expected_nonce_event2.into_log_data());
+            let ptr = mgr.expiring_nonce_ring_ptr.read()?;
+            assert_eq!(ptr, 1, "Pointer should increment to 1 after wrap");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_initialize_sets_storage_state() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
+
+            // Before initialization, contract should not be initialized
+            assert!(!mgr.is_initialized()?);
+
+            // Initialize
+            mgr.initialize()?;
+
+            // After initialization, contract should be initialized
+            assert!(mgr.is_initialized()?);
+
+            // Re-initializing a new handle should still see initialized state
+            let mgr2 = NonceManager::new();
+            assert!(mgr2.is_initialized()?);
+
+            Ok(())
+        })
     }
 }

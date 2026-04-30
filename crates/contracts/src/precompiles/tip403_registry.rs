@@ -1,23 +1,27 @@
-use alloy::sol;
-
 pub use ITIP403Registry::{
     ITIP403RegistryErrors as TIP403RegistryError, ITIP403RegistryEvents as TIP403RegistryEvent,
 };
 
-sol! {
-   #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc, abi)]
+crate::sol! {
+    #[derive(Debug, PartialEq, Eq)]
+    #[sol(abi)]
     interface ITIP403Registry {
         // Enums
         enum PolicyType {
             WHITELIST,
-            BLACKLIST
+            BLACKLIST,
+            COMPOUND
         }
 
         // View Functions
         function policyIdCounter() external view returns (uint64);
+        function policyExists(uint64 policyId) external view returns (bool);
         function policyData(uint64 policyId) external view returns (PolicyType policyType, address admin);
         function isAuthorized(uint64 policyId, address user) external view returns (bool);
+        function isAuthorizedSender(uint64 policyId, address user) external view returns (bool);
+        function isAuthorizedRecipient(uint64 policyId, address user) external view returns (bool);
+        function isAuthorizedMintRecipient(uint64 policyId, address user) external view returns (bool);
+        function compoundPolicyData(uint64 policyId) external view returns (uint64 senderPolicyId, uint64 recipientPolicyId, uint64 mintRecipientPolicyId);
 
         // State-Changing Functions
         function createPolicy(address admin, PolicyType policyType) external returns (uint64);
@@ -25,16 +29,39 @@ sol! {
         function setPolicyAdmin(uint64 policyId, address admin) external;
         function modifyPolicyWhitelist(uint64 policyId, address account, bool allowed) external;
         function modifyPolicyBlacklist(uint64 policyId, address account, bool restricted) external;
+        function createCompoundPolicy(uint64 senderPolicyId, uint64 recipientPolicyId, uint64 mintRecipientPolicyId) external returns (uint64);
 
         // Events
         event PolicyAdminUpdated(uint64 indexed policyId, address indexed updater, address indexed admin);
         event PolicyCreated(uint64 indexed policyId, address indexed updater, PolicyType policyType);
         event WhitelistUpdated(uint64 indexed policyId, address indexed updater, address indexed account, bool allowed);
         event BlacklistUpdated(uint64 indexed policyId, address indexed updater, address indexed account, bool restricted);
+        event CompoundPolicyCreated(uint64 indexed policyId, address indexed creator, uint64 senderPolicyId, uint64 recipientPolicyId, uint64 mintRecipientPolicyId);
 
         // Errors
         error Unauthorized();
+        error PolicyNotFound();
+        error PolicyNotSimple();
+        error InvalidPolicyType();
         error IncompatiblePolicyType();
+        error VirtualAddressNotAllowed();
+    }
+}
+
+impl ITIP403Registry::PolicyType {
+    /// Returns `true` if this is a whitelist policy.
+    pub const fn is_whitelist(&self) -> bool {
+        matches!(self, Self::WHITELIST)
+    }
+
+    /// Returns `true` if this is a blacklist policy.
+    pub const fn is_blacklist(&self) -> bool {
+        matches!(self, Self::BLACKLIST)
+    }
+
+    /// Returns `true` if this is a compound policy.
+    pub const fn is_compound(&self) -> bool {
+        matches!(self, Self::COMPOUND)
     }
 }
 
@@ -45,7 +72,26 @@ impl TIP403RegistryError {
     }
 
     /// Creates an error for incompatible policy types
+    pub const fn invalid_policy_type() -> Self {
+        Self::InvalidPolicyType(ITIP403Registry::InvalidPolicyType {})
+    }
+
+    /// Creates an error for incompatible policy types
     pub const fn incompatible_policy_type() -> Self {
         Self::IncompatiblePolicyType(ITIP403Registry::IncompatiblePolicyType {})
+    }
+
+    /// Creates an error for non-existent policy
+    pub const fn policy_not_found() -> Self {
+        Self::PolicyNotFound(ITIP403Registry::PolicyNotFound {})
+    }
+
+    pub const fn policy_not_simple() -> Self {
+        Self::PolicyNotSimple(ITIP403Registry::PolicyNotSimple {})
+    }
+
+    /// Virtual addresses are TIP-1022 forwarding aliases and cannot be used as policy members.
+    pub const fn virtual_address_not_allowed() -> Self {
+        Self::VirtualAddressNotAllowed(ITIP403Registry::VirtualAddressNotAllowed {})
     }
 }

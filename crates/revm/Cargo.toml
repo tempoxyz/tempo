@@ -12,7 +12,7 @@ workspace = true
 
 [dependencies]
 tempo-precompiles.workspace = true
-tempo-primitives.workspace = true
+tempo-primitives = { workspace = true, features = ["reth"] }
 tempo-contracts.workspace = true
 tempo-chainspec.workspace = true
 
@@ -22,7 +22,7 @@ reth-rpc-eth-types = { workspace = true, optional = true }
 
 revm.workspace = true
 
-alloy-evm.workspace = true
+alloy-evm = { workspace = true, features = ["std"] }
 alloy-primitives.workspace = true
 alloy-consensus.workspace = true
 alloy-sol-types.workspace = true
@@ -31,12 +31,35 @@ auto_impl.workspace = true
 derive_more.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
+serde = { workspace = true, optional = true }
 
 [dev-dependencies]
 eyre.workspace = true
 alloy-primitives = { workspace = true, features = ["rand"] }
+alloy-eips.workspace = true
+alloy-rlp.workspace = true
+alloy-signer.workspace = true
+alloy-signer-local.workspace = true
+base64.workspace = true
+p256.workspace = true
+proptest.workspace = true
+sha2.workspace = true
 tempo-evm.workspace = true
+tempo-precompiles = { workspace = true, features = ["test-utils"] }
+test-case.workspace = true
 
 [features]
 reth = ["dep:reth-storage-api"]
 rpc = ["dep:reth-rpc-eth-types"]
+serde = [
+	"dep:serde",
+	"revm/serde",
+	"alloy-consensus/serde",
+	"alloy-eips/serde",
+	"alloy-primitives/serde",
+	"p256/serde",
+	"reth-storage-api?/serde",
+	"tempo-chainspec/serde",
+	"tempo-contracts/serde",
+	"tempo-primitives/serde"
+]

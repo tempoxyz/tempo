@@ -2,7 +2,7 @@ use std::{net::SocketAddr, path::PathBuf};
 
 use alloy_primitives::Address;
 use eyre::{OptionExt as _, WrapErr as _, ensure};
-use rand::SeedableRng as _;
+use rand_08::SeedableRng as _;
 use reth_network_peers::pk2id;
 use secp256k1::SECP256K1;
 use serde::Serialize;
@@ -81,7 +81,8 @@ impl GenerateLocalnet {
             );
         }
 
-        let mut rng = rand::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand::random::<u64>));
+        let mut rng =
+            rand_08::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand_08::random::<u64>));
         let mut trusted_peers = vec![];
 
         let mut all_configs = vec![];
@@ -109,6 +110,7 @@ impl GenerateLocalnet {
                     execution_p2p_port,
 
                     execution_p2p_disc_key: execution_p2p_signing_key.display_secret().to_string(),
+                    execution_p2p_identity: format!("{execution_p2p_identity:x}"),
                 },
             ));
         }
@@ -147,11 +149,17 @@ impl GenerateLocalnet {
                 })?;
             let enode_key_dst = validator.dst_dir(&output).join("enode.key");
             std::fs::write(&enode_key_dst, config.execution_p2p_disc_key).wrap_err_with(|| {
-                format!(
-                    "failed writing signing share to `{}`",
-                    enode_key_dst.display()
-                )
+                format!("failed writing enode key to `{}`", enode_key_dst.display())
             })?;
+            let enode_identity_dst = validator.dst_dir(&output).join("enode.identity");
+            std::fs::write(&enode_identity_dst, &config.execution_p2p_identity).wrap_err_with(
+                || {
+                    format!(
+                        "failed writing enode identity to `{}`",
+                        enode_identity_dst.display()
+                    )
+                },
+            )?;
 
             println!("run the node with the following command:\n");
             let cmd = format!(
@@ -193,4 +201,5 @@ pub(crate) struct ConfigOutput {
     consensus_p2p_port: u16,
     execution_p2p_port: u16,
     execution_p2p_disc_key: String,
+    execution_p2p_identity: String,
 }

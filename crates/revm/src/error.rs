@@ -3,6 +3,7 @@
 use alloy_evm::error::InvalidTxError;
 use alloy_primitives::{Address, U256};
 use revm::context::result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction};
+use tempo_primitives::transaction::{KeyAuthorizationChainIdError, KeychainVersionError};
 
 /// Tempo-specific invalid transaction errors.
 ///
@@ -20,7 +21,7 @@ pub enum TempoInvalidTransaction {
 
     /// System transaction execution failed.
     #[error("system transaction execution failed, result: {_0:?}")]
-    SystemTransactionFailed(ExecutionResult<TempoHaltReason>),
+    SystemTransactionFailed(Box<ExecutionResult<TempoHaltReason>>),
 
     /// Fee payer signature recovery failed.
     ///
@@ -28,6 +29,10 @@ pub enum TempoInvalidTransaction {
     /// signature recovery for the fee payer fails.
     #[error("fee payer signature recovery failed")]
     InvalidFeePayerSignature,
+
+    /// Fee payer cannot resolve to the sender address.
+    #[error("fee payer cannot resolve to sender")]
+    SelfSponsoredFeePayer,
 
     // Tempo transaction errors
     /// Transaction cannot be included before validAfter timestamp.
@@ -69,23 +74,21 @@ pub enum TempoInvalidTransaction {
         reason: String,
     },
 
-    /// Insufficient gas for intrinsic cost.
-    ///
-    /// Tempo transactions have variable intrinsic gas costs based on signature type and nonce usage.
-    /// This error occurs when the gas_limit is less than the calculated intrinsic gas.
-    #[error(
-        "insufficient gas for intrinsic cost: gas_limit {gas_limit} < intrinsic_gas {intrinsic_gas}"
-    )]
-    InsufficientGasForIntrinsicCost {
-        /// The transaction's gas limit.
-        gas_limit: u64,
-        /// The calculated intrinsic gas required.
-        intrinsic_gas: u64,
-    },
-
     /// Nonce manager error.
     #[error("nonce manager error: {0}")]
     NonceManagerError(String),
+
+    /// Expiring nonce transaction missing tempo_tx_env.
+    #[error("expiring nonce transaction requires tempo_tx_env")]
+    ExpiringNonceMissingTxEnv,
+
+    /// Expiring nonce transaction missing valid_before.
+    #[error("expiring nonce transaction requires valid_before to be set")]
+    ExpiringNonceMissingValidBefore,
+
+    /// Expiring nonce transaction must have nonce == 0.
+    #[error("expiring nonce transaction must have nonce == 0")]
+    ExpiringNonceNonceNotZero,
 
     /// Subblock transaction must have zero fee.
     #[error("subblock transaction must have zero fee")]
@@ -103,19 +106,80 @@ pub enum TempoInvalidTransaction {
     #[error("value transfer in Tempo Transaction not allowed")]
     ValueTransferNotAllowedInAATx,
 
-    /// Access key authorization failed.
+    /// Failed to recover access key address from signature.
     ///
-    /// This error occurs when attempting to authorize an access key with the AccountKeychain
-    /// precompile fails (e.g., key already exists, invalid parameters, unauthorized caller).
-    #[error("access key authorization failed: {reason}")]
-    AccessKeyAuthorizationFailed {
-        /// Specific reason for failure.
+    /// This error occurs when attempting to recover the access key address from a Keychain signature fails.
+    #[error("failed to recover access key address from signature")]
+    AccessKeyRecoveryFailed,
+
+    /// Access keys cannot authorize other keys.
+    ///
+    /// Only the root key can authorize new access keys. An access key can only authorize itself
+    /// in a same-transaction authorization flow.
+    #[error("access keys cannot authorize other keys, only the root key can authorize new keys")]
+    AccessKeyCannotAuthorizeOtherKeys,
+
+    /// Failed to recover signer from KeyAuthorization signature.
+    ///
+    /// This error occurs when signature recovery from the KeyAuthorization fails.
+    #[error("failed to recover signer from KeyAuthorization signature")]
+    KeyAuthorizationSignatureRecoveryFailed,
+
+    /// KeyAuthorization not signed by root account.
+    ///
+    /// The KeyAuthorization must be signed by the root account (transaction caller),
+    /// but was signed by a different address.
+    #[error(
+        "KeyAuthorization must be signed by root account {expected}, but was signed by {actual}"
+    )]
+    KeyAuthorizationNotSignedByRoot {
+        /// The expected signer (root account).
+        expected: Address,
+        /// The actual signer recovered from the signature.
+        actual: Address,
+    },
+
+    /// Access key expiry is in the past.
+    ///
+    /// An access key cannot be authorized with an expiry timestamp that has already passed.
+    #[error("access key expiry {expiry} is in the past (current timestamp: {current_timestamp})")]
+    AccessKeyExpiryInPast {
+        /// The expiry timestamp from the KeyAuthorization.
+        expiry: u64,
+        /// The current block timestamp.
+        current_timestamp: u64,
+    },
+
+    /// AccountKeychain precompile error during key authorization.
+    ///
+    /// This error occurs when the AccountKeychain precompile rejects the key authorization
+    /// (e.g., key already exists, invalid parameters).
+    #[error("keychain precompile error: {reason}")]
+    KeychainPrecompileError {
+        /// The error message from the precompile.
         reason: String,
     },
 
-    /// Keychain operations are only supported after Allegretto.
-    #[error("keychain operations are only supported after Allegretto")]
-    KeychainOpBeforeAllegretto,
+    /// Keychain user address does not match transaction caller.
+    ///
+    /// For Keychain signatures, the user_address field must match the transaction caller.
+    #[error("keychain user_address {user_address} does not match transaction caller {caller}")]
+    KeychainUserAddressMismatch {
+        /// The user_address from the Keychain signature.
+        user_address: Address,
+        /// The transaction caller.
+        caller: Address,
+    },
+
+    /// Keychain validation failed.
+    ///
+    /// The access key is not authorized in the AccountKeychain precompile for this user,
+    /// or the key has expired, or spending limits are exceeded.
+    #[error("keychain validation failed: {reason}")]
+    KeychainValidationFailed {
+        /// The validation error details.
+        reason: String,
+    },
 
     /// KeyAuthorization chain_id does not match the current chain.
     #[error("KeyAuthorization chain_id mismatch: expected {expected}, got {got}")]
@@ -126,6 +190,23 @@ pub enum TempoInvalidTransaction {
         got: u64,
     },
 
+    /// Legacy V1 keychain signature is no longer accepted (deprecated at T1C).
+    ///
+    /// V1 keychain signatures do not bind the user address into the signature hash.
+    /// Use V2 keychain signatures instead.
+    #[error("legacy V1 keychain signature is no longer accepted, use V2 (type 0x04)")]
+    LegacyKeychainSignature,
+
+    /// V2 keychain signature used before T1C activation.
+    ///
+    /// V2 signatures (type 0x04) are only valid after the T1C hardfork activates.
+    /// Rejecting them before activation prevents chain splits between upgraded and
+    /// non-upgraded nodes.
+    ///
+    /// TODO(tanishk): This variant can be removed after T1C activation on all networks.
+    #[error("V2 keychain signature (type 0x04) is not valid before T1C activation")]
+    V2KeychainBeforeActivation,
+
     /// Keychain operations are not supported in subblock transactions.
     #[error("keychain operations are not supported in subblock transactions")]
     KeychainOpInSubblockTransaction,
@@ -133,6 +214,94 @@ pub enum TempoInvalidTransaction {
     /// Fee payment error.
     #[error(transparent)]
     CollectFeePreTx(#[from] FeePaymentError),
+
+    /// Tempo transaction validation error from validate_calls().
+    ///
+    /// This wraps validation errors from the shared validate_calls function.
+    #[error("{0}")]
+    CallsValidation(&'static str),
+}
+
+impl TempoInvalidTransaction {
+    /// Returns `true` if this error is deterministic — i.e. the transaction is inherently
+    /// malformed and will never become valid regardless of state changes.
+    ///
+    /// Returns `false` for state-dependent errors (balance, nonce, expiry, liquidity)
+    /// that may resolve as state advances.
+    pub fn is_bad_transaction(&self) -> bool {
+        match self {
+            Self::EthInvalidTransaction(eth) => match eth {
+                InvalidTransaction::PriorityFeeGreaterThanMaxFee
+                | InvalidTransaction::CallGasCostMoreThanGasLimit { .. }
+                | InvalidTransaction::GasFloorMoreThanGasLimit { .. }
+                | InvalidTransaction::CreateInitCodeSizeLimit
+                | InvalidTransaction::InvalidChainId
+                | InvalidTransaction::MissingChainId
+                | InvalidTransaction::AccessListNotSupported
+                | InvalidTransaction::MaxFeePerBlobGasNotSupported
+                | InvalidTransaction::BlobVersionedHashesNotSupported
+                | InvalidTransaction::EmptyBlobs
+                | InvalidTransaction::BlobCreateTransaction
+                | InvalidTransaction::TooManyBlobs { .. }
+                | InvalidTransaction::BlobVersionNotSupported
+                | InvalidTransaction::AuthorizationListNotSupported
+                | InvalidTransaction::AuthorizationListInvalidFields
+                | InvalidTransaction::EmptyAuthorizationList
+                | InvalidTransaction::Eip2930NotSupported
+                | InvalidTransaction::Eip1559NotSupported
+                | InvalidTransaction::Eip4844NotSupported
+                | InvalidTransaction::Eip7702NotSupported
+                | InvalidTransaction::Eip7873NotSupported
+                | InvalidTransaction::Eip7873MissingTarget
+                | InvalidTransaction::OverflowPaymentInTransaction
+                | InvalidTransaction::NonceOverflowInTransaction
+                | InvalidTransaction::TxGasLimitGreaterThanCap { .. } => true,
+
+                InvalidTransaction::GasPriceLessThanBasefee
+                | InvalidTransaction::CallerGasLimitMoreThanBlock
+                | InvalidTransaction::RejectCallerWithCode
+                | InvalidTransaction::LackOfFundForMaxFee { .. }
+                | InvalidTransaction::NonceTooHigh { .. }
+                | InvalidTransaction::NonceTooLow { .. }
+                | InvalidTransaction::BlobGasPriceGreaterThanMax { .. }
+                | InvalidTransaction::Str(_) => false,
+            },
+
+            // Deterministic: tx is inherently malformed.
+            Self::SystemTransactionMustBeCall
+            | Self::SystemTransactionFailed(_)
+            | Self::InvalidFeePayerSignature
+            | Self::SelfSponsoredFeePayer
+            | Self::InvalidP256Signature
+            | Self::InvalidWebAuthnSignature { .. }
+            | Self::AccessKeyRecoveryFailed
+            | Self::AccessKeyCannotAuthorizeOtherKeys
+            | Self::KeyAuthorizationSignatureRecoveryFailed
+            | Self::KeyAuthorizationNotSignedByRoot { .. }
+            | Self::KeychainUserAddressMismatch { .. }
+            | Self::KeyAuthorizationChainIdMismatch { .. }
+            | Self::ValueTransferNotAllowed
+            | Self::ValueTransferNotAllowedInAATx
+            | Self::ExpiringNonceMissingTxEnv
+            | Self::ExpiringNonceMissingValidBefore
+            | Self::ExpiringNonceNonceNotZero
+            | Self::SubblockTransactionMustHaveZeroFee
+            | Self::KeychainOpInSubblockTransaction
+            | Self::LegacyKeychainSignature
+            | Self::CallsValidation(_) => true,
+
+            // State-dependent: may resolve as state advances.
+            Self::ValidAfter { .. }
+            | Self::ValidBefore { .. }
+            | Self::InvalidFeeToken(_)
+            | Self::AccessKeyExpiryInPast { .. }
+            | Self::KeychainPrecompileError { .. }
+            | Self::KeychainValidationFailed { .. }
+            | Self::CollectFeePreTx(_)
+            | Self::NonceManagerError(_)
+            | Self::V2KeychainBeforeActivation => false,
+        }
+    }
 }
 
 impl InvalidTxError for TempoInvalidTransaction {
@@ -154,6 +323,21 @@ impl InvalidTxError for TempoInvalidTransaction {
 impl<DBError> From<TempoInvalidTransaction> for EVMError<DBError, TempoInvalidTransaction> {
     fn from(err: TempoInvalidTransaction) -> Self {
         Self::Transaction(err)
+    }
+}
+
+impl From<&'static str> for TempoInvalidTransaction {
+    fn from(err: &'static str) -> Self {
+        Self::CallsValidation(err)
+    }
+}
+
+impl From<KeychainVersionError> for TempoInvalidTransaction {
+    fn from(err: KeychainVersionError) -> Self {
+        match err {
+            KeychainVersionError::LegacyPostT1C => Self::LegacyKeychainSignature,
+            KeychainVersionError::V2BeforeActivation => Self::V2KeychainBeforeActivation,
+        }
     }
 }
 
@@ -185,6 +369,15 @@ pub enum FeePaymentError {
     /// Other error.
     #[error("{0}")]
     Other(String),
+}
+
+impl From<KeyAuthorizationChainIdError> for TempoInvalidTransaction {
+    fn from(err: KeyAuthorizationChainIdError) -> Self {
+        Self::KeyAuthorizationChainIdMismatch {
+            expected: err.expected,
+            got: err.got,
+        }
+    }
 }
 
 impl<DBError> From<FeePaymentError> for EVMError<DBError, TempoInvalidTransaction> {
@@ -253,5 +446,31 @@ mod tests {
             tempo_err,
             TempoInvalidTransaction::EthInvalidTransaction(_)
         ));
+    }
+
+    #[test]
+    fn test_is_nonce_too_low() {
+        let err = TempoInvalidTransaction::EthInvalidTransaction(InvalidTransaction::NonceTooLow {
+            tx: 1,
+            state: 0,
+        });
+        assert!(err.is_nonce_too_low());
+        assert!(err.as_invalid_tx_err().is_some());
+
+        let err = TempoInvalidTransaction::InvalidFeePayerSignature;
+        assert!(!err.is_nonce_too_low());
+        assert!(err.as_invalid_tx_err().is_none());
+
+        let err = TempoInvalidTransaction::SelfSponsoredFeePayer;
+        assert!(!err.is_nonce_too_low());
+        assert!(err.as_invalid_tx_err().is_none());
+    }
+
+    #[test]
+    fn test_fee_payment_error() {
+        let _: EVMError<(), TempoInvalidTransaction> = FeePaymentError::InsufficientAmmLiquidity {
+            fee: U256::from(1000),
+        }
+        .into();
     }
 }

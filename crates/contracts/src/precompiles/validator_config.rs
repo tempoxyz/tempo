@@ -1,15 +1,15 @@
-use alloy::sol;
+use alloc::string::String;
 
 pub use IValidatorConfig::IValidatorConfigErrors as ValidatorConfigError;
 
-sol! {
+crate::sol! {
     /// Validator config interface for managing consensus validators.
     ///
     /// This precompile manages the set of validators that participate in consensus.
     /// Validators can update their own information, rotate their identity to a new address,
     /// and the owner can manage validator status.
     #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc, abi)]
+    #[sol(abi)]
     interface IValidatorConfig {
         /// Validator information
         struct Validator {
@@ -46,7 +46,14 @@ sol! {
         /// Change validator active status (owner only)
         /// @param validator The validator address
         /// @param active Whether the validator should be active
+        /// @dev Deprecated: Use changeValidatorStatusByIndex to prevent front-running attacks
         function changeValidatorStatus(address validator, bool active) external;
+
+        /// Change validator active status by index (owner only) - T1+
+        /// @param index The validator index in the validators array
+        /// @param active Whether the validator should be active
+        /// @dev Added in T1 to prevent front-running attacks where a validator changes its address
+        function changeValidatorStatusByIndex(uint64 index, bool active) external;
 
         /// Get the owner of the precompile
         /// @return owner The owner address
@@ -56,10 +63,35 @@ sol! {
         /// @param newOwner The new owner address
         function changeOwner(address newOwner) external;
 
+        /// Get the epoch at which a fresh DKG ceremony will be triggered
+        ///
+        /// @return The epoch number. The fresh DKG ceremony runs in epoch N, and epoch N+1 uses the new DKG polynomial.
+        function getNextFullDkgCeremony() external view returns (uint64);
+
+        /// Set the epoch at which a fresh DKG ceremony will be triggered (owner only)
+        ///
+        /// @param epoch The epoch in which to run the fresh DKG ceremony. Epoch N runs the ceremony, and epoch N+1 uses the new DKG polynomial.
+        function setNextFullDkgCeremony(uint64 epoch) external;
+
+        /// Get validator address at a specific index in the validators array
+        /// @param index The index in the validators array
+        /// @return The validator address at the given index
+        function validatorsArray(uint256 index) external view returns (address);
+
+        /// Get validator information by address
+        /// @param validator The validator address to look up
+        /// @return The validator struct for the given address
+        function validators(address validator) external view returns (Validator memory);
+
+        /// Get the total number of validators
+        /// @return The count of validators
+        function validatorCount() external view returns (uint64);
+
         // Errors
         error Unauthorized();
         error ValidatorAlreadyExists();
         error ValidatorNotFound();
+        error InvalidPublicKey();
 
         error NotHostPort(string field, string input, string backtrace);
         error NotIpPort(string field, string input, string backtrace);
@@ -80,6 +112,11 @@ impl ValidatorConfigError {
     /// Creates an error when validator is not found.
     pub const fn validator_not_found() -> Self {
         Self::ValidatorNotFound(IValidatorConfig::ValidatorNotFound {})
+    }
+
+    /// Creates an error when public key is invalid (zero).
+    pub const fn invalid_public_key() -> Self {
+        Self::InvalidPublicKey(IValidatorConfig::InvalidPublicKey {})
     }
 
     pub fn not_host_port(field: String, input: String, backtrace: String) -> Self {

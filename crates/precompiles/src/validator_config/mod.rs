@@ -1,3 +1,8 @@
+//! Validator Config (V1) precompile – manages the on-chain [consensus] validator set.
+//! Will be migrated to Validator Config V2 post T2 hardfork
+//!
+//! [consensus]: <https://docs.tempo.xyz/protocol/blockspace/consensus>
+
 pub mod dispatch;
 
 use tempo_contracts::precompiles::VALIDATOR_CONFIG_ADDRESS;
@@ -5,107 +10,128 @@ pub use tempo_contracts::precompiles::{IValidatorConfig, ValidatorConfigError};
 use tempo_precompiles_macros::{Storable, contract};
 
 use crate::{
-    error::TempoPrecompileError,
-    storage::{Mapping, PrecompileStorageProvider, Slot, VecSlotExt},
+    error::{Result, TempoPrecompileError},
+    ip_validation::ensure_address_is_ip_port,
+    storage::{Handler, Mapping},
 };
-use alloy::primitives::{Address, B256, Bytes};
-use revm::state::Bytecode;
+use alloy::primitives::{Address, B256};
 use tracing::trace;
 
-/// Validator information
+/// On-chain record for a single consensus validator.
 #[derive(Debug, Storable)]
 struct Validator {
+    /// Ed25519 public key (zero ⇒ validator does not exist).
     public_key: B256,
+    /// Whether the validator participates in consensus.
     active: bool,
+    /// Position in the `validators_array` vector.
     index: u64,
+    /// Ethereum address that identifies this validator.
     validator_address: Address,
-    /// Address where other validators can connect to this validator.
-    /// Format: `<hostname|ip>:<port>`
+    /// Address where other validators can connect to this validator. Format: `<hostname|ip>:<port>`
     inbound_address: String,
     /// IP address for firewall whitelisting by other validators.
     /// Format: `<ip>:<port>` - must be an IP address, not a hostname.
     outbound_address: String,
 }
 
-/// Helper type to easily interact with the `validators_array`
-type ValidatorsArray = Slot<Vec<Address>>;
-
-/// Validator Config precompile for managing consensus validators
-#[contract]
+/// Validator Config precompile for managing consensus validators.
+///
+/// The struct fields define the on-chain storage layout; the `#[contract]` macro generates the
+/// storage handlers which provide an ergonomic way to interact with the EVM state.
+#[contract(addr = VALIDATOR_CONFIG_ADDRESS)]
 pub struct ValidatorConfig {
+    /// Contract admin who can add/update/deactivate validators.
     owner: Address,
-    validator_count: u64,
+    /// Ordered list of validator addresses (append-only).
     validators_array: Vec<Address>,
+    /// Validator address → full [`Validator`] record.
     validators: Mapping<Address, Validator>,
+    /// The epoch at which a fresh DKG ceremony will be triggered.
+    next_dkg_ceremony: u64,
 }
 
-impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
-    pub fn new(storage: &'a mut S) -> Self {
-        Self::_new(VALIDATOR_CONFIG_ADDRESS, storage)
-    }
-
-    /// Initialize the precompile with an owner
-    pub fn initialize(&mut self, owner: Address) -> Result<(), TempoPrecompileError> {
+impl ValidatorConfig {
+    /// Initializes the validator config (V1) precompile with an owner.
+    pub fn initialize(&mut self, owner: Address) -> Result<()> {
         trace!(address=%self.address, %owner, "Initializing validator config precompile");
 
         // must ensure the account is not empty, by setting some code
-        self.storage.set_code(
-            self.address,
-            Bytecode::new_legacy(Bytes::from_static(&[0xef])),
-        )?;
-
-        self.sstore_owner(owner)?;
-
-        Ok(())
+        self.__initialize()?;
+        self.owner.write(owner)
     }
 
-    /// Internal helper to get owner
-    pub fn owner(&mut self) -> Result<Address, TempoPrecompileError> {
-        self.sload_owner()
+    /// Returns the current contract owner address.
+    pub fn owner(&self) -> Result<Address> {
+        self.owner.read()
     }
 
-    /// Check if caller is the owner
-    pub fn check_owner(&mut self, caller: Address) -> Result<(), TempoPrecompileError> {
+    /// Returns `Ok(())` if `caller` is the owner, otherwise reverts with `unauthorized`.
+    pub fn check_owner(&self, caller: Address) -> Result<()> {
         if self.owner()? != caller {
             return Err(ValidatorConfigError::unauthorized())?;
         }
+
         Ok(())
     }
 
-    /// Change the owner (owner only)
+    /// Transfers contract ownership to `newOwner`. Owner-only.
+    ///
+    /// # Errors
+    /// - `unauthorized` — if `sender` is not the contract owner
     pub fn change_owner(
         &mut self,
         sender: Address,
         call: IValidatorConfig::changeOwnerCall,
-    ) -> Result<(), TempoPrecompileError> {
+    ) -> Result<()> {
         self.check_owner(sender)?;
-        self.sstore_owner(call.newOwner)
+        self.owner.write(call.newOwner)
     }
 
-    /// Get the current validator count
-    fn validator_count(&mut self) -> Result<u64, TempoPrecompileError> {
-        self.sload_validator_count()
+    /// Returns the total number of registered validators.
+    pub fn validator_count(&self) -> Result<u64> {
+        self.validators_array.len().map(|c| c as u64)
+    }
+
+    /// Returns the validator address stored at `index` in the ordered array.
+    ///
+    /// # Errors
+    /// - `Panic(ArrayOutOfBounds)` — if `index` is out of range
+    pub fn validators_array(&self, index: u64) -> Result<Address> {
+        match self.validators_array.at(index as usize)? {
+            Some(elem) => elem.read(),
+            None => Err(TempoPrecompileError::array_oob()),
+        }
+    }
+
+    /// Returns the full [`IValidatorConfig::Validator`] record for the given address.
+    pub fn validators(&self, validator: Address) -> Result<IValidatorConfig::Validator> {
+        let validator_info = self.validators[validator].read()?;
+        Ok(IValidatorConfig::Validator {
+            publicKey: validator_info.public_key,
+            active: validator_info.active,
+            index: validator_info.index,
+            validatorAddress: validator_info.validator_address,
+            inboundAddress: validator_info.inbound_address,
+            outboundAddress: validator_info.outbound_address,
+        })
     }
 
     /// Check if a validator exists by checking if their publicKey is non-zero
     /// Since ed25519 keys cannot be zero, this is a reliable existence check
-    fn validator_exists(&mut self, validator: Address) -> Result<bool, TempoPrecompileError> {
-        let validator = self.sload_validators(validator)?;
+    fn validator_exists(&self, validator: Address) -> Result<bool> {
+        let validator = self.validators[validator].read()?;
         Ok(!validator.public_key.is_zero())
     }
 
-    /// Get all validators (view function)
-    pub fn get_validators(
-        &mut self,
-        _call: IValidatorConfig::getValidatorsCall,
-    ) -> Result<Vec<IValidatorConfig::Validator>, TempoPrecompileError> {
-        let count = self.validator_count()?;
+    /// Returns all registered validators in index order.
+    pub fn get_validators(&self) -> Result<Vec<IValidatorConfig::Validator>> {
+        let count = self.validators_array.len()?;
         let mut validators = Vec::new();
 
-        let validators_array = ValidatorsArray::new(slots::VALIDATORS_ARRAY);
         for i in 0..count {
             // Read validator address from the array at index i
-            let validator_address = validators_array.read_at(self, i as usize)?;
+            let validator_address = self.validators_array[i].read()?;
 
             let Validator {
                 public_key,
@@ -114,7 +140,7 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
                 validator_address: _,
                 inbound_address,
                 outbound_address,
-            } = self.sload_validators(validator_address)?;
+            } = self.validators[validator_address].read()?;
 
             validators.push(IValidatorConfig::Validator {
                 publicKey: public_key,
@@ -129,12 +155,27 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
         Ok(validators)
     }
 
-    /// Add a new validator (owner only)
+    /// Registers a new validator with the given key, addresses, and status. Owner-only.
+    ///
+    /// Validates the public key, checks for duplicates, and ensures both inbound and outbound
+    /// addresses are valid `<ip>:<port>` pairs before appending to the registry.
+    ///
+    /// # Errors
+    /// - `invalid_public_key` — if `publicKey` is zero (sentinel for non-existence)
+    /// - `unauthorized` — if `sender` is not the contract owner
+    /// - `validator_already_exists` — if a validator with `newValidatorAddress` already exists
+    /// - `not_host_port` — if `inboundAddress` is not a valid `<ip>:<port>`
+    /// - `not_ip_port` — if `outboundAddress` is not a valid `<ip>:<port>`
     pub fn add_validator(
         &mut self,
         sender: Address,
         call: IValidatorConfig::addValidatorCall,
-    ) -> Result<(), TempoPrecompileError> {
+    ) -> Result<()> {
+        // Reject zero public key - zero is used as sentinel value for non-existence
+        if call.publicKey.is_zero() {
+            return Err(ValidatorConfigError::invalid_public_key())?;
+        }
+
         // Only owner can create validators
         self.check_owner(sender)?;
 
@@ -143,22 +184,40 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
             return Err(ValidatorConfigError::validator_already_exists())?;
         }
 
-        // Validate addresses
-        ensure_address_is_ip_port(&call.inboundAddress).map_err(|err| {
-            ValidatorConfigError::not_host_port(
-                "inboundAddress".to_string(),
-                call.inboundAddress.clone(),
-                format!("{err:?}"),
-            )
-        })?;
-
-        ensure_address_is_ip_port(&call.outboundAddress).map_err(|err| {
-            ValidatorConfigError::not_ip_port(
-                "outboundAddress".to_string(),
-                call.outboundAddress.clone(),
-                format!("{err:?}"),
-            )
-        })?;
+        // Validate addresses.
+        // T2+: use stable Display formatting for errors.
+        // Pre-T2: preserve legacy Debug formatting for consensus compatibility.
+        if self.storage.spec().is_t2() {
+            ensure_address_is_ip_port(&call.inboundAddress).map_err(|err| {
+                ValidatorConfigError::not_host_port(
+                    "inboundAddress".to_string(),
+                    call.inboundAddress.clone(),
+                    err.to_string(),
+                )
+            })?;
+            ensure_address_is_ip_port(&call.outboundAddress).map_err(|err| {
+                ValidatorConfigError::not_ip_port(
+                    "outboundAddress".to_string(),
+                    call.outboundAddress.clone(),
+                    err.to_string(),
+                )
+            })?;
+        } else {
+            ensure_address_is_ip_port(&call.inboundAddress).map_err(|err| {
+                ValidatorConfigError::not_host_port(
+                    "inboundAddress".to_string(),
+                    call.inboundAddress.clone(),
+                    format!("{err:?}"),
+                )
+            })?;
+            ensure_address_is_ip_port(&call.outboundAddress).map_err(|err| {
+                ValidatorConfigError::not_ip_port(
+                    "outboundAddress".to_string(),
+                    call.outboundAddress.clone(),
+                    format!("{err:?}"),
+                )
+            })?;
+        }
 
         // Store the new validator in the validators mapping
         let count = self.validator_count()?;
@@ -170,34 +229,50 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
             inbound_address: call.inboundAddress,
             outbound_address: call.outboundAddress,
         };
-        self.sstore_validators(call.newValidatorAddress, validator)?;
+        self.validators[call.newValidatorAddress].write(validator)?;
 
-        // Add the validator public key to the validators array
-        ValidatorsArray::new(slots::VALIDATORS_ARRAY).push(self, call.newValidatorAddress)?;
-
-        // Increment the validator count
-        self.sstore_validator_count(
-            count
-                .checked_add(1)
-                .ok_or(TempoPrecompileError::under_overflow())?,
-        )?;
-
-        Ok(())
+        // Add the validator address to the validators array
+        self.validators_array.push(call.newValidatorAddress)
     }
 
-    /// Update validator information (and optionally rotate to new address)
+    /// Updates validator information and optionally rotates to a new address.
+    ///
+    /// If `newValidatorAddress` differs from `sender`, the old record is cleared and the array
+    /// entry is updated to point at the new address.
+    ///
+    /// # Security Note
+    ///
+    /// The field `validator_address` must never be set to a user-controllable address.
+    ///
+    /// This function allows validators to update their own public key mid-epoch, which could
+    /// cause a chain halt at the next epoch boundary if exploited (the DKG manager panics when
+    /// the original key stored in the boundary header cannot be mapped to the modified registry).
+    /// By setting validator addresses to non-user-controllable addresses in the genesis config,
+    /// only the contract owner (admin) can effectively call this function.
+    ///
+    /// # Errors
+    /// - `invalid_public_key` — if `publicKey` is zero (sentinel for non-existence)
+    /// - `validator_not_found` — if `sender` is not a registered validator
+    /// - `validator_already_exists` — if rotating to an address that already has a validator
+    /// - `not_host_port` — if `inboundAddress` is not a valid `<ip>:<port>`
+    /// - `not_ip_port` — if `outboundAddress` is not a valid `<ip>:<port>`
     pub fn update_validator(
         &mut self,
         sender: Address,
         call: IValidatorConfig::updateValidatorCall,
-    ) -> Result<(), TempoPrecompileError> {
+    ) -> Result<()> {
+        // Reject zero public key - zero is used as sentinel value for non-existence
+        if call.publicKey.is_zero() {
+            return Err(ValidatorConfigError::invalid_public_key())?;
+        }
+
         // Validator can update their own info
         if !self.validator_exists(sender)? {
             return Err(ValidatorConfigError::validator_not_found())?;
         }
 
         // Load the current validator info
-        let old_validator = self.sload_validators(sender)?;
+        let old_validator = self.validators[sender].read()?;
 
         // Check if rotating to a new address
         if call.newValidatorAddress != sender {
@@ -206,31 +281,43 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
             }
 
             // Update the validators array to point at the new validator address
-            ValidatorsArray::new(slots::VALIDATORS_ARRAY).write_at(
-                self,
-                old_validator.index as usize,
-                call.newValidatorAddress,
-            )?;
+            self.validators_array[old_validator.index as usize].write(call.newValidatorAddress)?;
 
             // Clear the old validator
-            self.clear_validators(sender)?;
+            self.validators[sender].delete()?;
         }
 
-        ensure_address_is_ip_port(&call.inboundAddress).map_err(|err| {
-            ValidatorConfigError::not_host_port(
-                "inboundAddress".to_string(),
-                call.inboundAddress.clone(),
-                format!("{err:?}"),
-            )
-        })?;
-
-        ensure_address_is_ip_port(&call.outboundAddress).map_err(|err| {
-            ValidatorConfigError::not_ip_port(
-                "outboundAddress".to_string(),
-                call.outboundAddress.clone(),
-                format!("{err:?}"),
-            )
-        })?;
+        if self.storage.spec().is_t2() {
+            ensure_address_is_ip_port(&call.inboundAddress).map_err(|err| {
+                ValidatorConfigError::not_host_port(
+                    "inboundAddress".to_string(),
+                    call.inboundAddress.clone(),
+                    err.to_string(),
+                )
+            })?;
+            ensure_address_is_ip_port(&call.outboundAddress).map_err(|err| {
+                ValidatorConfigError::not_ip_port(
+                    "outboundAddress".to_string(),
+                    call.outboundAddress.clone(),
+                    err.to_string(),
+                )
+            })?;
+        } else {
+            ensure_address_is_ip_port(&call.inboundAddress).map_err(|err| {
+                ValidatorConfigError::not_host_port(
+                    "inboundAddress".to_string(),
+                    call.inboundAddress.clone(),
+                    format!("{err:?}"),
+                )
+            })?;
+            ensure_address_is_ip_port(&call.outboundAddress).map_err(|err| {
+                ValidatorConfigError::not_ip_port(
+                    "outboundAddress".to_string(),
+                    call.outboundAddress.clone(),
+                    format!("{err:?}"),
+                )
+            })?;
+        }
 
         let updated_validator = Validator {
             public_key: call.publicKey,
@@ -241,191 +328,211 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
             outbound_address: call.outboundAddress,
         };
 
-        self.sstore_validators(call.newValidatorAddress, updated_validator)?;
-
-        Ok(())
+        self.validators[call.newValidatorAddress].write(updated_validator)
     }
 
-    /// Change validator active status (owner only)
+    /// Sets a validator's active flag by address. Owner-only.
+    ///
+    /// Deprecated: prefer [`Self::change_validator_status_by_index`] to prevent front-running.
+    ///
+    /// # Errors
+    /// - `unauthorized` — if `sender` is not the contract owner
+    /// - `validator_not_found` — if no validator exists at `call.validator`
     pub fn change_validator_status(
         &mut self,
         sender: Address,
         call: IValidatorConfig::changeValidatorStatusCall,
-    ) -> Result<(), TempoPrecompileError> {
+    ) -> Result<()> {
         self.check_owner(sender)?;
 
         if !self.validator_exists(call.validator)? {
             return Err(ValidatorConfigError::validator_not_found())?;
         }
 
-        let mut validator = self.sload_validators(call.validator)?;
+        let mut validator = self.validators[call.validator].read()?;
         validator.active = call.active;
-        self.sstore_validators(call.validator, validator)?;
-
-        Ok(())
+        self.validators[call.validator].write(validator)
     }
-}
 
-#[derive(Debug, thiserror::Error)]
-#[error("input was not of the form `<ip>:<port>`")]
-pub struct IpWithPortParseError {
-    #[from]
-    source: std::net::AddrParseError,
-}
+    /// Sets a validator's active flag by array index. Owner-only, T1+.
+    ///
+    /// Added in T1 to prevent front-running attacks where a validator rotates its address.
+    ///
+    /// # Errors
+    /// - `unauthorized` — if `sender` is not the contract owner
+    /// - `validator_not_found` — if `call.index` is out of bounds
+    pub fn change_validator_status_by_index(
+        &mut self,
+        sender: Address,
+        call: IValidatorConfig::changeValidatorStatusByIndexCall,
+    ) -> Result<()> {
+        self.check_owner(sender)?;
 
-pub fn ensure_address_is_ip_port(input: &str) -> Result<(), IpWithPortParseError> {
-    // Only accept IP addresses (v4 or v6) with port
-    input.parse::<std::net::SocketAddr>()?;
-    Ok(())
+        // Look up validator address by index
+        let validator_address = match self.validators_array.at(call.index as usize)? {
+            Some(elem) => elem.read()?,
+            None => return Err(ValidatorConfigError::validator_not_found())?,
+        };
+
+        let mut validator = self.validators[validator_address].read()?;
+        validator.active = call.active;
+        self.validators[validator_address].write(validator)
+    }
+
+    /// Returns the epoch at which a fresh DKG ceremony will be triggered.
+    ///
+    /// The fresh DKG ceremony runs in epoch N, and epoch N+1 uses the new DKG polynomial.
+    pub fn get_next_full_dkg_ceremony(&self) -> Result<u64> {
+        self.next_dkg_ceremony.read()
+    }
+
+    /// Alias for [`Self::get_next_full_dkg_ceremony`].
+    pub fn next_dkg_ceremony(&self) -> Result<u64> {
+        self.next_dkg_ceremony.read()
+    }
+
+    /// Sets the epoch at which a fresh DKG ceremony will be triggered. Owner-only.
+    ///
+    /// Epoch N runs the ceremony, and epoch N+1 uses the new DKG polynomial.
+    ///
+    /// # Errors
+    /// - `unauthorized` — if `sender` is not the contract owner
+    pub fn set_next_full_dkg_ceremony(
+        &mut self,
+        sender: Address,
+        call: IValidatorConfig::setNextFullDkgCeremonyCall,
+    ) -> Result<()> {
+        self.check_owner(sender)?;
+        self.next_dkg_ceremony.write(call.epoch)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::hashmap::HashMapStorageProvider;
+    use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
     use alloy::primitives::Address;
     use alloy_primitives::FixedBytes;
 
     #[test]
-    fn test_owner_initialization_and_change() {
+    fn test_owner_initialization_and_change() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let owner1 = Address::from([0x11; 20]);
-        let owner2 = Address::from([0x22; 20]);
+        let owner1 = Address::random();
+        let owner2 = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut validator_config = ValidatorConfig::new();
 
-        let mut validator_config = ValidatorConfig::new(&mut storage);
+            // Initialize with owner1
+            validator_config.initialize(owner1)?;
 
-        // Initialize with owner1
-        validator_config.initialize(owner1).unwrap();
+            // Check that owner is owner1
+            let current_owner = validator_config.owner()?;
+            assert_eq!(
+                current_owner, owner1,
+                "Owner should be owner1 after initialization"
+            );
 
-        // Check that owner is owner1
-        let current_owner = validator_config.owner().unwrap();
-        assert_eq!(
-            current_owner, owner1,
-            "Owner should be owner1 after initialization"
-        );
-
-        // Change owner to owner2
-        validator_config
-            .change_owner(
+            // Change owner to owner2
+            validator_config.change_owner(
                 owner1,
                 IValidatorConfig::changeOwnerCall { newOwner: owner2 },
-            )
-            .expect("Should change owner");
+            )?;
 
-        // Check that owner is now owner2
-        let current_owner = validator_config.owner().unwrap();
-        assert_eq!(current_owner, owner2, "Owner should be owner2 after change");
+            // Check that owner is now owner2
+            let current_owner = validator_config.owner()?;
+            assert_eq!(current_owner, owner2, "Owner should be owner2 after change");
+
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_owner_only_functions() {
+    fn test_owner_only_functions() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let owner1 = Address::from([0x11; 20]);
-        let owner2 = Address::from([0x22; 20]);
-        let validator1 = Address::from([0x33; 20]);
+        let owner1 = Address::random();
+        let owner2 = Address::random();
+        let validator1 = Address::random();
+        let validator2 = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut validator_config = ValidatorConfig::new();
 
-        let mut validator_config = ValidatorConfig::new(&mut storage);
+            // Initialize with owner1
+            validator_config.initialize(owner1)?;
 
-        // Initialize with owner1
-        validator_config.initialize(owner1).unwrap();
+            // Owner1 adds a validator - should succeed
+            let public_key = FixedBytes::<32>::from([0x44; 32]);
+            validator_config.add_validator(
+                owner1,
+                IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: validator1,
+                    publicKey: public_key,
+                    inboundAddress: "192.168.1.1:8000".to_string(),
+                    active: true,
+                    outboundAddress: "192.168.1.1:9000".to_string(),
+                },
+            )?;
 
-        // Owner1 adds a validator - should succeed
-        let public_key = FixedBytes::<32>::from([0x44; 32]);
-        let result = validator_config.add_validator(
-            owner1,
-            IValidatorConfig::addValidatorCall {
-                newValidatorAddress: validator1,
-                publicKey: public_key,
-                inboundAddress: "192.168.1.1:8000".to_string(),
-                active: true,
-                outboundAddress: "192.168.1.1:9000".to_string(),
-            },
-        );
-        assert!(result.is_ok(), "Owner should be able to add validator");
+            // Verify validator was added
+            let validators = validator_config.get_validators()?;
+            assert_eq!(validators.len(), 1, "Should have 1 validator");
+            assert_eq!(validators[0].validatorAddress, validator1);
+            assert_eq!(validators[0].publicKey, public_key);
+            assert!(validators[0].active, "New validator should be active");
 
-        // Verify validator was added
-        let validators = validator_config
-            .get_validators(IValidatorConfig::getValidatorsCall {})
-            .expect("Should get validators");
-        assert_eq!(validators.len(), 1, "Should have 1 validator");
-        assert_eq!(validators[0].validatorAddress, validator1);
-        assert_eq!(validators[0].publicKey, public_key);
-        assert!(validators[0].active, "New validator should be active");
+            // Owner1 changes validator status - should succeed
+            validator_config.change_validator_status(
+                owner1,
+                IValidatorConfig::changeValidatorStatusCall {
+                    validator: validator1,
+                    active: false,
+                },
+            )?;
 
-        // Owner1 changes validator status - should succeed
-        let result = validator_config.change_validator_status(
-            owner1,
-            IValidatorConfig::changeValidatorStatusCall {
-                validator: validator1,
-                active: false,
-            },
-        );
-        assert!(
-            result.is_ok(),
-            "Owner should be able to change validator status"
-        );
+            // Verify status was changed
+            let validators = validator_config.get_validators()?;
+            assert!(!validators[0].active, "Validator should be inactive");
 
-        // Verify status was changed
-        let validators = validator_config
-            .get_validators(IValidatorConfig::getValidatorsCall {})
-            .expect("Should get validators");
-        assert!(!validators[0].active, "Validator should be inactive");
+            // Owner2 (non-owner) tries to add validator - should fail
+            let res = validator_config.add_validator(
+                owner2,
+                IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: validator2,
+                    publicKey: FixedBytes::<32>::from([0x66; 32]),
+                    inboundAddress: "192.168.1.2:8000".to_string(),
+                    active: true,
+                    outboundAddress: "192.168.1.2:9000".to_string(),
+                },
+            );
+            assert_eq!(res, Err(ValidatorConfigError::unauthorized().into()));
 
-        // Owner2 (non-owner) tries to add validator - should fail
-        let validator2 = Address::from([0x55; 20]);
-        let result = validator_config.add_validator(
-            owner2,
-            IValidatorConfig::addValidatorCall {
-                newValidatorAddress: validator2,
-                publicKey: FixedBytes::<32>::from([0x66; 32]),
-                inboundAddress: "192.168.1.2:8000".to_string(),
-                active: true,
-                outboundAddress: "192.168.1.2:9000".to_string(),
-            },
-        );
-        assert!(
-            result.is_err(),
-            "Non-owner should not be able to add validator"
-        );
-        assert_eq!(
-            result.unwrap_err(),
-            ValidatorConfigError::unauthorized().into(),
-            "Should return Unauthorized error"
-        );
+            // Owner2 (non-owner) tries to change validator status - should fail
+            let res = validator_config.change_validator_status(
+                owner2,
+                IValidatorConfig::changeValidatorStatusCall {
+                    validator: validator1,
+                    active: true,
+                },
+            );
+            assert_eq!(res, Err(ValidatorConfigError::unauthorized().into()));
 
-        // Owner2 (non-owner) tries to change validator status - should fail
-        let result = validator_config.change_validator_status(
-            owner2,
-            IValidatorConfig::changeValidatorStatusCall {
-                validator: validator1,
-                active: true,
-            },
-        );
-        assert!(
-            result.is_err(),
-            "Non-owner should not be able to change validator status"
-        );
-        assert_eq!(
-            result.unwrap_err(),
-            ValidatorConfigError::unauthorized().into(),
-            "Should return Unauthorized error"
-        );
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_validator_lifecycle() {
+    fn test_validator_lifecycle() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let owner = Address::from([0x01; 20]);
+        StorageCtx::enter(&mut storage, || {
+            let owner = Address::from([0x01; 20]);
 
-        let mut validator_config = ValidatorConfig::new(&mut storage);
-        validator_config.initialize(owner).unwrap();
+            let mut validator_config = ValidatorConfig::new();
+            validator_config.initialize(owner)?;
 
-        let validator1 = Address::from([0x11; 20]);
-        let public_key1 = FixedBytes::<32>::from([0x21; 32]);
-        let inbound1 = "192.168.1.1:8000".to_string();
-        let outbound1 = "192.168.1.1:9000".to_string();
-        validator_config
-            .add_validator(
+            let validator1 = Address::from([0x11; 20]);
+            let public_key1 = FixedBytes::<32>::from([0x21; 32]);
+            let inbound1 = "192.168.1.1:8000".to_string();
+            let outbound1 = "192.168.1.1:9000".to_string();
+            validator_config.add_validator(
                 owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator1,
@@ -434,32 +541,29 @@ mod tests {
                     active: true,
                     outboundAddress: outbound1,
                 },
-            )
-            .expect("should add validator1");
+            )?;
 
-        // Try adding duplicate validator - should fail
-        let result = validator_config.add_validator(
-            owner,
-            IValidatorConfig::addValidatorCall {
-                newValidatorAddress: validator1,
-                publicKey: FixedBytes::<32>::from([0x22; 32]),
-                inboundAddress: "192.168.1.1:8000".to_string(),
-                active: true,
-                outboundAddress: "192.168.1.1:9000".to_string(),
-            },
-        );
-        assert!(result.is_err(), "Should not allow duplicate validator");
-        assert_eq!(
-            result.unwrap_err(),
-            ValidatorConfigError::validator_already_exists().into(),
-            "Should return ValidatorAlreadyExists error"
-        );
+            // Try adding duplicate validator - should fail
+            let result = validator_config.add_validator(
+                owner,
+                IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: validator1,
+                    publicKey: FixedBytes::<32>::from([0x22; 32]),
+                    inboundAddress: "192.168.1.1:8000".to_string(),
+                    active: true,
+                    outboundAddress: "192.168.1.1:9000".to_string(),
+                },
+            );
+            assert_eq!(
+                result,
+                Err(ValidatorConfigError::validator_already_exists().into()),
+                "Should return ValidatorAlreadyExists error"
+            );
 
-        // Add 4 more unique validators
-        let validator2 = Address::from([0x12; 20]);
-        let public_key2 = FixedBytes::<32>::from([0x22; 32]);
-        validator_config
-            .add_validator(
+            // Add 4 more unique validators
+            let validator2 = Address::from([0x12; 20]);
+            let public_key2 = FixedBytes::<32>::from([0x22; 32]);
+            validator_config.add_validator(
                 owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator2,
@@ -468,13 +572,11 @@ mod tests {
                     active: true,
                     outboundAddress: "192.168.1.2:9000".to_string(),
                 },
-            )
-            .expect("Should add validator2");
+            )?;
 
-        let validator3 = Address::from([0x13; 20]);
-        let public_key3 = FixedBytes::<32>::from([0x23; 32]);
-        validator_config
-            .add_validator(
+            let validator3 = Address::from([0x13; 20]);
+            let public_key3 = FixedBytes::<32>::from([0x23; 32]);
+            validator_config.add_validator(
                 owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator3,
@@ -483,13 +585,11 @@ mod tests {
                     active: false,
                     outboundAddress: "192.168.1.3:9000".to_string(),
                 },
-            )
-            .expect("Should add validator3");
+            )?;
 
-        let validator4 = Address::from([0x14; 20]);
-        let public_key4 = FixedBytes::<32>::from([0x24; 32]);
-        validator_config
-            .add_validator(
+            let validator4 = Address::from([0x14; 20]);
+            let public_key4 = FixedBytes::<32>::from([0x24; 32]);
+            validator_config.add_validator(
                 owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator4,
@@ -498,13 +598,11 @@ mod tests {
                     active: true,
                     outboundAddress: "192.168.1.4:9000".to_string(),
                 },
-            )
-            .expect("Should add validator4");
+            )?;
 
-        let validator5 = Address::from([0x15; 20]);
-        let public_key5 = FixedBytes::<32>::from([0x25; 32]);
-        validator_config
-            .add_validator(
+            let validator5 = Address::from([0x15; 20]);
+            let public_key5 = FixedBytes::<32>::from([0x25; 32]);
+            validator_config.add_validator(
                 owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator5,
@@ -513,52 +611,48 @@ mod tests {
                     active: true,
                     outboundAddress: "192.168.1.5:9000".to_string(),
                 },
-            )
-            .expect("Should add validator5");
+            )?;
 
-        // Get all validators
-        let mut validators = validator_config
-            .get_validators(IValidatorConfig::getValidatorsCall {})
-            .expect("Should get validators");
+            // Get all validators
+            let mut validators = validator_config.get_validators()?;
 
-        // Verify count
-        assert_eq!(validators.len(), 5, "Should have 5 validators");
+            // Verify count
+            assert_eq!(validators.len(), 5, "Should have 5 validators");
 
-        // Sort by validator address for consistent checking
-        validators.sort_by_key(|v| v.validatorAddress);
+            // Sort by validator address for consistent checking
+            validators.sort_by_key(|v| v.validatorAddress);
 
-        // Verify each validator
-        assert_eq!(validators[0].validatorAddress, validator1);
-        assert_eq!(validators[0].publicKey, public_key1);
-        assert_eq!(validators[0].inboundAddress, inbound1);
-        assert!(validators[0].active);
+            // Verify each validator
+            assert_eq!(validators[0].validatorAddress, validator1);
+            assert_eq!(validators[0].publicKey, public_key1);
+            assert_eq!(validators[0].inboundAddress, inbound1);
+            assert!(validators[0].active);
 
-        assert_eq!(validators[1].validatorAddress, validator2);
-        assert_eq!(validators[1].publicKey, public_key2);
-        assert_eq!(validators[1].inboundAddress, "192.168.1.2:8000");
-        assert!(validators[1].active);
+            assert_eq!(validators[1].validatorAddress, validator2);
+            assert_eq!(validators[1].publicKey, public_key2);
+            assert_eq!(validators[1].inboundAddress, "192.168.1.2:8000");
+            assert!(validators[1].active);
 
-        assert_eq!(validators[2].validatorAddress, validator3);
-        assert_eq!(validators[2].publicKey, public_key3);
-        assert_eq!(validators[2].inboundAddress, "192.168.1.3:8000");
-        assert!(!validators[2].active);
+            assert_eq!(validators[2].validatorAddress, validator3);
+            assert_eq!(validators[2].publicKey, public_key3);
+            assert_eq!(validators[2].inboundAddress, "192.168.1.3:8000");
+            assert!(!validators[2].active);
 
-        assert_eq!(validators[3].validatorAddress, validator4);
-        assert_eq!(validators[3].publicKey, public_key4);
-        assert_eq!(validators[3].inboundAddress, "192.168.1.4:8000");
-        assert!(validators[3].active);
+            assert_eq!(validators[3].validatorAddress, validator4);
+            assert_eq!(validators[3].publicKey, public_key4);
+            assert_eq!(validators[3].inboundAddress, "192.168.1.4:8000");
+            assert!(validators[3].active);
 
-        assert_eq!(validators[4].validatorAddress, validator5);
-        assert_eq!(validators[4].publicKey, public_key5);
-        assert_eq!(validators[4].inboundAddress, "192.168.1.5:8000");
-        assert!(validators[4].active);
+            assert_eq!(validators[4].validatorAddress, validator5);
+            assert_eq!(validators[4].publicKey, public_key5);
+            assert_eq!(validators[4].inboundAddress, "192.168.1.5:8000");
+            assert!(validators[4].active);
 
-        // Validator1 updates from long to short address (tests update_string slot clearing)
-        let public_key1_new = FixedBytes::<32>::from([0x31; 32]);
-        let short_inbound1 = "10.0.0.1:8000".to_string();
-        let short_outbound1 = "10.0.0.1:9000".to_string();
-        validator_config
-            .update_validator(
+            // Validator1 updates from long to short address (tests update_string slot clearing)
+            let public_key1_new = FixedBytes::<32>::from([0x31; 32]);
+            let short_inbound1 = "10.0.0.1:8000".to_string();
+            let short_outbound1 = "10.0.0.1:9000".to_string();
+            validator_config.update_validator(
                 validator1,
                 IValidatorConfig::updateValidatorCall {
                     newValidatorAddress: validator1,
@@ -566,13 +660,11 @@ mod tests {
                     inboundAddress: short_inbound1.clone(),
                     outboundAddress: short_outbound1,
                 },
-            )
-            .expect("Should update validator1");
+            )?;
 
-        // Validator2 rotates to new address, keeps IP and publicKey
-        let validator2_new = Address::from([0x22; 20]);
-        validator_config
-            .update_validator(
+            // Validator2 rotates to new address, keeps IP and publicKey
+            let validator2_new = Address::from([0x22; 20]);
+            validator_config.update_validator(
                 validator2,
                 IValidatorConfig::updateValidatorCall {
                     newValidatorAddress: validator2_new,
@@ -580,15 +672,13 @@ mod tests {
                     inboundAddress: "192.168.1.2:8000".to_string(),
                     outboundAddress: "192.168.1.2:9000".to_string(),
                 },
-            )
-            .expect("Should rotate validator2 address");
+            )?;
 
-        // Validator3 rotates to new address with long host (tests delete_string on old slot)
-        let validator3_new = Address::from([0x23; 20]);
-        let long_inbound3 = "192.169.1.3:8000".to_string();
-        let long_outbound3 = "192.168.1.3:9000".to_string();
-        validator_config
-            .update_validator(
+            // Validator3 rotates to new address with long host (tests delete_string on old slot)
+            let validator3_new = Address::from([0x23; 20]);
+            let long_inbound3 = "192.169.1.3:8000".to_string();
+            let long_outbound3 = "192.168.1.3:9000".to_string();
+            validator_config.update_validator(
                 validator3,
                 IValidatorConfig::updateValidatorCall {
                     newValidatorAddress: validator3_new,
@@ -596,82 +686,81 @@ mod tests {
                     inboundAddress: long_inbound3.clone(),
                     outboundAddress: long_outbound3,
                 },
-            )
-            .expect("Should rotate validator3 address and update IP");
+            )?;
 
-        // Get all validators again
-        let mut validators = validator_config
-            .get_validators(IValidatorConfig::getValidatorsCall {})
-            .expect("Should get validators");
+            // Get all validators again
+            let mut validators = validator_config.get_validators()?;
 
-        // Should still have 5 validators
-        assert_eq!(validators.len(), 5, "Should still have 5 validators");
+            // Should still have 5 validators
+            assert_eq!(validators.len(), 5, "Should still have 5 validators");
 
-        // Sort by validator address
-        validators.sort_by_key(|v| v.validatorAddress);
+            // Sort by validator address
+            validators.sort_by_key(|v| v.validatorAddress);
 
-        // Verify validator1 - updated from long to short address
-        assert_eq!(validators[0].validatorAddress, validator1);
-        assert_eq!(
-            validators[0].publicKey, public_key1_new,
-            "PublicKey should be updated"
-        );
-        assert_eq!(
-            validators[0].inboundAddress, short_inbound1,
-            "Address should be updated to short"
-        );
-        assert!(validators[0].active);
+            // Verify validator1 - updated from long to short address
+            assert_eq!(validators[0].validatorAddress, validator1);
+            assert_eq!(
+                validators[0].publicKey, public_key1_new,
+                "PublicKey should be updated"
+            );
+            assert_eq!(
+                validators[0].inboundAddress, short_inbound1,
+                "Address should be updated to short"
+            );
+            assert!(validators[0].active);
 
-        // Verify validator4 - unchanged
-        assert_eq!(validators[1].validatorAddress, validator4);
-        assert_eq!(validators[1].publicKey, public_key4);
-        assert_eq!(validators[1].inboundAddress, "192.168.1.4:8000");
-        assert!(validators[1].active);
+            // Verify validator4 - unchanged
+            assert_eq!(validators[1].validatorAddress, validator4);
+            assert_eq!(validators[1].publicKey, public_key4);
+            assert_eq!(validators[1].inboundAddress, "192.168.1.4:8000");
+            assert!(validators[1].active);
 
-        // Verify validator5 - unchanged
-        assert_eq!(validators[2].validatorAddress, validator5);
-        assert_eq!(validators[2].publicKey, public_key5);
-        assert_eq!(validators[2].inboundAddress, "192.168.1.5:8000");
-        assert!(validators[2].active);
+            // Verify validator5 - unchanged
+            assert_eq!(validators[2].validatorAddress, validator5);
+            assert_eq!(validators[2].publicKey, public_key5);
+            assert_eq!(validators[2].inboundAddress, "192.168.1.5:8000");
+            assert!(validators[2].active);
 
-        // Verify validator2_new - rotated address, kept IP and publicKey
-        assert_eq!(validators[3].validatorAddress, validator2_new);
-        assert_eq!(
-            validators[3].publicKey, public_key2,
-            "PublicKey should be same"
-        );
-        assert_eq!(
-            validators[3].inboundAddress, "192.168.1.2:8000",
-            "IP should be same"
-        );
-        assert!(validators[3].active);
+            // Verify validator2_new - rotated address, kept IP and publicKey
+            assert_eq!(validators[3].validatorAddress, validator2_new);
+            assert_eq!(
+                validators[3].publicKey, public_key2,
+                "PublicKey should be same"
+            );
+            assert_eq!(
+                validators[3].inboundAddress, "192.168.1.2:8000",
+                "IP should be same"
+            );
+            assert!(validators[3].active);
 
-        // Verify validator3_new - rotated address with long host, kept publicKey
-        assert_eq!(validators[4].validatorAddress, validator3_new);
-        assert_eq!(
-            validators[4].publicKey, public_key3,
-            "PublicKey should be same"
-        );
-        assert_eq!(
-            validators[4].inboundAddress, long_inbound3,
-            "Address should be updated to long"
-        );
-        assert!(!validators[4].active);
+            // Verify validator3_new - rotated address with long host, kept publicKey
+            assert_eq!(validators[4].validatorAddress, validator3_new);
+            assert_eq!(
+                validators[4].publicKey, public_key3,
+                "PublicKey should be same"
+            );
+            assert_eq!(
+                validators[4].inboundAddress, long_inbound3,
+                "Address should be updated to long"
+            );
+            assert!(!validators[4].active);
+
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_owner_cannot_update_validator() {
+    fn test_owner_cannot_update_validator() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let owner = Address::from([0x01; 20]);
-        let validator = Address::from([0x11; 20]);
+        let owner = Address::random();
+        let validator = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut validator_config = ValidatorConfig::new();
+            validator_config.initialize(owner)?;
 
-        let mut validator_config = ValidatorConfig::new(&mut storage);
-        validator_config.initialize(owner).unwrap();
-
-        // Owner adds a validator
-        let public_key = FixedBytes::<32>::from([0x21; 32]);
-        validator_config
-            .add_validator(
+            // Owner adds a validator
+            let public_key = FixedBytes::<32>::from([0x21; 32]);
+            validator_config.add_validator(
                 owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator,
@@ -680,48 +769,45 @@ mod tests {
                     active: true,
                     outboundAddress: "192.168.1.1:9000".to_string(),
                 },
-            )
-            .expect("Should add validator");
+            )?;
 
-        // Owner tries to update validator - should fail
-        let result = validator_config.update_validator(
-            owner,
-            IValidatorConfig::updateValidatorCall {
-                newValidatorAddress: validator,
-                publicKey: FixedBytes::<32>::from([0x22; 32]),
-                inboundAddress: "10.0.0.1:8000".to_string(),
-                outboundAddress: "10.0.0.1:9000".to_string(),
-            },
-        );
+            // Owner tries to update validator - should fail
+            let result = validator_config.update_validator(
+                owner,
+                IValidatorConfig::updateValidatorCall {
+                    newValidatorAddress: validator,
+                    publicKey: FixedBytes::<32>::from([0x22; 32]),
+                    inboundAddress: "10.0.0.1:8000".to_string(),
+                    outboundAddress: "10.0.0.1:9000".to_string(),
+                },
+            );
 
-        assert!(
-            result.is_err(),
-            "Owner should not be able to update validator"
-        );
-        assert_eq!(
-            result.unwrap_err(),
-            ValidatorConfigError::validator_not_found().into(),
-            "Should return ValidatorNotFound error"
-        );
+            assert_eq!(
+                result,
+                Err(ValidatorConfigError::validator_not_found().into()),
+                "Should return ValidatorNotFound error"
+            );
+
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_validator_rotation_clears_all_slots() {
+    fn test_validator_rotation_clears_all_slots() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let owner = Address::from([0x01; 20]);
-        let validator1 = Address::from([0x11; 20]);
-        let validator2 = Address::from([0x22; 20]);
+        let owner = Address::random();
+        let validator1 = Address::random();
+        let validator2 = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut validator_config = ValidatorConfig::new();
+            validator_config.initialize(owner)?;
 
-        let mut validator_config = ValidatorConfig::new(&mut storage);
-        validator_config.initialize(owner).unwrap();
+            // Add validator with long inbound address that uses multiple slots
+            let long_inbound = "192.168.1.1:8000".to_string();
+            let long_outbound = "192.168.1.1:9000".to_string();
+            let public_key = FixedBytes::<32>::from([0x21; 32]);
 
-        // Add validator with long inbound address that uses multiple slots
-        let long_inbound = "192.168.1.1:8000".to_string();
-        let long_outbound = "192.168.1.1:9000".to_string();
-        let public_key = FixedBytes::<32>::from([0x21; 32]);
-
-        validator_config
-            .add_validator(
+            validator_config.add_validator(
                 owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator1,
@@ -730,12 +816,10 @@ mod tests {
                     active: true,
                     outboundAddress: long_outbound,
                 },
-            )
-            .expect("Should add validator with long addresses");
+            )?;
 
-        // Rotate to new address with shorter addresses
-        validator_config
-            .update_validator(
+            // Rotate to new address with shorter addresses
+            validator_config.update_validator(
                 validator1,
                 IValidatorConfig::updateValidatorCall {
                     newValidatorAddress: validator2,
@@ -743,46 +827,239 @@ mod tests {
                     inboundAddress: "10.0.0.1:8000".to_string(),
                     outboundAddress: "10.0.0.1:9000".to_string(),
                 },
-            )
-            .expect("Should rotate validator");
+            )?;
 
-        // Verify old slots are cleared by checking storage directly
-        let validator = validator_config
-            .sload_validators(validator1)
-            .expect("Could not load validator");
+            // Verify old slots are cleared by checking storage directly
+            let validator = validator_config.validators[validator1].read()?;
 
-        // Assert all validator fields are cleared/zeroed
-        assert_eq!(
-            validator.public_key,
-            B256::ZERO,
-            "Old validator public key should be cleared"
-        );
-        assert_eq!(
-            validator.validator_address,
-            Address::ZERO,
-            "Old validator address should be cleared"
-        );
-        assert_eq!(validator.index, 0, "Old validator index should be cleared");
-        assert!(!validator.active, "Old validator should be inactive");
-        assert_eq!(
-            validator.inbound_address,
-            String::default(),
-            "Old validator inbound address should be cleared"
-        );
-        assert_eq!(
-            validator.outbound_address,
-            String::default(),
-            "Old validator outbound address should be cleared"
-        );
+            // Assert all validator fields are cleared/zeroed
+            assert_eq!(
+                validator.public_key,
+                B256::ZERO,
+                "Old validator public key should be cleared"
+            );
+            assert_eq!(
+                validator.validator_address,
+                Address::ZERO,
+                "Old validator address should be cleared"
+            );
+            assert_eq!(validator.index, 0, "Old validator index should be cleared");
+            assert!(!validator.active, "Old validator should be inactive");
+            assert_eq!(
+                validator.inbound_address,
+                String::default(),
+                "Old validator inbound address should be cleared"
+            );
+            assert_eq!(
+                validator.outbound_address,
+                String::default(),
+                "Old validator outbound address should be cleared"
+            );
+
+            Ok(())
+        })
     }
 
     #[test]
-    fn ipv4_with_port_is_host_port() {
+    fn test_next_dkg_ceremony() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let non_owner = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut validator_config = ValidatorConfig::new();
+            validator_config.initialize(owner)?;
+
+            // Default value is 0
+            assert_eq!(validator_config.get_next_full_dkg_ceremony()?, 0);
+
+            // Owner can set the value
+            validator_config.set_next_full_dkg_ceremony(
+                owner,
+                IValidatorConfig::setNextFullDkgCeremonyCall { epoch: 42 },
+            )?;
+            assert_eq!(validator_config.get_next_full_dkg_ceremony()?, 42);
+
+            // Non-owner cannot set the value
+            let result = validator_config.set_next_full_dkg_ceremony(
+                non_owner,
+                IValidatorConfig::setNextFullDkgCeremonyCall { epoch: 100 },
+            );
+            assert_eq!(result, Err(ValidatorConfigError::unauthorized().into()));
+
+            // Value unchanged after failed attempt
+            assert_eq!(validator_config.get_next_full_dkg_ceremony()?, 42);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_ipv4_with_port_is_host_port() {
         ensure_address_is_ip_port("127.0.0.1:8000").unwrap();
     }
 
     #[test]
-    fn ipv6_with_port_is_host_port() {
+    fn test_ipv6_with_port_is_host_port() {
         ensure_address_is_ip_port("[::1]:8000").unwrap();
+    }
+
+    #[test]
+    fn test_add_validator_rejects_zero_public_key() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let validator = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut validator_config = ValidatorConfig::new();
+            validator_config.initialize(owner)?;
+
+            let zero_public_key = FixedBytes::<32>::ZERO;
+            let result = validator_config.add_validator(
+                owner,
+                IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: validator,
+                    publicKey: zero_public_key,
+                    inboundAddress: "192.168.1.1:8000".to_string(),
+                    active: true,
+                    outboundAddress: "192.168.1.1:9000".to_string(),
+                },
+            );
+
+            assert_eq!(
+                result,
+                Err(ValidatorConfigError::invalid_public_key().into()),
+                "Should reject zero public key"
+            );
+
+            // Verify no validator was added
+            let validators = validator_config.get_validators()?;
+            assert_eq!(validators.len(), 0, "Should have no validators");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_update_validator_rejects_zero_public_key() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let validator = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut validator_config = ValidatorConfig::new();
+            validator_config.initialize(owner)?;
+
+            let original_public_key = FixedBytes::<32>::from([0x44; 32]);
+            validator_config.add_validator(
+                owner,
+                IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: validator,
+                    publicKey: original_public_key,
+                    inboundAddress: "192.168.1.1:8000".to_string(),
+                    active: true,
+                    outboundAddress: "192.168.1.1:9000".to_string(),
+                },
+            )?;
+
+            let zero_public_key = FixedBytes::<32>::ZERO;
+            let result = validator_config.update_validator(
+                validator,
+                IValidatorConfig::updateValidatorCall {
+                    newValidatorAddress: validator,
+                    publicKey: zero_public_key,
+                    inboundAddress: "192.168.1.1:8000".to_string(),
+                    outboundAddress: "192.168.1.1:9000".to_string(),
+                },
+            );
+
+            assert_eq!(
+                result,
+                Err(ValidatorConfigError::invalid_public_key().into()),
+                "Should reject zero public key in update"
+            );
+
+            // Verify original public key is preserved
+            let validators = validator_config.get_validators()?;
+            assert_eq!(validators.len(), 1, "Should still have 1 validator");
+            assert_eq!(
+                validators[0].publicKey, original_public_key,
+                "Original public key should be preserved"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_validators_array_returns_correct_address() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let validator1 = Address::random();
+        let validator2 = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut validator_config = ValidatorConfig::new();
+            validator_config.initialize(owner)?;
+
+            let public_key1 = FixedBytes::<32>::from([0x11; 32]);
+            let public_key2 = FixedBytes::<32>::from([0x22; 32]);
+
+            // Add validators
+            validator_config.add_validator(
+                owner,
+                IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: validator1,
+                    publicKey: public_key1,
+                    inboundAddress: "192.168.1.1:8000".to_string(),
+                    active: true,
+                    outboundAddress: "192.168.1.1:9000".to_string(),
+                },
+            )?;
+
+            validator_config.add_validator(
+                owner,
+                IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: validator2,
+                    publicKey: public_key2,
+                    inboundAddress: "192.168.1.2:8000".to_string(),
+                    active: true,
+                    outboundAddress: "192.168.1.2:9000".to_string(),
+                },
+            )?;
+
+            // validators_array should return the actual addresses, not default
+            assert_eq!(validator_config.validators_array(0)?, validator1);
+            assert_eq!(validator_config.validators_array(1)?, validator2);
+
+            // Verify they're not default
+            assert_ne!(validator_config.validators_array(0)?, Address::ZERO);
+            assert_ne!(validator_config.validators_array(1)?, Address::ZERO);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_next_dkg_ceremony_returns_correct_value() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut validator_config = ValidatorConfig::new();
+            validator_config.initialize(owner)?;
+
+            // Default should be 0
+            assert_eq!(validator_config.get_next_full_dkg_ceremony()?, 0);
+
+            // Set to a specific value
+            validator_config.set_next_full_dkg_ceremony(
+                owner,
+                IValidatorConfig::setNextFullDkgCeremonyCall { epoch: 100 },
+            )?;
+
+            // Should return the set value, not 0 or 1
+            let result = validator_config.get_next_full_dkg_ceremony()?;
+            assert_eq!(result, 100);
+            assert_ne!(result, 0);
+            assert_ne!(result, 1);
+
+            Ok(())
+        })
     }
 }

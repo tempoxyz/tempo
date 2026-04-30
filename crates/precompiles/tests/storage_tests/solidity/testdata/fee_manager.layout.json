@@ -4,7 +4,7 @@
       "storage-layout": {
         "storage": [
           {
-            "astId": 17,
+            "astId": 12,
             "contract": "tests/storage_tests/solidity/testdata/fee_manager.sol:FeeManager",
             "label": "validatorTokens",
             "offset": 0,
@@ -12,7 +12,7 @@
             "type": "t_mapping(t_address,t_address)"
           },
           {
-            "astId": 22,
+            "astId": 17,
             "contract": "tests/storage_tests/solidity/testdata/fee_manager.sol:FeeManager",
             "label": "userTokens",
             "offset": 0,
@@ -20,7 +20,7 @@
             "type": "t_mapping(t_address,t_address)"
           },
           {
-            "astId": 27,
+            "astId": 22,
             "contract": "tests/storage_tests/solidity/testdata/fee_manager.sol:FeeManager",
             "label": "collectedFees",
             "offset": 0,
@@ -28,84 +28,28 @@
             "type": "t_mapping(t_address,t_uint256)"
           },
           {
-            "astId": 31,
-            "contract": "tests/storage_tests/solidity/testdata/fee_manager.sol:FeeManager",
-            "label": "tokensWithFees",
-            "offset": 0,
-            "slot": "3",
-            "type": "t_array(t_address)dyn_storage"
-          },
-          {
-            "astId": 36,
-            "contract": "tests/storage_tests/solidity/testdata/fee_manager.sol:FeeManager",
-            "label": "tokenInFeesArray",
-            "offset": 0,
-            "slot": "4",
-            "type": "t_mapping(t_address,t_bool)"
-          },
-          {
-            "astId": 42,
+            "astId": 28,
             "contract": "tests/storage_tests/solidity/testdata/fee_manager.sol:FeeManager",
             "label": "pools",
             "offset": 0,
-            "slot": "5",
+            "slot": "3",
             "type": "t_mapping(t_bytes32,t_struct(Pool)7_storage)"
           },
           {
-            "astId": 47,
-            "contract": "tests/storage_tests/solidity/testdata/fee_manager.sol:FeeManager",
-            "label": "pendingFeeSwapIn",
-            "offset": 0,
-            "slot": "6",
-            "type": "t_mapping(t_bytes32,t_uint128)"
-          },
-          {
-            "astId": 52,
+            "astId": 33,
             "contract": "tests/storage_tests/solidity/testdata/fee_manager.sol:FeeManager",
             "label": "totalSupply",
             "offset": 0,
-            "slot": "7",
+            "slot": "4",
             "type": "t_mapping(t_bytes32,t_uint256)"
           },
           {
-            "astId": 59,
+            "astId": 40,
             "contract": "tests/storage_tests/solidity/testdata/fee_manager.sol:FeeManager",
             "label": "liquidityBalances",
             "offset": 0,
-            "slot": "8",
+            "slot": "5",
             "type": "t_mapping(t_bytes32,t_mapping(t_address,t_uint256))"
-          },
-          {
-            "astId": 64,
-            "contract": "tests/storage_tests/solidity/testdata/fee_manager.sol:FeeManager",
-            "label": "poolsWithFees",
-            "offset": 0,
-            "slot": "9",
-            "type": "t_array(t_struct(TokenPair)12_storage)dyn_storage"
-          },
-          {
-            "astId": 69,
-            "contract": "tests/storage_tests/solidity/testdata/fee_manager.sol:FeeManager",
-            "label": "poolInFeesArray",
-            "offset": 0,
-            "slot": "10",
-            "type": "t_mapping(t_bytes32,t_bool)"
-          },
-          {
-            "astId": 73,
-            "contract": "tests/storage_tests/solidity/testdata/fee_manager.sol:FeeManager",
-            "label": "validatorsWithFees",
-            "offset": 0,
-            "slot": "11",
-            "type": "t_array(t_address)dyn_storage"
-          },
-          {
-            "astId": 78,
-            "contract": "tests/storage_tests/solidity/testdata/fee_manager.sol:FeeManager",
-            "label": "validatorInFeesArray",
-            "offset": 0,
-            "slot": "12",
-            "type": "t_mapping(t_address,t_bool)"
           }
         ],
         "types": {
@@ -113,23 +57,6 @@
             "encoding": "inplace",
             "label": "address",
             "numberOfBytes": "20"
-          },
-          "t_array(t_address)dyn_storage": {
-            "base": "t_address",
-            "encoding": "dynamic_array",
-            "label": "address[]",
-            "numberOfBytes": "32"
-          },
-          "t_array(t_struct(TokenPair)12_storage)dyn_storage": {
-            "base": "t_struct(TokenPair)12_storage",
-            "encoding": "dynamic_array",
-            "label": "struct FeeManager.TokenPair[]",
-            "numberOfBytes": "32"
-          },
-          "t_bool": {
-            "encoding": "inplace",
-            "label": "bool",
-            "numberOfBytes": "1"
           },
           "t_bytes32": {
             "encoding": "inplace",
@@ -143,26 +70,12 @@
             "numberOfBytes": "32",
             "value": "t_address"
           },
-          "t_mapping(t_address,t_bool)": {
-            "encoding": "mapping",
-            "key": "t_address",
-            "label": "mapping(address => bool)",
-            "numberOfBytes": "32",
-            "value": "t_bool"
-          },
           "t_mapping(t_address,t_uint256)": {
             "encoding": "mapping",
             "key": "t_address",
             "label": "mapping(address => uint256)",
             "numberOfBytes": "32",
             "value": "t_uint256"
-          },
-          "t_mapping(t_bytes32,t_bool)": {
-            "encoding": "mapping",
-            "key": "t_bytes32",
-            "label": "mapping(bytes32 => bool)",
-            "numberOfBytes": "32",
-            "value": "t_bool"
           },
           "t_mapping(t_bytes32,t_mapping(t_address,t_uint256))": {
             "encoding": "mapping",
@@ -177,13 +90,6 @@
             "label": "mapping(bytes32 => struct FeeManager.Pool)",
             "numberOfBytes": "32",
             "value": "t_struct(Pool)7_storage"
-          },
-          "t_mapping(t_bytes32,t_uint128)": {
-            "encoding": "mapping",
-            "key": "t_bytes32",
-            "label": "mapping(bytes32 => uint128)",
-            "numberOfBytes": "32",
-            "value": "t_uint128"
           },
           "t_mapping(t_bytes32,t_uint256)": {
             "encoding": "mapping",
@@ -215,29 +121,6 @@
             ],
             "numberOfBytes": "32"
           },
-          "t_struct(TokenPair)12_storage": {
-            "encoding": "inplace",
-            "label": "struct FeeManager.TokenPair",
-            "members": [
-              {
-                "astId": 9,
-                "contract": "tests/storage_tests/solidity/testdata/fee_manager.sol:FeeManager",
-                "label": "userToken",
-                "offset": 0,
-                "slot": "0",
-                "type": "t_uint64"
-              },
-              {
-                "astId": 11,
-                "contract": "tests/storage_tests/solidity/testdata/fee_manager.sol:FeeManager",
-                "label": "validatorToken",
-                "offset": 8,
-                "slot": "0",
-                "type": "t_uint64"
-              }
-            ],
-            "numberOfBytes": "32"
-          },
           "t_uint128": {
             "encoding": "inplace",
             "label": "uint128",
@@ -247,15 +130,10 @@
             "encoding": "inplace",
             "label": "uint256",
             "numberOfBytes": "32"
-          },
-          "t_uint64": {
-            "encoding": "inplace",
-            "label": "uint64",
-            "numberOfBytes": "8"
           }
         }
       }
     }
   },
-  "version": "0.8.30+commit.73712a01.Darwin.appleclang"
+  "version": "0.8.28+commit.7893614a.Darwin.appleclang"
 }

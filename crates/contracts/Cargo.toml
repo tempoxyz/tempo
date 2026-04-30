@@ -1,15 +1,29 @@
 [package]
 name = "tempo-contracts"
-description = "TODO:"
+description = "Tempo blockchain contract bindings and ABI definitions"
 
-version.workspace = true
+version = "1.6.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-publish.workspace = true
+publish = true
 
 [lints]
 workspace = true
 
 [dependencies]
-alloy = { workspace = true, features = ["sol-types", "rpc", "contract"] }
+alloy-contract = { workspace = true, optional = true }
+alloy-primitives.workspace = true
+alloy-sol-types = { workspace = true, features = ["json"] }
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+alloy-primitives = { workspace = true, features = ["rand"] }
+alloy-provider = { workspace = true, features = ["reqwest", "reqwest-rustls-tls"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[features]
+default = ["std", "rpc"]
+std = ["alloy-primitives/std", "alloy-sol-types/std", "serde?/std"]
+rpc = ["dep:alloy-contract"]
+serde = ["dep:serde", "alloy-primitives/serde"]

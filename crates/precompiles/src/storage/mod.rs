@@ -1,100 +1,188 @@
+//! EVM storage abstraction layer for Tempo precompile contracts.
+//!
+//! Provides traits and types for reading/writing contract state from EVM storage,
+//! including persistent (SLOAD/SSTORE) and transient (TLOAD/TSTORE) operations.
+
 pub mod evm;
 pub mod hashmap;
 
+pub mod thread_local;
+use alloy::primitives::keccak256;
+pub use thread_local::{CheckpointGuard, StorageCtx};
+
 mod types;
-use tempo_chainspec::hardfork::TempoHardfork;
 pub use types::*;
 
 pub mod packing;
 pub use packing::FieldLocation;
 pub use types::mapping as slots;
 
-// Re-export extension traits for convenience
-pub use types::vec::VecSlotExt;
+use alloy::primitives::{Address, B256, LogData, Signature, U256};
+use revm::{
+    context::journaled_state::JournalCheckpoint,
+    interpreter::gas::{KECCAK256, KECCAK256WORD},
+    state::{AccountInfo, Bytecode},
+};
+use tempo_chainspec::hardfork::TempoHardfork;
 
-use alloy::primitives::{Address, LogData, U256};
-use revm::state::{AccountInfo, Bytecode};
-
-use crate::error::TempoPrecompileError;
+use crate::error::{Result, TempoPrecompileError};
 
 /// Low-level storage provider for interacting with the EVM.
+///
+/// # Implementations
+///
+/// - `EvmPrecompileStorageProvider` - Production EVM storage
+/// - `HashMapStorageProvider` - Test storage
+///
+/// # Sync with `[StorageCtx]`
+///
+/// `StorageCtx` mirrors these methods with split mutability for read (staticcall) vs write (call).
+/// When adding new methods here, remember to add corresponding methods to `StorageCtx`.
 pub trait PrecompileStorageProvider {
+    /// Returns the chain ID.
     fn chain_id(&self) -> u64;
-    fn timestamp(&self) -> U256;
-    fn beneficiary(&self) -> Address;
-    fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError>;
-    fn get_account_info(
-        &mut self,
-        address: Address,
-    ) -> Result<&'_ AccountInfo, TempoPrecompileError>;
-    fn sload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError>;
-    fn tload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError>;
-    fn sstore(
-        &mut self,
-        address: Address,
-        key: U256,
-        value: U256,
-    ) -> Result<(), TempoPrecompileError>;
-    fn tstore(
-        &mut self,
-        address: Address,
-        key: U256,
-        value: U256,
-    ) -> Result<(), TempoPrecompileError>;
-    fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), TempoPrecompileError>;
 
-    /// Deducts gas from the remaining gas and return an error if the gas is insufficient.
-    fn deduct_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError>;
+    /// Returns the current block timestamp.
+    fn timestamp(&self) -> U256;
+
+    /// Returns the current block beneficiary (coinbase).
+    fn beneficiary(&self) -> Address;
+
+    /// Returns the current block number.
+    fn block_number(&self) -> u64;
+
+    /// Sets the bytecode at the given address.
+    fn set_code(&mut self, address: Address, code: Bytecode) -> Result<()>;
+
+    /// Executes a closure with access to the account info for the given address.
+    fn with_account_info(
+        &mut self,
+        address: Address,
+        f: &mut dyn FnMut(&AccountInfo),
+    ) -> Result<()>;
+
+    /// Performs an SLOAD operation (persistent storage read).
+    fn sload(&mut self, address: Address, key: U256) -> Result<U256>;
+
+    /// Performs a TLOAD operation (transient storage read).
+    fn tload(&mut self, address: Address, key: U256) -> Result<U256>;
+
+    /// Performs an SSTORE operation (persistent storage write).
+    fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<()>;
+
+    /// Performs a TSTORE operation (transient storage write).
+    fn tstore(&mut self, address: Address, key: U256, value: U256) -> Result<()>;
+
+    /// Emits an event from the given contract address.
+    fn emit_event(&mut self, address: Address, event: LogData) -> Result<()>;
+
+    /// Deducts gas from the remaining gas and returns an error if insufficient.
+    fn deduct_gas(&mut self, gas: u64) -> Result<()>;
 
     /// Add refund to the refund gas counter.
     fn refund_gas(&mut self, gas: i64);
 
+    /// Returns the gas limit for this precompile call.
+    fn gas_limit(&self) -> u64;
+
     /// Returns the gas used so far.
     fn gas_used(&self) -> u64;
+
+    /// Returns the state-creating gas used so far (cold SSTORE zero->non-zero, code deposit).
+    fn state_gas_used(&self) -> u64;
 
     /// Returns the gas refunded so far.
     fn gas_refunded(&self) -> i64;
 
-    /// Currently active hardfork.
+    /// Returns the state gas reservoir.
+    fn reservoir(&self) -> u64;
+
+    /// Returns the currently active hardfork.
     fn spec(&self) -> TempoHardfork;
+
+    /// Returns whether the current call context is static.
+    fn is_static(&self) -> bool;
+
+    /// Creates a new journal checkpoint so that all subsequent state-changing
+    /// operations can be atomically committed ([`checkpoint_commit`](Self::checkpoint_commit))
+    /// or reverted ([`checkpoint_revert`](Self::checkpoint_revert)).
+    ///
+    /// Prefer [`StorageCtx::checkpoint`] which returns a [`CheckpointGuard`] that
+    /// auto-reverts on drop and is hardfork-aware (no-op pre-T1C).
+    fn checkpoint(&mut self) -> JournalCheckpoint;
+
+    /// Commits all state changes since the given checkpoint.
+    ///
+    /// Prefer [`CheckpointGuard::commit`].
+    fn checkpoint_commit(&mut self, checkpoint: JournalCheckpoint);
+
+    /// Reverts all state changes back to the given checkpoint.
+    ///
+    /// Prefer [`CheckpointGuard`] (auto-reverts on drop).
+    fn checkpoint_revert(&mut self, checkpoint: JournalCheckpoint);
+
+    /// Computes keccak256 and charges the appropriate gas.
+    ///
+    /// Implementations should use this over naked `keccak256` call to ensure gas is accounted for.
+    fn keccak256(&mut self, data: &[u8]) -> Result<B256> {
+        let num_words =
+            u64::try_from(data.len().div_ceil(32)).map_err(|_| TempoPrecompileError::OutOfGas)?;
+        let price = KECCAK256WORD
+            .checked_mul(num_words)
+            .and_then(|w| w.checked_add(KECCAK256))
+            .ok_or(TempoPrecompileError::OutOfGas)?;
+        self.deduct_gas(price)?;
+        Ok(keccak256(data))
+    }
+
+    /// Recovers the signer address from an ECDSA signature and charges ecrecover gas.
+    /// As per [TIP-1004], it only accepts `v` values of `27` or `28` (no `0`/`1` normalization).
+    ///
+    /// Returns `Ok(None)` on invalid signatures; callers map to domain-specific errors.
+    ///
+    /// [TIP-1004]: <https://github.com/tempoxyz/tempo/blob/main/tips/tip-1004.md#signature-validation>
+    fn recover_signer(&mut self, digest: B256, v: u8, r: B256, s: B256) -> Result<Option<Address>> {
+        self.deduct_gas(crate::ECRECOVER_GAS)?;
+
+        if v != 27 && v != 28 {
+            return Ok(None);
+        }
+
+        let parity = v == 28;
+        let sig = Signature::from_scalars_and_parity(r, s, parity);
+        let recovered = alloy::consensus::crypto::secp256k1::recover_signer(&sig, digest);
+
+        Ok(recovered.ok().filter(|addr| !addr.is_zero()))
+    }
 }
 
 /// Storage operations for a given (contract) address.
+///
+/// Abstracts over persistent storage (SLOAD/SSTORE) and transient storage (TLOAD/TSTORE).
+/// Implementors must route to the appropriate opcode.
 pub trait StorageOps {
-    /// Performs an SSTORE operation at the provided slot, with the given value.
-    fn sstore(&mut self, slot: U256, value: U256) -> Result<(), TempoPrecompileError>;
-    /// Performs an SLOAD operation at the provided slot.
-    fn sload(&mut self, slot: U256) -> Result<U256, TempoPrecompileError>;
+    /// Stores a value at the provided slot.
+    fn store(&mut self, slot: U256, value: U256) -> Result<()>;
+    /// Loads a value from the provided slot.
+    fn load(&self, slot: U256) -> Result<U256>;
 }
 
-/// Trait providing access to a contract's address and storage provider.
+/// Trait providing access to a contract's address.
 ///
-/// Abstracts the common pattern of contracts needing both an address and a mutable reference
-/// to a storage provider. It is automatically implemented by the `#[contract]` macro.
+/// Automatically implemented by the `#[contract]` macro.
 pub trait ContractStorage {
-    type Storage: PrecompileStorageProvider;
-
     /// Contract address.
     fn address(&self) -> Address;
-    /// Storage provider.
-    fn storage(&mut self) -> &mut Self::Storage;
-}
 
-/// Blanket implementation of `StorageOps` for all type that implement `ContractStorage`.
-/// Allows contracts to use `StorageOps` while delegating to `PrecompileStorageProvider`.
-impl<T> StorageOps for T
-where
-    T: ContractStorage,
-{
-    /// Performs an SSTORE operation at the provided slot, with the given value.
-    fn sstore(&mut self, slot: U256, value: U256) -> Result<(), TempoPrecompileError> {
-        let address = self.address();
-        self.storage().sstore(address, slot, value)
-    }
+    /// Contract storage accessor.
+    fn storage(&self) -> &StorageCtx;
 
-    /// Performs an SLOAD operation at the provided slot.
-    fn sload(&mut self, slot: U256) -> Result<U256, TempoPrecompileError> {
-        let address = self.address();
-        self.storage().sload(address, slot)
+    /// Contract storage mutable accessor.
+    fn storage_mut(&mut self) -> &mut StorageCtx;
+
+    /// Returns true if the contract has been initialized (has bytecode deployed).
+    fn is_initialized(&self) -> Result<bool> {
+        self.storage()
+            .with_account_info(self.address(), |info| Ok(!info.is_empty_code_hash()))
     }
 }

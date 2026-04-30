@@ -6,7 +6,8 @@ yanked = "warn"
 ignore = [
   # https://rustsec.org/advisories/RUSTSEC-2024-0436 paste! is unmaintained
   "RUSTSEC-2024-0436",
-
+  # https://rustsec.org/advisories/RUSTSEC-2025-0141 bincode is unmaintained
+  "RUSTSEC-2025-0141",
 ]
 
 # This section is considered when running `cargo deny check bans`.
@@ -55,17 +56,16 @@ allow = [
   # https://github.com/rustls/webpki/blob/main/LICENSE ISC Style
   "LicenseRef-rustls-webpki",
   "CDLA-Permissive-2.0",
+  "OpenSSL",
 ]
 
 # Allow 1 or more licenses on a per-crate basis, so that particular licenses
 # aren't accepted for every possible crate as with the normal allow list
 exceptions = [
-  { allow = [
-    "MPL-2.0",
-  ], name = "option-ext" },
-  { allow = [
-    "MPL-2.0",
-  ], name = "webpki-root-certs" },
+  { allow = ["MPL-2.0"], name = "option-ext" },
+  { allow = ["MPL-2.0"], name = "bitmaps" },
+  { allow = ["MPL-2.0"], name = "imbl" },
+  { allow = ["MPL-2.0"], name = "imbl-sized-chunks" },
 ]
 
 [[licenses.clarify]]
@@ -85,6 +85,6 @@ unknown-registry = "warn"
 unknown-git = "deny"
 allow-git = [
   "https://github.com/commonwarexyz/monorepo",
-  "https://github.com/foundry-rs/foundry",
   "https://github.com/paradigmxyz/reth",
+  "https://github.com/sigp/discv5",
 ]

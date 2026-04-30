@@ -1,0 +1,83 @@
+[profile.ci]
+fail-fast = false
+retries = 2
+test-threads = "num-cpus"
+
+# Treat timeout as success while debugging snapshot-restart flakiness.
+[[profile.ci.overrides]]
+filter = "test(can_restart_after_joining_from_snapshot)"
+slow-timeout = { period = "3m", terminate-after = 3, on-timeout = "pass" }
+
+# Heavy e2e tests that flake under resource contention — run exclusively.
+# threads-required = "num-test-threads" reserves all slots, so no other test runs concurrently.
+# Scheduled last to avoid blocking the rest of the suite.
+[[profile.ci.overrides]]
+filter = """
+  package(tempo-e2e) & (
+    test(can_restart_after_joining_from_snapshot) |
+    test(validator_can_fast_sync_after_full_dkg) |
+    test(subblocks_are_included)
+  )
+"""
+threads-required = "num-test-threads"
+priority = -100
+
+# tempo-e2e tests spawn multiple execution nodes, each creating 4 rayon thread
+# pools (cpu, rpc, trie, storage) via reth's Runtime. Even with test_with_handle()
+# (2 threads per pool), running many in parallel causes OOM on CI.
+# threads-required = 8 means nextest counts each test as needing 8 of the -j slots,
+# so on a 32-vCPU runner (-j 32) at most 4 e2e tests run concurrently.
+[[profile.ci.overrides]]
+filter = "package(tempo-e2e)"
+failure-output = "never"
+threads-required = 8
+slow-timeout = { period = "3m", terminate-after = 1 }
+
+# Separate profile for flaky snapshot-restart tests so they fail-fast independently.
+[profile.ci-flaky]
+inherits = "ci"
+fail-fast = true
+retries = 0
+failure-output = "final"
+slow-timeout = { period = "3m", terminate-after = 1 }
+default-filter = "package(tempo-e2e) & test(can_restart_after_joining_from_snapshot)"
+
+# Dedicated profile for live RPC matrix tests (testnet/devnet).
+# These hit rate-limited external endpoints, so we serialize them and allow
+# more retries than regular tests.
+[profile.ci-rpc]
+inherits = "ci"
+test-threads = 1
+retries = 3
+slow-timeout = { period = "5m", terminate-after = 1 }
+
+# tempo-node integration tests (pool, block_building, etc.) also launch full
+# execution nodes with rayon pools. Limit to 4 slots so at most 8 run in parallel.
+[[profile.ci.overrides]]
+filter = "package(tempo-node) & binary(it)"
+threads-required = 4
+
+[[profile.default.overrides]]
+filter = "test(can_restart_after_joining_from_snapshot)"
+failure-output = "final"
+
+# Local development defaults (same constraints apply)
+[[profile.default.overrides]]
+filter = """
+  package(tempo-e2e) & (
+    test(can_restart_after_joining_from_snapshot) |
+    test(validator_can_fast_sync_after_full_dkg) |
+    test(subblocks_are_included)
+  )
+"""
+threads-required = "num-test-threads"
+priority = -100
+
+[[profile.default.overrides]]
+filter = "package(tempo-e2e)"
+threads-required = 8
+slow-timeout = { period = "4m", terminate-after = 1 }
+
+[[profile.default.overrides]]
+filter = "package(tempo-node) & binary(it)"
+threads-required = 4

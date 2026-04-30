@@ -1,9 +1,12 @@
 name: Docker Build
 
+permissions: {}
+
 on:
   push:
     branches:
       - main
+      - "rc/*"
     tags:
       - "v*.*.*"
   merge_group:
@@ -24,6 +27,7 @@ env:
 jobs:
   build-and-push:
     name: Build and Push Docker Images
+    if: ${{ !(github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository != 'tempoxyz/tempo') }}
     runs-on: depot-ubuntu-latest-16
     permissions:
       contents: read
@@ -31,22 +35,47 @@ jobs:
       id-token: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
-      - uses: depot/setup-action@v1
+      - uses: depot/setup-action@15c09a5f77a0840ad4bce955686522a257853461 # v1.7.1
+
+      - name: Determine Docker labels
+        id: docker-labels
+        shell: bash
+        run: |
+          if [[ "${{ github.repository }}" != "tempoxyz/tempo" ]]; then
+            cat <<'LABELS' >> "$GITHUB_OUTPUT"
+          value<<EOF
+          org.opencontainers.image.created=
+          org.opencontainers.image.description=
+          org.opencontainers.image.licenses=
+          org.opencontainers.image.revision=
+          org.opencontainers.image.source=
+          org.opencontainers.image.title=
+          org.opencontainers.image.url=
+          org.opencontainers.image.version=
+          EOF
+          LABELS
+          fi
 
       - name: Docker metadata for tempo
         id: meta-tempo
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
         with:
-          images: ${{ env.REGISTRY }}/tempo
+          images: |
+            ${{ env.REGISTRY }}/tempo
+            docker.io/tempoxyz/tempo
           bake-target: tempo
+          labels: ${{ steps.docker-labels.outputs.value }}
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
+            type=raw,value=stable,enable=${{ github.ref_type == 'tag' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
             type=sha,prefix=sha-
@@ -54,16 +83,20 @@ jobs:
 
       - name: Docker metadata for tempo-bench
         id: meta-tempo-bench
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
         with:
-          images: ${{ env.REGISTRY }}/tempo-bench
+          images: |
+            ${{ env.REGISTRY }}/tempo-bench
+            docker.io/tempoxyz/tempo-bench
           bake-target: tempo-bench
+          labels: ${{ steps.docker-labels.outputs.value }}
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
+            type=raw,value=stable,enable=${{ github.ref_type == 'tag' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
             type=sha,prefix=sha-
@@ -71,16 +104,20 @@ jobs:
 
       - name: Docker metadata for tempo-sidecar
         id: meta-tempo-sidecar
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
         with:
-          images: ${{ env.REGISTRY }}/tempo-sidecar
+          images: |
+            ${{ env.REGISTRY }}/tempo-sidecar
+            docker.io/tempoxyz/tempo-sidecar
           bake-target: tempo-sidecar
+          labels: ${{ steps.docker-labels.outputs.value }}
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
+            type=raw,value=stable,enable=${{ github.ref_type == 'tag' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
             type=sha,prefix=sha-
@@ -88,33 +125,43 @@ jobs:
 
       - name: Docker metadata for tempo-xtask
         id: meta-tempo-xtask
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
         with:
-          images: ${{ env.REGISTRY }}/tempo-xtask
+          images: |
+            ${{ env.REGISTRY }}/tempo-xtask
+            docker.io/tempoxyz/tempo-xtask
           bake-target: tempo-xtask
+          labels: ${{ steps.docker-labels.outputs.value }}
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
+            type=raw,value=stable,enable=${{ github.ref_type == 'tag' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
             type=sha,prefix=sha-
             type=ref,event=pr
 
       - name: Log in to Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Log in to Docker Hub
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          username: ${{ vars.DOCKER_HUB_USER }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
       - id: shortsha
         run: echo "shortsha=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
 
       - name: Build and push Docker images
-        uses: depot/bake-action@v1
+        uses: depot/bake-action@1d58c2668346981089b088b7ef36755b206b20e9 # v1.13.0
         with:
           files: |
             docker-bake.hcl
@@ -125,6 +172,88 @@ jobs:
           targets: default
           project: 0c6tg19qsp
           push: true
+          no-cache: ${{ github.event_name != 'merge_group' }}
+          pull: ${{ github.event_name != 'merge_group' }}
         env:
           VERGEN_GIT_SHA: ${{ github.sha }}
           VERGEN_GIT_SHA_SHORT: ${{ steps.shortsha.outputs.shortsha }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
+
+      - name: Sign Docker images
+        shell: bash
+        run: |
+          set -euo pipefail
+          images=(
+            "${{ steps.meta-tempo.outputs.tags }}"
+            "${{ steps.meta-tempo-bench.outputs.tags }}"
+            "${{ steps.meta-tempo-sidecar.outputs.tags }}"
+            "${{ steps.meta-tempo-xtask.outputs.tags }}"
+          )
+          for tags in "${images[@]}"; do
+            echo "$tags" | xargs -n1 cosign sign --yes --recursive
+          done
+
+      - name: Publish event (sha tag)
+        if: ${{ github.repository == 'tempoxyz/tempo' && github.event_name != 'merge_group' }}
+        shell: bash
+        env:
+          EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
+          EVENTS_CERT: ${{ secrets.EVENTS_CERT }}
+          RUNNER_TEMP: ${{ runner.temp }}
+          GH_REPO: ${{ github.repository }}
+          SHORT_SHA: ${{ steps.shortsha.outputs.shortsha }}
+          COMMIT_SHA: ${{ github.sha }}
+          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          echo "$EVENTS_KEY" > "${RUNNER_TEMP}/key"
+          echo "$EVENTS_CERT" > "${RUNNER_TEMP}/cert"
+
+          # EVENTS_ARGS may contain additional curl arguments, not just a URL.
+          curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }} \
+            --key "${RUNNER_TEMP}/key" \
+            --cert "${RUNNER_TEMP}/cert" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"repository\": \"${GH_REPO}\",
+              \"event\": \"registry_package\",
+              \"data\": {
+                \"tag\": \"sha-${SHORT_SHA}\",
+                \"sha\": \"${COMMIT_SHA}\",
+                \"branch\": \"${BRANCH_NAME}\"
+              }
+            }"
+
+      - name: Publish event (nightly tag)
+        if: ${{ github.repository == 'tempoxyz/tempo' && (github.event_name == 'schedule' || github.event.inputs.nightly == 'true') }}
+        shell: bash
+        env:
+          EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
+          EVENTS_CERT: ${{ secrets.EVENTS_CERT }}
+          RUNNER_TEMP: ${{ runner.temp }}
+          GH_REPO: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          echo "$EVENTS_KEY" > "${RUNNER_TEMP}/key"
+          echo "$EVENTS_CERT" > "${RUNNER_TEMP}/cert"
+
+          # EVENTS_ARGS may contain additional curl arguments, not just a URL.
+          curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }} \
+            --key "${RUNNER_TEMP}/key" \
+            --cert "${RUNNER_TEMP}/cert" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"repository\": \"${GH_REPO}\",
+              \"event\": \"registry_package\",
+              \"data\": {
+                \"tag\": \"nightly\",
+                \"sha\": \"${COMMIT_SHA}\",
+                \"branch\": \"${BRANCH_NAME}\"
+              }
+            }"
