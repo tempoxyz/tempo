@@ -8,7 +8,7 @@ pub mod hashmap;
 
 pub mod thread_local;
 use alloy::primitives::keccak256;
-pub use thread_local::{CheckpointGuard, StorageCtx};
+pub use thread_local::{CheckpointGuard, CurrentTxHash, StorageCtx};
 
 mod types;
 pub use types::*;

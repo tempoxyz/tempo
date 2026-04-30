@@ -21,6 +21,12 @@ use crate::{
 };
 
 scoped_thread_local!(static STORAGE: RefCell<&mut dyn PrecompileStorageProvider>);
+scoped_thread_local!(static CURRENT_TX_HASH: RefCell<Option<B256>>);
+
+/// Provides access to the enclosing transaction hash when the caller can expose it.
+pub trait CurrentTxHash {
+    fn current_tx_hash(&self) -> Option<B256>;
+}
 
 /// Thread-local storage accessor that implements `PrecompileStorageProvider` without the trait bound.
 ///
@@ -40,6 +46,12 @@ scoped_thread_local!(static STORAGE: RefCell<&mut dyn PrecompileStorageProvider>
 pub struct StorageCtx;
 
 impl StorageCtx {
+    /// Executes a closure with a scoped top-level transaction hash.
+    pub fn with_current_tx_hash<R>(tx_hash: Option<B256>, f: impl FnOnce() -> R) -> R {
+        let tx_hash = RefCell::new(tx_hash);
+        CURRENT_TX_HASH.set(&tx_hash, f)
+    }
+
     /// Enter storage context. All storage operations must happen within the closure.
     ///
     /// # IMPORTANT
@@ -58,6 +70,18 @@ impl StorageCtx {
             unsafe { std::mem::transmute(storage) };
         let cell = RefCell::new(storage_static);
         STORAGE.set(&cell, f)
+    }
+
+    /// Like [`Self::enter`], but also scopes the top-level transaction hash.
+    pub fn enter_with_tx_hash<S, R>(
+        storage: &mut S,
+        tx_hash: Option<B256>,
+        f: impl FnOnce() -> R,
+    ) -> R
+    where
+        S: PrecompileStorageProvider,
+    {
+        Self::with_current_tx_hash(tx_hash, || Self::enter(storage, f))
     }
 
     /// Execute an infallible function with access to the current thread-local storage provider.
@@ -135,6 +159,14 @@ impl StorageCtx {
     /// Returns the current block number.
     pub fn block_number(&self) -> u64 {
         Self::with_storage(|s| s.block_number())
+    }
+
+    /// Returns the current top-level transaction hash when available.
+    pub fn tx_hash(&self) -> Option<B256> {
+        if !CURRENT_TX_HASH.is_set() {
+            return None;
+        }
+        CURRENT_TX_HASH.with(|tx_hash| *tx_hash.borrow())
     }
 
     /// Sets the bytecode at the given address.
@@ -328,7 +360,7 @@ impl<'evm> StorageCtx {
         journal: &'evm mut J,
         block_env: &'evm dyn Block,
         cfg: &CfgEnv<TempoHardfork>,
-        tx_env: &'evm impl Transaction,
+        tx_env: &'evm (impl Transaction + CurrentTxHash),
         f: impl FnOnce() -> R,
     ) -> R
     where
@@ -338,7 +370,7 @@ impl<'evm> StorageCtx {
         let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
 
         // The core logic of setting up thread-local storage is here.
-        Self::enter(&mut provider, f)
+        Self::enter_with_tx_hash(&mut provider, tx_env.current_tx_hash(), f)
     }
 
     /// Like [`enter_evm`](Self::enter_evm), but takes a `&mut impl ContextTr`
@@ -346,6 +378,7 @@ impl<'evm> StorageCtx {
     pub fn enter_ctx<C, R>(ctx: &mut C, f: impl FnOnce() -> R) -> R
     where
         C: ContextTr<Cfg = CfgEnv<TempoHardfork>, Journal: Debug, Db: Database>,
+        C::Tx: CurrentTxHash,
     {
         let (tx, block, cfg, journal) = ctx.tx_block_cfg_journal_mut();
         Self::enter_evm(journal, block, cfg, tx, f)
@@ -361,12 +394,13 @@ impl<'evm> StorageCtx {
     ) -> (R, u64)
     where
         C: ContextTr<Cfg = CfgEnv<TempoHardfork>, Journal: Debug, Db: Database>,
+        C::Tx: CurrentTxHash,
     {
         let (tx, block, cfg, journal) = ctx.tx_block_cfg_journal_mut();
         let internals = EvmInternals::new(journal, block, cfg, tx);
         let mut provider =
             EvmPrecompileStorageProvider::new_with_gas_limit(internals, cfg, gas_limit, reservoir);
-        let result = Self::enter(&mut provider, f);
+        let result = Self::enter_with_tx_hash(&mut provider, tx.current_tx_hash(), f);
         let gas_used = provider.gas_used();
         (result, gas_used)
     }
@@ -376,7 +410,7 @@ impl<'evm> StorageCtx {
         journal: &'evm mut J,
         block_env: &'evm dyn Block,
         cfg: &CfgEnv<TempoHardfork>,
-        tx_env: &'evm impl Transaction,
+        tx_env: &'evm (impl Transaction + CurrentTxHash),
         f: impl FnOnce(P) -> R,
     ) -> R
     where
@@ -509,6 +543,32 @@ mod tests {
                 StorageCtx::with_storage(|_| ())
             })
         });
+    }
+
+    #[test]
+    fn test_tx_hash_scope_override_and_restore() {
+        let mut storage = t1c_storage();
+        let outer_hash = B256::repeat_byte(0x11);
+        let inner_hash = B256::repeat_byte(0x22);
+
+        assert_eq!(StorageCtx::default().tx_hash(), None);
+
+        StorageCtx::enter_with_tx_hash(&mut storage, Some(outer_hash), || {
+            let ctx = StorageCtx;
+            assert_eq!(ctx.tx_hash(), Some(outer_hash));
+
+            StorageCtx::with_current_tx_hash(Some(inner_hash), || {
+                assert_eq!(ctx.tx_hash(), Some(inner_hash));
+            });
+            assert_eq!(ctx.tx_hash(), Some(outer_hash));
+
+            StorageCtx::with_current_tx_hash(None, || {
+                assert_eq!(ctx.tx_hash(), None);
+            });
+            assert_eq!(ctx.tx_hash(), Some(outer_hash));
+        });
+
+        assert_eq!(StorageCtx::default().tx_hash(), None);
     }
 
     #[test]

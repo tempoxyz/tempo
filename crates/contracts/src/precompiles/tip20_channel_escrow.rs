@@ -18,6 +18,7 @@ crate::sol! {
             address token;
             bytes32 salt;
             address authorizedSigner;
+            bytes32 openTxHash;
         }
 
         struct ChannelState {
@@ -89,7 +90,8 @@ crate::sol! {
             address payee,
             address token,
             bytes32 salt,
-            address authorizedSigner
+            address authorizedSigner,
+            bytes32 openTxHash
         )
             external
             view
@@ -109,6 +111,7 @@ crate::sol! {
             address token,
             address authorizedSigner,
             bytes32 salt,
+            bytes32 openTxHash,
             uint96 deposit,
             uint32 expiresAt
         );
