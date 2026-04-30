@@ -42,12 +42,6 @@ pub struct TipFeeManager {
     /// Checked by `burn` and `rebalance_swap` to prevent withdrawals that would violate the reservation.
     pending_fee_swap_reservation: Mapping<B256, u128>,
 
-    /// T2+: The fee token used for the current transaction ([TIP-1007]).
-    /// Set by the handler before execution, read via `getFeeToken()`.
-    ///
-    /// [TIP-1007]: <https://docs.tempo.xyz/protocol/tips/tip-1007>
-    tx_fee_token: Address,
-
     /// T5+: Intermediate token for two-hop fee swap routing ([TIP-1033]).
     /// Set by `collect_fee_pre_tx` when the direct `(userToken, validatorToken)` pool has
     /// insufficient liquidity and the swap falls back through `userToken.quoteToken()`.
