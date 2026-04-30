@@ -4435,7 +4435,7 @@ mod tests {
         use alloy_signer::SignerSync;
         use alloy_signer_local::PrivateKeySigner;
         use tempo_primitives::transaction::{
-            KeychainSignature, SignatureType, key_authorization::KeyAuthorization,
+            KeychainSignature, KeychainVersion, SignatureType, key_authorization::KeyAuthorization,
         };
 
         fn generate_keypair() -> (PrivateKeySigner, Address) {
@@ -4553,7 +4553,7 @@ mod tests {
             let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T2, None, true);
 
             assert!(matches!(
-                h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default()),
+                h.validate_env(&mut evm),
                 Err(EVMError::Transaction(
                     TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot { .. }
                 ))
@@ -4573,7 +4573,7 @@ mod tests {
             let (mut evm, h) = make_evm(user, tx_key, Some(signed), TempoHardfork::T2, None, true);
 
             assert!(matches!(
-                h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default()),
+                h.validate_env(&mut evm),
                 Err(EVMError::Transaction(
                     TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys
                 ))
@@ -4591,8 +4591,14 @@ mod tests {
                 );
                 let (mut evm, h) = make_evm(user, key, Some(signed), spec, None, false);
 
-                let result =
-                    h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
+                if !spec.is_t1c()
+                    && let Some(aa_env) = evm.tx.tempo_tx_env.as_mut()
+                    && let TempoSignature::Keychain(keychain_sig) = &mut aa_env.signature
+                {
+                    // Overwrite the signature version pre-T1C to bypass the version check.
+                    keychain_sig.version = KeychainVersion::V1;
+                }
+                let result = h.validate_env(&mut evm);
                 if !spec.is_t1c() {
                     assert!(
                         result.is_ok(),
