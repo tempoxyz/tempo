@@ -84,9 +84,9 @@ impl ReceiptBuilder for TempoReceiptBuilder {
 ///
 /// This is an extension of [`EthTxResult`] with context necessary for committing a Tempo transaction.
 #[derive(Debug)]
-pub struct TempoTxResult<H> {
+pub struct TempoTxResult {
     /// Inner transaction execution result.
-    inner: EthTxResult<H, TempoTxType>,
+    inner: EthTxResult<TempoHaltReason, TempoTxType>,
     /// Next section of the block.
     next_section: BlockSection,
     /// Whether the transaction is a payment transaction.
@@ -96,10 +96,24 @@ pub struct TempoTxResult<H> {
     /// This is only populated for subblock transactions for which we need to store
     /// the full transaction encoding for later validation of subblock hash.
     tx: Option<TempoTxEnvelope>,
+    /// Block gas consumed by this transaction. The block `gas_used` field will be incremented by this value.
+    block_gas_used: u64,
 }
 
-impl<H: Send + 'static> TxResult for TempoTxResult<H> {
-    type HaltReason = H;
+impl TempoTxResult {
+    /// Returns the block gas consumed by this transaction.
+    pub fn block_gas_used(&self) -> u64 {
+        self.block_gas_used
+    }
+
+    /// Returns the state gas consumed by this transaction.
+    pub fn state_gas_used(&self) -> u64 {
+        self.inner.result.result.gas().state_gas_spent()
+    }
+}
+
+impl TxResult for TempoTxResult {
+    type HaltReason = TempoHaltReason;
 
     fn result(&self) -> &ResultAndState<Self::HaltReason> {
         self.inner.result()
@@ -430,7 +444,7 @@ where
     type Transaction = TempoTxEnvelope;
     type Receipt = TempoReceipt;
     type Evm = TempoEvm<DB, I>;
-    type Result = TempoTxResult<TempoHaltReason>;
+    type Result = TempoTxResult;
 
     fn apply_pre_execution_changes(&mut self) -> Result<(), alloy_evm::block::BlockExecutionError> {
         self.inner.apply_pre_execution_changes()?;
@@ -481,19 +495,19 @@ where
 
         let inner = result?;
 
+        // T4+: use block_regular_gas_used (excludes state gas) for section validation,
+        // matching block gas limit semantics. Pre-T4: use tx_gas_used.
+        let block_gas_used = if self.evm().cfg.spec.is_t4() {
+            inner.result.result.gas().block_regular_gas_used()
+        } else {
+            inner.result.result.tx_gas_used()
+        };
+
         let next_section = if let Some(next_section) = next_section {
             // If pre-execution validation returned a section to use, just use it.
             next_section
         } else {
-            // T4+: use block_regular_gas_used (excludes state gas) for section validation,
-            // matching block gas limit semantics. Pre-T4: use tx_gas_used.
-            let timestamp = self.evm().block().timestamp.to::<u64>();
-            let gas_used = if self.inner.spec.is_t4_active_at_timestamp(timestamp) {
-                inner.result.result.gas().block_regular_gas_used()
-            } else {
-                inner.result.result.tx_gas_used()
-            };
-            self.validate_tx(recovered.tx(), gas_used)?
+            self.validate_tx(recovered.tx(), block_gas_used)?
         };
         Ok(TempoTxResult {
             inner,
@@ -501,6 +515,7 @@ where
             is_payment: recovered.tx().is_payment_v1(),
             tx: matches!(next_section, BlockSection::SubBlock { .. })
                 .then(|| recovered.tx().clone()),
+            block_gas_used,
         })
     }
 
@@ -510,16 +525,8 @@ where
             next_section,
             is_payment,
             tx,
+            block_gas_used,
         } = output;
-
-        // T4+: use block_regular_gas_used (excludes state gas) for section validation,
-        // matching block gas limit semantics. Pre-T4: use tx_gas_used.
-        let timestamp = self.evm().block().timestamp.to::<u64>();
-        let gas_used = if self.inner.spec.is_t4_active_at_timestamp(timestamp) {
-            inner.result.result.gas().block_regular_gas_used()
-        } else {
-            inner.result.result.tx_gas_used()
-        };
 
         let gas_output = self.inner.commit_transaction(inner);
 
@@ -530,9 +537,9 @@ where
                 // no gas spending for start-of-block system transactions
             }
             BlockSection::NonShared => {
-                self.non_shared_gas_left -= gas_used;
+                self.non_shared_gas_left -= block_gas_used;
                 if !is_payment {
-                    self.non_payment_gas_left -= gas_used;
+                    self.non_payment_gas_left -= block_gas_used;
                 }
             }
             BlockSection::SubBlock { proposer } => {
@@ -552,7 +559,7 @@ where
                     .push(tx.expect("missing tx for subblock transaction"));
             }
             BlockSection::GasIncentive => {
-                self.incentive_gas_used += gas_used;
+                self.incentive_gas_used += block_gas_used;
             }
             BlockSection::System { .. } => {
                 // no gas spending for end-of-block system transactions
@@ -1236,6 +1243,7 @@ mod tests {
             next_section: BlockSection::NonShared,
             is_payment: false,
             tx: None,
+            block_gas_used: 21000,
         };
 
         let gas_output = executor.commit_transaction(output);
@@ -1317,6 +1325,7 @@ mod tests {
             next_section: BlockSection::NonShared,
             is_payment: false,
             tx: None,
+            block_gas_used: 21000,
         };
 
         let gas_output = executor.commit_transaction(output);
@@ -1355,6 +1364,7 @@ mod tests {
             next_section: BlockSection::NonShared,
             is_payment: false,
             tx: None,
+            block_gas_used: 21000,
         };
         executor.commit_transaction(output1);
 
@@ -1377,6 +1387,7 @@ mod tests {
             next_section: BlockSection::NonShared,
             is_payment: false,
             tx: None,
+            block_gas_used: 50000,
         };
         executor.commit_transaction(output2);
 
@@ -1438,6 +1449,7 @@ mod tests {
             next_section: BlockSection::NonShared,
             is_payment: false,
             tx: None,
+            block_gas_used: 50000,
         };
         executor.commit_transaction(output);
 
@@ -1481,6 +1493,7 @@ mod tests {
             next_section: BlockSection::NonShared,
             is_payment: false,
             tx: None,
+            block_gas_used: 200_000,
         };
         executor.commit_transaction(output);
 
@@ -1527,6 +1540,7 @@ mod tests {
             next_section: BlockSection::GasIncentive,
             is_payment: false,
             tx: None,
+            block_gas_used: 200_000,
         };
         executor.commit_transaction(output);
 

@@ -434,8 +434,6 @@ where
             .pool_fetch_duration_seconds
             .record(pool_fetch_start.elapsed());
 
-        let is_t4 = builder.evm().cfg.spec.is_t4();
-
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
         loop {
@@ -528,17 +526,10 @@ where
             let tx_execution_start = Instant::now();
             if let Err(err) =
                 builder.execute_transaction_with_result_closure(tx_with_env, |result| {
-                    // Compute gas usage as either regular-only gas spending (T4+) or total gas spending (pre-T4)
-                    let gas_used = if is_t4 {
-                        result.result().result.gas().block_regular_gas_used()
-                    } else {
-                        result.result().result.tx_gas_used()
-                    };
-
-                    cumulative_gas_used += gas_used;
+                    cumulative_gas_used += result.block_gas_used();
                     cumulative_state_gas_used += result.result().result.gas().state_gas_spent();
                     if !is_payment {
-                        non_payment_gas_used += gas_used;
+                        non_payment_gas_used += result.block_gas_used();
                     }
 
                     // Score payload value by actual validator payout, applying the AMM
