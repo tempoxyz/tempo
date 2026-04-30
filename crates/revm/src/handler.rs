@@ -1560,14 +1560,14 @@ where
                         );
                     }
 
-                    if cfg.spec.is_t3() {
-                        if key_auth.key_type != keychain_sig.signature.signature_type() {
-                            return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                    if cfg.spec.is_t3()
+                        && key_auth.key_type != keychain_sig.signature.signature_type()
+                    {
+                        return Err(TempoInvalidTransaction::KeychainValidationFailed {
                                 reason: "key authorization key_type does not match the keychain signature type"
                                     .to_string(),
                             }
                             .into());
-                        }
                     }
                 }
 
