@@ -85,12 +85,8 @@ pub async fn run_consensus_stack(
     // through this subchannel.
     let subblocks = network.register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, message_backlog);
 
-    let fee_recipient = config
-        .fee_recipient
-        .ok_or_eyre("required option `consensus.fee-recipient` not set")?;
-
     let consensus_engine = crate::consensus::engine::Builder {
-        fee_recipient,
+        fee_recipient: config.fee_recipient,
 
         execution_node: Some(execution_node),
         blocker: oracle.clone(),
@@ -115,7 +111,7 @@ pub async fn run_consensus_stack(
         time_to_build_subblock: config.time_to_build_subblock.into_duration(),
         subblock_broadcast_interval: config.subblock_broadcast_interval.into_duration(),
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
-        with_subblocks: config.enable_subblocks,
+        with_subblocks: false,
 
         feed_state,
     }
@@ -168,6 +164,7 @@ async fn instantiate_network(
         listen: config.listen_address,
         max_message_size: config.max_message_size_bytes,
         mailbox_size: config.mailbox_size,
+        send_batch_size: commonware_utils::NZUsize!(8),
         bypass_ip_check: config.bypass_ip_check,
         allow_private_ips: config.allow_private_ips,
         allow_dns: config.allow_dns,
@@ -178,12 +175,8 @@ async fn instantiate_network(
         max_concurrent_handshakes: config.max_concurrent_handshakes,
         block_duration: config.time_to_unblock_byzantine_peer.into_duration(),
         dial_frequency: config.wait_before_peers_redial.into_duration(),
-        query_frequency: config.wait_before_peers_discovery.into_duration(),
         ping_frequency: config.wait_before_peers_reping.into_duration(),
-        allowed_connection_rate_per_peer: commonware_runtime::Quota::with_period(
-            config.connection_per_peer_min_period.into_duration(),
-        )
-        .ok_or_eyre("connection min period must be non-zero")?,
+        peer_connection_cooldown: config.connection_per_peer_min_period.into_duration(),
         allowed_handshake_rate_per_ip: commonware_runtime::Quota::with_period(
             config.handshake_per_ip_min_period.into_duration(),
         )

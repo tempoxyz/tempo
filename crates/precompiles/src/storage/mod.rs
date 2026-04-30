@@ -1,7 +1,13 @@
+//! EVM storage abstraction layer for Tempo precompile contracts.
+//!
+//! Provides traits and types for reading/writing contract state from EVM storage,
+//! including persistent (SLOAD/SSTORE) and transient (TLOAD/TSTORE) operations.
+
 pub mod evm;
 pub mod hashmap;
 
 pub mod thread_local;
+use alloy::primitives::keccak256;
 pub use thread_local::{CheckpointGuard, StorageCtx};
 
 mod types;
@@ -11,14 +17,15 @@ pub mod packing;
 pub use packing::FieldLocation;
 pub use types::mapping as slots;
 
-use alloy::primitives::{Address, LogData, U256};
+use alloy::primitives::{Address, B256, LogData, Signature, U256};
 use revm::{
     context::journaled_state::JournalCheckpoint,
+    interpreter::gas::{KECCAK256, KECCAK256WORD},
     state::{AccountInfo, Bytecode},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 
-use crate::error::Result;
+use crate::error::{Result, TempoPrecompileError};
 
 /// Low-level storage provider for interacting with the EVM.
 ///
@@ -75,11 +82,20 @@ pub trait PrecompileStorageProvider {
     /// Add refund to the refund gas counter.
     fn refund_gas(&mut self, gas: i64);
 
+    /// Returns the gas limit for this precompile call.
+    fn gas_limit(&self) -> u64;
+
     /// Returns the gas used so far.
     fn gas_used(&self) -> u64;
 
+    /// Returns the state-creating gas used so far (cold SSTORE zero->non-zero, code deposit).
+    fn state_gas_used(&self) -> u64;
+
     /// Returns the gas refunded so far.
     fn gas_refunded(&self) -> i64;
+
+    /// Returns the state gas reservoir.
+    fn reservoir(&self) -> u64;
 
     /// Returns the currently active hardfork.
     fn spec(&self) -> TempoHardfork;
@@ -95,15 +111,49 @@ pub trait PrecompileStorageProvider {
     /// auto-reverts on drop and is hardfork-aware (no-op pre-T1C).
     fn checkpoint(&mut self) -> JournalCheckpoint;
 
-    /// Commits all state changes since the last checkpoint.
+    /// Commits all state changes since the given checkpoint.
     ///
     /// Prefer [`CheckpointGuard::commit`].
-    fn checkpoint_commit(&mut self);
+    fn checkpoint_commit(&mut self, checkpoint: JournalCheckpoint);
 
     /// Reverts all state changes back to the given checkpoint.
     ///
     /// Prefer [`CheckpointGuard`] (auto-reverts on drop).
     fn checkpoint_revert(&mut self, checkpoint: JournalCheckpoint);
+
+    /// Computes keccak256 and charges the appropriate gas.
+    ///
+    /// Implementations should use this over naked `keccak256` call to ensure gas is accounted for.
+    fn keccak256(&mut self, data: &[u8]) -> Result<B256> {
+        let num_words =
+            u64::try_from(data.len().div_ceil(32)).map_err(|_| TempoPrecompileError::OutOfGas)?;
+        let price = KECCAK256WORD
+            .checked_mul(num_words)
+            .and_then(|w| w.checked_add(KECCAK256))
+            .ok_or(TempoPrecompileError::OutOfGas)?;
+        self.deduct_gas(price)?;
+        Ok(keccak256(data))
+    }
+
+    /// Recovers the signer address from an ECDSA signature and charges ecrecover gas.
+    /// As per [TIP-1004], it only accepts `v` values of `27` or `28` (no `0`/`1` normalization).
+    ///
+    /// Returns `Ok(None)` on invalid signatures; callers map to domain-specific errors.
+    ///
+    /// [TIP-1004]: <https://github.com/tempoxyz/tempo/blob/main/tips/tip-1004.md#signature-validation>
+    fn recover_signer(&mut self, digest: B256, v: u8, r: B256, s: B256) -> Result<Option<Address>> {
+        self.deduct_gas(crate::ECRECOVER_GAS)?;
+
+        if v != 27 && v != 28 {
+            return Ok(None);
+        }
+
+        let parity = v == 28;
+        let sig = Signature::from_scalars_and_parity(r, s, parity);
+        let recovered = alloy::consensus::crypto::secp256k1::recover_signer(&sig, digest);
+
+        Ok(recovered.ok().filter(|addr| !addr.is_zero()))
+    }
 }
 
 /// Storage operations for a given (contract) address.

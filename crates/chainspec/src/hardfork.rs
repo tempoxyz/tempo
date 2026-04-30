@@ -23,10 +23,10 @@
 //! 6. Add `vivace_time: Option<u64>` arg to `xtask/src/genesis_args.rs`
 //! 7. Add insertion of `"vivaceTime"` to chain_config.extra_fields
 
+use crate::constants::gas;
 use alloy_eips::eip7825::MAX_TX_GAS_LIMIT_OSAKA;
 use alloy_evm::revm::primitives::hardfork::SpecId;
 use alloy_hardforks::hardfork;
-use reth_chainspec::{EthereumHardforks, ForkCondition};
 
 /// Single-source hardfork definition macro. Append a new variant and everything else is generated:
 ///
@@ -65,17 +65,18 @@ macro_rules! tempo_hardfork {
             paste::paste! {
                 $(
                     #[doc = concat!("Returns true if this hardfork is ", stringify!($variant), " or later.")]
-                    pub fn [<is_ $variant:lower>](&self) -> bool {
-                        *self >= Self::$variant
+                    pub const fn [<is_ $variant:lower>](&self) -> bool {
+                        *self as u64 >= Self::$variant as u64
                     }
                 )*
             }
         }
 
         /// Trait for querying Tempo-specific hardfork activations.
-        pub trait TempoHardforks: EthereumHardforks {
+        #[cfg(feature = "reth")]
+        pub trait TempoHardforks: reth_chainspec::EthereumHardforks {
             /// Retrieves activation condition for a Tempo-specific hardfork.
-            fn tempo_fork_activation(&self, fork: TempoHardfork) -> ForkCondition;
+            fn tempo_fork_activation(&self, fork: TempoHardfork) -> reth_chainspec::ForkCondition;
 
             /// Retrieves the Tempo hardfork active at a given timestamp.
             fn tempo_hardfork_at(&self, timestamp: u64) -> TempoHardfork {
@@ -107,7 +108,7 @@ macro_rules! tempo_hardfork {
             }
         }
 
-        #[cfg(test)]
+        #[cfg(all(test, feature = "reth"))]
         mod tests {
             use super::*;
             use TempoHardfork::*;
@@ -182,6 +183,12 @@ tempo_hardfork! (
         ///
         /// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
         T2,
+        /// T3 hardfork
+        T3,
+        /// T4 hardfork
+        T4,
+        /// T5 hardfork
+        T5,
     }
 );
 
@@ -194,24 +201,20 @@ impl TempoHardfork {
     ///
     /// Economic conversion: ceil(basefee × gas_used / 10^12) = cost in microdollars (TIP-20 tokens)
     pub const fn base_fee(&self) -> u64 {
-        match self {
-            Self::T1 | Self::T1A | Self::T1B | Self::T1C | Self::T2 => {
-                crate::spec::TEMPO_T1_BASE_FEE
-            }
-            Self::T0 | Self::Genesis => crate::spec::TEMPO_T0_BASE_FEE,
+        if self.is_t1() {
+            return gas::TEMPO_T1_BASE_FEE;
         }
+        gas::TEMPO_T0_BASE_FEE
     }
 
     /// Returns the fixed general gas limit for T1+, or None for pre-T1.
     /// - Pre-T1: None
     /// - T1+: 30M gas (fixed)
     pub const fn general_gas_limit(&self) -> Option<u64> {
-        match self {
-            Self::T1 | Self::T1A | Self::T1B | Self::T1C | Self::T2 => {
-                Some(crate::spec::TEMPO_T1_GENERAL_GAS_LIMIT)
-            }
-            Self::T0 | Self::Genesis => None,
+        if self.is_t1() {
+            return Some(gas::TEMPO_T1_GENERAL_GAS_LIMIT);
         }
+        None
     }
 
     /// Returns the per-transaction gas limit cap.
@@ -220,31 +223,117 @@ impl TempoHardfork {
     ///
     /// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
     pub const fn tx_gas_limit_cap(&self) -> Option<u64> {
-        match self {
-            Self::T1A | Self::T1B | Self::T1C | Self::T2 => {
-                Some(crate::spec::TEMPO_T1_TX_GAS_LIMIT_CAP)
-            }
-            Self::T0 | Self::Genesis | Self::T1 => Some(MAX_TX_GAS_LIMIT_OSAKA),
+        if self.is_t1a() {
+            return Some(gas::TEMPO_T1_TX_GAS_LIMIT_CAP);
         }
+        Some(MAX_TX_GAS_LIMIT_OSAKA)
     }
 
     /// Gas cost for using an existing 2D nonce key
     pub const fn gas_existing_nonce_key(&self) -> u64 {
-        match self {
-            Self::Genesis | Self::T0 | Self::T1 | Self::T1A | Self::T1B | Self::T1C => {
-                crate::spec::TEMPO_T1_EXISTING_NONCE_KEY_GAS
-            }
-            Self::T2 => crate::spec::TEMPO_T2_EXISTING_NONCE_KEY_GAS,
+        if self.is_t2() {
+            return gas::TEMPO_T2_EXISTING_NONCE_KEY_GAS;
         }
+        gas::TEMPO_T1_EXISTING_NONCE_KEY_GAS
     }
 
     /// Gas cost for using a new 2D nonce key
     pub const fn gas_new_nonce_key(&self) -> u64 {
-        match self {
-            Self::Genesis | Self::T0 | Self::T1 | Self::T1A | Self::T1B | Self::T1C => {
-                crate::spec::TEMPO_T1_NEW_NONCE_KEY_GAS
+        if self.is_t2() {
+            return gas::TEMPO_T2_NEW_NONCE_KEY_GAS;
+        }
+        gas::TEMPO_T1_NEW_NONCE_KEY_GAS
+    }
+
+    /// Returns the active hardfork at the given timestamp for the specified chain.
+    ///
+    /// Returns `None` if the chain ID is not a known Tempo chain.
+    pub const fn from_chain_and_timestamp(chain_id: u64, timestamp: u64) -> Option<Self> {
+        // Walk variants in reverse to find the latest active fork, mirroring
+        // `TempoHardforks::tempo_hardfork_at` but without needing a chainspec instance.
+        let variants = Self::VARIANTS;
+        let mut i = variants.len();
+        while i > 0 {
+            i -= 1;
+            let activation = match chain_id {
+                4217 => variants[i].mainnet_activation_timestamp(),
+                42431 => variants[i].moderato_activation_timestamp(),
+                _ => return None,
+            };
+            if let Some(ts) = activation
+                && timestamp >= ts
+            {
+                return Some(variants[i]);
             }
-            Self::T2 => crate::spec::TEMPO_T2_NEW_NONCE_KEY_GAS,
+        }
+        Some(Self::Genesis)
+    }
+
+    /// Retrieves the activation block for this hardfork on mainnet.
+    pub const fn mainnet_activation_block(&self) -> Option<u64> {
+        use crate::constants::mainnet::*;
+        match self {
+            Self::Genesis => Some(MAINNET_GENESIS_BLOCK),
+            Self::T0 => Some(MAINNET_T0_BLOCK),
+            Self::T1 => Some(MAINNET_T1_BLOCK),
+            Self::T1A => Some(MAINNET_T1A_BLOCK),
+            Self::T1B => Some(MAINNET_T1B_BLOCK),
+            Self::T1C => Some(MAINNET_T1C_BLOCK),
+            Self::T2 => Some(MAINNET_T2_BLOCK),
+            Self::T3 => None, // not yet known
+            Self::T4 => None,
+            Self::T5 => None,
+        }
+    }
+
+    /// Retrieves the activation timestamp for this hardfork on mainnet.
+    pub const fn mainnet_activation_timestamp(&self) -> Option<u64> {
+        use crate::constants::mainnet::*;
+        match self {
+            Self::Genesis => Some(MAINNET_GENESIS_TIMESTAMP),
+            Self::T0 => Some(MAINNET_T0_TIMESTAMP),
+            Self::T1 => Some(MAINNET_T1_TIMESTAMP),
+            Self::T1A => Some(MAINNET_T1A_TIMESTAMP),
+            Self::T1B => Some(MAINNET_T1B_TIMESTAMP),
+            Self::T1C => Some(MAINNET_T1C_TIMESTAMP),
+            Self::T2 => Some(MAINNET_T2_TIMESTAMP),
+            Self::T3 => Some(MAINNET_T3_TIMESTAMP),
+            Self::T4 => None,
+            Self::T5 => None,
+        }
+    }
+
+    /// Retrieves the activation block for this hardfork on moderato testnet.
+    pub const fn moderato_activation_block(&self) -> Option<u64> {
+        use crate::constants::moderato::*;
+        match self {
+            Self::Genesis => Some(MODERATO_GENESIS_BLOCK),
+            Self::T0 => Some(MODERATO_T0_BLOCK),
+            Self::T1 => Some(MODERATO_T1_BLOCK),
+            Self::T1A => Some(MODERATO_T1A_BLOCK),
+            Self::T1B => Some(MODERATO_T1B_BLOCK),
+            Self::T1C => Some(MODERATO_T1C_BLOCK),
+            Self::T2 => Some(MODERATO_T2_BLOCK),
+            Self::T3 => None, // not yet known
+            Self::T4 => None,
+            Self::T5 => None,
+        }
+    }
+
+    /// Retrieves the activation timestamp for this hardfork on moderato testnet.
+    pub const fn moderato_activation_timestamp(&self) -> Option<u64> {
+        use crate::constants::moderato::*;
+        match self {
+            Self::Genesis => Some(MODERATO_GENESIS_TIMESTAMP),
+            Self::T0 => Some(MODERATO_T0_TIMESTAMP),
+            Self::T1 => Some(MODERATO_T1_TIMESTAMP),
+            Self::T1A => Some(MODERATO_T1A_TIMESTAMP),
+            Self::T1B => Some(MODERATO_T1B_TIMESTAMP),
+            Self::T1C => Some(MODERATO_T1C_TIMESTAMP),
+            Self::T2 => Some(MODERATO_T2_TIMESTAMP),
+            Self::T3 => Some(MODERATO_T3_TIMESTAMP),
+            Self::T4 => None,
+            Self::T5 => None,
         }
     }
 }

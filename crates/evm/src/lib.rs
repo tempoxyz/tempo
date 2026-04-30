@@ -77,6 +77,11 @@ impl TempoEvmConfig {
         &self.inner
     }
 
+    /// Returns the moderato EVM config.
+    pub fn moderato() -> Self {
+        Self::new(Arc::new(TempoChainSpec::moderato()))
+    }
+
     /// Returns the mainnet EVM config.
     pub fn mainnet() -> Self {
         Self::new(Arc::new(TempoChainSpec::mainnet()))
@@ -136,6 +141,13 @@ impl ConfigureEvm for TempoEvmConfig {
         let mut cfg_env = cfg_env.with_spec_and_gas_params(spec, tempo_gas_params(spec));
         cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
 
+        // TIP-1016 (T4): Enable EIP-8037 state gas charging. All Tempo hardforks map to
+        // SpecId::OSAKA, but revm's AMSTERDAM (which gates record_state_cost in SSTORE/CREATE)
+        // comes after OSAKA in the SpecId enum. Without this flag, state gas overrides
+        // (sstore_set_state_gas, new_account_state_gas, etc.) are configured but never charged.
+        if spec.is_t4() {
+            cfg_env.enable_amsterdam_eip8037 = true;
+        }
         Ok(EvmEnv {
             cfg_env,
             block_env: TempoBlockEnv {
@@ -157,6 +169,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 suggested_fee_recipient: attributes.suggested_fee_recipient,
                 prev_randao: attributes.prev_randao,
                 gas_limit: attributes.gas_limit,
+                slot_number: attributes.slot_number,
             },
             self.chain_spec()
                 .next_block_base_fee(parent, attributes.timestamp)
@@ -173,6 +186,13 @@ impl ConfigureEvm for TempoEvmConfig {
         let mut cfg_env = cfg_env.with_spec_and_gas_params(spec, tempo_gas_params(spec));
         cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
 
+        // TIP-1016 (T4): Enable EIP-8037 state gas charging. All Tempo hardforks map to
+        // SpecId::OSAKA, but revm's AMSTERDAM (which gates record_state_cost in SSTORE/CREATE)
+        // comes after OSAKA in the SpecId enum. Without this flag, state gas overrides
+        // (sstore_set_state_gas, new_account_state_gas, etc.) are configured but never charged.
+        if spec.is_t4() {
+            cfg_env.enable_amsterdam_eip8037 = true;
+        }
         Ok(EvmEnv {
             cfg_env,
             block_env: TempoBlockEnv {
@@ -217,12 +237,14 @@ impl ConfigureEvm for TempoEvmConfig {
                     .map(|w| Cow::Borrowed(w.as_slice())),
                 extra_data: block.extra_data().clone(),
                 tx_count_hint: Some(block.body().transactions.len()),
+                slot_number: block.slot_number(),
             },
             general_gas_limit: block.header().general_gas_limit,
             shared_gas_limit: block.header().gas_limit()
                 / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
             // Not available when we only have a block body.
             validator_set: None,
+            consensus_context: block.header().consensus_context,
             subblock_fee_recipients,
         })
     }
@@ -236,6 +258,7 @@ impl ConfigureEvm for TempoEvmConfig {
             inner: EthBlockExecutionCtx {
                 parent_hash: parent.hash(),
                 parent_beacon_block_root: attributes.parent_beacon_block_root,
+                slot_number: attributes.slot_number,
                 ommers: &[],
                 withdrawals: attributes
                     .inner
@@ -249,6 +272,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
             // Fine to not validate during block building.
             validator_set: None,
+            consensus_context: attributes.consensus_context,
             subblock_fee_recipients: attributes.subblock_fee_recipients,
         })
     }
@@ -294,6 +318,7 @@ mod tests {
             general_gas_limit: 10_000_000,
             timestamp_millis_part: 500,
             shared_gas_limit: 3_000_000,
+            ..Default::default()
         };
 
         let result = evm_config.evm_env(&header);
@@ -336,6 +361,7 @@ mod tests {
             general_gas_limit: 10_000_000,
             timestamp_millis_part: 0,
             shared_gas_limit: 3_000_000,
+            ..Default::default()
         };
 
         // Verify we're in T1
@@ -366,6 +392,7 @@ mod tests {
             general_gas_limit: 10_000_000,
             timestamp_millis_part: 0,
             shared_gas_limit: 3_000_000,
+            ..Default::default()
         };
 
         let attributes = TempoNextBlockEnvAttributes {
@@ -377,10 +404,12 @@ mod tests {
                 parent_beacon_block_root: Some(B256::ZERO),
                 withdrawals: None,
                 extra_data: Default::default(),
+                slot_number: None,
             },
             general_gas_limit: 10_000_000,
             shared_gas_limit: 3_000_000,
             timestamp_millis_part: 750,
+            consensus_context: None,
             subblock_fee_recipients: HashMap::new(),
         };
 
@@ -448,6 +477,7 @@ mod tests {
             general_gas_limit: 10_000_000,
             timestamp_millis_part: 500,
             shared_gas_limit: 3_000_000,
+            ..Default::default()
         };
 
         let body = BlockBody {
@@ -505,6 +535,7 @@ mod tests {
             general_gas_limit: 10_000_000,
             timestamp_millis_part: 500,
             shared_gas_limit: 3_000_000,
+            ..Default::default()
         };
 
         let body = BlockBody {
@@ -540,6 +571,7 @@ mod tests {
             general_gas_limit: 10_000_000,
             timestamp_millis_part: 0,
             shared_gas_limit: 3_000_000,
+            ..Default::default()
         };
         let parent = SealedHeader::seal_slow(parent_header);
 
@@ -557,10 +589,12 @@ mod tests {
                 parent_beacon_block_root: Some(B256::repeat_byte(0x05)),
                 withdrawals: None,
                 extra_data: Default::default(),
+                slot_number: None,
             },
             general_gas_limit: 12_000_000,
             shared_gas_limit: 4_000_000,
             timestamp_millis_part: 999,
+            consensus_context: None,
             subblock_fee_recipients: subblock_fee_recipients.clone(),
         };
 

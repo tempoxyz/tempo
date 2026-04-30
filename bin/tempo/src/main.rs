@@ -15,6 +15,16 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+// tracy-client is an optional dependency activated by the `tracy` feature.
+// It is not used directly but must be present for the `ondemand` feature flag.
+#[cfg(feature = "tracy")]
+use tracy_client as _;
+
+// opentelemetry-otlp is an optional dependency activated by the `otlp` feature.
+// It is not used directly but must be present to enable reqwest rustls support.
+#[cfg(feature = "otlp")]
+use opentelemetry_otlp as _;
+
 #[global_allocator]
 static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::new_allocator();
 
@@ -31,6 +41,7 @@ static MALLOC_CONF: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0";
 
 mod defaults;
 mod init_state;
+mod p2p_proxy;
 mod tempo_cmd;
 
 use clap::{CommandFactory, FromArgMatches};
@@ -39,9 +50,11 @@ use eyre::WrapErr as _;
 use futures::{FutureExt as _, future::FusedFuture as _};
 use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands, evm::revm::primitives::B256};
 use reth_ethereum_cli::Cli;
+use reth_network_api::Peers;
+use reth_network_peers::pk2id;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
-use reth_rpc_server_types::DefaultRpcModuleValidator;
-use std::{sync::Arc, thread};
+use reth_rpc_server_types::{RethRpcModule, RpcModuleSelection, RpcModuleValidator};
+use std::{sync::Arc, thread, time::Duration};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_commonware_node::{feed as consensus_feed, run_consensus_stack};
 use tempo_consensus::TempoConsensus;
@@ -57,10 +70,37 @@ use tempo_node::{
     telemetry::{PrometheusMetricsConfig, install_prometheus_metrics},
 };
 use tokio::sync::oneshot;
-use tracing::{info, info_span};
+use tracing::{debug, info, info_span, warn};
 
 type TempoCli =
-    Cli<TempoChainSpecParser, TempoArgs, DefaultRpcModuleValidator, tempo_cmd::TempoSubcommand>;
+    Cli<TempoChainSpecParser, TempoArgs, TempoRpcModuleValidator, tempo_cmd::TempoSubcommand>;
+
+const TEMPO_CUSTOM_RPC_MODULES: &[&str] = &["consensus", "operator", "tempo", "token"];
+
+#[derive(Debug, Clone, Copy)]
+struct TempoRpcModuleValidator;
+
+impl RpcModuleValidator for TempoRpcModuleValidator {
+    fn parse_selection(s: &str) -> Result<RpcModuleSelection, String> {
+        let selection = s
+            .parse::<RpcModuleSelection>()
+            .map_err(|e| format!("Failed to parse RPC modules: {e}"))?;
+
+        if let RpcModuleSelection::Selection(modules) = &selection {
+            for module in modules {
+                let RethRpcModule::Other(name) = module else {
+                    continue;
+                };
+
+                if !TEMPO_CUSTOM_RPC_MODULES.contains(&name.as_str()) {
+                    return Err(format!("Unknown RPC module: '{name}'"));
+                }
+            }
+        }
+
+        Ok(selection)
+    }
+}
 
 // TODO: migrate this to tempo_node eventually.
 #[derive(Debug, Clone, clap::Args)]
@@ -69,6 +109,22 @@ struct TempoArgs {
     /// If provided without a value, defaults to the RPC URL for the selected chain.
     #[arg(long, value_name = "URL", default_missing_value = "auto", num_args(0..=1), env = "TEMPO_FOLLOW")]
     pub follow: Option<String>,
+
+    /// HTTP endpoint that returns a JSON object mapping chain IDs to bootnode lists.
+    ///
+    /// The endpoint must return JSON in the format:
+    /// `{ "<chain_id>": ["enode://...", ...] }`
+    ///
+    /// Bootnodes for the current chain are added as peer hints to the discovery service.
+    ///
+    /// Set to "none" to disable.
+    #[arg(
+        long = "tempo.bootnodes-endpoint",
+        value_name = "URL",
+        default_value = "https://peers.tempo.xyz",
+        env = "TEMPO_BOOTNODES_ENDPOINT"
+    )]
+    pub bootnodes_endpoint: String,
 
     #[command(flatten)]
     pub telemetry: defaults::TelemetryArgs,
@@ -125,6 +181,23 @@ fn install_crypto_provider() {
         .expect("Failed to install default rustls crypto provider");
 }
 
+trait NodeCommandExt {
+    /// Derive the peer id from the p2p secret key without starting the network.
+    fn peer_id(&self) -> reth_network_peers::PeerId;
+}
+
+impl NodeCommandExt for reth_cli_commands::node::NodeCommand<TempoChainSpecParser, TempoArgs> {
+    fn peer_id(&self) -> reth_network_peers::PeerId {
+        let data_dir = self.datadir.clone().resolve_datadir(self.chain.chain());
+        let sk = self
+            .network
+            .secret_key(data_dir.p2p_secret())
+            .expect("unable to derive peer id from p2p secret");
+
+        pk2id(&sk.public_key(secp256k1::SECP256K1))
+    }
+}
+
 /// Print installed extensions as a footer after root help output.
 /// Skips printing when help is for a subcommand (e.g. `tempo node --help`).
 fn print_extensions_footer() {
@@ -156,6 +229,39 @@ fn print_extensions_footer() {
             println!("  {b}{name:<22}{r} {desc}");
         }
     }
+}
+
+/// Fetches bootnodes from the given endpoint for the specified chain ID.
+///
+/// The endpoint must return JSON in the format:
+/// `{ "<chain_id>": ["enode://...", ...] }`
+async fn fetch_bootnodes(
+    endpoint: &str,
+    chain_id: u64,
+) -> eyre::Result<Vec<reth_network_peers::NodeRecord>> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .wrap_err("failed to build HTTP client")?;
+
+    let resp: std::collections::HashMap<String, Vec<String>> = client
+        .get(endpoint)
+        .send()
+        .await
+        .wrap_err("request failed")?
+        .error_for_status()
+        .wrap_err("endpoint returned error status")?
+        .json()
+        .await
+        .wrap_err("failed to parse response as JSON")?;
+
+    let key = chain_id.to_string();
+    let enodes = match resp.get(&key) {
+        Some(enodes) => enodes,
+        None => return Ok(Vec::new()),
+    };
+
+    Ok(reth_network_peers::parse_nodes(enodes))
 }
 
 fn main() -> eyre::Result<()> {
@@ -214,6 +320,16 @@ fn main() -> eyre::Result<()> {
         }
     };
 
+    if let Commands::Node(node_cmd) = &cli.command
+        && node_cmd.engine.share_sparse_trie_with_payload_builder
+        && node_cmd.builder.max_payload_tasks != 1
+    {
+        eyre::bail!(
+            "--engine.share-sparse-trie-with-payload-builder requires --builder.max-tasks to be 1 (got {})",
+            node_cmd.builder.max_payload_tasks
+        );
+    }
+
     // If telemetry is enabled, set logs OTLP (conflicts_with in TelemetryArgs prevents both being set)
     let mut telemetry_config = None;
     if let Commands::Node(node_cmd) = &cli.command
@@ -230,15 +346,22 @@ fn main() -> eyre::Result<()> {
             .wrap_err("failed parsing consensus key")?
             .map(|k| k.to_string());
 
+        let peer_id = format!("{:x}", node_cmd.peer_id());
+
+        // VictoriaMetrics does not support merging `extra_fields` query args like `extra_labels` for
+        // metrics. A workaround for now is to directly hook into the `OTEL_RESOURCE_ATTRIBUTES` env var
+        // used at startup to capture contextual information.
+        let mut extra_attrs = vec![format!("peer_id={peer_id}")];
         if let Some(pubkey) = &consensus_pubkey {
-            // VictoriaMetrics does not support merging `extra_fields` query args like `extra_labels` for
-            // metrics. A workaround for now is to directly hook into the `OTEL_RESOURCE_ATTRIBUTES` env var
-            // used at startup to capture contextual information.
+            extra_attrs.push(format!("consensus_pubkey={pubkey}"));
+        }
+
+        if !extra_attrs.is_empty() {
             let current = std::env::var("OTEL_RESOURCE_ATTRIBUTES").unwrap_or_default();
             let new_attrs = if current.is_empty() {
-                format!("consensus_pubkey={pubkey}")
+                extra_attrs.join(",")
             } else {
-                format!("{current},consensus_pubkey={pubkey}")
+                format!("{current},{}", extra_attrs.join(","))
             };
 
             // SAFETY: called at startup before the OTEL SDK is initialised
@@ -334,6 +457,7 @@ fn main() -> eyre::Result<()> {
                         interval: config.metrics_prometheus_interval,
                         auth_header: config.metrics_auth_header,
                         consensus_pubkey,
+                        peer_id: format!("{:x}", node.network.peer_id()),
                     };
 
                     install_prometheus_metrics(
@@ -341,6 +465,15 @@ fn main() -> eyre::Result<()> {
                         prometheus_config,
                     )
                     .wrap_err("failed to start Prometheus metrics exporter")?;
+                }
+
+                if args.consensus.fee_recipient.is_some() {
+                    warn!(
+                        "`--consensus.fee-recipient` is deprecated and will be \
+                         removed. It is only used pre-T2 hardfork, if validator \
+                         config v2 is not yet activated, or if the on-chain fee \
+                         recipient is set to the zero address",
+                    );
                 }
 
                 let consensus_stack =
@@ -413,6 +546,15 @@ fn main() -> eyre::Result<()> {
         } else {
             None
         };
+        let chain_id = builder.config().chain.chain().id();
+
+        // Resolve the bootnodes endpoint:
+        // --tempo.bootnodes-endpoint=none -> disabled
+        // otherwise -> use the provided/default URL
+        let bootnodes_endpoint = match args.bootnodes_endpoint.trim() {
+            value if value.eq_ignore_ascii_case("none") => None,
+            url => Some(url.to_string()),
+        };
 
         let NodeHandle {
             node,
@@ -466,6 +608,60 @@ fn main() -> eyre::Result<()> {
             .launch_with_debug_capabilities()
             .await
             .wrap_err("failed launching execution node")?;
+
+        // Fetch bootnodes from the endpoint in a background task and inject
+        // them into the already-running discovery services.
+        if let Some(endpoint) = bootnodes_endpoint {
+            let network = node.network.clone();
+            node.tasks().spawn_task(async move {
+                match fetch_bootnodes(&endpoint, chain_id).await {
+                    Ok(nodes) if nodes.is_empty() => {}
+                    Ok(nodes) => {
+                        info!(
+                            chain_id,
+                            count = nodes.len(),
+                            endpoint,
+                            "fetched bootnodes from endpoint"
+                        );
+                        for node in &nodes {
+                            if let Some(discv4) = network.discv4() {
+                                discv4.add_node(*node);
+                            }
+                            network.add_peer_kind(
+                                node.id,
+                                None,
+                                node.tcp_addr(),
+                                Some(node.udp_addr()),
+                            );
+                        }
+                        if let Some(discv5) = network.discv5() {
+                            let enr_requests = nodes.iter().filter_map(|node| {
+                                match reth_discv5::BootNode::from_unsigned(*node) {
+                                    Ok(boot_node) => Some(async move {
+                                        if let Err(err) = discv5
+                                            .with_discv5(|d| {
+                                                d.request_enr(boot_node.to_string())
+                                            })
+                                            .await
+                                        {
+                                            debug!(%err, %node, "failed adding boot node to discv5");
+                                        }
+                                    }),
+                                    Err(err) => {
+                                        warn!(%err, %node, "failed converting boot node for discv5");
+                                        None
+                                    }
+                                }
+                            });
+                            futures::future::join_all(enr_requests).await;
+                        }
+                    }
+                    Err(err) => {
+                        warn!(%err, endpoint, "failed to fetch bootnodes from endpoint");
+                    }
+                }
+            });
+        }
 
         let _ = args_and_node_handle_tx.send((node, args));
 

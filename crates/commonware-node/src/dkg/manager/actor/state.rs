@@ -771,14 +771,15 @@ impl Read for State {
         buf: &mut impl bytes::Buf,
         cfg: &Self::Cfg,
     ) -> Result<Self, commonware_codec::Error> {
-        let range_cfg = RangeCfg::from(1..=(u16::MAX as usize));
         Ok(Self {
             epoch: ReadExt::read(buf)?,
             seed: ReadExt::read(buf)?,
             output: Read::read_cfg(buf, &(*cfg, ModeVersion::v0()))?,
             share: ReadExt::read(buf)?,
-            players: Read::read_cfg(buf, &(range_cfg, ()))?,
-            syncers: Read::read_cfg(buf, &(range_cfg, ()))?,
+            players: Read::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), ()))?,
+            // Range from 0 to u16::MAX because after T2/V2 syncers are no longer
+            // stored in state.
+            syncers: Read::read_cfg(buf, &(RangeCfg::from(0..=(u16::MAX as usize)), ()))?,
             is_full_dkg: ReadExt::read(buf)?,
         })
     }
@@ -1275,10 +1276,12 @@ impl Player {
     /// Finalize the player's participation in the DKG round.
     pub(super) fn finalize(
         self,
-        logs: BTreeMap<PublicKey, dkg::DealerLog<MinSig, PublicKey>>,
+        rng: &mut impl rand_core::CryptoRngCore,
+        logs: dkg::Logs<MinSig, PublicKey, N3f1>,
         strategy: &impl Strategy,
     ) -> Result<(Output<MinSig, PublicKey>, Share), dkg::Error> {
-        self.player.finalize::<N3f1>(logs, strategy)
+        self.player
+            .finalize::<N3f1, commonware_cryptography::ed25519::Batch>(rng, logs, strategy)
     }
 }
 
@@ -1343,6 +1346,7 @@ impl ReducedBlock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use commonware_codec::Encode as _;
     use commonware_cryptography::{
         bls12381::{dkg, primitives::sharing::Mode},
         ed25519::PrivateKey,
@@ -1397,6 +1401,30 @@ mod tests {
             syncers: peers,
             is_full_dkg: false,
         }
+    }
+
+    #[test]
+    fn state_round_trip_with() {
+        let executor = deterministic::Runner::default();
+        executor.start(|mut context| async move {
+            let state = make_test_state(&mut context, 0);
+            let mut bytes = state.encode();
+            assert_eq!(
+                state,
+                State::read_cfg(&mut bytes, &NZU32!(u32::MAX)).unwrap(),
+            );
+
+            let state_without_syncers = {
+                let mut s = make_test_state(&mut context, 0);
+                s.syncers = Default::default();
+                s
+            };
+            let mut bytes = state_without_syncers.encode();
+            assert_eq!(
+                state_without_syncers,
+                State::read_cfg(&mut bytes, &NZU32!(u32::MAX)).unwrap(),
+            );
+        });
     }
 
     #[test]

@@ -23,6 +23,7 @@ pub(crate) enum IpParseError {
     Parse(#[from] std::net::AddrParseError),
 }
 
+/// Validates that `input` is a valid IP address (v4 or v6, no port).
 pub(crate) fn ensure_address_is_ip(input: &str) -> core::result::Result<(), IpParseError> {
     input.parse::<std::net::IpAddr>()?;
     Ok(())

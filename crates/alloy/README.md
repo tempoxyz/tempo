@@ -11,6 +11,14 @@ To use `tempo-alloy`, add the crate as a dependency in your `Cargo.toml` file:
 tempo-alloy = { git = "https://github.com/tempoxyz/tempo" }
 ```
 
+If you need the Reth RPC conversion/compatibility impls used by Tempo node-side code,
+enable the `reth` feature explicitly:
+
+```toml
+[dependencies]
+tempo-alloy = { git = "https://github.com/tempoxyz/tempo", features = ["reth"] }
+```
+
 ## Development Status
 
 `tempo-alloy` is currently in development and is not yet ready for production use.
@@ -28,7 +36,7 @@ use tempo_alloy::TempoNetwork;
 
 async fn build_provider() -> Result<impl Provider<TempoNetwork>, TransportError> {
     ProviderBuilder::new_with_network::<TempoNetwork>()
-        .connect("https://rpc.testnet.tempo.xyz")
+        .connect("https://rpc.moderato.tempo.xyz")
         .await
 }
 ```
@@ -82,7 +90,7 @@ use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderExt};
 
 async fn keychain_example() -> Result<(), Box<dyn std::error::Error>> {
     let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-        .connect("https://rpc.testnet.tempo.xyz")
+        .connect("https://rpc.moderato.tempo.xyz")
         .await?;
 
     let account = address!("0x1111111111111111111111111111111111111111");

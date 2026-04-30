@@ -10,7 +10,7 @@ use alloy::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_node::rpc::TempoTransactionRequest;
-use tempo_primitives::SignatureType;
+use tempo_primitives::{SignatureType, transaction::SignedKeyAuthorization};
 
 /// Test environment abstraction for matrix tests and scenario runners.
 ///
@@ -26,10 +26,12 @@ pub(crate) trait TestEnv: Sized {
     /// Currently active hardfork
     fn hardfork(&self) -> TempoHardfork;
 
-    /// Whether this environment still runs legacy mempool behavior for keychain
-    /// spending-limit checks that surface as builder exclusion instead of RPC rejection.
-    fn uses_legacy_keyauth_pool_validation(&self) -> bool {
-        false
+    /// Whether this environment should run selector-scoped key auth RPC cases.
+    ///
+    /// Local test nodes exercise the current branch's RPC implementation, while remote networks
+    /// may lag until the relevant hardfork is deployed there.
+    fn supports_scoped_key_auth_rpc(&self) -> bool {
+        true
     }
 
     /// Fund `addr` with fee tokens so it can transact.
@@ -57,22 +59,13 @@ pub(crate) trait TestEnv: Sized {
             .await;
         assert!(result.is_err(), "Transaction should be rejected");
         if let (Some(reason), Err(err)) = (expected_reason, &result) {
-            let err_str = err.to_string().to_lowercase();
             assert!(
-                err_str.contains(&reason.to_lowercase()),
+                super::helpers::rpc_error_contains_reason(err, reason),
                 "Rejection error should contain '{reason}', got: {err}"
             );
         }
         Ok(())
     }
-
-    /// Submit a transaction that enters the pool but is excluded by the block
-    /// builder (execution simulation fails). Asserts no receipt exists after mining.
-    async fn submit_tx_excluded_by_builder(
-        &mut self,
-        encoded: Vec<u8>,
-        tx_hash: B256,
-    ) -> eyre::Result<()>;
 
     /// Submit a signed, encoded transaction and wait until it is mined.
     /// Returns the receipt JSON WITHOUT asserting status (caller checks).
@@ -161,6 +154,10 @@ pub(crate) trait TestEnv: Sized {
     async fn run_send_negative_scenario(&mut self) -> eyre::Result<()> {
         super::runners::run_send_negative_scenario(self).await
     }
+
+    async fn run_fill_transaction_error_decoding_scenario(&mut self) -> eyre::Result<()> {
+        super::runners::run_fill_transaction_error_decoding_scenario(self).await
+    }
 }
 
 /// Key type for matrix tests
@@ -221,6 +218,20 @@ pub(crate) enum KeyExpiry {
     None,
     /// Already expired (expiry: Some(1)) → rejection.
     Past,
+}
+
+/// Scoped-call shape carried by a key authorization.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub(crate) enum AllowedCallsMode {
+    /// Unrestricted access key.
+    #[default]
+    None,
+    /// One selector with a single allowed recipient.
+    SelectorRecipient,
+    /// One selector with an empty recipient list (allow any recipient).
+    SelectorAnyRecipient,
+    /// One target with an empty selector list (allow any selector for that target).
+    TargetAnySelector,
 }
 
 /// How the access key / keychain is set up for the raw send case.
@@ -421,7 +432,6 @@ impl RawSendTestCase {
             ExpectedOutcome::Success => {}
             ExpectedOutcome::Rejection => flags.push("rejected"),
             ExpectedOutcome::Revert => flags.push("revert"),
-            ExpectedOutcome::ExcludedByBuilder => flags.push("excluded"),
         }
         flags
     }
@@ -570,9 +580,6 @@ pub(crate) enum ExpectedOutcome {
     Rejection,
     /// Mined but reverted (status 0x0). Nonce still bumps.
     Revert,
-    /// Enters pool but excluded by block builder (execution simulation fails).
-    /// Tx is never mined — no receipt exists.
-    ExcludedByBuilder,
 }
 
 /// Test case definition for fill tests and E2E matrix
@@ -581,6 +588,8 @@ pub(crate) struct FillTestCase {
     pub nonce_mode: NonceMode,
     pub key_type: KeyType,
     pub include_nonce_key: bool,
+    pub key_authorization_name: Option<&'static str>,
+    pub key_authorization: Option<SignedKeyAuthorization>,
     pub fee_token: Option<Address>,
     pub fee_payer: bool,
     pub valid_before_offset: Option<i64>,
@@ -598,6 +607,8 @@ impl FillTestCase {
             nonce_mode,
             key_type,
             include_nonce_key: true,
+            key_authorization_name: None,
+            key_authorization: None,
             fee_token: None,
             fee_payer: false,
             valid_before_offset: None,
@@ -616,6 +627,17 @@ impl FillTestCase {
 
     pub(crate) fn fee_payer(mut self) -> Self {
         self.fee_payer = true;
+        self.rebuild_name();
+        self
+    }
+
+    pub(crate) fn key_authorization(
+        mut self,
+        name: &'static str,
+        key_authorization: SignedKeyAuthorization,
+    ) -> Self {
+        self.key_authorization_name = Some(name);
+        self.key_authorization = Some(key_authorization);
         self.rebuild_name();
         self
     }
@@ -678,6 +700,9 @@ impl FillTestCase {
 
     fn opt_names(&self) -> Vec<&'static str> {
         let mut opts = Vec::new();
+        if let Some(name) = self.key_authorization_name {
+            opts.push(name);
+        }
         if self.fee_token.is_some() {
             opts.push("fee_token");
         }
@@ -701,6 +726,7 @@ pub(crate) struct FillRequestContext {
     pub request: TempoTransactionRequest,
     pub expected_nonce: Option<u64>,
     pub expected_nonce_key: U256,
+    pub expected_key_authorization: Option<SignedKeyAuthorization>,
     pub expected_valid_before: Option<u64>,
     pub expected_valid_after: Option<u64>,
 }
@@ -730,11 +756,13 @@ pub(crate) enum AuthKind {
     Keychain {
         key_type: Option<SignatureType>,
         num_limits: usize,
+        allowed_calls: AllowedCallsMode,
     },
     /// Inline key authorization: sets key_authorization only.
     KeyAuth {
         key_type: SignatureType,
         num_limits: usize,
+        allowed_calls: AllowedCallsMode,
     },
 }
 

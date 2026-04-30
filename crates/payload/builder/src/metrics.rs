@@ -8,8 +8,8 @@ use reth_storage_api::{
     StateProvider, StateRootProvider, StorageRootProvider,
 };
 use reth_trie_common::{
-    AccountProof, HashedPostState, HashedStorage, MultiProof, MultiProofTargets, StorageMultiProof,
-    StorageProof, TrieInput, updates::TrieUpdates,
+    AccountProof, ExecutionWitnessMode, HashedPostState, HashedStorage, MultiProof,
+    MultiProofTargets, StorageMultiProof, StorageProof, TrieInput, updates::TrieUpdates,
 };
 use std::time::Instant;
 use tracing::debug_span;
@@ -41,6 +41,20 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) gas_used: Histogram,
     /// Amount of gas used in the payload.
     pub(crate) gas_used_last: Gauge,
+    /// State gas used in the payload (TIP-1016).
+    pub(crate) state_gas_used: Histogram,
+    /// State gas used in the last payload (TIP-1016).
+    pub(crate) state_gas_used_last: Gauge,
+    /// Gas used by general (non-payment) transactions in the payload.
+    pub(crate) general_gas_used_last: Gauge,
+    /// Gas used by payment transactions in the payload.
+    pub(crate) payment_gas_used_last: Gauge,
+    /// General lane gas limit.
+    pub(crate) general_gas_limit_last: Gauge,
+    /// Payment lane gas limit.
+    pub(crate) payment_gas_limit_last: Gauge,
+    /// Shared (subblock) gas limit.
+    pub(crate) shared_gas_limit_last: Gauge,
     /// Time to create the pool's `BestTransactions` iterator, including lock acquisition and snapshot.
     pub(crate) pool_fetch_duration_seconds: Histogram,
     /// Time to acquire the state provider and initialize the state DB.
@@ -140,7 +154,7 @@ reth_storage_api::delegate_impls_to_as_ref!(
     StateProofProvider {
         fn proof(&self, input: TrieInput, address: Address, slots: &[B256]) -> ProviderResult<AccountProof>;
         fn multiproof(&self, input: TrieInput, targets: MultiProofTargets) -> ProviderResult<MultiProof>;
-        fn witness(&self, input: TrieInput, target: HashedPostState) -> ProviderResult<Vec<Bytes>>;
+        fn witness(&self, input: TrieInput, target: HashedPostState, mode: ExecutionWitnessMode) -> ProviderResult<Vec<Bytes>>;
     }
 );
 

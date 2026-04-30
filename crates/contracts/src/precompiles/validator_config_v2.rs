@@ -151,6 +151,7 @@ crate::sol! {
 
         error AlreadyInitialized();
         error IngressAlreadyExists(string ingress);
+        error EmptyV1ValidatorSet();
         error InvalidMigrationIndex();
         error InvalidOwner();
         error InvalidPublicKey();
@@ -216,6 +217,10 @@ impl ValidatorConfigV2Error {
 
     pub const fn migration_not_complete() -> Self {
         Self::MigrationNotComplete(IValidatorConfigV2::MigrationNotComplete {})
+    }
+
+    pub const fn empty_v1_validator_set() -> Self {
+        Self::EmptyV1ValidatorSet(IValidatorConfigV2::EmptyV1ValidatorSet {})
     }
 
     pub const fn invalid_migration_index() -> Self {
