@@ -118,8 +118,8 @@ impl Order {
     /// - T5+ (TIP-1030): for bid flips `flip_tick >= tick`; for ask flips `flip_tick <= tick`.
     ///
     /// # Errors
-    /// - `InvalidBidFlipTick` - `is_bid` is true and `flip_tick` is on the wrong side of `tick`
-    /// - `InvalidAskFlipTick` - `is_bid` is false and `flip_tick` is on the wrong side of `tick`
+    /// - `InvalidBidFlipTick` - `is_bid` is true and `flip_tick < tick`
+    /// - `InvalidAskFlipTick` - `is_bid` is false and `flip_tick > tick`
     #[allow(clippy::too_many_arguments)]
     pub fn new_flip(
         order_id: u128,
