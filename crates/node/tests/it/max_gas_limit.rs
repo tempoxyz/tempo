@@ -17,7 +17,10 @@ use alloy_network::TxSignerSync;
 use alloy_primitives::Bytes;
 use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
-use tempo_chainspec::spec::{TEMPO_T1_BASE_FEE, TEMPO_T1_TX_GAS_LIMIT_CAP};
+use tempo_chainspec::{
+    hardfork::TempoHardfork,
+    spec::{TEMPO_T1_BASE_FEE, TEMPO_T1_TX_GAS_LIMIT_CAP},
+};
 
 use crate::utils::{TEST_MNEMONIC, TestNodeBuilder, make_genesis_at};
 
@@ -138,7 +141,10 @@ async fn test_post_t1a_tx_at_tempo_cap() -> eyre::Result<()> {
 async fn test_post_t1a_tx_exceeding_tempo_cap() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let setup = TestNodeBuilder::new()
+        .with_genesis(make_genesis_at(TempoHardfork::T3))
+        .build_with_node_access()
+        .await?;
     let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
         .index(0)?
         .build()?;

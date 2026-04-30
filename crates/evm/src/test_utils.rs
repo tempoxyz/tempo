@@ -148,10 +148,12 @@ impl TestExecutorBuilder {
                 withdrawals: None,
                 extra_data: Bytes::new(),
                 tx_count_hint: None,
+                slot_number: None,
             },
             general_gas_limit: self.general_gas_limit,
             shared_gas_limit: self.shared_gas_limit,
             validator_set: self.validator_set,
+            consensus_context: None,
             subblock_fee_recipients: self.subblock_fee_recipients,
         };
 

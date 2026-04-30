@@ -290,7 +290,6 @@ where
             context.with_label("peer_manager"),
             peer_manager::Config {
                 execution_node: execution_node.clone(),
-                executor: executor_mailbox.clone(),
                 oracle: self.peer_manager.clone(),
                 epoch_strategy: epoch_strategy.clone(),
                 last_finalized_height,
@@ -545,7 +544,6 @@ where
                 dkg_channel,
                 subblocks_channel,
             )
-            .await
         )
     }
 

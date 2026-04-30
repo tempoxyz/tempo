@@ -126,14 +126,14 @@ impl<TContext: Spawner> Actor<TContext> {
 
     /// Start the actor, returning a handle to the spawned task.
     pub(crate) fn start(mut self) -> Handle<()> {
-        spawn_cell!(self.context, self.run().await)
+        spawn_cell!(self.context, self.run())
     }
 
     /// Run the actor's main loop.
     ///
     /// The loop races the oldest pending block subscription
     /// against incoming activity so events are emitted in order.
-    async fn run(&mut self) {
+    async fn run(mut self) {
         let reason = loop {
             // We need a mutable reference to poll pending subscription. Thus if a new activity arrives,
             // we also need to re-insert this popped subscription.

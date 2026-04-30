@@ -21,31 +21,36 @@ use alloy_rpc_types_engine::PayloadId;
 use commonware_codec::{Encode as _, ReadExt as _};
 use commonware_consensus::{
     Heightable as _,
+    simplex::Plan,
     types::{Epoch, Epocher as _, FixedEpocher, Height, HeightDelta, Round, View},
 };
 use commonware_cryptography::{certificate::Provider as _, ed25519::PublicKey};
 use commonware_macros::select;
+use commonware_p2p::Recipients;
 use commonware_runtime::{
     ContextCell, FutureExt as _, Handle, Metrics as _, Pacer, Spawner, Storage, spawn_cell,
 };
 use prometheus_client::metrics::counter::Counter;
 
-use commonware_utils::{SystemTimeExt, channel::oneshot};
+use commonware_utils::SystemTimeExt;
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
-use futures::{StreamExt as _, TryFutureExt as _, channel::mpsc, future::try_join};
+use futures::{
+    StreamExt as _, TryFutureExt as _,
+    channel::{mpsc, oneshot},
+    future::try_join,
+};
 use rand_08::{CryptoRng, Rng};
 use reth_ethereum::chainspec::EthChainSpec as _;
-use reth_node_builder::{
-    Block as _, BuiltPayload, ConsensusEngineHandle, PayloadAttributes, PayloadKind,
-};
+use reth_node_builder::{Block as _, BuiltPayload, ConsensusEngineHandle, PayloadKind};
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks as _};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 use tempo_telemetry_util::display_duration;
 
 use reth_provider::{BlockHashReader as _, BlockReader as _};
 use tempo_payload_types::TempoPayloadAttributes;
-use tokio::sync::RwLock;
-use tracing::{Level, debug, error, error_span, info, info_span, instrument, warn};
+use tempo_primitives::TempoConsensusContext;
+use tracing::{Level, debug, info, info_span, instrument, warn};
 
 use super::{
     Mailbox,
@@ -142,7 +147,7 @@ where
         mut self,
         dkg_manager: crate::dkg::manager::Mailbox,
     ) -> Handle<()> {
-        spawn_cell!(self.context, self.run_until_stopped(dkg_manager).await)
+        spawn_cell!(self.context, self.run_until_stopped(dkg_manager))
     }
 }
 
@@ -158,24 +163,16 @@ where
 {
     async fn run_until_stopped(mut self) {
         while let Some(msg) = self.mailbox.next().await {
-            if let Err(error) = self.handle_message(msg) {
-                error_span!("handle message").in_scope(|| {
-                    error!(
-                        %error,
-                        "critical error occurred while handling message; exiting"
-                    )
-                });
-                break;
-            }
+            self.handle_message(msg);
         }
     }
 
-    fn handle_message(&mut self, msg: Message) -> eyre::Result<()> {
+    fn handle_message(&mut self, msg: Message) {
         match msg {
             Message::Broadcast(broadcast) => {
                 self.context.with_label("broadcast").spawn({
                     let inner = self.inner.clone();
-                    move |_| inner.handle_broadcast(broadcast)
+                    move |_| inner.handle_broadcast(*broadcast)
                 });
             }
             Message::Genesis(genesis) => {
@@ -187,7 +184,7 @@ where
             Message::Propose(propose) => {
                 self.context.with_label("propose").spawn({
                     let inner = self.inner.clone();
-                    move |context| inner.handle_propose(propose, context)
+                    move |context| inner.handle_propose(*propose, context)
                 });
             }
             Message::Verify(verify) => {
@@ -197,7 +194,6 @@ where
                 });
             }
         }
-        Ok(())
     }
 }
 
@@ -226,23 +222,14 @@ struct Inner<TState> {
 impl Inner<Init> {
     #[instrument(
         skip_all,
-        fields(%broadcast.payload),
-        err(level = Level::ERROR),
+        fields(%digest),
     )]
-    async fn handle_broadcast(self, broadcast: Broadcast) -> eyre::Result<()> {
-        let Some((round, latest_proposed)) = self.state.latest_proposed_block.read().await.clone()
-        else {
-            return Err(eyre!("there was no latest block to broadcast"));
+    async fn handle_broadcast(self, Broadcast { digest, plan }: Broadcast) {
+        let (round, recipients) = match plan {
+            Plan::Propose { round } => (round, Recipients::All),
+            Plan::Forward { round, recipients } => (round, recipients),
         };
-        ensure!(
-            broadcast.payload == latest_proposed.digest(),
-            "broadcast of payload `{}` was requested, but digest of latest proposed block is `{}`",
-            broadcast.payload,
-            latest_proposed.digest(),
-        );
-
-        self.marshal.proposed(round, latest_proposed).await;
-        Ok(())
+        self.marshal.forward(round, digest, recipients).await;
     }
 
     #[instrument(
@@ -323,19 +310,22 @@ impl Inner<Init> {
             parent: (parent_view, parent_digest),
             mut response,
             round,
+            leader,
         } = request;
 
-        let (payload_id_tx, mut payload_id_rx) = oneshot::channel();
+        let mut payload_id_rx: Option<oneshot::Receiver<eyre::Result<PayloadId>>> = None;
 
-        let proposal = select!(
+        let proposal_digest = select!(
             () = response.closed() => {
-                // If we got interrupted, fetch payload resolve future and drop it
-                // to make sure that payload building is canceled.
-                if let Ok(payload_id) = payload_id_rx.try_recv() {
+                if let Some(rx) = payload_id_rx.as_mut() {
+                    let id = rx
+                        .await
+                        .wrap_err("executor dropped response")?
+                        .wrap_err("failed requesting a new payload build")?;
                     let fut = self
                         .execution_node
                         .payload_builder_handle
-                        .resolve_kind_fut(payload_id, PayloadKind::WaitForPending)
+                        .resolve_kind_fut(id, PayloadKind::WaitForPending)
                         .await
                         .wrap_err("failed resolving payload")?;
                     drop(fut);
@@ -352,18 +342,15 @@ impl Inner<Init> {
                 parent_view,
                 parent_digest,
                 round,
-                payload_id_tx,
+                &mut payload_id_rx,
+                leader,
             ) => {
                 res.wrap_err("failed creating a proposal")
             }
         )?;
 
-        let proposal_digest = proposal.digest();
-        let proposal_height = proposal.height();
-
         info!(
             proposal.digest = %proposal_digest,
-            proposal.height = %proposal_height,
             "constructed proposal",
         );
 
@@ -373,17 +360,6 @@ impl Inner<Init> {
                 channel was already closed"
             )
         })?;
-
-        // If re-proposing, then don't store the parent for broadcasting and
-        // don't touch the execution layer.
-        if proposal_digest == parent_digest {
-            return Ok(());
-        }
-
-        {
-            let mut lock = self.state.latest_proposed_block.write().await;
-            *lock = Some((round, proposal.clone()));
-        }
 
         Ok(())
     }
@@ -408,8 +384,13 @@ impl Inner<Init> {
             parent.digest = %verify.parent.1,
             proposer = %verify.proposer,
         ),
+        err,
     )]
-    async fn handle_verify<TContext: Pacer>(self, verify: Verify, context: TContext) {
+    async fn handle_verify<TContext: Pacer>(
+        self,
+        verify: Verify,
+        context: TContext,
+    ) -> eyre::Result<()> {
         let Verify {
             parent,
             payload,
@@ -428,30 +409,13 @@ impl Inner<Init> {
             res = self.clone().verify(context, parent, payload, proposer, round) => {
                 res.wrap_err("block verification failed")
             }
-        );
+        )?;
 
-        // Respond with the verification result ASAP. Also generates
-        // the event reporting the result of the verification.
-        let _ = report_verification_result(response, &result);
-
-        // 2. make the forkchoice state available && cache the block
-        if let Ok((block, true)) = result {
-            // Only make the verified block canonical when not doing a
-            // re-propose at the end of an epoch.
-            if parent.1 != payload
-                && let Err(error) = self
-                    .state
-                    .executor
-                    .canonicalize_head(block.height(), block.digest())
-                    .await
-            {
-                tracing::warn!(
-                    %error,
-                    "failed making the verified proposal the head of the canonical chain",
-                );
-            }
-            self.marshal.verified(round, block).await;
+        if response.send(result).is_err() {
+            warn!("received dropped channel before verification result could be returned");
         }
+
+        Ok(())
     }
 
     async fn propose<TContext: Pacer>(
@@ -460,9 +424,30 @@ impl Inner<Init> {
         parent_view: View,
         parent_digest: Digest,
         round: Round,
-        payload_id_tx: oneshot::Sender<PayloadId>,
-    ) -> eyre::Result<Block> {
+        payload_id_rx: &mut Option<oneshot::Receiver<eyre::Result<PayloadId>>>,
+        leader: PublicKey,
+    ) -> eyre::Result<Digest> {
         let propose_start = Instant::now();
+
+        // Follow the commonware marshal::standard::inline application:
+        //
+        // >On leader recovery, marshal may already hold a verified block
+        // >for this round (persisted by a pre-crash propose whose
+        // >notarize vote never reached the journal).
+        //
+        // >The parent context recovered by simplex may differ from the one
+        // >the cached block was built against, so the stored block is not safe to reuse
+        // >and building a fresh block would land on the same prunable
+        // >archive index and be silently dropped.
+        //
+        // >Skip this view and let the voter nullify it via timeout.
+        //
+        // TODO: we are diverging from commonware in that we return the digest
+        // here. Is that ok or can that cause problems?
+        if let Some(block) = self.marshal.get_verified(round).await {
+            debug!("skipping proposal: verified block already exists for round on restart");
+            return Ok(block.digest());
+        }
 
         let parent = get_parent(
             &self.execution_node,
@@ -472,39 +457,55 @@ impl Inner<Init> {
             &self.marshal,
         )
         .await?;
+
         debug!(height = %parent.height(), "retrieved parent block",);
 
         let parent_epoch_info = self
             .epoch_strategy
             .containing(parent.height())
             .expect("epoch strategy is for all heights");
-        // XXX: Re-propose the parent if the parent is the last height of the
-        // epoch. parent.height+1 should be proposed as the first block of the
+
+        // If in the same epoch, re-propose the parent if the parent is the last height
+        // of the epoch. parent.height+1 should be proposed as the first block of the
         // next epoch.
         if parent_epoch_info.last() == parent.height() && parent_epoch_info.epoch() == round.epoch()
         {
+            if !self.marshal.verified(round, parent.clone()).await {
+                bail!("marshal rejected re-proposed boundary block");
+            }
             info!("parent is last height of epoch; re-proposing parent");
-            return Ok(parent);
+            return Ok(parent_digest);
         }
 
-        // Send the proposal parent to reth to cover edge cases when we were not asked to verify it directly.
-        if !verify_block(
-            context.clone(),
-            parent_epoch_info.epoch(),
-            &self.epoch_strategy,
-            self.execution_node
-                .add_ons_handle
-                .beacon_engine_handle
-                .clone(),
-            &parent,
-            // It is safe to not verify the parent of the parent because this block is already notarized.
-            parent.parent_digest(),
-            &self.scheme_provider,
-        )
-        .await
-        .wrap_err("failed verifying block against execution layer")?
+        let is_genesis_parent = parent.height().is_zero()
+            || parent_epoch_info.last() == parent.height()
+                && parent_epoch_info.epoch().next() == round.epoch();
+
+        // Send the proposal parent to execution layer to cover edge cases when
+        // we were not asked to to verify it (and hence are missing it in the
+        // EL).
+        //
+        // If proposing the first block of an epoch, its parent
+        // (genesis/boundary block) must exist and be finalized, so we can skip
+        // it.
+        if !is_genesis_parent
+            && !verify_block(
+                context.clone(),
+                parent_epoch_info.epoch(),
+                &self.epoch_strategy,
+                self.execution_node
+                    .add_ons_handle
+                    .beacon_engine_handle
+                    .clone(),
+                &parent,
+                // It is safe to not verify the parent of the parent because this block is already notarized.
+                parent.parent_digest(),
+                &self.scheme_provider,
+            )
+            .await
+            .wrap_err("failed verifying block against execution layer")?
         {
-            eyre::bail!("the proposal parent block is not valid");
+            bail!("the proposal parent block is not valid");
         }
 
         // Query DKG manager for ceremony data before building payload
@@ -561,12 +562,27 @@ impl Inner<Init> {
         //
         // We don't expect this being hit in practice because we validate the
         // timestamp is not in the future during EL validation.
-        let current_timestamp = context.current().epoch_millis();
-        let timestamp_millis = if current_timestamp <= parent.timestamp_millis() {
+        let mut epoch_millis = context.current().epoch_millis();
+        if epoch_millis <= parent.timestamp_millis() {
             self.metrics.parent_ahead_of_local_time.inc();
-            parent.timestamp_millis() + 1
+            epoch_millis = parent.timestamp_millis() + 1
+        };
+
+        let (timestamp, timestamp_millis_part) = (epoch_millis / 1000, epoch_millis % 1000);
+
+        let consensus_context = if self
+            .execution_node
+            .chain_spec()
+            .is_t4_active_at_timestamp(timestamp)
+        {
+            Some(TempoConsensusContext {
+                epoch: round.epoch().get(),
+                view: round.view().get(),
+                parent_view: parent_view.get(),
+                proposer: crate::utils::public_key_to_tempo_primitive(&leader),
+            })
         } else {
-            current_timestamp
+            None
         };
 
         let parent_hash = parent.block_hash();
@@ -574,8 +590,10 @@ impl Inner<Init> {
         let attrs = TempoPayloadAttributes::new(
             self.fee_recipient.unwrap_or_default(),
             Some(proposer_public_key),
-            timestamp_millis,
+            timestamp,
+            timestamp_millis_part,
             extra_data,
+            consensus_context,
             move || {
                 self.subblocks
                     .as_ref()
@@ -584,17 +602,29 @@ impl Inner<Init> {
             },
         );
 
-        let payload_id = attrs.payload_id(&parent.digest().0);
-        payload_id_tx.send(payload_id).map_err(|_| {
-            eyre!("caller went away before payload job ID could be returned; aborting proposal")
-        })?;
         let interrupt_handle = attrs.interrupt_handle().clone();
 
-        self.state
-            .executor
-            .canonicalize_and_build(parent.height(), parent.digest(), attrs)
+        // Share the dispatch receiver with the cancel branch so that, if cancellation
+        // hits between dispatch send and receiving `payload_id`, the cancel branch can
+        // still drain the rx, learn `payload_id`, and cancel the now-registered job.
+        *payload_id_rx = Some(self.state.executor.canonicalize_and_build(
+            parent.height(),
+            parent.digest(),
+            attrs,
+        )?);
+
+        let payload_id = payload_id_rx
+            .as_mut()
+            .expect("just set")
             .await
+            .wrap_err("executor dropped response")?
             .wrap_err("failed requesting a new payload build")?;
+
+        // Replace the slot with a pre-filled oneshot so the cancel branch can keep
+        // unconditionally awaiting `payload_id_rx` and immediately get back `payload_id`.
+        let (tx, rx) = oneshot::channel();
+        let _ = tx.send(Ok(payload_id));
+        *payload_id_rx = Some(rx);
 
         let elapsed = propose_start.elapsed();
         let remaining_resolve = self.payload_resolve_time.saturating_sub(elapsed);
@@ -635,10 +665,16 @@ impl Inner<Init> {
             .and_then(|rsp| rsp.map_err(Into::<eyre::Report>::into))
             .wrap_err_with(|| format!("failed getting payload for payload ID `{payload_id}`"))?;
 
+        let proposal = Block::from_execution_block(payload.block().clone());
+        let digest = proposal.digest();
+        if !self.marshal.proposed(round, proposal).await {
+            bail!("marshal actor rejected persisting proposal");
+        }
+
         // Keep waiting for the remaining return time, if there's anything left after building the block.
         context.sleep_until(payload_return_time).await;
 
-        Ok(Block::from_execution_block(payload.block().clone()))
+        Ok(digest)
     }
 
     async fn verify<TContext: Pacer>(
@@ -648,12 +684,14 @@ impl Inner<Init> {
         payload: Digest,
         proposer: PublicKey,
         round: Round,
-    ) -> eyre::Result<(Block, bool)> {
+    ) -> eyre::Result<bool> {
         let block_request = self
             .marshal
             .subscribe_by_digest(None, payload)
             .await
-            .map_err(|_| eyre!("syncer dropped channel before the block-to-verified was sent"));
+            .map_err(|_| {
+                eyre!("marshal actor dropped channel before the block-to-verified was sent")
+            });
 
         let (block, parent) = try_join(
             block_request,
@@ -666,7 +704,7 @@ impl Inner<Init> {
             ),
         )
         .await
-        .wrap_err("failed getting required blocks from syncer")?;
+        .wrap_err("failed getting required blocks")?;
 
         // Can only repropose at the end of an epoch.
         //
@@ -680,27 +718,28 @@ impl Inner<Init> {
                 .containing(block.height())
                 .expect("epoch strategy is for all heights");
             if epoch_info.last() == block.height() && epoch_info.epoch() == round.epoch() {
-                return Ok((block, true));
+                if !self.marshal.verified(round, block).await {
+                    bail!("marshal actor refused to persist verified re-proposed block");
+                }
+                return Ok(true);
             } else {
-                return Ok((block, false));
+                return Ok(false);
             }
         }
 
-        if let Err(reason) = verify_header_extra_data(
+        if let Err(reason) = verify_header(
             &block,
             (parent_view, parent_digest),
             round,
+            self.execution_node.chain_spec().as_ref(),
             &self.state.dkg_manager,
             &self.epoch_strategy,
             &proposer,
         )
         .await
         {
-            warn!(
-                %reason,
-                "header extra data could not be verified; failing block",
-            );
-            return Ok((block, false));
+            warn!(%reason, "header could not be verified; failing block");
+            return Ok(false);
         }
 
         if let Err(error) = self
@@ -713,7 +752,7 @@ impl Inner<Init> {
                 %error,
                 parent.height = %parent.height(),
                 parent.digest = %parent.digest(),
-                "failed updating canonical head to parent",
+                "failed updating canonical head to parent; trying to go on",
             );
         }
 
@@ -732,7 +771,23 @@ impl Inner<Init> {
         .await
         .wrap_err("failed verifying block against execution layer")?;
 
-        Ok((block, is_good))
+        let block_height = block.height();
+        let block_digest = block.digest();
+
+        if is_good {
+            // Persist the block in the marshal actor and execution layer.
+            if !self.marshal.verified(round, block).await {
+                bail!("marshal actor refused to persist verified block");
+            }
+
+            // FIXME: move this into the certification step?
+            self.state
+                .executor
+                .canonicalize_head(block_height, block_digest)
+                .await
+                .wrap_err("failed making the verified proposal the head of the canonical chain")?;
+        }
+        Ok(is_good)
     }
 }
 
@@ -759,7 +814,6 @@ impl Inner<Uninit> {
             execution_node: self.execution_node,
             executor: self.executor.clone(),
             state: Init {
-                latest_proposed_block: Arc::new(RwLock::new(None)),
                 dkg_manager,
                 executor: self.executor.clone(),
             },
@@ -779,7 +833,6 @@ pub(in crate::consensus) struct Uninit(());
 /// Carries the runtime initialized state of the application.
 #[derive(Clone, Debug)]
 struct Init {
-    latest_proposed_block: Arc<RwLock<Option<(Round, Block)>>>,
     dkg_manager: crate::dkg::manager::Mailbox,
     /// The communication channel to the executor agent.
     executor: crate::executor::Mailbox,
@@ -831,24 +884,18 @@ async fn verify_block<TContext: Pacer>(
         return Ok(false);
     }
 
-    // FIXME: in cases where validate_block is called on the boundary block,
-    // the scheme might not be available.
-    //
-    // The fix is to track directly track notarizations and feed them to the
-    // EL that way, instead of doing this at the automaton/proposal level.
-    //
-    // https://github.com/tempoxyz/tempo/issues/1411
-    //
-    // let scheme = scheme_provider
-    //     .scoped(epoch)
-    //     .ok_or_eyre("cannot determine participants in the current epoch")?;
-    let validator_set = scheme_provider.scoped(epoch).map(|scheme| {
+    // Scheme registration precedes engine creation, so the scheme must exist
+    let scheme = scheme_provider
+        .scoped(epoch)
+        .ok_or_eyre("cannot determine participants in the current epoch")?;
+
+    let validator_set = Some(
         scheme
             .participants()
             .into_iter()
             .map(|p| B256::from_slice(p))
-            .collect()
-    });
+            .collect(),
+    );
     let block = block.clone().into_inner();
     let execution_data = TempoExecutionData {
         block: Arc::new(block),
@@ -885,10 +932,11 @@ async fn verify_block<TContext: Pacer>(
 }
 
 #[instrument(skip_all, err(Display))]
-async fn verify_header_extra_data(
+async fn verify_header(
     block: &Block,
     parent: (View, Digest),
     round: Round,
+    chainspec: &TempoChainSpec,
     dkg_manager: &crate::dkg::manager::Mailbox,
     epoch_strategy: &FixedEpocher,
     proposer: &PublicKey,
@@ -896,6 +944,27 @@ async fn verify_header_extra_data(
     let epoch_info = epoch_strategy
         .containing(block.height())
         .expect("epoch strategy is for all heights");
+
+    if chainspec.is_t4_active_at_timestamp(block.timestamp()) {
+        let ctx = block
+            .header()
+            .consensus_context
+            .ok_or_eyre("missing consensus context after t4 activation")?;
+
+        let expected_ctx = TempoConsensusContext {
+            epoch: round.epoch().get(),
+            view: round.view().get(),
+            parent_view: parent.0.get(),
+            proposer: crate::utils::public_key_to_tempo_primitive(proposer),
+        };
+
+        if ctx != expected_ctx {
+            bail!("mismatching block consensus context");
+        }
+    } else if block.header().consensus_context.is_some() {
+        bail!("block consensus context set prior to activation");
+    }
+
     if epoch_info.last() == block.height() {
         info!(
             "on last block of epoch; verifying that the boundary block \
@@ -948,38 +1017,6 @@ async fn verify_header_extra_data(
         );
     }
 
-    Ok(())
-}
-
-/// Reports the verification result as a tracing event and consensus response.
-///
-/// This means either sending true/false if a decision could be rendered, or
-/// dropping the channel, if not.
-#[instrument(skip_all, err)]
-fn report_verification_result(
-    response: oneshot::Sender<bool>,
-    verification_result: &eyre::Result<(Block, bool)>,
-) -> eyre::Result<()> {
-    match &verification_result {
-        Ok((_, is_good)) => {
-            info!(
-                proposal_valid = is_good,
-                "returning proposal verification result to consensus",
-            );
-            response.send(*is_good).map_err(|_| {
-                eyre!(
-                    "attempted to send return verification result, but \
-                        receiver already dropped the channel"
-                )
-            })?;
-        }
-        Err(error) => {
-            info!(
-                %error,
-                "could not decide proposal, dropping response channel",
-            );
-        }
-    }
     Ok(())
 }
 

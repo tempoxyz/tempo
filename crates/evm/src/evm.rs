@@ -8,7 +8,10 @@ use alloy_evm::{
     },
 };
 use alloy_primitives::{Address, Bytes, TxKind};
-use reth_revm::{InspectSystemCallEvm, MainContext, context::result::ExecutionResult};
+use reth_revm::{
+    InspectSystemCallEvm, MainContext,
+    context::{CfgEnv, result::ExecutionResult},
+};
 use std::ops::{Deref, DerefMut};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_revm::{
@@ -65,10 +68,20 @@ pub struct TempoEvm<DB: Database, I = NoOpInspector> {
 impl<DB: Database> TempoEvm<DB> {
     /// Create a new [`TempoEvm`] instance.
     pub fn new(db: DB, input: EvmEnv<TempoHardfork, TempoBlockEnv>) -> Self {
+        let mut cfg_env = input.cfg_env;
+
+        // TIP-1016 (T4): Enable EIP-8037 state gas charging automatically.
+        // This ensures all consumers (including foundry's executeTransaction cheatcode)
+        // get the correct gas validation behavior where tx.gas_limit > cap is allowed
+        // when the excess is state gas.
+        if cfg_env.spec.is_t4() {
+            cfg_env.enable_amsterdam_eip8037 = true;
+        }
+
         let ctx = Context::mainnet()
             .with_db(db)
             .with_block(input.block_env)
-            .with_cfg(input.cfg_env)
+            .with_cfg(cfg_env)
             .with_tx(Default::default());
 
         Self {
@@ -162,6 +175,10 @@ where
         &self.block
     }
 
+    fn cfg_env(&self) -> &CfgEnv<Self::Spec> {
+        &self.cfg
+    }
+
     fn chain_id(&self) -> u64 {
         self.cfg.chain_id
     }
@@ -190,7 +207,7 @@ where
                 );
             };
 
-            *gas = ResultGas::default().with_limit(tx.inner.gas_limit);
+            *gas = ResultGas::default();
 
             Ok(result)
         } else if self.inspect {
@@ -294,7 +311,7 @@ mod tests {
 
         let result = result.unwrap();
         assert!(result.result.is_success());
-        assert_eq!(result.result.gas_used(), 21000);
+        assert_eq!(result.result.tx_gas_used(), 21000);
     }
 
     #[test]
@@ -320,7 +337,7 @@ mod tests {
         let result = result.unwrap();
         assert!(result.result.is_success());
         // System transactions should not consume gas
-        assert_eq!(result.result.gas_used(), 0);
+        assert_eq!(result.result.tx_gas_used(), 0);
     }
 
     #[test]

@@ -3,8 +3,9 @@ use crate::{
     engine::TempoEngineValidator,
     rpc::{
         TempoAdminApi, TempoAdminApiServer, TempoEthApi, TempoEthApiBuilder, TempoEthExt,
-        TempoEthExtApiServer, TempoForkScheduleApiServer, TempoForkScheduleRpc, TempoSimulate,
-        TempoSimulateApiServer, TempoToken, TempoTokenApiServer,
+        TempoEthExtApiServer, TempoForkScheduleApiServer, TempoForkScheduleRpc,
+        TempoOperatorApiServer, TempoOperatorRpc, TempoSimulate, TempoSimulateApiServer,
+        TempoToken, TempoTokenApiServer,
     },
 };
 use alloy_primitives::B256;
@@ -178,6 +179,7 @@ where
                 NoopEngineApiBuilder::default(),
                 BasicEngineValidatorBuilder::default(),
                 Identity::default(),
+                Default::default(),
             ),
             validator_key,
         }
@@ -210,6 +212,7 @@ where
                 let eth_ext = TempoEthExt::new(eth_api.clone());
                 let simulate = TempoSimulate::new(eth_api);
                 let admin = TempoAdminApi::new(self.validator_key);
+                let operator = TempoOperatorRpc::new(registry.admin_api());
                 let fork_schedule =
                     TempoForkScheduleRpc::new(registry.eth_api().provider().clone());
 
@@ -217,6 +220,10 @@ where
                 modules.merge_configured(eth_ext.into_rpc())?;
                 modules.merge_if_module_configured(RethRpcModule::Eth, simulate.into_rpc())?;
                 modules.merge_configured(fork_schedule.into_rpc())?;
+                modules.merge_if_module_configured(
+                    RethRpcModule::Other("operator".to_string()),
+                    operator.into_rpc(),
+                )?;
                 modules.merge_if_module_configured(RethRpcModule::Admin, admin.into_rpc())?;
                 modules.merge_if_module_configured(RethRpcModule::Eth, eth_config.into_rpc())?;
 
@@ -306,16 +313,19 @@ impl PayloadAttributesBuilder<TempoPayloadAttributes, TempoHeader>
     for TempoPayloadAttributesBuilder
 {
     fn build(&self, _parent: &SealedHeader<TempoHeader>) -> TempoPayloadAttributes {
-        let timestamp_millis = std::time::SystemTime::now()
+        let millis = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
 
+        let (timestamp, timestamp_millis_part) = (millis / 1000, millis % 1000);
         TempoPayloadAttributes::new(
             Address::ZERO,
             None,
-            timestamp_millis,
+            timestamp,
+            timestamp_millis_part,
             Default::default(),
+            None,
             Vec::new,
         )
     }
@@ -502,6 +512,7 @@ where
             pool,
             ctx.provider().clone(),
             evm_config,
+            ctx.is_dev(),
             self.state_provider_metrics,
             self.disable_state_cache,
         ))
