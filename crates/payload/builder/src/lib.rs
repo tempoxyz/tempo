@@ -54,7 +54,7 @@ use tempo_primitives::{
     },
 };
 use tempo_transaction_pool::{
-    TempoTransactionPool,
+    StateAwareBestTransactions, TempoTransactionPool,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
@@ -422,19 +422,20 @@ where
         let base_fee = builder.evm_mut().block().basefee;
         let validator_fee_token = resolve_validator_fee_token(&mut builder)?;
         let pool_fetch_start = Instant::now();
-        let mut best_txs = best_txs(BestTransactionsAttributes::new(
-            base_fee,
-            builder
-                .evm_mut()
-                .block()
-                .blob_gasprice()
-                .map(|gasprice| gasprice as u64),
-        ));
+        // Wrap best transactions into state-aware wrapper to skip transactions that
+        // get invalidated by already-executed ones.
+        let mut best_txs =
+            StateAwareBestTransactions::new(best_txs(BestTransactionsAttributes::new(
+                base_fee,
+                builder
+                    .evm_mut()
+                    .block()
+                    .blob_gasprice()
+                    .map(|gasprice| gasprice as u64),
+            )));
         self.metrics
             .pool_fetch_duration_seconds
             .record(pool_fetch_start.elapsed());
-
-        let is_t4 = builder.evm().cfg.spec.is_t4();
 
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
@@ -528,17 +529,10 @@ where
             let tx_execution_start = Instant::now();
             if let Err(err) =
                 builder.execute_transaction_with_result_closure(tx_with_env, |result| {
-                    // Compute gas usage as either regular-only gas spending (T4+) or total gas spending (pre-T4)
-                    let gas_used = if is_t4 {
-                        result.result().result.gas().block_regular_gas_used()
-                    } else {
-                        result.result().result.tx_gas_used()
-                    };
-
-                    cumulative_gas_used += gas_used;
-                    cumulative_state_gas_used += result.result().result.gas().state_gas_spent();
+                    cumulative_gas_used += result.block_gas_used();
+                    cumulative_state_gas_used += result.state_gas_used();
                     if !is_payment {
-                        non_payment_gas_used += gas_used;
+                        non_payment_gas_used += result.block_gas_used();
                     }
 
                     // Score payload value by actual validator payout, applying the AMM
@@ -562,6 +556,9 @@ where
                     } else {
                         warn!("no resolved fee token for a pool transaction")
                     }
+
+                    // Notify transactions iterator about the new state.
+                    best_txs.on_new_result(result);
                 })
             {
                 if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {

@@ -1113,67 +1113,6 @@ where
         if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
             && let Some(key_auth) = &tempo_tx_env.key_authorization
         {
-            // Check if this TX is using a Keychain signature (access key)
-            // Access keys cannot authorize new keys UNLESS it's the same key being authorized (same-tx auth+use)
-            if let Some(keychain_sig) = tempo_tx_env.signature.as_keychain() {
-                // Use override_key_id if provided (for gas estimation), otherwise recover from signature
-                let access_key_addr = if let Some(override_key_id) = tempo_tx_env.override_key_id {
-                    override_key_id
-                } else {
-                    // Get the access key address (recovered during Tx->TxEnv conversion and cached)
-                    keychain_sig
-                        .key_id(&tempo_tx_env.signature_hash)
-                        .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
-                };
-
-                // Only allow if authorizing the same key that's being used (same-tx auth+use)
-                if access_key_addr != key_auth.key_id {
-                    return Err(TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys.into());
-                }
-            }
-
-            // Validate that the KeyAuthorization is signed by the root account
-            let root_account = &tx.caller;
-
-            // Recover the signer of the KeyAuthorization
-            let auth_signer = key_auth
-                .recover_signer()
-                .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
-
-            // Verify the KeyAuthorization is signed by the root account
-            if auth_signer != *root_account {
-                return Err(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
-                    expected: *root_account,
-                    actual: auth_signer,
-                }
-                .into());
-            }
-
-            // Validate KeyAuthorization chain_id.
-            // T1C+: chain_id must exactly match (wildcard 0 is no longer allowed).
-            // Pre-T1C: chain_id == 0 allows replay on any chain (wildcard).
-            key_auth
-                .validate_chain_id(cfg.chain_id(), spec.is_t1c())
-                .map_err(TempoInvalidTransaction::from)?;
-
-            // T3 gates all TIP-1011 fields. Before activation, transaction semantics must stay
-            // unchanged, so periodic limits and call scopes are rejected.
-            if !spec.is_t3() {
-                if key_auth.has_periodic_limits() {
-                    return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                        reason: "periodic token limits are not active before T3".to_string(),
-                    }
-                    .into());
-                }
-
-                if key_auth.has_call_scopes() {
-                    return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                        reason: "call scopes are not active before T3".to_string(),
-                    }
-                    .into());
-                }
-            }
-
             let keychain_checkpoint = if spec.is_t1() {
                 Some(journal.checkpoint())
             } else {
@@ -1233,16 +1172,6 @@ where
                 // Handle expiry: None means never expires (store as u64::MAX)
                 let expiry = key_auth.expiry.map_or(u64::MAX, |expiry| expiry.get());
 
-                // Validate expiry is not in the past
-                let current_timestamp = block.timestamp().saturating_to::<u64>();
-                if expiry <= current_timestamp {
-                    return Err(TempoInvalidTransaction::AccessKeyExpiryInPast {
-                        expiry,
-                        current_timestamp,
-                    }
-                    .into());
-                }
-
                 // Handle limits: None means unlimited spending (enforce_limits=false)
                 // Some([]) means no spending allowed (enforce_limits=true)
                 // Some([...]) means specific limits (enforce_limits=true)
@@ -1279,7 +1208,7 @@ where
                 };
 
                 // Call precompile to authorize the key (same phase as nonce increment)
-                match keychain.authorize_key(*root_account, authorize_call) {
+                match keychain.authorize_key(tx.caller, authorize_call) {
                     // all is good, we can do execution.
                     Ok(_) => Ok(false),
                     // on out of gas we are skipping execution but not invalidating the transaction.
@@ -1362,20 +1291,6 @@ where
                 tx,
                 |mut keychain: AccountKeychain| {
                     let key_expiry = if is_authorizing_this_key {
-                        if spec.is_t3()
-                            && tempo_tx_env
-                                .key_authorization
-                                .as_ref()
-                                .is_some_and(|key_auth| {
-                                    key_auth.key_type != keychain_sig.signature.signature_type()
-                                })
-                        {
-                            return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                                reason: "key authorization key_type does not match the keychain signature type"
-                                    .to_string(),
-                            }
-                            .into());
-                        }
                         // Same-tx auth+use: expiry comes from the inline KeyAuthorization
                         tempo_tx_env
                             .key_authorization
@@ -1578,8 +1493,8 @@ where
         validation::validate_env::<_, Self::Error>(evm.ctx())?;
 
         // AA-specific validations
-        let cfg = evm.ctx_ref().cfg();
-        let tx = evm.ctx_ref().tx();
+        let cfg = &evm.inner.cfg;
+        let tx = &evm.inner.tx;
 
         if let Some(aa_env) = tx.tempo_tx_env.as_ref() {
             // Validate AA transaction structure (calls list, CREATE rules)
@@ -1622,6 +1537,86 @@ where
 
             if aa_env.subblock_transaction && has_keychain_fields {
                 return Err(TempoInvalidTransaction::KeychainOpInSubblockTransaction.into());
+            }
+
+            if let Some(key_auth) = &aa_env.key_authorization {
+                // Check if this TX is using a Keychain signature (access key)
+                // Access keys cannot authorize new keys UNLESS it's the same key being authorized (same-tx auth+use)
+                if let Some(keychain_sig) = aa_env.signature.as_keychain() {
+                    // Use override_key_id if provided (for gas estimation), otherwise recover from signature
+                    let access_key_addr = if let Some(override_key_id) = aa_env.override_key_id {
+                        override_key_id
+                    } else {
+                        // Get the access key address (recovered during Tx->TxEnv conversion and cached)
+                        keychain_sig
+                            .key_id(&aa_env.signature_hash)
+                            .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
+                    };
+
+                    // Only allow if authorizing the same key that's being used (same-tx auth+use)
+                    if access_key_addr != key_auth.key_id {
+                        return Err(
+                            TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys.into()
+                        );
+                    }
+
+                    if cfg.spec.is_t3()
+                        && key_auth.key_type != keychain_sig.signature.signature_type()
+                    {
+                        return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                                reason: "key authorization key_type does not match the keychain signature type"
+                                    .to_string(),
+                            }
+                            .into());
+                    }
+                }
+
+                // Validate that the KeyAuthorization is signed by the root account
+                let root_account = &tx.caller;
+
+                // Recover the signer of the KeyAuthorization
+                let auth_signer = key_auth.recover_signer().map_err(|_| {
+                    TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed
+                })?;
+
+                // Verify the KeyAuthorization is signed by the root account
+                if auth_signer != *root_account {
+                    return Err(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
+                        expected: *root_account,
+                        actual: auth_signer,
+                    }
+                    .into());
+                }
+
+                // Validate KeyAuthorization chain_id.
+                // T1C+: chain_id must exactly match (wildcard 0 is no longer allowed).
+                // Pre-T1C: chain_id == 0 allows replay on any chain (wildcard).
+                key_auth
+                    .validate_chain_id(cfg.chain_id(), cfg.spec.is_t1c())
+                    .map_err(TempoInvalidTransaction::from)?;
+
+                // T3 gates all TIP-1011 fields. Before activation, transaction semantics must stay
+                // unchanged, so periodic limits and call scopes are rejected.
+                if !cfg.spec.is_t3() {
+                    if key_auth.has_periodic_limits() {
+                        return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                            reason: "periodic token limits are not active before T3".to_string(),
+                        }
+                        .into());
+                    }
+
+                    if key_auth.has_call_scopes() {
+                        return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                            reason: "call scopes are not active before T3".to_string(),
+                        }
+                        .into());
+                    }
+                }
+
+                // Cache inline key authorization expiry.
+                if let Some(expiry) = key_auth.expiry {
+                    evm.key_expiry = Some(expiry.get());
+                }
             }
 
             // Validate priority fee for AA transactions using revm's validate_priority_fee_tx
@@ -4443,7 +4438,7 @@ mod tests {
         use alloy_signer::SignerSync;
         use alloy_signer_local::PrivateKeySigner;
         use tempo_primitives::transaction::{
-            KeychainSignature, SignatureType, key_authorization::KeyAuthorization,
+            KeychainSignature, KeychainVersion, SignatureType, key_authorization::KeyAuthorization,
         };
 
         fn generate_keypair() -> (PrivateKeySigner, Address) {
@@ -4561,7 +4556,7 @@ mod tests {
             let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T2, None, true);
 
             assert!(matches!(
-                h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default()),
+                h.validate_env(&mut evm),
                 Err(EVMError::Transaction(
                     TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot { .. }
                 ))
@@ -4581,7 +4576,7 @@ mod tests {
             let (mut evm, h) = make_evm(user, tx_key, Some(signed), TempoHardfork::T2, None, true);
 
             assert!(matches!(
-                h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default()),
+                h.validate_env(&mut evm),
                 Err(EVMError::Transaction(
                     TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys
                 ))
@@ -4599,8 +4594,14 @@ mod tests {
                 );
                 let (mut evm, h) = make_evm(user, key, Some(signed), spec, None, false);
 
-                let result =
-                    h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
+                if !spec.is_t1c()
+                    && let Some(aa_env) = evm.tx.tempo_tx_env.as_mut()
+                    && let TempoSignature::Keychain(keychain_sig) = &mut aa_env.signature
+                {
+                    // Overwrite the signature version pre-T1C to bypass the version check.
+                    keychain_sig.version = KeychainVersion::V1;
+                }
+                let result = h.validate_env(&mut evm);
                 if !spec.is_t1c() {
                     assert!(
                         result.is_ok(),

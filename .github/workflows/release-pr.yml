@@ -12,7 +12,7 @@ jobs:
   release-pr:
     name: Release PR
     runs-on: ubuntu-latest
-    environment: release
+    environment: release-pr
     permissions: {}
     steps:
       - name: Mint scoped app token
