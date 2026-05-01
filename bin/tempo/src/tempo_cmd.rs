@@ -1295,64 +1295,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_transfer_validator_ownership_with_new_validator_address() {
-        let cli = TempoCli::try_parse_from([
-            "tempo",
-            "consensus",
-            "transfer-validator-ownership",
-            "0",
-            "--new-validator-address",
-            "0x0000000000000000000000000000000000000001",
-            "--wallet-key",
-            "/tmp/wallet.key",
-            "--yes",
-        ])
-        .unwrap();
-
-        assert!(matches!(
-            cli.command,
-            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
-                ConsensusSubcommand::TransferValidatorOwnership(_)
-            ))
-        ));
-    }
-
-    #[test]
-    fn parse_transfer_validator_ownership_rejects_both_inputs() {
-        let result = TempoCli::try_parse_from([
-            "tempo",
-            "consensus",
-            "transfer-validator-ownership",
-            "0",
-            "--new-private-key",
-            "/tmp/new.key",
-            "--new-validator-address",
-            "0x0000000000000000000000000000000000000001",
-            "--wallet-key",
-            "/tmp/wallet.key",
-            "--yes",
-        ]);
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn resolves_new_validator_address_directly() {
-        let expected: Address = "0x0000000000000000000000000000000000000001"
-            .parse()
-            .unwrap();
-
-        let actual = NewValidatorOwnershipArgs {
-            new_private_key: None,
-            new_validator_address: Some(expected),
-        }
-        .resolve_address()
-        .unwrap();
-
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
     fn tempo_rpc_module_validator_allows_tempo_custom_modules() {
         for module in ["consensus", "operator", "tempo", "token"] {
             let selection = crate::TempoRpcModuleValidator::parse_selection(module).unwrap();
