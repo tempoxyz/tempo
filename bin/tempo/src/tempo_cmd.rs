@@ -550,12 +550,7 @@ impl NewValidatorOwnershipArgs {
                 Ok(signer.address())
             }
             (None, Some(public_key)) => address_from_public_key(public_key),
-            (Some(_), Some(_)) => {
-                bail!("only one of --new-private-key or --new-public-key may be provided")
-            }
-            (None, None) => {
-                bail!("either --new-private-key or --new-public-key must be provided")
-            }
+            _ => unreachable!("exclusivity enforced by clap arg group"),
         }
     }
 }
