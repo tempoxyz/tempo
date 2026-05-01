@@ -1166,9 +1166,6 @@ where
                     cfg,
                     tx,
                     |mut keychain: AccountKeychain| {
-                        // Validate that user_address has authorized this access key in the keychain
-                        let user_address = &keychain_sig.user_address;
-
                         // Extract the signature type from the inner signature to validate it matches
                         // the key_type stored in the keychain. This prevents using a signature of one
                         // type to authenticate as a key registered with a different type.
@@ -4462,14 +4459,9 @@ mod tests {
 
     mod keychain {
         use super::*;
-        use alloy_primitives::Log;
         use alloy_signer::SignerSync;
         use alloy_signer_local::PrivateKeySigner;
-        use alloy_sol_types::SolEvent;
-        use tempo_contracts::precompiles::IAccountKeychain;
-        use tempo_precompiles::{
-            ACCOUNT_KEYCHAIN_ADDRESS, account_keychain::getRemainingLimitCall,
-        };
+        use tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS;
         use tempo_primitives::transaction::{
             KeychainSignature, KeychainVersion, SignatureType,
             key_authorization::{KeyAuthorization, TokenLimit as PrimTokenLimit},
