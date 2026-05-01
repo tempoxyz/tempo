@@ -583,9 +583,9 @@ where
                         self.metrics.inc_pool_tx_skipped("invalid_tx");
                     }
                     continue;
-                } else {
-                    return Err(PayloadBuilderError::evm(err));
                 }
+
+                return Err(PayloadBuilderError::evm(err));
             };
             let elapsed = tx_execution_start.elapsed();
             self.metrics
@@ -647,9 +647,9 @@ where
                             .store(builder.evm().block().number.to(), Ordering::Relaxed);
                         self.metrics.inc_build_failure("subblock_invalid_tx");
                         return Err(PayloadBuilderError::evm(err));
-                    } else {
-                        return Err(PayloadBuilderError::evm(err));
                     }
+
+                    return Err(PayloadBuilderError::evm(err));
                 }
 
                 subblock_tx_count += 1.0;

@@ -38,7 +38,7 @@ pub struct TempoBuiltPayload {
 
 impl TempoBuiltPayload {
     /// Creates a new [`TempoBuiltPayload`].
-    pub fn new(
+    pub const fn new(
         inner: EthBuiltPayload<TempoPrimitives>,
         executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
     ) -> Self {

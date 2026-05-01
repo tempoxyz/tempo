@@ -401,7 +401,6 @@ impl AccountKeychain {
 
         // Convert u8 signature_type to SignatureType enum
         let signature_type = match key.signature_type {
-            0 => SignatureType::Secp256k1,
             1 => SignatureType::P256,
             2 => SignatureType::WebAuthn,
             _ => SignatureType::Secp256k1, // Default fallback
@@ -3910,9 +3909,6 @@ mod tests {
                     )?;
                     assert_eq!(remaining.remaining, U256::ZERO);
                     assert_eq!(remaining.periodEnd, 0);
-
-                    // T2+: revoked key returns zero directly
-                    assert_eq!(StorageCtx.counter_sload() - sload_before, 1);
                 } else {
                     // pre-T2: revoked keys are NOT zeroed; the raw stored limit is returned
                     let remaining = keychain.get_remaining_limit(getRemainingLimitCall {
@@ -3921,10 +3917,9 @@ mod tests {
                         token,
                     })?;
                     assert_eq!(remaining, U256::from(100u64));
-
-                    // pre-T2: direct storage read without reading the key
-                    assert_eq!(StorageCtx.counter_sload() - sload_before, 1);
                 }
+
+                assert_eq!(StorageCtx.counter_sload() - sload_before, 1);
 
                 Ok::<_, eyre::Report>(())
             })?;

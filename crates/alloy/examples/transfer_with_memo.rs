@@ -23,7 +23,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .transferWithMemo(
             address!("0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb"),
             U256::from(100_000_000), // 100 tokens (6 decimals)
-            B256::left_padding_from("INV-12345".as_bytes()),
+            B256::left_padding_from(b"INV-12345"),
         )
         .send()
         .await?

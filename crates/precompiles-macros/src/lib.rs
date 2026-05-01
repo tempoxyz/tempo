@@ -4,7 +4,7 @@
 //! - `#[contract]` macro that transforms a storage schema into a fully-functional contract
 //! - `#[derive(Storable)]` macro for storage structs and `#[repr(u8)]` unit enums
 //! - `storable_alloy_ints!` macro for generating alloy integer storage implementations
-//! - `storable_alloy_bytes!` macro for generating alloy FixedBytes storage implementations
+//! - `storable_alloy_bytes!` macro for generating alloy `FixedBytes` storage implementations
 //! - `storable_rust_ints!` macro for generating standard Rust integer storage implementations
 
 mod layout;
@@ -324,7 +324,7 @@ pub fn gen_storable_tests(_input: TokenStream) -> TokenStream {
 /// - Rust integers: u8-u128, i8-i128
 /// - Alloy integers: U8-U256, I8-I256
 /// - Address
-/// - FixedBytes<20>, FixedBytes<32>
+/// - `FixedBytes<20>`, `FixedBytes<32>`
 ///
 /// Each array gets:
 /// - `StorableType` impl with `LAYOUT = Layout::Slot`

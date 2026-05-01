@@ -526,8 +526,10 @@ impl Launcher {
                 registry.save();
                 Ok(self.find_binary(&binary_name))
             }
-            Err(InstallerError::ReleaseManifestNotFound(_))
-            | Err(InstallerError::ExtensionNotInManifest(_)) => Ok(None),
+            Err(
+                InstallerError::ReleaseManifestNotFound(_)
+                | InstallerError::ExtensionNotInManifest(_),
+            ) => Ok(None),
             Err(InstallerError::Network(err))
                 if err.status() == Some(reqwest::StatusCode::NOT_FOUND) =>
             {

@@ -29,7 +29,7 @@ impl InterruptHandle {
 ///
 /// The `TempoPayloadAttributes` has an additional feature of interrupting payload.
 ///
-/// It also carries DKG data to be included in the block's extra_data field.
+/// It also carries DKG data to be included in the block's `extra_data` field.
 #[derive(
     derive_more::Debug, Clone, Serialize, Deserialize, derive_more::Deref, derive_more::DerefMut,
 )]
@@ -45,7 +45,7 @@ pub struct TempoPayloadAttributes {
     interrupt: InterruptHandle,
     /// Milliseconds portion of the timestamp.
     timestamp_millis_part: u64,
-    /// DKG ceremony data to include in the block's extra_data header field.
+    /// DKG ceremony data to include in the block's `extra_data` header field.
     ///
     /// This is empty when no DKG data is available (e.g., when the DKG manager
     /// hasn't produced ceremony outcomes yet, or when DKG operations fail).
@@ -98,12 +98,12 @@ impl TempoPayloadAttributes {
     }
 
     /// Returns the extra data to be included in the block header.
-    pub fn extra_data(&self) -> &Bytes {
+    pub const fn extra_data(&self) -> &Bytes {
         &self.extra_data
     }
 
     /// Returns the proposer's public key.
-    pub fn proposer_public_key(&self) -> Option<&B256> {
+    pub const fn proposer_public_key(&self) -> Option<&B256> {
         self.proposer_public_key.as_ref()
     }
 
@@ -114,12 +114,12 @@ impl TempoPayloadAttributes {
     }
 
     /// Returns a cloneable [`InterruptHandle`] for turning on the `interrupt` flag.
-    pub fn interrupt_handle(&self) -> &InterruptHandle {
+    pub const fn interrupt_handle(&self) -> &InterruptHandle {
         &self.interrupt
     }
 
     /// Returns the milliseconds portion of the timestamp.
-    pub fn timestamp_millis_part(&self) -> u64 {
+    pub const fn timestamp_millis_part(&self) -> u64 {
         self.timestamp_millis_part
     }
 
@@ -132,7 +132,7 @@ impl TempoPayloadAttributes {
     }
 
     /// Returns the consensus context
-    pub fn consensus_context(&self) -> Option<TempoConsensusContext> {
+    pub const fn consensus_context(&self) -> Option<TempoConsensusContext> {
         self.consensus_context
     }
 

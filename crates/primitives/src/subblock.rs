@@ -12,7 +12,7 @@ pub const TEMPO_SUBBLOCK_NONCE_KEY_PREFIX: u8 = 0x5b;
 
 /// Returns true if the given nonce key has the [`TEMPO_SUBBLOCK_NONCE_KEY_PREFIX`].
 #[inline]
-pub fn has_sub_block_nonce_key_prefix(nonce_key: &U256) -> bool {
+pub const fn has_sub_block_nonce_key_prefix(nonce_key: &U256) -> bool {
     nonce_key.byte(31) == TEMPO_SUBBLOCK_NONCE_KEY_PREFIX
 }
 
@@ -221,7 +221,11 @@ pub struct RecoveredSubBlock {
 
 impl RecoveredSubBlock {
     /// Creates a new [`RecoveredSubBlock`] without validating the signatures.
-    pub fn new_unchecked(inner: SignedSubBlock, senders: Vec<Address>, validator: B256) -> Self {
+    pub const fn new_unchecked(
+        inner: SignedSubBlock,
+        senders: Vec<Address>,
+        validator: B256,
+    ) -> Self {
         Self {
             inner,
             senders,
@@ -239,7 +243,7 @@ impl RecoveredSubBlock {
     }
 
     /// Returns the validator that submitted the subblock.
-    pub fn validator(&self) -> B256 {
+    pub const fn validator(&self) -> B256 {
         self.validator
     }
 

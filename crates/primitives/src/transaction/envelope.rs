@@ -12,7 +12,7 @@ use core::fmt;
 use tempo_contracts::precompiles::ITIP20;
 
 /// TIP20 payment address prefix (12 bytes for payment classification)
-/// Same as TIP20_TOKEN_PREFIX
+/// Same as `TIP20_TOKEN_PREFIX`
 pub const TIP20_PAYMENT_PREFIX: [u8; 12] = hex!("20C000000000000000000000");
 
 /// Fake signature for Tempo system transactions.
@@ -98,7 +98,7 @@ impl alloy_consensus::InMemorySize for TempoTxType {
 
 impl TempoTxEnvelope {
     /// Returns the fee token preference if this is a fee token transaction
-    pub fn fee_token(&self) -> Option<Address> {
+    pub const fn fee_token(&self) -> Option<Address> {
         match self {
             Self::AA(tx) => tx.tx().fee_token,
             _ => None,
@@ -125,7 +125,7 @@ impl TempoTxEnvelope {
     }
 
     /// Returns true if this is a fee token transaction
-    pub fn is_fee_token(&self) -> bool {
+    pub const fn is_fee_token(&self) -> bool {
         matches!(self, Self::AA(_))
     }
 
@@ -189,7 +189,7 @@ impl TempoTxEnvelope {
     /// - AA transactions have at least one call.
     ///
     /// # NOTE
-    /// Builder-level classifier, used by the transaction pool and payload builder to prevent DoS of
+    /// Builder-level classifier, used by the transaction pool and payload builder to prevent `DoS` of
     /// the payment lane. NOT enforced during block validation — a future TIP will enshrine this
     /// stricter classification at the protocol level.
     ///
@@ -232,7 +232,7 @@ impl TempoTxEnvelope {
     }
 
     /// Returns the [`AASigned`] transaction if this is a Tempo transaction.
-    pub fn as_aa(&self) -> Option<&AASigned> {
+    pub const fn as_aa(&self) -> Option<&AASigned> {
         match self {
             Self::AA(tx) => Some(tx),
             _ => None,
@@ -245,7 +245,7 @@ impl TempoTxEnvelope {
     }
 
     /// Returns true if this is a Tempo transaction
-    pub fn is_aa(&self) -> bool {
+    pub const fn is_aa(&self) -> bool {
         matches!(self, Self::AA(_))
     }
 

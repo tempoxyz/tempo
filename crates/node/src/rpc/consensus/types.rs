@@ -8,7 +8,7 @@ use tempo_primitives::Block;
 use tokio::sync::broadcast;
 
 /// A block with a threshold BLS certificate (notarization or finalization).
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CertifiedBlock {
     pub epoch: u64,

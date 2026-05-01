@@ -40,12 +40,53 @@ resolver = "3"
 
 [workspace.lints]
 [workspace.lints.clippy]
-dbg-macro = "warn"
-manual-string-new = "warn"
-uninlined-format-args = "warn"
-use-self = "warn"
-redundant-clone = "warn"
-default-constructed-unit-structs = "allow"
+# These are some of clippy's nursery (i.e., experimental) lints that we like.
+# By default, nursery lints are allowed. Some of the lints below have made good
+# suggestions which we fixed. The others didn't have any findings, so we can
+# assume they don't have that many false positives. Let's enable them to
+# prevent future problems.
+borrow_as_ptr = "warn"
+branches_sharing_code = "warn"
+clear_with_drain = "warn"
+dbg_macro = "warn"
+derive_partial_eq_without_eq = "warn"
+empty_line_after_doc_comments = "warn"
+empty_line_after_outer_attr = "warn"
+enum_glob_use = "warn"
+flat_map_option = "warn"
+from_iter_instead_of_collect = "warn"
+imprecise_flops = "warn"
+iter_on_empty_collections = "warn"
+manual_clamp = "warn"
+manual_is_variant_and = "warn"
+manual_string_new = "warn"
+mutex_integer = "warn"
+naive_bytecount = "warn"
+needless_bitwise_bool = "warn"
+nonstandard_macro_braces = "warn"
+option_as_ref_cloned = "warn"
+read_zero_byte_vec = "warn"
+redundant_clone = "warn"
+string_lit_as_bytes = "warn"
+string_lit_chars_any = "warn"
+suboptimal_flops = "warn"
+trait_duplication_in_bounds = "warn"
+transmute_undefined_repr = "warn"
+trivial_regex = "warn"
+tuple_array_conversions = "warn"
+type_repetition_in_bounds = "warn"
+uninlined_format_args = "warn"
+uninhabited_references = "warn"
+unnecessary_self_imports = "warn"
+unnecessary_struct_initialization = "warn"
+unnested_or_patterns = "warn"
+unused_peekable = "warn"
+unused_rounding = "warn"
+use_self = "warn"
+zero_sized_map_values = "warn"
+
+# These are nursery lints which have findings. Allow them for now.
+default_constructed_unit_structs = "allow"
 
 [workspace.lints.rust]
 rust-2018-idioms = "warn"

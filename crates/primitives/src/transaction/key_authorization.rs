@@ -8,8 +8,8 @@ use core::num::NonZeroU64;
 
 /// Token spending limit for access keys
 ///
-/// Defines a per-token spending limit for an access key provisioned via key_authorization.
-/// This limit is enforced by the AccountKeychain precompile when the key is used.
+/// Defines a per-token spending limit for an access key provisioned via `key_authorization`.
+/// This limit is enforced by the `AccountKeychain` precompile when the key is used.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
@@ -53,12 +53,12 @@ pub struct CallScope {
 
 impl CallScope {
     /// Returns the target contract address.
-    pub fn target(&self) -> Address {
+    pub const fn target(&self) -> Address {
         self.target
     }
 
     /// Returns `true` when any call to this target is allowed (no selector restrictions).
-    pub fn allows_all_selectors(&self) -> bool {
+    pub const fn allows_all_selectors(&self) -> bool {
         self.selector_rules.is_empty()
     }
 
@@ -101,7 +101,7 @@ pub struct SelectorRule {
 
 impl SelectorRule {
     /// Returns the 4-byte function selector.
-    pub fn selector(&self) -> [u8; 4] {
+    pub const fn selector(&self) -> [u8; 4] {
         self.selector
     }
 
@@ -111,11 +111,11 @@ impl SelectorRule {
     }
 
     /// Returns `true` when any recipient is allowed (no recipient restriction).
-    pub fn allows_all_recipients(&self) -> bool {
+    pub const fn allows_all_recipients(&self) -> bool {
         self.recipients.is_empty()
     }
 
-    fn heap_size(&self) -> usize {
+    const fn heap_size(&self) -> usize {
         self.recipients.capacity() * size_of::<Address>()
     }
 }
@@ -162,7 +162,7 @@ impl From<SelectorRule> for AbiSelectorRule {
 
 /// Key authorization for provisioning access keys
 ///
-/// Used in TempoTransaction to add a new key to the AccountKeychain precompile.
+/// Used in `TempoTransaction` to add a new key to the `AccountKeychain` precompile.
 /// The transaction must be signed by the root key to authorize adding this access key.
 ///
 /// RLP encoding: `[chain_id, key_type, key_id, expiry?, limits?, allowed_calls?]`
@@ -182,14 +182,14 @@ pub struct KeyAuthorization {
     #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
     pub chain_id: u64,
 
-    /// Type of key being authorized (Secp256k1, P256, or WebAuthn)
+    /// Type of key being authorized (Secp256k1, P256, or `WebAuthn`)
     pub key_type: SignatureType,
 
     /// Key identifier, is the address derived from the public key of the key type.
     pub key_id: Address,
 
     /// Unix timestamp when key expires.
-    /// - `None` (RLP 0x80) = key never expires (stored as u64::MAX in precompile)
+    /// - `None` (RLP 0x80) = key never expires (stored as `u64::MAX` in precompile)
     /// - `Some(timestamp)` = key expires at this timestamp
     ///
     /// This uses `Option<NonZeroU64>` so `Some(0)` is unrepresentable and cannot silently
@@ -199,7 +199,7 @@ pub struct KeyAuthorization {
 
     /// TIP20 spending limits for this key.
     /// - `None` (RLP 0x80) = unlimited spending (no limits enforced)
-    /// - `Some([])` = no spending allowed (enforce_limits=true but no tokens allowed)
+    /// - `Some([])` = no spending allowed (`enforce_limits=true` but no tokens allowed)
     /// - `Some([TokenLimit{...}])` = specific limits enforced
     pub limits: Option<Vec<TokenLimit>>,
 
@@ -213,7 +213,7 @@ pub struct KeyAuthorization {
 impl KeyAuthorization {
     /// Create a fully unrestricted key authorization: no expiry, no spending limits, no call
     /// scopes.
-    pub fn unrestricted(chain_id: u64, key_type: SignatureType, key_id: Address) -> Self {
+    pub const fn unrestricted(chain_id: u64, key_type: SignatureType, key_id: Address) -> Self {
         Self {
             chain_id,
             key_type,
@@ -225,7 +225,7 @@ impl KeyAuthorization {
     }
 
     /// Set an expiry timestamp on this key authorization.
-    pub fn with_expiry(mut self, expiry: u64) -> Self {
+    pub const fn with_expiry(mut self, expiry: u64) -> Self {
         self.expiry = NonZeroU64::new(expiry);
         self
     }
@@ -269,17 +269,17 @@ impl KeyAuthorization {
     }
 
     /// Returns whether this authorization carries explicit call-scope restrictions.
-    pub fn has_call_scopes(&self) -> bool {
+    pub const fn has_call_scopes(&self) -> bool {
         self.allowed_calls.is_some()
     }
 
     /// Returns whether this key has unlimited spending (limits is None)
-    pub fn has_unlimited_spending(&self) -> bool {
+    pub const fn has_unlimited_spending(&self) -> bool {
         self.limits.is_none()
     }
 
     /// Returns whether this key never expires (expiry is None)
-    pub fn never_expires(&self) -> bool {
+    pub const fn never_expires(&self) -> bool {
         self.expiry.is_none()
     }
 
@@ -289,7 +289,7 @@ impl KeyAuthorization {
     }
 
     /// Convert the key authorization into a [`SignedKeyAuthorization`] with a signature.
-    pub fn into_signed(self, signature: PrimitiveSignature) -> SignedKeyAuthorization {
+    pub const fn into_signed(self, signature: PrimitiveSignature) -> SignedKeyAuthorization {
         SignedKeyAuthorization {
             authorization: self,
             signature,
@@ -300,7 +300,7 @@ impl KeyAuthorization {
     ///
     /// - Post-T1C: `chain_id` must exactly match (wildcard `0` is no longer allowed).
     /// - Pre-T1C: `chain_id == 0` is a wildcard (valid on any chain), otherwise must match.
-    pub fn validate_chain_id(
+    pub const fn validate_chain_id(
         &self,
         expected_chain_id: u64,
         is_t1c: bool,
@@ -340,7 +340,7 @@ impl KeyAuthorization {
 pub struct KeyAuthorizationChainIdError {
     /// The expected chain ID (current chain).
     pub expected: u64,
-    /// The chain ID from the KeyAuthorization.
+    /// The chain ID from the `KeyAuthorization`.
     pub got: u64,
 }
 

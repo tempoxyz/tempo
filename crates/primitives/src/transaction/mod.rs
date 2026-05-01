@@ -38,7 +38,7 @@ pub const TEMPO_GAS_PRICE_SCALING_FACTOR: U256 = uint!(1_000_000_000_000_U256);
 /// Calculates gas balance spending in TIP-20 token units (microdollars).
 ///
 /// Takes gas parameters in attodollars and converts to microdollars (TIP-20 token units).
-/// Formula: (gas_limit × gas_price) / 10^12 = microdollars
+/// Formula: (`gas_limit` × `gas_price`) / 10^12 = microdollars
 pub fn calc_gas_balance_spending(gas_limit: u64, gas_price: u128) -> U256 {
     U256::from(gas_limit)
         .saturating_mul(U256::from(gas_price))

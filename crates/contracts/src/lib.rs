@@ -55,7 +55,7 @@ pub mod contracts {
         "abi/CreateX.json",
     );
 
-    /// Keccak256 hash of CreateX deployed bytecode
+    /// Keccak256 hash of `CreateX` deployed bytecode
     pub const CREATEX_BYTECODE_HASH: B256 =
         b256!("0xbd8a7ea8cfca7b4e5f5041d7d4b17bc317c5ce42cfbc42066a00cf26b43eb53f");
 

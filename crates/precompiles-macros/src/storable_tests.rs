@@ -120,7 +120,7 @@ fn gen_alloy_signed_arbitrary() -> TokenStream {
     quote! { #(#funcs)* }
 }
 
-/// Generate arbitrary functions for FixedBytes
+/// Generate arbitrary functions for `FixedBytes`
 fn gen_fixed_bytes_arbitrary() -> TokenStream {
     let funcs: Vec<_> = FIXED_BYTES_SIZES
         .iter()
@@ -393,7 +393,7 @@ fn gen_alloy_signed_tests() -> TokenStream {
     }
 }
 
-/// Generate complete proptest! block for FixedBytes
+/// Generate complete proptest! block for `FixedBytes`
 fn gen_fixed_bytes_tests() -> TokenStream {
     let tests: Vec<_> = FIXED_BYTES_SIZES
         .iter()

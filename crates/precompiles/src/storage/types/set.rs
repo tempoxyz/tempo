@@ -952,7 +952,7 @@ mod tests {
                 let set = handler.read()?;
 
                 for i in 0..set.len() {
-                    prop_assert_eq!(set.get(i).cloned(), handler.at(i)?, "Order mismatch at index {}", i);
+                    prop_assert_eq!(set.get(i).copied(), handler.at(i)?, "Order mismatch at index {}", i);
                 }
 
                 Ok(())

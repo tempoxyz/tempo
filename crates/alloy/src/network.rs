@@ -176,11 +176,9 @@ impl NetworkTransactionBuilder<TempoNetwork> for TempoTransactionRequest {
             TempoTxType::AA
         } else {
             match NetworkTransactionBuilder::<Ethereum>::output_tx_type(&self.inner) {
-                TxType::Legacy => TempoTxType::Legacy,
+                TxType::Legacy | TxType::Eip4844 => TempoTxType::Legacy,
                 TxType::Eip2930 => TempoTxType::Eip2930,
                 TxType::Eip1559 => TempoTxType::Eip1559,
-                // EIP-4844 transactions are not supported on Tempo
-                TxType::Eip4844 => TempoTxType::Legacy,
                 TxType::Eip7702 => TempoTxType::Eip7702,
             }
         }
@@ -227,7 +225,7 @@ impl NetworkTransactionBuilder<TempoNetwork> for TempoTransactionRequest {
                     .into_unbuilt(self));
                 }
 
-                if let Some(TxType::Eip4844) = self.inner.buildable_type() {
+                if self.inner.buildable_type() == Some(TxType::Eip4844) {
                     return Err(UnbuiltTransactionError {
                         request: self,
                         error: TransactionBuilderError::Custom(Box::new(

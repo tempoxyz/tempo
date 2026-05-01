@@ -42,7 +42,7 @@ impl PackingConstants {
     }
 }
 
-/// Convert a field name to a constant name (SCREAMING_SNAKE_CASE)
+/// Convert a field name to a constant name (`SCREAMING_SNAKE_CASE`)
 pub(crate) fn const_name(name: &Ident) -> String {
     name.to_string().to_uppercase()
 }
@@ -60,7 +60,7 @@ pub(crate) enum SlotAssignment {
 }
 
 impl SlotAssignment {
-    pub(crate) fn ref_slot(&self) -> &U256 {
+    pub(crate) const fn ref_slot(&self) -> &U256 {
         match self {
             Self::Manual(slot) => slot,
             Self::Auto { base_slot } => base_slot,
@@ -94,7 +94,7 @@ pub(crate) fn allocate_slots(fields: &[FieldInfo]) -> syn::Result<Vec<LayoutFiel
     let mut result = Vec::with_capacity(fields.len());
     let mut current_base_slot = U256::ZERO;
 
-    for field in fields.iter() {
+    for field in fields {
         let kind = classify_field_type(&field.ty)?;
 
         // Explicit fixed slot, doesn't affect auto-assignment chain

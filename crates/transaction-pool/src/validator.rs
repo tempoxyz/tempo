@@ -1706,8 +1706,10 @@ mod tests {
             assert!(
                 !matches!(
                     tempo_err,
-                    Some(TempoPoolTransactionError::InvalidValidAfter { .. })
-                        | Some(TempoPoolTransactionError::InvalidValidBefore { .. })
+                    Some(
+                        TempoPoolTransactionError::InvalidValidAfter { .. }
+                            | TempoPoolTransactionError::InvalidValidBefore { .. },
+                    )
                 ),
                 "Should not fail with validity window errors"
             );

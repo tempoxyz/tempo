@@ -68,8 +68,8 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("bid"));
         assert!(msg.contains(">= tick"));
-        assert!(msg.contains("5"));
-        assert!(msg.contains("3"));
+        assert!(msg.contains('5'));
+        assert!(msg.contains('3'));
     }
 
     #[test]
@@ -81,8 +81,8 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("ask"));
         assert!(msg.contains("<= tick"));
-        assert!(msg.contains("5"));
-        assert!(msg.contains("7"));
+        assert!(msg.contains('5'));
+        assert!(msg.contains('7'));
     }
 
     #[test]

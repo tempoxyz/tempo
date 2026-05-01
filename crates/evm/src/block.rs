@@ -533,9 +533,6 @@ where
         self.section = next_section;
 
         match self.section {
-            BlockSection::StartOfBlock => {
-                // no gas spending for start-of-block system transactions
-            }
             BlockSection::NonShared => {
                 self.non_shared_gas_left -= block_gas_used;
                 if !is_payment {
@@ -561,7 +558,7 @@ where
             BlockSection::GasIncentive => {
                 self.incentive_gas_used += block_gas_used;
             }
-            BlockSection::System { .. } => {
+            BlockSection::StartOfBlock | BlockSection::System { .. } => {
                 // no gas spending for end-of-block system transactions
             }
         }

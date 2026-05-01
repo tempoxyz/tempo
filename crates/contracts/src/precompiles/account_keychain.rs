@@ -11,7 +11,7 @@ crate::sol! {
     /// Account Keychain interface for managing authorized keys
     ///
     /// This precompile allows accounts to authorize secondary keys with:
-    /// - Different signature types (secp256k1, P256, WebAuthn)
+    /// - Different signature types (secp256k1, P256, `WebAuthn`)
     /// - Expiry times for key rotation
     /// - Per-token spending limits for security
     ///
@@ -103,7 +103,7 @@ crate::sol! {
 
         /// Authorize a new key for the caller's account with T3 extensions.
         /// @param keyId The key identifier (address derived from public key)
-        /// @param signatureType 0: secp256k1, 1: P256, 2: WebAuthn
+        /// @param signatureType 0: secp256k1, 1: P256, 2: `WebAuthn`
         /// @param config Access-key expiry and optional limits / call restrictions
         function authorizeKey(
             address keyId,
@@ -249,8 +249,8 @@ impl AccountKeychainError {
         Self::ExpiryInPast(IAccountKeychain::ExpiryInPast {})
     }
 
-    /// Creates an error for when a key_id has already been revoked.
-    /// Once revoked, a key_id can never be re-authorized for the same account.
+    /// Creates an error for when a `key_id` has already been revoked.
+    /// Once revoked, a `key_id` can never be re-authorized for the same account.
     /// This prevents replay attacks where a revoked key's authorization is reused.
     pub const fn key_already_revoked() -> Self {
         Self::KeyAlreadyRevoked(IAccountKeychain::KeyAlreadyRevoked {})

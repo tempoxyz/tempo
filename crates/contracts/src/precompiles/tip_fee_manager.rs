@@ -2,17 +2,17 @@ pub use IFeeManager::{IFeeManagerErrors as FeeManagerError, IFeeManagerEvents as
 pub use ITIPFeeAMM::{ITIPFeeAMMErrors as TIPFeeAMMError, ITIPFeeAMMEvents as TIPFeeAMMEvent};
 
 crate::sol! {
-    /// FeeManager interface for managing gas fee collection and distribution.
+    /// `FeeManager` interface for managing gas fee collection and distribution.
     ///
-    /// IMPORTANT: FeeManager inherits from TIPFeeAMM and shares the same storage layout.
+    /// IMPORTANT: `FeeManager` inherits from `TIPFeeAMM` and shares the same storage layout.
     /// This means:
-    /// - FeeManager has all the functionality of TIPFeeAMM (pool management, swaps, liquidity operations)
+    /// - `FeeManager` has all the functionality of `TIPFeeAMM` (pool management, swaps, liquidity operations)
     /// - Both contracts use the same storage slots for AMM data (pools, reserves, liquidity balances)
-    /// - FeeManager extends TIPFeeAMM with additional storage slots (4-15) for fee-specific data
-    /// - When deployed, FeeManager IS a TIPFeeAMM with additional fee management capabilities
+    /// - `FeeManager` extends `TIPFeeAMM` with additional storage slots (4-15) for fee-specific data
+    /// - When deployed, `FeeManager` is a `TIPFeeAMM` with additional fee management capabilities
     ///
     /// Storage layout:
-    /// - Slots 0-3: TIPFeeAMM storage (pools, pool exists, liquidity data)
+    /// - Slots 0-3: `TIPFeeAMM` storage (pools, pool exists, liquidity data)
     /// - Slots 4+: FeeManager-specific storage (validator tokens, user tokens, collected fees, etc.)
     #[derive(Debug, PartialEq, Eq)]
     #[sol(abi)]
@@ -48,11 +48,11 @@ crate::sol! {
 }
 
 sol! {
-    /// TIPFeeAMM interface defining the base AMM functionality for stablecoin pools.
+    /// `TIPFeeAMM` interface defining the base AMM functionality for stablecoin pools.
     /// This interface provides core liquidity pool management and swap operations.
     ///
-    /// NOTE: The FeeManager contract inherits from TIPFeeAMM and shares the same storage layout.
-    /// When FeeManager is deployed, it effectively "is" a TIPFeeAMM with additional fee management
+    /// NOTE: The `FeeManager` contract inherits from `TIPFeeAMM` and shares the same storage layout.
+    /// When `FeeManager` is deployed, it effectively "is" a `TIPFeeAMM` with additional fee management
     /// capabilities layered on top. Both contracts operate on the same storage slots.
     #[derive(Debug, PartialEq, Eq)]
     #[sol(abi)]

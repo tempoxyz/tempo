@@ -409,11 +409,11 @@ pub(crate) fn dispatch_call<T>(
     if calldata.len() < 4 {
         if storage.spec().is_t1() {
             return Ok(storage.revert_output(Bytes::new()));
-        } else {
-            return Ok(storage.halt_output(PrecompileHalt::Other(
-                "Invalid input: missing function selector".into(),
-            )));
         }
+
+        return Ok(storage.halt_output(PrecompileHalt::Other(
+            "Invalid input: missing function selector".into(),
+        )));
     }
 
     let selector: [u8; 4] = calldata[..4].try_into().expect("calldata len >= 4");

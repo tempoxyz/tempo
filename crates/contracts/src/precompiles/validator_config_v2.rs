@@ -231,15 +231,15 @@ impl ValidatorConfigV2Error {
         Self::InvalidOwner(IValidatorConfigV2::InvalidOwner {})
     }
 
-    pub fn not_ip(input: String, backtrace: String) -> Self {
+    pub const fn not_ip(input: String, backtrace: String) -> Self {
         Self::NotIp(IValidatorConfigV2::NotIp { input, backtrace })
     }
 
-    pub fn not_ip_port(input: String, backtrace: String) -> Self {
+    pub const fn not_ip_port(input: String, backtrace: String) -> Self {
         Self::NotIpPort(IValidatorConfigV2::NotIpPort { input, backtrace })
     }
 
-    pub fn ingress_already_exists(ingress: String) -> Self {
+    pub const fn ingress_already_exists(ingress: String) -> Self {
         Self::IngressAlreadyExists(IValidatorConfigV2::IngressAlreadyExists { ingress })
     }
 }

@@ -68,9 +68,11 @@ pub(super) struct TypeDefinition {
 ///
 /// **NOTE:** assumes 1 contract per file.
 pub(super) fn load_solc_layout(sol_file: &Path) -> StorageLayout {
-    if sol_file.extension().and_then(|s| s.to_str()) != Some("sol") {
-        panic!("expected .sol file, got: {}", sol_file.display());
-    }
+    assert!(
+        sol_file.extension().and_then(|s| s.to_str()) == Some("sol"),
+        "expected .sol file, got: {}",
+        sol_file.display()
+    );
 
     let json_path = sol_file.with_extension("layout.json");
     let content = std::fs::read_to_string(&json_path).unwrap_or_else(|_| {
@@ -82,9 +84,11 @@ pub(super) fn load_solc_layout(sol_file: &Path) -> StorageLayout {
             .output()
             .expect("failed to run solc");
 
-        if !output.status.success() {
-            panic!("solc failed: {}", String::from_utf8_lossy(&output.stderr));
-        }
+        assert!(
+            output.status.success(),
+            "solc failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
 
         // (De)serialize the value back to a pretty-printed string, and save it
         let json_value: serde_json::Value =

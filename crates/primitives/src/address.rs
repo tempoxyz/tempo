@@ -1,7 +1,7 @@
 use alloy_primitives::{Address, FixedBytes, hex};
 
 /// TIP20 token address prefix (12 bytes)
-/// The full address is: TIP20_TOKEN_PREFIX (12 bytes) || derived_bytes (8 bytes)
+/// The full address is: `TIP20_TOKEN_PREFIX` (12 bytes) || `derived_bytes` (8 bytes)
 const TIP20_TOKEN_PREFIX: [u8; 12] = hex!("20C000000000000000000000");
 
 /// Returns `true` if `addr` has the TIP-20 token prefix.

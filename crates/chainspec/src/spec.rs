@@ -26,7 +26,7 @@ use tempo_primitives::TempoHeader;
 pub const SYSTEM_TX_COUNT: usize = 1;
 pub const SYSTEM_TX_ADDRESSES: [Address; SYSTEM_TX_COUNT] = [Address::ZERO];
 
-/// Tempo genesis info extracted from genesis extra_fields
+/// Tempo genesis info extracted from genesis `extra_fields`
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TempoGenesisInfo {
@@ -63,7 +63,7 @@ pub struct TempoGenesisInfo {
 }
 
 impl TempoGenesisInfo {
-    /// Extract Tempo genesis info from genesis extra_fields
+    /// Extract Tempo genesis info from genesis `extra_fields`
     fn extract_from(genesis: &Genesis) -> Self {
         genesis
             .config
@@ -72,12 +72,12 @@ impl TempoGenesisInfo {
             .unwrap_or_default()
     }
 
-    pub fn epoch_length(&self) -> Option<u64> {
+    pub const fn epoch_length(&self) -> Option<u64> {
         self.epoch_length
     }
 
     /// Returns the activation timestamp for a given hardfork, or `None` if not scheduled.
-    pub fn fork_time(&self, fork: TempoHardfork) -> Option<u64> {
+    pub const fn fork_time(&self, fork: TempoHardfork) -> Option<u64> {
         match fork {
             TempoHardfork::Genesis => Some(0),
             TempoHardfork::T0 => self.t0_time,
@@ -173,7 +173,7 @@ pub struct TempoChainSpec {
 
 impl TempoChainSpec {
     /// Returns the default RPC URL for following this chain.
-    pub fn default_follow_url(&self) -> Option<&'static str> {
+    pub const fn default_follow_url(&self) -> Option<&'static str> {
         self.default_follow_url
     }
 
@@ -205,7 +205,7 @@ impl TempoChainSpec {
     }
 
     /// Sets the default follow URL for this chain spec.
-    pub fn with_default_follow_url(mut self, url: &'static str) -> Self {
+    pub const fn with_default_follow_url(mut self, url: &'static str) -> Self {
         self.default_follow_url = Some(url);
         self
     }

@@ -18,8 +18,8 @@ pub const MAGIC: u8 = 0x05;
 /// A signed EIP-7702 authorization with AA signature support.
 ///
 /// This is a 1:1 parallel to alloy's `SignedAuthorization`, but using `TempoSignature`
-/// instead of hardcoded (y_parity, r, s) components. This allows supporting multiple
-/// signature types: Secp256k1, P256, and WebAuthn.
+/// instead of hardcoded (`y_parity`, `r`, `s`) components. This allows supporting multiple
+/// signature types: Secp256k1, P256, and `WebAuthn`.
 ///
 /// The structure and methods mirror `SignedAuthorization` exactly to maintain
 /// compatibility with the EIP-7702 spec.
@@ -31,7 +31,7 @@ pub struct TempoSignedAuthorization {
     /// Inner authorization (reuses alloy's Authorization)
     #[cfg_attr(feature = "serde", serde(flatten))]
     inner: Authorization,
-    /// The AA signature (Secp256k1, P256, or WebAuthn)
+    /// The AA signature (Secp256k1, P256, or `WebAuthn`)
     signature: TempoSignature,
 }
 
@@ -45,7 +45,7 @@ impl TempoSignedAuthorization {
 
     /// Gets the `signature` for the authorization.
     ///
-    /// Returns a reference to the AA signature, which can be Secp256k1, P256, or WebAuthn.
+    /// Returns a reference to the AA signature, which can be Secp256k1, P256, or `WebAuthn`.
     pub const fn signature(&self) -> &TempoSignature {
         &self.signature
     }
@@ -113,7 +113,7 @@ impl TempoSignedAuthorization {
     }
 
     /// Calculates a heuristic for the in-memory size of this authorization
-    pub fn size(&self) -> usize {
+    pub const fn size(&self) -> usize {
         size_of::<Self>()
     }
 }

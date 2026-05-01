@@ -103,7 +103,7 @@ impl alloy_rlp::Decodable for SignatureType {
 
 /// Helper function to create an RLP header for a list with the given payload length
 #[inline]
-fn rlp_header(payload_length: usize) -> alloy_rlp::Header {
+const fn rlp_header(payload_length: usize) -> alloy_rlp::Header {
     alloy_rlp::Header {
         list: true,
         payload_length,
@@ -186,8 +186,8 @@ impl Decodable for Call {
 /// Tempo transaction following the Tempo spec.
 ///
 /// This transaction type supports:
-/// - Multiple signature types (secp256k1, P256, WebAuthn)
-/// - Parallelizable nonces via 2D nonce system (nonce_key + nonce)
+/// - Multiple signature types (secp256k1, P256, `WebAuthn`)
+/// - Parallelizable nonces via 2D nonce system (`nonce_key` + nonce)
 /// - Gas sponsorship via fee payer
 /// - Scheduled transactions (validBefore/validAfter)
 /// - EIP-7702 authorization lists
@@ -249,7 +249,7 @@ pub struct TempoTransaction {
 
     /// Optional key authorization for provisioning a new access key
     ///
-    /// When present, this transaction will add the specified key to the AccountKeychain precompile,
+    /// When present, this transaction will add the specified key to the `AccountKeychain` precompile,
     /// before verifying the transaction signature.
     /// The authorization must be signed with the root key, the tx can be signed by the Keychain signature.
     pub key_authorization: Option<SignedKeyAuthorization>,
@@ -349,7 +349,7 @@ impl TempoTransaction {
     }
 
     /// Convert the transaction into a signed transaction
-    pub fn into_signed(self, signature: TempoSignature) -> AASigned {
+    pub const fn into_signed(self, signature: TempoSignature) -> AASigned {
         AASigned::new_unhashed(self, signature)
     }
 
@@ -513,7 +513,7 @@ impl TempoTransaction {
         )
     }
 
-    /// Decodes the inner TempoTransaction fields from RLP bytes
+    /// Decodes the inner `TempoTransaction` fields from RLP bytes
     pub(crate) fn rlp_decode_fields(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let chain_id = Decodable::decode(buf)?;
         let max_priority_fee_per_gas = Decodable::decode(buf)?;
@@ -600,19 +600,14 @@ impl TempoTransaction {
     }
 
     /// Returns true if the nonce key of this transaction has the [`TEMPO_SUBBLOCK_NONCE_KEY_PREFIX`](crate::subblock::TEMPO_SUBBLOCK_NONCE_KEY_PREFIX).
-    pub fn has_sub_block_nonce_key_prefix(&self) -> bool {
+    pub const fn has_sub_block_nonce_key_prefix(&self) -> bool {
         has_sub_block_nonce_key_prefix(&self.nonce_key)
     }
 
     /// Returns the proposer of the subblock if this is a subblock transaction.
     pub fn subblock_proposer(&self) -> Option<PartialValidatorKey> {
-        if self.has_sub_block_nonce_key_prefix() {
-            Some(PartialValidatorKey::from_slice(
-                &self.nonce_key.to_be_bytes::<32>()[1..16],
-            ))
-        } else {
-            None
-        }
+        self.has_sub_block_nonce_key_prefix()
+            .then(|| PartialValidatorKey::from_slice(&self.nonce_key.to_be_bytes::<32>()[1..16]))
     }
 }
 
@@ -907,9 +902,7 @@ mod serde_input {
         Ok(helper
             .input
             .or(helper.data)
-            .ok_or(serde::de::Error::missing_field(
-                "missing `input` or `data` field",
-            ))?
+            .ok_or_else(|| serde::de::Error::missing_field("missing `input` or `data` field"))?
             .into_owned())
     }
 }
@@ -985,9 +978,7 @@ mod tests {
         assert!(tx4.validate().is_ok());
 
         // Invalid: empty calls
-        let tx5 = TempoTransaction {
-            ..Default::default()
-        };
+        let tx5 = TempoTransaction::default();
         assert!(tx5.validate().is_err());
     }
 

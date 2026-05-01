@@ -119,7 +119,7 @@ impl ValidatorConfigError {
         Self::InvalidPublicKey(IValidatorConfig::InvalidPublicKey {})
     }
 
-    pub fn not_host_port(field: String, input: String, backtrace: String) -> Self {
+    pub const fn not_host_port(field: String, input: String, backtrace: String) -> Self {
         Self::NotHostPort(IValidatorConfig::NotHostPort {
             field,
             input,
@@ -127,7 +127,7 @@ impl ValidatorConfigError {
         })
     }
 
-    pub fn not_ip_port(field: String, input: String, backtrace: String) -> Self {
+    pub const fn not_ip_port(field: String, input: String, backtrace: String) -> Self {
         Self::NotIpPort(IValidatorConfig::NotIpPort {
             field,
             input,

@@ -372,7 +372,7 @@ fn test_oz_values_full_and_paginated() -> eyre::Result<()> {
                     .iter()
                     .skip(begin)
                     .take(end.saturating_sub(begin))
-                    .cloned()
+                    .copied()
                     .collect();
                 assert_eq!(page, expected, "values_range({begin}, {end}) mismatch");
             }

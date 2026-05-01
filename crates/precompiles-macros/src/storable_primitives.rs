@@ -333,7 +333,7 @@ struct ArrayConfig {
 }
 
 /// Whether a given amount of bytes (primitives only) should be packed, or not.
-fn is_packable(byte_count: usize) -> bool {
+const fn is_packable(byte_count: usize) -> bool {
     byte_count < 32 && 32 % byte_count == 0
 }
 

@@ -3,7 +3,7 @@
 use alloy::primitives::{U256, keccak256};
 use syn::{Attribute, Lit, Type};
 
-/// Return type for [`extract_attributes`]: (slot, base_slot)
+/// Return type for [`extract_attributes`]: (`slot`, `base_slot`)
 type ExtractedAttributes = (Option<U256>, Option<U256>);
 
 /// Parses a slot value from a literal.
@@ -31,8 +31,8 @@ fn parse_slot_value(value: &Lit) -> syn::Result<U256> {
     }
 }
 
-/// Converts a string from CamelCase or snake_case to snake_case.
-/// Preserves SCREAMING_SNAKE_CASE, as those are assumed to be constant/immutable names.
+/// Converts a string from `CamelCase` or `snake_case` to `snake_case`.
+/// Preserves `SCREAMING_SNAKE_CASE`, as those are assumed to be constant/immutable names.
 pub(crate) fn to_snake_case(s: &str) -> String {
     let constant = s.to_uppercase();
     if s == constant {
@@ -61,7 +61,7 @@ pub(crate) fn to_snake_case(s: &str) -> String {
     result
 }
 
-/// Converts a string from snake_case to camelCase.
+/// Converts a string from `snake_case` to `camelCase`.
 pub(crate) fn to_camel_case(s: &str) -> String {
     let mut result = String::new();
     let mut first_word = true;
@@ -90,7 +90,7 @@ pub(crate) fn to_camel_case(s: &str) -> String {
 /// This function iterates through the attributes a single time to find all
 /// relevant values. It returns a tuple containing:
 /// - The slot number (if present)
-/// - The base_slot number (if present)
+/// - The `base_slot` number (if present)
 ///
 /// # Errors
 ///
@@ -222,7 +222,7 @@ pub(crate) fn extract_storable_array_sizes(attrs: &[Attribute]) -> syn::Result<O
 
 /// Extracts the type parameters from Mapping<K, V>.
 ///
-/// Returns Some((key_type, value_type)) if the type is a Mapping, None otherwise.
+/// Returns `Some((key_type, value_type))` if the type is a `Mapping`, `None` otherwise.
 pub(crate) fn extract_mapping_types(ty: &Type) -> Option<(&Type, &Type)> {
     if let Type::Path(type_path) = ty {
         let last_segment = type_path.path.segments.last()?;

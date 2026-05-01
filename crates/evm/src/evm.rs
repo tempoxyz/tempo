@@ -133,7 +133,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     }
 }
 
-impl<DB: Database, I> Deref for TempoEvm<DB, I>
+impl<DB, I> Deref for TempoEvm<DB, I>
 where
     DB: Database,
     I: Inspector<TempoContext<DB>>,
@@ -146,7 +146,7 @@ where
     }
 }
 
-impl<DB: Database, I> DerefMut for TempoEvm<DB, I>
+impl<DB, I> DerefMut for TempoEvm<DB, I>
 where
     DB: Database,
     I: Inspector<TempoContext<DB>>,

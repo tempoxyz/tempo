@@ -711,7 +711,7 @@ mod tests {
             let tx1 = TxHash::random();
 
             // First snapshot should not evict anything (no previous snapshot to compare)
-            let stale = tracker.check_and_update([tx1].into_iter().collect(), 100);
+            let stale = tracker.check_and_update(std::iter::once(tx1).collect(), 100);
             assert!(stale.is_empty());
             assert!(tracker.previous_pending.contains(&tx1));
         }
@@ -723,7 +723,7 @@ mod tests {
             let tx_new = TxHash::random();
 
             // First snapshot at t=0
-            tracker.check_and_update([tx_stale].into_iter().collect(), 0);
+            tracker.check_and_update(std::iter::once(tx_stale).collect(), 0);
 
             // Second snapshot at t=100: tx_stale still pending, tx_new is new
             let stale = tracker.check_and_update([tx_stale, tx_new].into_iter().collect(), 100);
@@ -745,7 +745,7 @@ mod tests {
 
             // First snapshot at t=0
             assert!(tracker.should_check(0));
-            tracker.check_and_update([tx].into_iter().collect(), 0);
+            tracker.check_and_update(std::iter::once(tx).collect(), 0);
 
             // At t=50 (before interval elapsed) - should_check returns false
             assert!(!tracker.should_check(50));
@@ -767,7 +767,7 @@ mod tests {
 
             // Second snapshot at t=100: only tx1 still pending
             // tx1 was in both -> stale, tx2 not in current -> removed from tracking
-            let stale = tracker.check_and_update([tx1].into_iter().collect(), 100);
+            let stale = tracker.check_and_update(std::iter::once(tx1).collect(), 100);
             assert_eq!(stale.len(), 1);
             assert!(stale.contains(&tx1));
 

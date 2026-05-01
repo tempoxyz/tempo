@@ -21,7 +21,7 @@
 //! ### In genesis files and generator:
 //! 5. Add `"vivaceTime": 0` to `genesis/dev.json`
 //! 6. Add `vivace_time: Option<u64>` arg to `xtask/src/genesis_args.rs`
-//! 7. Add insertion of `"vivaceTime"` to chain_config.extra_fields
+//! 7. Add insertion of `"vivaceTime"` to `chain_config.extra_fields`
 
 use crate::constants::gas;
 use alloy_eips::eip7825::MAX_TX_GAS_LIMIT_OSAKA;
@@ -100,7 +100,7 @@ macro_rules! tempo_hardfork {
 
             /// Returns the general (non-payment) gas limit for the given timestamp and block.
             /// - T1+: fixed at 30M gas
-            /// - Pre-T1: calculated as (gas_limit - shared_gas_limit) / 2
+            /// - Pre-T1: calculated as (`gas_limit` - `shared_gas_limit`) / 2
             fn general_gas_limit_at(&self, timestamp: u64, gas_limit: u64, shared_gas_limit: u64) -> u64 {
                 self.tempo_hardfork_at(timestamp)
                     .general_gas_limit()
@@ -199,7 +199,7 @@ impl TempoHardfork {
     /// - Pre-T1: 10 billion attodollars per gas
     /// - T1+: 20 billion attodollars per gas (targets ~0.1 cent per TIP-20 transfer)
     ///
-    /// Economic conversion: ceil(basefee × gas_used / 10^12) = cost in microdollars (TIP-20 tokens)
+    /// Economic conversion: ceil(basefee × `gas_used` / 10^12) = cost in microdollars (TIP-20 tokens)
     pub const fn base_fee(&self) -> u64 {
         if self.is_t1() {
             return gas::TEMPO_T1_BASE_FEE;
@@ -280,9 +280,7 @@ impl TempoHardfork {
             Self::T1B => Some(MAINNET_T1B_BLOCK),
             Self::T1C => Some(MAINNET_T1C_BLOCK),
             Self::T2 => Some(MAINNET_T2_BLOCK),
-            Self::T3 => None, // not yet known
-            Self::T4 => None,
-            Self::T5 => None,
+            Self::T3 | Self::T4 | Self::T5 => None, // not yet known
         }
     }
 
@@ -298,8 +296,7 @@ impl TempoHardfork {
             Self::T1C => Some(MAINNET_T1C_TIMESTAMP),
             Self::T2 => Some(MAINNET_T2_TIMESTAMP),
             Self::T3 => Some(MAINNET_T3_TIMESTAMP),
-            Self::T4 => None,
-            Self::T5 => None,
+            Self::T4 | Self::T5 => None,
         }
     }
 
@@ -314,9 +311,7 @@ impl TempoHardfork {
             Self::T1B => Some(MODERATO_T1B_BLOCK),
             Self::T1C => Some(MODERATO_T1C_BLOCK),
             Self::T2 => Some(MODERATO_T2_BLOCK),
-            Self::T3 => None, // not yet known
-            Self::T4 => None,
-            Self::T5 => None,
+            Self::T3 | Self::T4 | Self::T5 => None, // not yet known
         }
     }
 
@@ -332,8 +327,7 @@ impl TempoHardfork {
             Self::T1C => Some(MODERATO_T1C_TIMESTAMP),
             Self::T2 => Some(MODERATO_T2_TIMESTAMP),
             Self::T3 => Some(MODERATO_T3_TIMESTAMP),
-            Self::T4 => None,
-            Self::T5 => None,
+            Self::T4 | Self::T5 => None,
         }
     }
 }

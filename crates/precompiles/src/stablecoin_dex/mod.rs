@@ -971,42 +971,42 @@ impl StablecoinDEX {
                     .checked_add(amount_in)
                     .ok_or(TempoPrecompileError::under_overflow())?;
                 break;
-            } else {
-                let (amount_out_received, next_order_info) =
-                    self.fill_order(book_key, &mut order, level, taker)?;
-                total_amount_in = total_amount_in
-                    .checked_add(amount_in)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
+            }
 
-                // Update remaining amount_out
-                if bid {
-                    // Round UP baseNeeded to match the initial calculation
-                    let base_needed = quote_to_base(amount_out, tick, RoundingDirection::Up)
-                        .ok_or(TempoPrecompileError::under_overflow())?;
-                    if base_needed > order.remaining() {
-                        amount_out = amount_out
-                            .checked_sub(amount_out_received)
-                            .ok_or(TempoPrecompileError::under_overflow())?;
-                    } else {
-                        amount_out = 0;
-                    }
-                } else if amount_out > order.remaining() {
+            let (amount_out_received, next_order_info) =
+                self.fill_order(book_key, &mut order, level, taker)?;
+            total_amount_in = total_amount_in
+                .checked_add(amount_in)
+                .ok_or(TempoPrecompileError::under_overflow())?;
+
+            // Update remaining amount_out
+            if bid {
+                // Round UP baseNeeded to match the initial calculation
+                let base_needed = quote_to_base(amount_out, tick, RoundingDirection::Up)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+                if base_needed > order.remaining() {
                     amount_out = amount_out
                         .checked_sub(amount_out_received)
                         .ok_or(TempoPrecompileError::under_overflow())?;
                 } else {
                     amount_out = 0;
                 }
+            } else if amount_out > order.remaining() {
+                amount_out = amount_out
+                    .checked_sub(amount_out_received)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+            } else {
+                amount_out = 0;
+            }
 
-                if let Some((new_level, new_order)) = next_order_info {
-                    level = new_level;
-                    order = new_order;
-                } else {
-                    if amount_out > 0 {
-                        return Err(StablecoinDEXError::insufficient_liquidity().into());
-                    }
-                    break;
+            if let Some((new_level, new_order)) = next_order_info {
+                level = new_level;
+                order = new_order;
+            } else {
+                if amount_out > 0 {
+                    return Err(StablecoinDEXError::insufficient_liquidity().into());
                 }
+                break;
             }
         }
 
@@ -1047,48 +1047,48 @@ impl StablecoinDEX {
                     .checked_add(amount_out)
                     .ok_or(TempoPrecompileError::under_overflow())?;
                 break;
-            } else {
-                let (amount_out, next_order_info) =
-                    self.fill_order(book_key, &mut order, level, taker)?;
-                total_amount_out = total_amount_out
-                    .checked_add(amount_out)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
+            }
 
-                // Set to 0 to avoid rounding errors
-                if bid {
-                    if amount_in > order.remaining() {
-                        amount_in = amount_in
-                            .checked_sub(order.remaining())
-                            .ok_or(TempoPrecompileError::under_overflow())?;
-                    } else {
-                        amount_in = 0;
-                    }
-                } else {
-                    // For asks: taker pays quote, maker receives quote
-                    let base_out = quote_to_base(amount_in, tick, RoundingDirection::Down)
+            let (amount_out, next_order_info) =
+                self.fill_order(book_key, &mut order, level, taker)?;
+            total_amount_out = total_amount_out
+                .checked_add(amount_out)
+                .ok_or(TempoPrecompileError::under_overflow())?;
+
+            // Set to 0 to avoid rounding errors
+            if bid {
+                if amount_in > order.remaining() {
+                    amount_in = amount_in
+                        .checked_sub(order.remaining())
                         .ok_or(TempoPrecompileError::under_overflow())?;
-                    if base_out > order.remaining() {
-                        // Quote consumed = what maker receives - round UP (zero-sum with maker)
-                        let quote_needed =
-                            base_to_quote(order.remaining(), tick, RoundingDirection::Up)
-                                .ok_or(TempoPrecompileError::under_overflow())?;
-                        amount_in = amount_in
-                            .checked_sub(quote_needed)
-                            .ok_or(TempoPrecompileError::under_overflow())?;
-                    } else {
-                        amount_in = 0;
-                    }
-                }
-
-                if let Some((new_level, new_order)) = next_order_info {
-                    level = new_level;
-                    order = new_order;
                 } else {
-                    if amount_in > 0 {
-                        return Err(StablecoinDEXError::insufficient_liquidity().into());
-                    }
-                    break;
+                    amount_in = 0;
                 }
+            } else {
+                // For asks: taker pays quote, maker receives quote
+                let base_out = quote_to_base(amount_in, tick, RoundingDirection::Down)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+                if base_out > order.remaining() {
+                    // Quote consumed = what maker receives - round UP (zero-sum with maker)
+                    let quote_needed =
+                        base_to_quote(order.remaining(), tick, RoundingDirection::Up)
+                            .ok_or(TempoPrecompileError::under_overflow())?;
+                    amount_in = amount_in
+                        .checked_sub(quote_needed)
+                        .ok_or(TempoPrecompileError::under_overflow())?;
+                } else {
+                    amount_in = 0;
+                }
+            }
+
+            if let Some((new_level, new_order)) = next_order_info {
+                level = new_level;
+                order = new_order;
+            } else {
+                if amount_in > 0 {
+                    return Err(StablecoinDEXError::insufficient_liquidity().into());
+                }
+                break;
             }
         }
 

@@ -879,8 +879,7 @@ impl AA2dPool {
             let mut iter = self
                 .by_id
                 .range_mut((sender_id.start_bound(), Unbounded))
-                .take_while(move |(other, _)| sender_id == other.seq_id)
-                .peekable();
+                .take_while(move |(other, _)| sender_id == other.seq_id);
 
             let Some(mut current) = iter.next() else {
                 continue;
@@ -2391,7 +2390,7 @@ mod tests {
         );
 
         // Remove tx1 (creates a gap)
-        let removed = pool.remove_transactions([&tx1_hash].into_iter());
+        let removed = pool.remove_transactions(std::iter::once(&tx1_hash));
         assert_eq!(removed.len(), 1, "Should remove tx1");
 
         // Verify tx1 is removed from pool
@@ -2816,7 +2815,7 @@ mod tests {
         // Remove nonce 2 from the middle
         let tx2_id = AA2dTransactionId::new(seq_id, 2);
         let tx2_hash = *pool.by_id.get(&tx2_id).unwrap().inner.transaction.hash();
-        let removed = pool.remove_transactions([&tx2_hash].into_iter());
+        let removed = pool.remove_transactions(std::iter::once(&tx2_hash));
         assert_eq!(removed.len(), 1, "Should remove transaction");
 
         let (pending_count, queued_count) = pool.pending_and_queued_txn_count();
@@ -3718,7 +3717,7 @@ mod tests {
         .unwrap();
 
         // Remove tx0 and its descendants (tx1, tx2)
-        let removed = pool.remove_transactions_and_descendants([&tx0_hash].into_iter());
+        let removed = pool.remove_transactions_and_descendants(std::iter::once(&tx0_hash));
         assert_eq!(removed.len(), 3);
 
         let (pending, queued) = pool.pending_and_queued_txn_count();
@@ -3865,13 +3864,13 @@ mod tests {
         let random_hash = B256::random();
         let random_sender = Address::random();
 
-        let removed = pool.remove_transactions([&random_hash].into_iter());
+        let removed = pool.remove_transactions(std::iter::once(&random_hash));
         assert!(removed.is_empty());
 
         let removed = pool.remove_transactions_by_sender(random_sender);
         assert!(removed.is_empty());
 
-        let removed = pool.remove_transactions_and_descendants([&random_hash].into_iter());
+        let removed = pool.remove_transactions_and_descendants(std::iter::once(&random_hash));
         assert!(removed.is_empty());
 
         pool.assert_invariants();

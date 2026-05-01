@@ -10,9 +10,9 @@ pub const MAX_TICK: i16 = 2000;
 pub const PRICE_SCALE: u32 = 100_000;
 
 crate::sol! {
-    /// StablecoinDEX interface for managing orderbook based trading of stablecoins.
+    /// `StablecoinDEX` interface for managing orderbook based trading of stablecoins.
     ///
-    /// The StablecoinDEX provides a limit orderbook system where users can:
+    /// The `StablecoinDEX` provides a limit orderbook system where users can:
     /// - Place limit orders (buy/sell) with specific price ticks
     /// - Place flip orders that automatically create opposite-side orders when filled
     /// - Execute swaps against existing liquidity

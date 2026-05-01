@@ -18,7 +18,7 @@ impl core::fmt::Display for InvalidPublicKey {
 pub struct PublicKey(VerificationKey);
 
 impl PublicKey {
-    pub fn get(&self) -> VerificationKey {
+    pub const fn get(&self) -> VerificationKey {
         self.0
     }
 

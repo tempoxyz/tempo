@@ -249,7 +249,7 @@ impl Installer {
         let metadata = manifest
             .binaries
             .get(&platform_key)
-            .ok_or_else(|| InstallerError::ExtensionNotInManifest(platform_key.to_string()))?;
+            .ok_or_else(|| InstallerError::ExtensionNotInManifest(platform_key.clone()))?;
 
         let download_dir = TempDir::new()?;
         let src = download_extension(

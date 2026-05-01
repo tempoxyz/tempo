@@ -24,7 +24,7 @@ use std::sync::OnceLock;
 
 /// A transaction with an AA signature and hash seal.
 ///
-/// This wraps a TempoTransaction transaction with its multi-signature-type signature
+/// This wraps a `TempoTransaction` transaction with its multi-signature-type signature
 /// (secp256k1, P256, Webauthn, Keychain) and provides cached hashes.
 #[derive(Clone, Debug)]
 pub struct AASigned {

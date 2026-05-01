@@ -55,7 +55,7 @@ pub const SIGNATURE_TYPE_KEYCHAIN_V2: u8 = 0x04;
 // Minimum authenticatorData is 37 bytes (32 rpIdHash + 1 flags + 4 signCount)
 const MIN_AUTH_DATA_LEN: usize = 37;
 
-/// WebAuthn authenticator data flags (byte 32)
+/// `WebAuthn` authenticator data flags (byte 32)
 /// ref: <https://www.w3.org/TR/webauthn-2/#sctn-authenticator-data>
 const UP: u8 = 0x01; // User Presence (bit 0)
 const UV: u8 = 0x04; // User Verified (bit 2)
@@ -77,7 +77,7 @@ pub struct P256SignatureWithPreHash {
     pub pre_hash: bool,
 }
 
-/// WebAuthn signature with authenticator data
+/// `WebAuthn` signature with authenticator data
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
@@ -94,11 +94,11 @@ pub struct WebAuthnSignature {
 }
 
 /// Primitive signature types that can be used standalone or within a Keychain signature.
-/// This enum contains only the base signature types: Secp256k1, P256, and WebAuthn.
+/// This enum contains only the base signature types: Secp256k1, P256, and `WebAuthn`.
 /// It does NOT support Keychain signatures to prevent recursion.
 ///
 /// Note: This enum uses custom RLP encoding via `to_bytes()` and does NOT derive Compact.
-/// The Compact encoding is handled at the parent struct level (e.g., KeyAuthorization).
+/// The Compact encoding is handled at the parent struct level (e.g., `KeyAuthorization`).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "type", rename_all = "camelCase"))]
@@ -114,7 +114,7 @@ pub enum PrimitiveSignature {
     /// P256 signature with embedded public key (129 bytes)
     P256(P256SignatureWithPreHash),
 
-    /// WebAuthn signature with variable-length authenticator data
+    /// `WebAuthn` signature with variable-length authenticator data
     WebAuthn(WebAuthnSignature),
 }
 
@@ -230,7 +230,7 @@ impl PrimitiveSignature {
     }
 
     /// Get signature type
-    pub fn signature_type(&self) -> SignatureType {
+    pub const fn signature_type(&self) -> SignatureType {
         match self {
             Self::Secp256k1(_) => SignatureType::Secp256k1,
             Self::P256(_) => SignatureType::P256,
@@ -252,7 +252,7 @@ impl PrimitiveSignature {
     /// This function verifies the signature and extracts the address based on signature type:
     /// - secp256k1: Uses standard ecrecover (signature verification + address recovery)
     /// - P256: Verifies P256 signature then derives address from public key
-    /// - WebAuthn: Parses WebAuthn data, verifies P256 signature, derives address
+    /// - `WebAuthn`: Parses `WebAuthn` data, verifies P256 signature, derives address
     pub fn recover_signer(
         &self,
         sig_hash: &B256,
@@ -375,27 +375,27 @@ pub enum KeychainVersionError {
 /// to `to_bytes()`/`from_bytes()` which encodes the version via the wire type byte
 /// (`0x03` = V1, `0x04` = V2).
 ///
-/// Format (V1): 0x03 || user_address (20 bytes) || inner_signature
-/// Format (V2): 0x04 || user_address (20 bytes) || inner_signature
+/// Format (V1): 0x03 || `user_address` (20 bytes) || `inner_signature`
+/// Format (V2): 0x04 || `user_address` (20 bytes) || `inner_signature`
 ///
-/// The user_address is the root account this transaction is being executed for.
+/// The `user_address` is the root account this transaction is being executed for.
 /// The inner signature proves an authorized access key signed the transaction.
-/// The handler validates that user_address has authorized the access key in the KeyChain precompile.
+/// The handler validates that `user_address` has authorized the access key in the `KeyChain` precompile.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct KeychainSignature {
     /// Root account address that this transaction is being executed for
     pub user_address: Address,
-    /// The actual signature from the access key (can be Secp256k1, P256, or WebAuthn, but NOT another Keychain)
+    /// The actual signature from the access key (can be Secp256k1, P256, or `WebAuthn`, but NOT another Keychain)
     pub signature: PrimitiveSignature,
-    /// Keychain signature version (V1 = legacy, V2 = includes user_address in sig hash)
+    /// Keychain signature version (V1 = legacy, V2 = includes `user_address` in sig hash)
     #[cfg_attr(feature = "serde", serde(default))]
     pub version: KeychainVersion,
     /// Cached access key ID recovered from the inner signature.
     /// This is an implementation detail - use `key_id()` to access.
-    /// Uses OnceLock for thread-safe interior mutability.
-    /// Note: Excluded from PartialEq, Eq, Hash, and Compact as it's a cache.
+    /// Uses `OnceLock` for thread-safe interior mutability.
+    /// Note: Excluded from `PartialEq`, `Eq`, `Hash`, and `Compact` as it's a cache.
     #[cfg_attr(
         feature = "serde",
         serde(
@@ -408,10 +408,10 @@ pub struct KeychainSignature {
 }
 
 impl KeychainSignature {
-    /// Create a new V2 KeychainSignature (recommended).
+    /// Create a new V2 `KeychainSignature` (recommended).
     ///
-    /// V2 signatures include the user_address in the signature hash.
-    pub fn new(user_address: Address, signature: PrimitiveSignature) -> Self {
+    /// V2 signatures include the `user_address` in the signature hash.
+    pub const fn new(user_address: Address, signature: PrimitiveSignature) -> Self {
         Self {
             user_address,
             signature,
@@ -420,11 +420,11 @@ impl KeychainSignature {
         }
     }
 
-    /// Create a legacy V1 KeychainSignature.
+    /// Create a legacy V1 `KeychainSignature`.
     ///
-    /// V1 signatures do NOT include the user_address in the signature hash
+    /// V1 signatures do NOT include the `user_address` in the signature hash
     /// and are deprecated at the T1C hardfork.
-    pub fn new_v1(user_address: Address, signature: PrimitiveSignature) -> Self {
+    pub const fn new_v1(user_address: Address, signature: PrimitiveSignature) -> Self {
         Self {
             user_address,
             signature,
@@ -447,7 +447,7 @@ impl KeychainSignature {
     /// Get the access key ID for Keychain signatures.
     ///
     /// For Keychain signatures, this returns the access key address that signed the transaction.
-    /// The key_id is recovered from the inner signature on first access and cached for
+    /// The `key_id` is recovered from the inner signature on first access and cached for
     /// subsequent calls. Returns None for non-Keychain signatures.
     ///
     /// This follows the pattern used in alloy for lazy hash computation.
@@ -530,13 +530,13 @@ impl<'a> arbitrary::Arbitrary<'a> for KeychainSignature {
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact, rlp))]
 pub enum TempoSignature {
-    /// Primitive signature types: Secp256k1, P256, or WebAuthn
+    /// Primitive signature types: Secp256k1, P256, or `WebAuthn`
     Primitive(PrimitiveSignature),
 
     /// Keychain signature - wraps another signature with a key identifier
-    /// Format: key_id (20 bytes) + inner signature
+    /// Format: `key_id` (20 bytes) + inner signature
     /// IMP: The inner signature MUST NOT be another Keychain (validated at runtime)
-    /// Note: Recursion is prevented by KeychainSignature's custom Arbitrary impl
+    /// Note: Recursion is prevented by `KeychainSignature`'s custom Arbitrary impl
     Keychain(KeychainSignature),
 }
 
@@ -626,7 +626,7 @@ impl TempoSignature {
     }
 
     /// Get signature type
-    pub fn signature_type(&self) -> SignatureType {
+    pub const fn signature_type(&self) -> SignatureType {
         match self {
             Self::Primitive(primitive_sig) => primitive_sig.signature_type(),
             Self::Keychain(keychain_sig) => keychain_sig.signature.signature_type(),
@@ -646,12 +646,12 @@ impl TempoSignature {
     /// This function verifies the signature and extracts the address based on signature type:
     /// - secp256k1: Uses standard ecrecover (signature verification + address recovery)
     /// - P256: Verifies P256 signature then derives address from public key
-    /// - WebAuthn: Parses WebAuthn data, verifies P256 signature, derives address
-    /// - Keychain: Validates inner signature and returns user_address
+    /// - `WebAuthn`: Parses `WebAuthn` data, verifies P256 signature, derives address
+    /// - Keychain: Validates inner signature and returns `user_address`
     ///
     /// For Keychain signatures, this performs full validation of the inner signature.
-    /// The access key address is cached in the KeychainSignature for later use.
-    /// Note: This pattern has a big footgun, that someone using recover_signer, cannot assume
+    /// The access key address is cached in the `KeychainSignature` for later use.
+    /// Note: This pattern has a big footgun, that someone using `recover_signer`, cannot assume
     /// that the signature is valid for the keychain. They also need to check the access key is authorized
     /// in the keychain precompile.
     /// We cannot check this here, as we don't have access to the keychain precompile.
@@ -672,7 +672,7 @@ impl TempoSignature {
     }
 
     /// Check if this is a Keychain signature
-    pub fn is_keychain(&self) -> bool {
+    pub const fn is_keychain(&self) -> bool {
         matches!(self, Self::Keychain(_))
     }
 
@@ -682,7 +682,7 @@ impl TempoSignature {
     }
 
     /// Check if this is a V2 Keychain signature.
-    pub fn is_v2_keychain(&self) -> bool {
+    pub const fn is_v2_keychain(&self) -> bool {
         matches!(
             self,
             Self::Keychain(KeychainSignature {
@@ -707,7 +707,7 @@ impl TempoSignature {
     }
 
     /// Get the Keychain signature if this is a Keychain signature
-    pub fn as_keychain(&self) -> Option<&KeychainSignature> {
+    pub const fn as_keychain(&self) -> Option<&KeychainSignature> {
         match self {
             Self::Keychain(keychain_sig) => Some(keychain_sig),
             _ => None,
@@ -881,7 +881,7 @@ fn verify_p256_signature_internal(
 }
 
 /// Minimal struct to deserialize only the fields we need from clientDataJSON.
-/// serde_json will ignore unknown fields and only parse `type` and `challenge`.
+/// `serde_json` will ignore unknown fields and only parse `type` and `challenge`.
 #[derive(serde::Deserialize)]
 struct ClientDataJson<'a> {
     #[serde(rename = "type")]
@@ -889,12 +889,12 @@ struct ClientDataJson<'a> {
     challenge: &'a str,
 }
 
-/// Parses and validates WebAuthn data, returning the message hash for P256 verification.
+/// Parses and validates `WebAuthn` data, returning the message hash for P256 verification.
 /// ref: <https://www.w3.org/TR/webauthn-2/#sctn-authenticator-data>
 ///
 /// 1. Parses authenticatorData and clientDataJSON
 /// 2. Validates authenticatorData (min 37 bytes, UP flag set)
-/// 3. Validates clientDataJSON (type="webauthn.get", challenge matches tx_hash)
+/// 3. Validates clientDataJSON (type="webauthn.get", challenge matches `tx_hash`)
 /// 4. Computes message hash = sha256(authenticatorData || sha256(clientDataJSON))
 fn verify_webauthn_data_internal(
     webauthn_data: &[u8],
