@@ -1130,7 +1130,7 @@ where
             if let Some(key_auth) = tempo_tx_env.key_authorization.as_ref() {
                 // If this is a same tx auth+use, validate that spending limit is enough to cover the fee.
                 //
-                // `collectFeePreTx` would not validate the spending limit because they key is not authorized yet and we are not setting the transient key_id.
+                // `collectFeePreTx` would not validate the spending limit because the key is not authorized yet and we are not setting the transient key_id.
                 if !gas_balance_spending.is_zero()
                     && fee_payer == tx.caller
                     && let Some(limits) = key_auth.limits.as_ref()
