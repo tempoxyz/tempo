@@ -67,6 +67,6 @@ reth-rpc-convert.workspace = true
 
 serde_json.workspace = true
 
-thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "sync"] }
+tokio-stream = { workspace = true, features = ["sync"] }
 tracing.workspace = true

@@ -26,7 +26,6 @@ use tempo_node::TempoFullNode;
 use tokio::select;
 use tracing::{debug, error, instrument, warn};
 
-use super::upstream;
 use crate::consensus::{Digest, block::Block};
 
 pub(crate) fn try_init<TContext>(
@@ -229,18 +228,9 @@ async fn resolve_finalized_new(
     upstream: super::upstream::Mailbox,
     height: Height,
 ) -> Result<Bytes, bool> {
-    if upstream.subscribe_connection().await.is_ok() {
-        return Err(false);
-    }
     let certified_block = match upstream.get_finalization(height).await {
-        Ok(Some(certified_block)) => certified_block,
-        Ok(None) => return Err(false),
-        Err(error) => {
-            return Err(match error {
-                upstream::Error::Dead => false,
-                _ => true,
-            });
-        }
+        Some(certified_block) => certified_block,
+        None => return Err(false),
     };
 
     let Ok(finalization) = alloy_primitives::hex::decode(&certified_block.certificate)

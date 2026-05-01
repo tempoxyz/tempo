@@ -31,7 +31,7 @@ use reth_node_core::primitives::SealedBlock;
 use reth_provider::HeaderProvider as _;
 use tempo_node::{TempoFullNode, rpc::consensus::Event};
 use tokio::{select, sync::mpsc};
-use tracing::instrument;
+use tracing::{debug, instrument};
 
 use crate::{
     consensus::{Digest, block::Block},
@@ -122,6 +122,7 @@ pub(super) struct Config {
     pub(super) epoch_strategy: FixedEpocher,
 }
 
+#[derive(Debug)]
 enum Message {
     Event(Event),
     Finalized(marshal::Update<Block>),
@@ -209,7 +210,7 @@ where
                     match message {
                         Message::Event(event) => {
                             // Emits an event on error.
-                            let _ = self.process_event(event);
+                            let _: Result<_, _> = self.process_event(event).await;
                         }
                         Message::Finalized(update) => {
                             self.process_update(update).await;
@@ -273,12 +274,14 @@ where
                     *onchain_outcome.sharing().public(),
                 ),
             );
+        } else {
+            debug!("no gap detected");
         }
 
         Ok(())
     }
 
-    #[instrument(skip_all)]
+    #[instrument(skip_all, ret, err(Display))]
     async fn process_event(&mut self, event: Event) -> eyre::Result<()> {
         let Event::Finalized {
             block: certified, ..

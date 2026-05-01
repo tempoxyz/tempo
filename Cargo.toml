@@ -254,6 +254,7 @@ tempfile = "3.24.0"
 thiserror = "2.0.18"
 # TODO: restrict this to only the required features
 tokio = { version = "1.49.0", features = ["full"] }
+tokio-stream = { version = "0.1.18" }
 tokio-util = "0.7.18"
 tracy-client = "0.18.4"
 tracing = "0.1.44"

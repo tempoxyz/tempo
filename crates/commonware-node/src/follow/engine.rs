@@ -39,7 +39,7 @@ use crate::{
 
 /// Builder for the follow engine.
 #[derive(Clone)]
-pub struct Config {
+pub struct Config<TUpstream> {
     /// The execution node to drive.
     pub execution_node: TempoFullNode,
 
@@ -49,8 +49,6 @@ pub struct Config {
     /// Partition prefix for storage.
     pub partition_prefix: String,
 
-    pub upstream_url: String,
-
     /// Epoch strategy.
     pub epoch_strategy: FixedEpocher,
 
@@ -59,11 +57,20 @@ pub struct Config {
 
     /// FCU heartbeat interval.
     pub fcu_heartbeat_interval: Duration,
+
+    /// An actor that can be started with reporters listening to consensus events.
+    pub upstream: TUpstream,
+
+    /// Mailbox to an upstream actor running outside of the follower engine.
+    pub upstream_mailbox: upstream::Mailbox,
 }
 
-impl Config {
+impl<TUpstream> Config<TUpstream> {
     /// Initialize all components and return an [`Engine`] ready to start.
-    pub async fn try_init<TContext>(self, context: TContext) -> eyre::Result<Engine<TContext>>
+    pub async fn try_init<TContext>(
+        self,
+        context: TContext,
+    ) -> eyre::Result<Engine<TContext, TUpstream>>
     where
         TContext: Clock
             + Rng
@@ -139,18 +146,11 @@ impl Config {
 
         let execution_node = Arc::new(self.execution_node.clone());
 
-        let (upstream_actor, upstream_mailbox) = upstream::init(
-            context.with_label("upstream"),
-            upstream::Config {
-                upstream_url: self.upstream_url,
-            },
-        );
-
         let (resolver, resolver_mailbox, resolver_rx) = resolver::try_init(
             context.with_label("resolver"),
             resolver::Config {
                 execution_node: execution_node.clone(),
-                upstream: upstream_mailbox.clone(),
+                upstream: self.upstream_mailbox.clone(),
                 mailbox_size: self.mailbox_size,
             },
         );
@@ -192,7 +192,6 @@ impl Config {
 
         Ok(Engine {
             context: ContextCell::new(context),
-            upstream_actor,
             driver,
             driver_mailbox,
             resolver,
@@ -203,26 +202,17 @@ impl Config {
             executor_mailbox,
             feed: feed_actor,
             broadcast,
+            upstream: self.upstream,
         })
     }
 }
 
-pub struct Engine<TContext>
+pub struct Engine<TContext, TUpstreamActor>
 where
-    TContext: Clock
-        + Rng
-        + CryptoRng
-        + Metrics
-        + Pacer
-        + Spawner
-        + Storage
-        + BufferPooler
-        + Clone
-        + Send
-        + 'static,
+    TContext: Clock + Rng + CryptoRng + Metrics + Pacer + Spawner + Storage + BufferPooler,
+    TUpstreamActor:,
 {
     context: ContextCell<TContext>,
-    upstream_actor: upstream::Actor<TContext>,
     driver: driver::Driver<TContext>,
     driver_mailbox: driver::Mailbox,
     resolver: Resolver<TContext>,
@@ -233,9 +223,10 @@ where
     executor_mailbox: executor::Mailbox,
     feed: feed::Actor<TContext>,
     broadcast: buffered::Mailbox<PublicKey, Block>,
+    upstream: TUpstreamActor,
 }
 
-impl<TContext> Engine<TContext>
+impl<TContext, TUpstreamActor> Engine<TContext, TUpstreamActor>
 where
     TContext: Clock
         + Rng
@@ -248,6 +239,7 @@ where
         + Clone
         + Send
         + 'static,
+    TUpstreamActor: upstream::UpstreamActor,
 {
     pub fn start(mut self) -> Handle<eyre::Result<()>> {
         spawn_cell!(self.context, self.run().await)
@@ -255,7 +247,7 @@ where
 
     async fn run(self) -> eyre::Result<()> {
         let Self {
-            upstream_actor,
+            upstream,
             driver,
             driver_mailbox,
             resolver,
@@ -282,7 +274,7 @@ where
                 (resolver_rx, resolver_mailbox),
             ),
             resolver.start(),
-            upstream_actor.start(driver_mailbox.to_event_reporter()),
+            upstream.start(driver_mailbox.to_event_reporter()),
         ];
 
         // TODO: report which actor failed and why.

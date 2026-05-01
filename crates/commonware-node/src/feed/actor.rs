@@ -36,7 +36,7 @@ use tempo_node::{
     TempoFullNode,
     rpc::consensus::{CertifiedBlock, Event},
 };
-use tracing::{error, info_span, instrument, warn, warn_span};
+use tracing::{debug, error, info_span, instrument, warn, warn_span};
 
 use super::state::FeedStateHandle;
 use crate::{
@@ -247,6 +247,10 @@ impl<TContext: Spawner> Actor<TContext> {
             }
 
             Activity::Finalization(_) => {
+                debug!(
+                    subscribers = self.state.events_tx().receiver_count(),
+                    "sending finalized event",
+                );
                 let _ = self.state.events_tx().send(Event::Finalized {
                     block: certified.clone(),
                     seen: now_millis(),

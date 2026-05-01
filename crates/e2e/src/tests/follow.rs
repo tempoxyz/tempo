@@ -4,7 +4,10 @@
 //! node (validator or another follower) using in-process direct access.
 
 use std::{
-    sync::atomic::{AtomicU32, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
     time::Duration,
 };
 
@@ -98,18 +101,13 @@ impl FollowerBuilder {
     where
         TContext: BufferPooler + Clock + CryptoRngCore + Metrics + Pacer + Spawner + Storage,
     {
+        use tempo_commonware_node::follow::upstream::in_process;
         let Self {
             name,
             partition_prefix,
             runtime,
         } = self;
         let runtime = runtime.expect("must pass a runtime handle to start a follower");
-        let websocket_addr = validator
-            .execution()
-            .rpc_server_handles
-            .rpc
-            .ws_local_addr()
-            .unwrap();
 
         let name = name.unwrap_or_else(|| {
             format!(
@@ -135,14 +133,23 @@ impl FollowerBuilder {
             .await
             .expect("must be able to spawn follower execution node");
 
+        let (upstream, upstream_mailbox) = in_process::init(
+            context.with_label("upstream"),
+            in_process::Config {
+                execution_node: Arc::new(node.node.clone()),
+                feed: validator.consensus_config.feed_state.clone(),
+            },
+        );
+
         let config = follow::Config {
             execution_node: node.node.clone(),
             feed_state: feed_state.clone(),
             partition_prefix: partition_prefix.into(),
-            upstream_url: format!("ws://{websocket_addr}"),
             epoch_strategy: FixedEpocher::new(NZU64!(EPOCH_LENGTH)),
             mailbox_size: 16_384,
             fcu_heartbeat_interval: Duration::from_secs(300),
+            upstream,
+            upstream_mailbox,
         };
 
         let handle = config
@@ -179,61 +186,6 @@ impl Follower {
             }
         }
     }
-
-    async fn start(
-        context: &deterministic::Context,
-        runtime: &ExecutionRuntimeHandle,
-        upstream_url: String,
-        partition_prefix: Option<&str>,
-        trusted_peers: Vec<&ExecutionNode>,
-    ) -> Self {
-        let name = next_follower_name();
-        let partition_prefix = partition_prefix.unwrap_or(&name);
-        let feed_state = FeedStateHandle::new();
-
-        let db_path = runtime.nodes_dir().join(&name).join("db");
-        std::fs::create_dir_all(&db_path).expect("failed to create follower database directory");
-
-        let db = reth_db::init_db(db_path, test_db_args()).expect("reth db init");
-
-        let config = crate::ExecutionNodeConfig {
-            secret_key: alloy_primitives::B256::random(),
-            validator_key: None,
-            feed_state: Some(feed_state.clone()),
-        };
-
-        let node = runtime
-            .spawn_node(&name, config, db, None)
-            .await
-            .expect("must be able to spawn follower execution node");
-
-        for peer in trusted_peers {
-            node.connect_peer(peer).await;
-        }
-
-        let config = follow::Config {
-            execution_node: node.node.clone(),
-            feed_state: feed_state.clone(),
-            partition_prefix: partition_prefix.into(),
-            upstream_url,
-            epoch_strategy: FixedEpocher::new(NZU64!(EPOCH_LENGTH)),
-            mailbox_size: 16_384,
-            fcu_heartbeat_interval: Duration::from_secs(300),
-        };
-
-        let handle = config
-            .try_init(context.with_label(&name))
-            .await
-            .expect("failed to initialize follow engine")
-            .start();
-
-        Self {
-            name,
-            feed: feed_state,
-            execution_node: node,
-            handle,
-        }
-    }
 }
 
 #[test_traced]
@@ -263,7 +215,7 @@ fn follower_bootstraps_from_validator() {
 
         // Follower starts only from the bootstrap point.
         let historical_cert = follower.feed.get_finalization(Query::Height(1)).await;
-        assert!(historical_cert.is_none());
+        assert_eq!(None, historical_cert);
     });
 }
 

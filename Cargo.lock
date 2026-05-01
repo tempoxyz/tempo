@@ -11952,8 +11952,8 @@ dependencies = [
  "tempo-precompiles",
  "tempo-primitives",
  "tempo-telemetry-util",
- "thiserror 2.0.18",
  "tokio",
+ "tokio-stream",
  "tracing",
 ]
 
