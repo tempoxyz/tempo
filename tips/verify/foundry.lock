@@ -1,6 +1,6 @@
 {
   "lib/forge-std": {
-    "rev": "f61e4dd133379a4536a54ee57a808c9c00019b60"
+    "rev": "e72518ef87be67df939a70b0ff1cb349e92b6dde"
   },
   "lib/solady": {
     "rev": "90db92ce173856605d24a554969f2c67cadbc7e9"
