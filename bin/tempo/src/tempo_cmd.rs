@@ -9,7 +9,7 @@ use std::{
 
 use alloy::hex::ToHexExt;
 use alloy_network::EthereumWallet;
-use alloy_primitives::{Address, B256, Bytes, keccak256};
+use alloy_primitives::{Address, B256, Bytes};
 use alloy_provider::{Provider, ProviderBuilder};
 use alloy_rpc_types_eth::TransactionRequest;
 use alloy_signer_aws::{AwsSigner, aws_config, aws_sdk_kms};
@@ -31,7 +31,7 @@ use eyre::{OptionExt as _, Report, WrapErr as _, bail, eyre};
 use reth_chainspec::EthChainSpec;
 use reth_cli_runner::CliRunner;
 use reth_ethereum_cli::ExtendedCommand;
-use secp256k1::PublicKey as Secp256k1PublicKey;
+
 use serde::Serialize;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
@@ -527,21 +527,21 @@ impl AddValidator {
 #[group(required = true, multiple = false)]
 pub(crate) struct NewValidatorOwnershipArgs {
     /// Path to the file holding the private key of the new validator address.
-    /// Preferred over `--new-public-key` because it ensures the caller has
-    /// control over the new validator's private key.
+    /// Preferred over `--new-validator-address` because it ensures the caller
+    /// has control over the new validator's private key.
     #[arg(long, value_name = "FILE")]
     new_private_key: Option<PathBuf>,
 
-    /// Hex-encoded secp256k1 public key for the new validator address.
+    /// Ethereum address of the new validator.
     /// Note: `--new-private-key` is preferred because it ensures the caller
     /// has control over the new validator's private key.
-    #[arg(long, value_name = "PUBLIC_KEY")]
-    new_public_key: Option<String>,
+    #[arg(long, value_name = "ADDRESS")]
+    new_validator_address: Option<Address>,
 }
 
 impl NewValidatorOwnershipArgs {
     fn resolve_address(&self) -> eyre::Result<Address> {
-        match (&self.new_private_key, &self.new_public_key) {
+        match (&self.new_private_key, &self.new_validator_address) {
             (Some(path), None) => {
                 let signer = key_from_file(path).wrap_err_with(|| {
                     format!("failed reading private key from file `{}`", path.display())
@@ -549,7 +549,7 @@ impl NewValidatorOwnershipArgs {
 
                 Ok(signer.address())
             }
-            (None, Some(public_key)) => address_from_public_key(public_key),
+            (None, Some(address)) => Ok(*address),
             _ => unreachable!("exclusivity enforced by clap arg group"),
         }
     }
@@ -1227,23 +1227,12 @@ fn key_from_file<P: AsRef<Path>>(p: P) -> eyre::Result<PrivateKeySigner> {
         .wrap_err("failed converting file decoded hex bytes to private key")
 }
 
-fn address_from_public_key(public_key: &str) -> eyre::Result<Address> {
-    let bytes =
-        alloy::hex::decode(public_key.trim()).wrap_err("failed decoding public key from hex")?;
-    let public_key =
-        Secp256k1PublicKey::from_slice(&bytes).wrap_err("failed parsing secp256k1 public key")?;
-    let uncompressed = public_key.serialize_uncompressed();
-
-    Ok(Address::from_slice(&keccak256(&uncompressed[1..])[12..]))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use clap::Parser;
     use reth_ethereum_cli::Cli;
     use reth_rpc_server_types::{RethRpcModule, RpcModuleSelection, RpcModuleValidator};
-    use secp256k1::{PublicKey as Secp256k1PublicKey, Secp256k1, SecretKey};
     use tempo_chainspec::spec::TempoChainSpecParser;
 
     type TempoCli = Cli<
@@ -1306,14 +1295,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_transfer_validator_ownership_with_new_public_key() {
+    fn parse_transfer_validator_ownership_with_new_validator_address() {
         let cli = TempoCli::try_parse_from([
             "tempo",
             "consensus",
             "transfer-validator-ownership",
             "0",
-            "--new-public-key",
-            "0x045474b1fd8f9a4f6847507d8aa2f209f856c727c4641e57b09f00f5f20e141c2ac3f3af0e7e8b3558dcfff6c5b3388c711050602b15f422ff2b61cd5bc80c2f2a",
+            "--new-validator-address",
+            "0x0000000000000000000000000000000000000001",
             "--wallet-key",
             "/tmp/wallet.key",
             "--yes",
@@ -1329,7 +1318,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_transfer_validator_ownership_rejects_both_new_key_inputs() {
+    fn parse_transfer_validator_ownership_rejects_both_inputs() {
         let result = TempoCli::try_parse_from([
             "tempo",
             "consensus",
@@ -1337,8 +1326,8 @@ mod tests {
             "0",
             "--new-private-key",
             "/tmp/new.key",
-            "--new-public-key",
-            "0x045474b1fd8f9a4f6847507d8aa2f209f856c727c4641e57b09f00f5f20e141c2ac3f3af0e7e8b3558dcfff6c5b3388c711050602b15f422ff2b61cd5bc80c2f2a",
+            "--new-validator-address",
+            "0x0000000000000000000000000000000000000001",
             "--wallet-key",
             "/tmp/wallet.key",
             "--yes",
@@ -1348,17 +1337,14 @@ mod tests {
     }
 
     #[test]
-    fn resolves_new_validator_address_from_public_key() {
-        let secret_key = SecretKey::from_slice(&[1u8; 32]).unwrap();
-        let expected = PrivateKeySigner::from_slice(&secret_key.secret_bytes())
-            .unwrap()
-            .address();
-        let public_key = Secp256k1PublicKey::from_secret_key(&Secp256k1::new(), &secret_key);
-        let public_key = alloy::hex::encode_prefixed(public_key.serialize_uncompressed());
+    fn resolves_new_validator_address_directly() {
+        let expected: Address = "0x0000000000000000000000000000000000000001"
+            .parse()
+            .unwrap();
 
         let actual = NewValidatorOwnershipArgs {
             new_private_key: None,
-            new_public_key: Some(public_key),
+            new_validator_address: Some(expected),
         }
         .resolve_address()
         .unwrap();
