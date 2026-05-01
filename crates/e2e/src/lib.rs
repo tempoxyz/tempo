@@ -12,7 +12,6 @@
 
 use std::{iter::repeat_with, net::SocketAddr, time::Duration};
 
-use alloy::signers::k256::schnorr::CryptoRngCore;
 use alloy_primitives::Address;
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
@@ -34,6 +33,7 @@ use commonware_runtime::{
 use commonware_utils::{N3f1, TryFromIterator as _, ordered};
 use futures::future::join_all;
 use itertools::Itertools as _;
+use rand_core::CryptoRngCore;
 use reth_node_metrics::recorder::PrometheusRecorder;
 use tempo_commonware_node::{consensus, feed::FeedStateHandle};
 
