@@ -151,6 +151,19 @@ where
     }
 
     async fn run(mut self, mut reporter: impl Reporter<Activity = Event>) {
+        self.pending_connect.replace({
+            let url = self.url;
+            async move {
+                (
+                    1,
+                    WsClientBuilder::default()
+                        .build(&url)
+                        .await
+                        .map_err(Report::new),
+                )
+            }
+            .boxed()
+        });
         loop {
             select!(
                 biased;
