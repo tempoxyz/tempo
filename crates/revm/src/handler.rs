@@ -1114,39 +1114,51 @@ where
         if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
             && let Some(keychain_sig) = tempo_tx_env.signature.as_keychain()
         {
-            // Use override_key_id if provided (for gas estimation), otherwise recover from signature
-            let access_key_addr = if let Some(override_key_id) = tempo_tx_env.override_key_id {
-                override_key_id
-            } else {
-                // The user_address is the root account this transaction is being executed for
-                // This should match tx.caller (which comes from recover_signer on the outer signature)
-                let user_address = &keychain_sig.user_address;
+            // The user_address is the root account this transaction is being executed for.
+            // This should match tx.caller (which comes from recover_signer on the outer signature).
+            let user_address = &keychain_sig.user_address;
 
-                // Sanity check: user_address should match tx.caller
-                if *user_address != tx.caller {
-                    return Err(TempoInvalidTransaction::KeychainUserAddressMismatch {
-                        user_address: *user_address,
-                        caller: tx.caller,
-                    }
-                    .into());
+            // Sanity check: user_address should match tx.caller
+            if *user_address != tx.caller {
+                return Err(TempoInvalidTransaction::KeychainUserAddressMismatch {
+                    user_address: *user_address,
+                    caller: tx.caller,
                 }
+                .into());
+            }
 
-                // Get the access key address (recovered during pool validation and cached)
-                keychain_sig
-                    .key_id(&tempo_tx_env.signature_hash)
-                    .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
-            };
+            if let Some(key_auth) = tempo_tx_env.key_authorization.as_ref() {
+                // If this is a same tx auth+use, validate that spending limit is enough to cover the fee.
+                //
+                // `collectFeePreTx` would not validate the spending limit because they key is not authorized yet and we are not setting the transient key_id.
+                if !gas_balance_spending.is_zero()
+                    && fee_payer == tx.caller
+                    && let Some(limits) = key_auth.limits.as_ref()
+                {
+                    let remaining = limits
+                        .iter()
+                        .rev()
+                        .find(|limit| limit.token == fee_token)
+                        .map(|limit| limit.limit)
+                        .unwrap_or_default();
 
-            // Check if this transaction includes a KeyAuthorization for the same key.
-            // Same-tx auth+use still needs key-type parity checks, but we avoid a full keychain
-            // existence lookup here to preserve the pre-T1B out-of-gas behavior.
-            let is_authorizing_this_key = tempo_tx_env
-                .key_authorization
-                .as_ref()
-                .map(|key_auth| key_auth.key_id == access_key_addr)
-                .unwrap_or(false);
+                    if gas_balance_spending > remaining {
+                        return Err(
+                            FeePaymentError::Other("SpendingLimitExceeded".to_string()).into()
+                        );
+                    }
+                }
+            } else {
+                // Use override_key_id if provided (for gas estimation), otherwise recover from signature.
+                let access_key_addr = if let Some(override_key_id) = tempo_tx_env.override_key_id {
+                    override_key_id
+                } else {
+                    // Get the access key address (recovered during pool validation and cached)
+                    keychain_sig
+                        .key_id(&tempo_tx_env.signature_hash)
+                        .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
+                };
 
-            if !is_authorizing_this_key {
                 // If this transaction is using an already-authorized key, validate the signature against stored key and set the transient key_id.
                 let stored_key_expiry = StorageCtx::enter_precompile(
                     journal,
@@ -4876,6 +4888,62 @@ mod tests {
             assert_eq!(spend.token, DEFAULT_FEE_TOKEN);
             assert_eq!(spend.amount, fee);
             assert_eq!(spend.remainingLimit, spending_limit - fee);
+        }
+
+        #[test]
+        fn test_same_tx_key_authorization_rejects_fee_above_new_limit_before_auth() {
+            let (signer, user) = generate_keypair();
+            let key = Address::random();
+            let gas_limit = 100_000;
+            let fee = U256::from(gas_limit);
+            let spending_limit = fee - U256::ONE;
+
+            let signed = sign_key_auth(
+                &signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key).with_limits(vec![
+                    PrimTokenLimit {
+                        token: DEFAULT_FEE_TOKEN,
+                        limit: spending_limit,
+                        period: 60,
+                    },
+                ]),
+            );
+            let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T3, None, false);
+            evm.inner.ctx.tx.inner.gas_limit = gas_limit;
+            evm.inner.ctx.tx.inner.gas_price = 1_000_000_000_000;
+            evm.inner.ctx.tx.inner.gas_priority_fee = Some(1_000_000_000_000);
+
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+                TIP20Setup::path_usd(user)
+                    .with_issuer(user)
+                    .with_mint(user, fee * U256::from(2))
+                    .apply()
+                    .expect("pathUSD setup succeeds");
+            });
+
+            let result =
+                h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
+
+            assert!(
+                matches!(
+                    &result,
+                    Err(EVMError::Transaction(TempoInvalidTransaction::CollectFeePreTx(
+                        FeePaymentError::Other(reason)
+                    ))) if reason.contains("SpendingLimitExceeded")
+                ),
+                "same-tx auth+use should reject fee above the new key limit before auth, got: {result:?}"
+            );
+            assert_eq!(evm.collected_fee, U256::ZERO);
+            assert!(
+                evm.inner
+                    .ctx
+                    .journaled_state
+                    .inner
+                    .logs
+                    .iter()
+                    .all(|log| log.address != ACCOUNT_KEYCHAIN_ADDRESS),
+                "fee-limit rejection must happen before key authorization emits events"
+            );
         }
     }
 
