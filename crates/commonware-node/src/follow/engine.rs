@@ -180,11 +180,11 @@ impl<TUpstream> Config<TUpstream> {
         let (driver, driver_mailbox) = driver::try_init(
             context.with_label("driver"),
             driver::Config {
-                execution_node: execution_node.clone(),
+                execution_node,
                 scheme_provider: scheme_provider.clone(),
                 last_finalized_height,
-                marshal: marshal_mailbox.clone(),
-                feed: feed_mailbox.clone(),
+                marshal: marshal_mailbox,
+                feed: feed_mailbox,
                 epoch_strategy: epoch_strategy.clone(),
             },
         )
@@ -278,7 +278,7 @@ where
         ];
 
         // TODO: report which actor failed and why.
-        if let Some(_) = FuturesUnordered::from_iter(actors).next().await {
+        if FuturesUnordered::from_iter(actors).next().await.is_some() {
             return Err(eyre!("one critical subsystem exited unexpectedly"));
         }
 

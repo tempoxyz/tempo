@@ -3,12 +3,13 @@ use std::{sync::Arc, time::Duration};
 use commonware_consensus::{Reporter, types::Height};
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, spawn_cell};
 use eyre::OptionExt as _;
-use futures::stream::{self, BoxStream, Fuse};
-use futures::{FutureExt as _, StreamExt as _};
-use tempo_node::rpc::consensus::{ConsensusFeed as _, Query};
+use futures::{
+    FutureExt as _, StreamExt as _,
+    stream::{self, BoxStream, Fuse},
+};
 use tempo_node::{
     TempoFullNode,
-    rpc::consensus::{CertifiedBlock, Event},
+    rpc::consensus::{CertifiedBlock, ConsensusFeed as _, Event, Query},
 };
 use tokio::{
     select,

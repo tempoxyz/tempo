@@ -8,8 +8,7 @@
 
 use commonware_consensus::Reporter;
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner};
-use futures::stream;
-use futures::stream::StreamExt as _;
+use futures::{stream, stream::StreamExt as _};
 use tempo_node::rpc::consensus::Event;
 use tokio::sync::mpsc;
 
@@ -52,7 +51,7 @@ pub(crate) fn init<TContext>(
     let (tx, rx) = mpsc::unbounded_channel();
     let mailbox = ingress::Mailbox::new(tx);
 
-    let url = Box::leak(Box::<str>::from(config.upstream_url.clone()));
+    let url = Box::leak(Box::<str>::from(config.upstream_url));
     let actor = Actor {
         context: ContextCell::new(context),
         connection: None,
