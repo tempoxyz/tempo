@@ -8,6 +8,12 @@ ignore = [
   "RUSTSEC-2024-0436",
   # https://rustsec.org/advisories/RUSTSEC-2025-0141 bincode is unmaintained
   "RUSTSEC-2025-0141",
+  # https://rustsec.org/advisories/RUSTSEC-2026-0118 hickory-proto DNSSEC loop
+  # requires dnssec-ring or dnssec-aws-lc-rs, but reth-dns-discovery only enables tokio.
+  "RUSTSEC-2026-0118",
+  # https://rustsec.org/advisories/RUSTSEC-2026-0119 hickory-proto name compression DoS
+  # comes from the reth-pinned hickory 0.25 resolver stack; ignore until reth can move to 0.26.x.
+  "RUSTSEC-2026-0119",
 ]
 
 # This section is considered when running `cargo deny check bans`.
