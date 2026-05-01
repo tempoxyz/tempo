@@ -1228,12 +1228,8 @@ fn key_from_file<P: AsRef<Path>>(p: P) -> eyre::Result<PrivateKeySigner> {
 }
 
 fn address_from_public_key(public_key: &str) -> eyre::Result<Address> {
-    let public_key = public_key.trim();
-    let public_key = public_key
-        .strip_prefix("0x")
-        .or_else(|| public_key.strip_prefix("0X"))
-        .unwrap_or(public_key);
-    let bytes = alloy::hex::decode(public_key).wrap_err("failed decoding public key from hex")?;
+    let bytes =
+        alloy::hex::decode(public_key.trim()).wrap_err("failed decoding public key from hex")?;
     let public_key =
         Secp256k1PublicKey::from_slice(&bytes).wrap_err("failed parsing secp256k1 public key")?;
     let uncompressed = public_key.serialize_uncompressed();
