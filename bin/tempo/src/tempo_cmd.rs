@@ -527,10 +527,14 @@ impl AddValidator {
 #[group(required = true, multiple = false)]
 pub(crate) struct NewValidatorOwnershipArgs {
     /// Path to the file holding the private key of the new validator address.
+    /// Preferred over `--new-public-key` because it ensures the caller has
+    /// control over the new validator's private key.
     #[arg(long, value_name = "FILE")]
     new_private_key: Option<PathBuf>,
 
     /// Hex-encoded secp256k1 public key for the new validator address.
+    /// Note: `--new-private-key` is preferred because it ensures the caller
+    /// has control over the new validator's private key.
     #[arg(long, value_name = "PUBLIC_KEY")]
     new_public_key: Option<String>,
 }
