@@ -19,8 +19,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
     uint64 public constant CLOSE_GRACE_PERIOD = 15 minutes;
 
     uint256 internal constant _DEPOSIT_OFFSET = 96;
-    uint256 internal constant _EXPIRES_AT_OFFSET = 192;
-    uint256 internal constant _CLOSE_DATA_OFFSET = 224;
+    uint256 internal constant _CLOSE_DATA_OFFSET = 192;
     uint32 internal constant _FINALIZED_CLOSE_DATA = 1;
 
     bytes32 internal constant _EIP712_DOMAIN_TYPEHASH = keccak256(
@@ -36,8 +35,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         address token,
         uint96 deposit,
         bytes32 salt,
-        address authorizedSigner,
-        uint32 expiresAt
+        address authorizedSigner
     )
         external
         returns (bytes32 channelId)
@@ -45,7 +43,6 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         if (payee == address(0)) revert InvalidPayee();
         if (token == address(0)) revert InvalidToken();
         if (deposit == 0) revert ZeroDeposit();
-        if (expiresAt <= block.timestamp) revert InvalidExpiry();
 
         channelId = computeChannelId(msg.sender, payee, token, salt, authorizedSigner);
         if (channelStates[channelId] != 0) revert ChannelAlreadyExists();
@@ -54,7 +51,6 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
             ChannelState({
                 settled: 0,
                 deposit: deposit,
-                expiresAt: expiresAt,
                 closeData: 0
             })
         );
@@ -64,9 +60,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         bool success = ITIP20(token).transferFrom(msg.sender, address(this), deposit);
         if (!success) revert TransferFailed();
 
-        emit ChannelOpened(
-            channelId, msg.sender, payee, token, authorizedSigner, salt, deposit, expiresAt
-        );
+        emit ChannelOpened(channelId, msg.sender, payee, token, authorizedSigner, salt, deposit);
     }
 
     function settle(
@@ -81,7 +75,6 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
 
         if (msg.sender != descriptor.payee) revert NotPayee();
         if (_isFinalized(channel.closeData)) revert ChannelFinalized();
-        if (_isExpired(channel.expiresAt)) revert ChannelExpiredError();
         if (cumulativeAmount > channel.deposit) revert AmountExceedsDeposit();
         if (cumulativeAmount <= channel.settled) revert AmountNotIncreasing();
 
@@ -101,8 +94,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
 
     function topUp(
         ChannelDescriptor calldata descriptor,
-        uint96 additionalDeposit,
-        uint32 newExpiresAt
+        uint96 additionalDeposit
     )
         external
     {
@@ -113,10 +105,6 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         if (_isFinalized(channel.closeData)) revert ChannelFinalized();
 
         if (additionalDeposit > type(uint96).max - channel.deposit) revert DepositOverflow();
-        if (newExpiresAt != 0) {
-            if (newExpiresAt <= block.timestamp) revert InvalidExpiry();
-            if (newExpiresAt <= channel.expiresAt) revert InvalidExpiry();
-        }
 
         if (additionalDeposit > 0) {
             channel.deposit += additionalDeposit;
@@ -126,10 +114,6 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
             bool success =
                 ITIP20(descriptor.token).transferFrom(msg.sender, address(this), additionalDeposit);
             if (!success) revert TransferFailed();
-        }
-
-        if (newExpiresAt != 0) {
-            channel.expiresAt = newExpiresAt;
         }
 
         if (_closeRequestedAt(channel.closeData) != 0) {
@@ -144,8 +128,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
             descriptor.payer,
             descriptor.payee,
             additionalDeposit,
-            channel.deposit,
-            channel.expiresAt
+            channel.deposit
         );
     }
 
@@ -189,7 +172,6 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         if (captureAmount > channel.deposit) revert AmountExceedsDeposit();
 
         if (captureAmount > previousSettled) {
-            if (_isExpired(channel.expiresAt)) revert ChannelExpiredError();
             _validateVoucher(descriptor, channelId, cumulativeAmount, signature);
         }
 
@@ -225,7 +207,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         bool closeGracePassed = closeRequestedAt != 0
             && block.timestamp >= uint256(closeRequestedAt) + CLOSE_GRACE_PERIOD;
 
-        if (!closeGracePassed && !_isExpired(channel.expiresAt)) revert CloseNotReady();
+        if (!closeGracePassed) revert CloseNotReady();
 
         uint96 refund = channel.deposit - channel.settled;
         channel.closeData = _FINALIZED_CLOSE_DATA;
@@ -236,7 +218,6 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
             if (!success) revert TransferFailed();
         }
 
-        emit ChannelExpired(channelId, descriptor.payer, descriptor.payee);
         emit ChannelClosed(channelId, descriptor.payer, descriptor.payee, channel.settled, refund);
     }
 
@@ -333,7 +314,6 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
 
         state.settled = uint96(packedState);
         state.deposit = uint96(packedState >> _DEPOSIT_OFFSET);
-        state.expiresAt = uint32(packedState >> _EXPIRES_AT_OFFSET);
         state.closeData = uint32(packedState >> _CLOSE_DATA_OFFSET);
     }
 
@@ -344,7 +324,6 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
     {
         packedState = uint256(state.settled);
         packedState |= uint256(state.deposit) << _DEPOSIT_OFFSET;
-        packedState |= uint256(state.expiresAt) << _EXPIRES_AT_OFFSET;
         packedState |= uint256(state.closeData) << _CLOSE_DATA_OFFSET;
     }
 
@@ -354,10 +333,6 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
 
     function _closeRequestedAt(uint32 closeData) internal pure returns (uint32) {
         return closeData >= 2 ? closeData : 0;
-    }
-
-    function _isExpired(uint32 expiresAt) internal view returns (bool) {
-        return block.timestamp >= expiresAt;
     }
 
     function _validateVoucher(
