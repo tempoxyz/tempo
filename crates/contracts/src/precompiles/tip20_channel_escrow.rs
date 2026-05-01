@@ -23,7 +23,6 @@ crate::sol! {
         struct ChannelState {
             uint96 settled;
             uint96 deposit;
-            uint32 expiresAt;
             uint32 closeData;
         }
 
@@ -40,8 +39,7 @@ crate::sol! {
             address token,
             uint96 deposit,
             bytes32 salt,
-            address authorizedSigner,
-            uint32 expiresAt
+            address authorizedSigner
         )
             external
             returns (bytes32 channelId);
@@ -55,8 +53,7 @@ crate::sol! {
 
         function topUp(
             ChannelDescriptor calldata descriptor,
-            uint96 additionalDeposit,
-            uint32 newExpiresAt
+            uint96 additionalDeposit
         )
             external;
 
@@ -109,8 +106,7 @@ crate::sol! {
             address token,
             address authorizedSigner,
             bytes32 salt,
-            uint96 deposit,
-            uint32 expiresAt
+            uint96 deposit
         );
 
         event Settled(
@@ -127,8 +123,7 @@ crate::sol! {
             address indexed payer,
             address indexed payee,
             uint96 additionalDeposit,
-            uint96 newDeposit,
-            uint32 newExpiresAt
+            uint96 newDeposit
         );
 
         event CloseRequested(
@@ -152,8 +147,6 @@ crate::sol! {
             address indexed payee
         );
 
-        event ChannelExpired(bytes32 indexed channelId, address indexed payer, address indexed payee);
-
         error ChannelAlreadyExists();
         error ChannelNotFound();
         error ChannelFinalized();
@@ -162,8 +155,6 @@ crate::sol! {
         error InvalidPayee();
         error InvalidToken();
         error ZeroDeposit();
-        error InvalidExpiry();
-        error ChannelExpiredError();
         error InvalidSignature();
         error AmountExceedsDeposit();
         error AmountNotIncreasing();
@@ -205,14 +196,6 @@ impl TIP20ChannelEscrowError {
 
     pub const fn zero_deposit() -> Self {
         Self::ZeroDeposit(ITIP20ChannelEscrow::ZeroDeposit {})
-    }
-
-    pub const fn invalid_expiry() -> Self {
-        Self::InvalidExpiry(ITIP20ChannelEscrow::InvalidExpiry {})
-    }
-
-    pub const fn channel_expired() -> Self {
-        Self::ChannelExpiredError(ITIP20ChannelEscrow::ChannelExpiredError {})
     }
 
     pub const fn invalid_signature() -> Self {
