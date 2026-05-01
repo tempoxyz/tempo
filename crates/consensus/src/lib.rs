@@ -174,9 +174,19 @@ impl Consensus<Block> for TempoConsensus {
             .into());
         }
 
+        let expected_system_tx_count = if self
+            .inner
+            .chain_spec()
+            .is_t4_active_at_timestamp(block.header().timestamp())
+        {
+            0
+        } else {
+            SYSTEM_TX_COUNT
+        };
+
         // Get the last END_OF_BLOCK_SYSTEM_TX_COUNT transactions and validate they are end-of-block system txs
         let end_of_block_system_txs = transactions
-            .get(transactions.len().saturating_sub(SYSTEM_TX_COUNT)..)
+            .get(transactions.len().saturating_sub(expected_system_tx_count)..)
             .map(|slice| {
                 slice
                     .iter()
@@ -185,9 +195,9 @@ impl Consensus<Block> for TempoConsensus {
             })
             .unwrap_or_default();
 
-        if end_of_block_system_txs.len() != SYSTEM_TX_COUNT {
+        if end_of_block_system_txs.len() != expected_system_tx_count {
             return Err(TempoConsensusError::MissingEndOfBlockSystemTxs {
-                expected: SYSTEM_TX_COUNT,
+                expected: expected_system_tx_count,
                 actual: end_of_block_system_txs.len(),
             }
             .into());
@@ -244,7 +254,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
     use tempo_chainspec::{
         hardfork::TempoHardfork,
-        spec::{MODERATO, TempoChainSpec},
+        spec::{DEV, MODERATO, TempoChainSpec},
     };
 
     fn current_timestamp_millis() -> u64 {
@@ -817,7 +827,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_block_pre_execution_no_system_tx() {
+    fn test_validate_block_pre_execution_pre_t4_missing_system_tx() {
         let consensus = TempoConsensus::new(MODERATO.clone());
         let chain_id = MODERATO.chain().id();
 
@@ -840,6 +850,23 @@ mod tests {
                 )),
             "Expected MissingEndOfBlockSystemTxs, got: {err:?}"
         );
+    }
+
+    #[test]
+    fn test_validate_block_pre_execution_t4_allows_missing_system_tx() {
+        let consensus = TempoConsensus::new(DEV.clone());
+        let chain_id = DEV.chain().id();
+
+        let user_tx = create_tx(chain_id);
+
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(0)
+            .build();
+        let block = create_valid_block(header, vec![user_tx]);
+        let sealed = SealedBlock::seal_slow(block);
+
+        assert!(consensus.validate_block_pre_execution(&sealed).is_ok());
     }
 
     #[test]

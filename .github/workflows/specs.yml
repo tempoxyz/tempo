@@ -16,6 +16,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: "sccache"
+  # Pinned to mablr/alloy_bump_without_op (alloy 2.0.4 + OP support stripped)
+  FOUNDRY_SHA: "be874c9f6dacaa289b8c3b438f0e94e8d34e9fe0"
 
 jobs:
   check-specs-changes:
@@ -168,7 +170,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: foundry-rs/foundry
-          ref: master
+          ref: ${{ env.FOUNDRY_SHA }}
           path: foundry
           persist-credentials: false
 
