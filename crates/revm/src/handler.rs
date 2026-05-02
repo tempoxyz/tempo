@@ -1109,71 +1109,151 @@ where
         // Note: Signature verification happens during recover_signer() before entering the pool
         // Note: Transaction parameter validation (priority fee, time window) happens in validate_env()
 
-        // If the transaction includes a KeyAuthorization, validate and authorize the key
+        // For Keychain signatures, validate that the keychain is authorized in the precompile
+        // before fee collection so existing-key fee charges can consume spending limits.
         if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
-            && let Some(key_auth) = &tempo_tx_env.key_authorization
+            && let Some(keychain_sig) = tempo_tx_env.signature.as_keychain()
         {
-            // Check if this TX is using a Keychain signature (access key)
-            // Access keys cannot authorize new keys UNLESS it's the same key being authorized (same-tx auth+use)
-            if let Some(keychain_sig) = tempo_tx_env.signature.as_keychain() {
-                // Use override_key_id if provided (for gas estimation), otherwise recover from signature
+            // The user_address is the root account this transaction is being executed for.
+            // This should match tx.caller (which comes from recover_signer on the outer signature).
+            let user_address = &keychain_sig.user_address;
+
+            // Sanity check: user_address should match tx.caller
+            if *user_address != tx.caller {
+                return Err(TempoInvalidTransaction::KeychainUserAddressMismatch {
+                    user_address: *user_address,
+                    caller: tx.caller,
+                }
+                .into());
+            }
+
+            if let Some(key_auth) = tempo_tx_env.key_authorization.as_ref() {
+                // If this is a same tx auth+use, validate that spending limit is enough to cover the fee.
+                //
+                // `collectFeePreTx` would not validate the spending limit because the key is not authorized yet and we are not setting the transient key_id.
+                if !gas_balance_spending.is_zero()
+                    && fee_payer == tx.caller
+                    && let Some(limits) = key_auth.limits.as_ref()
+                {
+                    let remaining = limits
+                        .iter()
+                        .rev()
+                        .find(|limit| limit.token == fee_token)
+                        .map(|limit| limit.limit)
+                        .unwrap_or_default();
+
+                    if gas_balance_spending > remaining {
+                        return Err(
+                            FeePaymentError::Other("SpendingLimitExceeded".to_string()).into()
+                        );
+                    }
+                }
+            } else {
+                // Use override_key_id if provided (for gas estimation), otherwise recover from signature.
                 let access_key_addr = if let Some(override_key_id) = tempo_tx_env.override_key_id {
                     override_key_id
                 } else {
-                    // Get the access key address (recovered during Tx->TxEnv conversion and cached)
+                    // Get the access key address (recovered during pool validation and cached)
                     keychain_sig
                         .key_id(&tempo_tx_env.signature_hash)
                         .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
                 };
 
-                // Only allow if authorizing the same key that's being used (same-tx auth+use)
-                if access_key_addr != key_auth.key_id {
-                    return Err(TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys.into());
-                }
+                // If this transaction is using an already-authorized key, validate the signature against stored key and set the transient key_id.
+                let stored_key_expiry = StorageCtx::enter_precompile(
+                    journal,
+                    block,
+                    cfg,
+                    tx,
+                    |mut keychain: AccountKeychain| {
+                        // Extract the signature type from the inner signature to validate it matches
+                        // the key_type stored in the keychain. This prevents using a signature of one
+                        // type to authenticate as a key registered with a different type.
+                        // Only validate signature type on T1+ to maintain backward compatibility
+                        // with historical blocks during re-execution.
+                        let sig_type = spec
+                            .is_t1()
+                            .then_some(keychain_sig.signature.signature_type().into());
+
+                        let key = keychain
+                            .validate_keychain_authorization(
+                                *user_address,
+                                access_key_addr,
+                                block.timestamp().to::<u64>(),
+                                sig_type,
+                            )
+                            .map_err(|e| TempoInvalidTransaction::KeychainValidationFailed {
+                                reason: format!("{e:?}"),
+                            })?;
+
+                        // Set the transaction key in the keychain precompile.
+                        // The TIP20 precompile will read this during fee collection and
+                        // execution to enforce spending limits for existing keys.
+                        keychain
+                            .set_transaction_key(access_key_addr)
+                            .map_err(|e| EVMError::Custom(e.to_string()))?;
+
+                        Ok::<_, EVMError<_, TempoInvalidTransaction>>(key.expiry)
+                    },
+                )?;
+
+                evm.key_expiry = Some(stored_key_expiry);
             }
+        }
 
-            // Validate that the KeyAuthorization is signed by the root account
-            let root_account = &tx.caller;
+        // Collect fees for the transaction.
+        if !gas_balance_spending.is_zero() {
+            let checkpoint = journal.checkpoint();
 
-            // Recover the signer of the KeyAuthorization
-            let auth_signer = key_auth
-                .recover_signer()
-                .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
+            let skip_liquidity_check = evm.skip_liquidity_check;
+            let result = StorageCtx::enter_evm(journal, &block, cfg, tx, || {
+                TipFeeManager::new().collect_fee_pre_tx(
+                    fee_payer,
+                    fee_token,
+                    gas_balance_spending,
+                    block.beneficiary(),
+                    skip_liquidity_check,
+                )
+            });
 
-            // Verify the KeyAuthorization is signed by the root account
-            if auth_signer != *root_account {
-                return Err(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
-                    expected: *root_account,
-                    actual: auth_signer,
-                }
-                .into());
-            }
+            if let Err(err) = result {
+                // Revert the journal to checkpoint before `collectFeePreTx` call if something went wrong.
+                journal.checkpoint_revert(checkpoint);
 
-            // Validate KeyAuthorization chain_id.
-            // T1C+: chain_id must exactly match (wildcard 0 is no longer allowed).
-            // Pre-T1C: chain_id == 0 allows replay on any chain (wildcard).
-            key_auth
-                .validate_chain_id(cfg.chain_id(), spec.is_t1c())
-                .map_err(TempoInvalidTransaction::from)?;
-
-            // T3 gates all TIP-1011 fields. Before activation, transaction semantics must stay
-            // unchanged, so periodic limits and call scopes are rejected.
-            if !spec.is_t3() {
-                if key_auth.has_periodic_limits() {
-                    return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                        reason: "periodic token limits are not active before T3".to_string(),
+                // Map fee collection errors to transaction validation errors since they
+                // indicate the transaction cannot be included (e.g., insufficient liquidity
+                // in FeeAMM pool for fee swaps)
+                return Err(match err {
+                    TempoPrecompileError::TIPFeeAMMError(
+                        TIPFeeAMMError::InsufficientLiquidity(_),
+                    ) => FeePaymentError::InsufficientAmmLiquidity {
+                        fee: gas_balance_spending,
                     }
-                    .into());
-                }
+                    .into(),
 
-                if key_auth.has_call_scopes() {
-                    return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                        reason: "call scopes are not active before T3".to_string(),
+                    TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(
+                        InsufficientBalance { available, .. },
+                    )) => FeePaymentError::InsufficientFeeTokenBalance {
+                        fee: gas_balance_spending,
+                        balance: available,
                     }
-                    .into());
-                }
+                    .into(),
+
+                    TempoPrecompileError::Fatal(e) => EVMError::Custom(e),
+
+                    _ => FeePaymentError::Other(err.to_string()).into(),
+                });
             }
 
+            journal.checkpoint_commit();
+            evm.collected_fee = gas_balance_spending;
+        }
+
+        // If the transaction includes a KeyAuthorization, validate and authorize the key
+        // only after fee collection has succeeded.
+        if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
+            && let Some(key_auth) = &tempo_tx_env.key_authorization
+        {
             let keychain_checkpoint = if spec.is_t1() {
                 Some(journal.checkpoint())
             } else {
@@ -1233,16 +1313,6 @@ where
                 // Handle expiry: None means never expires (store as u64::MAX)
                 let expiry = key_auth.expiry.map_or(u64::MAX, |expiry| expiry.get());
 
-                // Validate expiry is not in the past
-                let current_timestamp = block.timestamp().saturating_to::<u64>();
-                if expiry <= current_timestamp {
-                    return Err(TempoInvalidTransaction::AccessKeyExpiryInPast {
-                        expiry,
-                        current_timestamp,
-                    }
-                    .into());
-                }
-
                 // Handle limits: None means unlimited spending (enforce_limits=false)
                 // Some([]) means no spending allowed (enforce_limits=true)
                 // Some([...]) means specific limits (enforce_limits=true)
@@ -1279,7 +1349,7 @@ where
                 };
 
                 // Call precompile to authorize the key (same phase as nonce increment)
-                match keychain.authorize_key(*root_account, authorize_call) {
+                match keychain.authorize_key(tx.caller, authorize_call) {
                     // all is good, we can do execution.
                     Ok(_) => Ok(false),
                     // on out of gas we are skipping execution but not invalidating the transaction.
@@ -1315,166 +1385,35 @@ where
                     journal.checkpoint_commit();
                 };
             }
-        }
 
-        // For Keychain signatures, validate that the keychain is authorized in the precompile
-        // UNLESS this transaction also includes a KeyAuthorization (same-tx auth+use case)
-        if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
-            && let Some(keychain_sig) = tempo_tx_env.signature.as_keychain()
-        {
-            // Use override_key_id if provided (for gas estimation), otherwise recover from signature
-            let access_key_addr = if let Some(override_key_id) = tempo_tx_env.override_key_id {
-                override_key_id
-            } else {
-                // The user_address is the root account this transaction is being executed for
-                // This should match tx.caller (which comes from recover_signer on the outer signature)
-                let user_address = &keychain_sig.user_address;
+            // If this is a same tx auth+use, we need to set the transient key_id and decrement the fee from the spending limit.
+            if tempo_tx_env.signature.is_keychain() {
+                StorageCtx::enter_precompile(
+                    journal,
+                    block,
+                    cfg,
+                    tx,
+                    |mut keychain: AccountKeychain| {
+                        keychain
+                            .set_transaction_key(key_auth.key_id)
+                            .map_err(|e| EVMError::Custom(e.to_string()))?;
 
-                // Sanity check: user_address should match tx.caller
-                if *user_address != tx.caller {
-                    return Err(TempoInvalidTransaction::KeychainUserAddressMismatch {
-                        user_address: *user_address,
-                        caller: tx.caller,
-                    }
-                    .into());
-                }
-
-                // Get the access key address (recovered during pool validation and cached)
-                keychain_sig
-                    .key_id(&tempo_tx_env.signature_hash)
-                    .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
-            };
-
-            // Check if this transaction includes a KeyAuthorization for the same key.
-            // Same-tx auth+use still needs key-type parity checks, but we avoid a full keychain
-            // existence lookup here to preserve the pre-T1B out-of-gas behavior.
-            let is_authorizing_this_key = tempo_tx_env
-                .key_authorization
-                .as_ref()
-                .map(|key_auth| key_auth.key_id == access_key_addr)
-                .unwrap_or(false);
-
-            // Always need to set the transaction key for Keychain signatures
-            let stored_key_expiry = StorageCtx::enter_precompile(
-                journal,
-                block,
-                cfg,
-                tx,
-                |mut keychain: AccountKeychain| {
-                    let key_expiry = if is_authorizing_this_key {
-                        if spec.is_t3()
-                            && tempo_tx_env
-                                .key_authorization
-                                .as_ref()
-                                .is_some_and(|key_auth| {
-                                    key_auth.key_type != keychain_sig.signature.signature_type()
-                                })
-                        {
-                            return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                                reason: "key authorization key_type does not match the keychain signature type"
-                                    .to_string(),
-                            }
-                            .into());
+                        if evm.collected_fee.is_zero() {
+                            return Ok(());
                         }
-                        // Same-tx auth+use: expiry comes from the inline KeyAuthorization
-                        tempo_tx_env
-                            .key_authorization
-                            .as_ref()
-                            .and_then(|ka| ka.expiry.map(|expiry| expiry.get()))
-                    } else {
-                        // Validate that user_address has authorized this access key in the keychain
-                        let user_address = &keychain_sig.user_address;
 
-                        // Extract the signature type from the inner signature to validate it matches
-                        // the key_type stored in the keychain. This prevents using a signature of one
-                        // type to authenticate as a key registered with a different type.
-                        // Only validate signature type on T1+ to maintain backward compatibility
-                        // with historical blocks during re-execution.
-                        let sig_type = spec
-                            .is_t1()
-                            .then_some(keychain_sig.signature.signature_type().into());
-
-                        let key = keychain
-                            .validate_keychain_authorization(
-                                *user_address,
-                                access_key_addr,
-                                block.timestamp().to::<u64>(),
-                                sig_type,
-                            )
-                            .map_err(|e| TempoInvalidTransaction::KeychainValidationFailed {
-                                reason: format!("{e:?}"),
-                            })?;
-
-                        // Surface stored key expiry
-                        Some(key.expiry)
-                    };
-
-                    // Set the transaction key in the keychain precompile
-                    // This marks that the current transaction is using an access key
-                    // The TIP20 precompile will read this during execution to enforce spending limits
-                    keychain
-                        .set_transaction_key(access_key_addr)
-                        .map_err(|e| EVMError::Custom(e.to_string()))?;
-
-                    Ok::<_, EVMError<_, TempoInvalidTransaction>>(key_expiry)
-                },
-            )?;
-
-            evm.key_expiry = stored_key_expiry;
+                        keychain
+                            .authorize_transfer(fee_payer, fee_token, evm.collected_fee)
+                            .map_err(|err| match err {
+                                TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
+                                err => FeePaymentError::Other(err.to_string()).into(),
+                            })
+                    },
+                )?;
+            }
         }
 
-        // Short-circuit if there is no spending for this transaction and `collectFeePreTx`
-        // call will not collect any fees.
-        if gas_balance_spending.is_zero() {
-            return Ok(());
-        }
-
-        let checkpoint = journal.checkpoint();
-
-        let skip_liquidity_check = evm.skip_liquidity_check;
-        let result = StorageCtx::enter_evm(journal, &block, cfg, tx, || {
-            TipFeeManager::new().collect_fee_pre_tx(
-                fee_payer,
-                fee_token,
-                gas_balance_spending,
-                block.beneficiary(),
-                skip_liquidity_check,
-            )
-        });
-
-        if let Err(err) = result {
-            // Revert the journal to checkpoint before `collectFeePreTx` call if something went wrong.
-            journal.checkpoint_revert(checkpoint);
-
-            // Map fee collection errors to transaction validation errors since they
-            // indicate the transaction cannot be included (e.g., insufficient liquidity
-            // in FeeAMM pool for fee swaps)
-            Err(match err {
-                TempoPrecompileError::TIPFeeAMMError(TIPFeeAMMError::InsufficientLiquidity(_)) => {
-                    FeePaymentError::InsufficientAmmLiquidity {
-                        fee: gas_balance_spending,
-                    }
-                    .into()
-                }
-
-                TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(
-                    InsufficientBalance { available, .. },
-                )) => FeePaymentError::InsufficientFeeTokenBalance {
-                    fee: gas_balance_spending,
-                    balance: available,
-                }
-                .into(),
-
-                TempoPrecompileError::Fatal(e) => EVMError::Custom(e),
-
-                _ => FeePaymentError::Other(err.to_string()).into(),
-            })
-        } else {
-            journal.checkpoint_commit();
-            evm.collected_fee = gas_balance_spending;
-
-            Ok(())
-        }
+        Ok(())
     }
 
     fn reimburse_caller(
@@ -1578,8 +1517,8 @@ where
         validation::validate_env::<_, Self::Error>(evm.ctx())?;
 
         // AA-specific validations
-        let cfg = evm.ctx_ref().cfg();
-        let tx = evm.ctx_ref().tx();
+        let cfg = &evm.inner.cfg;
+        let tx = &evm.inner.tx;
 
         if let Some(aa_env) = tx.tempo_tx_env.as_ref() {
             // Validate AA transaction structure (calls list, CREATE rules)
@@ -1622,6 +1561,86 @@ where
 
             if aa_env.subblock_transaction && has_keychain_fields {
                 return Err(TempoInvalidTransaction::KeychainOpInSubblockTransaction.into());
+            }
+
+            if let Some(key_auth) = &aa_env.key_authorization {
+                // Check if this TX is using a Keychain signature (access key)
+                // Access keys cannot authorize new keys UNLESS it's the same key being authorized (same-tx auth+use)
+                if let Some(keychain_sig) = aa_env.signature.as_keychain() {
+                    // Use override_key_id if provided (for gas estimation), otherwise recover from signature
+                    let access_key_addr = if let Some(override_key_id) = aa_env.override_key_id {
+                        override_key_id
+                    } else {
+                        // Get the access key address (recovered during Tx->TxEnv conversion and cached)
+                        keychain_sig
+                            .key_id(&aa_env.signature_hash)
+                            .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
+                    };
+
+                    // Only allow if authorizing the same key that's being used (same-tx auth+use)
+                    if access_key_addr != key_auth.key_id {
+                        return Err(
+                            TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys.into()
+                        );
+                    }
+
+                    if cfg.spec.is_t3()
+                        && key_auth.key_type != keychain_sig.signature.signature_type()
+                    {
+                        return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                                reason: "key authorization key_type does not match the keychain signature type"
+                                    .to_string(),
+                            }
+                            .into());
+                    }
+                }
+
+                // Validate that the KeyAuthorization is signed by the root account
+                let root_account = &tx.caller;
+
+                // Recover the signer of the KeyAuthorization
+                let auth_signer = key_auth.recover_signer().map_err(|_| {
+                    TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed
+                })?;
+
+                // Verify the KeyAuthorization is signed by the root account
+                if auth_signer != *root_account {
+                    return Err(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
+                        expected: *root_account,
+                        actual: auth_signer,
+                    }
+                    .into());
+                }
+
+                // Validate KeyAuthorization chain_id.
+                // T1C+: chain_id must exactly match (wildcard 0 is no longer allowed).
+                // Pre-T1C: chain_id == 0 allows replay on any chain (wildcard).
+                key_auth
+                    .validate_chain_id(cfg.chain_id(), cfg.spec.is_t1c())
+                    .map_err(TempoInvalidTransaction::from)?;
+
+                // T3 gates all TIP-1011 fields. Before activation, transaction semantics must stay
+                // unchanged, so periodic limits and call scopes are rejected.
+                if !cfg.spec.is_t3() {
+                    if key_auth.has_periodic_limits() {
+                        return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                            reason: "periodic token limits are not active before T3".to_string(),
+                        }
+                        .into());
+                    }
+
+                    if key_auth.has_call_scopes() {
+                        return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                            reason: "call scopes are not active before T3".to_string(),
+                        }
+                        .into());
+                    }
+                }
+
+                // Cache inline key authorization expiry.
+                if let Some(expiry) = key_auth.expiry {
+                    evm.key_expiry = Some(expiry.get());
+                }
             }
 
             // Validate priority fee for AA transactions using revm's validate_priority_fee_tx
@@ -1777,10 +1796,13 @@ where
             evm.ctx().local_mut().clear();
             evm.frame_stack().clear();
 
+            // On fee payment failure, treat the transaction as a halt that consumed entire regular gas limit.
+            let total_spent = core::cmp::min(evm.ctx.tx.gas_limit, evm.ctx.cfg.tx_gas_limit_cap());
+
             Ok(ExecutionResult::Halt {
                 reason: TempoHaltReason::SubblockTxFeePayment,
                 logs: Default::default(),
-                gas: ResultGas::new_with_state_gas(evm.ctx.tx.gas_limit, 0, 0, 0),
+                gas: ResultGas::new_with_state_gas(total_spent, 0, 0, 0),
             })
         } else {
             MainnetHandler::default()
@@ -2185,7 +2207,7 @@ mod tests {
     };
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
-    use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
+    use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, test_util::TIP20Setup};
     use tempo_primitives::transaction::{
         Call, RecoveredTempoAuthorization, TempoSignature, TempoSignedAuthorization,
         tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
@@ -4439,8 +4461,10 @@ mod tests {
         use super::*;
         use alloy_signer::SignerSync;
         use alloy_signer_local::PrivateKeySigner;
+        use tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS;
         use tempo_primitives::transaction::{
-            KeychainSignature, SignatureType, key_authorization::KeyAuthorization,
+            KeychainSignature, KeychainVersion, SignatureType,
+            key_authorization::{KeyAuthorization, TokenLimit as PrimTokenLimit},
         };
 
         fn generate_keypair() -> (PrivateKeySigner, Address) {
@@ -4558,7 +4582,7 @@ mod tests {
             let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T2, None, true);
 
             assert!(matches!(
-                h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default()),
+                h.validate_env(&mut evm),
                 Err(EVMError::Transaction(
                     TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot { .. }
                 ))
@@ -4578,7 +4602,7 @@ mod tests {
             let (mut evm, h) = make_evm(user, tx_key, Some(signed), TempoHardfork::T2, None, true);
 
             assert!(matches!(
-                h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default()),
+                h.validate_env(&mut evm),
                 Err(EVMError::Transaction(
                     TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys
                 ))
@@ -4596,8 +4620,14 @@ mod tests {
                 );
                 let (mut evm, h) = make_evm(user, key, Some(signed), spec, None, false);
 
-                let result =
-                    h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
+                if !spec.is_t1c()
+                    && let Some(aa_env) = evm.tx.tempo_tx_env.as_mut()
+                    && let TempoSignature::Keychain(keychain_sig) = &mut aa_env.signature
+                {
+                    // Overwrite the signature version pre-T1C to bypass the version check.
+                    keychain_sig.version = KeychainVersion::V1;
+                }
+                let result = h.validate_env(&mut evm);
                 if !spec.is_t1c() {
                     assert!(
                         result.is_ok(),
@@ -4750,6 +4780,62 @@ mod tests {
                     ))
                 ),
                 "Same-tx auth+use should pass when key does not exist, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_same_tx_key_authorization_rejects_fee_above_new_limit_before_auth() {
+            let (signer, user) = generate_keypair();
+            let key = Address::random();
+            let gas_limit = 100_000;
+            let fee = U256::from(gas_limit);
+            let spending_limit = fee - U256::ONE;
+
+            let signed = sign_key_auth(
+                &signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key).with_limits(vec![
+                    PrimTokenLimit {
+                        token: DEFAULT_FEE_TOKEN,
+                        limit: spending_limit,
+                        period: 60,
+                    },
+                ]),
+            );
+            let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T3, None, false);
+            evm.inner.ctx.tx.inner.gas_limit = gas_limit;
+            evm.inner.ctx.tx.inner.gas_price = 1_000_000_000_000;
+            evm.inner.ctx.tx.inner.gas_priority_fee = Some(1_000_000_000_000);
+
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+                TIP20Setup::path_usd(user)
+                    .with_issuer(user)
+                    .with_mint(user, fee * U256::from(2))
+                    .apply()
+                    .expect("pathUSD setup succeeds");
+            });
+
+            let result =
+                h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
+
+            assert!(
+                matches!(
+                    &result,
+                    Err(EVMError::Transaction(TempoInvalidTransaction::CollectFeePreTx(
+                        FeePaymentError::Other(reason)
+                    ))) if reason.contains("SpendingLimitExceeded")
+                ),
+                "same-tx auth+use should reject fee above the new key limit before auth, got: {result:?}"
+            );
+            assert_eq!(evm.collected_fee, U256::ZERO);
+            assert!(
+                evm.inner
+                    .ctx
+                    .journaled_state
+                    .inner
+                    .logs
+                    .iter()
+                    .all(|log| log.address != ACCOUNT_KEYCHAIN_ADDRESS),
+                "fee-limit rejection must happen before key authorization emits events"
             );
         }
     }
@@ -4950,6 +5036,69 @@ mod tests {
             result.is_err(),
             "With enable_amsterdam_eip8037=false, tx gas limit above cap should be rejected"
         );
+    }
+
+    /// TIP-1016 regression: subblock fee-payment halt must not exceed the gas cap.
+    #[test]
+    fn test_subblock_fee_payment_halt_clamps_to_gas_cap_t4() {
+        const CAP: u64 = 30_000_000;
+        const TX_GAS_LIMIT: u64 = 60_000_000;
+
+        let aa_env = TempoBatchCallEnv {
+            subblock_transaction: true,
+            ..Default::default()
+        };
+        let tx_env = TempoTxEnv {
+            inner: revm::context::TxEnv {
+                gas_limit: TX_GAS_LIMIT,
+                kind: TxKind::Call(Address::random()),
+                ..Default::default()
+            },
+            tempo_tx_env: Some(Box::new(aa_env)),
+            ..Default::default()
+        };
+
+        let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T4, tx_env, |cfg| {
+            cfg.tx_gas_limit_cap = Some(CAP);
+        });
+
+        // Sanity: T4 must actually have the cap-skip enabled so tx_gas_limit > cap is legal.
+        assert!(
+            test.cfg().enable_amsterdam_eip8037,
+            "T4 must enable enable_amsterdam_eip8037 for this regression to apply"
+        );
+
+        let err = EVMError::Transaction(TempoInvalidTransaction::EthInvalidTransaction(
+            InvalidTransaction::LackOfFundForMaxFee {
+                fee: Box::new(U256::ZERO),
+                balance: Box::new(U256::ZERO),
+            },
+        ));
+
+        let result = test
+            .handler
+            .catch_error(&mut test.evm, err)
+            .expect("subblock fee-payment failure must be converted to a halt, not a hard error");
+
+        match result {
+            ExecutionResult::Halt { reason, gas, .. } => {
+                assert!(
+                    matches!(reason, TempoHaltReason::SubblockTxFeePayment),
+                    "expected SubblockTxFeePayment halt, got {reason:?}"
+                );
+                assert_eq!(
+                    gas.total_gas_spent(),
+                    CAP,
+                    "regular gas charged on subblock fee-payment halt must be clamped to \
+                     tx_gas_limit_cap (got {} for tx.gas_limit={} cap={})",
+                    gas.total_gas_spent(),
+                    TX_GAS_LIMIT,
+                    CAP,
+                );
+                assert_eq!(gas.state_gas_spent(), 0, "halt reports zero state gas");
+            }
+            other => panic!("expected ExecutionResult::Halt, got {other:?}"),
+        }
     }
 
     /// TIP-1016: Pre-T4 behavior unchanged - initial_state_gas is still populated

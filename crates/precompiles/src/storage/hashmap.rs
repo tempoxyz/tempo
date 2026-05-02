@@ -286,12 +286,20 @@ impl HashMapStorageProvider {
             .or_default();
     }
 
+    /// Returns the amount of counted SLOADs.
     pub fn counter_sload(&self) -> u64 {
         self.counter_sload
     }
 
+    /// Returns the amount of counted SSTOREs.
     pub fn counter_sstore(&self) -> u64 {
         self.counter_sstore
+    }
+
+    /// Resets the SLOAD and SSTORE counters.
+    pub fn reset_counters(&mut self) {
+        self.counter_sload = 0;
+        self.counter_sstore = 0;
     }
 
     /// Returns all storage entries as `(address, slot, value)`.
