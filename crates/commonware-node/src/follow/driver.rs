@@ -306,6 +306,7 @@ where
                 .epoch_strategy
                 .last(self.current_epoch)
                 .expect("strategy is valid for all epochs and heights");
+
             self.config
                 .marshal
                 .hint_finalized(
@@ -315,6 +316,10 @@ where
                     NonEmptyVec::new(ed25519::PrivateKey::random(&mut self.context).public_key()),
                 )
                 .await;
+
+            if let Some(one_before_boundary) = boundary_height.previous() {
+                self.config.marshal.set_floor(one_before_boundary).await;
+            }
 
             return Ok(());
         }
