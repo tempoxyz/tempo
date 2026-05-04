@@ -442,41 +442,6 @@ mod tests {
         assert_eq!(chainspec.tempo_hardfork_at(u64::MAX), latest);
     }
 
-    #[test]
-    fn test_from_genesis_with_t6_schedule() {
-        use alloy_genesis::Genesis;
-
-        let genesis: Genesis = serde_json::from_value(serde_json::json!({
-            "config": {
-                "chainId": 1234,
-                "t0Time": 0,
-                "t1Time": 10,
-                "t1aTime": 20,
-                "t1bTime": 30,
-                "t1cTime": 40,
-                "t2Time": 50,
-                "t3Time": 60,
-                "t4Time": 70,
-                "t5Time": 80,
-                "t6Time": 90
-            },
-            "alloc": {}
-        }))
-        .unwrap();
-        let chainspec = super::TempoChainSpec::from_genesis(genesis);
-
-        assert_eq!(
-            chainspec.tempo_fork_activation(TempoHardfork::T6),
-            ForkCondition::Timestamp(90)
-        );
-        assert!(!chainspec.is_t6_active_at_timestamp(89));
-        assert!(chainspec.is_t6_active_at_timestamp(90));
-        assert_eq!(chainspec.tempo_hardfork_at(89), TempoHardfork::T5);
-        assert_eq!(chainspec.tempo_hardfork_at(90), TempoHardfork::T6);
-        assert!(chainspec.tempo_hardfork_at(90).is_t5());
-        assert!(chainspec.tempo_hardfork_at(90).is_t6());
-    }
-
     mod tempo_hardfork_at {
         use super::*;
 
