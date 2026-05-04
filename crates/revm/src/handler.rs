@@ -1260,6 +1260,7 @@ where
                 None
             };
 
+            let amsterdam_eip8037_enabled = cfg.enable_amsterdam_eip8037;
             let internals = EvmInternals::new(journal, block, cfg, tx);
 
             // T1/T1A: Apply gas metering for the keychain precompile call.
@@ -1294,7 +1295,13 @@ where
 
             // It's ok to set reservoir to 0 because pre-T1B it doesn't matter and post-T1B we have unlimited gas anyway.
             let mut provider = EvmPrecompileStorageProvider::new(
-                internals, gas_limit, 0, cfg.spec, false, gas_params,
+                internals,
+                gas_limit,
+                0,
+                cfg.spec,
+                amsterdam_eip8037_enabled,
+                false,
+                gas_params,
             );
 
             // The core logic of setting up thread-local storage is here.
@@ -2258,7 +2265,6 @@ mod tests {
             let mut cfg = CfgEnv::<TempoHardfork>::default();
             cfg.spec = spec;
             cfg.gas_params = tempo_gas_params(spec);
-            cfg.enable_amsterdam_eip8037 = spec.is_t4();
             configure(&mut cfg);
 
             let ctx = Context::mainnet()
@@ -3122,7 +3128,9 @@ mod tests {
             signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
         };
 
-        let gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T4);
+        // TIP-1016 is opt-in via amsterdam_eip8037; manually enable for this test.
+        let gas_params =
+            crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
 
         let sig_gas = ECRECOVER_GAS + primitive_signature_verification_gas(&key_auth.signature);
         let sload = gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
@@ -4846,7 +4854,9 @@ mod tests {
     /// later in validate_against_state_and_deduct_caller, not in upstream initial_tx_gas.
     #[test]
     fn test_state_gas_standard_create_tx_populates_initial_state_gas() {
-        let gas_params = tempo_gas_params(TempoHardfork::T4);
+        // TIP-1016 is opt-in via amsterdam_eip8037; manually enable for this test.
+        let gas_params =
+            crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
         let initcode = Bytes::from(vec![0x60, 0x80]);
 
         let init_gas = gas_params.initial_tx_gas(
@@ -4998,8 +5008,12 @@ mod tests {
             ..Default::default()
         };
 
+        // TIP-1016 is opt-in via amsterdam_eip8037; manually enable for this test.
         let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T4, tx_env, |cfg| {
             cfg.tx_gas_limit_cap = Some(30_000_000);
+            cfg.enable_amsterdam_eip8037 = true;
+            cfg.gas_params =
+                crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
         });
 
         // validate_env should pass even though gas_limit > cap
@@ -5060,6 +5074,9 @@ mod tests {
 
         let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T4, tx_env, |cfg| {
             cfg.tx_gas_limit_cap = Some(CAP);
+            cfg.enable_amsterdam_eip8037 = true;
+            cfg.gas_params =
+                crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
         });
 
         // Sanity: T4 must actually have the cap-skip enabled so tx_gas_limit > cap is legal.
@@ -5292,7 +5309,9 @@ mod tests {
     /// TIP-1016: AA auth list entries with nonce==0 should track state gas.
     #[test]
     fn test_state_gas_aa_auth_list_nonce_zero() {
-        let gas_params = tempo_gas_params(TempoHardfork::T4);
+        // TIP-1016 is opt-in via amsterdam_eip8037; manually enable for this test.
+        let gas_params =
+            crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
 
         let aa_env = TempoBatchCallEnv {
             signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
