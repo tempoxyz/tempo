@@ -437,7 +437,6 @@ where
             .pool_fetch_duration_seconds
             .record(pool_fetch_start.elapsed());
 
-
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
         loop {
