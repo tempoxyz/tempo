@@ -212,6 +212,7 @@ mod tests {
         storage::{Layout, LayoutCtx, PrecompileStorageProvider, StorageCtx},
         test_util::setup_storage,
     };
+    use alloy::primitives::aliases::U96;
     use proptest::prelude::*;
 
     // Strategy for generating random U256 slot values that won't overflow
@@ -354,6 +355,138 @@ mod tests {
             let loaded = slot.read().unwrap();
             assert_eq!(loaded, data, "[Address; 3] roundtrip failed");
         });
+    }
+    #[test]
+    fn u96_array_packed_layout_matches_solidity() {
+        let (mut storage, address) = setup_storage();
+        let base_slot = U256::from(450);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut handler = <[U96; 2]>::handle(base_slot, LayoutCtx::FULL, address);
+            handler.write([U96::from(1), U96::from(2)]).unwrap();
+        });
+
+        // Both elements packed in slot 0: low 12 bytes = elem 0, next 12 bytes = elem 1.
+        let expected = U256::from(1) | (U256::from(2) << 96);
+        assert_eq!(storage.sload(address, base_slot).unwrap(), expected);
+        assert_eq!(
+            storage.sload(address, base_slot + U256::ONE).unwrap(),
+            U256::ZERO
+        );
+
+        StorageCtx::enter(&mut storage, || {
+            let mut handler = <[U96; 2]>::handle(base_slot, LayoutCtx::FULL, address);
+            // Indexed read now agrees with bulk layout.
+            assert_eq!(handler.at(0).unwrap().read().unwrap(), U96::from(1));
+            assert_eq!(handler.at(1).unwrap().read().unwrap(), U96::from(2));
+
+            // Indexed write to elem 1 only modifies bytes 12..23 of slot 0.
+            handler[1].write(U96::from(3)).unwrap();
+        });
+
+        let after = U256::from(1) | (U256::from(3) << 96);
+        assert_eq!(storage.sload(address, base_slot).unwrap(), after);
+        assert_eq!(
+            storage.sload(address, base_slot + U256::ONE).unwrap(),
+            U256::ZERO
+        );
+    }
+
+    #[test]
+    fn u96_array_5_packed_layout_matches_solidity() {
+        let (mut storage, address) = setup_storage();
+        let base_slot = U256::from(550);
+
+        let data = [
+            U96::from(1u64),
+            U96::from(2u64),
+            U96::from(3u64),
+            U96::from(4u64),
+            U96::from(5u64),
+        ];
+
+        // LAYOUT must report 3 slots (Solidity: ceil(5/2) = 3).
+        assert_eq!(
+            <[U96; 5] as StorableType>::LAYOUT,
+            Layout::Slots(3),
+            "[U96; 5] must occupy 3 slots, not 2 (slot-count bug)"
+        );
+
+        StorageCtx::enter(&mut storage, || {
+            let mut handler = <[U96; 5]>::handle(base_slot, LayoutCtx::FULL, address);
+            handler.write(data).unwrap();
+        });
+
+        // Slot 0: elem0 in low 12 bytes, elem1 in next 12 bytes.
+        let expected_slot0 = U256::from(1) | (U256::from(2) << 96);
+        assert_eq!(
+            storage.sload(address, base_slot).unwrap(),
+            expected_slot0,
+            "slot 0 must hold packed (elem0, elem1)"
+        );
+
+        // Slot 1: elem2 + elem3 packed.
+        let expected_slot1 = U256::from(3) | (U256::from(4) << 96);
+        assert_eq!(
+            storage.sload(address, base_slot + U256::ONE).unwrap(),
+            expected_slot1,
+            "slot 1 must hold packed (elem2, elem3)"
+        );
+
+        // Slot 2: elem4 alone in low 12 bytes (this slot is missed entirely
+        // if the bulk-store loop uses the buggy `(5*12).div_ceil(32) = 2`
+        // slot-count formula).
+        assert_eq!(
+            storage
+                .sload(address, base_slot + U256::from(2u64))
+                .unwrap(),
+            U256::from(5),
+            "slot 2 must hold elem4 in low 12 bytes (slot-count formula must use \
+             ceil(N / itemsPerSlot), not (N*B).div_ceil(32))"
+        );
+
+        // Slot 3 must be untouched.
+        assert_eq!(
+            storage
+                .sload(address, base_slot + U256::from(3u64))
+                .unwrap(),
+            U256::ZERO,
+            "slot 3 must remain untouched"
+        );
+
+        // Whole-array roundtrip and per-index reads must agree with the
+        // packed layout established above.
+        StorageCtx::enter(&mut storage, || {
+            let mut handler = <[U96; 5]>::handle(base_slot, LayoutCtx::FULL, address);
+            assert_eq!(handler.read().unwrap(), data, "bulk read mismatch");
+            for (i, expected) in data.iter().enumerate() {
+                assert_eq!(
+                    handler.at(i).unwrap().read().unwrap(),
+                    *expected,
+                    "indexed read mismatch at i={i}"
+                );
+            }
+
+            // Indexed write to elem 4 must hit slot base+2 only.
+            handler[4].write(U96::from(99u64)).unwrap();
+        });
+        assert_eq!(
+            storage
+                .sload(address, base_slot + U256::from(2u64))
+                .unwrap(),
+            U256::from(99),
+            "indexed write to elem 4 must update slot base+2"
+        );
+        assert_eq!(
+            storage.sload(address, base_slot).unwrap(),
+            expected_slot0,
+            "indexed write to elem 4 must not disturb slot 0"
+        );
+        assert_eq!(
+            storage.sload(address, base_slot + U256::ONE).unwrap(),
+            expected_slot1,
+            "indexed write to elem 4 must not disturb slot 1"
+        );
     }
 
     #[test]

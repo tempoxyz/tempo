@@ -8,4 +8,6 @@ contract Arrays {
     uint256 public fieldB; // slot 6
     uint8[4][8] public nestedArray; // slot 7-14 (8 slots)
     uint16[2][6] public anotherNestedArray; // slots 15-20 (6 slots)
+    uint96[5] public u96Array5; // slots 21-23
+    int96[5] public i96Array5; // slots 24-26
 }

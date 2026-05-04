@@ -4,7 +4,10 @@
 //! storage patterns like primitive types, arrays, mappings, structs, and enums.
 
 use super::*;
-use alloy_primitives::{Address, FixedBytes};
+use alloy_primitives::{
+    Address, FixedBytes,
+    aliases::{I96, U96},
+};
 use tempo_precompiles::storage::Mapping;
 use tempo_precompiles_macros::{
     gen_test_fields_layout as layout_fields, gen_test_fields_struct as struct_fields,
@@ -60,6 +63,8 @@ fn test_arrays_layout() {
         field_b: U256,
         nested_array: [[u8; 4]; 8],
         another_nested_array: [[u16; 2]; 6],
+        u96_array5: [U96; 5],
+        i96_array5: [I96; 5],
     }
 
     let rust_layout = layout_fields!(
@@ -67,7 +72,9 @@ fn test_arrays_layout() {
         large_array,
         field_b,
         nested_array,
-        another_nested_array
+        another_nested_array,
+        u96_array5,
+        i96_array5
     );
 
     // Compare against expected layout from Solidity

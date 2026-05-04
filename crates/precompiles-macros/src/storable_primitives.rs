@@ -334,7 +334,7 @@ struct ArrayConfig {
 
 /// Whether a given amount of bytes (primitives only) should be packed, or not.
 fn is_packable(byte_count: usize) -> bool {
-    byte_count < 32 && 32 % byte_count == 0
+    byte_count < 32
 }
 
 /// Generate `StorableType`, `Storable`, and `StorageKey` for a fixed-size array.
@@ -347,12 +347,11 @@ fn gen_array_impl(config: &ArrayConfig) -> TokenStream {
     } = config;
 
     // Calculate slot count at compile time
-    let slot_count = if *elem_is_packable {
-        // Packed: multiple elements per slot
-        (*array_size * elem_byte_count).div_ceil(32)
+    let slot_count_expr = if *elem_is_packable {
+        quote! { crate::storage::packing::calc_packed_slot_count(#array_size, #elem_byte_count) }
     } else {
         // Unpacked: each element uses full slots (assume 1 slot per element for primitives)
-        *array_size
+        quote! { #array_size }
     };
 
     let load_impl = if *elem_is_packable {
@@ -371,7 +370,7 @@ fn gen_array_impl(config: &ArrayConfig) -> TokenStream {
         // Implement StorableType
         impl crate::storage::StorableType for [#elem_type; #array_size] {
             // Arrays cannot be packed, so they must take full slots
-            const LAYOUT: crate::storage::Layout = crate::storage::Layout::Slots(#slot_count);
+            const LAYOUT: crate::storage::Layout = crate::storage::Layout::Slots(#slot_count_expr);
 
             type Handler = crate::storage::types::array::ArrayHandler<#elem_type, #array_size>;
 
@@ -432,7 +431,10 @@ fn gen_packed_array_load(array_size: &usize, elem_byte_count: &usize) -> TokenSt
 fn gen_packed_array_store(array_size: &usize, elem_byte_count: &usize) -> TokenStream {
     quote! {
         // Determine how many slots we need
-        let slot_count = (#array_size * #elem_byte_count).div_ceil(32);
+        let slot_count = crate::storage::packing::calc_packed_slot_count(
+            #array_size,
+            #elem_byte_count,
+        );
 
         // Build slots by packing elements
         for slot_idx in 0..slot_count {
