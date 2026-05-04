@@ -68,13 +68,13 @@ impl AmmLiquidityCache {
         let amount_out = compute_amount_out(fee).map_err(ProviderError::other)?;
 
         let mut missing_in_cache = Vec::new();
-        let current_fork;
+        let hardfork;
 
         // Hot path: decide each `(user, validator)` pair entirely from the primitive cache.
         {
             let inner = self.inner.read();
-            current_fork = inner.current_fork;
-            let two_hop_out = if current_fork.is_t5() {
+            hardfork = inner.hardfork;
+            let two_hop_out = if hardfork.is_t5() {
                 Some(compute_amount_out(amount_out).map_err(ProviderError::other)?)
             } else {
                 None
@@ -131,7 +131,7 @@ impl AmmLiquidityCache {
         // Slow path: ask the planner. Unconditionally warm all its reported `data.pools`.
         // This might race other fetches but we're OK with it.
         state_provider
-            .with_read_only_storage_ctx(current_fork, || -> TempoResult<bool> {
+            .with_read_only_storage_ctx(hardfork, || -> TempoResult<bool> {
                 let manager = TipFeeManager::new();
                 for validator_token in missing_in_cache {
                     let (route, pools) =
@@ -305,7 +305,7 @@ impl AmmLiquidityCache {
         }
 
         // Refresh the cached active hardfork from the latest seen header.
-        self.inner.write().current_fork = client.chain_spec().tempo_hardfork_at(latest_timestamp);
+        self.inner.write().hardfork = client.chain_spec().tempo_hardfork_at(latest_timestamp);
 
         Ok(())
     }
@@ -314,7 +314,7 @@ impl AmmLiquidityCache {
 #[derive(Debug, Default)]
 struct AmmLiquidityCacheInner {
     /// Hardfork active at the most recently observed canonical header.
-    current_fork: TempoHardfork,
+    hardfork: TempoHardfork,
 
     /// Cache for (user_token, validator_token) -> liquidity
     pool_cache: HashMap<(Address, Address), U256>,
@@ -519,7 +519,7 @@ mod tests {
 
         let cache = AmmLiquidityCache {
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
-                current_fork: TempoHardfork::T5,
+                hardfork: TempoHardfork::T5,
                 unique_tokens: vec![validator],
                 pool_cache: {
                     let mut m = HashMap::default();
