@@ -165,7 +165,12 @@ impl TIP20Factory {
     /// the new token's address with `updater = sender`. An empty `logoURI` is
     /// valid and is treated as "no logo set" — no slot write, no event.
     ///
-    /// Reverts with `LogoURITooLong` if `bytes(logoURI).length > 256`.
+    /// The logo URI is validated **before** the token is deployed so a rejected
+    /// URI does not leave a partially-created token in storage. Reverts with
+    /// `LogoURITooLong` if `bytes(logoURI).length > 256`, or with
+    /// `InvalidLogoURI` if `logoURI` is non-empty and either has no parseable
+    /// scheme (RFC 3986 §3.1) or its scheme is not in the allowlist
+    /// (`https`, `http`, `ipfs`, `data`, ASCII-case-insensitive).
     pub fn create_token_with_logo(
         &mut self,
         sender: Address,

@@ -345,7 +345,9 @@ impl TIP20Token {
     /// Sets the logo URI for this token (TIP-1026).
     ///
     /// Restricted to `DEFAULT_ADMIN_ROLE`. Reverts with `LogoURITooLong` if the URI
-    /// exceeds 256 bytes. Empty strings are valid and clear the URI.
+    /// exceeds 256 bytes, or with `InvalidLogoURI` if the URI is non-empty and
+    /// either has no parseable scheme (RFC 3986 §3.1) or its scheme is not in
+    /// [`ALLOWED_LOGO_URI_SCHEMES`]. Empty strings are valid and clear the URI.
     pub fn set_logo_uri(
         &mut self,
         msg_sender: Address,
@@ -355,7 +357,8 @@ impl TIP20Token {
         self.write_logo_uri(msg_sender, call.newLogoURI)
     }
 
-    /// Internal helper: validates length, writes the slot, and emits `LogoURIUpdated`.
+    /// Internal helper: runs [`validate_logo_uri`] (length cap + scheme allowlist),
+    /// writes the slot, and emits `LogoURIUpdated`.
     ///
     /// Used by `set_logo_uri` (after role check) and by the factory at token creation
     /// time (skipping the role check, since admin role hasn't been used yet by the new
