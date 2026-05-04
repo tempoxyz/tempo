@@ -12,6 +12,8 @@
 //! - Values are right-aligned within their byte range
 //! - Types smaller than 32 bytes can pack multiple per slot when dimensions align
 
+#[cfg(any(test, feature = "test-utils"))]
+use alloc::vec::Vec;
 use alloy::primitives::U256;
 
 use crate::{

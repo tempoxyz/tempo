@@ -5,6 +5,12 @@
 
 pub mod dispatch;
 
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
+use core::{convert::TryFrom, net::SocketAddr};
+
 pub use tempo_contracts::precompiles::{IValidatorConfigV2, ValidatorConfigV2Error};
 use tempo_contracts::precompiles::{VALIDATOR_CONFIG_V2_ADDRESS, ValidatorConfigV2Event};
 use tempo_precompiles_macros::{Storable, contract};
@@ -16,11 +22,7 @@ use crate::{
     validator_config::ValidatorConfig,
 };
 use alloy::primitives::{Address, B256, Keccak256};
-use commonware_codec::DecodeExt;
-use commonware_cryptography::{
-    Verifier,
-    ed25519::{PublicKey, Signature},
-};
+use ed25519_consensus::{Signature as Ed25519Signature, VerificationKey};
 use tracing::trace;
 
 /// Signature namespace for `addValidator` operations.
@@ -191,6 +193,53 @@ impl ValidatorConfigV2 {
         self.config.write(config)
     }
 
+    fn validator_message(
+        kind: SignatureKind,
+        chain_id: u64,
+        validator_address: Address,
+        ingress: &str,
+        egress: &str,
+    ) -> (&'static [u8], B256) {
+        let mut hasher = Keccak256::new();
+        hasher.update(chain_id.to_be_bytes());
+        hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
+        hasher.update(validator_address.as_slice());
+        hasher.update([
+            u8::try_from(ingress.len()).expect("validator ingress length must fit in uint8")
+        ]);
+        hasher.update(ingress.as_bytes());
+        hasher.update([
+            u8::try_from(egress.len()).expect("validator egress length must fit in uint8")
+        ]);
+        hasher.update(egress.as_bytes());
+
+        let namespace = match kind {
+            SignatureKind::Add { fee_recipient } => {
+                hasher.update(fee_recipient.as_slice());
+                VALIDATOR_NS_ADD
+            }
+            SignatureKind::Rotate => VALIDATOR_NS_ROTATE,
+        };
+
+        (namespace, hasher.finalize())
+    }
+
+    fn namespaced_message(namespace: &[u8], message: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        Self::write_varuint(namespace.len(), &mut out);
+        out.extend_from_slice(namespace);
+        out.extend_from_slice(message);
+        out
+    }
+
+    fn write_varuint(mut value: usize, out: &mut Vec<u8>) {
+        while value >= 0x80 {
+            out.push((value as u8) | 0x80);
+            value >>= 7;
+        }
+        out.push(value as u8);
+    }
+
     // =========================================================================
     // Config accessors and guards — each reads config once (1 SLOAD)
     // =========================================================================
@@ -334,7 +383,7 @@ impl ValidatorConfigV2 {
     /// For V6 addresses, that's `keccak256(octets(ip) || big_endian(scope_id) || big_endian(port))`.
     fn ingress_key(ingress: &str) -> Result<B256> {
         let ingress = ingress
-            .parse::<std::net::SocketAddr>()
+            .parse::<SocketAddr>()
             .map_err(IpWithPortParseError::from)
             .map_err(|err| {
                 TempoPrecompileError::from(ValidatorConfigV2Error::not_ip_port(
@@ -344,11 +393,11 @@ impl ValidatorConfigV2 {
             })?;
         let mut hasher = Keccak256::new();
         match ingress {
-            std::net::SocketAddr::V4(v4) => {
+            SocketAddr::V4(v4) => {
                 hasher.update(v4.ip().octets());
                 hasher.update(v4.port().to_be_bytes());
             }
-            std::net::SocketAddr::V6(v6) => {
+            SocketAddr::V6(v6) => {
                 hasher.update(v6.ip().octets());
                 hasher.update(v6.scope_id().to_be_bytes());
                 hasher.update(v6.port().to_be_bytes());
@@ -464,34 +513,20 @@ impl ValidatorConfigV2 {
         ingress: &str,
         egress: &str,
     ) -> Result<()> {
-        let sig = Signature::decode(signature)
+        let sig = Ed25519Signature::try_from(signature)
             .map_err(|_| ValidatorConfigV2Error::invalid_signature_format())?;
+        let (namespace, message) = Self::validator_message(
+            kind,
+            self.storage.chain_id(),
+            validator_address,
+            ingress,
+            egress,
+        );
+        let signed_message = Self::namespaced_message(namespace, message.as_slice());
 
-        let mut hasher = Keccak256::new();
-        hasher.update(self.storage.chain_id().to_be_bytes());
-        hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
-        hasher.update(validator_address.as_slice());
-        hasher.update([
-            u8::try_from(ingress.len()).expect("validator ingress length must fit in uint8")
-        ]);
-        hasher.update(ingress.as_bytes());
-        hasher.update([
-            u8::try_from(egress.len()).expect("validator egress length must fit in uint8")
-        ]);
-        hasher.update(egress.as_bytes());
-
-        let namespace = match kind {
-            SignatureKind::Add { fee_recipient } => {
-                hasher.update(fee_recipient.as_slice());
-                VALIDATOR_NS_ADD
-            }
-            SignatureKind::Rotate => VALIDATOR_NS_ROTATE,
-        };
-        let message = hasher.finalize();
-
-        let public_key = PublicKey::decode(pubkey.as_slice())
+        let public_key = VerificationKey::try_from(pubkey.as_slice())
             .map_err(|_| ValidatorConfigV2Error::invalid_public_key())?;
-        if !public_key.verify(namespace, message.as_slice(), &sig) {
+        if public_key.verify(&sig, signed_message.as_slice()).is_err() {
             Err(ValidatorConfigV2Error::invalid_signature())?
         }
 
@@ -955,12 +990,12 @@ impl ValidatorConfigV2 {
         };
 
         // Skip if public key decoding fails
-        if PublicKey::decode(v1_val.publicKey.as_slice()).is_err() {
+        if VerificationKey::try_from(v1_val.publicKey.as_slice()).is_err() {
             return skip(self);
         }
 
         // Skip if egress decoding fails
-        let egress = match v1_val.outboundAddress.parse::<std::net::SocketAddr>() {
+        let egress = match v1_val.outboundAddress.parse::<SocketAddr>() {
             Ok(sa) => sa.ip().to_string(),
             Err(_) => return skip(self),
         };
@@ -1064,8 +1099,7 @@ mod tests {
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
     use alloy::primitives::Address;
     use alloy_primitives::FixedBytes;
-    use commonware_codec::Encode;
-    use commonware_cryptography::{Signer, ed25519::PrivateKey};
+    use ed25519_consensus::SigningKey;
 
     /// Generate a test Ed25519 key pair and create a valid signature
     fn make_test_keypair_and_signature(
@@ -1074,43 +1108,20 @@ mod tests {
         egress: &str,
         kind: SignatureKind,
     ) -> (FixedBytes<32>, Vec<u8>) {
-        // Generate a random private key for testing
-        let seed = rand_08::random::<u64>();
-        let private_key = PrivateKey::from_seed(seed);
-        let public_key = private_key.public_key();
+        let mut seed = [0u8; 32];
+        seed[..8].copy_from_slice(&rand_08::random::<u64>().to_le_bytes());
+        let private_key = SigningKey::from(seed);
+        let public_key = private_key.verification_key();
 
-        let mut hasher = Keccak256::new();
-        hasher.update(1u64.to_be_bytes());
-        hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
-        hasher.update(validator_address.as_slice());
-        hasher.update([
-            u8::try_from(ingress.len()).expect("validator ingress length must fit in uint8")
-        ]);
-        hasher.update(ingress.as_bytes());
-        hasher.update([
-            u8::try_from(egress.len()).expect("validator egress length must fit in uint8")
-        ]);
-        hasher.update(egress.as_bytes());
-        let namespace = match kind {
-            SignatureKind::Add { fee_recipient } => {
-                hasher.update(fee_recipient.as_slice());
-                VALIDATOR_NS_ADD
-            }
-            SignatureKind::Rotate => VALIDATOR_NS_ROTATE,
-        };
-        let message = hasher.finalize();
-
-        // Sign with namespace
-        let signature = private_key.sign(namespace, message.as_slice());
-
-        // Encode public key to bytes
-        let pubkey_bytes = public_key.encode();
-        let mut pubkey_array = [0u8; 32];
-        pubkey_array.copy_from_slice(&pubkey_bytes);
+        let (namespace, message) =
+            ValidatorConfigV2::validator_message(kind, 1, validator_address, ingress, egress);
+        let signature = private_key
+            .sign(ValidatorConfigV2::namespaced_message(namespace, message.as_slice()).as_slice());
+        let pubkey_array: [u8; 32] = public_key.into();
 
         (
             FixedBytes::<32>::from(pubkey_array),
-            signature.encode().to_vec(),
+            signature.to_bytes().to_vec(),
         )
     }
 

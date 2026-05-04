@@ -22,8 +22,10 @@ use crate::{
     error::Result,
     storage::{StorageOps, packing},
 };
+use alloc::boxed::Box;
 use alloy::primitives::{Address, U256, keccak256};
-use std::{cell::RefCell, collections::HashMap, hash::Hash};
+use core::{cell::RefCell, hash::Hash};
+use hashbrown::HashMap;
 
 /// Describes how a type is laid out in EVM storage.
 ///
