@@ -2,7 +2,10 @@ use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::EvmInternals;
 use revm::{
     context::{Block, CfgEnv, journaled_state::JournalCheckpoint},
-    context_interface::cfg::{GasParams, gas},
+    context_interface::{
+        cfg::{GasParams, gas},
+        context::SStoreResult,
+    },
     interpreter::gas::GasTracker,
     state::{AccountInfo, Bytecode},
 };
@@ -80,6 +83,28 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             return Err(TempoPrecompileError::OutOfGas);
         }
         Ok(())
+    }
+
+    #[inline]
+    fn zero_to_nonzero_sstore_result() -> SStoreResult {
+        SStoreResult {
+            original_value: U256::ZERO,
+            present_value: U256::ZERO,
+            new_value: U256::ONE,
+        }
+    }
+
+    #[inline]
+    fn prepaid_sstore_refund(&self, result: &SStoreResult) -> i64 {
+        let refund = self.gas_params.sstore_refund(true, result);
+        if result.is_original_eq_new() && result.is_original_zero() {
+            let prepaid_state_gas = self
+                .gas_params
+                .sstore_state_gas(&Self::zero_to_nonzero_sstore_result());
+            refund.saturating_sub(prepaid_state_gas.try_into().unwrap_or(i64::MAX))
+        } else {
+            refund
+        }
     }
 }
 
@@ -184,6 +209,28 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     }
 
     #[inline]
+    fn sstore_prepaid(
+        &mut self,
+        address: Address,
+        key: U256,
+        value: U256,
+    ) -> Result<(), TempoPrecompileError> {
+        let result = self
+            .internals
+            .load_account_mut(address)?
+            .sstore(key, value, false)?;
+
+        self.deduct_gas(self.gas_params.sstore_static_gas())?;
+        self.deduct_gas(
+            self.gas_params
+                .sstore_dynamic_gas(true, &result.data, false),
+        )?;
+        self.refund_gas(self.prepaid_sstore_refund(&result.data));
+
+        Ok(())
+    }
+
+    #[inline]
     fn tstore(
         &mut self,
         address: Address,
@@ -234,6 +281,34 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         }
 
         Ok(value)
+    }
+
+    #[inline]
+    fn sload_prepaid(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
+        let value;
+        {
+            let mut account = self.internals.load_account_mut(address)?;
+            let val = account.sload(key, false)?;
+
+            value = val.present_value;
+        };
+
+        self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
+
+        Ok(value)
+    }
+
+    #[inline]
+    fn reserve_prepaid_sstore(
+        &mut self,
+        _address: Address,
+        _key: U256,
+    ) -> Result<(), TempoPrecompileError> {
+        let result = Self::zero_to_nonzero_sstore_result();
+        self.deduct_gas(self.gas_params.sstore_static_gas())?;
+        self.deduct_gas(self.gas_params.sstore_dynamic_gas(true, &result, true))?;
+        self.deduct_state_gas(self.gas_params.sstore_state_gas(&result))?;
+        Ok(())
     }
 
     #[inline]
@@ -881,6 +956,57 @@ mod tests {
             provider.state_gas_used() - state_gas_before_warm_sstore,
             230_000,
             "TIP-1016 warm zero-to-non-zero SSTORE should still consume 230,000 state gas"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_t4_prepaid_sstore_charges_reservation_then_warm_writes() -> eyre::Result<()> {
+        let mut evm = TestEvm::new(TempoHardfork::T4);
+        let mut provider = evm.provider_with_reservoir(460_000);
+
+        let (address, slot) = (Address::random(), U256::ONE);
+
+        provider.reserve_prepaid_sstore(address, slot)?;
+        assert_eq!(
+            provider.gas_used(),
+            22_200,
+            "prepaid reservation should charge the same regular gas as a cold zero-to-non-zero SSTORE"
+        );
+        assert_eq!(
+            provider.state_gas_used(),
+            230_000,
+            "prepaid reservation should charge the zero-to-non-zero state gas once"
+        );
+
+        let gas_before_load = provider.gas_used();
+        provider.sload_prepaid(address, slot)?;
+        assert_eq!(
+            provider.gas_used() - gas_before_load,
+            100,
+            "prepaid SLOAD should be priced as warm even for first access"
+        );
+
+        let gas_before_write = provider.gas_used();
+        let state_before_write = provider.state_gas_used();
+        provider.sstore_prepaid(address, slot, U256::ONE)?;
+        assert_eq!(
+            provider.gas_used() - gas_before_write,
+            20_100,
+            "prepaid SSTORE should be priced as warm"
+        );
+        assert_eq!(
+            provider.state_gas_used() - state_before_write,
+            0,
+            "prepaid SSTORE should not charge storage-creation state gas again"
+        );
+
+        provider.sstore_prepaid(address, slot, U256::ZERO)?;
+        assert_eq!(
+            provider.gas_refunded(),
+            17_800,
+            "prepaid 0->X->0 restore refund should exclude the state gas charged at reservation"
         );
 
         Ok(())

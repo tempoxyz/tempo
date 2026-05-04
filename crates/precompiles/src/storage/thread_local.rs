@@ -147,6 +147,11 @@ impl StorageCtx {
         Self::try_with_storage(|s| s.sload(address, key))
     }
 
+    /// Performs an SLOAD against a prepaid persistent storage slot.
+    pub fn sload_prepaid(&self, address: Address, key: U256) -> Result<U256> {
+        Self::try_with_storage(|s| s.sload_prepaid(address, key))
+    }
+
     /// Performs a TLOAD operation (transient storage read).
     pub fn tload(&self, address: Address, key: U256) -> Result<U256> {
         Self::try_with_storage(|s| s.tload(address, key))
@@ -155,6 +160,16 @@ impl StorageCtx {
     /// Performs an SSTORE operation (persistent storage write).
     pub fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<()> {
         Self::try_with_storage(|s| s.sstore(address, key, value))
+    }
+
+    /// Performs an SSTORE against a prepaid persistent storage slot.
+    pub fn sstore_prepaid(&mut self, address: Address, key: U256, value: U256) -> Result<()> {
+        Self::try_with_storage(|s| s.sstore_prepaid(address, key, value))
+    }
+
+    /// Charges the current caller for reserving a prepaid persistent storage slot.
+    pub fn reserve_prepaid_sstore(&mut self, address: Address, key: U256) -> Result<()> {
+        Self::try_with_storage(|s| s.reserve_prepaid_sstore(address, key))
     }
 
     /// Performs a TSTORE operation (transient storage write).

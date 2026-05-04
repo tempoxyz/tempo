@@ -25,6 +25,17 @@ const T5_ADDED: &[[u8; 4]] = &[
     ITIP403Registry::receivePolicyCall::SELECTOR,
     ITIP403Registry::validateReceivePolicyCall::SELECTOR,
     ITIP403Registry::setReceivePolicyCall::SELECTOR,
+    ITIP403Registry::tokenFilterIdCounterCall::SELECTOR,
+    ITIP403Registry::isTokenAllowedCall::SELECTOR,
+    ITIP403Registry::tokenFilterExistsCall::SELECTOR,
+    ITIP403Registry::tokenFilterDataCall::SELECTOR,
+    ITIP403Registry::createTokenFilterCall::SELECTOR,
+    ITIP403Registry::createTokenFilterWithTokensCall::SELECTOR,
+    ITIP403Registry::setTokenFilterAdminCall::SELECTOR,
+    ITIP403Registry::modifyTokenFilterWhitelistCall::SELECTOR,
+    ITIP403Registry::modifyTokenFilterBlacklistCall::SELECTOR,
+    ITIP403Registry::modifyTokenFilterWhitelistBatchCall::SELECTOR,
+    ITIP403Registry::modifyTokenFilterBlacklistBatchCall::SELECTOR,
 ];
 
 impl Precompile for TIP403Registry {
@@ -62,11 +73,21 @@ impl Precompile for TIP403Registry {
                 ITIP403RegistryCalls::compoundPolicyData(call) => {
                     view(call, |c| self.compound_policy_data(c))
                 }
-                ITIP403RegistryCalls::receivePolicy(call) => {
-                    view(call, |c| self.receive_policy(c))
-                }
+                ITIP403RegistryCalls::receivePolicy(call) => view(call, |c| self.receive_policy(c)),
                 ITIP403RegistryCalls::validateReceivePolicy(call) => {
                     view(call, |c| self.validate_receive_policy(c))
+                }
+                ITIP403RegistryCalls::tokenFilterIdCounter(call) => {
+                    view(call, |_| self.token_filter_id_counter())
+                }
+                ITIP403RegistryCalls::isTokenAllowed(call) => {
+                    view(call, |c| self.is_token_allowed(c))
+                }
+                ITIP403RegistryCalls::tokenFilterExists(call) => {
+                    view(call, |c| self.token_filter_exists(c))
+                }
+                ITIP403RegistryCalls::tokenFilterData(call) => {
+                    view(call, |c| self.token_filter_data(c))
                 }
                 ITIP403RegistryCalls::createPolicy(call) => {
                     mutate(call, msg_sender, |s, c| self.create_policy(s, c))
@@ -91,6 +112,37 @@ impl Precompile for TIP403Registry {
                 }
                 ITIP403RegistryCalls::setReceivePolicy(call) => {
                     mutate_void(call, msg_sender, |s, c| self.set_receive_policy(s, c))
+                }
+                ITIP403RegistryCalls::createTokenFilter(call) => {
+                    mutate(call, msg_sender, |s, c| self.create_token_filter(s, c))
+                }
+                ITIP403RegistryCalls::createTokenFilterWithTokens(call) => {
+                    mutate(call, msg_sender, |s, c| {
+                        self.create_token_filter_with_tokens(s, c)
+                    })
+                }
+                ITIP403RegistryCalls::setTokenFilterAdmin(call) => {
+                    mutate_void(call, msg_sender, |s, c| self.set_token_filter_admin(s, c))
+                }
+                ITIP403RegistryCalls::modifyTokenFilterWhitelist(call) => {
+                    mutate_void(call, msg_sender, |s, c| {
+                        self.modify_token_filter_whitelist(s, c)
+                    })
+                }
+                ITIP403RegistryCalls::modifyTokenFilterBlacklist(call) => {
+                    mutate_void(call, msg_sender, |s, c| {
+                        self.modify_token_filter_blacklist(s, c)
+                    })
+                }
+                ITIP403RegistryCalls::modifyTokenFilterWhitelistBatch(call) => {
+                    mutate_void(call, msg_sender, |s, c| {
+                        self.modify_token_filter_whitelist_batch(s, c)
+                    })
+                }
+                ITIP403RegistryCalls::modifyTokenFilterBlacklistBatch(call) => {
+                    mutate_void(call, msg_sender, |s, c| {
+                        self.modify_token_filter_blacklist_batch(s, c)
+                    })
                 }
             },
         )
@@ -551,8 +603,8 @@ mod tests {
 
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
-        // Use T2 to test all selectors including TIP-1015 compound policy functions
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        // Use T5 to test all selectors, including TIP-1015 and TIP-1028 additions.
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 

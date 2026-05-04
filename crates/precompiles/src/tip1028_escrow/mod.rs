@@ -34,6 +34,10 @@ impl TIP1028Escrow {
         &self,
         call: ITIP1028Escrow::blockedReceiptBalanceCall,
     ) -> Result<U256> {
+        if !call.token.is_tip20() {
+            return Err(TIP1028EscrowError::invalid_token().into());
+        }
+
         let receipt = Self::decode_v1(call.receiptVersion, &call.receipt)?;
         self.blocked_receipt_amount[Self::receipt_key(
             call.receiptVersion,
@@ -52,7 +56,18 @@ impl TIP1028Escrow {
         if msg_sender != call.token || !call.token.is_tip20() {
             return Err(TIP1028EscrowError::invalid_token().into());
         }
-        if call.blockedReason == ITIP1028Escrow::BlockedReason::NONE {
+        if matches!(
+            call.blockedReason,
+            ITIP1028Escrow::BlockedReason::NONE | ITIP1028Escrow::BlockedReason::__Invalid
+        ) || call.kind == ITIP1028Escrow::InboundKind::__Invalid
+        {
+            return Err(TIP1028EscrowError::invalid_receipt_claim().into());
+        }
+
+        let receiver = AddressRegistry::new()
+            .resolve_recipient(call.recipient)
+            .map_err(|_| TIP1028EscrowError::claim_destination_unauthorized())?;
+        if receiver != call.receiver {
             return Err(TIP1028EscrowError::invalid_receipt_claim().into());
         }
 
@@ -86,10 +101,14 @@ impl TIP1028Escrow {
         msg_sender: Address,
         call: ITIP1028Escrow::claimBlockedCall,
     ) -> Result<()> {
+        if !call.token.is_tip20() {
+            return Err(TIP1028EscrowError::invalid_token().into());
+        }
         if call.to == TIP1028_ESCROW_ADDRESS {
             return Err(TIP1028EscrowError::escrow_address_reserved().into());
         }
 
+        let guard = self.storage.checkpoint();
         let receipt = Self::decode_v1(call.receiptVersion, &call.receipt)?;
         let receiver = AddressRegistry::new()
             .resolve_recipient(receipt.recipient)
@@ -121,6 +140,7 @@ impl TIP1028Escrow {
             receipt.originator,
             call.to,
             amount,
+            call.recoveryContract == Address::ZERO,
         )?;
 
         self.emit_event(TIP1028EscrowEvent::BlockedReceiptClaimed(
@@ -137,7 +157,10 @@ impl TIP1028Escrow {
                 to: call.to,
                 amount,
             },
-        ))
+        ))?;
+
+        guard.commit();
+        Ok(())
     }
 
     fn next_blocked_receipt_nonce(&mut self) -> Result<u64> {
@@ -179,5 +202,66 @@ impl TIP1028Escrow {
             )
                 .abi_encode(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        PATH_USD_ADDRESS,
+        error::TempoPrecompileError,
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+    };
+    use alloy::primitives::U256;
+    use tempo_chainspec::hardfork::TempoHardfork;
+
+    #[test]
+    fn test_store_blocked_rejects_fabricated_or_invalid_receipts() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let originator = Address::random();
+        let receiver = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut escrow = TIP1028Escrow::new();
+
+            let call = ITIP1028Escrow::storeBlockedCall {
+                token: PATH_USD_ADDRESS,
+                originator,
+                receiver,
+                recipient: receiver,
+                recoveryContract: Address::ZERO,
+                amount: U256::from(100),
+                blockedReason: ITIP1028Escrow::BlockedReason::RECEIVE_POLICY,
+                kind: ITIP1028Escrow::InboundKind::TRANSFER,
+                memo: B256::ZERO,
+            };
+
+            let err = escrow
+                .store_blocked(Address::random(), call.clone())
+                .unwrap_err();
+            assert!(matches!(
+                err,
+                TempoPrecompileError::TIP1028EscrowError(TIP1028EscrowError::InvalidToken(_))
+            ));
+
+            let err = escrow
+                .store_blocked(
+                    PATH_USD_ADDRESS,
+                    ITIP1028Escrow::storeBlockedCall {
+                        blockedReason: ITIP1028Escrow::BlockedReason::NONE,
+                        ..call
+                    },
+                )
+                .unwrap_err();
+            assert!(matches!(
+                err,
+                TempoPrecompileError::TIP1028EscrowError(TIP1028EscrowError::InvalidReceiptClaim(
+                    _
+                ))
+            ));
+
+            Ok(())
+        })
     }
 }

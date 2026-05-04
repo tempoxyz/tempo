@@ -1,6 +1,5 @@
 pub use ITIP1028Escrow::{
-    ITIP1028EscrowErrors as TIP1028EscrowError,
-    ITIP1028EscrowEvents as TIP1028EscrowEvent,
+    ITIP1028EscrowErrors as TIP1028EscrowError, ITIP1028EscrowEvents as TIP1028EscrowEvent,
 };
 
 crate::sol! {

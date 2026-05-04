@@ -15,11 +15,11 @@ pub use tempo_contracts::precompiles::{
 use tempo_precompiles_macros::{Storable, contract};
 
 use crate::{
-    TIP1028_ESCROW_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    TIP403_REGISTRY_ADDRESS, TIP1028_ESCROW_ADDRESS,
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
 };
-use alloy::primitives::Address;
+use alloy::primitives::{Address, U256};
 use tempo_primitives::TempoAddressExt;
 
 /// Built-in policy ID that always rejects authorization.
@@ -27,6 +27,12 @@ pub const REJECT_ALL_POLICY_ID: u64 = 0;
 
 /// Built-in policy ID that always allows authorization.
 pub const ALLOW_ALL_POLICY_ID: u64 = 1;
+
+/// Built-in token filter ID that rejects all TIP-20 tokens.
+pub const REJECT_ALL_TOKEN_FILTER_ID: u64 = 0;
+
+/// Built-in token filter ID that allows all TIP-20 tokens.
+pub const ALLOW_ALL_TOKEN_FILTER_ID: u64 = 1;
 
 /// Registry for [TIP-403] transfer policies. TIP20 tokens reference an ID from this registry
 /// to police transfers between sender and receiver addresses.
@@ -48,19 +54,48 @@ pub struct TIP403Registry {
     /// value is `true` when the address is allowed; for blacklists it is `true` when the
     /// address is restricted.
     policy_set: Mapping<u64, Mapping<Address, bool>>,
-    /// Per-account receive policy configuration.
-    address_receive_config: Mapping<Address, ReceivePolicyConfig>,
+    /// Monotonically increasing counter for token filter IDs. Starts at `2` because IDs `0`
+    /// and `1` are reserved special filters.
+    token_filter_id_counter: u64,
+    /// Maps a token filter ID to its metadata.
+    token_filter_data: Mapping<u64, TokenFilterData>,
+    /// Per-filter token set. For whitelists, `true` means allowed; for blacklists, `true` means
+    /// restricted.
+    token_filter_members: Mapping<u64, Mapping<Address, bool>>,
+    /// Per-account packed receive policy configuration.
+    address_receive_config: Mapping<Address, U256>,
     /// Per-account recovery contract for blocked inbound claims.
     address_recovery_contract: Mapping<Address, Address>,
 }
 
 #[derive(Debug, Clone, Default, Storable)]
-pub struct ReceivePolicyConfig {
-    pub has_receive_policy: bool,
-    pub sender_policy_id: u64,
-    pub sender_policy_type: u8,
-    pub token_filter_id: u64,
-    pub token_filter_type: u8,
+pub struct TokenFilterData {
+    pub filter_type: u8,
+    pub admin: Address,
+}
+
+impl TokenFilterData {
+    fn filter_type(&self) -> Result<PolicyType> {
+        match self.filter_type.try_into() {
+            Ok(PolicyType::WHITELIST | PolicyType::BLACKLIST) => {
+                Ok(self.filter_type.try_into().expect("checked above"))
+            }
+            _ => Err(TIP403RegistryError::invalid_token_filter_type().into()),
+        }
+    }
+
+    fn is_default(&self) -> bool {
+        self.filter_type == 0 && self.admin == Address::ZERO
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReceivePolicyConfig {
+    has_receive_policy: bool,
+    sender_policy_id: u64,
+    sender_policy_type: u8,
+    token_filter_id: u64,
+    token_filter_type: u8,
 }
 
 /// Policy record containing base data and optional data for compound policies ([TIP-1015])
@@ -247,7 +282,7 @@ impl TIP403Registry {
         &self,
         call: ITIP403Registry::receivePolicyCall,
     ) -> Result<ITIP403Registry::receivePolicyReturn> {
-        let config = self.address_receive_config[call.account].read()?;
+        let config = Self::decode_receive_config(self.address_receive_config[call.account].read()?);
         Ok(ITIP403Registry::receivePolicyReturn {
             hasReceivePolicy: config.has_receive_policy,
             senderPolicyId: config.sender_policy_id,
@@ -259,7 +294,7 @@ impl TIP403Registry {
             tokenFilterType: config
                 .token_filter_type
                 .try_into()
-                .map_err(|_| TIP403RegistryError::invalid_policy_type())?,
+                .map_err(|_| TIP403RegistryError::invalid_token_filter_type())?,
             recoveryContract: self.address_recovery_contract[call.account].read()?,
         })
     }
@@ -282,12 +317,12 @@ impl TIP403Registry {
         sender: Address,
         receiver: Address,
     ) -> Result<(bool, ITIP403Registry::BlockedReason)> {
-        let config = self.address_receive_config[receiver].read()?;
+        let config = Self::decode_receive_config(self.address_receive_config[receiver].read()?);
         if !config.has_receive_policy {
             return Ok((true, ITIP403Registry::BlockedReason::NONE));
         }
 
-        if !self.is_authorized_simple(config.token_filter_id, token)? {
+        if !self.is_token_allowed_raw(config.token_filter_id, token)? {
             return Ok((false, ITIP403Registry::BlockedReason::TOKEN_FILTER));
         }
 
@@ -300,6 +335,45 @@ impl TIP403Registry {
 
     pub fn receive_policy_recovery_contract(&self, account: Address) -> Result<Address> {
         self.address_recovery_contract[account].read()
+    }
+
+    pub fn token_filter_id_counter(&self) -> Result<u64> {
+        self.token_filter_id_counter
+            .read()
+            .map(|counter| counter.max(2))
+    }
+
+    pub fn token_filter_exists(
+        &self,
+        call: ITIP403Registry::tokenFilterExistsCall,
+    ) -> Result<bool> {
+        if Self::builtin_token_filter_type(call.tokenFilterId).is_some() {
+            return Ok(true);
+        }
+
+        Ok(call.tokenFilterId < self.token_filter_id_counter()?)
+    }
+
+    pub fn token_filter_data(
+        &self,
+        call: ITIP403Registry::tokenFilterDataCall,
+    ) -> Result<ITIP403Registry::tokenFilterDataReturn> {
+        if let Some(filter_type) = Self::builtin_token_filter_type(call.tokenFilterId) {
+            return Ok(ITIP403Registry::tokenFilterDataReturn {
+                filterType: filter_type,
+                admin: Address::ZERO,
+            });
+        }
+
+        let data = self.get_token_filter_data(call.tokenFilterId)?;
+        Ok(ITIP403Registry::tokenFilterDataReturn {
+            filterType: data.filter_type()?,
+            admin: data.admin,
+        })
+    }
+
+    pub fn is_token_allowed(&self, call: ITIP403Registry::isTokenAllowedCall) -> Result<bool> {
+        self.is_token_allowed_raw(call.tokenFilterId, call.token)
     }
 
     /// Creates a new simple (whitelist or blacklist) policy and returns its ID.
@@ -353,20 +427,25 @@ impl TIP403Registry {
         msg_sender: Address,
         call: ITIP403Registry::setReceivePolicyCall,
     ) -> Result<()> {
-        if msg_sender == TIP1028_ESCROW_ADDRESS || msg_sender.is_virtual() {
+        if msg_sender == TIP1028_ESCROW_ADDRESS {
+            return Err(TIP403RegistryError::escrow_address_reserved().into());
+        }
+        if msg_sender.is_virtual() {
             return Err(TIP403RegistryError::virtual_address_not_allowed().into());
         }
 
         let sender_policy_type = self.validate_receive_policy_id(call.senderPolicyId)?;
         let token_filter_type = self.validate_receive_token_filter_id(call.tokenFilterId)?;
 
-        self.address_receive_config[msg_sender].write(ReceivePolicyConfig {
-            has_receive_policy: true,
-            sender_policy_id: call.senderPolicyId,
-            sender_policy_type,
-            token_filter_id: call.tokenFilterId,
-            token_filter_type,
-        })?;
+        self.address_receive_config[msg_sender].write(Self::encode_receive_config(
+            ReceivePolicyConfig {
+                has_receive_policy: true,
+                sender_policy_id: call.senderPolicyId,
+                sender_policy_type,
+                token_filter_id: call.tokenFilterId,
+                token_filter_type,
+            },
+        ))?;
         self.address_recovery_contract[msg_sender].write(call.recoveryContract)?;
 
         self.emit_event(TIP403RegistryEvent::ReceivePolicyUpdated(
@@ -377,6 +456,136 @@ impl TIP403Registry {
                 recoveryContract: call.recoveryContract,
             },
         ))
+    }
+
+    pub fn create_token_filter(
+        &mut self,
+        msg_sender: Address,
+        call: ITIP403Registry::createTokenFilterCall,
+    ) -> Result<u64> {
+        self.create_token_filter_inner(msg_sender, call.admin, call.filterType)
+    }
+
+    pub fn create_token_filter_with_tokens(
+        &mut self,
+        msg_sender: Address,
+        call: ITIP403Registry::createTokenFilterWithTokensCall,
+    ) -> Result<u64> {
+        let filter_type = call.filterType;
+        let filter_type_u8 = filter_type.ensure_is_token_filter_type()?;
+        let new_filter_id = self.next_token_filter_id()?;
+        self.token_filter_data[new_filter_id].write(TokenFilterData {
+            filter_type: filter_type_u8,
+            admin: call.admin,
+        })?;
+
+        for token in call.tokens {
+            self.token_filter_members[new_filter_id][token].write(true)?;
+        }
+
+        self.emit_event(TIP403RegistryEvent::TokenFilterCreated(
+            ITIP403Registry::TokenFilterCreated {
+                tokenFilterId: new_filter_id,
+                creator: msg_sender,
+                filterType: filter_type,
+            },
+        ))?;
+
+        Ok(new_filter_id)
+    }
+
+    pub fn set_token_filter_admin(
+        &mut self,
+        msg_sender: Address,
+        call: ITIP403Registry::setTokenFilterAdminCall,
+    ) -> Result<()> {
+        self.check_token_filter_admin(call.tokenFilterId, msg_sender)?;
+        self.token_filter_data[call.tokenFilterId]
+            .admin
+            .write(call.admin)?;
+        self.emit_event(TIP403RegistryEvent::TokenFilterAdminUpdated(
+            ITIP403Registry::TokenFilterAdminUpdated {
+                tokenFilterId: call.tokenFilterId,
+                updater: msg_sender,
+                admin: call.admin,
+            },
+        ))
+    }
+
+    pub fn modify_token_filter_whitelist(
+        &mut self,
+        msg_sender: Address,
+        call: ITIP403Registry::modifyTokenFilterWhitelistCall,
+    ) -> Result<()> {
+        self.modify_token_filter_member(
+            msg_sender,
+            call.tokenFilterId,
+            call.token,
+            call.allowed,
+            PolicyType::WHITELIST,
+        )
+    }
+
+    pub fn modify_token_filter_blacklist(
+        &mut self,
+        msg_sender: Address,
+        call: ITIP403Registry::modifyTokenFilterBlacklistCall,
+    ) -> Result<()> {
+        self.modify_token_filter_member(
+            msg_sender,
+            call.tokenFilterId,
+            call.token,
+            call.restricted,
+            PolicyType::BLACKLIST,
+        )
+    }
+
+    pub fn modify_token_filter_whitelist_batch(
+        &mut self,
+        msg_sender: Address,
+        call: ITIP403Registry::modifyTokenFilterWhitelistBatchCall,
+    ) -> Result<()> {
+        if call.tokens.len() != call.allowed.len() {
+            return Err(TIP403RegistryError::token_filter_batch_length_mismatch().into());
+        }
+        let token_filter_id = call.tokenFilterId;
+        self.check_token_filter_admin_and_type(token_filter_id, msg_sender, PolicyType::WHITELIST)?;
+        for (token, allowed) in call.tokens.into_iter().zip(call.allowed.into_iter()) {
+            self.token_filter_members[token_filter_id][token].write(allowed)?;
+            self.emit_event(TIP403RegistryEvent::TokenFilterWhitelistUpdated(
+                ITIP403Registry::TokenFilterWhitelistUpdated {
+                    tokenFilterId: token_filter_id,
+                    updater: msg_sender,
+                    token,
+                    allowed,
+                },
+            ))?;
+        }
+        Ok(())
+    }
+
+    pub fn modify_token_filter_blacklist_batch(
+        &mut self,
+        msg_sender: Address,
+        call: ITIP403Registry::modifyTokenFilterBlacklistBatchCall,
+    ) -> Result<()> {
+        if call.tokens.len() != call.restricted.len() {
+            return Err(TIP403RegistryError::token_filter_batch_length_mismatch().into());
+        }
+        let token_filter_id = call.tokenFilterId;
+        self.check_token_filter_admin_and_type(token_filter_id, msg_sender, PolicyType::BLACKLIST)?;
+        for (token, restricted) in call.tokens.into_iter().zip(call.restricted.into_iter()) {
+            self.token_filter_members[token_filter_id][token].write(restricted)?;
+            self.emit_event(TIP403RegistryEvent::TokenFilterBlacklistUpdated(
+                ITIP403Registry::TokenFilterBlacklistUpdated {
+                    tokenFilterId: token_filter_id,
+                    updater: msg_sender,
+                    token,
+                    restricted,
+                },
+            ))?;
+        }
+        Ok(())
     }
 
     /// Creates a simple policy and pre-populates it with an initial set of accounts.
@@ -755,20 +964,175 @@ impl TIP403Registry {
     }
 
     fn validate_receive_token_filter_id(&self, policy_id: u64) -> Result<u8> {
-        if self.builtin_authorization(policy_id).is_some() {
-            return Ok(policy_id as u8);
+        if let Some(filter_type) = Self::builtin_token_filter_type(policy_id) {
+            return Ok(filter_type as u8);
         }
-        if policy_id >= self.policy_id_counter()? {
-            return Err(TIP403RegistryError::policy_not_found().into());
+        Ok(self.get_token_filter_data(policy_id)?.filter_type()? as u8)
+    }
+
+    fn encode_receive_config(config: ReceivePolicyConfig) -> U256 {
+        let mut word = U256::ZERO;
+        if config.has_receive_policy {
+            word |= U256::ONE;
         }
-        let data = self.get_policy_data(policy_id)?;
-        if !data.is_simple() {
-            return Err(TIP403RegistryError::invalid_token_filter_type().into());
+        word |= U256::from(config.sender_policy_id) << 1;
+        word |= U256::from(config.sender_policy_type) << 65;
+        word |= U256::from(config.token_filter_id) << 73;
+        word |= U256::from(config.token_filter_type) << 137;
+        word
+    }
+
+    fn decode_receive_config(word: U256) -> ReceivePolicyConfig {
+        ReceivePolicyConfig {
+            has_receive_policy: (word & U256::ONE) != U256::ZERO,
+            sender_policy_id: ((word >> 1usize) & U256::from(u64::MAX)).to::<u64>(),
+            sender_policy_type: ((word >> 65usize) & U256::from(u8::MAX)).to::<u8>(),
+            token_filter_id: ((word >> 73usize) & U256::from(u64::MAX)).to::<u64>(),
+            token_filter_type: ((word >> 137usize) & U256::from(u8::MAX)).to::<u8>(),
         }
-        Ok(data.policy_type)
     }
 
     // Internal helper functions
+
+    fn next_token_filter_id(&mut self) -> Result<u64> {
+        let new_filter_id = self.token_filter_id_counter()?;
+        self.token_filter_id_counter.write(
+            new_filter_id
+                .checked_add(1)
+                .ok_or(TempoPrecompileError::under_overflow())?,
+        )?;
+        Ok(new_filter_id)
+    }
+
+    fn create_token_filter_inner(
+        &mut self,
+        msg_sender: Address,
+        admin: Address,
+        filter_type: PolicyType,
+    ) -> Result<u64> {
+        let filter_type_u8 = filter_type.ensure_is_token_filter_type()?;
+        let new_filter_id = self.next_token_filter_id()?;
+        self.token_filter_data[new_filter_id].write(TokenFilterData {
+            filter_type: filter_type_u8,
+            admin,
+        })?;
+        self.emit_event(TIP403RegistryEvent::TokenFilterCreated(
+            ITIP403Registry::TokenFilterCreated {
+                tokenFilterId: new_filter_id,
+                creator: msg_sender,
+                filterType: filter_type,
+            },
+        ))?;
+        Ok(new_filter_id)
+    }
+
+    fn builtin_token_filter_type(token_filter_id: u64) -> Option<PolicyType> {
+        match token_filter_id {
+            REJECT_ALL_TOKEN_FILTER_ID => Some(PolicyType::WHITELIST),
+            ALLOW_ALL_TOKEN_FILTER_ID => Some(PolicyType::BLACKLIST),
+            _ => None,
+        }
+    }
+
+    fn builtin_token_filter_authorization(token_filter_id: u64) -> Option<bool> {
+        match token_filter_id {
+            REJECT_ALL_TOKEN_FILTER_ID => Some(false),
+            ALLOW_ALL_TOKEN_FILTER_ID => Some(true),
+            _ => None,
+        }
+    }
+
+    fn get_token_filter_data(&self, token_filter_id: u64) -> Result<TokenFilterData> {
+        if token_filter_id >= self.token_filter_id_counter()? {
+            return Err(TIP403RegistryError::token_filter_not_found().into());
+        }
+        let data = self.token_filter_data[token_filter_id].read()?;
+        if data.is_default() {
+            return Err(TIP403RegistryError::token_filter_not_found().into());
+        }
+        Ok(data)
+    }
+
+    fn is_token_allowed_raw(&self, token_filter_id: u64, token: Address) -> Result<bool> {
+        if let Some(auth) = Self::builtin_token_filter_authorization(token_filter_id) {
+            return Ok(auth);
+        }
+
+        let data = self.get_token_filter_data(token_filter_id)?;
+        let is_in_set = self.token_filter_members[token_filter_id][token].read()?;
+        match data.filter_type()? {
+            PolicyType::WHITELIST => Ok(is_in_set),
+            PolicyType::BLACKLIST => Ok(!is_in_set),
+            PolicyType::COMPOUND | PolicyType::__Invalid => {
+                Err(TIP403RegistryError::invalid_token_filter_type().into())
+            }
+        }
+    }
+
+    fn check_token_filter_admin(
+        &self,
+        token_filter_id: u64,
+        msg_sender: Address,
+    ) -> Result<TokenFilterData> {
+        if Self::builtin_token_filter_authorization(token_filter_id).is_some() {
+            return Err(TIP403RegistryError::token_filter_not_found().into());
+        }
+        let data = self.get_token_filter_data(token_filter_id)?;
+        if data.admin != msg_sender {
+            return Err(TIP403RegistryError::unauthorized().into());
+        }
+        Ok(data)
+    }
+
+    fn check_token_filter_admin_and_type(
+        &self,
+        token_filter_id: u64,
+        msg_sender: Address,
+        expected: PolicyType,
+    ) -> Result<TokenFilterData> {
+        let data = self.check_token_filter_admin(token_filter_id, msg_sender)?;
+        if data.filter_type()? != expected {
+            return Err(TIP403RegistryError::invalid_token_filter_type().into());
+        }
+        Ok(data)
+    }
+
+    fn modify_token_filter_member(
+        &mut self,
+        msg_sender: Address,
+        token_filter_id: u64,
+        token: Address,
+        member: bool,
+        expected: PolicyType,
+    ) -> Result<()> {
+        self.check_token_filter_admin_and_type(token_filter_id, msg_sender, expected)?;
+        self.token_filter_members[token_filter_id][token].write(member)?;
+        match expected {
+            PolicyType::WHITELIST => {
+                self.emit_event(TIP403RegistryEvent::TokenFilterWhitelistUpdated(
+                    ITIP403Registry::TokenFilterWhitelistUpdated {
+                        tokenFilterId: token_filter_id,
+                        updater: msg_sender,
+                        token,
+                        allowed: member,
+                    },
+                ))
+            }
+            PolicyType::BLACKLIST => {
+                self.emit_event(TIP403RegistryEvent::TokenFilterBlacklistUpdated(
+                    ITIP403Registry::TokenFilterBlacklistUpdated {
+                        tokenFilterId: token_filter_id,
+                        updater: msg_sender,
+                        token,
+                        restricted: member,
+                    },
+                ))
+            }
+            PolicyType::COMPOUND | PolicyType::__Invalid => {
+                Err(TIP403RegistryError::invalid_token_filter_type().into())
+            }
+        }
+    }
 
     /// Returns policy data for the given policy ID.
     /// Errors with `PolicyNotFound` for invalid policy ids.
@@ -844,6 +1208,8 @@ pub fn is_policy_lookup_error(e: &TempoPrecompileError) -> bool {
 trait PolicyTypeExt {
     /// Validates that this is a simple policy type and returns its `u8` discriminant.
     fn ensure_is_simple(&self) -> Result<u8>;
+    /// Validates that this is a token filter type and returns its `u8` discriminant.
+    fn ensure_is_token_filter_type(&self) -> Result<u8>;
 }
 
 impl PolicyTypeExt for PolicyType {
@@ -860,6 +1226,15 @@ impl PolicyTypeExt for PolicyType {
                 } else {
                     Ok(Self::__Invalid as u8)
                 }
+            }
+        }
+    }
+
+    fn ensure_is_token_filter_type(&self) -> Result<u8> {
+        match self {
+            Self::WHITELIST | Self::BLACKLIST => Ok(*self as u8),
+            Self::COMPOUND | Self::__Invalid => {
+                Err(TIP403RegistryError::invalid_token_filter_type().into())
             }
         }
     }
@@ -2396,6 +2771,276 @@ mod tests {
                     .unwrap_err(),
                 TIP403RegistryError::policy_not_found().into()
             );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_token_filter_membership_and_admin() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let admin = Address::random();
+        let next_admin = Address::random();
+        let token_a = Address::random();
+        let token_b = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            assert_eq!(registry.token_filter_id_counter()?, 2);
+            assert!(
+                registry.token_filter_exists(ITIP403Registry::tokenFilterExistsCall {
+                    tokenFilterId: REJECT_ALL_TOKEN_FILTER_ID,
+                })?
+            );
+            assert!(
+                registry.token_filter_exists(ITIP403Registry::tokenFilterExistsCall {
+                    tokenFilterId: ALLOW_ALL_TOKEN_FILTER_ID,
+                })?
+            );
+            assert!(
+                !registry.is_token_allowed(ITIP403Registry::isTokenAllowedCall {
+                    tokenFilterId: REJECT_ALL_TOKEN_FILTER_ID,
+                    token: token_a,
+                })?
+            );
+            assert!(
+                registry.is_token_allowed(ITIP403Registry::isTokenAllowedCall {
+                    tokenFilterId: ALLOW_ALL_TOKEN_FILTER_ID,
+                    token: token_a,
+                })?
+            );
+
+            let filter_id = registry.create_token_filter_with_tokens(
+                admin,
+                ITIP403Registry::createTokenFilterWithTokensCall {
+                    admin,
+                    filterType: PolicyType::WHITELIST,
+                    tokens: vec![token_a],
+                },
+            )?;
+            assert_eq!(filter_id, 2);
+            assert_eq!(registry.token_filter_id_counter()?, 3);
+
+            let data = registry.token_filter_data(ITIP403Registry::tokenFilterDataCall {
+                tokenFilterId: filter_id,
+            })?;
+            assert_eq!(data.filterType, PolicyType::WHITELIST);
+            assert_eq!(data.admin, admin);
+
+            assert!(
+                registry.is_token_allowed(ITIP403Registry::isTokenAllowedCall {
+                    tokenFilterId: filter_id,
+                    token: token_a,
+                })?
+            );
+            assert!(
+                !registry.is_token_allowed(ITIP403Registry::isTokenAllowedCall {
+                    tokenFilterId: filter_id,
+                    token: token_b,
+                })?
+            );
+
+            let unauthorized = registry.modify_token_filter_whitelist(
+                next_admin,
+                ITIP403Registry::modifyTokenFilterWhitelistCall {
+                    tokenFilterId: filter_id,
+                    token: token_b,
+                    allowed: true,
+                },
+            );
+            assert!(matches!(
+                unauthorized.unwrap_err(),
+                TempoPrecompileError::TIP403RegistryError(TIP403RegistryError::Unauthorized(_))
+            ));
+
+            let mismatch = registry.modify_token_filter_whitelist_batch(
+                admin,
+                ITIP403Registry::modifyTokenFilterWhitelistBatchCall {
+                    tokenFilterId: filter_id,
+                    tokens: vec![token_b],
+                    allowed: vec![],
+                },
+            );
+            assert!(matches!(
+                mismatch.unwrap_err(),
+                TempoPrecompileError::TIP403RegistryError(
+                    TIP403RegistryError::TokenFilterBatchLengthMismatch(_)
+                )
+            ));
+
+            registry.set_token_filter_admin(
+                admin,
+                ITIP403Registry::setTokenFilterAdminCall {
+                    tokenFilterId: filter_id,
+                    admin: next_admin,
+                },
+            )?;
+            registry.modify_token_filter_whitelist(
+                next_admin,
+                ITIP403Registry::modifyTokenFilterWhitelistCall {
+                    tokenFilterId: filter_id,
+                    token: token_b,
+                    allowed: true,
+                },
+            )?;
+            assert!(
+                registry.is_token_allowed(ITIP403Registry::isTokenAllowedCall {
+                    tokenFilterId: filter_id,
+                    token: token_b,
+                })?
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_receive_policy_evaluation_order_and_recovery_contract() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let admin = Address::random();
+        let sender = Address::random();
+        let receiver = Address::random();
+        let blocked_token = Address::random();
+        let allowed_token = Address::random();
+        let recovery_contract = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            assert_eq!(
+                registry.validate_receive_policy_raw(blocked_token, sender, receiver)?,
+                (true, ITIP403Registry::BlockedReason::NONE)
+            );
+
+            let sender_policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: PolicyType::WHITELIST,
+                },
+            )?;
+            let token_filter_id = registry.create_token_filter_with_tokens(
+                admin,
+                ITIP403Registry::createTokenFilterWithTokensCall {
+                    admin,
+                    filterType: PolicyType::WHITELIST,
+                    tokens: vec![allowed_token],
+                },
+            )?;
+            registry.set_receive_policy(
+                receiver,
+                ITIP403Registry::setReceivePolicyCall {
+                    senderPolicyId: sender_policy_id,
+                    tokenFilterId: token_filter_id,
+                    recoveryContract: recovery_contract,
+                },
+            )?;
+
+            let stored = registry
+                .receive_policy(ITIP403Registry::receivePolicyCall { account: receiver })?;
+            assert!(stored.hasReceivePolicy);
+            assert_eq!(stored.senderPolicyId, sender_policy_id);
+            assert_eq!(stored.senderPolicyType, PolicyType::WHITELIST);
+            assert_eq!(stored.tokenFilterId, token_filter_id);
+            assert_eq!(stored.tokenFilterType, PolicyType::WHITELIST);
+            assert_eq!(stored.recoveryContract, recovery_contract);
+
+            assert_eq!(
+                registry.validate_receive_policy_raw(blocked_token, sender, receiver)?,
+                (false, ITIP403Registry::BlockedReason::TOKEN_FILTER)
+            );
+
+            registry.modify_token_filter_whitelist(
+                admin,
+                ITIP403Registry::modifyTokenFilterWhitelistCall {
+                    tokenFilterId: token_filter_id,
+                    token: blocked_token,
+                    allowed: true,
+                },
+            )?;
+            assert_eq!(
+                registry.validate_receive_policy_raw(blocked_token, sender, receiver)?,
+                (false, ITIP403Registry::BlockedReason::RECEIVE_POLICY)
+            );
+
+            registry.modify_policy_whitelist(
+                admin,
+                ITIP403Registry::modifyPolicyWhitelistCall {
+                    policyId: sender_policy_id,
+                    account: sender,
+                    allowed: true,
+                },
+            )?;
+            assert_eq!(
+                registry.validate_receive_policy_raw(blocked_token, sender, receiver)?,
+                (true, ITIP403Registry::BlockedReason::NONE)
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_receive_policy_rejects_invalid_policy_and_reserved_account() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let receiver = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            let compound_policy_id = registry.create_compound_policy(
+                receiver,
+                ITIP403Registry::createCompoundPolicyCall {
+                    senderPolicyId: ALLOW_ALL_POLICY_ID,
+                    recipientPolicyId: ALLOW_ALL_POLICY_ID,
+                    mintRecipientPolicyId: ALLOW_ALL_POLICY_ID,
+                },
+            )?;
+            let result = registry.set_receive_policy(
+                receiver,
+                ITIP403Registry::setReceivePolicyCall {
+                    senderPolicyId: compound_policy_id,
+                    tokenFilterId: ALLOW_ALL_TOKEN_FILTER_ID,
+                    recoveryContract: Address::ZERO,
+                },
+            );
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP403RegistryError(
+                    TIP403RegistryError::InvalidReceivePolicyType(_)
+                )
+            ));
+
+            let result = registry.set_receive_policy(
+                receiver,
+                ITIP403Registry::setReceivePolicyCall {
+                    senderPolicyId: ALLOW_ALL_POLICY_ID,
+                    tokenFilterId: 99,
+                    recoveryContract: Address::ZERO,
+                },
+            );
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP403RegistryError(
+                    TIP403RegistryError::TokenFilterNotFound(_)
+                )
+            ));
+
+            let result = registry.set_receive_policy(
+                TIP1028_ESCROW_ADDRESS,
+                ITIP403Registry::setReceivePolicyCall {
+                    senderPolicyId: ALLOW_ALL_POLICY_ID,
+                    tokenFilterId: ALLOW_ALL_TOKEN_FILTER_ID,
+                    recoveryContract: Address::ZERO,
+                },
+            );
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP403RegistryError(
+                    TIP403RegistryError::EscrowAddressReserved(_)
+                )
+            ));
+
             Ok(())
         })
     }

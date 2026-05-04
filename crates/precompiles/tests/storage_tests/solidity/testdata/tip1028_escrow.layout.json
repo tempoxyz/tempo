@@ -1,0 +1,50 @@
+{
+  "contracts": {
+    "/Users/daniel/tempo/tempo/crates/precompiles/tests/storage_tests/solidity/testdata/tip1028_escrow.sol:TIP1028Escrow": {
+      "storage-layout": {
+        "storage": [
+          {
+            "astId": 4,
+            "contract": "crates/precompiles/tests/storage_tests/solidity/testdata/tip1028_escrow.sol:TIP1028Escrow",
+            "label": "blockedReceiptNonce",
+            "offset": 0,
+            "slot": "0",
+            "type": "t_uint64"
+          },
+          {
+            "astId": 8,
+            "contract": "crates/precompiles/tests/storage_tests/solidity/testdata/tip1028_escrow.sol:TIP1028Escrow",
+            "label": "blockedReceiptAmount",
+            "offset": 0,
+            "slot": "1",
+            "type": "t_mapping(t_bytes32,t_uint256)"
+          }
+        ],
+        "types": {
+          "t_bytes32": {
+            "encoding": "inplace",
+            "label": "bytes32",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_bytes32,t_uint256)": {
+            "encoding": "mapping",
+            "key": "t_bytes32",
+            "label": "mapping(bytes32 => uint256)",
+            "numberOfBytes": "32",
+            "value": "t_uint256"
+          },
+          "t_uint256": {
+            "encoding": "inplace",
+            "label": "uint256",
+            "numberOfBytes": "32"
+          },
+          "t_uint64": {
+            "encoding": "inplace",
+            "label": "uint64",
+            "numberOfBytes": "8"
+          }
+        }
+      }
+    }
+  }
+}

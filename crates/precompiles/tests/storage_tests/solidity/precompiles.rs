@@ -17,7 +17,16 @@ fn test_tip403_registry_layout() {
     let solc_layout = load_solc_layout(&sol_path);
 
     // Verify top-level fields
-    let rust_layout = layout_fields!(policy_id_counter, policy_records, policy_set);
+    let rust_layout = layout_fields!(
+        policy_id_counter,
+        policy_records,
+        policy_set,
+        token_filter_id_counter,
+        token_filter_data,
+        token_filter_members,
+        address_receive_config,
+        address_recovery_contract
+    );
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
         panic_layout_mismatch("Layout", errors, &sol_path);
     }
@@ -55,6 +64,31 @@ fn test_tip403_registry_layout() {
         {
             panic_layout_mismatch("CompoundPolicyData struct layout", errors, &sol_path);
         }
+    }
+
+    // Verify `TokenFilterData` struct members
+    {
+        use tempo_precompiles::tip403_registry::__packing_token_filter_data::*;
+        let token_filter_base_slot = slots::TOKEN_FILTER_DATA;
+        let rust_token_filter = struct_fields!(token_filter_base_slot, filter_type, admin);
+        if let Err(errors) =
+            compare_nested_struct_type(&solc_layout, "TokenFilterData", &rust_token_filter)
+        {
+            panic_layout_mismatch("TokenFilterData struct layout", errors, &sol_path);
+        }
+    }
+}
+
+#[test]
+fn test_tip1028_escrow_layout() {
+    use tempo_precompiles::tip1028_escrow::slots;
+
+    let sol_path = testdata("tip1028_escrow.sol");
+    let solc_layout = load_solc_layout(&sol_path);
+
+    let rust_layout = layout_fields!(blocked_receipt_nonce, blocked_receipt_amount);
+    if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
+        panic_layout_mismatch("Layout", errors, &sol_path);
     }
 }
 
@@ -223,7 +257,16 @@ fn export_all_storage_constants() {
     {
         use tempo_precompiles::tip403_registry::{__packing_policy_record::*, slots};
 
-        let fields = layout_fields!(policy_id_counter, policy_records, policy_set);
+        let fields = layout_fields!(
+            policy_id_counter,
+            policy_records,
+            policy_set,
+            token_filter_id_counter,
+            token_filter_data,
+            token_filter_members,
+            address_receive_config,
+            address_recovery_contract
+        );
         let base_slot = slots::POLICY_RECORDS;
         let policy_record_struct = struct_fields!(base_slot, base, compound);
 
@@ -242,6 +285,11 @@ fn export_all_storage_constants() {
             )
         };
 
+        let token_filter_data_struct = {
+            use tempo_precompiles::tip403_registry::__packing_token_filter_data::*;
+            struct_fields!(slots::TOKEN_FILTER_DATA, filter_type, admin)
+        };
+
         all_constants.insert(
             "tip403_registry".to_string(),
             json!({
@@ -249,7 +297,8 @@ fn export_all_storage_constants() {
                 "structs": {
                     "policyRecords": policy_record_struct.iter().map(field_to_json).collect::<Vec<_>>(),
                     "policyData": policy_data_struct.iter().map(field_to_json).collect::<Vec<_>>(),
-                    "compoundPolicyData": compound_policy_data_struct.iter().map(field_to_json).collect::<Vec<_>>()
+                    "compoundPolicyData": compound_policy_data_struct.iter().map(field_to_json).collect::<Vec<_>>(),
+                    "tokenFilterData": token_filter_data_struct.iter().map(field_to_json).collect::<Vec<_>>()
                 }
             }),
         );
@@ -378,6 +427,20 @@ fn export_all_storage_constants() {
                 "structs": {
                     "userRewardInfo": user_info_struct.iter().map(field_to_json).collect::<Vec<_>>()
                 }
+            }),
+        );
+    }
+
+    // TIP1028 Escrow
+    {
+        use tempo_precompiles::tip1028_escrow::slots;
+
+        let fields = layout_fields!(blocked_receipt_nonce, blocked_receipt_amount);
+        all_constants.insert(
+            "tip1028_escrow".to_string(),
+            json!({
+                "fields": fields.iter().map(field_to_json).collect::<Vec<_>>(),
+                "structs": {}
             }),
         );
     }

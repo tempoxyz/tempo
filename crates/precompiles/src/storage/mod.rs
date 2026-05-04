@@ -64,11 +64,28 @@ pub trait PrecompileStorageProvider {
     /// Performs an SLOAD operation (persistent storage read).
     fn sload(&mut self, address: Address, key: U256) -> Result<U256>;
 
+    /// Performs an SLOAD against a slot whose cold access and storage-creation
+    /// costs were charged separately.
+    fn sload_prepaid(&mut self, address: Address, key: U256) -> Result<U256> {
+        self.sload(address, key)
+    }
+
     /// Performs a TLOAD operation (transient storage read).
     fn tload(&mut self, address: Address, key: U256) -> Result<U256>;
 
     /// Performs an SSTORE operation (persistent storage write).
     fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<()>;
+
+    /// Performs an SSTORE against a slot whose cold access and storage-creation
+    /// costs were charged separately.
+    fn sstore_prepaid(&mut self, address: Address, key: U256, value: U256) -> Result<()> {
+        self.sstore(address, key, value)
+    }
+
+    /// Charges the current caller for reserving a prepaid storage slot.
+    fn reserve_prepaid_sstore(&mut self, _address: Address, _key: U256) -> Result<()> {
+        Ok(())
+    }
 
     /// Performs a TSTORE operation (transient storage write).
     fn tstore(&mut self, address: Address, key: U256, value: U256) -> Result<()>;
