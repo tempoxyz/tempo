@@ -60,6 +60,9 @@ pub struct TempoGenesisInfo {
     /// Activation timestamp for T5 hardfork.
     #[serde(skip_serializing_if = "Option::is_none")]
     t5_time: Option<u64>,
+    /// Activation timestamp for T6 hardfork.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    t6_time: Option<u64>,
 }
 
 impl TempoGenesisInfo {
@@ -89,6 +92,7 @@ impl TempoGenesisInfo {
             TempoHardfork::T3 => self.t3_time,
             TempoHardfork::T4 => self.t4_time,
             TempoHardfork::T5 => self.t5_time,
+            TempoHardfork::T6 => self.t6_time,
         }
     }
 }
@@ -488,6 +492,9 @@ mod tests {
             // At and after T3 activation
             assert!(cs.is_t3_active_at_timestamp(1777298400));
             assert_eq!(cs.tempo_hardfork_at(1777298400), TempoHardfork::T3);
+            assert!(!cs.is_t4_active_at_timestamp(u64::MAX));
+            assert!(!cs.is_t5_active_at_timestamp(u64::MAX));
+            assert!(!cs.is_t6_active_at_timestamp(u64::MAX));
             assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T3);
         }
 
@@ -535,6 +542,9 @@ mod tests {
             // At and after T3 activation
             assert!(cs.is_t3_active_at_timestamp(1776780000));
             assert_eq!(cs.tempo_hardfork_at(1776780000), TempoHardfork::T3);
+            assert!(!cs.is_t4_active_at_timestamp(u64::MAX));
+            assert!(!cs.is_t5_active_at_timestamp(u64::MAX));
+            assert!(!cs.is_t6_active_at_timestamp(u64::MAX));
             assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T3);
         }
 
