@@ -31,6 +31,7 @@ use eyre::{OptionExt as _, Report, WrapErr as _, bail, eyre};
 use reth_chainspec::EthChainSpec;
 use reth_cli_runner::CliRunner;
 use reth_ethereum_cli::ExtendedCommand;
+
 use serde::Serialize;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
@@ -523,13 +524,45 @@ impl AddValidator {
 }
 
 #[derive(Debug, clap::Args)]
+#[group(required = true, multiple = false)]
+pub(crate) struct NewValidatorOwnershipArgs {
+    /// Path to the file holding the private key of the new validator address.
+    /// Preferred over `--new-validator-address` because it ensures the caller
+    /// has control over the new validator's private key.
+    #[arg(long, value_name = "FILE")]
+    new_private_key: Option<PathBuf>,
+
+    /// Ethereum address of the new validator.
+    /// Note: `--new-private-key` is preferred because it ensures the caller
+    /// has control over the new validator's private key.
+    #[arg(long, value_name = "ADDRESS")]
+    new_validator_address: Option<Address>,
+}
+
+impl NewValidatorOwnershipArgs {
+    fn resolve_address(&self) -> eyre::Result<Address> {
+        match (&self.new_private_key, &self.new_validator_address) {
+            (Some(path), None) => {
+                let signer = key_from_file(path).wrap_err_with(|| {
+                    format!("failed reading private key from file `{}`", path.display())
+                })?;
+
+                Ok(signer.address())
+            }
+            (None, Some(address)) => Ok(*address),
+            _ => unreachable!("exclusivity enforced by clap arg group"),
+        }
+    }
+}
+
+#[derive(Debug, clap::Args)]
 pub(crate) struct TransferValidatorOwnership {
     /// Validator ethereum address, ed25519 public key, or index
     #[arg()]
     id: ValidatorId,
-    /// Path to the file holding the private key of the new validator address
-    #[arg(long, value_name = "FILE")]
-    new_private_key: PathBuf,
+
+    #[command(flatten)]
+    new_validator: NewValidatorOwnershipArgs,
 
     #[command(flatten)]
     submit: ValidatorTransactionArgs,
@@ -539,14 +572,7 @@ impl TransferValidatorOwnership {
     async fn run(self) -> eyre::Result<()> {
         let provider = self.submit.provider().await?;
 
-        let new_signer = key_from_file(&self.new_private_key).wrap_err_with(|| {
-            format!(
-                "failed reading private key from file `{}`",
-                self.new_private_key.display()
-            )
-        })?;
-
-        let new_validator_address = new_signer.address();
+        let new_validator_address = self.new_validator.resolve_address()?;
 
         let validator = read_validator_from_contract(&provider, self.id).await?;
 
