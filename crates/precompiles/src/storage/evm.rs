@@ -115,11 +115,11 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             was_empty
         };
 
-        // T4: charge TIP20 deployments as CREATE. Precompile bytecode is a fixed 0xEF marker,
-        // so new accounts only pay CREATE + code-deposit, but not HASH_COST(L).
+        // T4: charge TIP20 deployments as CREATE.
         if self.spec.is_t4() && was_empty {
             self.deduct_gas(self.gas_params.create_cost())?;
             self.deduct_state_gas(self.gas_params.create_state_gas())?;
+            self.deduct_gas(self.gas_params.keccak256_cost(code_len.div_ceil(32)))?;
         }
 
         Ok(())
@@ -895,8 +895,9 @@ mod tests {
         let code = Bytecode::new_raw(vec![0xef].into());
         let expected_state_gas =
             gas_params.create_state_gas() + gas_params.code_deposit_state_gas(code.len());
-        let expected_regular_gas =
-            gas_params.create_cost() + gas_params.code_deposit_cost(code.len());
+        let expected_regular_gas = gas_params.create_cost()
+            + gas_params.code_deposit_cost(code.len())
+            + gas_params.keccak256_cost(code.len().div_ceil(32));
         let mut provider = evm.provider_with_reservoir(expected_state_gas);
 
         provider.set_code(Address::random(), code)?;
