@@ -1,5 +1,12 @@
 # Changelog
 
+## `tempo-alloy@1.7.0`
+
+### Minor Changes
+
+- Moved TIP-20 and TIP-1022 virtual-address helpers (`is_tip20_prefix`, `is_virtual_address`, `decode_virtual_address`, `make_virtual_address`, `MasterId`, `UserTag`) from `tempo-precompiles` into a new `TempoAddressExt` trait on `Address` in `tempo-primitives`. Updated all consumers to use the new trait methods (`address.is_tip20()`, `address.is_virtual()`, `Address::new_virtual(...)`, etc.). (by @0xrusowsky, [#3732](https://github.com/tempoxyz/tempo/pull/3732))
+- Added `is_hardfork_active` helper to `TempoProviderExt` and re-exported `tempo-chainspec` as a non-optional dependency. Updated the crates.io publish pipeline to include `tempo-chainspec` as a published crate. (by @0xrusowsky, [#3732](https://github.com/tempoxyz/tempo/pull/3732))
+
 ## `tempo-alloy@1.6.0`
 
 ### Patch Changes
