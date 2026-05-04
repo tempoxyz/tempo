@@ -22,6 +22,11 @@ contract TIP403Registry {
         CompoundPolicyData compound;
     }
 
+    struct TokenFilterData {
+        uint8 filterType;
+        address admin;
+    }
+
     // ========== Storage ==========
 
     /// Counter for policy IDs
@@ -33,4 +38,19 @@ contract TIP403Registry {
     /// Nested mapping for policy sets: policy_id -> address -> is_in_set
     /// Used for whitelist/blacklist entries
     mapping(uint64 => mapping(address => bool)) public policySet;
+
+    /// Counter for token filter IDs
+    uint64 public tokenFilterIdCounter;
+
+    /// Mapping of token filter ID to filter metadata
+    mapping(uint64 => TokenFilterData) internal tokenFilterData;
+
+    /// Nested mapping for token filter members: filter_id -> token -> is_in_set
+    mapping(uint64 => mapping(address => bool)) public tokenFilterMembers;
+
+    /// Packed receive policy configuration per account
+    mapping(address => uint256) public addressReceiveConfig;
+
+    /// Recovery contract configured per account
+    mapping(address => address) public addressRecoveryContract;
 }

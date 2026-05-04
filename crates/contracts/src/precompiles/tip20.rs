@@ -126,6 +126,12 @@ crate::sol! {
             uint256 rewardBalance;
         }
 
+        enum BlockedReason {
+            NONE,
+            TOKEN_FILTER,
+            RECEIVE_POLICY
+        }
+
         // Reward Functions
         function distributeReward(uint256 amount) external;
         function setRewardRecipient(address recipient) external;
@@ -149,6 +155,8 @@ crate::sol! {
         event QuoteTokenUpdate(address indexed updater, address indexed newQuoteToken);
         event RewardDistributed(address indexed funder, uint256 amount);
         event RewardRecipientSet(address indexed holder, address indexed recipient);
+        event TransferBlocked(address indexed token, address indexed from, address indexed receiver, uint8 receiptVersion, uint64 blockedNonce, uint64 blockedAt, address recipient, uint256 amount, BlockedReason blockedReason, address recoveryContract, bytes32 memo);
+        event MintBlocked(address indexed token, address indexed operator, address indexed receiver, uint8 receiptVersion, uint64 blockedNonce, uint64 blockedAt, address recipient, uint256 amount, BlockedReason blockedReason, address recoveryContract, bytes32 memo);
 
         // Errors
         error InsufficientBalance(uint256 available, uint256 required, address token);
@@ -170,6 +178,9 @@ crate::sol! {
         error InvalidTransferPolicyId();
         error PermitExpired();
         error InvalidSignature();
+        error EscrowAddressReserved();
+        error ClaimDestinationUnauthorized();
+        error InsufficientEscrowBalance();
     }
 }
 
@@ -309,6 +320,18 @@ impl TIP20Error {
     /// Error when permit signature is invalid
     pub const fn invalid_signature() -> Self {
         Self::InvalidSignature(ITIP20::InvalidSignature {})
+    }
+
+    pub const fn escrow_address_reserved() -> Self {
+        Self::EscrowAddressReserved(ITIP20::EscrowAddressReserved {})
+    }
+
+    pub const fn claim_destination_unauthorized() -> Self {
+        Self::ClaimDestinationUnauthorized(ITIP20::ClaimDestinationUnauthorized {})
+    }
+
+    pub const fn insufficient_escrow_balance() -> Self {
+        Self::InsufficientEscrowBalance(ITIP20::InsufficientEscrowBalance {})
     }
 }
 

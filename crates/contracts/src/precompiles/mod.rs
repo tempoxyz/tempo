@@ -4,6 +4,7 @@ pub mod common_errors;
 pub mod nonce;
 pub mod signature_verifier;
 pub mod stablecoin_dex;
+pub mod tip1028_escrow;
 pub mod tip20;
 pub mod tip20_factory;
 pub mod tip403_registry;
@@ -22,6 +23,7 @@ pub use tip_fee_manager::*;
 pub use tip20::*;
 pub use tip20_factory::*;
 pub use tip403_registry::*;
+pub use tip1028_escrow::*;
 pub use validator_config::*;
 pub use validator_config_v2::*;
 
@@ -43,3 +45,4 @@ pub const ADDRESS_REGISTRY_ADDRESS: Address =
     address!("0xFDC0000000000000000000000000000000000000");
 pub const SIGNATURE_VERIFIER_ADDRESS: Address =
     address!("0x5165300000000000000000000000000000000000");
+pub const TIP1028_ESCROW_ADDRESS: Address = address!("0xE5C0000000000000000000000000000000000000");
