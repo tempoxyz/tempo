@@ -2,7 +2,7 @@ use std::{
     future::Future,
     ops::{Deref, DerefMut},
     pin::Pin,
-    task::Poll,
+    task::{Poll, ready},
 };
 
 use alloy_primitives::B256;
@@ -16,6 +16,13 @@ pub(crate) fn public_key_to_b256(key: &PublicKey) -> B256 {
         .expect("ed25519 pub keys always map to B256")
 }
 
+pub(crate) fn public_key_to_tempo_primitive(
+    key: &PublicKey,
+) -> tempo_primitives::ed25519::PublicKey {
+    tempo_primitives::ed25519::PublicKey::try_from(B256::from_slice(key.as_ref()))
+        .expect("shared implementation of ed25519 pub keys")
+}
+
 /// A vendored version of [`commonware_utils::futures::OptionFuture`] to implement
 /// [`futures::future::FusedFuture`].
 ///
@@ -27,9 +34,27 @@ pub(crate) fn public_key_to_b256(key: &PublicKey) -> B256 {
 #[pin_project]
 pub(crate) struct OptionFuture<F>(#[pin] Option<F>);
 
+impl<F> OptionFuture<F> {
+    pub(crate) fn new(fut: Option<F>) -> Self {
+        Self(fut)
+    }
+
+    pub(crate) fn is_none(&self) -> bool {
+        self.0.is_none()
+    }
+
+    pub(crate) fn none() -> Self {
+        Self::new(None)
+    }
+
+    pub(crate) fn replace(&mut self, fut: F) -> Option<F> {
+        self.0.replace(fut)
+    }
+}
+
 impl<F: Future> Default for OptionFuture<F> {
     fn default() -> Self {
-        Self(None)
+        Self::none()
     }
 }
 
@@ -56,12 +81,13 @@ impl<F: Future> DerefMut for OptionFuture<F> {
 impl<F: Future> Future for OptionFuture<F> {
     type Output = F::Output;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
-        let this = self.project();
-        match this.0.as_pin_mut() {
-            Some(fut) => fut.poll(cx),
-            None => Poll::Pending,
-        }
+    fn poll(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        let output = match self.as_mut().project().0.as_pin_mut() {
+            Some(fut) => ready!(fut.poll(cx)),
+            None => return Poll::Pending,
+        };
+        self.as_mut().project().0.set(None);
+        Poll::Ready(output)
     }
 }
 
@@ -75,9 +101,19 @@ impl<F: Future> FusedFuture for OptionFuture<F> {
 mod tests {
     use std::task::Poll;
 
+    use commonware_cryptography::ed25519::PublicKey as CommonwarePublicKey;
     use futures::{channel::oneshot, executor::block_on, pin_mut};
+    use tempo_primitives::ed25519::PublicKey as TempoPublicKey;
 
-    use crate::utils::OptionFuture;
+    use crate::utils::{OptionFuture, public_key_to_tempo_primitive};
+
+    #[test]
+    fn commonware_public_key_to_tempo_primitive_conversion() {
+        let tempo_key = TempoPublicKey::from_seed([42u8; 32]);
+        let cw_key = CommonwarePublicKey::from(tempo_key.get());
+        assert_eq!(public_key_to_tempo_primitive(&cw_key), tempo_key);
+        assert_eq!(tempo_key.get().to_bytes(), cw_key.as_ref());
+    }
 
     #[test]
     fn option_future() {

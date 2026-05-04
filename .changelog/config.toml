@@ -4,9 +4,6 @@
 # How to bump packages that depend on changed packages.
 dependent_bump = "patch"
 
-[changelog]
-format = "per-crate"
-
 # Ignore all workspace-only crates (not published to crates.io).
 ignore = [
     "tempo",
@@ -33,6 +30,9 @@ ignore = [
     "tempo-validator-config",
     "tempo-xtask",
 ]
+
+[changelog]
+format = "per-crate"
 
 # The published SDK crates release together and share one version.
 [[fixed]]

@@ -12,9 +12,11 @@ use alloy::{
     rpc::types::TransactionRequest,
     signers::{SignerSync, local::PrivateKeySigner},
     sol_types::SolCall,
+    transports::{RpcError, TransportErrorKind},
 };
 use alloy_eips::Encodable2718;
 use alloy_primitives::TxKind;
+use core::num::NonZeroU64;
 use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
 use reth_transaction_pool::TransactionPool;
@@ -25,8 +27,8 @@ use tempo_precompiles::tip20::ITIP20::{self, transferCall};
 use tempo_primitives::{
     SignatureType, TempoTransaction, TempoTxEnvelope,
     transaction::{
-        KeyAuthorization, SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY,
-        TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS, TokenLimit,
+        CallScope, KeyAuthorization, SelectorRule, SignedKeyAuthorization,
+        TEMPO_EXPIRING_NONCE_KEY, TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS, TokenLimit,
         tempo_transaction::Call,
         tt_signature::{
             KeychainSignature, P256SignatureWithPreHash, PrimitiveSignature, TempoSignature,
@@ -36,6 +38,128 @@ use tempo_primitives::{
 };
 
 use super::types::*;
+
+pub(crate) fn nonzero_timestamp(timestamp: u64) -> NonZeroU64 {
+    NonZeroU64::new(timestamp).expect("test timestamp must be non-zero")
+}
+
+fn try_nonzero_timestamp(timestamp: Option<u64>, field: &str) -> eyre::Result<Option<NonZeroU64>> {
+    timestamp
+        .map(|timestamp| {
+            NonZeroU64::new(timestamp)
+                .ok_or_else(|| eyre::eyre!("filled tx returned zero for {field}"))
+        })
+        .transpose()
+}
+
+fn decoded_tempo_rpc_error_message(err: &RpcError<TransportErrorKind>) -> Option<String> {
+    tempo_precompiles::error::decode_error(&err.as_error_resp()?.as_revert_data()?.0)
+        .map(|decoded| format!("execution reverted: {}", decoded.error))
+}
+
+/// Returns a decoded Tempo revert message when possible, else the original RPC error string.
+pub(super) fn tempo_rpc_error_message(err: &RpcError<TransportErrorKind>) -> String {
+    decoded_tempo_rpc_error_message(err).unwrap_or_else(|| err.to_string())
+}
+
+pub(super) fn rpc_error_contains_reason(err: &RpcError<TransportErrorKind>, reason: &str) -> bool {
+    tempo_rpc_error_message(err)
+        .to_ascii_lowercase()
+        .contains(&reason.to_ascii_lowercase())
+}
+
+/// Normalizes Tempo revert errors so tests do not depend on server-side formatting.
+pub(super) fn normalize_tempo_rpc_error(err: RpcError<TransportErrorKind>) -> eyre::Report {
+    decoded_tempo_rpc_error_message(&err).map_or_else(|| err.into(), eyre::Report::msg)
+}
+
+// TODO: remove once all RPC providers accept hex-serialized scoped key auth selectors.
+mod legacy_compat {
+    use alloy::{
+        hex,
+        providers::Provider,
+        transports::{RpcError, TransportErrorKind},
+    };
+    use serde::de::DeserializeOwned;
+    use tempo_node::rpc::TempoTransactionRequest;
+
+    fn should_retry_with_selector_arrays(err: &RpcError<TransportErrorKind>) -> bool {
+        let err_str = err.to_string().to_lowercase();
+        err_str.contains("invalid params")
+            && err_str.contains("expected an array of length 4")
+            && err_str.contains("invalid type: string")
+    }
+
+    pub(super) fn request_value_with_selector_arrays(
+        mut request: serde_json::Value,
+    ) -> serde_json::Value {
+        let Some(allowed_calls) = request
+            .get_mut("keyAuthorization")
+            .and_then(|key_authorization| key_authorization.get_mut("allowedCalls"))
+            .and_then(serde_json::Value::as_array_mut)
+        else {
+            return request;
+        };
+
+        for scope in allowed_calls {
+            let Some(selector_rules) = scope
+                .get_mut("selectorRules")
+                .and_then(serde_json::Value::as_array_mut)
+            else {
+                continue;
+            };
+
+            for rule in selector_rules {
+                let Some(selector) = rule.get_mut("selector") else {
+                    continue;
+                };
+                let Some(selector_hex) = selector.as_str() else {
+                    continue;
+                };
+                let selector_hex = selector_hex
+                    .strip_prefix("0x")
+                    .or_else(|| selector_hex.strip_prefix("0X"))
+                    .unwrap_or(selector_hex);
+                let Ok(bytes) = hex::decode(selector_hex) else {
+                    continue;
+                };
+                let Ok(selector_bytes) = <[u8; 4]>::try_from(bytes.as_slice()) else {
+                    continue;
+                };
+                *selector = serde_json::json!(selector_bytes);
+            }
+        }
+
+        request
+    }
+
+    pub(super) async fn raw_request<T>(
+        provider: &impl Provider,
+        method: &'static str,
+        request: &TempoTransactionRequest,
+    ) -> Result<T, RpcError<TransportErrorKind>>
+    where
+        T: DeserializeOwned + std::fmt::Debug + Send + Sync + Unpin + 'static,
+    {
+        let request_value = serde_json::to_value(request).map_err(RpcError::local_usage)?;
+
+        match provider
+            .raw_request::<_, T>(method.into(), [request_value.clone()])
+            .await
+        {
+            Ok(response) => Ok(response),
+            Err(err) if should_retry_with_selector_arrays(&err) => {
+                provider
+                    .raw_request::<_, T>(
+                        method.into(),
+                        [request_value_with_selector_arrays(request_value)],
+                    )
+                    .await
+            }
+            Err(err) => Err(err),
+        }
+    }
+}
 
 /// Polls until the pool no longer contains the given tx hash, or returns error after timeout.
 pub(super) async fn wait_until_pool_not_contains(
@@ -171,10 +295,34 @@ pub(crate) async fn estimate_gas(
     provider: &impl Provider,
     request: &TempoTransactionRequest,
 ) -> eyre::Result<u64> {
-    let hex: String = provider
-        .raw_request("eth_estimateGas".into(), [serde_json::to_value(request)?])
-        .await?;
+    let hex: String = legacy_compat::raw_request(provider, "eth_estimateGas", request).await?;
     Ok(u64::from_str_radix(hex.trim_start_matches("0x"), 16)?)
+}
+
+pub(crate) fn create_allowed_call_scopes(
+    mode: AllowedCallsMode,
+    allowed_recipient: Address,
+) -> Option<Vec<CallScope>> {
+    let rule = |recipients| SelectorRule {
+        selector: ITIP20::transferCall::SELECTOR,
+        recipients,
+    };
+
+    match mode {
+        AllowedCallsMode::None => None,
+        AllowedCallsMode::SelectorRecipient => Some(vec![CallScope {
+            target: DEFAULT_FEE_TOKEN,
+            selector_rules: vec![rule(vec![allowed_recipient])],
+        }]),
+        AllowedCallsMode::SelectorAnyRecipient => Some(vec![CallScope {
+            target: DEFAULT_FEE_TOKEN,
+            selector_rules: vec![rule(Vec::new())],
+        }]),
+        AllowedCallsMode::TargetAnySelector => Some(vec![CallScope {
+            target: DEFAULT_FEE_TOKEN,
+            selector_rules: Vec::new(),
+        }]),
+    }
 }
 
 /// Helper function to create a signed KeyAuthorization for gas estimation tests
@@ -183,6 +331,8 @@ pub(crate) fn create_signed_key_authorization(
     key_type: SignatureType,
     num_limits: usize,
     chain_id: u64,
+    allowed_calls: AllowedCallsMode,
+    allowed_recipient: Address,
 ) -> SignedKeyAuthorization {
     let limits = if num_limits == 0 {
         None
@@ -209,6 +359,7 @@ pub(crate) fn create_signed_key_authorization(
         Address::random(), // Random key being authorized
     );
     authorization.limits = limits;
+    authorization.allowed_calls = create_allowed_call_scopes(allowed_calls, allowed_recipient);
 
     // Sign the key authorization
     let sig_hash = authorization.signature_hash();
@@ -301,7 +452,7 @@ pub(crate) fn create_key_authorization(
     access_key_addr: Address,
     access_key_signature: TempoSignature,
     chain_id: u64,
-    expiry: Option<u64>,
+    expiry: Option<std::num::NonZeroU64>,
     spending_limits: Option<Vec<tempo_primitives::transaction::TokenLimit>>,
 ) -> eyre::Result<SignedKeyAuthorization> {
     // Infer key_type from the access key signature
@@ -632,7 +783,7 @@ pub(super) fn create_expiring_nonce_tx(
         2_000_000,
     );
     tx.nonce_key = TEMPO_EXPIRING_NONCE_KEY;
-    tx.valid_before = Some(valid_before);
+    tx.valid_before = Some(nonzero_timestamp(valid_before));
     tx
 }
 
@@ -938,8 +1089,14 @@ pub(crate) fn parse_filled_tx(filled: &serde_json::Value) -> eyre::Result<TempoT
     let max_fee_per_gas = require_hex_u128(tx, "maxFeePerGas")?;
     let max_priority_fee_per_gas = require_hex_u128(tx, "maxPriorityFeePerGas")?;
     let nonce_key = parse_hex_u256(tx, "nonceKey")?.unwrap_or(U256::ZERO);
-    let valid_before = parse_hex_u64(tx, "validBefore")?;
-    let valid_after = parse_hex_u64(tx, "validAfter")?;
+    let valid_before = try_nonzero_timestamp(parse_hex_u64(tx, "validBefore")?, "validBefore")?;
+    let valid_after = try_nonzero_timestamp(parse_hex_u64(tx, "validAfter")?, "validAfter")?;
+    let key_authorization = tx
+        .get("keyAuthorization")
+        .filter(|value| !value.is_null())
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()?;
 
     let fee_token = tx
         .get("feeToken")
@@ -996,6 +1153,7 @@ pub(crate) fn parse_filled_tx(filled: &serde_json::Value) -> eyre::Result<TempoT
         nonce_key,
         valid_before,
         valid_after,
+        key_authorization,
         fee_token,
         calls,
         ..Default::default()
@@ -1034,6 +1192,8 @@ pub(crate) fn build_fill_request_context(
         NonceMode::ExpiringInPast => Some(current_timestamp.saturating_sub(1)),
         _ => None,
     });
+    let request_valid_before = valid_before.map(nonzero_timestamp);
+    let request_valid_after = valid_after_offset.map(nonzero_timestamp);
 
     let nonce_key_value = match test_case.nonce_mode {
         NonceMode::Protocol => U256::ZERO,
@@ -1072,10 +1232,11 @@ pub(crate) fn build_fill_request_context(
         }],
         key_type: Some(key_type_to_signature_type(test_case.key_type)),
         key_data: None,
+        key_authorization: test_case.key_authorization.clone(),
         fee_token: test_case.fee_token,
         fee_payer_signature,
-        valid_before,
-        valid_after: valid_after_offset,
+        valid_before: request_valid_before,
+        valid_after: request_valid_after,
         nonce_key,
         ..Default::default()
     };
@@ -1084,6 +1245,7 @@ pub(crate) fn build_fill_request_context(
         request,
         expected_nonce: test_case.explicit_nonce,
         expected_nonce_key,
+        expected_key_authorization: test_case.key_authorization.clone(),
         expected_valid_before: valid_before,
         expected_valid_after: valid_after_offset,
     }
@@ -1099,12 +1261,10 @@ pub(crate) async fn fill_transaction_from_case(
     let request_context =
         build_fill_request_context(test_case, signer_addr, recipient, current_timestamp);
 
-    let filled: serde_json::Value = provider
-        .raw_request(
-            "eth_fillTransaction".into(),
-            [serde_json::to_value(&request_context.request)?],
-        )
-        .await?;
+    let filled: serde_json::Value =
+        legacy_compat::raw_request(provider, "eth_fillTransaction", &request_context.request)
+            .await
+            .map_err(normalize_tempo_rpc_error)?;
 
     let tx = parse_filled_tx(&filled)?;
 
@@ -1121,12 +1281,18 @@ pub(crate) fn assert_fill_request_expectations(
         "nonceKey should match"
     );
     assert_eq!(
-        tx.valid_before, request_context.expected_valid_before,
+        tx.valid_before.map(NonZeroU64::get),
+        request_context.expected_valid_before,
         "validBefore should match"
     );
     assert_eq!(
-        tx.valid_after, request_context.expected_valid_after,
+        tx.valid_after.map(NonZeroU64::get),
+        request_context.expected_valid_after,
         "validAfter should match"
+    );
+    assert_eq!(
+        tx.key_authorization, request_context.expected_key_authorization,
+        "keyAuthorization should match"
     );
 
     if let Some(expected_nonce) = request_context.expected_nonce {
@@ -1149,4 +1315,51 @@ pub(crate) fn assert_fill_request_expectations(
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::sol_types::SolInterface;
+    use tempo_contracts::precompiles::TIP20Error;
+
+    #[test]
+    fn normalize_tempo_rpc_error_decodes_raw_revert_data() {
+        let expected_revert_bytes = hex!(
+            "832f98b5000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000f424000000000000000000000000020c0000000000000000000000000000000000000"
+        );
+        let expected_revert_hex = hex::encode(expected_revert_bytes);
+        let revert_data = TIP20Error::InsufficientBalance(ITIP20::InsufficientBalance {
+            available: U256::ZERO,
+            required: U256::from(1_000_000u64),
+            token: DEFAULT_FEE_TOKEN,
+        })
+        .abi_encode();
+        assert_eq!(
+            revert_data.as_slice(),
+            expected_revert_bytes.as_slice(),
+            "ABI encoding should match the raw revert bytes observed in CI"
+        );
+        let error_json = serde_json::json!({
+            "code": 3,
+            "message": "execution reverted",
+            "data": format!("0x{expected_revert_hex}"),
+        })
+        .to_string();
+        let parse_err = serde_json::from_str::<serde_json::Value>("not json")
+            .expect_err("fixture should produce a serde error");
+        let err = RpcError::deser_err(parse_err, &error_json);
+
+        assert!(
+            rpc_error_contains_reason(&err, "InsufficientBalance"),
+            "client-side revert decoding should recognize Tempo precompile errors"
+        );
+
+        let normalized = normalize_tempo_rpc_error(err).to_string();
+        assert!(
+            normalized.contains("execution reverted:")
+                && normalized.contains("InsufficientBalance"),
+            "normalized error should prefer decoded Tempo revert, got: {normalized}"
+        );
+    }
 }

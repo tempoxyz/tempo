@@ -14,18 +14,220 @@ use commonware_runtime::{
 use commonware_utils::NZU64;
 use futures::future::join_all;
 use rand_08::Rng;
+use reth_ethereum::storage::BlockNumReader;
+use reth_node_metrics::recorder::install_prometheus_recorder;
 use tracing::debug;
 
 use crate::{
     CONSENSUS_NODE_PREFIX, Setup, connect_execution_peers, connect_execution_to_peers,
-    setup_validators,
+    get_pipeline_runs, setup_validators,
 };
+
+#[test_traced("WARN")]
+fn committee_of_one() {
+    SimpleRestart {
+        committee_size: 1,
+        epoch_length: 10,
+        restart_after: 5,
+        stop_at: 10,
+        connect_execution_layer: false,
+    }
+    .run()
+}
+
+#[test_traced("WARN")]
+fn committee_of_three() {
+    SimpleRestart {
+        committee_size: 3,
+        epoch_length: 10,
+        restart_after: 5,
+        stop_at: 10,
+        connect_execution_layer: false,
+    }
+    .run()
+}
+
+struct SimpleRestart {
+    committee_size: u32,
+    epoch_length: u64,
+    restart_after: u64,
+    stop_at: u64,
+    connect_execution_layer: bool,
+}
+
+impl SimpleRestart {
+    #[track_caller]
+    fn run(self) {
+        let Self {
+            committee_size,
+            epoch_length,
+            restart_after,
+            stop_at,
+            connect_execution_layer,
+        } = self;
+        let _ = tempo_eyre::install();
+
+        let setup = Setup::new()
+            .how_many_signers(committee_size)
+            .seed(0)
+            .epoch_length(epoch_length);
+
+        let cfg = deterministic::Config::default().with_seed(setup.seed);
+        let executor = Runner::from(cfg);
+
+        executor.start(|mut context| async move {
+            let (mut validators, _execution_runtime) =
+                setup_validators(&mut context, setup.clone()).await;
+
+            join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+            if connect_execution_layer {
+                connect_execution_peers(&validators).await;
+            }
+
+            debug!(
+                height = restart_after,
+                "waiting for network to reach target height before stopping a validator",
+            );
+            wait_for_height(&context, setup.how_many_signers, restart_after, false).await;
+
+            validators[0].stop().await;
+            debug!(public_key = %validators[0].public_key(), "stopped validator");
+
+            // wait a bit to let the network settle; some finalizations come in later
+            context.sleep(Duration::from_secs(5)).await;
+            ensure_no_progress(&context, 5).await;
+
+            validators[0].start(&context).await;
+            if connect_execution_layer {
+                connect_execution_to_peers(&validators[0], &validators).await;
+            }
+
+            debug!(
+                public_key = %validators[0].public_key(),
+                "restarted validator",
+            );
+
+            debug!(
+                height = stop_at,
+                "waiting for reconstituted validators to reach target height to reach test success",
+            );
+            wait_for_height(&context, validators.len() as u32, stop_at, false).await;
+        })
+    }
+}
+
+#[test_traced]
+fn validator_catches_up_to_network_during_epoch() {
+    let _ = tempo_eyre::install();
+
+    RestartSetup {
+        epoch_length: 100,
+        shutdown_height: 5,
+        restart_height: 10,
+        final_height: 15,
+        assert_skips: false,
+        connect_execution_layer: false,
+    }
+    .run();
+}
+
+#[test_traced]
+fn validator_catches_up_with_gap_of_one_epoch() {
+    let _ = tempo_eyre::install();
+
+    let epoch_length = 30;
+    RestartSetup {
+        epoch_length,
+        shutdown_height: epoch_length + 1,
+        restart_height: 2 * epoch_length + 1,
+        final_height: 3 * epoch_length + 1,
+        assert_skips: false,
+        connect_execution_layer: false,
+    }
+    .run();
+}
+
+#[test_traced]
+fn validator_catches_up_with_gap_of_three_epochs() {
+    let _ = tempo_eyre::install();
+
+    let epoch_length = 30;
+    RestartSetup {
+        epoch_length,
+        connect_execution_layer: true,
+        shutdown_height: epoch_length + 1,
+        restart_height: 4 * epoch_length + 1,
+        final_height: 5 * epoch_length + 1,
+        assert_skips: true,
+    }
+    .run();
+}
+
+#[test_traced]
+fn single_node_recovers_after_finalizing_ceremony() {
+    AssertNodeRecoversAfterFinalizingBlock {
+        n_validators: 1,
+        epoch_length: 6,
+        shutdown_after_finalizing: ShutdownAfterFinalizing::Ceremony,
+    }
+    .run()
+}
+
+#[test_traced]
+fn node_recovers_after_finalizing_ceremony_four_validators() {
+    AssertNodeRecoversAfterFinalizingBlock {
+        n_validators: 4,
+        epoch_length: 30,
+        shutdown_after_finalizing: ShutdownAfterFinalizing::Ceremony,
+    }
+    .run()
+}
+
+#[test_traced]
+fn node_recovers_after_finalizing_middle_of_epoch_four_validators() {
+    AssertNodeRecoversAfterFinalizingBlock {
+        n_validators: 4,
+        epoch_length: 30,
+        shutdown_after_finalizing: ShutdownAfterFinalizing::MiddleOfEpoch,
+    }
+    .run()
+}
+
+#[test_traced]
+fn node_recovers_before_finalizing_middle_of_epoch_four_validators() {
+    AssertNodeRecoversAfterFinalizingBlock {
+        n_validators: 4,
+        epoch_length: 30,
+        shutdown_after_finalizing: ShutdownAfterFinalizing::BeforeMiddleOfEpoch,
+    }
+    .run()
+}
+
+#[test_traced]
+fn single_node_recovers_after_finalizing_boundary() {
+    AssertNodeRecoversAfterFinalizingBlock {
+        n_validators: 1,
+        epoch_length: 10,
+        shutdown_after_finalizing: ShutdownAfterFinalizing::Boundary,
+    }
+    .run()
+}
+
+#[test_traced]
+fn node_recovers_after_finalizing_boundary_four_validators() {
+    AssertNodeRecoversAfterFinalizingBlock {
+        n_validators: 4,
+        epoch_length: 30,
+        shutdown_after_finalizing: ShutdownAfterFinalizing::Boundary,
+    }
+    .run()
+}
 
 /// Test configuration for restart scenarios
 #[derive(Clone)]
 struct RestartSetup {
-    // Setup for the nodes to launch.
-    node_setup: Setup,
+    // The epoch length to use.
+    epoch_length: u64,
     /// Whether to connect the execution layer.
     connect_execution_layer: bool,
     /// Height at which to shutdown a validator
@@ -34,91 +236,91 @@ struct RestartSetup {
     restart_height: u64,
     /// Final height that all validators (including restarted) must reach
     final_height: u64,
-
     /// Whether to assert that DKG rounds were skipped
     assert_skips: bool,
 }
 
-/// Runs a validator restart test with the given configuration
-#[track_caller]
-fn run_restart_test(
-    RestartSetup {
-        node_setup,
-        connect_execution_layer,
-        shutdown_height,
-        restart_height,
-        final_height,
-        assert_skips,
-    }: RestartSetup,
-) -> String {
-    let _ = tempo_eyre::install();
-    let cfg = deterministic::Config::default().with_seed(node_setup.seed);
-    let executor = Runner::from(cfg);
-
-    executor.start(|mut context| async move {
-        let (mut validators, _execution_runtime) =
-            setup_validators(&mut context, node_setup.clone()).await;
-
-        join_all(validators.iter_mut().map(|v| v.start(&context))).await;
-        if connect_execution_layer {
-            connect_execution_peers(&validators).await;
-        }
-
-        debug!(
-            height = shutdown_height,
-            "waiting for network to reach target height before stopping a validator",
-        );
-        wait_for_height(
-            &context,
-            node_setup.how_many_signers,
+impl RestartSetup {
+    #[track_caller]
+    fn run(self) {
+        let Self {
+            epoch_length,
             shutdown_height,
-            false,
-        )
-        .await;
-
-        // Randomly select a validator to kill
-        let idx = context.gen_range(0..validators.len());
-        validators[idx].stop().await;
-
-        debug!(public_key = %validators[idx].public_key(), "stopped a random validator");
-
-        debug!(
-            height = restart_height,
-            "waiting for remaining validators to reach target height before restarting validator",
-        );
-        wait_for_height(
-            &context,
-            node_setup.how_many_signers - 1,
             restart_height,
-            false,
-        )
-        .await;
-
-        debug!("target height reached, restarting stopped validator");
-        validators[idx].start(&context).await;
-        if connect_execution_layer {
-            connect_execution_to_peers(&validators[idx], &validators).await;
-        }
-
-        debug!(
-            public_key = %validators[idx].public_key(),
-            "restarted validator",
-        );
-
-        debug!(
-            height = final_height,
-            "waiting for reconstituted validators to reach target height to reach test success",
-        );
-        wait_for_height(
-            &context,
-            node_setup.how_many_signers,
             final_height,
             assert_skips,
-        )
-        .await;
+            connect_execution_layer,
+        } = self;
+        let _ = tempo_eyre::install();
 
-        context.auditor().state()
+        let setup = Setup::new().epoch_length(epoch_length);
+
+        let cfg = deterministic::Config::default().with_seed(setup.seed);
+        let executor = Runner::from(cfg);
+
+        executor.start(|mut context| async move {
+            let (mut validators, _execution_runtime) =
+                setup_validators(&mut context, setup.clone()).await;
+
+            join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+            if connect_execution_layer {
+                connect_execution_peers(&validators).await;
+            }
+
+            debug!(
+                height = shutdown_height,
+                "waiting for network to reach target height before stopping a validator",
+            );
+            wait_for_height(
+                &context,
+                setup.how_many_signers,
+                shutdown_height,
+                false,
+            )
+            .await;
+
+            // Randomly select a validator to kill
+            let idx = context.gen_range(0..validators.len());
+            validators[idx].stop().await;
+
+            debug!(public_key = %validators[idx].public_key(), "stopped a random validator");
+
+            debug!(
+                height = restart_height,
+                "waiting for remaining validators to reach target height before restarting validator",
+            );
+            wait_for_height(
+                &context,
+                setup.how_many_signers - 1,
+                restart_height,
+                false,
+            )
+            .await;
+
+            debug!("target height reached, restarting stopped validator");
+            validators[idx].start(&context).await;
+            if connect_execution_layer {
+                connect_execution_to_peers(&validators[idx], &validators).await;
+            }
+
+            debug!(
+                public_key = %validators[idx].public_key(),
+                "restarted validator",
+            );
+
+            debug!(
+                height = final_height,
+                "waiting for reconstituted validators to reach target height to reach test success",
+            );
+            wait_for_height(
+                &context,
+                setup.how_many_signers,
+                final_height,
+                assert_skips,
+            )
+            .await;
     })
+    }
 }
 
 /// Wait for a specific number of validators to reach a target height
@@ -211,170 +413,6 @@ async fn ensure_no_progress(context: &Context, tries: u32) {
         }
     }
 }
-
-/// This is the simplest possible restart case: the network stops because we
-/// dropped below quorum. The node should be able to pick up after.
-#[test_traced]
-fn network_resumes_after_restart() {
-    let _ = tempo_eyre::install();
-
-    for seed in 0..3 {
-        let setup = Setup::new()
-            .how_many_signers(3) // quorum for 3 validators is 3.
-            .seed(seed)
-            .epoch_length(100);
-
-        let shutdown_height = 5;
-        let final_height = 10;
-
-        let cfg = deterministic::Config::default().with_seed(setup.seed);
-        let executor = Runner::from(cfg);
-
-        executor.start(|mut context| async move {
-            let (mut validators, _execution_runtime) =
-                setup_validators(&mut context, setup.clone()).await;
-
-            join_all(validators.iter_mut().map(|v| v.start(&context))).await;
-
-            debug!(
-                height = shutdown_height,
-                "waiting for network to reach target height before stopping a validator",
-            );
-            wait_for_height(&context, setup.how_many_signers, shutdown_height, false).await;
-
-            let idx = context.gen_range(0..validators.len());
-            validators[idx].stop().await;
-            debug!(public_key = %validators[idx].public_key(), "stopped a random validator");
-
-            // wait a bit to let the network settle; some finalizations come in later
-            context.sleep(Duration::from_secs(1)).await;
-            ensure_no_progress(&context, 5).await;
-
-            validators[idx].start(&context).await;
-            debug!(
-                public_key = %validators[idx].public_key(),
-                "restarted validator",
-            );
-
-            debug!(
-                height = final_height,
-                "waiting for reconstituted validators to reach target height to reach test success",
-            );
-            wait_for_height(&context, validators.len() as u32, final_height, false).await;
-        })
-    }
-}
-
-#[test_traced]
-fn validator_catches_up_to_network_during_epoch() {
-    let _ = tempo_eyre::install();
-
-    let setup = RestartSetup {
-        node_setup: Setup::new().epoch_length(100),
-        connect_execution_layer: false,
-        shutdown_height: 5,
-        restart_height: 10,
-        final_height: 15,
-        assert_skips: false,
-    };
-
-    let _state = run_restart_test(setup);
-}
-
-#[test_traced]
-fn validator_catches_up_with_gap_of_one_epoch() {
-    let _ = tempo_eyre::install();
-
-    let epoch_length = 30;
-    let setup = RestartSetup {
-        node_setup: Setup::new().epoch_length(epoch_length),
-        connect_execution_layer: false,
-        shutdown_height: epoch_length + 1,
-        restart_height: 2 * epoch_length + 1,
-        final_height: 3 * epoch_length + 1,
-        assert_skips: false,
-    };
-
-    let _state = run_restart_test(setup);
-}
-
-#[test_traced]
-fn validator_catches_up_with_gap_of_three_epochs() {
-    let _ = tempo_eyre::install();
-
-    let epoch_length = 30;
-    let setup = RestartSetup {
-        node_setup: Setup::new().epoch_length(epoch_length),
-        connect_execution_layer: true,
-        shutdown_height: epoch_length + 1,
-        restart_height: 4 * epoch_length + 1,
-        final_height: 5 * epoch_length + 1,
-        assert_skips: true,
-    };
-
-    let _state = run_restart_test(setup);
-}
-
-#[test_traced]
-fn single_node_recovers_after_finalizing_ceremony() {
-    AssertNodeRecoversAfterFinalizingBlock {
-        n_validators: 1,
-        epoch_length: 6,
-        shutdown_after_finalizing: ShutdownAfterFinalizing::Ceremony,
-    }
-    .run()
-}
-
-#[test_traced]
-fn node_recovers_after_finalizing_ceremony_four_validators() {
-    AssertNodeRecoversAfterFinalizingBlock {
-        n_validators: 4,
-        epoch_length: 30,
-        shutdown_after_finalizing: ShutdownAfterFinalizing::Ceremony,
-    }
-    .run()
-}
-
-#[test_traced]
-fn node_recovers_after_finalizing_middle_of_epoch_four_validators() {
-    AssertNodeRecoversAfterFinalizingBlock {
-        n_validators: 4,
-        epoch_length: 30,
-        shutdown_after_finalizing: ShutdownAfterFinalizing::MiddleOfEpoch,
-    }
-    .run()
-}
-
-#[test_traced]
-fn node_recovers_before_finalizing_middle_of_epoch_four_validators() {
-    AssertNodeRecoversAfterFinalizingBlock {
-        n_validators: 4,
-        epoch_length: 30,
-        shutdown_after_finalizing: ShutdownAfterFinalizing::BeforeMiddleOfEpoch,
-    }
-    .run()
-}
-
-#[test_traced]
-fn single_node_recovers_after_finalizing_boundary() {
-    AssertNodeRecoversAfterFinalizingBlock {
-        n_validators: 1,
-        epoch_length: 10,
-        shutdown_after_finalizing: ShutdownAfterFinalizing::Boundary,
-    }
-    .run()
-}
-
-#[test_traced]
-fn node_recovers_after_finalizing_boundary_four_validators() {
-    AssertNodeRecoversAfterFinalizingBlock {
-        n_validators: 4,
-        epoch_length: 30,
-        shutdown_after_finalizing: ShutdownAfterFinalizing::Boundary,
-    }
-    .run()
-}
-
 enum ShutdownAfterFinalizing {
     Boundary,
     Ceremony,
@@ -517,4 +555,117 @@ impl AssertNodeRecoversAfterFinalizingBlock {
             }
         });
     }
+}
+
+/// After a clean stop, unwind reth's DB by 2 blocks, then restart. The CL's
+/// marshal storage still has the higher finalized height, so the executor's
+/// `backfill_on_start` path fires to replay the missing blocks.
+///
+/// This also simulates regular expected EL behavior, where the last few
+/// blocks are not guaranteed to be persisted even if finalized.
+#[test_traced]
+fn backfill_on_start_after_crash() {
+    let _ = tempo_eyre::install();
+
+    let setup = Setup::new().how_many_signers(1).epoch_length(100);
+
+    let cfg = deterministic::Config::default().with_seed(setup.seed);
+    Runner::from(cfg).start(|mut context| async move {
+        let (mut validators, _execution_runtime) =
+            setup_validators(&mut context, setup.clone()).await;
+
+        join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+
+        // Wait for chain to advance past 10
+        wait_for_height(&context, 1, 10, false).await;
+
+        validators[0].stop().await;
+
+        // Unwind EL by 2 blocks to simulate crash
+        let (el_before, el_after) = validators[0].unwind(2);
+        assert!(el_before > el_after);
+
+        // Restart — should trigger backfill_on_start
+        validators[0].start(&context).await;
+
+        // Wait for the node to recover and produce past the pre-unwind height
+        wait_for_height(&context, 1, el_before + 5, false).await;
+
+        // Verify EL actually persisted the recovered blocks
+        let el_recovered = validators[0]
+            .execution_provider()
+            .last_block_number()
+            .unwrap();
+        assert!(
+            el_recovered >= el_before,
+            "EL should have recovered to at least {el_before} after backfill, \
+            got {el_recovered}"
+        );
+    });
+}
+
+/// Reproduces the race where a large EL gap triggers a pipeline run on
+/// restart.
+///
+/// On restart with a 50-block gap, `select_biased!` in the consensus loop
+/// falls through to the mailbox while `marshal.get_block()` is still
+/// pending. A `Finalize` for `CL_tip + 1` arrives from live consensus;
+/// its FCU triggers a download from EL peers. The downloaded block is
+/// disconnected from the local chain and the gap exceeds 32, so reth
+/// triggers a pipeline run.
+///
+/// The test asserts that **no** pipeline runs occur — the node should
+/// recover purely via backfill + live sync.
+#[test_traced]
+fn backfill_on_start_large_gap_does_not_trigger_pipeline_sync() {
+    let _ = tempo_eyre::install();
+    let metrics_recorder = install_prometheus_recorder();
+
+    let setup = Setup::new().how_many_signers(4).epoch_length(100);
+
+    let cfg = deterministic::Config::default().with_seed(setup.seed);
+    Runner::from(cfg).start(|mut context| async move {
+        let (mut validators, _execution_runtime) =
+            setup_validators(&mut context, setup.clone()).await;
+
+        join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+        connect_execution_peers(&validators).await;
+
+        // Let the network reach height 40.
+        wait_for_height(&context, 4, 40, false).await;
+
+        // Stop validator[0] and unwind its EL by 35 blocks (exceeds 32-block pipeline sync threshold).
+        validators[0].stop().await;
+        let (el_before, el_after) = validators[0].unwind(35);
+        debug!(el_before, el_after, "unwound validator[0] by 35 blocks");
+
+        // Let the remaining 3 validators advance 10 more blocks.
+        wait_for_height(&context, 3, 50, false).await;
+
+        let pipeline_runs_before = get_pipeline_runs(metrics_recorder);
+
+        // Restart validator[0] with EL peers connected.
+        validators[0].start(&context).await;
+        connect_execution_to_peers(&validators[0], &validators).await;
+
+        // Wait up to 60s for the node to recover.
+        let mut recovered = false;
+        for _ in 0..60 {
+            context.sleep(Duration::from_secs(1)).await;
+            let current = validators[0]
+                .execution_provider()
+                .last_block_number()
+                .unwrap();
+
+            if current >= el_before + 5 {
+                recovered = true;
+                break;
+            }
+        }
+
+        assert!(recovered, "unwound validator did not recover");
+
+        let new_pipeline_runs = get_pipeline_runs(metrics_recorder) - pipeline_runs_before;
+        assert_eq!(new_pipeline_runs, 0);
+    });
 }

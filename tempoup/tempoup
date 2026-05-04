@@ -285,9 +285,14 @@ get_latest_version() {
         error "curl not found. Please install curl."
     fi
 
-    local api_url="https://api.github.com/repos/$REPO/releases/latest"
+    # List recent non-prerelease releases and pick the first tag starting with
+    # "v" (binary releases). The /releases/latest endpoint can return crate-publish
+    # tags (e.g. tempo-primitives@1.6.0) which carry no binary assets.
+    # We also match only strict "vN.N.N" to skip prerelease tags like v1.6.0-rc.1.
+    local api_url="https://api.github.com/repos/$REPO/releases?per_page=100"
     local version=$(curl -sSL "$api_url" 2>/dev/null | \
-        grep '"tag_name":' | head -n 1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
+        grep '"tag_name":' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/' | \
+        grep '^v[0-9]*\.[0-9]*\.[0-9]*$' | head -n 1)
 
     if [[ -z "$version" ]]; then
         error "Failed to fetch latest version from GitHub"

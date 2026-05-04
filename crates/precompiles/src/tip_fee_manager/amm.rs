@@ -214,6 +214,11 @@ impl TipFeeManager {
     /// permanently locked. Subsequent deposits mint pro-rata to existing supply. Both tokens
     /// must be distinct, USD-denominated TIP-20s.
     ///
+    /// NOTE: Validators who also provide liquidity have an information advantage over non-validator
+    /// LPs. Because validators choose their preferred fee token and control transaction inclusion
+    /// order as block producers, a validator-LP can predict which pool will receive fee-swap
+    /// revenue and position liquidity accordingly.
+    ///
     /// # Errors
     /// - `IdenticalAddresses` — `user_token` equals `validator_token`
     /// - `InvalidAmount` — `amount_validator_token` is zero or exceeds `u128`
