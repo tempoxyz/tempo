@@ -1,14 +1,13 @@
-//! Upstream node abstraction for follow mode.
+//! Actors to communicate with the upstream node.
 //!
-//! Defines the [`UpstreamNode`] trait that captures the operations the follow
-//! engine needs from an upstream node, and provides two implementations:
-//!
-//! - [`WsUpstream`]: WebSocket RPC for production use.
-//! - [`LocalUpstream`]: Direct access for testing network I/O.
+//! Provides [`Actor`] as a regular connection to an upstream node over
+//! websocket, and `in_process::Actor` as an in-process actor working off of
+//! channels.
 
 use commonware_consensus::Reporter;
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner};
-use futures::{stream, stream::StreamExt as _};
+use futures::stream;
+use futures::stream::StreamExt as _;
 use tempo_node::rpc::consensus::Event;
 use tokio::sync::mpsc;
 
