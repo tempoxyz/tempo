@@ -22,6 +22,7 @@ pub use tempo_contracts::precompiles::{
     },
     authorizeKeyCall, getAllowedCallsReturn, getRemainingLimitReturn,
 };
+use tempo_primitives::TempoAddressExt;
 
 use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
@@ -476,12 +477,7 @@ impl AccountKeychain {
             return Err(AccountKeychainError::invalid_call_scope().into());
         }
 
-        let mut seen_targets = HashSet::with_capacity(scopes.len());
-        for scope in &scopes {
-            if !seen_targets.insert(scope.target) {
-                return Err(AccountKeychainError::invalid_call_scope().into());
-            }
-        }
+        self.validate_call_scopes(&scopes)?;
 
         for scope in &scopes {
             self.upsert_target_scope(key_hash, scope)?;
@@ -781,12 +777,7 @@ impl AccountKeychain {
                     return Ok(());
                 }
 
-                let mut seen_targets = HashSet::new();
-                for scope in scopes {
-                    if !seen_targets.insert(scope.target) {
-                        return Err(AccountKeychainError::invalid_call_scope().into());
-                    }
-                }
+                self.validate_call_scopes(scopes)?;
 
                 for scope in scopes {
                     self.upsert_target_scope(account_key, scope)?;
@@ -836,14 +827,9 @@ impl AccountKeychain {
     fn upsert_target_scope(&mut self, account_key: B256, scope: &CallScope) -> Result<()> {
         let target = scope.target;
 
-        // The public API uses the absence of a target to block it, so persisting address(0) as a
-        // real target is always confusing and serves no useful purpose.
-        if target.is_zero() {
-            return Err(AccountKeychainError::invalid_call_scope().into());
-        }
-
-        if !scope.selectorRules.is_empty() {
-            self.validate_selector_rules(target, &scope.selectorRules)?;
+        // Pre-T4: validate call scopes inline
+        if !self.storage.spec().is_t4() {
+            self.validate_call_scope(scope)?;
         }
 
         self.key_scopes[account_key].targets.insert(target)?;
@@ -882,6 +868,37 @@ impl AccountKeychain {
         Ok(())
     }
 
+    /// Validates a list of [`CallScope`]s.
+    fn validate_call_scopes(&self, scopes: &[CallScope]) -> Result<()> {
+        let mut seen_targets = HashSet::new();
+        for scope in scopes {
+            if !seen_targets.insert(scope.target) {
+                return Err(AccountKeychainError::invalid_call_scope().into());
+            }
+
+            // Post-T4: validate call scopes before inserting
+            if self.storage.spec().is_t4() {
+                self.validate_call_scope(scope)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Validates a single [`CallScope`].
+    fn validate_call_scope(&self, scope: &CallScope) -> Result<()> {
+        // The public API uses the absence of a target to block it, so persisting address(0) as a
+        // real target is always confusing and serves no useful purpose.
+        if scope.target.is_zero() {
+            return Err(AccountKeychainError::invalid_call_scope().into());
+        }
+
+        if !scope.selectorRules.is_empty() {
+            self.validate_selector_rules(scope.target, &scope.selectorRules)?;
+        }
+
+        Ok(())
+    }
+
     /// Validates per-selector scope rules for one target before they are persisted.
     ///
     /// `recipients = []` is an explicit allow-all sentinel at the selector level. To deny a
@@ -892,7 +909,15 @@ impl AccountKeychain {
         let mut is_tip20 = || -> Result<bool> {
             match cached_is_tip20 {
                 Some(v) => Ok(v),
-                None => Ok(*cached_is_tip20.insert(TIP20Factory::new().is_tip20(target)?)),
+                None => Ok(*cached_is_tip20.insert({
+                    if !self.storage.spec().is_t4() {
+                        // Pre-T4: validate that TIP-20 is initialized
+                        TIP20Factory::new().is_tip20(target)?
+                    } else {
+                        // Post-T4: only validate the address
+                        target.is_tip20()
+                    }
+                })),
             }
         };
 
