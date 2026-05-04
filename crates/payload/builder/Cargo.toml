@@ -39,7 +39,6 @@ alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
 
-either.workspace = true
 metrics.workspace = true
 tracing.workspace = true
 
