@@ -15,7 +15,7 @@ pub use tempo_contracts::precompiles::{
 use tempo_precompiles_macros::{Storable, contract};
 
 use crate::{
-    TIP403_REGISTRY_ADDRESS,
+    TIP1028_ESCROW_ADDRESS, TIP403_REGISTRY_ADDRESS,
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
 };
@@ -48,6 +48,19 @@ pub struct TIP403Registry {
     /// value is `true` when the address is allowed; for blacklists it is `true` when the
     /// address is restricted.
     policy_set: Mapping<u64, Mapping<Address, bool>>,
+    /// Per-account receive policy configuration.
+    address_receive_config: Mapping<Address, ReceivePolicyConfig>,
+    /// Per-account recovery contract for blocked inbound claims.
+    address_recovery_contract: Mapping<Address, Address>,
+}
+
+#[derive(Debug, Clone, Default, Storable)]
+pub struct ReceivePolicyConfig {
+    pub has_receive_policy: bool,
+    pub sender_policy_id: u64,
+    pub sender_policy_type: u8,
+    pub token_filter_id: u64,
+    pub token_filter_type: u8,
 }
 
 /// Policy record containing base data and optional data for compound policies ([TIP-1015])
@@ -230,6 +243,59 @@ impl TIP403Registry {
         })
     }
 
+    pub fn receive_policy(
+        &self,
+        call: ITIP403Registry::receivePolicyCall,
+    ) -> Result<ITIP403Registry::receivePolicyReturn> {
+        let config = self.address_receive_config[call.account].read()?;
+        Ok(ITIP403Registry::receivePolicyReturn {
+            hasReceivePolicy: config.has_receive_policy,
+            senderPolicyId: config.sender_policy_id,
+            senderPolicyType: config
+                .sender_policy_type
+                .try_into()
+                .map_err(|_| TIP403RegistryError::invalid_policy_type())?,
+            tokenFilterId: config.token_filter_id,
+            tokenFilterType: config
+                .token_filter_type
+                .try_into()
+                .map_err(|_| TIP403RegistryError::invalid_policy_type())?,
+            recoveryContract: self.address_recovery_contract[call.account].read()?,
+        })
+    }
+
+    pub fn validate_receive_policy(
+        &self,
+        call: ITIP403Registry::validateReceivePolicyCall,
+    ) -> Result<ITIP403Registry::validateReceivePolicyReturn> {
+        let config = self.address_receive_config[call.receiver].read()?;
+        if !config.has_receive_policy {
+            return Ok(ITIP403Registry::validateReceivePolicyReturn {
+                authorized: true,
+                blockedReason: ITIP403Registry::BlockedReason::NONE,
+            });
+        }
+
+        let token_allowed = self.is_authorized_simple(config.token_filter_id, call.token)?;
+        let sender_allowed = self.is_authorized_simple(config.sender_policy_id, call.sender)?;
+
+        let blocked_reason = match (token_allowed, sender_allowed) {
+            (true, true) => ITIP403Registry::BlockedReason::NONE,
+            (false, true) => ITIP403Registry::BlockedReason::TOKEN_FILTER,
+            (true, false) => ITIP403Registry::BlockedReason::RECEIVE_POLICY,
+            (false, false) => ITIP403Registry::BlockedReason::TOKEN_FILTER_AND_RECEIVE_POLICY,
+        };
+
+        Ok(ITIP403Registry::validateReceivePolicyReturn {
+            authorized: blocked_reason == ITIP403Registry::BlockedReason::NONE,
+            blockedReason: blocked_reason,
+        })
+    }
+
+    pub fn receive_policy_recovery_contract(&self, account: Address) -> Result<Address> {
+        self.address_recovery_contract[account].read()
+    }
+
     /// Creates a new simple (whitelist or blacklist) policy and returns its ID.
     ///
     /// # Errors
@@ -274,6 +340,37 @@ impl TIP403Registry {
         ))?;
 
         Ok(new_policy_id)
+    }
+
+    pub fn set_receive_policy(
+        &mut self,
+        msg_sender: Address,
+        call: ITIP403Registry::setReceivePolicyCall,
+    ) -> Result<()> {
+        if msg_sender == TIP1028_ESCROW_ADDRESS || msg_sender.is_virtual() {
+            return Err(TIP403RegistryError::virtual_address_not_allowed().into());
+        }
+
+        let sender_policy_type = self.validate_receive_policy_id(call.senderPolicyId)?;
+        let token_filter_type = self.validate_receive_token_filter_id(call.tokenFilterId)?;
+
+        self.address_receive_config[msg_sender].write(ReceivePolicyConfig {
+            has_receive_policy: true,
+            sender_policy_id: call.senderPolicyId,
+            sender_policy_type,
+            token_filter_id: call.tokenFilterId,
+            token_filter_type,
+        })?;
+        self.address_recovery_contract[msg_sender].write(call.recoveryContract)?;
+
+        self.emit_event(TIP403RegistryEvent::ReceivePolicyUpdated(
+            ITIP403Registry::ReceivePolicyUpdated {
+                account: msg_sender,
+                senderPolicyId: call.senderPolicyId,
+                tokenFilterId: call.tokenFilterId,
+                recoveryContract: call.recoveryContract,
+            },
+        ))
     }
 
     /// Creates a simple policy and pre-populates it with an initial set of accounts.
@@ -635,6 +732,34 @@ impl TIP403Registry {
         }
 
         Ok(())
+    }
+
+    fn validate_receive_policy_id(&self, policy_id: u64) -> Result<u8> {
+        if self.builtin_authorization(policy_id).is_some() {
+            return Ok(policy_id as u8);
+        }
+        if policy_id >= self.policy_id_counter()? {
+            return Err(TIP403RegistryError::policy_not_found().into());
+        }
+        let data = self.get_policy_data(policy_id)?;
+        if !data.is_simple() {
+            return Err(TIP403RegistryError::invalid_receive_policy_type().into());
+        }
+        Ok(data.policy_type)
+    }
+
+    fn validate_receive_token_filter_id(&self, policy_id: u64) -> Result<u8> {
+        if self.builtin_authorization(policy_id).is_some() {
+            return Ok(policy_id as u8);
+        }
+        if policy_id >= self.policy_id_counter()? {
+            return Err(TIP403RegistryError::policy_not_found().into());
+        }
+        let data = self.get_policy_data(policy_id)?;
+        if !data.is_simple() {
+            return Err(TIP403RegistryError::invalid_token_filter_type().into());
+        }
+        Ok(data.policy_type)
     }
 
     // Internal helper functions
