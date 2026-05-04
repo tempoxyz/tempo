@@ -435,8 +435,8 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::mintWithMemoCall,
     ) -> Result<()> {
-        let to = Recipient::resolve(call.to)?;
-        let blocked = self._mint(msg_sender, &to, call.to, call.amount, call.memo)?;
+        let recipient = Recipient::resolve(call.to)?;
+        let blocked = self._mint(msg_sender, &recipient, call.to, call.amount, call.memo)?;
 
         if blocked.is_none() {
             self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
@@ -455,8 +455,15 @@ impl TIP20Token {
             amount: call.amount,
         }))?;
         if let Some(blocked) = blocked {
-            self.emit_mint_blocked(msg_sender, &to, call.to, call.amount, call.memo, blocked)?;
-        } else if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
+            self.emit_mint_blocked(
+                msg_sender,
+                &recipient,
+                call.to,
+                call.amount,
+                call.memo,
+                blocked,
+            )?;
+        } else if let Some(hop) = recipient.build_virtual_transfer_event(call.amount) {
             self.emit_event(hop)?;
         }
         Ok(())
@@ -466,8 +473,8 @@ impl TIP20Token {
     fn _mint(
         &mut self,
         msg_sender: Address,
-        to: &Recipient,
-        literal_to: Address,
+        recipient: &Recipient,
+        to: Address,
         amount: U256,
         memo: B256,
     ) -> Result<Option<StoredBlockedInbound>> {
@@ -475,7 +482,7 @@ impl TIP20Token {
         let total_supply = self.total_supply()?;
 
         // Check if the resolved target address is authorized to receive minted tokens
-        self.validate_mint(to)?;
+        self.validate_mint(recipient)?;
 
         let new_supply = total_supply
             .checked_add(amount)
@@ -486,11 +493,11 @@ impl TIP20Token {
             return Err(TIP20Error::supply_cap_exceeded().into());
         }
 
-        let blocked = self.blocked_inbound(msg_sender, to.target)?;
+        let blocked = self.blocked_inbound(msg_sender, recipient.target)?;
         let credit_to = if blocked.is_some() {
             Recipient::direct(TIP1028_ESCROW_ADDRESS)
         } else {
-            *to
+            *recipient
         };
 
         self.handle_rewards_on_mint(credit_to.target, amount)?;
@@ -507,8 +514,8 @@ impl TIP20Token {
             return self
                 .store_blocked_inbound(
                     Address::ZERO,
-                    to.target,
-                    literal_to,
+                    recipient.target,
+                    to,
                     blocked,
                     amount,
                     ITIP1028Escrow::InboundKind::MINT,
@@ -853,12 +860,12 @@ impl TIP20Token {
         &mut self,
         msg_sender: Address,
         from: Address,
-        to: &Recipient,
-        literal_to: Address,
+        recipient: &Recipient,
+        to: Address,
         amount: U256,
         memo: B256,
     ) -> Result<bool> {
-        self.validate_transfer(from, to)?;
+        self.validate_transfer(from, recipient)?;
 
         let allowed = self.get_allowance(from, msg_sender)?;
         if amount > allowed {
@@ -872,7 +879,7 @@ impl TIP20Token {
             self.set_allowance(from, msg_sender, new_allowance)?;
         }
 
-        self.transfer_or_blocked(from, to, literal_to, amount, memo)
+        self.transfer_or_blocked(from, recipient, to, amount, memo)
     }
 
     /// Like [`Self::transfer`], but attaches a 32-byte memo.
@@ -1103,13 +1110,13 @@ impl TIP20Token {
     fn transfer_or_blocked(
         &mut self,
         from: Address,
-        to: &Recipient,
-        literal_to: Address,
+        recipient: &Recipient,
+        to: Address,
         amount: U256,
         memo: B256,
     ) -> Result<bool> {
-        let Some(blocked) = self.blocked_inbound(from, to.target)? else {
-            self._transfer(from, to, amount)?;
+        let Some(blocked) = self.blocked_inbound(from, recipient.target)? else {
+            self._transfer(from, recipient, amount)?;
             return Ok(false);
         };
 
@@ -1117,14 +1124,14 @@ impl TIP20Token {
         self._transfer(from, &escrow, amount)?;
         let stored = self.store_blocked_inbound(
             from,
-            to.target,
-            literal_to,
+            recipient.target,
+            to,
             blocked,
             amount,
             ITIP1028Escrow::InboundKind::TRANSFER,
             memo,
         )?;
-        self.emit_transfer_blocked(from, to, literal_to, amount, memo, stored)?;
+        self.emit_transfer_blocked(from, recipient, to, amount, memo, stored)?;
         Ok(true)
     }
 
@@ -1164,8 +1171,8 @@ impl TIP20Token {
     fn emit_transfer_blocked(
         &mut self,
         from: Address,
-        to: &Recipient,
-        literal_to: Address,
+        recipient: &Recipient,
+        to: Address,
         amount: U256,
         memo: B256,
         blocked: StoredBlockedInbound,
@@ -1173,11 +1180,11 @@ impl TIP20Token {
         self.emit_event(TIP20Event::TransferBlocked(ITIP20::TransferBlocked {
             token: self.address,
             from,
-            receiver: to.target,
+            receiver: recipient.target,
             receiptVersion: crate::tip1028_escrow::BLOCKED_RECEIPT_VERSION,
             blockedNonce: blocked.blocked_nonce,
             blockedAt: blocked.blocked_at,
-            recipient: literal_to,
+            recipient: to,
             amount,
             blockedReason: Self::blocked_reason_for_tip20(blocked.blocked_reason),
             recoveryContract: blocked.recovery_contract,
@@ -1188,8 +1195,8 @@ impl TIP20Token {
     fn emit_mint_blocked(
         &mut self,
         operator: Address,
-        to: &Recipient,
-        literal_to: Address,
+        recipient: &Recipient,
+        to: Address,
         amount: U256,
         memo: B256,
         blocked: StoredBlockedInbound,
@@ -1197,11 +1204,11 @@ impl TIP20Token {
         self.emit_event(TIP20Event::MintBlocked(ITIP20::MintBlocked {
             token: self.address,
             operator,
-            receiver: to.target,
+            receiver: recipient.target,
             receiptVersion: crate::tip1028_escrow::BLOCKED_RECEIPT_VERSION,
             blockedNonce: blocked.blocked_nonce,
             blockedAt: blocked.blocked_at,
-            recipient: literal_to,
+            recipient: to,
             amount,
             blockedReason: Self::blocked_reason_for_tip20(blocked.blocked_reason),
             recoveryContract: blocked.recovery_contract,
