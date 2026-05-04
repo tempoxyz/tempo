@@ -11907,7 +11907,6 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "alloy-rpc-types-engine",
- "alloy-rpc-types-eth",
  "axum",
  "bytes",
  "clap",
@@ -11943,6 +11942,7 @@ dependencies = [
  "reth-provider",
  "reth-revm",
  "reth-rpc-convert",
+ "serde_json",
  "tempo-alloy",
  "tempo-chainspec",
  "tempo-commonware-node-config",
@@ -11953,6 +11953,7 @@ dependencies = [
  "tempo-primitives",
  "tempo-telemetry-util",
  "tokio",
+ "tokio-stream",
  "tracing",
 ]
 
@@ -12035,6 +12036,7 @@ dependencies = [
  "itertools 0.14.0",
  "jsonrpsee",
  "rand 0.8.5",
+ "rand_core 0.6.4",
  "reth-chainspec",
  "reth-db",
  "reth-ethereum",

@@ -7,8 +7,6 @@ mod driver;
 pub mod engine;
 pub(crate) mod resolver;
 mod stubs;
-mod upstream;
+pub mod upstream;
 
 pub use engine::Config;
-pub(crate) use upstream::WsUpstream;
-pub use upstream::{LocalUpstream, UpstreamNode};

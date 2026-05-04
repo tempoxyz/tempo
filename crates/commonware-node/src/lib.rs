@@ -170,16 +170,17 @@ pub async fn run_follow_stack(
         .epoch_length()
         .ok_or_eyre("chainspec did not contain epochLength")?;
 
-    let upstream = std::sync::Arc::new(follow::WsUpstream::new(
+    let (upstream, upstream_mailbox) = crate::follow::upstream::init(
         context.with_label("upstream"),
-        upstream_url,
-    ));
+        crate::follow::upstream::Config { upstream_url },
+    );
 
     let config = follow::Config {
         execution_node,
         feed_state,
-        partition_prefix: PARTITION_PREFIX.into(),
         upstream,
+        upstream_mailbox,
+        partition_prefix: PARTITION_PREFIX.into(),
         epoch_strategy: FixedEpocher::new(NZU64!(epoch_length)),
         mailbox_size: config.mailbox_size,
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
