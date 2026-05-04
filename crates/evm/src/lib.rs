@@ -145,6 +145,11 @@ impl ConfigureEvm for TempoEvmConfig {
         // and is independent of the T4 hardfork. The flag is currently left at its default
         // (`false`) so TIP-1016 is disabled even on T4; flipping it on enables the regular/
         // state gas split everywhere it is checked downstream.
+        //
+        // TODO(TIP-1016): this is the place where we previously did
+        // `cfg_env.enable_amsterdam_eip8037 = spec.is_t4();`. When TIP-1016 is ready to
+        // ship, re-enable it here (or wire it through chain spec / cfg defaults) so the
+        // state gas split activates on the appropriate hardfork.
         let amsterdam_eip8037_enabled = cfg_env.enable_amsterdam_eip8037;
         let mut cfg_env = cfg_env.with_spec_and_gas_params(
             spec,
@@ -189,6 +194,11 @@ impl ConfigureEvm for TempoEvmConfig {
         // Apply TIP-1000 gas params for T1 hardfork. TIP-1016 is gated by
         // `cfg_env.enable_amsterdam_eip8037`, independent of the T4 hardfork
         // (see `evm_env_for_block` for details).
+        //
+        // TODO(TIP-1016): this is the place where we previously did
+        // `cfg_env.enable_amsterdam_eip8037 = spec.is_t4();`. When TIP-1016 is ready to
+        // ship, re-enable it here (or wire it through chain spec / cfg defaults) so the
+        // state gas split activates on the appropriate hardfork.
         let amsterdam_eip8037_enabled = cfg_env.enable_amsterdam_eip8037;
         let mut cfg_env = cfg_env.with_spec_and_gas_params(
             spec,
