@@ -233,7 +233,6 @@ where
 
         self.metrics.dealers.set(state.dealers().len() as i64);
         self.metrics.players.set(state.players().len() as i64);
-        self.metrics.syncing_players.set(state.syncers.len() as i64);
 
         if let Some(previous) = state.epoch.previous() {
             // NOTE: State::prune emits an error event.
@@ -285,7 +284,6 @@ where
                 me = %self.config.me.public_key(),
                 dealers = ?state.dealers(),
                 players = ?state.players(),
-                syncers = ?state.syncers,
                 as_dealer = dealer_state.is_some(),
                 as_player = player_state.is_some(),
                 "entering a new DKG ceremony",
@@ -810,7 +808,6 @@ where
             output: onchain_outcome.output.clone(),
             share,
             players: onchain_outcome.next_players,
-            syncers: ordered::Set::default(),
             is_full_dkg: onchain_outcome.is_next_full_dkg,
         }))
     }
@@ -889,7 +886,6 @@ where
             output: onchain_outcome.output.clone(),
             share: state::ShareState::Plaintext(None),
             players: onchain_outcome.next_players,
-            syncers: ordered::Set::default(),
             is_full_dkg: onchain_outcome.is_next_full_dkg,
         }))
     }
@@ -1335,7 +1331,6 @@ where
         output: onchain_outcome.output.clone(),
         share,
         players: onchain_outcome.next_players,
-        syncers: ordered::Set::default(),
         is_full_dkg: onchain_outcome.is_next_full_dkg,
     })
 }
@@ -1354,7 +1349,6 @@ struct Metrics {
 
     dealers: Gauge,
     players: Gauge,
-    syncing_players: Gauge,
 
     how_often_dealer: Counter,
     how_often_player: Counter,
@@ -1367,13 +1361,6 @@ impl Metrics {
     where
         TContext: commonware_runtime::Metrics,
     {
-        let syncing_players = Gauge::default();
-        context.register(
-            "syncing_players",
-            "how many syncing players were registered; these will become players in the next ceremony",
-            syncing_players.clone(),
-        );
-
         let failures = Counter::default();
         context.register(
             "ceremony_failures",
@@ -1464,7 +1451,6 @@ impl Metrics {
         );
 
         Self {
-            syncing_players,
             shares_distributed,
             shares_received,
             acks_received,
