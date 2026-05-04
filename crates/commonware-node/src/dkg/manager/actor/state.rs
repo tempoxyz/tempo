@@ -506,7 +506,6 @@ impl Builder {
 
         let page_cache = CacheRef::from_pooler(&context, PAGE_SIZE, POOL_CAPACITY);
 
-        let states_partition = format!("{partition_prefix}_states");
         let states_metadata_partition = format!("{partition_prefix}_states_metadata");
 
         let mut states = metadata::Metadata::init(
