@@ -1,26 +1,16 @@
 //! ABI dispatch for the [`AccountKeychain`] precompile.
-
 use super::{AccountKeychain, KeyRestrictions, TokenLimit, authorizeKeyCall};
-use crate::{Precompile, SelectorSchedule, charge_input_cost, dispatch_call, mutate_void, view};
+use crate::{Precompile, charge_input_cost, mutate_void, view};
 use alloy::{
     primitives::Address,
     sol_types::{SolCall, SolInterface},
 };
 use revm::precompile::PrecompileResult;
-use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     AccountKeychainError,
     IAccountKeychain::{self, IAccountKeychainCalls},
 };
-
-const T3_ADDED: &[[u8; 4]] = &[
-    authorizeKeyCall::SELECTOR,
-    IAccountKeychain::setAllowedCallsCall::SELECTOR,
-    IAccountKeychain::removeAllowedCallsCall::SELECTOR,
-    IAccountKeychain::getRemainingLimitWithPeriodCall::SELECTOR,
-    IAccountKeychain::getAllowedCallsCall::SELECTOR,
-];
-const T3_DROPPED: &[[u8; 4]] = &[IAccountKeychain::getRemainingLimitCall::SELECTOR];
+use tempo_precompiles_macros::dispatch;
 
 impl Precompile for AccountKeychain {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -28,80 +18,81 @@ impl Precompile for AccountKeychain {
             return err;
         }
 
-        dispatch_call(
-            calldata,
-            &[SelectorSchedule::new(TempoHardfork::T3)
-                .with_added(T3_ADDED)
-                .with_dropped(T3_DROPPED)],
-            IAccountKeychainCalls::abi_decode,
-            |call| match call {
-                IAccountKeychainCalls::authorizeKey_0(call) => {
-                    if self.storage.spec().is_t3() {
-                        return self.storage.error_result(
-                            AccountKeychainError::legacy_authorize_key_selector_changed(
-                                authorizeKeyCall::SELECTOR,
-                            ),
-                        );
-                    }
+        dispatch! {
+            IAccountKeychainCalls::authorizeKey_0(call) => {
+                if self.storage.spec().is_t3() {
+                    return self.storage.error_result(
+                        AccountKeychainError::legacy_authorize_key_selector_changed(
+                            authorizeKeyCall::SELECTOR,
+                        ),
+                    );
+                }
 
-                    let call = authorizeKeyCall {
-                        keyId: call.keyId,
-                        signatureType: call.signatureType,
-                        config: KeyRestrictions {
-                            expiry: call.expiry,
-                            enforceLimits: call.enforceLimits,
-                            limits: call
-                                .limits
-                                .into_iter()
-                                .map(|limit| TokenLimit {
-                                    token: limit.token,
-                                    amount: limit.amount,
-                                    period: 0,
-                                })
-                                .collect(),
-                            allowAnyCalls: true,
-                            allowedCalls: vec![],
-                        },
-                    };
+                let call = authorizeKeyCall {
+                    keyId: call.keyId,
+                    signatureType: call.signatureType,
+                    config: KeyRestrictions {
+                        expiry: call.expiry,
+                        enforceLimits: call.enforceLimits,
+                        limits: call
+                            .limits
+                            .into_iter()
+                            .map(|limit| TokenLimit {
+                                token: limit.token,
+                                amount: limit.amount,
+                                period: 0,
+                            })
+                            .collect(),
+                        allowAnyCalls: true,
+                        allowedCalls: vec![],
+                    },
+                };
 
-                    mutate_void(call, msg_sender, |sender, c| self.authorize_key(sender, c))
-                }
-                IAccountKeychainCalls::authorizeKey_1(call) => {
-                    mutate_void(call, msg_sender, |sender, c| self.authorize_key(sender, c))
-                }
-                IAccountKeychainCalls::revokeKey(call) => {
-                    mutate_void(call, msg_sender, |sender, c| self.revoke_key(sender, c))
-                }
-                IAccountKeychainCalls::updateSpendingLimit(call) => {
-                    mutate_void(call, msg_sender, |sender, c| {
-                        self.update_spending_limit(sender, c)
-                    })
-                }
-                IAccountKeychainCalls::setAllowedCalls(call) => {
-                    mutate_void(call, msg_sender, |sender, c| {
-                        self.set_allowed_calls(sender, c)
-                    })
-                }
-                IAccountKeychainCalls::removeAllowedCalls(call) => {
-                    mutate_void(call, msg_sender, |sender, c| {
-                        self.remove_allowed_calls(sender, c)
-                    })
-                }
-                IAccountKeychainCalls::getKey(call) => view(call, |c| self.get_key(c)),
-                IAccountKeychainCalls::getRemainingLimit(call) => {
-                    view(call, |c| self.get_remaining_limit(c))
-                }
-                IAccountKeychainCalls::getRemainingLimitWithPeriod(call) => {
-                    view(call, |c| self.get_remaining_limit_with_period(c))
-                }
-                IAccountKeychainCalls::getAllowedCalls(call) => {
-                    view(call, |c| self.get_allowed_calls(c))
-                }
-                IAccountKeychainCalls::getTransactionKey(call) => {
-                    view(call, |c| self.get_transaction_key(c, msg_sender))
-                }
+                mutate_void(call, msg_sender, |sender, c| self.authorize_key(sender, c))
             },
-        )
+            #[since = T3, selector = authorizeKeyCall]
+            IAccountKeychainCalls::authorizeKey_1(call) => {
+                mutate_void(call, msg_sender, |sender, c| self.authorize_key(sender, c))
+            },
+            IAccountKeychainCalls::revokeKey(call) => {
+                mutate_void(call, msg_sender, |sender, c| self.revoke_key(sender, c))
+            },
+            IAccountKeychainCalls::updateSpendingLimit(call) => mutate_void(
+                call,
+                msg_sender,
+                |sender, c| {
+                self.update_spending_limit(sender, c)
+                },
+            ),
+            #[since = T3]
+            IAccountKeychainCalls::setAllowedCalls(call) => mutate_void(
+                call,
+                msg_sender,
+                |sender, c| self.set_allowed_calls(sender, c),
+            ),
+            #[since = T3]
+            IAccountKeychainCalls::removeAllowedCalls(call) => mutate_void(
+                call,
+                msg_sender,
+                |sender, c| self.remove_allowed_calls(sender, c),
+            ),
+            IAccountKeychainCalls::getKey(call) => view(call, |c| self.get_key(c)),
+            #[until = T3]
+            IAccountKeychainCalls::getRemainingLimit(call) => {
+                view(call, |c| self.get_remaining_limit(c))
+            },
+            #[since = T3]
+            IAccountKeychainCalls::getRemainingLimitWithPeriod(call) => view(call, |c| {
+                self.get_remaining_limit_with_period(c)
+            }),
+            #[since = T3]
+            IAccountKeychainCalls::getAllowedCalls(call) => {
+                view(call, |c| self.get_allowed_calls(c))
+            },
+            IAccountKeychainCalls::getTransactionKey(call) => {
+                view(call, |c| self.get_transaction_key(c, msg_sender))
+            },
+        }
     }
 }
 

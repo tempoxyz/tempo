@@ -3,10 +3,12 @@
 //! This crate provides:
 //! - `#[contract]` macro that transforms a storage schema into a fully-functional contract
 //! - `#[derive(Storable)]` macro for storage structs and `#[repr(u8)]` unit enums
+//! - `dispatch!` macro for concise precompile ABI dispatch with hardfork-gated selectors
 //! - `storable_alloy_ints!` macro for generating alloy integer storage implementations
 //! - `storable_alloy_bytes!` macro for generating alloy FixedBytes storage implementations
 //! - `storable_rust_ints!` macro for generating standard Rust integer storage implementations
 
+mod dispatch;
 mod layout;
 mod packing;
 mod storable;
@@ -250,6 +252,70 @@ pub fn derive_storage_block(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
     match storable::derive_impl(input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Generate a `crate::dispatch_call(...)` invocation from concise match-style syntax.
+///
+/// # Requirements
+///
+/// - a `calldata: &[u8]` binding must be in scope at the call site
+/// - every arm must use a fully qualified pattern (e.g. `ICalls::variant(call) => ...`) so that
+///   the calls enum and `abi_decode` function can be inferred
+///
+/// # Hardfork-gated selectors
+///
+/// Arms accept `[since, until)` attributes, express the selector's validity window:
+/// - `#[since = HF]`: throws `TempoPrecompileError::UnknownSelector` before `HF` activates.
+/// - `#[until = HF]`: throws `TempoPrecompileError::UnknownSelector` once `HF` activates.
+/// - `#[selector = SomeCallType]`: override the inferred `<Variant>Call` type used for computing
+///   the 4-byte selector (only needed for renamed variants / wrapper enums).
+///
+/// At runtime, gated selectors are rejected by `dispatch_call` BEFORE the body runs and
+/// calldata is decoded. Thus, hardfork-gated ABI selectors behave identically to unexistent ones.
+///
+/// # Example
+///
+/// ```ignore
+/// dispatch! {
+///     ITIP20Calls::name(_) => metadata::<ITIP20::nameCall>(|| self.name()),
+///
+///     // Available only on [T2, T4).
+///     #[since = T2, until = T4]
+///     ITIP20Calls::mint(call) => mutate_void(call, msg_sender, |s, c| self.mint(s, c)),
+///
+///     // Custom error: bail out with a domain-specific revert before the helper runs.
+///     ITIP20Calls::burn(call) => {
+///         if !self.can_burn(msg_sender) {
+///             return self.storage.error_result(TIP20Error::not_authorized());
+///         }
+///         mutate_void(call, msg_sender, |s, c| self.burn(s, c))
+///     },
+/// }
+/// ```
+///
+/// NOTE: Custom / domain errors are NOT automated. Arm bodies are responsible for producing
+/// their own revert payloads, typically by returning early with `self.storage.error_result(..)`.
+///
+/// ```ignore
+/// IAccountKeychainCalls::authorizeKey_0(call) => {
+///     if self.storage.spec().is_t3() {
+///         return self.storage.error_result(
+///             AccountKeychainError::legacy_authorize_key_selector_changed(
+///                 authorizeKeyCall::SELECTOR,
+///             ),
+///         );
+///     }
+///     // ...pre-T3 handling...
+/// }
+///  ```
+#[proc_macro]
+pub fn dispatch(input: TokenStream) -> TokenStream {
+    let input = proc_macro2::TokenStream::from(input);
+
+    match dispatch::expand(input) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }
