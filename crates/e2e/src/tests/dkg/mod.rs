@@ -4,5 +4,6 @@ pub(crate) mod common;
 mod dynamic;
 mod fast_sync_after_full_dkg;
 mod full_ceremony;
+mod handle_finalized_block;
 mod share_loss;
 mod static_transitions;
