@@ -6,8 +6,7 @@
 
 use commonware_consensus::Reporter;
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner};
-use futures::stream;
-use futures::stream::StreamExt as _;
+use futures::{stream, stream::StreamExt as _};
 use tempo_node::rpc::consensus::Event;
 use tokio::sync::mpsc;
 

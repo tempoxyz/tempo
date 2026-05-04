@@ -140,7 +140,7 @@ async fn get_finalization(
     let finalization = match client.get_finalization(Query::Height(height.get())).await {
         tempo_node::rpc::consensus::types::Response::Success(val) => Some(val),
         tempo_node::rpc::consensus::types::Response::NotReady => {
-            panic!("for in-process execution the feed should be immedaitely available")
+            panic!("for in-process execution the feed should be immediately available")
         }
         tempo_node::rpc::consensus::types::Response::Missing(_) => None,
     };
