@@ -301,18 +301,6 @@ impl TIP403Registry {
 
     pub fn validate_receive_policy(
         &self,
-        call: ITIP403Registry::validateReceivePolicyCall,
-    ) -> Result<ITIP403Registry::validateReceivePolicyReturn> {
-        let (authorized, blocked_reason) =
-            self.validate_receive_policy_raw(call.token, call.sender, call.receiver)?;
-        Ok(ITIP403Registry::validateReceivePolicyReturn {
-            authorized,
-            blockedReason: blocked_reason,
-        })
-    }
-
-    pub fn validate_receive_policy_raw(
-        &self,
         token: Address,
         sender: Address,
         receiver: Address,
@@ -550,7 +538,7 @@ impl TIP403Registry {
         }
         let token_filter_id = call.tokenFilterId;
         self.check_token_filter_admin_and_type(token_filter_id, msg_sender, PolicyType::WHITELIST)?;
-        for (token, allowed) in call.tokens.into_iter().zip(call.allowed.into_iter()) {
+        for (token, allowed) in call.tokens.into_iter().zip(call.allowed) {
             self.token_filter_members[token_filter_id][token].write(allowed)?;
             self.emit_event(TIP403RegistryEvent::TokenFilterWhitelistUpdated(
                 ITIP403Registry::TokenFilterWhitelistUpdated {
@@ -574,7 +562,7 @@ impl TIP403Registry {
         }
         let token_filter_id = call.tokenFilterId;
         self.check_token_filter_admin_and_type(token_filter_id, msg_sender, PolicyType::BLACKLIST)?;
-        for (token, restricted) in call.tokens.into_iter().zip(call.restricted.into_iter()) {
+        for (token, restricted) in call.tokens.into_iter().zip(call.restricted) {
             self.token_filter_members[token_filter_id][token].write(restricted)?;
             self.emit_event(TIP403RegistryEvent::TokenFilterBlacklistUpdated(
                 ITIP403Registry::TokenFilterBlacklistUpdated {
@@ -2908,7 +2896,7 @@ mod tests {
             let mut registry = TIP403Registry::new();
 
             assert_eq!(
-                registry.validate_receive_policy_raw(blocked_token, sender, receiver)?,
+                registry.validate_receive_policy(blocked_token, sender, receiver)?,
                 (true, ITIP403Registry::BlockedReason::NONE)
             );
 
@@ -2946,7 +2934,7 @@ mod tests {
             assert_eq!(stored.recoveryContract, recovery_contract);
 
             assert_eq!(
-                registry.validate_receive_policy_raw(blocked_token, sender, receiver)?,
+                registry.validate_receive_policy(blocked_token, sender, receiver)?,
                 (false, ITIP403Registry::BlockedReason::TOKEN_FILTER)
             );
 
@@ -2959,7 +2947,7 @@ mod tests {
                 },
             )?;
             assert_eq!(
-                registry.validate_receive_policy_raw(blocked_token, sender, receiver)?,
+                registry.validate_receive_policy(blocked_token, sender, receiver)?,
                 (false, ITIP403Registry::BlockedReason::RECEIVE_POLICY)
             );
 
@@ -2972,7 +2960,7 @@ mod tests {
                 },
             )?;
             assert_eq!(
-                registry.validate_receive_policy_raw(blocked_token, sender, receiver)?,
+                registry.validate_receive_policy(blocked_token, sender, receiver)?,
                 (true, ITIP403Registry::BlockedReason::NONE)
             );
 
