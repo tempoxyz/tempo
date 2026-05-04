@@ -168,7 +168,7 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
                 nonce += 1;
             }
             Err(err) => {
-                if err.to_string().contains("Insufficient liquidity") {
+                if err.to_string().contains("insufficient liquidity") {
                     transactions_rejected += 1;
                 } else {
                     panic!("Transaction {i} rejected with unexpected error: {err}");

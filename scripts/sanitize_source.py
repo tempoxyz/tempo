@@ -5,7 +5,7 @@ Every edit asserts an expected match count. If a pattern matches 0 times,
 the source has drifted and the script fails — preventing silent breakage.
 
 Usage:
-    sanitize_source.py <primitives_dir> <alloy_dir>
+    sanitize_source.py <primitives_dir> <alloy_dir> <chainspec_dir>
 """
 import os
 import re
@@ -171,6 +171,14 @@ def sanitize_primitives(prim_dir):
         expected=2,
     )
 
+    # ── #[cfg(all(test, feature = "reth-codec"))] compact test modules ────
+    for rs_file in find_rs_files(src):
+        _delete_cfg_gated_block(
+            rs_file,
+            '#[cfg(all(test, feature = "reth-codec"))]',
+            expected=None,
+        )
+
 
 def _delete_cfg_gated_block(path, gate_line, *, expected=1):
     """Delete an exact cfg gate line and the block/item it gates.
@@ -223,7 +231,7 @@ def _delete_cfg_gated_block(path, gate_line, *, expected=1):
         result.append(lines[i])
         i += 1
 
-    if count != expected:
+    if expected is not None and count != expected:
         print(
             f"error: _delete_cfg_gated_block({path!r}, {gate_line!r}): "
             f"expected {expected} occurrences, got {count}",
@@ -265,27 +273,45 @@ def _strip_rust_strings(line):
     return ''.join(result)
 
 
+def sanitize_chainspec(chainspec_dir):
+    """Strip reth-gated code from tempo-chainspec source files."""
+    lib_rs = f"{chainspec_dir}/src/lib.rs"
+
+    # Delete #![cfg_attr(all(not(test), feature = "reth"), warn(unused_crate_dependencies))]
+    delete_lines(lib_rs, r'^#!\[cfg_attr\(all\(not\(test\), feature = "reth"\), warn\(unused_crate_dependencies\)\)\]\n', expected=1)
+
+    # Delete #[cfg(feature = "reth")] extern crate alloc;
+    delete_lines(lib_rs, r'^#\[cfg\(feature = "reth"\)\]\nextern crate alloc;\n', expected=1)
+
+    # Delete #[cfg(feature = "reth")] gated mod/pub declarations (bootnodes, spec)
+    _delete_cfg_gated_block(lib_rs, '#[cfg(feature = "reth")]', expected=3)
+
+    print(f"  chainspec/src/lib.rs: stripped reth-gated code", file=sys.stderr)
+
+
 def sanitize_alloy(alloy_dir):
     """Strip node-internal code from tempo-alloy source files.
 
-    The compat.rs file is already deleted by the shell script (publish-crates.sh).
-    This function removes the `mod compat;` declaration from rpc/mod.rs so the
-    crate compiles without the file.
+    The reth_compat.rs file is already deleted by the shell script (publish-crates.sh).
+    This function removes the cfg-gated `mod reth_compat;` declaration from rpc/mod.rs
+    so the crate compiles without the file.
     """
     src = f"{alloy_dir}/src"
 
-    # Delete the bare `mod compat;` line from rpc/mod.rs
-    delete_lines(f"{src}/rpc/mod.rs", r'^mod compat;\n', expected=1)
-    print(f"  rpc/mod.rs: deleted mod compat declaration", file=sys.stderr)
+    # Delete the cfg-gated `mod reth_compat;` block from rpc/mod.rs
+    delete_lines(f"{src}/rpc/mod.rs", r'^#\[cfg\(feature = "reth"\)\]\nmod reth_compat;\n', expected=1)
+    print(f"  rpc/mod.rs: deleted mod reth_compat declaration", file=sys.stderr)
 
 
 if __name__ == '__main__':
-    if len(sys.argv) != 3:
-        print("Usage: sanitize_source.py <primitives_dir> <alloy_dir>", file=sys.stderr)
+    if len(sys.argv) != 4:
+        print("Usage: sanitize_source.py <primitives_dir> <alloy_dir> <chainspec_dir>", file=sys.stderr)
         sys.exit(1)
 
     prim_dir = sys.argv[1]
     alloy_dir = sys.argv[2]
+    chainspec_dir = sys.argv[3]
 
     sanitize_primitives(prim_dir)
     sanitize_alloy(alloy_dir)
+    sanitize_chainspec(chainspec_dir)

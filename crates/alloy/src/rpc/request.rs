@@ -3,16 +3,20 @@ use alloy_contract::{CallBuilder, CallDecoder};
 use alloy_eips::Typed2718;
 use alloy_primitives::{Address, Bytes, U256};
 use alloy_provider::Provider;
-use alloy_rpc_types_eth::{TransactionRequest, TransactionTrait};
+use alloy_rpc_types_eth::{Transaction, TransactionRequest, TransactionTrait};
+use core::num::NonZeroU64;
 use serde::{Deserialize, Serialize};
 use tempo_primitives::{
     AASigned, SignatureType, TempoTransaction, TempoTxEnvelope,
-    transaction::{Call, SignedKeyAuthorization, TempoSignedAuthorization, TempoTypedTransaction},
+    transaction::{
+        Call, SignedKeyAuthorization, TempoSignedAuthorization, TempoTypedTransaction,
+        key_authorization::serde_nonzero_quantity_opt,
+    },
 };
 
 use crate::TempoNetwork;
 
-/// An Ethereum [`TransactionRequest`] with an optional `fee_token`.
+/// An Ethereum [`TransactionRequest`] extended with Tempo-specific fields.
 #[derive(
     Clone,
     Debug,
@@ -34,6 +38,7 @@ pub struct TempoTransactionRequest {
     pub inner: TransactionRequest,
 
     /// Optional fee token preference
+    #[serde(default)]
     pub fee_token: Option<Address>,
 
     /// Optional nonce key for a 2D [`TempoTransaction`].
@@ -46,10 +51,12 @@ pub struct TempoTransactionRequest {
 
     /// Optional key type for gas estimation of Tempo transactions.
     /// Specifies the signature verification algorithm to calculate accurate gas costs.
+    #[serde(default)]
     pub key_type: Option<SignatureType>,
 
     /// Optional key-specific data for gas estimation (e.g., webauthn authenticator data).
     /// Required when key_type is WebAuthn to calculate calldata gas costs.
+    #[serde(default)]
     pub key_data: Option<Bytes>,
 
     /// Optional access key ID for gas estimation.
@@ -80,9 +87,9 @@ pub struct TempoTransactionRequest {
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        with = "alloy_serde::quantity::opt"
+        with = "serde_nonzero_quantity_opt"
     )]
-    pub valid_before: Option<u64>,
+    pub valid_before: Option<NonZeroU64>,
 
     /// Transaction valid after timestamp in seconds (for expiring nonces, [TIP-1009]).
     /// Transaction can only be included in a block after this timestamp.
@@ -91,9 +98,9 @@ pub struct TempoTransactionRequest {
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        with = "alloy_serde::quantity::opt"
+        with = "serde_nonzero_quantity_opt"
     )]
-    pub valid_after: Option<u64>,
+    pub valid_after: Option<NonZeroU64>,
 
     /// Fee payer signature for sponsored transactions.
     /// The sponsor signs fee_payer_signature_hash(sender) to commit to paying gas.
@@ -124,15 +131,75 @@ impl TempoTransactionRequest {
         self
     }
 
+    /// Replace the Tempo call list for this transaction.
+    pub fn set_calls(&mut self, calls: Vec<Call>) {
+        self.calls = calls;
+    }
+
+    /// Builder-pattern method for replacing the Tempo call list.
+    pub fn with_calls(mut self, calls: Vec<Call>) -> Self {
+        self.calls = calls;
+        self
+    }
+
+    /// Append one call to the Tempo call list.
+    pub fn push_call(&mut self, call: Call) {
+        self.calls.push(call);
+    }
+
+    /// Set the access-key signature type used for gas estimation.
+    pub fn set_key_type(&mut self, key_type: SignatureType) {
+        self.key_type = Some(key_type);
+    }
+
+    /// Builder-pattern method for setting the access-key signature type.
+    pub fn with_key_type(mut self, key_type: SignatureType) -> Self {
+        self.key_type = Some(key_type);
+        self
+    }
+
+    /// Set key-specific signature data used for gas estimation.
+    pub fn set_key_data(&mut self, key_data: impl Into<Bytes>) {
+        self.key_data = Some(key_data.into());
+    }
+
+    /// Builder-pattern method for setting key-specific signature data.
+    pub fn with_key_data(mut self, key_data: impl Into<Bytes>) -> Self {
+        self.key_data = Some(key_data.into());
+        self
+    }
+
+    /// Set the access-key ID used for gas estimation.
+    pub fn set_key_id(&mut self, key_id: Address) {
+        self.key_id = Some(key_id);
+    }
+
+    /// Builder-pattern method for setting the access-key ID.
+    pub fn with_key_id(mut self, key_id: Address) -> Self {
+        self.key_id = Some(key_id);
+        self
+    }
+
+    /// Set the key authorization attached to this transaction.
+    pub fn set_key_authorization(&mut self, key_authorization: SignedKeyAuthorization) {
+        self.key_authorization = Some(key_authorization);
+    }
+
+    /// Builder-pattern method for setting the key authorization.
+    pub fn with_key_authorization(mut self, key_authorization: SignedKeyAuthorization) -> Self {
+        self.key_authorization = Some(key_authorization);
+        self
+    }
+
     /// Set the valid_before timestamp for expiring nonces ([TIP-1009]).
     ///
     /// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
-    pub fn set_valid_before(&mut self, valid_before: u64) {
+    pub fn set_valid_before(&mut self, valid_before: NonZeroU64) {
         self.valid_before = Some(valid_before);
     }
 
     /// Builder-pattern method for setting valid_before timestamp.
-    pub fn with_valid_before(mut self, valid_before: u64) -> Self {
+    pub fn with_valid_before(mut self, valid_before: NonZeroU64) -> Self {
         self.valid_before = Some(valid_before);
         self
     }
@@ -140,12 +207,12 @@ impl TempoTransactionRequest {
     /// Set the valid_after timestamp for expiring nonces ([TIP-1009]).
     ///
     /// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
-    pub fn set_valid_after(&mut self, valid_after: u64) {
+    pub fn set_valid_after(&mut self, valid_after: NonZeroU64) {
         self.valid_after = Some(valid_after);
     }
 
     /// Builder-pattern method for setting valid_after timestamp.
-    pub fn with_valid_after(mut self, valid_after: u64) -> Self {
+    pub fn with_valid_after(mut self, valid_after: NonZeroU64) -> Self {
         self.valid_after = Some(valid_after);
         self
     }
@@ -248,6 +315,12 @@ impl From<TransactionRequest> for TempoTransactionRequest {
 impl From<TempoTransactionRequest> for TransactionRequest {
     fn from(value: TempoTransactionRequest) -> Self {
         value.inner
+    }
+}
+
+impl From<Transaction<TempoTxEnvelope>> for TempoTransactionRequest {
+    fn from(tx: Transaction<TempoTxEnvelope>) -> Self {
+        tx.inner.into_inner().into()
     }
 }
 
@@ -387,6 +460,24 @@ pub trait TempoCallBuilderExt {
 
     /// Sets the `nonce_key` field in the [`TempoTransaction`] transaction to the provided value
     fn nonce_key(self, nonce_key: U256) -> Self;
+
+    /// Sets the `valid_before` field in the [`TempoTransaction`] transaction.
+    fn valid_before(self, valid_before: NonZeroU64) -> Self;
+
+    /// Sets the `valid_after` field in the [`TempoTransaction`] transaction.
+    fn valid_after(self, valid_after: NonZeroU64) -> Self;
+
+    /// Sets the `key_id` field in the [`TempoTransaction`] transaction.
+    fn key_id(self, key_id: Address) -> Self;
+
+    /// Sets the `key_type` field in the [`TempoTransaction`] transaction.
+    fn key_type(self, key_type: SignatureType) -> Self;
+
+    /// Sets the `key_data` field in the [`TempoTransaction`] transaction.
+    fn key_data(self, key_data: Bytes) -> Self;
+
+    /// Sets the `key_authorization` field in the [`TempoTransaction`] transaction.
+    fn key_authorization(self, key_authorization: SignedKeyAuthorization) -> Self;
 }
 
 impl<P: Provider<TempoNetwork>, D: CallDecoder> TempoCallBuilderExt
@@ -399,21 +490,51 @@ impl<P: Provider<TempoNetwork>, D: CallDecoder> TempoCallBuilderExt
     fn nonce_key(self, nonce_key: U256) -> Self {
         self.map(|request| request.with_nonce_key(nonce_key))
     }
+
+    fn valid_before(self, valid_before: NonZeroU64) -> Self {
+        self.map(|request| request.with_valid_before(valid_before))
+    }
+
+    fn valid_after(self, valid_after: NonZeroU64) -> Self {
+        self.map(|request| request.with_valid_after(valid_after))
+    }
+
+    fn key_id(self, key_id: Address) -> Self {
+        self.map(|request| request.with_key_id(key_id))
+    }
+
+    fn key_type(self, key_type: SignatureType) -> Self {
+        self.map(|request| request.with_key_type(key_type))
+    }
+
+    fn key_data(self, key_data: Bytes) -> Self {
+        self.map(|request| request.with_key_data(key_data))
+    }
+
+    fn key_authorization(self, key_authorization: SignedKeyAuthorization) -> Self {
+        self.map(|request| request.with_key_authorization(key_authorization))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{Bytes, address};
-    use tempo_primitives::transaction::{Call, TEMPO_EXPIRING_NONCE_KEY};
+    use alloy_primitives::{Bytes, Signature, address};
+    use tempo_primitives::transaction::{
+        Call, KeyAuthorization, PrimitiveSignature, TEMPO_EXPIRING_NONCE_KEY,
+    };
+
+    fn nz(value: u64) -> NonZeroU64 {
+        NonZeroU64::new(value).expect("test timestamp must be non-zero")
+    }
 
     #[test]
     fn test_set_valid_before() {
         let mut request = TempoTransactionRequest::default();
         assert!(request.valid_before.is_none());
 
-        request.set_valid_before(1234567890);
-        assert_eq!(request.valid_before, Some(1234567890));
+        request.set_valid_before(nz(1234567890));
+        assert_eq!(request.valid_before, Some(nz(1234567890)));
     }
 
     #[test]
@@ -421,28 +542,28 @@ mod tests {
         let mut request = TempoTransactionRequest::default();
         assert!(request.valid_after.is_none());
 
-        request.set_valid_after(1234567800);
-        assert_eq!(request.valid_after, Some(1234567800));
+        request.set_valid_after(nz(1234567800));
+        assert_eq!(request.valid_after, Some(nz(1234567800)));
     }
 
     #[test]
     fn test_with_valid_before() {
-        let request = TempoTransactionRequest::default().with_valid_before(1234567890);
-        assert_eq!(request.valid_before, Some(1234567890));
+        let request = TempoTransactionRequest::default().with_valid_before(nz(1234567890));
+        assert_eq!(request.valid_before, Some(nz(1234567890)));
     }
 
     #[test]
     fn test_with_valid_after() {
-        let request = TempoTransactionRequest::default().with_valid_after(1234567800);
-        assert_eq!(request.valid_after, Some(1234567800));
+        let request = TempoTransactionRequest::default().with_valid_after(nz(1234567800));
+        assert_eq!(request.valid_after, Some(nz(1234567800)));
     }
 
     #[test]
     fn test_build_aa_with_validity_window() {
         let request = TempoTransactionRequest::default()
             .with_nonce_key(TEMPO_EXPIRING_NONCE_KEY)
-            .with_valid_before(1234567890)
-            .with_valid_after(1234567800);
+            .with_valid_before(nz(1234567890))
+            .with_valid_after(nz(1234567800));
 
         // Set required fields for build_aa
         let mut request = request;
@@ -453,10 +574,21 @@ mod tests {
         request.inner.to = Some(address!("0x86A2EE8FAf9A840F7a2c64CA3d51209F9A02081D").into());
 
         let tx = request.build_aa().expect("should build transaction");
-        assert_eq!(tx.valid_before, Some(1234567890));
-        assert_eq!(tx.valid_after, Some(1234567800));
+        assert_eq!(tx.valid_before, Some(nz(1234567890)));
+        assert_eq!(tx.valid_after, Some(nz(1234567800)));
         assert_eq!(tx.nonce_key, TEMPO_EXPIRING_NONCE_KEY);
         assert_eq!(tx.nonce, 0);
+    }
+
+    #[test]
+    fn test_deserialize_rejects_zero_validity_window_bounds() {
+        let err = serde_json::from_str::<TempoTransactionRequest>(r#"{"validBefore":"0x0"}"#)
+            .expect_err("zero valid_before must be rejected during deserialization");
+        assert!(err.to_string().contains("expected non-zero quantity"));
+
+        let err = serde_json::from_str::<TempoTransactionRequest>(r#"{"validAfter":"0x0"}"#)
+            .expect_err("zero valid_after must be rejected during deserialization");
+        assert!(err.to_string().contains("expected non-zero quantity"));
     }
 
     #[test]
@@ -465,8 +597,8 @@ mod tests {
             chain_id: 1,
             nonce: 0,
             fee_payer_signature: None,
-            valid_before: Some(1234567890),
-            valid_after: Some(1234567800),
+            valid_before: Some(NonZeroU64::new(1234567890).unwrap()),
+            valid_after: Some(NonZeroU64::new(1234567800).unwrap()),
             gas_limit: 21000,
             max_fee_per_gas: 1000000000,
             max_priority_fee_per_gas: 1000000,
@@ -483,8 +615,8 @@ mod tests {
         };
 
         let request: TempoTransactionRequest = tx.into();
-        assert_eq!(request.valid_before, Some(1234567890));
-        assert_eq!(request.valid_after, Some(1234567800));
+        assert_eq!(request.valid_before, Some(nz(1234567890)));
+        assert_eq!(request.valid_after, Some(nz(1234567800)));
         assert_eq!(request.nonce_key, Some(TEMPO_EXPIRING_NONCE_KEY));
     }
 
@@ -492,13 +624,13 @@ mod tests {
     fn test_expiring_nonce_builder_chain() {
         let request = TempoTransactionRequest::default()
             .with_nonce_key(TEMPO_EXPIRING_NONCE_KEY)
-            .with_valid_before(1234567890)
-            .with_valid_after(1234567800)
+            .with_valid_before(nz(1234567890))
+            .with_valid_after(nz(1234567800))
             .with_fee_token(address!("0x20c0000000000000000000000000000000000000"));
 
         assert_eq!(request.nonce_key, Some(TEMPO_EXPIRING_NONCE_KEY));
-        assert_eq!(request.valid_before, Some(1234567890));
-        assert_eq!(request.valid_after, Some(1234567800));
+        assert_eq!(request.valid_before, Some(nz(1234567890)));
+        assert_eq!(request.valid_after, Some(nz(1234567800)));
         assert_eq!(
             request.fee_token,
             Some(address!("0x20c0000000000000000000000000000000000000"))
@@ -507,8 +639,6 @@ mod tests {
 
     #[test]
     fn test_set_fee_payer_signature() {
-        use alloy_primitives::Signature;
-
         let mut request = TempoTransactionRequest::default();
         assert!(request.fee_payer_signature.is_none());
 
@@ -519,8 +649,6 @@ mod tests {
 
     #[test]
     fn test_with_fee_payer_signature() {
-        use alloy_primitives::Signature;
-
         let sig = Signature::test_signature();
         let request = TempoTransactionRequest::default().with_fee_payer_signature(sig);
         assert!(request.fee_payer_signature.is_some());
@@ -528,8 +656,6 @@ mod tests {
 
     #[test]
     fn test_build_aa_with_fee_payer_signature() {
-        use alloy_primitives::Signature;
-
         let sig = Signature::test_signature();
         let mut request = TempoTransactionRequest::default().with_fee_payer_signature(sig);
 
@@ -545,8 +671,6 @@ mod tests {
 
     #[test]
     fn test_from_tempo_transaction_preserves_fee_payer_signature() {
-        use alloy_primitives::Signature;
-
         let sig = Signature::test_signature();
         let tx = TempoTransaction {
             chain_id: 1,
@@ -575,20 +699,12 @@ mod tests {
 
     #[test]
     fn test_build_aa_preserves_key_authorization() {
-        use tempo_primitives::transaction::{
-            KeyAuthorization, PrimitiveSignature, SignedKeyAuthorization,
-        };
-
-        let key_auth = SignedKeyAuthorization {
-            authorization: KeyAuthorization {
-                chain_id: 4217,
-                key_type: SignatureType::Secp256k1,
-                key_id: address!("0x1111111111111111111111111111111111111111"),
-                expiry: None,
-                limits: None,
-            },
-            signature: PrimitiveSignature::default(),
-        };
+        let key_auth = KeyAuthorization::unrestricted(
+            4217,
+            SignatureType::Secp256k1,
+            address!("0x1111111111111111111111111111111111111111"),
+        )
+        .into_signed(PrimitiveSignature::default());
 
         let mut request = TempoTransactionRequest {
             key_authorization: Some(key_auth.clone()),
@@ -606,6 +722,45 @@ mod tests {
             Some(key_auth),
             "build_aa must preserve key_authorization from the request"
         );
+    }
+
+    #[test]
+    fn test_set_calls_and_push_call() {
+        let call = Call {
+            to: address!("0x1111111111111111111111111111111111111111").into(),
+            value: U256::ZERO,
+            input: Bytes::from(vec![0xaa]),
+        };
+
+        let mut request = TempoTransactionRequest::default();
+        request.set_calls(vec![call.clone()]);
+        request.push_call(call.clone());
+
+        assert_eq!(request.calls, vec![call.clone(), call]);
+    }
+
+    #[test]
+    fn test_keychain_builder_helpers() {
+        let key_auth = KeyAuthorization::unrestricted(
+            4217,
+            SignatureType::Secp256k1,
+            address!("0x1111111111111111111111111111111111111111"),
+        )
+        .into_signed(PrimitiveSignature::default());
+
+        let request = TempoTransactionRequest::default()
+            .with_key_id(address!("0x2222222222222222222222222222222222222222"))
+            .with_key_type(SignatureType::WebAuthn)
+            .with_key_data(Bytes::from_static(b"auth-data"))
+            .with_key_authorization(key_auth.clone());
+
+        assert_eq!(
+            request.key_id,
+            Some(address!("0x2222222222222222222222222222222222222222"))
+        );
+        assert_eq!(request.key_type, Some(SignatureType::WebAuthn));
+        assert_eq!(request.key_data, Some(Bytes::from_static(b"auth-data")));
+        assert_eq!(request.key_authorization, Some(key_auth));
     }
 
     #[test]

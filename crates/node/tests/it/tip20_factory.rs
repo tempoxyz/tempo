@@ -6,7 +6,8 @@ use alloy::{
 };
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{ITIP20, ITIP20Factory};
-use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::is_tip20_prefix};
+use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS};
+use tempo_primitives::TempoAddressExt;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_create_token() -> eyre::Result<()> {
@@ -54,10 +55,7 @@ async fn test_create_token() -> eyre::Result<()> {
     assert_eq!(event.salt, salt);
 
     // Verify the token address has TIP20 prefix
-    assert!(
-        is_tip20_prefix(event.token),
-        "Token should have TIP20 prefix"
-    );
+    assert!(event.token.is_tip20(), "Token should have TIP20 prefix");
 
     let token = ITIP20::new(event.token, provider);
     assert_eq!(token.name().call().await?, name);
@@ -93,7 +91,7 @@ async fn test_is_tip20_checks_code_deployment() -> eyre::Result<()> {
 
     // Verify this address has valid TIP20 prefix
     assert!(
-        is_tip20_prefix(non_existent_tip20_addr),
+        non_existent_tip20_addr.is_tip20(),
         "Address should have valid TIP20 prefix"
     );
 

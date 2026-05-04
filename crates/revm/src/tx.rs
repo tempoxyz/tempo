@@ -1,8 +1,8 @@
 use crate::TempoInvalidTransaction;
 use alloy_consensus::{EthereumTxEnvelope, TxEip4844, Typed2718, crypto::secp256k1};
-use alloy_evm::{FromRecoveredTx, FromTxWithEncoded, IntoTxEnv};
+use alloy_evm::{FromRecoveredTx, FromTxWithEncoded, IntoTxEnv, TransactionEnvMut};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
-use reth_evm::TransactionEnv;
+use core::num::NonZeroU64;
 use revm::context::{
     Transaction, TxEnv,
     either::Either,
@@ -64,6 +64,11 @@ pub struct TempoBatchCallEnv {
     /// When provided in eth_call/eth_estimateGas, enables spending limits simulation
     /// This is not used in actual transaction execution - the key_id is recovered from the signature.
     pub override_key_id: Option<Address>,
+
+    /// Perf optimization for expiring nonce transactions.
+    ///
+    /// Stores how many other expiring nonce transactions are there in the block before this one.
+    pub expiring_nonce_idx: Option<usize>,
 }
 /// Tempo transaction environment.
 #[derive(Debug, Clone, Default, derive_more::Deref, derive_more::DerefMut)]
@@ -237,13 +242,9 @@ impl Transaction for TempoTxEnv {
     }
 }
 
-impl TransactionEnv for TempoTxEnv {
+impl TransactionEnvMut for TempoTxEnv {
     fn set_gas_limit(&mut self, gas_limit: u64) {
         self.inner.set_gas_limit(gas_limit);
-    }
-
-    fn nonce(&self) -> u64 {
-        Transaction::nonce(&self.inner)
     }
 
     fn set_nonce(&mut self, nonce: u64) {
@@ -342,8 +343,8 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             // Bundle AA-specific fields into TempoBatchCallEnv
             tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
                 signature: signature.clone(),
-                valid_before: *valid_before,
-                valid_after: *valid_after,
+                valid_before: valid_before.map(NonZeroU64::get),
+                valid_after: valid_after.map(NonZeroU64::get),
                 aa_calls: calls.clone(),
                 // Recover authorizations upfront to avoid recovery during execution
                 tempo_authorization_list: tempo_authorization_list
@@ -361,6 +362,8 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                     .then(|| aa_signed.expiring_nonce_hash(caller)),
                 // override_key_id is only used for gas estimation, not actual execution
                 override_key_id: None,
+                // can only be derived when given an entire block
+                expiring_nonce_idx: None,
             })),
         }
     }
@@ -410,6 +413,7 @@ impl FromTxWithEncoded<TempoTxEnvelope> for TempoTxEnv {
 mod tests {
     use alloy_evm::FromRecoveredTx;
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
+    use core::num::NonZeroU64;
     use proptest::prelude::*;
     use revm::context::{Transaction, TxEnv, result::InvalidTransaction};
     use tempo_primitives::transaction::{
@@ -510,7 +514,7 @@ mod tests {
                 gas_limit: 1_000_000,
                 nonce_key,
                 nonce: 0,
-                valid_before: Some(100),
+                valid_before: Some(NonZeroU64::new(100).unwrap()),
                 calls: vec![Call {
                     to: TxKind::Call(Address::repeat_byte(0x42)),
                     value: U256::ZERO,
@@ -618,7 +622,7 @@ mod tests {
 
     #[test]
     fn test_transaction_env_set_gas_limit() {
-        use reth_evm::TransactionEnv;
+        use alloy_evm::TransactionEnvMut;
 
         let mut tx_env = super::TempoTxEnv::default();
 
@@ -631,21 +635,22 @@ mod tests {
 
     #[test]
     fn test_transaction_env_nonce() {
-        use reth_evm::TransactionEnv;
+        use alloy_evm::TransactionEnvMut;
+        use revm::context::Transaction;
 
         let mut tx_env = super::TempoTxEnv::default();
-        assert_eq!(TransactionEnv::nonce(&tx_env), 0);
+        assert_eq!(Transaction::nonce(&tx_env), 0);
 
         tx_env.set_nonce(42);
-        assert_eq!(TransactionEnv::nonce(&tx_env), 42);
+        assert_eq!(Transaction::nonce(&tx_env), 42);
 
         tx_env.set_nonce(u64::MAX);
-        assert_eq!(TransactionEnv::nonce(&tx_env), u64::MAX);
+        assert_eq!(Transaction::nonce(&tx_env), u64::MAX);
     }
 
     #[test]
     fn test_transaction_env_set_access_list() {
-        use reth_evm::TransactionEnv;
+        use alloy_evm::TransactionEnvMut;
         use revm::context::transaction::{AccessList, AccessListItem};
 
         let mut tx_env = super::TempoTxEnv::default();
@@ -677,7 +682,7 @@ mod tests {
 
     #[test]
     fn test_transaction_env_combined_operations() {
-        use reth_evm::TransactionEnv;
+        use alloy_evm::TransactionEnvMut;
         use revm::context::transaction::{AccessList, AccessListItem};
 
         let mut tx_env = super::TempoTxEnv::default();
@@ -692,7 +697,7 @@ mod tests {
 
         // Verify all values are set correctly
         assert_eq!(tx_env.inner.gas_limit, 50_000);
-        assert_eq!(TransactionEnv::nonce(&tx_env), 100);
+        assert_eq!(revm::context::Transaction::nonce(&tx_env), 100);
         assert_eq!(tx_env.inner.access_list.0.len(), 1);
         assert_eq!(
             tx_env.inner.access_list.0[0].address,
@@ -702,8 +707,7 @@ mod tests {
 
     #[test]
     fn test_transaction_env_from_tx_env() {
-        use reth_evm::TransactionEnv;
-        use revm::context::TxEnv;
+        use revm::context::{Transaction, TxEnv};
 
         let inner = TxEnv {
             gas_limit: 75_000,
@@ -714,7 +718,7 @@ mod tests {
         let tx_env: super::TempoTxEnv = inner.into();
 
         assert_eq!(tx_env.inner.gas_limit, 75_000);
-        assert_eq!(TransactionEnv::nonce(&tx_env), 55);
+        assert_eq!(Transaction::nonce(&tx_env), 55);
         assert!(tx_env.fee_token.is_none());
         assert!(!tx_env.is_system_tx);
         assert!(tx_env.fee_payer.is_none());

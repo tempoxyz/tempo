@@ -15,12 +15,16 @@ pub struct HashMapStorageProvider {
     internals: HashMap<(Address, U256), U256>,
     transient: HashMap<(Address, U256), U256>,
     accounts: HashMap<Address, AccountInfo>,
+    fail_on_sload: Option<(Address, U256)>,
     chain_id: u64,
     timestamp: U256,
     beneficiary: Address,
     block_number: u64,
     spec: TempoHardfork,
+    amsterdam_eip8037_enabled: bool,
     is_static: bool,
+    counter_sload: u64,
+    counter_sstore: u64,
     snapshots: Vec<Snapshot>,
 
     /// Emitted events keyed by contract address.
@@ -47,6 +51,7 @@ impl HashMapStorageProvider {
             internals: HashMap::new(),
             transient: HashMap::new(),
             accounts: HashMap::new(),
+            fail_on_sload: None,
             events: HashMap::new(),
             snapshots: Vec::new(),
             chain_id,
@@ -60,13 +65,22 @@ impl HashMapStorageProvider {
             beneficiary: Address::ZERO,
             block_number: 0,
             spec,
+            amsterdam_eip8037_enabled: false,
             is_static: false,
+            counter_sload: 0,
+            counter_sstore: 0,
         }
     }
 
     /// Returns self with the hardfork spec overridden (builder pattern).
     pub fn with_spec(mut self, spec: TempoHardfork) -> Self {
         self.spec = spec;
+        self
+    }
+
+    /// Returns self with `amsterdam_eip8037_enabled` overridden (builder pattern).
+    pub fn with_amsterdam_eip8037_enabled(mut self, enabled: bool) -> Self {
+        self.amsterdam_eip8037_enabled = enabled;
         self
     }
 }
@@ -111,6 +125,7 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
+        self.counter_sstore += 1;
         self.internals.insert((address, key), value);
         Ok(())
     }
@@ -131,6 +146,11 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
     }
 
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
+        if self.fail_on_sload == Some((address, key)) {
+            return Err(TempoPrecompileError::Fatal("injected sload failure".into()));
+        }
+
+        self.counter_sload += 1;
         Ok(self
             .internals
             .get(&(address, key))
@@ -154,7 +174,15 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         // No-op
     }
 
+    fn gas_limit(&self) -> u64 {
+        0
+    }
+
     fn gas_used(&self) -> u64 {
+        0
+    }
+
+    fn state_gas_used(&self) -> u64 {
         0
     }
 
@@ -162,8 +190,16 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         0
     }
 
+    fn reservoir(&self) -> u64 {
+        0
+    }
+
     fn spec(&self) -> TempoHardfork {
         self.spec
+    }
+
+    fn amsterdam_eip8037_enabled(&self) -> bool {
+        self.amsterdam_eip8037_enabled
     }
 
     fn is_static(&self) -> bool {
@@ -207,6 +243,10 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
 
 #[cfg(any(test, feature = "test-utils"))]
 impl HashMapStorageProvider {
+    pub fn fail_next_sload_at(&mut self, address: Address, slot: U256) {
+        self.fail_on_sload = Some((address, slot));
+    }
+
     /// Returns the account info for the given address, if it exists.
     pub fn get_account_info(&self, address: Address) -> Option<&AccountInfo> {
         self.accounts.get(&address)
@@ -256,6 +296,22 @@ impl HashMapStorageProvider {
             .entry(address)
             .and_modify(|v| v.clear())
             .or_default();
+    }
+
+    /// Returns the amount of counted SLOADs.
+    pub fn counter_sload(&self) -> u64 {
+        self.counter_sload
+    }
+
+    /// Returns the amount of counted SSTOREs.
+    pub fn counter_sstore(&self) -> u64 {
+        self.counter_sstore
+    }
+
+    /// Resets the SLOAD and SSTORE counters.
+    pub fn reset_counters(&mut self) {
+        self.counter_sload = 0;
+        self.counter_sstore = 0;
     }
 
     /// Returns all storage entries as `(address, slot, value)`.

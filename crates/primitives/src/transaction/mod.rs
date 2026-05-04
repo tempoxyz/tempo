@@ -15,7 +15,8 @@ pub use tt_signature::{
 pub use alloy_eips::eip7702::Authorization;
 pub use envelope::{TIP20_PAYMENT_PREFIX, TempoTxEnvelope, TempoTxType, TempoTypedTransaction};
 pub use key_authorization::{
-    KeyAuthorization, KeyAuthorizationChainIdError, SignedKeyAuthorization, TokenLimit,
+    CallScope, KeyAuthorization, KeyAuthorizationChainIdError, SelectorRule,
+    SignedKeyAuthorization, TokenLimit,
 };
 pub use tempo_transaction::{
     Call, MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH,

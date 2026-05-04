@@ -1,12 +1,13 @@
 use std::{collections::VecDeque, sync::Arc};
 
+use alloy_consensus::BlockHeader;
 use alloy_primitives::{
     Address, U256,
     map::{AddressMap, HashMap, U256Map},
 };
 use itertools::Itertools;
 use parking_lot::RwLock;
-use reth_primitives_traits::{BlockHeader, SealedHeader};
+use reth_primitives_traits::SealedHeader;
 use reth_provider::{
     ChainSpecProvider, ExecutionOutcome, HeaderProvider, ProviderError, ProviderResult,
     StateProvider, StateProviderFactory,
@@ -25,7 +26,7 @@ use tempo_precompiles::{
         amm::{Pool, PoolKey, compute_amount_out},
     },
 };
-use tempo_primitives::TempoReceipt;
+use tempo_primitives::{TempoHeader, TempoReceipt};
 use tempo_revm::IntoAddress;
 
 /// Number of recent validators/tokens to track.
@@ -42,19 +43,13 @@ impl AmmLiquidityCache {
     pub fn new<Client>(client: Client) -> ProviderResult<Self>
     where
         Client: StateProviderFactory
-            + HeaderProvider<Header: BlockHeader>
+            + HeaderProvider<Header = TempoHeader>
             + ChainSpecProvider<ChainSpec = TempoChainSpec>,
     {
         let this = Self {
             inner: Default::default(),
         };
-        let tip = client.best_block_number()?;
-
-        for header in
-            client.sealed_headers_range(tip.saturating_sub(LAST_SEEN_WINDOW as u64 + 1)..=tip)?
-        {
-            this.on_new_block(&header, &client)?;
-        }
+        this.repopulate(&client)?;
 
         Ok(this)
     }
@@ -141,17 +136,14 @@ impl AmmLiquidityCache {
     pub fn repopulate<Client>(&self, client: &Client) -> ProviderResult<()>
     where
         Client: StateProviderFactory
-            + HeaderProvider<Header: BlockHeader>
+            + HeaderProvider<Header = TempoHeader>
             + ChainSpecProvider<ChainSpec = TempoChainSpec>,
     {
         self.clear();
         let tip = client.best_block_number()?;
-        for header in
-            client.sealed_headers_range(tip.saturating_sub(LAST_SEEN_WINDOW as u64 + 1)..=tip)?
-        {
-            self.on_new_block(&header, client)?;
-        }
-        Ok(())
+        let headers =
+            client.sealed_headers_range(tip.saturating_sub(LAST_SEEN_WINDOW as u64 + 1)..=tip)?;
+        self.on_new_blocks(headers.iter(), client)
     }
 
     /// Processes a new [`ExecutionOutcome`] and caches new validator
@@ -182,71 +174,89 @@ impl AmmLiquidityCache {
         }
     }
 
-    /// Processes a new block and record the validator's fee token used in the block.
-    pub fn on_new_block<P>(
+    /// Processes new blocks and records recent validators and their fee token preferences in the cache.
+    pub fn on_new_blocks<'a, P>(
         &self,
-        header: &SealedHeader<impl BlockHeader>,
-        state: P,
+        headers: impl IntoIterator<Item = &'a SealedHeader<TempoHeader>>,
+        client: P,
     ) -> ProviderResult<()>
     where
         P: StateProviderFactory + ChainSpecProvider<ChainSpec: TempoHardforks>,
     {
-        let beneficiary = header.beneficiary();
-        let validator_token_slot = TipFeeManager::new().validator_tokens[beneficiary].slot();
-
-        let cached_preference = self
-            .inner
-            .read()
-            .validator_preferences
-            .get(&beneficiary)
-            .copied();
-
-        let preference = if let Some(cached) = cached_preference {
-            cached
+        let headers = headers.into_iter().collect::<Vec<_>>();
+        let latest_hash = if let Some(header) = headers.last() {
+            header.hash()
         } else {
-            // If no cached preference, load from state
-            state
-                .state_by_block_hash(header.hash())?
-                .storage(TIP_FEE_MANAGER_ADDRESS, validator_token_slot.into())?
-                .unwrap_or_default()
-                .into_address()
+            return Ok(());
         };
 
-        // Get the actual fee token, accounting for defaults.
-        let fee_token = if preference.is_zero() {
-            DEFAULT_FEE_TOKEN
-        } else {
-            preference
-        };
+        let mut state = None;
 
-        let mut inner = self.inner.write();
+        for header in headers {
+            let beneficiary = header.beneficiary();
+            let validator_token_slot = TipFeeManager::new().validator_tokens[beneficiary].slot();
 
-        // Track the new fee token preference, if any
-        if cached_preference.is_none() {
-            inner.validator_preferences.insert(beneficiary, preference);
-            inner
-                .slot_to_validator
-                .insert(validator_token_slot, beneficiary);
+            let cached_preference = self
+                .inner
+                .read()
+                .validator_preferences
+                .get(&beneficiary)
+                .copied();
+
+            let preference = if let Some(cached) = cached_preference {
+                cached
+            } else {
+                // If no cached preference, load from state
+
+                // Lazily initialize the state provider for the latest block in the set
+                if state.is_none() {
+                    state = Some(client.state_by_block_hash(latest_hash)?);
+                }
+
+                state
+                    .as_mut()
+                    .expect("initialized above")
+                    .storage(TIP_FEE_MANAGER_ADDRESS, validator_token_slot.into())?
+                    .unwrap_or_default()
+                    .into_address()
+            };
+
+            // Get the actual fee token, accounting for defaults.
+            let fee_token = if preference.is_zero() {
+                DEFAULT_FEE_TOKEN
+            } else {
+                preference
+            };
+
+            let mut inner = self.inner.write();
+
+            // Track the new fee token preference, if any
+            if cached_preference.is_none() {
+                inner.validator_preferences.insert(beneficiary, preference);
+                inner
+                    .slot_to_validator
+                    .insert(validator_token_slot, beneficiary);
+            }
+
+            // Track the new observed fee token
+            inner.last_seen_tokens.push_back(fee_token);
+            if inner.last_seen_tokens.len() > LAST_SEEN_WINDOW {
+                inner.last_seen_tokens.pop_front();
+            }
+            inner.unique_tokens = inner.last_seen_tokens.iter().copied().unique().collect();
+
+            // Track the new observed validator (block producer)
+            inner.last_seen_validators.push_back(beneficiary);
+            if inner.last_seen_validators.len() > LAST_SEEN_WINDOW {
+                inner.last_seen_validators.pop_front();
+            }
+            inner.unique_validators = inner
+                .last_seen_validators
+                .iter()
+                .copied()
+                .unique()
+                .collect();
         }
-
-        // Track the new observed fee token
-        inner.last_seen_tokens.push_back(fee_token);
-        if inner.last_seen_tokens.len() > LAST_SEEN_WINDOW {
-            inner.last_seen_tokens.pop_front();
-        }
-        inner.unique_tokens = inner.last_seen_tokens.iter().copied().unique().collect();
-
-        // Track the new observed validator (block producer)
-        inner.last_seen_validators.push_back(beneficiary);
-        if inner.last_seen_validators.len() > LAST_SEEN_WINDOW {
-            inner.last_seen_validators.pop_front();
-        }
-        inner.unique_validators = inner
-            .last_seen_validators
-            .iter()
-            .copied()
-            .unique()
-            .collect();
 
         Ok(())
     }
@@ -754,9 +764,12 @@ mod tests {
         let new_validator = Address::random();
         let provider = create_mock_provider();
         for i in 0..3u64 {
-            let header = Header {
-                number: i,
-                beneficiary: new_validator,
+            let header = TempoHeader {
+                inner: Header {
+                    number: i,
+                    beneficiary: new_validator,
+                    ..Default::default()
+                },
                 ..Default::default()
             };
             provider.add_header(alloy_primitives::B256::random(), header);

@@ -20,32 +20,43 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: full
   RUSTC_WRAPPER: "sccache"
-  TEMPO_TESTNET_RPC_URL: ${{ secrets.TEMPO_TESTNET_RPC_URL }}
-  TEMPO_DEVNET_RPC_URL: ${{ secrets.TEMPO_DEVNET_RPC_URL }}
+  TEMPO_TESTNET_RPC_URL: ${{ secrets.TEMPO_TESTNET_RPC_URL || 'https://rpc.moderato.tempo.xyz' }}
+  TEMPO_DEVNET_RPC_URL: ${{ secrets.TEMPO_DEVNET_RPC_URL || 'https://rpc.devnet.tempoxyz.dev' }}
 
 jobs:
   rpc-tests:
     name: rpc-tests (${{ matrix.network }})
     runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
-    continue-on-error: true
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
-        network: [testnet, devnet]
+        include:
+          - network: testnet
+            allow_failure: false
+          - network: devnet
+            allow_failure: true
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
-      - uses: taiki-e/install-action@3f67faa728964808f52294a9cd15561b15550b28 # v2.67.19
+      - uses: taiki-e/install-action@d0f23220b09a75c6db730f13bb37c4f8144b4382 # v2.75.9
         with:
           tool: nextest@0.9.124
       - name: Build RPC tests
+        id: build
+        continue-on-error: ${{ matrix.allow_failure }}
         run: cargo nextest run --profile ci-rpc -E 'package(tempo-node) & binary(it) & test(/test_matrices_${{ matrix.network }}/)' --no-run
       - name: Run RPC tests
+        id: run
+        if: steps.build.outcome == 'success'
+        continue-on-error: ${{ matrix.allow_failure }}
         run: cargo nextest run --profile ci-rpc -E 'package(tempo-node) & binary(it) & test(/test_matrices_${{ matrix.network }}/)'
+      - name: Report allowed devnet failure
+        if: matrix.allow_failure && (steps.build.outcome == 'failure' || steps.run.outcome == 'failure')
+        run: echo '::warning::Devnet RPC tests failed, but this check is allowed to fail so merge queue processing can continue.'

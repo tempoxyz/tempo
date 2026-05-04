@@ -1,0 +1,165 @@
+# Bootstrap stub for the txgen workflow_dispatch entrypoint.
+#
+# GitHub only exposes workflow_dispatch for workflows that exist on the default
+# branch. Keep this file on main so branch-local implementations can replace it
+# at the same path and still be dispatched from the Actions UI or CLI.
+
+name: bench-txgen-dispatch
+
+on:
+  workflow_dispatch:
+    inputs:
+      baseline:
+        description: Git ref for the baseline run. Use `local` to use the checked-out tree.
+        type: string
+        required: true
+        default: origin/main
+      feature:
+        description: Git ref for the feature run. Use `local` to use the checked-out tree.
+        type: string
+        required: true
+        default: local
+      txgen-ref:
+        description: Optional ref to pin in tempoxyz/txgen.
+        type: string
+        required: false
+        default: ""
+      preset:
+        description: Benchmark preset. txgen currently supports only `tip20`.
+        type: string
+        required: true
+        default: tip20
+      duration:
+        description: Benchmark duration in seconds.
+        type: string
+        required: true
+        default: "30"
+      bloat:
+        description: State bloat size in MiB.
+        type: string
+        required: true
+        default: "1"
+      tps:
+        description: Target transactions per second.
+        type: string
+        required: true
+        default: "1000"
+      accounts:
+        description: Number of txgen accounts to generate.
+        type: string
+        required: true
+        default: "1000"
+      max-concurrent-requests:
+        description: Max in-flight txgen requests.
+        type: string
+        required: true
+        default: "100"
+      samply:
+        description: Capture samply profiles.
+        type: boolean
+        required: true
+        default: false
+      tracy:
+        description: Tracy mode.
+        type: choice
+        required: true
+        default: off
+        options:
+          - off
+          - on
+          - full
+      tracy-seconds:
+        description: Tracy capture duration in seconds.
+        type: string
+        required: true
+        default: "30"
+      tracy-offset:
+        description: Tracy capture start offset in seconds.
+        type: string
+        required: true
+        default: "120"
+      node-args:
+        description: Extra args passed to both node runs.
+        type: string
+        required: false
+        default: ""
+      baseline-args:
+        description: Extra args passed only to the baseline node.
+        type: string
+        required: false
+        default: ""
+      feature-args:
+        description: Extra args passed only to the feature node.
+        type: string
+        required: false
+        default: ""
+      bench-args:
+        description: Extra bench args.
+        type: string
+        required: false
+        default: ""
+      bench-env:
+        description: Extra env vars for the bench sender process.
+        type: string
+        required: false
+        default: ""
+      baseline-env:
+        description: Extra env vars for the baseline node process.
+        type: string
+        required: false
+        default: ""
+      feature-env:
+        description: Extra env vars for the feature node process.
+        type: string
+        required: false
+        default: ""
+      baseline-hardfork:
+        description: Optional baseline hardfork.
+        type: string
+        required: false
+        default: ""
+      feature-hardfork:
+        description: Optional feature hardfork.
+        type: string
+        required: false
+        default: ""
+      gas-limit:
+        description: Optional gas limit override.
+        type: string
+        required: true
+        default: "1000000000000"
+      no-cache:
+        description: Disable worktree binary cache usage.
+        type: boolean
+        required: true
+        default: false
+      force:
+        description: Force regeneration of local benchmark state.
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  bench-txgen-dispatch:
+    name: bench-txgen-dispatch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Explain bootstrap behavior
+        run: |
+          {
+            echo "### bench-txgen-dispatch bootstrap"
+            echo
+            echo "This default-branch stub exists so GitHub exposes the workflow_dispatch entrypoint."
+            echo "Run this workflow against a branch that contains the txgen benchmark implementation."
+            echo
+            echo "- ref: \`${GITHUB_REF}\`"
+            echo "- sha: \`${GITHUB_SHA}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Print next step
+        run: |
+          echo "No benchmark runs on this stub."
+          echo "Dispatch the workflow against a branch that replaces .github/workflows/bench-txgen-dispatch.yml."

@@ -1,5 +1,5 @@
 use alloy_evm::{
-    Database, Evm, EvmEnv, EvmFactory,
+    Database, Evm, EvmEnv, EvmFactory, IntoTxEnv,
     precompiles::PrecompilesMap,
     revm::{
         Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm,
@@ -7,11 +7,17 @@ use alloy_evm::{
         inspector::NoOpInspector,
     },
 };
-use alloy_primitives::{Address, Bytes, Log, TxKind};
-use reth_revm::{InspectSystemCallEvm, MainContext, context::result::ExecutionResult};
+use alloy_primitives::{Address, Bytes, TxKind};
+use reth_revm::{
+    InspectSystemCallEvm, MainContext,
+    context::{CfgEnv, result::ExecutionResult},
+};
 use std::ops::{Deref, DerefMut};
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_revm::{TempoHaltReason, TempoInvalidTransaction, TempoTxEnv, evm::TempoContext};
+use tempo_revm::{
+    TempoHaltReason, TempoInvalidTransaction, TempoTxEnv, ValidationContext, evm::TempoContext,
+    handler::TempoEvmHandler,
+};
 
 use crate::TempoBlockEnv;
 
@@ -62,6 +68,9 @@ pub struct TempoEvm<DB: Database, I = NoOpInspector> {
 impl<DB: Database> TempoEvm<DB> {
     /// Create a new [`TempoEvm`] instance.
     pub fn new(db: DB, input: EvmEnv<TempoHardfork, TempoBlockEnv>) -> Self {
+        // TIP-1016 (EIP-8037 state gas split) is gated by `cfg_env.enable_amsterdam_eip8037`
+        // and is independent of the T4 hardfork. The caller is responsible for setting the
+        // flag on the input `EvmEnv`; here we pass it through unchanged.
         let ctx = Context::mainnet()
             .with_db(db)
             .with_block(input.block_env)
@@ -91,6 +100,11 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         &mut self.inner.inner.ctx
     }
 
+    /// Provides a mutable reference to the inner [`tempo_revm::TempoEvm`].
+    pub fn inner_mut(&mut self) -> &mut tempo_revm::TempoEvm<DB, I> {
+        &mut self.inner
+    }
+
     /// Sets the inspector for the EVM.
     pub fn with_inspector<OINSP>(self, inspector: OINSP) -> TempoEvm<DB, OINSP> {
         TempoEvm {
@@ -99,16 +113,16 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         }
     }
 
-    /// Takes the inner EVM's revert logs.
+    /// Runs the full transaction validation pipeline without executing the transaction.
     ///
-    /// This is used as a work around to allow logs to be
-    /// included for reverting transactions.
-    ///
-    /// TODO: remove once revm supports emitting logs for reverted transactions
-    ///
-    /// <https://github.com/tempoxyz/tempo/pull/729>
-    pub fn take_revert_logs(&mut self) -> Vec<Log> {
-        std::mem::take(&mut self.inner.logs)
+    /// Returns a [`ValidationContext`] with context relevant for the transaction pool.
+    pub fn validate_transaction(
+        &mut self,
+        tx: impl IntoTxEnv<TempoTxEnv>,
+    ) -> Result<ValidationContext, EVMError<DB::Error, TempoInvalidTransaction>> {
+        self.inner.inner.ctx.tx = tx.into_tx_env();
+        let mut handler = TempoEvmHandler::new();
+        handler.validate_transaction(&mut self.inner)
     }
 }
 
@@ -154,6 +168,10 @@ where
         &self.block
     }
 
+    fn cfg_env(&self) -> &CfgEnv<Self::Spec> {
+        &self.cfg
+    }
+
     fn chain_id(&self) -> u64 {
         self.cfg.chain_id
     }
@@ -182,7 +200,7 @@ where
                 );
             };
 
-            *gas = ResultGas::default().with_limit(tx.inner.gas_limit);
+            *gas = ResultGas::default();
 
             Ok(result)
         } else if self.inspect {
@@ -241,7 +259,7 @@ mod tests {
         database::{EmptyDB, in_memory_db::CacheDB},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_revm::gas_params::tempo_gas_params;
+    use tempo_revm::gas_params::tempo_gas_params_with_amsterdam;
 
     use super::*;
 
@@ -286,7 +304,7 @@ mod tests {
 
         let result = result.unwrap();
         assert!(result.result.is_success());
-        assert_eq!(result.result.gas_used(), 21000);
+        assert_eq!(result.result.tx_gas_used(), 21000);
     }
 
     #[test]
@@ -312,7 +330,7 @@ mod tests {
         let result = result.unwrap();
         assert!(result.result.is_success());
         // System transactions should not consume gas
-        assert_eq!(result.result.gas_used(), 0);
+        assert_eq!(result.result.tx_gas_used(), 0);
     }
 
     #[test]
@@ -398,33 +416,6 @@ mod tests {
         assert!(result.result.is_success());
     }
 
-    #[test]
-    fn test_take_revert_logs() {
-        let mut evm = test_evm(EmptyDB::default());
-
-        assert!(evm.take_revert_logs().is_empty());
-
-        let log1 = Log::new_unchecked(
-            Address::repeat_byte(0x01),
-            vec![alloy_primitives::B256::repeat_byte(0xaa)],
-            Bytes::from_static(&[0x01, 0x02]),
-        );
-        let log2 = Log::new_unchecked(
-            Address::repeat_byte(0x02),
-            vec![],
-            Bytes::from_static(&[0x03, 0x04]),
-        );
-        evm.inner.logs.push(log1);
-        evm.inner.logs.push(log2);
-
-        let logs = evm.take_revert_logs();
-        assert_eq!(logs.len(), 2);
-        assert_eq!(logs[0].address, Address::repeat_byte(0x01));
-        assert_eq!(logs[1].address, Address::repeat_byte(0x02));
-
-        assert!(evm.take_revert_logs().is_empty());
-    }
-
     // ==================== TIP-1000 EVM Configuration Tests ====================
 
     /// Helper to create EvmEnv with a specific hardfork spec.
@@ -432,7 +423,10 @@ mod tests {
         spec: tempo_chainspec::hardfork::TempoHardfork,
     ) -> EvmEnv<tempo_chainspec::hardfork::TempoHardfork, TempoBlockEnv> {
         EvmEnv::<tempo_chainspec::hardfork::TempoHardfork, TempoBlockEnv>::new(
-            CfgEnv::new_with_spec_and_gas_params(spec, tempo_gas_params(spec)),
+            CfgEnv::new_with_spec_and_gas_params(
+                spec,
+                tempo_gas_params_with_amsterdam(spec, false),
+            ),
             TempoBlockEnv::default(),
         )
     }

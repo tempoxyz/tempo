@@ -14,12 +14,12 @@ Publishes `tempo-contracts`, `tempo-primitives`, and `tempo-alloy` to crates.io 
 
 All Reth-specific code in `tempo-primitives` lives in `crates/primitives/src/reth_compat/`, gated behind `#[cfg(feature = "reth")]`. This creates a clean deletion boundary — the publish script deletes that directory, strips remaining `cfg_attr` annotations from struct definitions, sanitizes `Cargo.toml` files, and publishes.
 
-In `tempo-alloy`, reth-specific code lives in `rpc/compat.rs` (reth RPC trait impls and related tests). The publish script deletes `compat.rs`, removes the `mod compat;` declaration from `rpc/mod.rs`, strips reth/internal dependencies from `Cargo.toml`, and publishes. No feature gates are needed — the file deletion boundary is sufficient.
+In `tempo-alloy`, reth-specific code lives in `rpc/reth_compat.rs`, gated behind `#[cfg(feature = "reth")]`. The publish script deletes `reth_compat.rs`, removes the cfg-gated `mod reth_compat;` declaration from `rpc/mod.rs`, strips reth/internal dependencies from `Cargo.toml`, and publishes.
 
 ## Pipeline
 
 1. copy to tmpdir
-2. delete reth_compat/ & rpc/compat.rs
+2. delete reth_compat modules (primitives dir + alloy file)
 3. sanitize_source.py ── strip reth/tempo cfg attrs from .rs files
 4. sanitize_toml.py ──── strip reth deps/features from Cargo.toml
 5. cargo check + cargo check --all-features
@@ -44,6 +44,7 @@ Orchestrator. Copies the 3 crates to a temp directory, runs the sanitization pip
 - No internal path-only workspace crates (dynamically discovered from workspace root)
 - No forbidden feature definitions (`reth`, `reth-codec`, `serde-bincode-compat`, `rpc`)
 - No reth-gated `cfg` attrs in `tempo-primitives` source
+- No reth-gated `cfg` attrs in `tempo-alloy` source
 
 **Post-resolve validation** (after concrete versions replace workspace refs):
 - No `workspace = true`, `path =`, or `git =` in any published `Cargo.toml`
@@ -59,7 +60,7 @@ Orchestrator. Copies the 3 crates to a temp directory, runs the sanitization pip
 Strips reth/node-specific code from `.rs` files using two strategies:
 
 - **Directory-wide scan** for `cfg_attr` patterns — walks all `.rs` files under `src/` and strips matching attributes wherever they appear. No hardcoded file lists; adding a new struct with reth derives requires no script update. Pre-scans to count expected matches, then asserts exact deletion counts post-mutation.
-- **Simple line deletion** for alloy — removes the `mod compat;` declaration from `rpc/mod.rs` (the file itself is already deleted by the shell script).
+- **Simple line deletion** for alloy — removes the cfg-gated `mod reth_compat;` declaration from `rpc/mod.rs` (the file itself is already deleted by the shell script).
 
 **`tempo-primitives` edits:**
 - Removes `#[cfg(feature = "reth")] mod reth_compat;` and `pub use reth_compat::TempoReceipt;` from `lib.rs`
@@ -69,7 +70,7 @@ Strips reth/node-specific code from `.rs` files using two strategies:
 - Removes `#[cfg(feature = "rpc")]` impl blocks from `envelope.rs`
 
 **`tempo-alloy` edits:**
-- Deletes the `mod compat;` declaration from `rpc/mod.rs` (file already deleted by shell script)
+- Deletes the cfg-gated `mod reth_compat;` declaration from `rpc/mod.rs` (file already deleted by shell script)
 
 ### `sanitize_toml.py`
 

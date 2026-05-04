@@ -10,12 +10,13 @@ use tempo_precompiles_macros::contract;
 use crate::{
     PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
     error::{Result, TempoPrecompileError},
-    tip20::{TIP20Error, TIP20Token, USD_CURRENCY, is_tip20_prefix},
+    tip20::{TIP20Error, TIP20Token, USD_CURRENCY},
 };
 use alloy::{
     primitives::{Address, B256, keccak256},
     sol_types::SolValue,
 };
+use tempo_primitives::TempoAddressExt;
 use tracing::trace;
 
 /// Number of reserved addresses (0 to RESERVED_SIZE-1) that cannot be deployed via factory
@@ -82,7 +83,7 @@ impl TIP20Factory {
 
     /// Returns `true` if `token` has the correct TIP-20 prefix and has code deployed.
     pub fn is_tip20(&self, token: Address) -> Result<bool> {
-        if !is_tip20_prefix(token) {
+        if !token.is_tip20() {
             return Ok(false);
         }
         // Check if the token has code deployed (non-empty code hash)
@@ -178,7 +179,7 @@ impl TIP20Factory {
         admin: Address,
     ) -> Result<Address> {
         // Validate that the address has a TIP20 prefix
-        if !is_tip20_prefix(address) {
+        if !address.is_tip20() {
             return Err(TIP20Error::invalid_token().into());
         }
 
@@ -268,26 +269,6 @@ mod tests {
     }
 
     #[test]
-    fn test_is_tip20_prefix() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-
-        StorageCtx::enter(&mut storage, || {
-            // PATH_USD has correct prefix
-            assert!(is_tip20_prefix(PATH_USD_ADDRESS));
-
-            // Address with TIP20 prefix (0x20C0...)
-            let tip20_addr = Address::from(alloy::hex!("20C0000000000000000000000000000000001234"));
-            assert!(is_tip20_prefix(tip20_addr));
-
-            // Random address does not have TIP20 prefix
-            let random = Address::random();
-            assert!(!is_tip20_prefix(random));
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_is_tip20() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
@@ -364,11 +345,11 @@ mod tests {
         assert_ne!(lower4, lower5);
 
         // All addresses should have TIP20 prefix
-        assert!(is_tip20_prefix(addr1));
-        assert!(is_tip20_prefix(addr2));
-        assert!(is_tip20_prefix(addr3));
-        assert!(is_tip20_prefix(addr4));
-        assert!(is_tip20_prefix(addr5));
+        assert!(addr1.is_tip20());
+        assert!(addr2.is_tip20());
+        assert!(addr3.is_tip20());
+        assert!(addr4.is_tip20());
+        assert!(addr5.is_tip20());
     }
 
     #[test]
@@ -406,8 +387,8 @@ mod tests {
             assert_ne!(token_addr_1, token_addr_2);
 
             // Verify addresses have TIP20 prefix
-            assert!(is_tip20_prefix(token_addr_1));
-            assert!(is_tip20_prefix(token_addr_2));
+            assert!(token_addr_1.is_tip20());
+            assert!(token_addr_2.is_tip20());
 
             // Verify tokens are valid TIP20s
             assert!(factory.is_tip20(token_addr_1)?);
@@ -778,7 +759,7 @@ mod tests {
         assert_ne!(address, Address::ZERO);
 
         // Address should have TIP20 prefix
-        assert!(is_tip20_prefix(address));
+        assert!(address.is_tip20());
 
         // Same inputs should produce same outputs (deterministic)
         let (address2, lower_bytes2) = compute_tip20_address(sender, salt);
@@ -812,7 +793,7 @@ mod tests {
             assert_ne!(address, Address::ZERO);
 
             // Should have TIP20 prefix
-            assert!(is_tip20_prefix(address));
+            assert!(address.is_tip20());
 
             // Should be deterministic
             let address2 =

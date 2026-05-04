@@ -601,7 +601,7 @@ mod tests {
                 nonce: 0,
                 fee_token: Some(Address::repeat_byte(0xFE)),
                 fee_payer_signature: Some(fee_payer_sig),
-                valid_before: Some(100),
+                valid_before: Some(core::num::NonZeroU64::new(100).unwrap()),
                 calls: vec![Call {
                     to: TxKind::Call(Address::repeat_byte(0x42)),
                     value: U256::ZERO,
@@ -641,7 +641,7 @@ mod tests {
             gas_limit: 1_000_000,
             nonce_key: U256::MAX,
             nonce: 0,
-            valid_before: Some(100),
+            valid_before: Some(core::num::NonZeroU64::new(100).unwrap()),
             calls: vec![Call {
                 to: TxKind::Call(Address::repeat_byte(0x42)),
                 value: U256::ZERO,

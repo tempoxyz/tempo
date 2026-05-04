@@ -25,7 +25,7 @@ crate::sol! {
 
         function isTIP20(address token) public view returns (bool);
 
-        function getTokenAddress(address sender, bytes32 salt) public view returns (address);
+        function getTokenAddress(address sender, bytes32 salt) public pure returns (address);
     }
 }
 

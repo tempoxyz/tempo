@@ -68,7 +68,7 @@ crate::sol! {
         // Standard token functions
         function name() external view returns (string memory);
         function symbol() external view returns (string memory);
-        function decimals() external view returns (uint8);
+        function decimals() external pure returns (uint8);
         function totalSupply() external view returns (uint256);
         function quoteToken() external view returns (address);
         function nextQuoteToken() external view returns (address);
@@ -156,13 +156,11 @@ crate::sol! {
         error SupplyCapExceeded();
         error InvalidSupplyCap();
         error InvalidPayload();
-        error StringTooLong();
         error PolicyForbids();
         error InvalidRecipient();
         error ContractPaused();
         error InvalidCurrency();
         error InvalidQuoteToken();
-        error TransfersDisabled();
         error InvalidAmount();
         error NoOptedInSupply();
         error Unauthorized();
@@ -253,11 +251,6 @@ impl TIP20Error {
         Self::InvalidQuoteToken(ITIP20::InvalidQuoteToken {})
     }
 
-    /// Creates an error when string parameter exceeds maximum length.
-    pub const fn string_too_long() -> Self {
-        Self::StringTooLong(ITIP20::StringTooLong {})
-    }
-
     /// Creates an error when transfer is forbidden by policy.
     pub const fn policy_forbids() -> Self {
         Self::PolicyForbids(ITIP20::PolicyForbids {})
@@ -276,11 +269,6 @@ impl TIP20Error {
     /// Creates an error for invalid currency.
     pub const fn invalid_currency() -> Self {
         Self::InvalidCurrency(ITIP20::InvalidCurrency {})
-    }
-
-    /// Creates an error for transfers being disabled.
-    pub const fn transfers_disabled() -> Self {
-        Self::TransfersDisabled(ITIP20::TransfersDisabled {})
     }
 
     /// Creates an error for invalid amount.

@@ -1,6 +1,6 @@
 use commonware_consensus::{
     Automaton, CertifiableAutomaton, Relay,
-    simplex::types::Context,
+    simplex::{Plan, types::Context},
     types::{Epoch, Round, View},
 };
 
@@ -24,9 +24,9 @@ impl Mailbox {
 /// Messages forwarded from consensus to application.
 // TODO: add trace spans into all of these messages.
 pub(super) enum Message {
-    Broadcast(Broadcast),
+    Broadcast(Box<Broadcast>),
     Genesis(Genesis),
-    Propose(Propose),
+    Propose(Box<Propose>),
     Verify(Box<Verify>),
 }
 
@@ -45,21 +45,23 @@ pub(super) struct Propose {
     pub(super) parent: (View, Digest),
     pub(super) response: oneshot::Sender<Digest>,
     pub(super) round: Round,
+    pub(super) leader: PublicKey,
 }
 
 impl From<Propose> for Message {
     fn from(value: Propose) -> Self {
-        Self::Propose(value)
+        Self::Propose(Box::new(value))
     }
 }
 
 pub(super) struct Broadcast {
-    pub(super) payload: Digest,
+    pub(super) digest: Digest,
+    pub(super) plan: Plan<PublicKey>,
 }
 
 impl From<Broadcast> for Message {
     fn from(value: Broadcast) -> Self {
-        Self::Broadcast(value)
+        Self::Broadcast(Box::new(value))
     }
 }
 
@@ -110,6 +112,7 @@ impl Automaton for Mailbox {
                     parent: context.parent,
                     response: tx,
                     round: context.round,
+                    leader: context.leader,
                 }
                 .into(),
             )
@@ -155,11 +158,13 @@ impl CertifiableAutomaton for Mailbox {
 
 impl Relay for Mailbox {
     type Digest = Digest;
+    type PublicKey = PublicKey;
+    type Plan = commonware_consensus::simplex::Plan<PublicKey>;
 
-    async fn broadcast(&mut self, digest: Self::Digest) {
+    async fn broadcast(&mut self, digest: Self::Digest, plan: Self::Plan) {
         // TODO: panicking here is really not necessary. Just log at the ERROR or WARN levels instead?
         self.inner
-            .send(Broadcast { payload: digest }.into())
+            .send(Broadcast { digest, plan }.into())
             .await
             .expect("application is present and ready to receive broadcasts");
     }

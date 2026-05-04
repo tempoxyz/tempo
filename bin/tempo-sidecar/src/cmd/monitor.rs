@@ -6,7 +6,7 @@ use metrics::{describe_counter, describe_gauge};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use poem::{EndpointExt, Route, Server, get, listener::TcpListener};
 use reqwest::Url;
-use tempo_precompiles::tip20::is_tip20_prefix;
+use tempo_primitives::TempoAddressExt;
 use tokio::signal;
 use tracing_subscriber::EnvFilter;
 
@@ -43,7 +43,7 @@ impl MonitorArgs {
             .install_recorder()
             .context("failed to install recorder")?;
 
-        if self.tokens.iter().any(|t| !is_tip20_prefix(*t)) {
+        if self.tokens.iter().any(|t| !t.is_tip20()) {
             return Err(eyre!("Invalid input. Pools require TIP20 tokens."));
         }
 

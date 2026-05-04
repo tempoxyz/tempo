@@ -26,6 +26,8 @@ impl NodePrimitives for TempoPrimitives {
     type Receipt = TempoReceipt;
 }
 
+mod ed25519;
+
 mod header;
 
 mod subblock;

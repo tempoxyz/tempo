@@ -49,7 +49,7 @@ where
         mut self,
         reporter: impl Reporter<Activity = Event>,
     ) -> commonware_runtime::Handle<()> {
-        spawn_cell!(self.context, self.run(reporter).await)
+        spawn_cell!(self.context, self.run(reporter))
     }
 
     async fn run(mut self, mut reporter: impl Reporter<Activity = Event>) {

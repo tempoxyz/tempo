@@ -1,6 +1,6 @@
 {
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/24.11";
+    nixpkgs.url = "github:NixOS/nixpkgs/25.11";
     utils.url = "github:numtide/flake-utils";
     crane.url = "github:ipetkov/crane";
     fenix.url = "github:nix-community/fenix";
@@ -34,6 +34,7 @@
           "cargo"
           "rustc"
           "rust-src"
+          "clippy"
         ];
         rustNightly = fenix.packages.${system}.latest;
 
@@ -83,19 +84,26 @@
 
       in
       {
-        packages = rec {
-          tempo = mkTempo (
-            [
-              withClang
-              withMaxPerf
-            ]
-            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
-              withMold
-            ]
-          );
-
-          default = tempo;
-        };
+        # TODO `nix build` is broken due to a Nix bug: builtins.fetchGit with
+        # allRefs=true (used by crane for bare rev= git deps) fails when Nix's
+        # internal git cache has stale refs from deleted/force-pushed branches.
+        # The reth git deps in Cargo.toml use bare rev= without a branch/tag,
+        # which triggers this. Adding `branch = "main"` to the reth git deps in
+        # Cargo.toml would fix it by letting crane use allRefs=false.
+        #
+        # packages = rec {
+        #   tempo = mkTempo (
+        #     [
+        #       withClang
+        #       withMaxPerf
+        #     ]
+        #     ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+        #       withMold
+        #     ]
+        #   );
+        #
+        #   default = tempo;
+        # };
 
         devShell =
           let

@@ -2,26 +2,28 @@
 
 use super::ValidatorConfig;
 use crate::{
-    Precompile, dispatch_call, error::TempoPrecompileError, input_cost, mutate_void,
-    unknown_selector, view,
+    Precompile, SelectorSchedule, charge_input_cost, dispatch_call, error::TempoPrecompileError,
+    mutate_void, view,
 };
 use alloy::{
     primitives::Address,
     sol_types::{SolCall, SolInterface},
 };
-use revm::precompile::{PrecompileError, PrecompileResult};
-use tempo_contracts::precompiles::IValidatorConfig::{
-    IValidatorConfigCalls, changeValidatorStatusByIndexCall,
-};
+use revm::precompile::PrecompileResult;
+use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_contracts::precompiles::IValidatorConfig::{self, IValidatorConfigCalls};
+
+const T1_ADDED: &[[u8; 4]] = &[IValidatorConfig::changeValidatorStatusByIndexCall::SELECTOR];
 
 impl Precompile for ValidatorConfig {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
-        self.storage
-            .deduct_gas(input_cost(calldata.len()))
-            .map_err(|_| PrecompileError::OutOfGas)?;
+        if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
+            return err;
+        }
 
         dispatch_call(
             calldata,
+            &[SelectorSchedule::new(TempoHardfork::T1).with_added(T1_ADDED)],
             IValidatorConfigCalls::abi_decode,
             |call| match call {
                 // View functions
@@ -53,13 +55,6 @@ impl Precompile for ValidatorConfig {
                     mutate_void(call, msg_sender, |s, c| self.change_validator_status(s, c))
                 }
                 IValidatorConfigCalls::changeValidatorStatusByIndex(call) => {
-                    // T1+: changeValidatorStatusByIndex is only available in T1+
-                    if !self.storage.spec().is_t1() {
-                        return unknown_selector(
-                            changeValidatorStatusByIndexCall::SELECTOR,
-                            self.storage.gas_used(),
-                        );
-                    }
                     mutate_void(call, msg_sender, |s, c| {
                         self.change_validator_status_by_index(s, c)
                     })
@@ -89,6 +84,7 @@ mod tests {
         primitives::{Address, FixedBytes},
         sol_types::{SolCall, SolValue},
     };
+
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         IValidatorConfig, IValidatorConfig::IValidatorConfigCalls, ValidatorConfigError,
@@ -106,23 +102,24 @@ mod tests {
             validator_config.initialize(owner)?;
 
             let result = validator_config.call(&[0x12, 0x34, 0x56, 0x78], sender)?;
-            assert!(result.reverted);
+            assert!(result.is_revert());
 
             // T1: insufficient calldata also returns reverted output
             let result = validator_config.call(&[0x12, 0x34], sender)?;
-            assert!(result.reverted);
+            assert!(result.is_revert());
 
             Ok(())
         })?;
 
-        // Pre-T1 (T0): insufficient calldata returns error
+        // Pre-T1 (T0): insufficient calldata returns halted output
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
         StorageCtx::enter(&mut storage, || {
             let mut validator_config = ValidatorConfig::new();
             validator_config.initialize(owner)?;
 
             let result = validator_config.call(&[0x12, 0x34], sender);
-            assert!(matches!(result, Err(PrecompileError::Other(_))));
+            let output = result.expect("expected Ok(halt) for short calldata");
+            assert!(output.is_halt());
 
             Ok(())
         })
@@ -227,7 +224,7 @@ mod tests {
 
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
         StorageCtx::enter(&mut storage, || {
             let mut validator_config = ValidatorConfig::new();
 
@@ -279,7 +276,7 @@ mod tests {
             let calldata = call.abi_encode();
             let result = validator_config.call(&calldata, owner)?;
 
-            assert!(result.reverted);
+            assert!(result.is_revert());
             let decoded = UnknownFunctionSelector::abi_decode(&result.bytes)?;
             assert_eq!(
                 decoded.selector.0,
@@ -316,7 +313,7 @@ mod tests {
             let result = validator_config.call(&calldata, owner)?;
 
             assert!(
-                !result.reverted,
+                !result.is_revert(),
                 "changeValidatorStatusByIndex should succeed in T1"
             );
 

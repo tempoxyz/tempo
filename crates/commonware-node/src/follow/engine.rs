@@ -242,7 +242,7 @@ where
     TUpstreamActor: upstream::UpstreamActor,
 {
     pub fn start(mut self) -> Handle<eyre::Result<()>> {
-        spawn_cell!(self.context, self.run().await)
+        spawn_cell!(self.context, self.run())
     }
 
     async fn run(self) -> eyre::Result<()> {

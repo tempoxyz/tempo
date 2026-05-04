@@ -1276,10 +1276,12 @@ impl Player {
     /// Finalize the player's participation in the DKG round.
     pub(super) fn finalize(
         self,
-        logs: BTreeMap<PublicKey, dkg::DealerLog<MinSig, PublicKey>>,
+        rng: &mut impl rand_core::CryptoRngCore,
+        logs: dkg::Logs<MinSig, PublicKey, N3f1>,
         strategy: &impl Strategy,
     ) -> Result<(Output<MinSig, PublicKey>, Share), dkg::Error> {
-        self.player.finalize::<N3f1>(logs, strategy)
+        self.player
+            .finalize::<N3f1, commonware_cryptography::ed25519::Batch>(rng, logs, strategy)
     }
 }
 

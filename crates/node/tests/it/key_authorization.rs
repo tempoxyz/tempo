@@ -1,4 +1,4 @@
-use crate::utils::{TEST_MNEMONIC, TestNodeBuilder};
+use crate::utils::{TEST_MNEMONIC, TestNodeBuilder, make_genesis_at};
 use alloy::{
     primitives::{Address, Bytes, U256},
     providers::{Provider, ProviderBuilder},
@@ -28,13 +28,11 @@ fn build_create_key_auth_tx(
     gas_limit: u64,
     max_priority_fee_per_gas: u128,
 ) -> eyre::Result<Vec<u8>> {
-    let key_auth = KeyAuthorization {
+    let key_auth = KeyAuthorization::unrestricted(
         chain_id,
-        key_type: tempo_primitives::SignatureType::Secp256k1,
-        key_id: Address::random(),
-        expiry: None,
-        limits: None,
-    };
+        tempo_primitives::SignatureType::Secp256k1,
+        Address::random(),
+    );
     let sig = signer.sign_hash_sync(&key_auth.signature_hash())?;
     let signed_key_auth = key_auth.into_signed(PrimitiveSignature::Secp256k1(sig));
 
@@ -104,14 +102,8 @@ fn build_2d_nonce_transfer_tx(
     Ok(envelope.encoded_2718())
 }
 
-fn make_pre_t1b_genesis() -> eyre::Result<String> {
-    let genesis_str = include_str!("../assets/test-genesis.json");
-    let mut genesis: serde_json::Value = serde_json::from_str(genesis_str)?;
-    genesis["config"].as_object_mut().unwrap().remove("t1bTime");
-    genesis["config"].as_object_mut().unwrap().remove("t1cTime");
-    genesis["config"].as_object_mut().unwrap().remove("t2Time");
-    genesis["config"].as_object_mut().unwrap().remove("t3Time");
-    Ok(serde_json::to_string(&genesis)?)
+fn make_pre_t1b_genesis() -> String {
+    make_genesis_at(tempo_chainspec::hardfork::TempoHardfork::T1A)
 }
 
 /// Pre-T1B fee-drain replay: the poisoned KeyAuth CREATE tx is followed by a
@@ -132,7 +124,7 @@ async fn test_pre_t1b_keyauth_oog_replay() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new()
-        .with_genesis(make_pre_t1b_genesis()?)
+        .with_genesis(make_pre_t1b_genesis())
         .build_with_node_access()
         .await?;
 
@@ -233,7 +225,7 @@ async fn test_pre_t1b_keyauth_oog_single_tx_nonce_not_bumped() -> eyre::Result<(
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new()
-        .with_genesis(make_pre_t1b_genesis()?)
+        .with_genesis(make_pre_t1b_genesis())
         .build_with_node_access()
         .await?;
 
@@ -326,8 +318,8 @@ async fn test_post_t1b_keyauth_oog_fixed() -> eyre::Result<()> {
         .expect_err("Post-T1B: replay must be rejected");
     let err_msg = replay_err.to_string();
     assert!(
-        err_msg.contains("nonce too low: next nonce 1, tx nonce 0"),
-        "Post-T1B: replay error must be nonce-too-low, got: {err_msg}"
+        err_msg.contains("KeyAlreadyExists"),
+        "Post-T1B: replay error must be KeyAlreadyExists, got: {err_msg}"
     );
 
     Ok(())

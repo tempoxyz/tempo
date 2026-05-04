@@ -171,7 +171,7 @@ function buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, re
     `*Baseline:* ${baselineLink}`,
     `*Feature:* ${featureLink}`,
     '',
-    `*Preset:* \`${config.preset}\` | *Bloat:* \`${config.bloat} MiB\``,
+    `*Preset:* \`${config.preset}\` | *Bloat:* \`${Math.round(config.bloat / 1000)} GB\``,
     `*Duration:* \`${config.duration}s\` | *Target TPS:* \`${config.tps}\` | *Blocks:* ${blockCount}`,
   ].join('\n');
 

@@ -1,22 +1,22 @@
 [package]
 name = "tempo-chainspec"
-description = "TODO:"
+description = "Tempo hardfork configuration and chain specification helpers"
 
-version.workspace = true
+version = "1.5.3"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-publish.workspace = true
+publish = true
 
 [lints]
 workspace = true
 
 [dependencies]
-tempo-primitives = { workspace = true, features = ["reth"] }
+tempo-primitives.workspace = true
 
 reth-cli = { workspace = true, optional = true }
-reth-chainspec.workspace = true
-reth-network-peers.workspace = true
+reth-chainspec = { workspace = true, optional = true }
+reth-network-peers = { workspace = true, optional = true }
 
 alloy-evm.workspace = true
 alloy-genesis.workspace = true
@@ -33,15 +33,15 @@ paste.workspace = true
 [dev-dependencies]
 
 [features]
-default = ["std", "serde", "cli"]
+default = ["std", "serde", "reth", "cli"]
 std = [
     "alloy-eips/std",
     "alloy-evm/std",
     "alloy-genesis/std",
     "alloy-primitives/std",
     "once_cell/std",
-    "reth-chainspec/std",
-    "reth-network-peers/std",
+    "reth-chainspec?/std",
+    "reth-network-peers?/std",
     "serde/std",
     "serde_json/std",
     "tempo-primitives/std",
@@ -52,4 +52,10 @@ serde = [
     "alloy-primitives/serde",
     "tempo-primitives/serde"
 ]
-cli = ["std", "dep:reth-cli", "dep:eyre", "tempo-primitives/reth-codec"]
+reth = [
+    "std",
+    "dep:reth-chainspec",
+    "dep:reth-network-peers",
+    "tempo-primitives/reth",
+]
+cli = ["reth", "dep:reth-cli", "dep:eyre", "tempo-primitives/reth-codec"]

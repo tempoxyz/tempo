@@ -3,7 +3,7 @@ use std::time::Duration;
 use commonware_macros::test_traced;
 use commonware_runtime::{
     Clock, Metrics, Runner as _,
-    deterministic::{self, Context, Runner},
+    deterministic::{Config, Runner},
 };
 use futures::future::join_all;
 use reth_ethereum::storage::BlockNumReader;
@@ -13,83 +13,25 @@ use crate::{
     Setup, connect_execution_peers, connect_execution_to_peers, get_pipeline_runs, setup_validators,
 };
 
-async fn run_validator_late_join_test(
-    context: &mut Context,
-    blocks_before_join: u64,
-    blocks_after_join: u64,
-    should_pipeline_sync: bool,
-) {
-    let metrics_recorder = install_prometheus_recorder();
-
-    let setup = Setup::new().epoch_length(100);
-
-    let (mut nodes, _execution_runtime) = setup_validators(context, setup.clone()).await;
-
-    // Start all nodes except the last one
-    let mut last = nodes.pop().unwrap();
-    join_all(nodes.iter_mut().map(|node| node.start(context))).await;
-    if should_pipeline_sync {
-        connect_execution_peers(&nodes).await;
-    }
-
-    // Wait for chain to advance before starting the last node
-    while nodes[0].execution_provider().last_block_number().unwrap() < blocks_before_join {
-        context.sleep(Duration::from_secs(1)).await;
-    }
-
-    last.start(context).await;
-    assert_eq!(last.execution_provider().last_block_number().unwrap(), 0);
-
-    if should_pipeline_sync {
-        connect_execution_to_peers(&last, &nodes).await;
-    }
-
-    tracing::debug!("last node started");
-
-    // Assert that last node is able to catch up and progress
-    while last.execution_provider().last_block_number().unwrap() < blocks_after_join {
-        context.sleep(Duration::from_millis(100)).await;
-        assert_no_new_epoch(context, 0);
-    }
-    // Verify backfill behavior
-    let actual_runs = get_pipeline_runs(metrics_recorder);
-    if should_pipeline_sync {
-        assert!(
-            actual_runs > 0,
-            "at least one backfill must have been triggered"
-        );
-    } else {
-        assert_eq!(
-            0, actual_runs,
-            "expected no backfill, got {actual_runs} runs"
-        );
-    }
-
-    // Verify that the node is still progressing after sync
-    let last_block = last.execution_provider().last_block_number().unwrap();
-    context.sleep(Duration::from_secs(10)).await;
-    assert!(
-        last.execution_provider().last_block_number().unwrap() > last_block,
-        "node should still be progressing after sync"
-    );
-}
-
 #[test_traced]
 fn validator_can_join_later_with_live_sync() {
-    let _ = tempo_eyre::install();
-
-    Runner::from(deterministic::Config::default().with_seed(0)).start(|mut context| async move {
-        run_validator_late_join_test(&mut context, 5, 10, false).await;
-    });
+    AssertJoinsLate {
+        blocks_before_join: 5,
+        blocks_after_join: 10,
+        should_pipeline_sync: false,
+    }
+    .run();
 }
 
 #[test_traced]
 fn validator_can_join_later_with_pipeline_sync() {
+    AssertJoinsLate {
+        blocks_before_join: 65,
+        blocks_after_join: 70,
+        should_pipeline_sync: false,
+    }
+    .run();
     let _ = tempo_eyre::install();
-
-    Runner::from(deterministic::Config::default().with_seed(0)).start(|mut context| async move {
-        run_validator_late_join_test(&mut context, 65, 70, true).await;
-    });
 }
 
 #[track_caller]
@@ -109,5 +51,78 @@ fn assert_no_new_epoch(context: &impl Metrics, max_epoch: u64) {
             let value = value.parse::<u64>().unwrap();
             assert!(value <= max_epoch, "epoch progressed; sync likely failed");
         }
+    }
+}
+
+struct AssertJoinsLate {
+    blocks_before_join: u64,
+    blocks_after_join: u64,
+    should_pipeline_sync: bool,
+}
+impl AssertJoinsLate {
+    fn run(self) {
+        let Self {
+            blocks_before_join,
+            blocks_after_join,
+            should_pipeline_sync,
+        } = self;
+
+        let _ = tempo_eyre::install();
+        let metrics_recorder = install_prometheus_recorder();
+
+        let setup = Setup::new().epoch_length(100);
+
+        Runner::from(Config::default().with_seed(setup.seed)).start(|mut context| async move {
+            let (mut nodes, _execution_runtime) =
+                setup_validators(&mut context, setup.clone()).await;
+
+            // Start all nodes except the last one
+            let mut last = nodes.pop().unwrap();
+            join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
+            if should_pipeline_sync {
+                connect_execution_peers(&nodes).await;
+            }
+
+            // Wait for chain to advance before starting the last node
+            while nodes[0].execution_provider().last_block_number().unwrap() < blocks_before_join {
+                context.sleep(Duration::from_secs(1)).await;
+            }
+
+            last.start(&context).await;
+            if should_pipeline_sync {
+                connect_execution_to_peers(&last, &nodes).await;
+            }
+
+            assert_eq!(last.execution_provider().last_block_number().unwrap(), 0);
+
+            tracing::debug!("last node started");
+
+            // Assert that last node is able to catch up and progress
+            while last.execution_provider().last_block_number().unwrap() < blocks_after_join {
+                context.sleep(Duration::from_millis(100)).await;
+                assert_no_new_epoch(&context, 0);
+            }
+            // Verify backfill behavior
+            let actual_runs = get_pipeline_runs(metrics_recorder);
+            if should_pipeline_sync {
+                assert!(
+                    actual_runs > 0,
+                    "at least one backfill must have been triggered"
+                );
+            } else {
+                assert_eq!(
+                    0, actual_runs,
+                    "expected no backfill, got {actual_runs} runs"
+                );
+            }
+
+            // Verify that the node is still progressing after sync
+            let last_block = last.execution_provider().last_block_number().unwrap();
+            context.sleep(Duration::from_secs(10)).await;
+            assert!(
+                last.execution_provider().last_block_number().unwrap() > last_block,
+                "node should still be progressing after sync"
+            );
+        });
     }
 }

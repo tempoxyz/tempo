@@ -193,7 +193,7 @@ where
     C: Spawner,
 {
     pub(super) fn start(mut self) -> commonware_runtime::Handle<()> {
-        spawn_cell!(self.context, self.run().await)
+        spawn_cell!(self.context, self.run())
     }
 
     async fn run(mut self) {
