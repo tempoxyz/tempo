@@ -21,6 +21,7 @@ pub struct HashMapStorageProvider {
     beneficiary: Address,
     block_number: u64,
     spec: TempoHardfork,
+    amsterdam_eip8037_enabled: bool,
     is_static: bool,
     counter_sload: u64,
     counter_sstore: u64,
@@ -64,6 +65,7 @@ impl HashMapStorageProvider {
             beneficiary: Address::ZERO,
             block_number: 0,
             spec,
+            amsterdam_eip8037_enabled: false,
             is_static: false,
             counter_sload: 0,
             counter_sstore: 0,
@@ -73,6 +75,12 @@ impl HashMapStorageProvider {
     /// Returns self with the hardfork spec overridden (builder pattern).
     pub fn with_spec(mut self, spec: TempoHardfork) -> Self {
         self.spec = spec;
+        self
+    }
+
+    /// Returns self with `amsterdam_eip8037_enabled` overridden (builder pattern).
+    pub fn with_amsterdam_eip8037_enabled(mut self, enabled: bool) -> Self {
+        self.amsterdam_eip8037_enabled = enabled;
         self
     }
 }
@@ -188,6 +196,10 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
 
     fn spec(&self) -> TempoHardfork {
         self.spec
+    }
+
+    fn amsterdam_eip8037_enabled(&self) -> bool {
+        self.amsterdam_eip8037_enabled
     }
 
     fn is_static(&self) -> bool {

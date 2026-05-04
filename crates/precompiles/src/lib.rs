@@ -152,6 +152,7 @@ sol! {
 macro_rules! tempo_precompile {
     ($id:expr, $cfg:expr, |$input:ident| $impl:expr) => {{
         let spec = $cfg.spec;
+        let amsterdam_eip8037_enabled = $cfg.enable_amsterdam_eip8037;
         let gas_params = $cfg.gas_params.clone();
         DynPrecompile::new_stateful(PrecompileId::Custom($id.into()), move |$input| {
             if !$input.is_direct_call() {
@@ -166,6 +167,7 @@ macro_rules! tempo_precompile {
                 $input.gas,
                 $input.reservoir,
                 spec,
+                amsterdam_eip8037_enabled,
                 $input.is_static,
                 gas_params.clone(),
             );
@@ -319,21 +321,25 @@ pub(crate) fn charge_input_cost(
 
 /// Fills state gas accounting on a [`PrecompileOutput`] from the storage context.
 ///
-/// State gas is only set for T4+ where the state gas / reservoir model is active.
-/// Pre-T4, `state_gas_used` must remain 0 to avoid leaking into revm's reservoir
+/// State gas / reservoir tracking is only set when TIP-1016 (EIP-8037) is enabled.
+/// When disabled, `state_gas_used` must remain 0 to avoid leaking into revm's reservoir
 /// accounting and corrupting `tx_gas_used()` via `handle_reservoir_remaining_gas`.
+///
+/// SSTORE refund propagation is activated unconditionally at T4 so the
+/// `TempoPrecompileProvider` wrapper can apply refunds with `record_refund`. Pre-T4
+/// blocks were executed without refund propagation, so we cannot change their gas
+/// accounting.
 #[inline]
 fn fill_state_gas(output: &mut PrecompileOutput, storage: &StorageCtx) {
-    if storage.spec().is_t4() {
+    if storage.spec().is_t4() && output.is_success() {
+        output.gas_refunded = storage.gas_refunded();
+    }
+
+    if storage.amsterdam_eip8037_enabled() {
         if output.is_success() {
             // On success: parent takes the child's final reservoir.
             output.reservoir = storage.reservoir();
             output.state_gas_used = storage.state_gas_used();
-
-            // T4+: propagate SSTORE refunds via reservoir so the TempoPrecompileProvider
-            // wrapper can apply them with record_refund. Pre-T4 blocks were executed
-            // without refund propagation, so we cannot change their gas accounting.
-            output.gas_refunded = storage.gas_refunded();
         } else {
             // On revert or halt: state changes are undone, so ALL state gas returns
             // to the parent's reservoir.
@@ -899,6 +905,8 @@ mod tests {
     fn test_precompile_gas_refund_in_reservoir_t4() {
         let mut cfg = CfgEnv::<TempoHardfork>::default();
         cfg.set_spec_and_mainnet_gas_params(TempoHardfork::T4);
+        // TIP-1016 gates state-gas refund propagation on `enable_amsterdam_eip8037`.
+        cfg.enable_amsterdam_eip8037 = true;
 
         let sender = Address::repeat_byte(0x01);
         let recipient = Address::repeat_byte(0x02);

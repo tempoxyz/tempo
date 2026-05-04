@@ -17,6 +17,7 @@ pub struct EvmPrecompileStorageProvider<'a> {
     internals: EvmInternals<'a>,
     gas_tracker: GasTracker,
     spec: TempoHardfork,
+    amsterdam_eip8037_enabled: bool,
     is_static: bool,
     gas_params: GasParams,
     /// Debug-only LIFO checkpoint validator. See [`Self::assert_lifo`].
@@ -31,6 +32,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         gas_limit: u64,
         reservoir: u64,
         spec: TempoHardfork,
+        amsterdam_eip8037_enabled: bool,
         is_static: bool,
         gas_params: GasParams,
     ) -> Self {
@@ -38,6 +40,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             internals,
             gas_tracker: GasTracker::new(gas_limit, gas_limit, reservoir),
             spec,
+            amsterdam_eip8037_enabled,
             is_static,
             gas_params,
             #[cfg(debug_assertions)]
@@ -52,6 +55,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             u64::MAX,
             0,
             cfg.spec,
+            cfg.enable_amsterdam_eip8037,
             false,
             cfg.gas_params.clone(),
         )
@@ -69,6 +73,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             gas_limit,
             reservoir,
             cfg.spec,
+            cfg.enable_amsterdam_eip8037,
             false,
             cfg.gas_params.clone(),
         )
@@ -115,10 +120,11 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             was_empty
         };
 
-        // T4: charge TIP20 creations as CREATE
-        if self.spec.is_t4() && was_empty {
+        // TIP-1016: charge TIP20 deployments as CREATE.
+        if self.amsterdam_eip8037_enabled && was_empty {
             self.deduct_gas(self.gas_params.create_cost())?;
             self.deduct_state_gas(self.gas_params.create_state_gas())?;
+            self.deduct_gas(self.gas_params.keccak256_cost(code_len.div_ceil(32)))?;
         }
 
         Ok(())
@@ -132,15 +138,24 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     ) -> Result<(), TempoPrecompileError> {
         let additional_cost = self.gas_params.cold_account_additional_cost();
 
+        // T4+: pre-charge static gas to avoid cheap useless work.
+        let insufficient_gas_for_cold_load = if self.spec.is_t4() {
+            self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
+            self.gas_tracker.remaining() < additional_cost
+        } else {
+            false
+        };
+
         let mut account = self
             .internals
-            .load_account_mut_skip_cold_load(address, false)?;
+            .load_account_mut_skip_cold_load(address, insufficient_gas_for_cold_load)?;
 
-        // TODO(rakita) can be moved to the beginning of the function. Requires fork.
-        deduct_gas(
-            &mut self.gas_tracker,
-            self.gas_params.warm_storage_read_cost(),
-        )?;
+        if !self.spec.is_t4() {
+            deduct_gas(
+                &mut self.gas_tracker,
+                self.gas_params.warm_storage_read_cost(),
+            )?;
+        }
 
         // dynamic gas
         if account.is_cold {
@@ -160,13 +175,23 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
-        let result = self
-            .internals
-            .load_account_mut(address)?
-            .sstore(key, value, false)?;
+        // T4+: pre-charge static gas before loading storage to avoid cheap useless work.
+        let insufficient_gas_for_cold_load = if self.spec.is_t4() {
+            self.deduct_gas(self.gas_params.sstore_static_gas())?;
+            self.gas_tracker.remaining() < self.gas_params.cold_storage_additional_cost()
+        } else {
+            false
+        };
 
-        // TODO(rakita) can be moved to the beginning of the function. Requires fork.
-        self.deduct_gas(self.gas_params.sstore_static_gas())?;
+        let result = self.internals.load_account_mut(address)?.sstore(
+            key,
+            value,
+            insufficient_gas_for_cold_load,
+        )?;
+
+        if !self.spec.is_t4() {
+            self.deduct_gas(self.gas_params.sstore_static_gas())?;
+        }
 
         // dynamic gas
         self.deduct_gas(
@@ -216,19 +241,29 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
         let additional_cost = self.gas_params.cold_storage_additional_cost();
 
+        // T4+: pre-charge static gas to avoid cheap useless work.
+        let insufficient_gas_for_cold_load = if self.spec.is_t4() {
+            self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
+            self.gas_tracker.remaining() < additional_cost
+        } else {
+            false
+        };
+
         let value;
         let is_cold;
         {
             let mut account = self.internals.load_account_mut(address)?;
-            let val = account.sload(key, false)?;
+            let val = account.sload(key, insufficient_gas_for_cold_load)?;
 
             value = val.present_value;
             is_cold = val.is_cold;
         };
 
-        // TODO(rakita) can be moved to the beginning of the function. Requires fork.
-        self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
+        if !self.spec.is_t4() {
+            self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
+        }
 
+        // dynamic gas
         if is_cold {
             self.deduct_gas(additional_cost)?;
         }
@@ -281,6 +316,11 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     #[inline]
     fn spec(&self) -> TempoHardfork {
         self.spec
+    }
+
+    #[inline]
+    fn amsterdam_eip8037_enabled(&self) -> bool {
+        self.amsterdam_eip8037_enabled
     }
 
     #[inline]
@@ -363,16 +403,30 @@ mod tests {
     };
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_evm::{TempoEvmFactory, evm::TempoEvm};
-    use tempo_revm::gas_params::tempo_gas_params;
+    use tempo_revm::gas_params::tempo_gas_params_with_amsterdam;
 
     struct TestEvm(TempoEvm<CacheDB<EmptyDB>>);
 
     impl TestEvm {
         fn new(spec: TempoHardfork) -> Self {
+            Self::with_amsterdam(spec, false)
+        }
+
+        /// Constructs a [`TestEvm`] with TIP-1016 (EIP-8037) manually enabled.
+        ///
+        /// Used by tests that exercise TIP-1016 behavior (state gas split, reservoir
+        /// accounting). TIP-1016 is otherwise opt-in via `cfg.enable_amsterdam_eip8037`,
+        /// which defaults to `false` in production.
+        fn new_with_tip1016(spec: TempoHardfork) -> Self {
+            Self::with_amsterdam(spec, true)
+        }
+
+        fn with_amsterdam(spec: TempoHardfork, amsterdam_eip8037_enabled: bool) -> Self {
             let db = CacheDB::new(EmptyDB::new());
             let mut cfg = revm::context::CfgEnv::<TempoHardfork>::default();
             cfg.spec = spec;
-            cfg.gas_params = tempo_gas_params(spec);
+            cfg.enable_amsterdam_eip8037 = amsterdam_eip8037_enabled;
+            cfg.gas_params = tempo_gas_params_with_amsterdam(spec, amsterdam_eip8037_enabled);
 
             Self(TempoEvmFactory::default().create_evm(
                 db,
@@ -390,6 +444,7 @@ mod tests {
         ) -> EvmPrecompileStorageProvider<'_> {
             let ctx = self.0.ctx_mut();
             let spec = ctx.cfg.spec;
+            let amsterdam_eip8037_enabled = ctx.cfg.enable_amsterdam_eip8037;
             let gas_params = ctx.cfg.gas_params.clone();
             let evm_internals =
                 EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
@@ -399,6 +454,7 @@ mod tests {
                 gas_limit,
                 reservoir,
                 spec,
+                amsterdam_eip8037_enabled,
                 false,
                 gas_params,
             )
@@ -724,7 +780,7 @@ mod tests {
 
     #[test]
     fn test_state_gas_used_only_counts_state_creating_ops() -> eyre::Result<()> {
-        let mut evm = TestEvm::new(TempoHardfork::T4);
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
         let gas_params = evm.ctx().cfg.gas_params.clone();
         let mut provider = evm.provider_with_reservoir(0);
 
@@ -781,7 +837,7 @@ mod tests {
     /// spills into regular gas once the reservoir is exhausted.
     #[test]
     fn test_state_gas_spills_from_reservoir_to_regular_gas() -> eyre::Result<()> {
-        let mut evm = TestEvm::new(TempoHardfork::T4);
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
 
         // Reservoir = 500k: enough for 2 full SSTOREs (2 × 230k = 460k)
         // but the 3rd SSTORE (230k) must spill 190k into regular gas.
@@ -850,7 +906,7 @@ mod tests {
 
     #[test]
     fn test_t4_cold_sstore_matches_tip1016_spec() -> eyre::Result<()> {
-        let mut evm = TestEvm::new(TempoHardfork::T4);
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
         let mut provider = evm.provider_with_reservoir(460_000);
 
         let (address, cold_slot, warm_slot) = (Address::random(), U256::ONE, U256::from(2));
@@ -888,14 +944,15 @@ mod tests {
 
     #[test]
     fn test_t4_set_code_new_account_matches_tip1016_success_path() -> eyre::Result<()> {
-        let mut evm = TestEvm::new(TempoHardfork::T4);
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
         let gas_params = evm.ctx().cfg.gas_params.clone();
 
         let code = Bytecode::new_raw(vec![0xef].into());
         let expected_state_gas =
             gas_params.create_state_gas() + gas_params.code_deposit_state_gas(code.len());
-        let expected_regular_gas =
-            gas_params.create_cost() + gas_params.code_deposit_cost(code.len());
+        let expected_regular_gas = gas_params.create_cost()
+            + gas_params.code_deposit_cost(code.len())
+            + gas_params.keccak256_cost(code.len().div_ceil(32));
         let mut provider = evm.provider_with_reservoir(expected_state_gas);
 
         provider.set_code(Address::random(), code)?;
@@ -910,6 +967,198 @@ mod tests {
             "set_code on a new account should charge CREATE state gas plus code deposit state gas"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_sstore_t4_fork_sufficient_gas() -> eyre::Result<()> {
+        // T4 fork sstore/sload with abundant gas: round-trip the value.
+        let mut evm = TestEvm::new(TempoHardfork::T4);
+        let mut provider = evm.provider_max_gas();
+
+        let address = Address::random();
+        let key = U256::from(42);
+        let value = U256::from(999);
+
+        provider.sstore(address, key, value)?;
+        assert_eq!(provider.sload(address, key)?, value);
+        Ok(())
+    }
+
+    #[test]
+    fn test_sload_t4_fork_sufficient_gas() -> eyre::Result<()> {
+        // T4 fork sload with abundant gas: cold then warm reads return the stored value.
+        let mut evm = TestEvm::new(TempoHardfork::T4);
+        let mut provider = evm.provider_max_gas();
+
+        let address = Address::random();
+        let key = U256::from(100);
+        let value = U256::from(12345);
+
+        provider.sstore(address, key, value)?;
+        assert_eq!(provider.sload(address, key)?, value);
+        // second access should hit the warm path
+        assert_eq!(provider.sload(address, key)?, value);
+        Ok(())
+    }
+
+    #[test]
+    fn test_with_account_info_t4_fork() -> eyre::Result<()> {
+        // T4 fork with_account_info on a fresh account: zero balance/nonce.
+        let mut evm = TestEvm::new(TempoHardfork::T4);
+        let mut provider = evm.provider_max_gas();
+
+        let mut account_nonce = u64::MAX;
+        provider.with_account_info(Address::random(), &mut |info| {
+            account_nonce = info.nonce;
+            assert!(info.balance.is_zero());
+        })?;
+
+        assert_eq!(account_nonce, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_sstore_sload_cold_storage_t4() -> eyre::Result<()> {
+        // T4 fork cold/warm handling across multiple addresses.
+        let mut evm = TestEvm::new(TempoHardfork::T4);
+        let mut provider = evm.provider_max_gas();
+
+        let addr1 = Address::random();
+        let addr2 = Address::random();
+        let key1 = U256::from(1);
+        let key2 = U256::from(2);
+
+        // Cold writes
+        provider.sstore(addr1, key1, U256::from(100))?;
+        provider.sstore(addr2, key2, U256::from(200))?;
+
+        // Warm overwrites
+        provider.sstore(addr1, key1, U256::from(110))?;
+        provider.sstore(addr2, key2, U256::from(210))?;
+
+        assert_eq!(provider.sload(addr1, key1)?, U256::from(110));
+        assert_eq!(provider.sload(addr2, key2)?, U256::from(210));
+        Ok(())
+    }
+
+    #[test]
+    fn test_sstore_insufficient_gas_for_cold_load_t4() -> eyre::Result<()> {
+        // T4 fork sstore with a tight gas budget: cold-load cost is skipped when the
+        // pre-charged static gas leaves the remaining gas below the cold additional cost.
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
+        let gas_params = evm.ctx().cfg.gas_params.clone();
+
+        let static_gas = gas_params.sstore_static_gas();
+        let dynamic_gas = 25_000u64;
+        let gas_limit = static_gas + dynamic_gas;
+
+        // Generous reservoir so T4 state-gas (zero->non-zero) doesn't spill into regular gas.
+        let mut provider = evm.provider_with_gas_limit(gas_limit, u64::MAX);
+
+        let initial_gas = provider.gas_used();
+        let address = Address::random();
+        let key = U256::from(42);
+        let value = U256::from(999);
+
+        provider.sstore(address, key, value)?;
+        let gas_after_sstore = provider.gas_used();
+        assert!(gas_after_sstore > initial_gas, "sstore should consume gas");
+
+        assert_eq!(provider.sload(address, key)?, value);
+        assert!(
+            provider.gas_used() > gas_after_sstore,
+            "sload should consume additional gas"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_sload_insufficient_gas_for_cold_load_t4() -> eyre::Result<()> {
+        // T4 fork sload succeeds even when remaining gas can't cover the cold-load cost.
+        let mut evm = TestEvm::new(TempoHardfork::T4);
+        let address = Address::random();
+        let key = U256::from(100);
+        let value = U256::from(555);
+
+        // Seed storage with abundant gas first.
+        {
+            let mut provider = evm.provider_max_gas();
+            provider.sstore(address, key, value)?;
+        }
+
+        let gas_params = evm.ctx().cfg.gas_params.clone();
+        let warm_read_gas = gas_params.warm_storage_read_cost();
+        let dynamic_gas = 2_100u64;
+        let gas_limit = warm_read_gas + dynamic_gas;
+
+        let mut provider = evm.provider_with_gas_limit(gas_limit, 0);
+        let initial_gas = provider.gas_used();
+
+        assert_eq!(provider.sload(address, key)?, value);
+        assert!(
+            provider.gas_used() > initial_gas,
+            "sload should consume gas"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_with_account_info_insufficient_gas_for_cold_load_t4() -> eyre::Result<()> {
+        // T4 fork with_account_info under a tight gas budget.
+        let mut evm = TestEvm::new(TempoHardfork::T4);
+        let gas_params = evm.ctx().cfg.gas_params.clone();
+
+        let static_gas = gas_params.sstore_static_gas();
+        let gas_limit = static_gas + 10_000u64;
+
+        let mut provider = evm.provider_with_gas_limit(gas_limit, 0);
+        let initial_gas = provider.gas_used();
+
+        let mut retrieved_nonce = u64::MAX;
+        provider.with_account_info(Address::random(), &mut |info| {
+            retrieved_nonce = info.nonce;
+        })?;
+
+        assert_eq!(retrieved_nonce, 0);
+        assert!(
+            provider.gas_used() > initial_gas,
+            "with_account_info should consume gas"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_multiple_sstore_insufficient_gas_scenarios_t4() -> eyre::Result<()> {
+        // T4 fork multiple sstores under a constrained gas budget.
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
+        let gas_params = evm.ctx().cfg.gas_params.clone();
+
+        let static_gas = gas_params.sstore_static_gas();
+        let dynamic_gas = 20_000u64;
+        let gas_per_sstore = static_gas + dynamic_gas;
+        let gas_limit = gas_per_sstore * 3;
+
+        let mut provider = evm.provider_with_gas_limit(gas_limit, u64::MAX);
+        let address = Address::random();
+        let mut prev_gas = provider.gas_used();
+
+        for i in 0..3 {
+            provider.sstore(address, U256::from(i), U256::from(i * 1000))?;
+            let current_gas = provider.gas_used();
+            assert!(
+                current_gas > prev_gas,
+                "each sstore should increase gas usage"
+            );
+            prev_gas = current_gas;
+        }
+
+        for i in 0..3 {
+            assert_eq!(
+                provider.sload(address, U256::from(i))?,
+                U256::from(i * 1000)
+            );
+        }
         Ok(())
     }
 
