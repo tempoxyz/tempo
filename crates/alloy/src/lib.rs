@@ -2,6 +2,9 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+mod account;
+pub use account::AccessKeyAccount;
+
 mod network;
 pub use network::*;
 
@@ -12,6 +15,9 @@ pub mod rpc;
 
 /// Transaction fillers.
 pub mod fillers;
+
+mod wallet;
+pub use wallet::TempoWallet;
 
 #[doc(inline)]
 pub use tempo_primitives as primitives;
