@@ -74,6 +74,12 @@ impl AmmLiquidityCache {
         {
             let inner = self.inner.read();
             current_fork = inner.current_fork;
+            let two_hop_out = if current_fork.is_t5() {
+                Some(compute_amount_out(amount_out).map_err(ProviderError::other)?)
+            } else {
+                None
+            };
+
             for &validator_token in &inner.unique_tokens {
                 // Validators always accept fees in their own token.
                 if validator_token == user_token {
@@ -88,29 +94,25 @@ impl AmmLiquidityCache {
                     return Ok(true);
                 }
 
-                if current_fork.is_t5() {
-                    match inner.quote_token_cache.get(&user_token).copied() {
-                        Some(h) if !h.is_zero() && h != validator_token => {
-                            let r1 = inner.pool_cache.get(&(user_token, h)).copied();
-                            let r2 = inner.pool_cache.get(&(h, validator_token)).copied();
-                            let out1 = amount_out;
-                            let out2 = compute_amount_out(out1).map_err(ProviderError::other)?;
-                            match (r1, r2) {
-                                (Some(r1), Some(r2)) if r1 >= out1 && r2 >= out2 => {
-                                    return Ok(true);
-                                }
-                                (Some(_), Some(_)) => {} // Both cached and not enough liquidity.
-                                _ => {
-                                    // A leg's reserve is missing: defer.
-                                    missing_in_cache.push(validator_token);
-                                    continue;
-                                }
+                if let Some(out2) = two_hop_out {
+                    let Some(hop) = inner.quote_token_cache.get(&user_token).copied() else {
+                        missing_in_cache.push(validator_token);
+                        continue;
+                    };
+
+                    if !hop.is_zero() && hop != validator_token {
+                        let r1 = inner.pool_cache.get(&(user_token, hop)).copied();
+                        let r2 = inner.pool_cache.get(&(hop, validator_token)).copied();
+                        match (r1, r2) {
+                            (Some(r1), Some(r2)) if r1 >= amount_out && r2 >= out2 => {
+                                return Ok(true);
                             }
-                        }
-                        Some(_) => {} // Cached as zero / equal to validator: no two-hop path possible.
-                        None => {
-                            missing_in_cache.push(validator_token);
-                            continue;
+                            (Some(_), Some(_)) => {} // Both cached and not enough liquidity.
+                            _ => {
+                                // A leg's reserve is missing: defer.
+                                missing_in_cache.push(validator_token);
+                                continue;
+                            }
                         }
                     }
                 }
