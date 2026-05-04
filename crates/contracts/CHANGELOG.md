@@ -1,5 +1,8 @@
 # Changelog
 
+## `tempo-contracts@1.7.0`
+
+
 ## `tempo-contracts@1.6.0`
 
 
