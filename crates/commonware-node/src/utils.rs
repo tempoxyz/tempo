@@ -2,7 +2,7 @@ use std::{
     future::Future,
     ops::{Deref, DerefMut},
     pin::Pin,
-    task::Poll,
+    task::{Poll, ready},
 };
 
 use alloy_primitives::B256;
@@ -27,6 +27,20 @@ pub(crate) fn public_key_to_b256(key: &PublicKey) -> B256 {
 #[pin_project]
 pub(crate) struct OptionFuture<F>(#[pin] Option<F>);
 
+impl<F> OptionFuture<F> {
+    pub(crate) fn new(maybe_fut: Option<F>) -> Self {
+        Self(maybe_fut)
+    }
+
+    pub(crate) fn none() -> Self {
+        Self::new(None)
+    }
+
+    pub(crate) fn some(fut: F) -> Self {
+        Self::new(Some(fut))
+    }
+}
+
 impl<F: Future> Default for OptionFuture<F> {
     fn default() -> Self {
         Self(None)
@@ -35,7 +49,7 @@ impl<F: Future> Default for OptionFuture<F> {
 
 impl<F: Future> From<Option<F>> for OptionFuture<F> {
     fn from(opt: Option<F>) -> Self {
-        Self(opt)
+        Self::new(opt)
     }
 }
 
@@ -56,12 +70,13 @@ impl<F: Future> DerefMut for OptionFuture<F> {
 impl<F: Future> Future for OptionFuture<F> {
     type Output = F::Output;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
-        let this = self.project();
-        match this.0.as_pin_mut() {
-            Some(fut) => fut.poll(cx),
-            None => Poll::Pending,
-        }
+    fn poll(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        let output = match self.as_mut().project().0.as_pin_mut() {
+            Some(fut) => ready!(fut.poll(cx)),
+            None => return Poll::Pending,
+        };
+        self.project().0.set(None);
+        Poll::Ready(output)
     }
 }
 

@@ -31,6 +31,9 @@ commonware-utils.workspace = true
 itertools.workspace = true
 
 eyre.workspace = true
+futures.workspace = true
+rand_core.workspace = true
+
 reth-chainspec.workspace = true
 reth-db.workspace = true
 reth-ethereum = { workspace = true, features = [
@@ -44,14 +47,14 @@ reth-node-core.workspace = true
 reth-node-metrics.workspace = true
 reth-rpc-builder.workspace = true
 
+tempfile.workspace = true
+
 tempo-chainspec.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true
 tempo-commonware-node.workspace = true
 tempo-node.workspace = true
 tempo-precompiles = { workspace = true, features = ["rpc"] }
 
-futures.workspace = true
-tempfile.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 serde_json.workspace = true

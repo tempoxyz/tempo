@@ -12,46 +12,34 @@
 
 use std::{sync::Arc, time::Duration};
 
-use alloy_consensus::BlockHeader as _;
 use commonware_broadcast::buffered;
-use commonware_codec::ReadExt as _;
-use commonware_consensus::{
-    Reporter as _, marshal,
-    simplex::{
-        scheme::bls12381_threshold::vrf::Scheme,
-        types::{Activity, Finalization},
-    },
-    types::{Epoch, Epocher as _, FixedEpocher, Height, Round, View},
-};
-use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
-use commonware_macros::select;
+use commonware_consensus::{Reporters, marshal, types::FixedEpocher};
+use commonware_cryptography::ed25519::PublicKey;
 use commonware_parallel::Sequential;
 use commonware_runtime::{
     BufferPooler, Clock, ContextCell, Handle, Metrics, Pacer, Spawner, Storage,
     buffer::paged::CacheRef, spawn_cell,
 };
 use commonware_utils::{NZUsize, channel::mpsc};
-use eyre::{OptionExt as _, WrapErr as _, bail, eyre};
-use futures::future::join_all;
+use eyre::{WrapErr as _, eyre};
+use futures::{StreamExt as _, stream::FuturesUnordered};
 use rand_08::{CryptoRng, Rng};
-use reth_node_core::primitives::SealedBlock;
-use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-use tempo_node::{TempoFullNode, rpc::consensus::Query};
+use tempo_node::TempoFullNode;
 use tracing::{info, info_span};
 
-use super::{driver, resolver, resolver::Resolver, stubs, upstream::UpstreamNode};
+use super::{driver, resolver, resolver::Resolver, stubs};
 use crate::{
-    config::NAMESPACE,
     consensus::{Digest, block::Block},
     epoch::SchemeProvider,
     executor,
     feed::{self, FeedStateHandle},
+    follow::upstream,
     storage,
 };
 
 /// Builder for the follow engine.
 #[derive(Clone)]
-pub struct Config<U: UpstreamNode> {
+pub struct Config<TUpstream> {
     /// The execution node to drive.
     pub execution_node: TempoFullNode,
 
@@ -61,9 +49,6 @@ pub struct Config<U: UpstreamNode> {
     /// Partition prefix for storage.
     pub partition_prefix: String,
 
-    /// Upstream node to sync from.
-    pub upstream: U,
-
     /// Epoch strategy.
     pub epoch_strategy: FixedEpocher,
 
@@ -72,11 +57,20 @@ pub struct Config<U: UpstreamNode> {
 
     /// FCU heartbeat interval.
     pub fcu_heartbeat_interval: Duration,
+
+    /// An actor that can be started with reporters listening to consensus events.
+    pub upstream: TUpstream,
+
+    /// Mailbox to an upstream actor running outside of the follower engine.
+    pub upstream_mailbox: upstream::Mailbox,
 }
 
-impl<U: UpstreamNode> Config<U> {
+impl<TUpstream> Config<TUpstream> {
     /// Initialize all components and return an [`Engine`] ready to start.
-    pub async fn try_init<TContext>(self, context: TContext) -> eyre::Result<Engine<TContext, U>>
+    pub async fn try_init<TContext>(
+        self,
+        context: TContext,
+    ) -> eyre::Result<Engine<TContext, TUpstream>>
     where
         TContext: Clock
             + Rng
@@ -150,11 +144,13 @@ impl<U: UpstreamNode> Config<U> {
             )
         });
 
+        let execution_node = Arc::new(self.execution_node.clone());
+
         let (resolver, resolver_mailbox, resolver_rx) = resolver::try_init(
             context.with_label("resolver"),
             resolver::Config {
-                execution_node: Arc::new(self.execution_node.clone()),
-                upstream: self.upstream.clone(),
+                execution_node: execution_node.clone(),
+                upstream: self.upstream_mailbox.clone(),
                 mailbox_size: self.mailbox_size,
             },
         );
@@ -181,58 +177,56 @@ impl<U: UpstreamNode> Config<U> {
         // No broadcast is needed in follow mode.
         let broadcast = stubs::null_broadcast(context.with_label("broadcast"), self.mailbox_size);
 
+        let (driver, driver_mailbox) = driver::try_init(
+            context.with_label("driver"),
+            driver::Config {
+                execution_node,
+                scheme_provider: scheme_provider.clone(),
+                last_finalized_height,
+                marshal: marshal_mailbox,
+                feed: feed_mailbox,
+                epoch_strategy: epoch_strategy.clone(),
+            },
+        )
+        .wrap_err("failed initializing driver actor")?;
+
         Ok(Engine {
             context: ContextCell::new(context),
-            upstream: self.upstream,
+            driver,
+            driver_mailbox,
             resolver,
             resolver_mailbox,
             resolver_rx,
-            scheme_provider,
-            epoch_strategy,
-            marshal_actor,
-            marshal_mailbox,
-            executor_actor,
+            marshal: marshal_actor,
+            executor: executor_actor,
             executor_mailbox,
-            feed_actor,
-            feed_mailbox,
+            feed: feed_actor,
             broadcast,
-            last_finalized_height,
+            upstream: self.upstream,
         })
     }
 }
 
-pub struct Engine<TContext, U: UpstreamNode>
+pub struct Engine<TContext, TUpstreamActor>
 where
-    TContext: Clock
-        + Rng
-        + CryptoRng
-        + Metrics
-        + Pacer
-        + Spawner
-        + Storage
-        + BufferPooler
-        + Clone
-        + Send
-        + 'static,
+    TContext: Clock + Rng + CryptoRng + Metrics + Pacer + Spawner + Storage + BufferPooler,
+    TUpstreamActor:,
 {
     context: ContextCell<TContext>,
-    upstream: U,
-    resolver: Resolver<TContext, U>,
+    driver: driver::Driver<TContext>,
+    driver_mailbox: driver::Mailbox,
+    resolver: Resolver<TContext>,
     resolver_mailbox: resolver::Mailbox,
     resolver_rx: mpsc::Receiver<commonware_consensus::marshal::resolver::handler::Message<Digest>>,
-    scheme_provider: SchemeProvider,
-    epoch_strategy: FixedEpocher,
-    marshal_actor: crate::alias::marshal::Actor<TContext>,
-    marshal_mailbox: crate::alias::marshal::Mailbox,
-    executor_actor: executor::Actor<TContext>,
+    marshal: crate::alias::marshal::Actor<TContext>,
+    executor: executor::Actor<TContext>,
     executor_mailbox: executor::Mailbox,
-    feed_actor: feed::Actor<TContext>,
-    feed_mailbox: feed::Mailbox,
+    feed: feed::Actor<TContext>,
     broadcast: buffered::Mailbox<PublicKey, Block>,
-    last_finalized_height: Height,
+    upstream: TUpstreamActor,
 }
 
-impl<TContext, U: UpstreamNode> Engine<TContext, U>
+impl<TContext, TUpstreamActor> Engine<TContext, TUpstreamActor>
 where
     TContext: Clock
         + Rng
@@ -245,158 +239,49 @@ where
         + Clone
         + Send
         + 'static,
+    TUpstreamActor: upstream::UpstreamActor,
 {
     pub fn start(mut self) -> Handle<eyre::Result<()>> {
         spawn_cell!(self.context, self.run().await)
     }
 
-    async fn run(mut self) -> eyre::Result<()> {
-        let mut actors = join_all([
-            self.executor_actor.start(),
-            self.feed_actor.start(),
-            self.marshal_actor.start(
-                self.executor_mailbox.clone(),
-                self.broadcast,
-                (self.resolver_rx, self.resolver_mailbox),
+    async fn run(self) -> eyre::Result<()> {
+        let Self {
+            upstream,
+            driver,
+            driver_mailbox,
+            resolver,
+            resolver_mailbox,
+            resolver_rx,
+            marshal,
+            executor,
+            executor_mailbox,
+            feed,
+            broadcast,
+            ..
+        } = self;
+
+        let actors = vec![
+            driver.start(),
+            executor.start(),
+            feed.start(),
+            marshal.start(
+                Reporters::from((
+                    executor_mailbox.clone(),
+                    driver_mailbox.to_marshal_reporter(),
+                )),
+                broadcast,
+                (resolver_rx, resolver_mailbox),
             ),
-            self.resolver.start(),
-        ]);
+            resolver.start(),
+            upstream.start(driver_mailbox.to_event_reporter()),
+        ];
 
-        let bootstrap = self.last_finalized_height == Height::zero();
-        let boundary_block = if bootstrap {
-            // If we're bootstrapping, find the latest boundary block and
-            // use it as the trusted floor for the identity scheme.
-            let latest_finalization = self
-                .upstream
-                .get_finalization(Query::Latest)
-                .await?
-                .ok_or_eyre("failed to get latest finalization")?;
-
-            let latest_finalization_height = Height::new(latest_finalization.block.number());
-
-            let epoch_info = self
-                .epoch_strategy
-                .containing(latest_finalization_height)
-                .ok_or_eyre("failed to determine epoch for latest finalization height")?;
-
-            let boundary_height = if latest_finalization_height == epoch_info.last() {
-                latest_finalization_height
-            } else {
-                match epoch_info.epoch().previous() {
-                    None => Height::zero(),
-                    Some(prev_epoch) => self.epoch_strategy.last(prev_epoch).unwrap(),
-                }
-            };
-
-            let block = self
-                .upstream
-                .get_block_by_number(boundary_height.get())
-                .await?
-                .ok_or_eyre(format!(
-                    "block at height {} not found on upstream",
-                    boundary_height.get()
-                ))?;
-
-            // Process the boundary with the marshal so that the starting scheme has it's corresponding
-            // block available. The genesis block is an exception as there is no finalization certificate.
-            if boundary_height > Height::zero() {
-                let boundary_block = self
-                    .upstream
-                    .get_finalization(Query::Height(boundary_height.get()))
-                    .await?
-                    .ok_or_else(|| {
-                        eyre!(
-                            "finalization at height {} not found on upstream",
-                            boundary_height.get()
-                        )
-                    })?;
-
-                let sealed = SealedBlock::seal_slow(block.clone());
-                let consensus_block = Block::from_execution_block(sealed);
-                eyre::ensure!(boundary_block.digest == consensus_block.block_hash());
-
-                let cert_bytes = alloy_primitives::hex::decode(&boundary_block.certificate)?;
-                let finalization: Finalization<Scheme<PublicKey, MinSig>, Digest> =
-                    Finalization::read(&mut &cert_bytes[..])?;
-
-                // Process the boundary block & finalization
-                let epoch = Epoch::new(boundary_block.epoch);
-                let round = Round::new(epoch, View::new(boundary_block.view));
-                let activity = Activity::Finalization(finalization);
-                self.marshal_mailbox.verified(round, consensus_block).await;
-                self.marshal_mailbox.report(activity.clone()).await;
-                self.feed_mailbox.report(activity).await;
-
-                self.last_finalized_height = boundary_height;
-                self.marshal_mailbox.set_floor(boundary_height).await;
-                info_span!("follow_engine")
-                    .in_scope(|| info!(?boundary_height, ?epoch, "bootstrapped marshal floor"));
-            }
-
-            block
-        } else {
-            // Get the last boundary block processed.
-            let epoch_info = self
-                .epoch_strategy
-                .containing(self.last_finalized_height)
-                .ok_or_eyre("failed to determine epoch for last finalized height")?;
-
-            let boundary_height = if self.last_finalized_height == epoch_info.last() {
-                self.last_finalized_height
-            } else {
-                match epoch_info.epoch().previous() {
-                    None => Height::zero(),
-                    Some(prev_epoch) => self.epoch_strategy.last(prev_epoch).unwrap(),
-                }
-            };
-
-            self.marshal_mailbox
-                .get_block(boundary_height)
-                .await
-                .ok_or_else(|| {
-                    eyre!(
-                        "block at height {} not found in local archive",
-                        boundary_height.get()
-                    )
-                })?
-                .into_inner()
-                .into_block()
-        };
-
-        let extra_data = boundary_block.extra_data();
-        let outcome = OnchainDkgOutcome::read(&mut &extra_data[..])
-            .wrap_err("could not read DKG outcome from block")?;
-
-        let outcome_scheme: Scheme<PublicKey, MinSig> = Scheme::verifier(
-            NAMESPACE,
-            outcome.players().clone(),
-            outcome.sharing().clone(),
-        );
-
-        // Register the boundary scheme so that driver can correctly process finalizations
-        self.scheme_provider.register(outcome.epoch, outcome_scheme);
-        info_span!("follow_engine").in_scope(|| {
-            info!(
-                height = boundary_block.header.number(),
-                epoch = ?outcome.epoch,
-                source = if bootstrap { "upstream" } else { "archive" },
-                "registered starting identity scheme"
-            )
-        });
-
-        let driver = driver::FollowDriver::new(
-            self.context,
-            self.upstream,
-            self.scheme_provider,
-            self.marshal_mailbox,
-            self.feed_mailbox,
-            self.epoch_strategy,
-            self.last_finalized_height,
-        );
-
-        select! {
-            result = driver.run() => result,
-            _ = &mut actors => bail!("actors exited unexpectedly"),
+        // TODO: report which actor failed and why.
+        if FuturesUnordered::from_iter(actors).next().await.is_some() {
+            return Err(eyre!("one critical subsystem exited unexpectedly"));
         }
+
+        Ok(())
     }
 }

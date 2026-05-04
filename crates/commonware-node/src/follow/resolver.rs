@@ -19,20 +19,20 @@ use commonware_utils::{
     futures::{AbortablePool, Aborter},
     vec::NonEmptyVec,
 };
+use eyre::Report;
 use reth_node_core::primitives::SealedBlock;
 use reth_provider::{BlockReader as _, BlockSource};
-use tempo_node::{TempoFullNode, rpc::consensus::Query};
+use tempo_node::TempoFullNode;
 use tokio::select;
 use tracing::{debug, error, instrument, warn};
 
-use super::upstream::UpstreamNode;
 use crate::consensus::{Digest, block::Block};
 
-pub(crate) fn try_init<TContext, TUpstream>(
+pub(crate) fn try_init<TContext>(
     context: TContext,
-    config: Config<TUpstream>,
+    config: Config,
 ) -> (
-    Resolver<TContext, TUpstream>,
+    Resolver<TContext>,
     Mailbox,
     mpsc::Receiver<handler::Message<Digest>>,
 ) {
@@ -76,18 +76,18 @@ enum Message {
     },
 }
 
-pub(crate) struct Config<TUpstream> {
+pub(crate) struct Config {
     /// For reading blocks locally from the execution layer.
-    pub(crate) execution_node: Arc<TempoFullNode>,
+    pub(super) execution_node: Arc<TempoFullNode>,
     /// For reading blocks and certificates from the connected node.
-    pub(crate) upstream: TUpstream,
-    pub(crate) mailbox_size: usize,
+    pub(super) upstream: super::upstream::Mailbox,
+    pub(super) mailbox_size: usize,
 }
 
-type FetchPool = AbortablePool<Result<(handler::Request<Digest>, Bytes), handler::Request<Digest>>>;
-pub(crate) struct Resolver<TContext, TUpstream> {
+type FetchPool = AbortablePool<(handler::Request<Digest>, Result<Bytes, bool>)>;
+pub(crate) struct Resolver<TContext> {
     context: ContextCell<TContext>,
-    config: Config<TUpstream>,
+    config: Config,
     /// To send messages to the application/actor relying on the resolver.
     handler_tx: mpsc::Sender<handler::Message<Digest>>,
     mailbox: mpsc::UnboundedReceiver<Message>,
@@ -95,10 +95,9 @@ pub(crate) struct Resolver<TContext, TUpstream> {
     fetches: FetchPool,
 }
 
-impl<TContext, TUpstream> Resolver<TContext, TUpstream>
+impl<TContext> Resolver<TContext>
 where
     TContext: Spawner,
-    TUpstream: UpstreamNode,
 {
     async fn run(mut self) {
         loop {
@@ -139,49 +138,17 @@ where
     #[instrument(skip_all)]
     fn handle_fetch_request(&mut self, keys: Vec<handler::Request<Digest>>) {
         for key in keys {
-            if !self.requests.contains_key(&key) {
-                let aborter = match &key {
-                    handler::Request::Block(digest) => {
-                        let execution_node = self.config.execution_node.clone();
-                        let digest = *digest;
-                        let key = key.clone();
-                        self.fetches.push(async move {
-                            resolve_block(&execution_node, digest)
-                                .ok_or(key.clone())
-                                .map(move |response| (key, response))
-                        })
-                    }
-                    handler::Request::Finalized { height } => {
-                        let upstream = self.config.upstream.clone();
-                        let height = *height;
-                        let key = key.clone();
-                        self.fetches.push(async move {
-                            resolve_finalized(&upstream, height)
-                                .await
-                                .ok_or(key.clone())
-                                .map(move |response| (key, response))
-                        })
-                    }
-                    handler::Request::Notarized { .. } => {
-                        debug!("ignoring requests for notarized blocks");
-                        continue;
-                    }
-                };
-                debug!(%key, "scheduled new request");
-                self.requests.insert(key, aborter);
-            } else {
-                debug!(%key, "request already scheduled");
-            }
+            self.schedule_request(key);
         }
     }
 
     #[instrument(skip_all)]
     fn handle_fetch_resolution(
         &mut self,
-        resolution: Result<(handler::Request<Digest>, Bytes), handler::Request<Digest>>,
+        (key, resolution): (handler::Request<Digest>, Result<Bytes, bool>),
     ) {
         match resolution {
-            Ok((key, value)) => {
+            Ok(value) => {
                 debug!(%key, "fetched value, delivering to client");
                 self.requests.remove(&key);
                 // Fire and forget; there is no mechanism to retry
@@ -193,51 +160,92 @@ where
                     response,
                 });
             }
-            Err(key) => {
+            Err(true) => {
+                debug!(%key, "fetch failed, rescheduling");
+                self.requests.remove(&key);
+                self.schedule_request(key);
+            }
+            Err(false) => {
                 debug!(%key, "fetch failed, dropping");
                 self.requests.remove(&key);
             }
         }
     }
+
+    fn schedule_request(&mut self, key: handler::Request<Digest>) {
+        if !self.requests.contains_key(&key) {
+            let aborter = match &key {
+                handler::Request::Block(digest) => {
+                    let execution_node = self.config.execution_node.clone();
+                    let digest = *digest;
+                    let key = key.clone();
+                    self.fetches.push(async move {
+                        let response = resolve_block(&execution_node, digest);
+                        (key, response)
+                    })
+                }
+                handler::Request::Finalized { height } => {
+                    let upstream = self.config.upstream.clone();
+                    let height = *height;
+                    let key = key.clone();
+                    self.fetches.push(async move {
+                        let response = resolve_finalized_new(upstream, height).await;
+                        (key, response)
+                    })
+                }
+                handler::Request::Notarized { .. } => {
+                    debug!("ignoring requests for notarized blocks");
+                    return;
+                }
+            };
+            debug!(%key, "scheduled new request");
+            self.requests.insert(key, aborter);
+        } else {
+            debug!(%key, "request already scheduled");
+        }
+    }
 }
 
 #[instrument(skip(execution_node))]
-fn resolve_block(execution_node: &TempoFullNode, block_digest: Digest) -> Option<Bytes> {
-    let block = execution_node
+fn resolve_block(execution_node: &TempoFullNode, block_digest: Digest) -> Result<Bytes, bool> {
+    let Ok(Some(block)) = execution_node
         .provider
         .find_block_by_hash(block_digest.0, BlockSource::Any)
-        .map_err(eyre::Report::new)
+        .map_err(Report::new)
         .inspect_err(
             |error| error!(%error, "unable to communicate with execution layer to lookup block"),
         )
-        .ok()??;
+    else {
+        return Err(false);
+    };
     let consensus_block = Block::from_execution_block(SealedBlock::seal_slow(block));
-    Some(consensus_block.encode())
+    Ok(consensus_block.encode())
 }
 
-#[instrument(skip(upstream_node))]
-async fn resolve_finalized(upstream_node: &impl UpstreamNode, height: Height) -> Option<Bytes> {
-    let certified_block = match upstream_node
-        .get_finalization(Query::Height(height.get()))
-        .await
-    {
-        Ok(Some(cert)) => cert,
-        Ok(None) | Err(_) => return None,
+/// Resolves a request for a finalized.
+#[instrument(skip_all, fields(%height))]
+async fn resolve_finalized_new(
+    upstream: super::upstream::Mailbox,
+    height: Height,
+) -> Result<Bytes, bool> {
+    let certified_block = match upstream.get_finalization(height).await {
+        Some(certified_block) => certified_block,
+        None => return Err(false),
     };
 
-    let finalization = <Finalization<Scheme<PublicKey, MinSig>, Digest>>::decode(
-        &*alloy_primitives::hex::decode(&certified_block.certificate)
-            .map_err(eyre::Report::new)
-            .inspect_err(|error| warn!(%error, "failed decoding certificate"))
-            .ok()?,
-    )
-    .map_err(eyre::Report::new)
-    .inspect_err(|error| warn!(%error, "failed decoding certificate"))
-    .ok()?;
+    let Ok(finalization) = alloy_primitives::hex::decode(&certified_block.certificate)
+        .map_err(Report::new)
+        .and_then(|bytes| {
+            <Finalization<Scheme<PublicKey, MinSig>, Digest>>::decode(&*bytes).map_err(Report::new)
+        })
+        .inspect_err(|error| warn!(%error, "failed decoding certificate"))
+    else {
+        return Err(false);
+    };
 
     let consensus_block =
         Block::from_execution_block(SealedBlock::seal_slow(certified_block.block));
-    Some((finalization, consensus_block).encode())
+    Ok((finalization, consensus_block).encode())
 }
 
 impl commonware_resolver::Resolver for Mailbox {

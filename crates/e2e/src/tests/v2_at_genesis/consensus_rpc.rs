@@ -94,7 +94,6 @@ async fn consensus_subscribe_and_query_finalization() {
                 let queried_block = http_client
                     .get_finalization(Query::Height(height))
                     .await
-                    .unwrap()
                     .unwrap();
 
                 assert_eq!(queried_block, block);
@@ -106,11 +105,7 @@ async fn consensus_subscribe_and_query_finalization() {
         }
     }
 
-    let _ = http_client
-        .get_finalization(Query::Latest)
-        .await
-        .unwrap()
-        .unwrap();
+    let _ = http_client.get_finalization(Query::Latest).await.unwrap();
 
     let state = http_client.get_latest().await.unwrap();
 
