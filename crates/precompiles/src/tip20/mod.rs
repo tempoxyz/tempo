@@ -947,11 +947,6 @@ impl TIP20Token {
         // must ensure the account is not empty, by setting some code
         self.__initialize()?;
 
-        if self.storage.spec().is_t5() {
-            self.storage
-                .reserve_prepaid_sstore(self.address, self.tip1028_escrow_balance_slot())?;
-        }
-
         self.name.write(name.to_string())?;
         self.symbol.write(symbol.to_string())?;
         self.currency.write(currency.to_string())?;
@@ -970,27 +965,11 @@ impl TIP20Token {
     }
 
     fn get_balance(&self, account: Address) -> Result<U256> {
-        if self.storage.spec().is_t5() && account == TIP1028_ESCROW_ADDRESS {
-            return self
-                .storage
-                .sload_prepaid(self.address, self.tip1028_escrow_balance_slot());
-        }
         self.balances[account].read()
     }
 
     fn set_balance(&mut self, account: Address, amount: U256) -> Result<()> {
-        if self.storage.spec().is_t5() && account == TIP1028_ESCROW_ADDRESS {
-            return self.storage.sstore_prepaid(
-                self.address,
-                self.tip1028_escrow_balance_slot(),
-                amount,
-            );
-        }
         self.balances[account].write(amount)
-    }
-
-    fn tip1028_escrow_balance_slot(&self) -> U256 {
-        TIP1028_ESCROW_ADDRESS.mapping_slot(self.balances.slot())
     }
 
     fn get_allowance(&self, owner: Address, spender: Address) -> Result<U256> {
