@@ -29,7 +29,6 @@ crate::sol! {
 
         function blockedReceiptBalance(address token, address recoveryContract, uint8 receiptVersion, bytes calldata receipt) external view returns (uint256 amount);
         function claimBlocked(address token, address recoveryContract, uint8 receiptVersion, bytes calldata receipt, address to) external;
-        function storeBlocked(address token, address originator, address receiver, address recipient, address recoveryContract, uint256 amount, BlockedReason blockedReason, InboundKind kind, bytes32 memo) external returns (uint64 blockedNonce, uint64 blockedAt);
 
         event BlockedReceiptClaimed(address indexed token, address indexed receiver, uint8 receiptVersion, uint64 indexed blockedNonce, uint64 blockedAt, address originator, address recipient, address recoveryContract, address caller, address to, uint256 amount);
 
@@ -65,5 +64,19 @@ impl TIP1028EscrowError {
 
     pub const fn invalid_token() -> Self {
         Self::InvalidToken(ITIP1028Escrow::InvalidToken {})
+    }
+}
+
+// `BlockedReason` conversions between the canonical TIP-403 type and this interface
+use super::tip403_registry::ITIP403Registry::BlockedReason as Canonical;
+
+impl From<Canonical> for ITIP1028Escrow::BlockedReason {
+    fn from(r: Canonical) -> Self {
+        match r {
+            Canonical::NONE => Self::NONE,
+            Canonical::TOKEN_FILTER => Self::TOKEN_FILTER,
+            Canonical::RECEIVE_POLICY => Self::RECEIVE_POLICY,
+            Canonical::__Invalid => Self::__Invalid,
+        }
     }
 }

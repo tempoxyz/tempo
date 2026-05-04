@@ -24,9 +24,6 @@ impl Precompile for TIP1028Escrow {
                 ITIP1028EscrowCalls::claimBlocked(call) => {
                     mutate_void(call, msg_sender, |s, c| self.claim_blocked(s, c))
                 }
-                ITIP1028EscrowCalls::storeBlocked(call) => {
-                    crate::mutate(call, msg_sender, |s, c| self.store_blocked(s, c))
-                }
             },
         )
     }

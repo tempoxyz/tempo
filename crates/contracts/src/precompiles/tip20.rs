@@ -335,6 +335,20 @@ impl TIP20Error {
     }
 }
 
+// `BlockedReason` conversions between the canonical TIP-403 type and this interface
+use super::tip403_registry::ITIP403Registry::BlockedReason as Canonical;
+
+impl From<Canonical> for ITIP20::BlockedReason {
+    fn from(r: Canonical) -> Self {
+        match r {
+            Canonical::NONE => Self::NONE,
+            Canonical::TOKEN_FILTER => Self::TOKEN_FILTER,
+            Canonical::RECEIVE_POLICY => Self::RECEIVE_POLICY,
+            Canonical::__Invalid => Self::__Invalid,
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
