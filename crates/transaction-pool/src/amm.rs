@@ -132,21 +132,22 @@ impl AmmLiquidityCache {
             .with_read_only_storage_ctx(current_fork, || -> TempoResult<bool> {
                 let manager = TipFeeManager::new();
                 for validator_token in missing_in_cache {
-                    let plan = manager.plan_fee_route(user_token, validator_token, fee)?;
-                    if !plan.pools.is_empty() {
+                    let (route, pools) =
+                        manager.plan_fee_route(user_token, validator_token, fee)?;
+                    if !pools.is_empty() {
                         let mut inner = self.inner.write();
-                        for &(pair, reserve) in &plan.pools {
+                        for &(pair, reserve) in &pools {
                             let id = manager.pool_id(pair.0, pair.1);
                             let slot = manager.pools[id].base_slot();
                             inner.pool_cache.insert(pair, U256::from(reserve));
                             inner.slot_to_pool.insert(slot, pair);
                         }
-                        if let Some(FeeRoute::TwoHop(hop)) = plan.route {
+                        if let Some(FeeRoute::TwoHop(hop)) = route {
                             inner.quote_token_cache.insert(user_token, hop);
                         }
                     }
                     // If there is enough liquidity, short circuit and return `true`
-                    if plan.route.is_some() {
+                    if route.is_some() {
                         return Ok(true);
                     }
                 }
