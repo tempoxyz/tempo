@@ -126,7 +126,7 @@ impl GenerateLocalnet {
             std::fs::create_dir(&target_dir).wrap_err_with(|| {
                 format!(
                     "failed creating target directory to store validator specifici keys at `{}`",
-                    &target_dir.display()
+                    target_dir.display()
                 )
             })?;
 
