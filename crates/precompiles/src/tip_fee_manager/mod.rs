@@ -180,37 +180,47 @@ impl TipFeeManager {
         tip20_token.transfer_fee_pre_tx(fee_payer, max_amount)?;
 
         if !skip_liquidity_check {
-            match self.plan_fee_route(user_token, validator_token, max_amount)? {
-                (None, _) => return Err(TIPFeeAMMError::insufficient_liquidity().into()),
-                (Some(FeeRoute::SameToken), _) => {}
-                (Some(FeeRoute::Direct), _) => {
-                    if self.storage.spec().is_t1c() {
-                        let amount_out: u128 = compute_amount_out(max_amount)?
-                            .try_into()
-                            .map_err(|_| TempoPrecompileError::under_overflow())?;
-                        self.reserve_pool_liquidity(
-                            self.pool_id(user_token, validator_token),
-                            amount_out,
-                        )?;
-                    }
-                }
-                (Some(FeeRoute::TwoHop(intermediate)), _) => {
-                    // T5+ implies T1C+, so reservation is always required here.
-                    let out1: u128 = compute_amount_out(max_amount)?
-                        .try_into()
-                        .map_err(|_| TempoPrecompileError::under_overflow())?;
-                    let out2: u128 = compute_amount_out(U256::from(out1))?
-                        .try_into()
-                        .map_err(|_| TempoPrecompileError::under_overflow())?;
-                    self.reserve_pool_liquidity(self.pool_id(user_token, intermediate), out1)?;
-                    self.reserve_pool_liquidity(self.pool_id(intermediate, validator_token), out2)?;
-                    self.two_hop_intermediate.t_write(intermediate)?;
-                }
-            }
+            let (route, _) = self.plan_fee_route(user_token, validator_token, max_amount)?;
+            let route = route.ok_or_else(TIPFeeAMMError::insufficient_liquidity)?;
+            self.reserve_fee_liquidity(user_token, validator_token, max_amount, route)?;
         }
 
         // Return the user's token preference
         Ok(user_token)
+    }
+
+    /// Reserves AMM liquidity needed to settle the selected fee route after transaction execution.
+    fn reserve_fee_liquidity(
+        &mut self,
+        user_token: Address,
+        validator_token: Address,
+        max_amount: U256,
+        route: FeeRoute,
+    ) -> Result<()> {
+        match route {
+            FeeRoute::SameToken => {}
+            FeeRoute::Direct if self.storage.spec().is_t1c() => {
+                let amount_out: u128 = compute_amount_out(max_amount)?
+                    .try_into()
+                    .map_err(|_| TempoPrecompileError::under_overflow())?;
+                self.reserve_pool_liquidity(self.pool_id(user_token, validator_token), amount_out)?;
+            }
+            FeeRoute::Direct => {}
+            FeeRoute::TwoHop(intermediate) => {
+                // T5+ implies T1C+, so reservation is always required here.
+                let out1: u128 = compute_amount_out(max_amount)?
+                    .try_into()
+                    .map_err(|_| TempoPrecompileError::under_overflow())?;
+                let out2: u128 = compute_amount_out(U256::from(out1))?
+                    .try_into()
+                    .map_err(|_| TempoPrecompileError::under_overflow())?;
+                self.reserve_pool_liquidity(self.pool_id(user_token, intermediate), out1)?;
+                self.reserve_pool_liquidity(self.pool_id(intermediate, validator_token), out2)?;
+                self.two_hop_intermediate.t_write(intermediate)?;
+            }
+        }
+
+        Ok(())
     }
 
     /// Finalizes fee collection after transaction execution.

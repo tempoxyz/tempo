@@ -1,21 +1,62 @@
 use crate::utils::{TestNodeBuilder, await_receipts, setup_test_token};
 use alloy::{
-    primitives::U256,
+    primitives::{B256, U256},
     providers::{Provider, ProviderBuilder},
     signers::local::MnemonicBuilder,
+    sol_types::SolEvent,
 };
 use alloy_eips::BlockId;
 use alloy_primitives::{Address, uint};
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{
-    IFeeManager,
+    IFeeManager, IRolesAuth,
     ITIP20::{self, ITIP20Instance},
-    ITIPFeeAMM,
+    ITIP20Factory, ITIPFeeAMM,
 };
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    tip_fee_manager::amm::{MIN_LIQUIDITY, PoolKey},
+    DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
+    tip_fee_manager::amm::{MIN_LIQUIDITY, PoolKey, compute_amount_out},
+    tip20::ISSUER_ROLE,
 };
+use tempo_primitives::transaction::calc_gas_balance_spending;
+use test_case::test_case;
+
+async fn setup_test_token_with_quote<P>(
+    provider: P,
+    caller: Address,
+    quote_token: Address,
+) -> eyre::Result<ITIP20Instance<impl Clone + Provider>>
+where
+    P: Provider + Clone,
+{
+    let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
+    let receipt = factory
+        .createToken(
+            "Test".to_string(),
+            "TEST".to_string(),
+            "USD".to_string(),
+            quote_token,
+            caller,
+            B256::random(),
+        )
+        .gas(5_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    let event = ITIP20Factory::TokenCreated::decode_log(&receipt.logs()[1].inner).unwrap();
+    let token = ITIP20::new(event.token, provider.clone());
+
+    IRolesAuth::new(*token.address(), provider)
+        .grantRole(*ISSUER_ROLE, caller)
+        .gas(1_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    Ok(token)
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_mint_liquidity() -> eyre::Result<()> {
@@ -376,6 +417,167 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
 
     assert!(pool_before.reserveUserToken < pool_after.reserveUserToken);
     assert!(pool_before.reserveValidatorToken > pool_after.reserveValidatorToken);
+
+    Ok(())
+}
+
+#[test_case(false ; "no_direct_pool")]
+#[test_case(true ; "insufficient_direct_pool")]
+#[tokio::test(flavor = "multi_thread")]
+async fn test_transact_two_hop_fee_route(direct_pool_exists: bool) -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let http_url = setup.http_url;
+
+    let user_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+        .index(1)?
+        .build()?;
+    let user_address = user_wallet.address();
+    let provider = ProviderBuilder::new()
+        .wallet(user_wallet)
+        .connect_http(http_url);
+
+    let validator_address = provider
+        .get_block(BlockId::latest())
+        .await?
+        .expect("Could not get block")
+        .header
+        .beneficiary;
+
+    let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    let validator_token = ITIP20Instance::new(PATH_USD_ADDRESS, provider.clone());
+
+    let hop_token = setup_test_token(provider.clone(), user_address).await?;
+    let user_token =
+        setup_test_token_with_quote(provider.clone(), user_address, *hop_token.address()).await?;
+
+    let liquidity = uint!(1_000_000_000_000_000_000_U256);
+    let mut pending = vec![];
+    pending.push(user_token.mint(user_address, liquidity).send().await?);
+    pending.push(hop_token.mint(user_address, liquidity).send().await?);
+    await_receipts(&mut pending).await?;
+
+    fee_amm
+        .mint(
+            *user_token.address(),
+            *hop_token.address(),
+            liquidity,
+            user_address,
+        )
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    fee_amm
+        .mint(
+            *hop_token.address(),
+            *validator_token.address(),
+            liquidity,
+            user_address,
+        )
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    if direct_pool_exists {
+        // Present but far below any real tx fee, forcing the T5 two-hop fallback.
+        fee_amm
+            .mint(
+                *user_token.address(),
+                *validator_token.address(),
+                U256::from(3_000),
+                user_address,
+            )
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+    }
+
+    fee_manager
+        .setUserToken(*user_token.address())
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let direct_before = fee_amm
+        .getPool(*user_token.address(), *validator_token.address())
+        .call()
+        .await?;
+    let first_hop_before = fee_amm
+        .getPool(*user_token.address(), *hop_token.address())
+        .call()
+        .await?;
+    let second_hop_before = fee_amm
+        .getPool(*hop_token.address(), *validator_token.address())
+        .call()
+        .await?;
+    let collected_before = fee_manager
+        .collectedFees(validator_address, *validator_token.address())
+        .call()
+        .await?;
+
+    let transfer_token = ITIP20::new(DEFAULT_FEE_TOKEN, provider.clone());
+    let receipt = transfer_token
+        .transfer(Address::random(), U256::from(1))
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(receipt.status());
+
+    let actual_spending = calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price);
+    let out1 = compute_amount_out(actual_spending)?;
+    let out2 = compute_amount_out(out1)?;
+
+    let collected_after = fee_manager
+        .collectedFees(validator_address, *validator_token.address())
+        .call()
+        .await?;
+    assert_eq!(collected_after - collected_before, out2);
+
+    let direct_after = fee_amm
+        .getPool(*user_token.address(), *validator_token.address())
+        .call()
+        .await?;
+    assert_eq!(
+        direct_after.reserveUserToken,
+        direct_before.reserveUserToken
+    );
+    assert_eq!(
+        direct_after.reserveValidatorToken,
+        direct_before.reserveValidatorToken
+    );
+
+    let first_hop_after = fee_amm
+        .getPool(*user_token.address(), *hop_token.address())
+        .call()
+        .await?;
+    assert_eq!(
+        first_hop_after.reserveUserToken,
+        first_hop_before.reserveUserToken + actual_spending.to::<u128>()
+    );
+    assert_eq!(
+        first_hop_after.reserveValidatorToken,
+        first_hop_before.reserveValidatorToken - out1.to::<u128>()
+    );
+
+    let second_hop_after = fee_amm
+        .getPool(*hop_token.address(), *validator_token.address())
+        .call()
+        .await?;
+    assert_eq!(
+        second_hop_after.reserveUserToken,
+        second_hop_before.reserveUserToken + out1.to::<u128>()
+    );
+    assert_eq!(
+        second_hop_after.reserveValidatorToken,
+        second_hop_before.reserveValidatorToken - out2.to::<u128>()
+    );
 
     Ok(())
 }
