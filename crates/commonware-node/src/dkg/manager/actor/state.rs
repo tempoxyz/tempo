@@ -1219,7 +1219,9 @@ mod tests {
         let mut keys: Vec<_> = (0..3)
             .map(|i| PrivateKey::from_seed(i + epoch * 100))
             .collect();
+
         keys.sort_by_key(|k| k.public_key());
+
         let pubkeys = ordered::Set::try_from_iter(keys.iter().map(|k| k.public_key())).unwrap();
 
         let (output, _shares) =
@@ -1230,7 +1232,7 @@ mod tests {
             seed: Summary::random(rng),
             output,
             share: ShareState::Plaintext(None),
-            players: pubkeys.clone(),
+            players: pubkeys,
             is_full_dkg: false,
         }
     }
