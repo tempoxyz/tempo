@@ -43,7 +43,7 @@ impl FeedStateProvider for Follower {
     }
 }
 
-impl<'a, T: FeedStateProvider> FeedStateProvider for &'a T {
+impl<T: FeedStateProvider> FeedStateProvider for &T {
     fn feed_state(&self) -> FeedStateHandle {
         (*self).feed_state()
     }
@@ -178,7 +178,7 @@ impl FollowerBuilder {
         let config = follow::Config {
             execution_node: node.node.clone(),
             feed_state: feed_state.clone(),
-            partition_prefix: partition_prefix.into(),
+            partition_prefix,
             epoch_strategy: FixedEpocher::new(NZU64!(EPOCH_LENGTH)),
             mailbox_size: 16_384,
             fcu_heartbeat_interval: Duration::from_secs(300),
@@ -289,7 +289,7 @@ fn follower_bootstraps_from_follower() {
         );
 
         // Some finalization state needs to be present.
-        wait_for_height(&context, &validator_follower.name(), target_height).await;
+        wait_for_height(&context, validator_follower.name(), target_height).await;
 
         let follower_follower = Follower::builder()
             .runtime(execution_runtime.handle())
@@ -306,7 +306,7 @@ fn follower_bootstraps_from_follower() {
         // should address all race conditions between a) the secondary follower
         // starting, b) receving the finalized block, and c) propagating it to its
         // consensus feed so that it can d) be queried successfully.
-        wait_for_height(&context, &validator_follower.name(), target_height * 2).await;
+        wait_for_height(&context, validator_follower.name(), target_height * 2).await;
 
         follower_follower
             .feed
