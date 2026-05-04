@@ -51,7 +51,6 @@ impl<F> OptionFuture<F> {
         self.0.is_none()
     }
 
-
     pub(crate) fn replace(&mut self, fut: F) -> Option<F> {
         self.0.replace(fut)
     }

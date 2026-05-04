@@ -624,7 +624,6 @@ fn main() -> eyre::Result<()> {
                         )
                     }
 
-                    
                     let follow_url = args.follow.clone().and_then(|v| {
                         if v != "auto" {
                             Some(v)
