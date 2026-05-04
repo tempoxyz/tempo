@@ -522,8 +522,7 @@ impl Builder {
             let initial_state = match initial_state {
                 None => {
                     return Err(eyre!(
-                        "states metadata was empty, legacy journal was empty, \
-                         and initializer was not set"
+                        "states metadata was empty and initializer was not set"
                     ));
                 }
                 Some(initial_state) => initial_state
