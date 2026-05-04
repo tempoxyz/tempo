@@ -6,6 +6,7 @@ use alloy::{
     providers::{Provider, ProviderBuilder},
     rpc::client::BatchRequest,
 };
+use alloy_rlp::Encodable;
 use clap::Parser;
 use eyre::{Context, Result};
 use futures::StreamExt;
@@ -43,6 +44,7 @@ type TempoRpcBlock = <TempoNetwork as Network>::BlockResponse;
 /// 3 hrs of blocks at 500ms block time.
 const CACHE_CAPACITY: u64 = 60 * 60 * 6; // 21600
 const HEADER_BATCH_SIZE: usize = 512;
+const BODY_RESPONSE_SIZE_LIMIT: usize = 1024 * 1024; // 1 MiB
 
 #[derive(Parser, Debug)]
 #[command(
@@ -671,19 +673,30 @@ async fn resolve_bodies(
     hashes: &[B256],
 ) -> Vec<tempo_primitives::BlockBody> {
     let mut bodies = Vec::new();
+    let mut total_bytes = 0usize;
 
     for &hash in hashes {
-        if let Some(body) = cache
+        let body = match cache
             .get_by_hash(&hash)
             .and_then(|block| block.body.clone())
         {
-            bodies.push(body);
-            continue;
+            Some(body) => body,
+            None => match fetch_body_by_hash(provider, cache, hash).await {
+                Some(body) => body,
+                None => break,
+            },
+        };
+
+        let Some(next_total_bytes) = total_bytes.checked_add(body.length()) else {
+            break;
+        };
+
+        if next_total_bytes > BODY_RESPONSE_SIZE_LIMIT {
+            break;
         }
 
-        if let Some(body) = fetch_body_by_hash(provider, cache, hash).await {
-            bodies.push(body);
-        }
+        total_bytes = next_total_bytes;
+        bodies.push(body);
     }
 
     bodies
@@ -700,6 +713,30 @@ mod tests {
     fn moderato_provider() -> impl Provider<TempoNetwork> {
         ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect_http(MODERATO_RPC.parse().unwrap())
+    }
+
+    fn cached_body_with_min_size(min_size: usize) -> tempo_primitives::BlockBody {
+        let mut body = tempo_primitives::BlockBody::default();
+        while body.length() < min_size {
+            body.ommers.push(TempoHeader::default());
+        }
+        body
+    }
+
+    #[tokio::test]
+    async fn resolve_bodies_stops_before_response_size_limit() {
+        let provider = moderato_provider();
+        let mut cache = BlockCache::new(100);
+        let body = cached_body_with_min_size(BODY_RESPONSE_SIZE_LIMIT / 2);
+        let first_hash = B256::with_last_byte(1);
+        let second_hash = B256::with_last_byte(2);
+
+        cache.insert_block(1, first_hash, TempoHeader::default(), body.clone());
+        cache.insert_block(2, second_hash, TempoHeader::default(), body);
+
+        let bodies = resolve_bodies(&provider, &mut cache, &[first_hash, second_hash]).await;
+        assert_eq!(bodies.len(), 1);
+        assert!(bodies.iter().map(Encodable::length).sum::<usize>() <= BODY_RESPONSE_SIZE_LIMIT);
     }
 
     #[tokio::test]
