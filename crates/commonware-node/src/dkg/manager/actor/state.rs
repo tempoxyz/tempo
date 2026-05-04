@@ -648,7 +648,6 @@ pub(super) struct State {
     pub(super) output: Output<MinSig, PublicKey>,
     pub(super) share: ShareState,
     pub(super) players: ordered::Set<PublicKey>,
-    pub(super) syncers: ordered::Set<PublicKey>,
     pub(super) is_full_dkg: bool,
 }
 
@@ -662,6 +661,11 @@ impl State {
     pub(super) fn players(&self) -> &ordered::Set<PublicKey> {
         &self.players
     }
+
+    /// Placeholder for the legacy `syncers` field.
+    fn legacy_syncers(&self) -> ordered::Set<PublicKey> {
+        ordered::Set::default()
+    }
 }
 
 impl EncodeSize for State {
@@ -671,7 +675,7 @@ impl EncodeSize for State {
             + self.output.encode_size()
             + self.share.encode_size()
             + self.players.encode_size()
-            + self.syncers.encode_size()
+            + self.legacy_syncers().encode_size()
             + self.is_full_dkg.encode_size()
     }
 }
@@ -683,7 +687,7 @@ impl Write for State {
         self.output.write(buf);
         self.share.write(buf);
         self.players.write(buf);
-        self.syncers.write(buf);
+        self.legacy_syncers().write(buf);
         self.is_full_dkg.write(buf);
     }
 }
@@ -695,16 +699,24 @@ impl Read for State {
         buf: &mut impl bytes::Buf,
         cfg: &Self::Cfg,
     ) -> Result<Self, commonware_codec::Error> {
+        let epoch = ReadExt::read(buf)?;
+        let seed = ReadExt::read(buf)?;
+        let output = Read::read_cfg(buf, &(*cfg, ModeVersion::v0()))?;
+        let share = ReadExt::read(buf)?;
+        let players = Read::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), ()))?;
+
+        // Legacy syncers (Read but ignored. Should be empty)
+        ordered::Set::<PublicKey>::read_cfg(buf, &(RangeCfg::from(0..=(u16::MAX as usize)), ()))?;
+
+        let is_full_dkg = ReadExt::read(buf)?;
+
         Ok(Self {
-            epoch: ReadExt::read(buf)?,
-            seed: ReadExt::read(buf)?,
-            output: Read::read_cfg(buf, &(*cfg, ModeVersion::v0()))?,
-            share: ReadExt::read(buf)?,
-            players: Read::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), ()))?,
-            // Range from 0 to u16::MAX because after T2/V2 syncers are no longer
-            // stored in state.
-            syncers: Read::read_cfg(buf, &(RangeCfg::from(0..=(u16::MAX as usize)), ()))?,
-            is_full_dkg: ReadExt::read(buf)?,
+            epoch,
+            seed,
+            output,
+            share,
+            players,
+            is_full_dkg,
         })
     }
 }
@@ -1219,32 +1231,44 @@ mod tests {
             output,
             share: ShareState::Plaintext(None),
             players: pubkeys.clone(),
-            syncers: pubkeys,
             is_full_dkg: false,
         }
     }
 
     #[test]
-    fn state_round_trip_with() {
+    fn state_codec_round_trip() {
         let executor = deterministic::Runner::default();
         executor.start(|mut context| async move {
             let state = make_test_state(&mut context, 0);
             let mut bytes = state.encode();
-            assert_eq!(
-                state,
-                State::read_cfg(&mut bytes, &NZU32!(u32::MAX)).unwrap(),
-            );
+            let decoded = State::read_cfg(&mut bytes, &NZU32!(u32::MAX)).unwrap();
+            assert_eq!(state, decoded);
+        });
+    }
 
-            let state_without_syncers = {
-                let mut s = make_test_state(&mut context, 0);
-                s.syncers = Default::default();
-                s
-            };
-            let mut bytes = state_without_syncers.encode();
-            assert_eq!(
-                state_without_syncers,
-                State::read_cfg(&mut bytes, &NZU32!(u32::MAX)).unwrap(),
-            );
+    #[test]
+    fn state_codec_read_ignores_legacy_populated_syncers() {
+        let executor = deterministic::Runner::default();
+        executor.start(|mut context| async move {
+            let state = make_test_state(&mut context, 0);
+
+            // Serialize using the legacy layout: same field order as today, but
+            // with a non-empty syncers set in place of `legacy_syncers()`.
+            let legacy_syncers = state.players.clone();
+            let mut bytes = Vec::new();
+            state.epoch.write(&mut bytes);
+            state.seed.write(&mut bytes);
+            state.output.write(&mut bytes);
+            state.share.write(&mut bytes);
+            state.players.write(&mut bytes);
+
+            // Legacy slot that is still written/read but ignored
+            legacy_syncers.write(&mut bytes);
+
+            state.is_full_dkg.write(&mut bytes);
+
+            let decoded = State::read_cfg(&mut bytes.as_slice(), &NZU32!(u32::MAX)).unwrap();
+            assert_eq!(state, decoded);
         });
     }
 

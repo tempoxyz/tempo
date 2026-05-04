@@ -808,7 +808,6 @@ where
             output: onchain_outcome.output.clone(),
             share,
             players: onchain_outcome.next_players,
-            syncers: ordered::Set::default(),
             is_full_dkg: onchain_outcome.is_next_full_dkg,
         }))
     }
@@ -887,7 +886,6 @@ where
             output: onchain_outcome.output.clone(),
             share: state::ShareState::Plaintext(None),
             players: onchain_outcome.next_players,
-            syncers: ordered::Set::default(),
             is_full_dkg: onchain_outcome.is_next_full_dkg,
         }))
     }
@@ -1333,7 +1331,6 @@ where
         output: onchain_outcome.output.clone(),
         share,
         players: onchain_outcome.next_players,
-        syncers: ordered::Set::default(),
         is_full_dkg: onchain_outcome.is_next_full_dkg,
     })
 }
