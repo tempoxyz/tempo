@@ -5074,6 +5074,9 @@ mod tests {
 
         let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T4, tx_env, |cfg| {
             cfg.tx_gas_limit_cap = Some(CAP);
+            cfg.enable_amsterdam_eip8037 = true;
+            cfg.gas_params =
+                crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
         });
 
         // Sanity: T4 must actually have the cap-skip enabled so tx_gas_limit > cap is legal.
