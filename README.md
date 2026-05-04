@@ -144,6 +144,46 @@ Our contributor guidelines can be found in [`CONTRIBUTING.md`](https://github.co
 
 See [`SECURITY.md`](https://github.com/tempoxyz/tempo?tab=security-ov-file). Note: Tempo is still undergoing audit and does not have an active bug bounty. Submissions will not be eligible for a bounty until audits have concluded.
 
+### Verifying release binaries
+
+Each release ships `<binary>-<version>-<target>.tar.gz` plus `.sha256` (archive checksum), `.asc` (GPG signature), and `.spdx.json` (SBOM), as well as a separate `<binary>-<version>-<target>.sha256` for the bare unpacked binary (the durable hash an independent rebuilder will compare against). Releases also carry Sigstore-signed SLSA provenance and SBOM attestations. To verify a download:
+
+```bash
+TAG=v1.6.0
+BIN=tempo-${TAG}-x86_64-unknown-linux-gnu
+ARCHIVE=${BIN}.tar.gz
+
+# 1. Download the archive and its sidecars from the release.
+gh release download "$TAG" --repo tempoxyz/tempo \
+  -p "$ARCHIVE" -p "$ARCHIVE.sha256" -p "$ARCHIVE.asc" \
+  -p "$ARCHIVE.spdx.json" -p "$BIN.sha256"
+
+# 2. Checksum the archive (and, after extraction, the bare binary).
+sha256sum -c "$ARCHIVE.sha256"
+tar xzf "$ARCHIVE" && sha256sum -c "$BIN.sha256"
+
+# 3. GPG signature. See https://docs.tempo.xyz/guide/node/installation#verifying-releases
+#    for the public key, fingerprint, and `gpg --recv-keys` command.
+gpg --verify "$ARCHIVE.asc" "$ARCHIVE"
+
+# 4. GitHub release attestation (tag + asset digests, signed by GitHub).
+gh release verify "$TAG" --repo tempoxyz/tempo
+
+# 5. SLSA build provenance (proves the workflow + commit that built it).
+#    Both the archive and the bare binary are listed as subjects of the
+#    same attestation, so either path verifies.
+gh attestation verify "$ARCHIVE" --repo tempoxyz/tempo \
+  --predicate-type https://slsa.dev/provenance/v1
+gh attestation verify "$BIN"     --repo tempoxyz/tempo \
+  --predicate-type https://slsa.dev/provenance/v1
+
+# 6. SBOM attestation (binds $ARCHIVE.spdx.json to the artifact digest).
+gh attestation verify "$ARCHIVE" --repo tempoxyz/tempo \
+  --predicate-type https://spdx.dev/Document
+gh attestation verify "$BIN"     --repo tempoxyz/tempo \
+  --predicate-type https://spdx.dev/Document
+```
+
 ## License
 
 Licensed under either of [Apache License](./LICENSE-APACHE), Version
