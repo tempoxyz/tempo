@@ -749,7 +749,7 @@ impl TIP20Token {
         Ok(true)
     }
 
-    /// Transfers `amount` from `from` to `to` without approval, for use
+    /// Transfers `amount` from the current call's `msg.sender` to `to` without approval, for use
     /// by other precompiles only (not exposed via ABI). Enforces
     /// compliance via the [`TIP403Registry`] and [`AccountKeychain`].
     ///
@@ -758,13 +758,9 @@ impl TIP20Token {
     /// - `InvalidRecipient` — recipient address is zero
     /// - `PolicyForbids` — TIP-403 policy rejects sender or recipient
     /// - `SpendingLimitExceeded` — access key spending limit exceeded
-    /// - `InsufficientBalance` — `from` balance lower than transfer amount
-    pub fn system_transfer_from(
-        &mut self,
-        from: Address,
-        to: Address,
-        amount: U256,
-    ) -> Result<bool> {
+    /// - `InsufficientBalance` — `msg.sender` balance lower than transfer amount
+    pub fn system_transfer_from(&mut self, to: Address, amount: U256) -> Result<bool> {
+        let from = self.storage.msg_sender();
         let to = Recipient::resolve(to)?;
         self.validate_transfer(from, &to)?;
         self.check_and_update_spending_limit(from, amount)?;
@@ -1817,20 +1813,25 @@ pub(crate) mod tests {
     fn test_system_transfer_from() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
-        let from = Address::random();
+        let sender = Address::random();
         let to = Address::random();
         let amount = U256::random() % U256::from(u128::MAX);
 
-        StorageCtx::enter(&mut storage, || {
+        StorageCtx::enter_with_msg_sender(&mut storage, sender, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
-                .with_mint(from, amount)
+                .with_mint(sender, amount)
                 .apply()?;
 
-            assert!(token.system_transfer_from(from, to, amount).is_ok());
+            assert!(token.system_transfer_from(to, amount).is_ok());
             assert_eq!(
                 token.emitted_events().last().unwrap(),
-                &TIP20Event::Transfer(ITIP20::Transfer { from, to, amount }).into_log_data()
+                &TIP20Event::Transfer(ITIP20::Transfer {
+                    from: sender,
+                    to,
+                    amount,
+                })
+                .into_log_data()
             );
 
             Ok(())
