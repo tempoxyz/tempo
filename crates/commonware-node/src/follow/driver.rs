@@ -281,7 +281,7 @@ where
         Ok(())
     }
 
-    #[instrument(skip_all, ret, err(Display))]
+    #[instrument(skip_all, err(Display))]
     async fn process_event(&mut self, event: Event) -> eyre::Result<()> {
         let Event::Finalized {
             block: certified, ..

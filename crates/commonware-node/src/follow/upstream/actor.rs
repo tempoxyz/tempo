@@ -140,7 +140,7 @@ where
 
                 Some(event) = self.event_stream.next() => {
                     debug_span!("consensus_event").in_scope(|| debug!(
-                        "received consensus event, forwarding to reporter"
+                        ?event, "received consensus event, forwarding to reporter"
                     ));
                     match event {
                         Ok(event) => reporter.report(event).await,
@@ -185,6 +185,6 @@ async fn get_finalization(
         .await
         .wrap_err("failed getting finalization")?;
     response
-        .send(finalization)
+        .send(Some(finalization))
         .map_err(|_| eyre::eyre!("receiver went away"))
 }

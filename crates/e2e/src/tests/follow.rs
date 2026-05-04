@@ -3,13 +3,7 @@
 //! These tests verify that a follower node can sync blocks from an upstream
 //! node (validator or another follower) using in-process direct access.
 
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicU32, Ordering},
-    },
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 use crate::{
     CONSENSUS_NODE_PREFIX, Setup, TestingNode,
@@ -28,13 +22,31 @@ use commonware_utils::NZU64;
 use futures::future::join_all;
 use rand_core::CryptoRngCore;
 use tempo_commonware_node::{feed::FeedStateHandle, follow};
-use tempo_node::rpc::consensus::{ConsensusFeed as _, Query};
+use tempo_node::rpc::consensus::{ConsensusFeed as _, Query, types::Response};
+use tracing::info;
 
 static EPOCH_LENGTH: u64 = 10;
 
-fn next_follower_name() -> String {
-    let id = FOLLOWER_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("follower_{id}")
+trait FeedStateProvider {
+    fn feed_state(&self) -> FeedStateHandle;
+}
+
+impl<TContext: Clock> FeedStateProvider for TestingNode<TContext> {
+    fn feed_state(&self) -> FeedStateHandle {
+        self.consensus_config.feed_state.clone()
+    }
+}
+
+impl FeedStateProvider for Follower {
+    fn feed_state(&self) -> FeedStateHandle {
+        self.feed.clone()
+    }
+}
+
+impl<'a, T: FeedStateProvider> FeedStateProvider for &'a T {
+    fn feed_state(&self) -> FeedStateHandle {
+        (*self).feed_state()
+    }
 }
 
 async fn wait_for_height(context: &Context, prefix: &str, target_height: u64) {
@@ -85,17 +97,10 @@ impl FollowerBuilder {
         }
     }
 
-    fn name(self, name: &str) -> Self {
-        Self {
-            name: Some(name.into()),
-            ..self
-        }
-    }
-
     async fn follow<TContext>(
         self,
         context: &mut TContext,
-        validator: &TestingNode<TContext>,
+        upstream: impl FeedStateProvider,
     ) -> Follower
     where
         TContext: BufferPooler + Clock + CryptoRngCore + Metrics + Pacer + Spawner + Storage,
@@ -136,7 +141,7 @@ impl FollowerBuilder {
             context.with_label("upstream"),
             in_process::Config {
                 execution_node: Arc::new(node.node.clone()),
-                feed: validator.consensus_config.feed_state.clone(),
+                feed: upstream.feed_state(),
             },
         );
 
@@ -161,7 +166,7 @@ impl FollowerBuilder {
             name,
             feed: feed_state,
             execution_node: node,
-            handle,
+            _handle: handle,
         }
     }
 }
@@ -170,12 +175,12 @@ struct Follower {
     name: String,
     feed: FeedStateHandle,
     execution_node: ExecutionNode,
-    handle: Handle<eyre::Result<()>>,
+    _handle: Handle<eyre::Result<()>>,
 }
 
 impl Follower {
     fn builder() -> FollowerBuilder {
-        FollowerBuilder::default()
+        FollowerBuilder::new()
     }
 
     async fn connect_peers<T: Clock>(&self, peers: &[TestingNode<T>]) {
@@ -185,10 +190,16 @@ impl Follower {
             }
         }
     }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 #[test_traced]
 fn follower_bootstraps_from_validator() {
+    let _ = tempo_eyre::install();
+
     let target_height = 15;
 
     let setup = Setup::new().how_many_signers(1).epoch_length(EPOCH_LENGTH);
@@ -209,125 +220,107 @@ fn follower_bootstraps_from_validator() {
 
         wait_for_height(&context, &follower.name, target_height).await;
 
-        let cert = follower.feed.get_finalization(Query::Latest).await;
-        assert!(cert.is_some());
+        follower.feed.get_finalization(Query::Latest).await.unwrap();
 
         // Follower starts only from the bootstrap point.
         let historical_cert = follower.feed.get_finalization(Query::Height(1)).await;
-        assert_eq!(None, historical_cert);
+        let Response::Missing(..) = historical_cert else {
+            panic!("shouldn't have historical certs");
+        };
     });
 }
 
-// #[test_traced]
-// fn follower_bootstraps_from_follower() {
-//     let target_height = 15;
+#[test_traced]
+fn follower_bootstraps_from_follower() {
+    let _ = tempo_eyre::install();
 
-//     let setup = Setup::new().how_many_signers(4).epoch_length(EPOCH_LENGTH);
-//     let cfg = deterministic::Config::default().with_seed(setup.seed);
+    let target_height = 15;
 
-//     let executor = Runner::from(cfg);
-//     executor.start(|mut context| async move {
-//         let (mut validators, _execution_runtime) = setup_validators(&mut context, setup).await;
-//         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+    let setup = Setup::new().how_many_signers(1).epoch_length(EPOCH_LENGTH);
+    let cfg = deterministic::Config::default().with_seed(setup.seed);
 
-//         let runtime = _execution_runtime.handle();
-//         let trusted_peers = validators
-//             .iter()
-//             .map(|v| v.execution_node.as_ref().unwrap())
-//             .collect::<Vec<_>>();
+    let executor = Runner::from(cfg);
+    executor.start(|mut context| async move {
+        let (mut validators, execution_runtime) = setup_validators(&mut context, setup).await;
+        join_all(validators.iter_mut().map(|v| v.start(&context))).await;
 
-//         let local_ws_addr = validators[0]
-//             .execution()
-//             .rpc_server_handles
-//             .rpc
-//             .ws_local_addr()
-//             .unwrap();
+        // Some finalization state needs to be present.
+        wait_for_height(&context, CONSENSUS_NODE_PREFIX, target_height).await;
 
-//         // Some finalization state needs to be present.
-//         wait_for_height(&context, CONSENSUS_NODE_PREFIX, target_height).await;
+        let validator_follower = Follower::builder()
+            .runtime(execution_runtime.handle())
+            .follow(&mut context, &validators[0])
+            .await;
+        validator_follower.connect_peers(&validators).await;
 
-//         let follower1 = Follower::start(
-//             &context,
-//             &runtime,
-//             format!("ws://{local_ws_addr}"),
-//             None,
-//             trusted_peers.clone(),
-//         )
-//         .await;
+        info!(
+            new_follower_name = validator_follower.name(),
+            "started following validator",
+        );
 
-//         // Some finalization state needs to be present.
-//         wait_for_height(&context, &follower1.name, target_height).await;
+        // Some finalization state needs to be present.
+        wait_for_height(&context, &validator_follower.name(), target_height).await;
 
-//         todo!("follower 2 should follow follower 1")
-//         // // -- Follower2 syncs from follower 1.
-//         // let follower2 = Follower::start(
-//         //     &context,
-//         //     &runtime,
-//         //     follower1.feed.clone(),
-//         //     follower1.execution_node.node.clone(),
-//         //     None,
-//         //     trusted_peers,
-//         // )
-//         // .await;
+        let follower_follower = Follower::builder()
+            .runtime(execution_runtime.handle())
+            .follow(&mut context, &validator_follower) // <-- needs feed of follower
+            .await;
+        follower_follower.connect_peers(&validators).await;
 
-//         // wait_for_height(&context, &follower2.name, target_height).await;
+        info!(
+            new_follower_name = follower_follower.name(),
+            "started following follower",
+        );
 
-//         // let cert = follower2.feed.get_finalization(Query::Latest).await;
-//         // assert!(cert.is_some());
-//     });
-// }
+        // Wait on the *primary*, but query the *secondary* follower. This
+        // should address all race conditions between a) the secondary follower
+        // starting, b) receving the finalized block, and c) propagating it to its
+        // consensus feed so that it can d) be queried successfully.
+        wait_for_height(&context, &validator_follower.name(), target_height * 2).await;
 
-// #[test_traced]
-// fn follower_starts_from_validator_archives() {
-//     let target_height = 15;
-//     let follower_target_height = target_height + 5;
+        follower_follower
+            .feed
+            .get_finalization(Query::Latest)
+            .await
+            .unwrap();
+    });
+}
 
-//     let setup = Setup::new().how_many_signers(4).epoch_length(EPOCH_LENGTH);
-//     let cfg = deterministic::Config::default().with_seed(setup.seed);
+#[test_traced]
+fn follower_starts_from_validator_archives() {
+    let _ = tempo_eyre::install();
+    let target_height = 15;
+    let follower_target_height = target_height + 5;
 
-//     let executor = Runner::from(cfg);
-//     executor.start(|mut context| async move {
-//         let (mut validators, _execution_runtime) = setup_validators(&mut context, setup).await;
-//         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+    let setup = Setup::new().how_many_signers(4).epoch_length(EPOCH_LENGTH);
+    let cfg = deterministic::Config::default().with_seed(setup.seed);
 
-//         let runtime = _execution_runtime.handle();
+    let executor = Runner::from(cfg);
+    executor.start(|mut context| async move {
+        let (mut validators, execution_runtime) = setup_validators(&mut context, setup).await;
+        join_all(validators.iter_mut().map(|v| v.start(&context))).await;
 
-//         // Wait for validator[0] specifically since we'll reuse its archive.
-//         wait_for_height(&context, &validators[0].metric_prefix(), target_height).await;
+        // Wait for validator[0] specifically since we'll reuse its archive.
+        wait_for_height(&context, &validators[0].metric_prefix(), target_height).await;
 
-//         // Let's stop the validator and start the follower from its archive. Block production
-//         // continues with 3/4 validators. Much easier than copying archives around.
-//         let validator_partition = validators[0].uid.clone();
-//         validators[0].stop().await;
+        // Stop a validator and start the follower from its archive. Block production
+        // continues with 3/4 validators. Much easier than copying archives around.
+        // let validator_partition = validators[0].uid.clone();
+        validators[0].stop().await;
 
-//         let local_ws_addr = validators[1]
-//             .execution()
-//             .rpc_server_handles
-//             .rpc
-//             .ws_local_addr()
-//             .unwrap();
+        let follower = Follower::builder()
+            .runtime(execution_runtime.handle())
+            .partition_prefix(&validators[0].uid)
+            .follow(&mut context, &validators[1])
+            .await;
+        follower.connect_peers(&validators[1..]).await;
 
-//         let trusted_peers = validators[1..]
-//             .iter()
-//             .map(|v| v.execution_node.as_ref().unwrap())
-//             .collect::<Vec<_>>();
+        wait_for_height(&context, &follower.name, follower_target_height).await;
 
-//         let follower = Follower::start(
-//             &context,
-//             &runtime,
-//             format!("ws://{local_ws_addr}"),
-//             Some(&validator_partition),
-//             trusted_peers,
-//         )
-//         .await;
+        follower.feed.get_finalization(Query::Latest).await.unwrap();
 
-//         wait_for_height(&context, &follower.name, follower_target_height).await;
-
-//         let cert = follower.feed.get_finalization(Query::Latest).await;
-//         assert!(cert.is_some());
-
-//         // With an archive, the follower syncs from that state. All historical state remains
-//         let historical_cert = follower.feed.get_finalization(Query::Height(1)).await;
-//         assert!(historical_cert.is_some());
-//     });
-// }
+        // With an archive, the follower syncs from that state. All historical state remains
+        let historical_cert = follower.feed.get_finalization(Query::Height(1)).await;
+        historical_cert.unwrap();
+    });
+}

@@ -20,10 +20,11 @@ use tempo_node::{
     rpc::consensus::{
         CertifiedBlock, ConsensusFeed, ConsensusState, Event, IdentityProofError,
         IdentityTransition, IdentityTransitionResponse, Query, TransitionProofData,
+        types::Response,
     },
 };
 use tokio::sync::broadcast;
-use tracing::instrument;
+use tracing::{Level, instrument};
 
 const BROADCAST_CHANNEL_SIZE: usize = 1024;
 
@@ -315,20 +316,29 @@ impl std::fmt::Debug for FeedStateHandle {
 }
 
 impl ConsensusFeed for FeedStateHandle {
-    async fn get_finalization(&self, query: Query) -> Option<CertifiedBlock> {
+    #[instrument(skip_all, fields(%query), ret(level = Level::DEBUG, Display))]
+    async fn get_finalization(&self, query: Query) -> Response<CertifiedBlock> {
         match query {
-            Query::Latest => {
-                let block = self.state.read().latest_finalized.clone()?;
-                Some(block)
-            }
-            Query::Height(height) => {
+            Query::Latest => self
+                .state
+                .read()
+                .latest_finalized
+                .clone()
+                .map_or(Response::Missing("certifications"), Response::Success),
+            Query::Height(height) => 'process: {
                 let height = Height::new(height);
-                let marshal = self.marshal()?;
+                let Some(marshal) = self.marshal() else {
+                    break 'process Response::NotReady;
+                };
 
-                let finalization = marshal.get_finalization(height).await?;
-                let block = marshal.get_block(height).await?;
+                let Some(finalization) = marshal.get_finalization(height).await else {
+                    break 'process Response::Missing("certificate");
+                };
+                let Some(block) = marshal.get_block(height).await else {
+                    break 'process Response::Missing("block");
+                };
 
-                Some(CertifiedBlock {
+                Response::Success(CertifiedBlock {
                     epoch: finalization.proposal.round.epoch().get(),
                     view: finalization.proposal.round.view().get(),
                     block: block.into_inner().into_block(),

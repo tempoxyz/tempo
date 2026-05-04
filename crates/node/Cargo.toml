@@ -52,11 +52,12 @@ commonware-runtime = { workspace = true, features = ["external"] }
 eyre.workspace = true
 futures.workspace = true
 jiff = { workspace = true, features = ["std"] }
+jsonrpsee.workspace = true
 reqwest.workspace = true
-tokio.workspace = true
 url.workspace = true
 serde.workspace = true
-jsonrpsee.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 tempo-e2e.workspace = true

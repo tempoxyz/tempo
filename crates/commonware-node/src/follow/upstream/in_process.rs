@@ -7,7 +7,6 @@ use std::{sync::Arc, time::Duration};
 
 use commonware_consensus::{Reporter, types::Height};
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, spawn_cell};
-use eyre::OptionExt as _;
 use futures::{
     FutureExt as _, StreamExt as _,
     stream::{self, BoxStream, Fuse},
@@ -97,7 +96,7 @@ where
 
                 Some(event) = self.event_stream.next() => {
                     debug_span!("consensus_event").in_scope(|| debug!(
-                        "received consensus event, forwarding to reporter"
+                        ?event, "received consensus event, forwarding to reporter"
                     ));
                     match event {
                         Ok(event) => reporter.report(event).await,
@@ -138,11 +137,14 @@ async fn get_finalization(
 ) -> eyre::Result<()> {
     // TODO: right now, the response channel would just drop and an error
     // emitted here. Should this failure be propagated upstream?
-    let finalization = client
-        .get_finalization(Query::Height(height.get()))
-        .await
-        .ok_or_eyre("failed getting finalization because feed state was not connected")?;
+    let finalization = match client.get_finalization(Query::Height(height.get())).await {
+        tempo_node::rpc::consensus::types::Response::Success(val) => Some(val),
+        tempo_node::rpc::consensus::types::Response::NotReady => {
+            panic!("for in-process execution the feed should be immedaitely available")
+        }
+        tempo_node::rpc::consensus::types::Response::Missing(_) => None,
+    };
     response
-        .send(Some(finalization))
+        .send(finalization)
         .map_err(|_| eyre::eyre!("receiver went away"))
 }
