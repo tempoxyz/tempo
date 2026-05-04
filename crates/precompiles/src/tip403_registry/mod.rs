@@ -268,28 +268,34 @@ impl TIP403Registry {
         &self,
         call: ITIP403Registry::validateReceivePolicyCall,
     ) -> Result<ITIP403Registry::validateReceivePolicyReturn> {
-        let config = self.address_receive_config[call.receiver].read()?;
-        if !config.has_receive_policy {
-            return Ok(ITIP403Registry::validateReceivePolicyReturn {
-                authorized: true,
-                blockedReason: ITIP403Registry::BlockedReason::NONE,
-            });
-        }
-
-        let token_allowed = self.is_authorized_simple(config.token_filter_id, call.token)?;
-        let sender_allowed = self.is_authorized_simple(config.sender_policy_id, call.sender)?;
-
-        let blocked_reason = match (token_allowed, sender_allowed) {
-            (true, true) => ITIP403Registry::BlockedReason::NONE,
-            (false, true) => ITIP403Registry::BlockedReason::TOKEN_FILTER,
-            (true, false) => ITIP403Registry::BlockedReason::RECEIVE_POLICY,
-            (false, false) => ITIP403Registry::BlockedReason::TOKEN_FILTER_AND_RECEIVE_POLICY,
-        };
-
+        let (authorized, blocked_reason) =
+            self.validate_receive_policy_raw(call.token, call.sender, call.receiver)?;
         Ok(ITIP403Registry::validateReceivePolicyReturn {
-            authorized: blocked_reason == ITIP403Registry::BlockedReason::NONE,
+            authorized,
             blockedReason: blocked_reason,
         })
+    }
+
+    pub fn validate_receive_policy_raw(
+        &self,
+        token: Address,
+        sender: Address,
+        receiver: Address,
+    ) -> Result<(bool, ITIP403Registry::BlockedReason)> {
+        let config = self.address_receive_config[receiver].read()?;
+        if !config.has_receive_policy {
+            return Ok((true, ITIP403Registry::BlockedReason::NONE));
+        }
+
+        if !self.is_authorized_simple(config.token_filter_id, token)? {
+            return Ok((false, ITIP403Registry::BlockedReason::TOKEN_FILTER));
+        }
+
+        if !self.is_authorized_simple(config.sender_policy_id, sender)? {
+            return Ok((false, ITIP403Registry::BlockedReason::RECEIVE_POLICY));
+        }
+
+        Ok((true, ITIP403Registry::BlockedReason::NONE))
     }
 
     pub fn receive_policy_recovery_contract(&self, account: Address) -> Result<Address> {

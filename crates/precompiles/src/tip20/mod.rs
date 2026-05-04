@@ -12,7 +12,7 @@ pub mod dispatch;
 pub mod rewards;
 pub mod roles;
 
-use tempo_contracts::precompiles::STABLECOIN_DEX_ADDRESS;
+use tempo_contracts::precompiles::{STABLECOIN_DEX_ADDRESS, TIP1028_ESCROW_ADDRESS};
 pub use tempo_contracts::precompiles::{
     IRolesAuth, ITIP20, RolesAuthError, RolesAuthEvent, TIP20Error, TIP20Event, USD_CURRENCY,
 };
@@ -968,12 +968,78 @@ impl TIP20Token {
         Ok(())
     }
 
+    fn is_transfer_recipient_authorized(&self, to: Address) -> Result<bool> {
+        TIP403Registry::new().is_authorized_as(
+            self.transfer_policy_id()?,
+            to,
+            AuthRole::recipient(),
+        )
+    }
+
     /// Checks and deducts `amount` from the caller's [`AccountKeychain`] spending limit.
     ///
     /// # Errors
     /// - `SpendingLimitExceeded` — access key spending limit exceeded
     pub fn check_and_update_spending_limit(&mut self, from: Address, amount: U256) -> Result<()> {
         AccountKeychain::new().authorize_transfer(from, self.address, amount)
+    }
+
+    pub fn release_from_tip1028_escrow(
+        &mut self,
+        receiver: Address,
+        originator: Address,
+        to: Address,
+        amount: U256,
+    ) -> Result<()> {
+        if to == TIP1028_ESCROW_ADDRESS {
+            return Err(TIP20Error::escrow_address_reserved().into());
+        }
+
+        let destination =
+            Recipient::resolve(to).map_err(|_| TIP20Error::claim_destination_unauthorized())?;
+        destination
+            .validate()
+            .map_err(|_| TIP20Error::claim_destination_unauthorized())?;
+
+        if destination.target != receiver {
+            if !self.is_transfer_recipient_authorized(destination.target)? {
+                return Err(TIP20Error::claim_destination_unauthorized().into());
+            }
+            let (allowed, _) = TIP403Registry::new().validate_receive_policy_raw(
+                self.address,
+                originator,
+                destination.target,
+            )?;
+            if !allowed {
+                return Err(TIP20Error::claim_destination_unauthorized().into());
+            }
+        }
+
+        let escrow_balance = self.get_balance(TIP1028_ESCROW_ADDRESS)?;
+        if amount > escrow_balance {
+            return Err(TIP20Error::insufficient_escrow_balance().into());
+        }
+
+        self.set_balance(
+            TIP1028_ESCROW_ADDRESS,
+            escrow_balance
+                .checked_sub(amount)
+                .ok_or(TempoPrecompileError::under_overflow())?,
+        )?;
+
+        let to_balance = self.get_balance(destination.target)?;
+        self.set_balance(
+            destination.target,
+            to_balance
+                .checked_add(amount)
+                .ok_or(TempoPrecompileError::under_overflow())?,
+        )?;
+
+        self.emit_event(destination.build_transfer_event(TIP1028_ESCROW_ADDRESS, amount))?;
+        if let Some(hop) = destination.build_virtual_transfer_event(amount) {
+            self.emit_event(hop)?;
+        }
+        Ok(())
     }
 
     /// Core transfer: debits `from`, credits `to.target`, emits `Transfer(from, event_addr, amount)`.

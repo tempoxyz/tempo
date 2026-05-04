@@ -129,8 +129,7 @@ crate::sol! {
         enum BlockedReason {
             NONE,
             TOKEN_FILTER,
-            RECEIVE_POLICY,
-            TOKEN_FILTER_AND_RECEIVE_POLICY
+            RECEIVE_POLICY
         }
 
         // Reward Functions

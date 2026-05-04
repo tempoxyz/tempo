@@ -166,7 +166,7 @@ impl TIP1028Escrow {
     ) -> Result<B256> {
         Ok(keccak256(
             (
-                receipt_version,
+                U256::from(receipt_version),
                 token,
                 receipt.originator,
                 receipt.recipient,
@@ -174,8 +174,8 @@ impl TIP1028Escrow {
                 receipt.blockedReason,
                 receipt.kind,
                 receipt.memo,
-                receipt.blockedAt,
-                receipt.blockedNonce,
+                U256::from(receipt.blockedAt),
+                U256::from(receipt.blockedNonce),
             )
                 .abi_encode(),
         ))
