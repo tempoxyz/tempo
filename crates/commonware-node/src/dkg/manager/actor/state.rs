@@ -1,6 +1,5 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    net::SocketAddr,
     num::{NonZeroU16, NonZeroU32, NonZeroUsize},
 };
 
@@ -25,11 +24,8 @@ use commonware_cryptography::{
 };
 use commonware_parallel::Strategy;
 use commonware_runtime::{BufferPooler, Clock, Metrics, buffer::paged::CacheRef};
-use commonware_storage::{
-    journal::{contiguous, contiguous::Reader as _, segmented},
-    metadata,
-};
-use commonware_utils::{N3f1, NZU16, NZU32, NZU64, NZUsize, ordered};
+use commonware_storage::{journal::segmented, metadata};
+use commonware_utils::{N3f1, NZU16, NZU32, NZUsize, ordered};
 use eyre::{OptionExt, WrapErr as _, bail, eyre};
 use futures::{FutureExt as _, StreamExt as _, future::BoxFuture};
 use tracing::{debug, info, instrument, warn};
@@ -523,15 +519,6 @@ impl Builder {
         .await
         .wrap_err("unable to initialize DKG states metadata")?;
 
-        migrate_journal_to_metadata_if_necessary(
-            &context,
-            &mut states,
-            &states_partition,
-            &page_cache,
-        )
-        .await
-        .wrap_err("migrating legacy states journal failed")?;
-
         if states.keys().max().is_none() {
             let initial_state = match initial_state {
                 None => {
@@ -599,67 +586,6 @@ impl Builder {
             cache,
         })
     }
-}
-
-async fn migrate_journal_to_metadata_if_necessary<TContext>(
-    context: &TContext,
-    states: &mut metadata::Metadata<TContext, u64, State>,
-    states_partition: &str,
-    page_cache: &CacheRef,
-) -> eyre::Result<()>
-where
-    TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
-{
-    if states.keys().next().is_some() {
-        debug!("states already exists in new format; not migrating");
-        return Ok(());
-    }
-
-    let legacy_journal = contiguous::variable::Journal::<TContext, LegacyState>::init(
-        context.with_label("states_legacy"),
-        contiguous::variable::Config {
-            partition: states_partition.to_string(),
-            compression: None,
-            codec_config: MAXIMUM_VALIDATORS,
-            page_cache: page_cache.clone(),
-            write_buffer: WRITE_BUFFER,
-            items_per_section: NZU64!(1),
-        },
-    )
-    .await
-    .wrap_err("unable to initialize legacy DKG states journal for migration")?;
-
-    if let Some(latest_segment) = legacy_journal.size().await.checked_sub(1) {
-        info!(
-            latest_segment,
-            "legacy journal contains states; migrating last 2 segments",
-        );
-
-        let reader = legacy_journal.reader().await;
-        for segment in latest_segment.saturating_sub(1)..=latest_segment {
-            let legacy_state = reader
-                .read(segment)
-                .await
-                .wrap_err("unable to read state from legacy journal")?;
-            let state: State = legacy_state.into();
-            let epoch = state.epoch;
-            states.put(epoch.get(), state);
-            info!(%epoch, "migrated state to new format");
-        }
-        states
-            .sync()
-            .await
-            .wrap_err("unable to persist migrated states")?;
-
-        info!("states migrated to new format, deleting journal");
-    }
-
-    legacy_journal
-        .destroy()
-        .await
-        .wrap_err("unable to destroy legacy states journal")?;
-
-    Ok(())
 }
 
 /// Wrapper around a DKG share that tracks how it is stored at rest.
@@ -782,83 +708,6 @@ impl Read for State {
             syncers: Read::read_cfg(buf, &(RangeCfg::from(0..=(u16::MAX as usize)), ()))?,
             is_full_dkg: ReadExt::read(buf)?,
         })
-    }
-}
-
-/// Legacy state format used before the migration that removed peer address
-/// mappings. Kept only to read existing data from disk during migration.
-///
-/// `Write` and `EncodeSize` are required by the journal's `Codec` bound even
-/// though we only read from the journal during migration.
-#[derive(Clone)]
-struct LegacyState {
-    epoch: Epoch,
-    seed: Summary,
-    output: Output<MinSig, PublicKey>,
-    share: Option<Share>,
-    dealers: ordered::Map<PublicKey, SocketAddr>,
-    players: ordered::Map<PublicKey, SocketAddr>,
-    syncers: ordered::Map<PublicKey, SocketAddr>,
-    is_full_dkg: bool,
-}
-
-impl EncodeSize for LegacyState {
-    fn encode_size(&self) -> usize {
-        self.epoch.encode_size()
-            + self.seed.encode_size()
-            + self.output.encode_size()
-            + self.share.encode_size()
-            + self.dealers.encode_size()
-            + self.players.encode_size()
-            + self.syncers.encode_size()
-            + self.is_full_dkg.encode_size()
-    }
-}
-
-impl Write for LegacyState {
-    fn write(&self, buf: &mut impl bytes::BufMut) {
-        self.epoch.write(buf);
-        self.seed.write(buf);
-        self.output.write(buf);
-        self.share.write(buf);
-        self.dealers.write(buf);
-        self.players.write(buf);
-        self.syncers.write(buf);
-        self.is_full_dkg.write(buf);
-    }
-}
-
-impl Read for LegacyState {
-    type Cfg = NonZeroU32;
-
-    fn read_cfg(
-        buf: &mut impl bytes::Buf,
-        cfg: &Self::Cfg,
-    ) -> Result<Self, commonware_codec::Error> {
-        Ok(Self {
-            epoch: ReadExt::read(buf)?,
-            seed: ReadExt::read(buf)?,
-            output: Read::read_cfg(buf, &(*cfg, ModeVersion::v0()))?,
-            share: ReadExt::read(buf)?,
-            dealers: Read::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), (), ()))?,
-            players: Read::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), (), ()))?,
-            syncers: Read::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), (), ()))?,
-            is_full_dkg: ReadExt::read(buf)?,
-        })
-    }
-}
-
-impl From<LegacyState> for State {
-    fn from(legacy: LegacyState) -> Self {
-        Self {
-            epoch: legacy.epoch,
-            seed: legacy.seed,
-            output: legacy.output,
-            share: ShareState::Plaintext(legacy.share),
-            players: legacy.players.keys().clone(),
-            syncers: legacy.syncers.keys().clone(),
-            is_full_dkg: legacy.is_full_dkg,
-        }
     }
 }
 
@@ -1377,32 +1226,6 @@ mod tests {
         }
     }
 
-    fn make_legacy_state(rng: &mut impl rand_core::CryptoRngCore, epoch: u64) -> LegacyState {
-        let mut keys: Vec<_> = (0..3)
-            .map(|i| PrivateKey::from_seed(i + epoch * 100))
-            .collect();
-        keys.sort_by_key(|k| k.public_key());
-        let pubkeys = ordered::Set::try_from_iter(keys.iter().map(|k| k.public_key())).unwrap();
-
-        let (output, _shares) =
-            dkg::deal::<_, _, N3f1>(&mut *rng, Mode::NonZeroCounter, pubkeys.clone()).unwrap();
-
-        let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
-        let peers =
-            ordered::Map::from_iter_dedup(pubkeys.iter().map(|k: &PublicKey| (k.clone(), addr)));
-
-        LegacyState {
-            epoch: Epoch::new(epoch),
-            seed: Summary::random(rng),
-            output,
-            share: None,
-            dealers: peers.clone(),
-            players: peers.clone(),
-            syncers: peers,
-            is_full_dkg: false,
-        }
-    }
-
     #[test]
     fn state_round_trip_with() {
         let executor = deterministic::Runner::default();
@@ -1423,242 +1246,6 @@ mod tests {
             assert_eq!(
                 state_without_syncers,
                 State::read_cfg(&mut bytes, &NZU32!(u32::MAX)).unwrap(),
-            );
-        });
-    }
-
-    #[test]
-    fn states_migration_migrates_last_two() {
-        let executor = deterministic::Runner::default();
-        executor.start(|mut context| async move {
-            let partition_prefix = "test_dkg";
-            let states_partition = format!("{partition_prefix}_states");
-            let states_metadata_partition = format!("{partition_prefix}_states_metadata");
-            let page_cache = CacheRef::from_pooler(&context, PAGE_SIZE, POOL_CAPACITY);
-
-            let ancient_legacy = make_legacy_state(&mut context, 1);
-            let previous_legacy = make_legacy_state(&mut context, 2);
-            let latest_legacy = make_legacy_state(&mut context, 3);
-            let previous_expected: State = previous_legacy.clone().into();
-            let latest_expected: State = latest_legacy.clone().into();
-
-            // Populate the legacy journal with three entries.
-            {
-                let journal = contiguous::variable::Journal::<_, LegacyState>::init(
-                    context.with_label("journal_setup"),
-                    contiguous::variable::Config {
-                        partition: states_partition.clone(),
-                        compression: None,
-                        codec_config: MAXIMUM_VALIDATORS,
-                        page_cache: page_cache.clone(),
-                        write_buffer: WRITE_BUFFER,
-                        items_per_section: NZU64!(1),
-                    },
-                )
-                .await
-                .unwrap();
-
-                journal.append(&ancient_legacy).await.unwrap();
-                journal.append(&previous_legacy).await.unwrap();
-                journal.append(&latest_legacy).await.unwrap();
-                journal.sync().await.unwrap();
-            }
-
-            let mut states = metadata::Metadata::init(
-                context.with_label("states"),
-                metadata::Config {
-                    partition: states_metadata_partition.clone(),
-                    codec_config: MAXIMUM_VALIDATORS,
-                },
-            )
-            .await
-            .unwrap();
-
-            migrate_journal_to_metadata_if_necessary(
-                &context,
-                &mut states,
-                &states_partition,
-                &page_cache,
-            )
-            .await
-            .unwrap();
-
-            // Only the last two states should be migrated.
-            assert!(
-                states.get(&1).is_none(),
-                "ancient state should not be migrated"
-            );
-            assert_eq!(
-                &previous_expected,
-                states.get(&previous_expected.epoch.get()).unwrap(),
-            );
-            assert_eq!(
-                &latest_expected,
-                states.get(&latest_expected.epoch.get()).unwrap(),
-            );
-
-            // Journal should be destroyed.
-            let reopened = contiguous::variable::Journal::<_, LegacyState>::init(
-                context.with_label("journal_verify"),
-                contiguous::variable::Config {
-                    partition: states_partition.clone(),
-                    compression: None,
-                    codec_config: MAXIMUM_VALIDATORS,
-                    page_cache: page_cache.clone(),
-                    write_buffer: WRITE_BUFFER,
-                    items_per_section: NZU64!(1),
-                },
-            )
-            .await
-            .unwrap();
-
-            assert_eq!(reopened.size().await, 0);
-
-            // Metadata persists across reopens.
-            drop(states);
-            let states = metadata::Metadata::<_, u64, State>::init(
-                context.with_label("states_reopen"),
-                metadata::Config {
-                    partition: states_metadata_partition,
-                    codec_config: MAXIMUM_VALIDATORS,
-                },
-            )
-            .await
-            .unwrap();
-            assert_eq!(
-                &previous_expected,
-                states.get(&previous_expected.epoch.get()).unwrap(),
-            );
-            assert_eq!(
-                &latest_expected,
-                states.get(&latest_expected.epoch.get()).unwrap(),
-            );
-        });
-    }
-
-    #[test]
-    fn states_migration_single_entry() {
-        let executor = deterministic::Runner::default();
-        executor.start(|mut context| async move {
-            let partition_prefix = "test_dkg_single";
-            let states_partition = format!("{partition_prefix}_states");
-            let states_metadata_partition = format!("{partition_prefix}_states_metadata");
-            let page_cache = CacheRef::from_pooler(&context, PAGE_SIZE, POOL_CAPACITY);
-
-            let only_legacy = make_legacy_state(&mut context, 5);
-            let only_expected: State = only_legacy.clone().into();
-
-            // Populate the legacy journal with a single entry.
-            {
-                let journal = contiguous::variable::Journal::<_, LegacyState>::init(
-                    context.with_label("journal_setup"),
-                    contiguous::variable::Config {
-                        partition: states_partition.clone(),
-                        compression: None,
-                        codec_config: MAXIMUM_VALIDATORS,
-                        page_cache: page_cache.clone(),
-                        write_buffer: WRITE_BUFFER,
-                        items_per_section: NZU64!(1),
-                    },
-                )
-                .await
-                .unwrap();
-
-                journal.append(&only_legacy).await.unwrap();
-                journal.sync().await.unwrap();
-            }
-
-            let mut states = metadata::Metadata::init(
-                context.with_label("states"),
-                metadata::Config {
-                    partition: states_metadata_partition,
-                    codec_config: MAXIMUM_VALIDATORS,
-                },
-            )
-            .await
-            .unwrap();
-
-            migrate_journal_to_metadata_if_necessary(
-                &context,
-                &mut states,
-                &states_partition,
-                &page_cache,
-            )
-            .await
-            .unwrap();
-
-            // Single entry: saturating_sub(1) == 0, range 0..=0, so only that one state.
-            assert_eq!(states.keys().count(), 1);
-            assert_eq!(
-                &only_expected,
-                states.get(&only_expected.epoch.get()).unwrap(),
-            );
-        });
-    }
-
-    #[test]
-    fn states_migration_does_not_overwrite_existing_metadata() {
-        let executor = deterministic::Runner::default();
-        executor.start(|mut context| async move {
-            let partition_prefix = "test_dkg_noop";
-            let states_partition = format!("{partition_prefix}_states");
-            let states_metadata_partition = format!("{partition_prefix}_states_metadata");
-            let page_cache = CacheRef::from_pooler(&context, PAGE_SIZE, POOL_CAPACITY);
-
-            let existing_state = make_test_state(&mut context, 10);
-            let journal_legacy = make_legacy_state(&mut context, 20);
-            let journal_expected_epoch = journal_legacy.epoch.get();
-
-            // Pre-populate metadata.
-            let mut states = metadata::Metadata::init(
-                context.with_label("states"),
-                metadata::Config {
-                    partition: states_metadata_partition.clone(),
-                    codec_config: MAXIMUM_VALIDATORS,
-                },
-            )
-            .await
-            .unwrap();
-            states.put(existing_state.epoch.get(), existing_state.clone());
-            states.sync().await.unwrap();
-
-            // Populate a legacy journal with different data.
-            {
-                let journal = contiguous::variable::Journal::<_, LegacyState>::init(
-                    context.with_label("journal_setup"),
-                    contiguous::variable::Config {
-                        partition: states_partition.clone(),
-                        compression: None,
-                        codec_config: MAXIMUM_VALIDATORS,
-                        page_cache: page_cache.clone(),
-                        write_buffer: WRITE_BUFFER,
-                        items_per_section: NZU64!(1),
-                    },
-                )
-                .await
-                .unwrap();
-                journal.append(&journal_legacy).await.unwrap();
-                journal.sync().await.unwrap();
-            }
-
-            // Run migration — should be a no-op since metadata is already populated.
-            migrate_journal_to_metadata_if_necessary(
-                &context,
-                &mut states,
-                &states_partition,
-                &page_cache,
-            )
-            .await
-            .unwrap();
-
-            assert_eq!(states.keys().count(), 1);
-            assert_eq!(
-                &existing_state,
-                states.get(&existing_state.epoch.get()).unwrap(),
-            );
-            assert!(
-                states.get(&journal_expected_epoch).is_none(),
-                "journal state must not be written into already-populated metadata"
             );
         });
     }
