@@ -13,6 +13,8 @@
 #   BENCH_BASELINE_ARGS           – extra node args for baseline (optional)
 #   BENCH_FEATURE_ARGS            – extra node args for feature (optional)
 #   BENCH_SAMPLY                  – "true" to enable samply profiling (optional)
+#   BENCH_CORES                   – limit node to N CPU cores, 0=all (optional)
+#   BENCH_ABBA                    – "true" for B-F-F-B, "false" for single A/B (optional)
 set -euxo pipefail
 
 SCHELK_MOUNT="/reth-bench"
@@ -47,6 +49,30 @@ echo "Chain: $CHAIN_NAME (id=$CHAIN_ID, rpc=$REPLAY_RPC_URL)"
 MC="mc"
 BLOCKS="${BENCH_BLOCKS:-5000}"
 WARMUP="${BENCH_WARMUP_BLOCKS:-1000}"
+
+# ============================================================================
+# CPU pinning: reserve core 0 for OS/IRQs, give remaining cores to the node
+# ============================================================================
+
+compute_allowed_cpus() {
+  local max_cores="${BENCH_CORES:-0}"
+  local online_cpus
+  online_cpus=$(nproc --all)
+  local max_worker=$(( online_cpus - 1 ))
+
+  if [ "$max_cores" -gt 0 ] 2>/dev/null && [ "$max_cores" -lt "$max_worker" ]; then
+    max_worker=$max_cores
+  fi
+
+  if [ "$max_worker" -le 0 ]; then
+    echo "0"
+  else
+    echo "1-${max_worker}"
+  fi
+}
+
+ALLOWED_CPUS=$(compute_allowed_cpus)
+echo "CPU pinning: node AllowedCPUs=$ALLOWED_CPUS (BENCH_CORES=${BENCH_CORES:-0}, online=$(nproc --all))"
 
 mkdir -p "$BENCH_WORK_DIR"
 
@@ -214,7 +240,7 @@ run_single() {
     local samply_bin
     samply_bin="$(which samply)"
     sudo systemd-run --quiet --scope --collect --unit="$TEMPO_SCOPE" \
-      -p MemoryMax="$mem_limit" \
+      -p MemoryMax="$mem_limit" -p AllowedCPUs="$ALLOWED_CPUS" \
       nice -n -20 \
       "$samply_bin" record --save-only --presymbolicate --rate 10000 \
       --output "$output_dir/samply-profile.json.gz" \
@@ -222,7 +248,7 @@ run_single() {
       > "$log" 2>&1 &
   else
     sudo systemd-run --quiet --scope --collect --unit="$TEMPO_SCOPE" \
-      -p MemoryMax="$mem_limit" \
+      -p MemoryMax="$mem_limit" -p AllowedCPUs="$ALLOWED_CPUS" \
       nice -n -20 "$binary" "${NODE_ARGS[@]}" \
       > "$log" 2>&1 &
   fi
@@ -292,7 +318,9 @@ run_single() {
 
 run_single baseline-1 "$BASELINE_BIN" "$BENCH_WORK_DIR/baseline-1"
 run_single feature-1  "$FEATURE_BIN"  "$BENCH_WORK_DIR/feature-1"
-run_single feature-2  "$FEATURE_BIN"  "$BENCH_WORK_DIR/feature-2"
-run_single baseline-2 "$BASELINE_BIN" "$BENCH_WORK_DIR/baseline-2"
+if [ "${BENCH_ABBA:-true}" != "false" ]; then
+  run_single feature-2  "$FEATURE_BIN"  "$BENCH_WORK_DIR/feature-2"
+  run_single baseline-2 "$BASELINE_BIN" "$BENCH_WORK_DIR/baseline-2"
+fi
 
 echo "All replay benchmark runs complete."
