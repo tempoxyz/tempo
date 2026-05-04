@@ -116,8 +116,12 @@ struct TempoArgs {
     /// Disable consensus certification in follow mode. The follower syncs execution
     /// state from the upstream node without validating consensus state.
     /// DO NOT USE IN PRODUCTION.
-    #[arg(long = "follow.nocertify", requires = "follow")]
-    pub follow_nocertify: Option<bool>,
+    #[arg(
+        long = "follow.experimental.certify",
+        requires = "follow",
+        default_value_t = false
+    )]
+    pub follow_certify: bool,
 
     /// HTTP endpoint that returns a JSON object mapping chain IDs to bootnode lists.
     ///
@@ -155,7 +159,7 @@ struct TempoArgs {
 impl TempoArgs {
     // When unset, the default is to follow uncertified until the migration is complete
     fn is_following_uncertified(&self) -> bool {
-        self.follow.is_some() && self.follow_nocertify.unwrap_or(true)
+        self.follow.is_some() && !self.follow_certify
     }
 
     /// Whether the consensus engine should be active.
@@ -426,7 +430,7 @@ fn main() -> eyre::Result<()> {
                 and a handle to the execution node could be received",
         )?;
 
-        if node.config.dev.dev || args.is_following_uncertified() {
+        if !args.has_consensus_engine(node.config.dev.dev) {
             return futures::executor::block_on(async move {
                 shutdown_token_clone.cancelled().await;
                 Ok(())
@@ -614,16 +618,6 @@ fn main() -> eyre::Result<()> {
 
                 // Uncertified follower mode: set debug RPC when certification is off
                 if args.is_following_uncertified() {
-
-                    // Only emit a warning if explicitly configured. Until the migration
-                    // is complete, the default is to follow uncertified.
-                    if args.follow_nocertify.is_some() {
-                        warn!(
-                            "--follow.uncertified does not validate the peer's execution state against \
-                            consensus state. The upstream is fully trusted. DO NOT USE IN PRODUCTION!!!!"
-                        )
-                    }
-
                     let follow_url = args.follow.clone().and_then(|v| {
                         if v != "auto" {
                             Some(v)

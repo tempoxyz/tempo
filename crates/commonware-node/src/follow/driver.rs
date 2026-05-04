@@ -31,7 +31,7 @@ use reth_node_core::primitives::SealedBlock;
 use reth_provider::HeaderProvider as _;
 use tempo_node::{TempoFullNode, rpc::consensus::Event};
 use tokio::{select, sync::mpsc};
-use tracing::{debug, instrument};
+use tracing::{debug, instrument, warn, warn_span};
 
 use crate::{
     consensus::{Digest, block::Block},
@@ -324,12 +324,18 @@ where
             return Ok(());
         }
 
+        let height = certified.block.number();
         let consensus_block = Block::from_execution_block(SealedBlock::seal_slow(certified.block));
 
         // Store the Finalized Block
         let round = Round::new(Epoch::new(certified.epoch), View::new(certified.view));
         let activity = Activity::Finalization(finalization);
-        self.config.marshal.verified(round, consensus_block).await;
+        let verified = self.config.marshal.verified(round, consensus_block).await;
+        if !verified {
+            warn_span!("follow_driver")
+                .in_scope(|| warn!(?round, %height, "failed to verify incoming block"))
+        }
+
         self.config.marshal.report(activity.clone()).await;
         self.config.feed.report(activity).await;
         Ok(())
