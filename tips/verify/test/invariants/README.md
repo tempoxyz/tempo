@@ -32,7 +32,7 @@
 
 ### Flip Order Invariants
 
-- **TEMPO-DEX17**: Flip orders have valid tick constraints - for bids `flipTick > tick`, for asks `flipTick < tick`.
+- **TEMPO-DEX17**: Flip orders have valid tick constraints. Pre-T5: for bids `flipTick > tick`, for asks `flipTick < tick`. T5+ (TIP-1030): for bids `flipTick >= tick`, for asks `flipTick <= tick`. `flipTick == tick` is accepted; `flipTick` strictly on the wrong side of `tick` is still rejected.
 
 ### Blacklist Invariants
 

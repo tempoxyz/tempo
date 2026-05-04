@@ -1777,10 +1777,13 @@ where
             evm.ctx().local_mut().clear();
             evm.frame_stack().clear();
 
+            // On fee payment failure, treat the transaction as a halt that consumed entire regular gas limit.
+            let total_spent = core::cmp::min(evm.ctx.tx.gas_limit, evm.ctx.cfg.tx_gas_limit_cap());
+
             Ok(ExecutionResult::Halt {
                 reason: TempoHaltReason::SubblockTxFeePayment,
                 logs: Default::default(),
-                gas: ResultGas::new_with_state_gas(evm.ctx.tx.gas_limit, 0, 0, 0),
+                gas: ResultGas::new_with_state_gas(total_spent, 0, 0, 0),
             })
         } else {
             MainnetHandler::default()
@@ -4950,6 +4953,69 @@ mod tests {
             result.is_err(),
             "With enable_amsterdam_eip8037=false, tx gas limit above cap should be rejected"
         );
+    }
+
+    /// TIP-1016 regression: subblock fee-payment halt must not exceed the gas cap.
+    #[test]
+    fn test_subblock_fee_payment_halt_clamps_to_gas_cap_t4() {
+        const CAP: u64 = 30_000_000;
+        const TX_GAS_LIMIT: u64 = 60_000_000;
+
+        let aa_env = TempoBatchCallEnv {
+            subblock_transaction: true,
+            ..Default::default()
+        };
+        let tx_env = TempoTxEnv {
+            inner: revm::context::TxEnv {
+                gas_limit: TX_GAS_LIMIT,
+                kind: TxKind::Call(Address::random()),
+                ..Default::default()
+            },
+            tempo_tx_env: Some(Box::new(aa_env)),
+            ..Default::default()
+        };
+
+        let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T4, tx_env, |cfg| {
+            cfg.tx_gas_limit_cap = Some(CAP);
+        });
+
+        // Sanity: T4 must actually have the cap-skip enabled so tx_gas_limit > cap is legal.
+        assert!(
+            test.cfg().enable_amsterdam_eip8037,
+            "T4 must enable enable_amsterdam_eip8037 for this regression to apply"
+        );
+
+        let err = EVMError::Transaction(TempoInvalidTransaction::EthInvalidTransaction(
+            InvalidTransaction::LackOfFundForMaxFee {
+                fee: Box::new(U256::ZERO),
+                balance: Box::new(U256::ZERO),
+            },
+        ));
+
+        let result = test
+            .handler
+            .catch_error(&mut test.evm, err)
+            .expect("subblock fee-payment failure must be converted to a halt, not a hard error");
+
+        match result {
+            ExecutionResult::Halt { reason, gas, .. } => {
+                assert!(
+                    matches!(reason, TempoHaltReason::SubblockTxFeePayment),
+                    "expected SubblockTxFeePayment halt, got {reason:?}"
+                );
+                assert_eq!(
+                    gas.total_gas_spent(),
+                    CAP,
+                    "regular gas charged on subblock fee-payment halt must be clamped to \
+                     tx_gas_limit_cap (got {} for tx.gas_limit={} cap={})",
+                    gas.total_gas_spent(),
+                    TX_GAS_LIMIT,
+                    CAP,
+                );
+                assert_eq!(gas.state_gas_spent(), 0, "halt reports zero state gas");
+            }
+            other => panic!("expected ExecutionResult::Halt, got {other:?}"),
+        }
     }
 
     /// TIP-1016: Pre-T4 behavior unchanged - initial_state_gas is still populated

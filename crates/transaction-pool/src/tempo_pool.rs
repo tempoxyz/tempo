@@ -220,10 +220,10 @@ where
             }
 
             // Check 2b: Spending limit spends
-            // When a keychain tx is included, verify_and_update_spending() decrements the
-            // remaining limit but emits no event. We re-read the current remaining limit
-            // from state for affected (account, key_id, fee_token) combos and evict if
-            // the pending tx's fee cost now exceeds the remaining limit.
+            // AccessKeySpend receipt logs identify the exact (account, key_id, token)
+            // triples whose remaining limit changed during execution. We re-read the
+            // current remaining limit from state for matching pending txs and evict if
+            // the tx's fee cost now exceeds that remaining limit.
             if !updates.spending_limit_spends.is_empty()
                 && let Some(ref subject) = keychain_subject
                 && subject.matches_spending_limit_update(&updates.spending_limit_spends)
@@ -1114,6 +1114,18 @@ where
     > {
         self.protocol_pool
             .get_blobs_for_versioned_hashes_v3(versioned_hashes)
+    }
+
+    fn get_blobs_for_versioned_hashes_v4(
+        &self,
+        versioned_hashes: &[B256],
+        indices_bitarray: alloy_primitives::B128,
+    ) -> Result<
+        Vec<Option<alloy_eips::eip4844::BlobCellsAndProofsV1>>,
+        reth_transaction_pool::blobstore::BlobStoreError,
+    > {
+        self.protocol_pool
+            .get_blobs_for_versioned_hashes_v4(versioned_hashes, indices_bitarray)
     }
 }
 
