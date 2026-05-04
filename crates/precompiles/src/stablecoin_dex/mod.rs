@@ -757,6 +757,70 @@ impl StablecoinDEX {
         Ok(order_id)
     }
 
+    fn flip_in_place(
+        &mut self,
+        order: &Order,
+        base_token: Address,
+        quote_token: Address,
+    ) -> Result<()> {
+        // CHECKPOINT START: `flip_in_place` performs multiple state mutations that
+        // must succeed or fail as a unit. The guard auto-reverts on drop.
+        let batch = self.storage.checkpoint();
+
+        // Prepare the flipped order
+        let flipped = order.create_flipped_order(order.order_id);
+
+        // Calculate escrow amount and token based on order side
+        let (escrow_token, escrow_amount, non_escrow_token) = if flipped.is_bid {
+            // For bids, escrow quote tokens based on price
+            let quote_amount = base_to_quote(flipped.amount, flipped.tick, RoundingDirection::Up)
+                .ok_or(StablecoinDEXError::insufficient_balance())?;
+            (quote_token, quote_amount, base_token)
+        } else {
+            // For asks, escrow base tokens
+            (base_token, flipped.amount, quote_token)
+        };
+
+        // Check policy and pause state on escrow token
+        // Direction: maker → DEX
+        let escrow_tip20 = TIP20Token::from_address(escrow_token)?;
+        escrow_tip20.check_not_paused()?;
+        escrow_tip20.ensure_transfer_authorized(flipped.maker, self.address)?;
+
+        // Check policy and pause state on non-escrow token
+        // Direction: DEX → maker (order placer receives non-escrow token when filled)
+        let non_escrow_tip20 = TIP20Token::from_address(non_escrow_token)?;
+        non_escrow_tip20.check_not_paused()?;
+        non_escrow_tip20.ensure_transfer_authorized(self.address, flipped.maker)?;
+
+        let user_balance = self.balance_of(flipped.maker, escrow_token)?;
+        if user_balance < escrow_amount {
+            return Err(StablecoinDEXError::insufficient_balance().into());
+        }
+        self.sub_balance(flipped.maker, escrow_token, escrow_amount)?;
+
+        self.commit_order_to_book(flipped)?;
+
+        // Emit OrderFlipped event for flip order
+        self.emit_event(StablecoinDEXEvents::OrderFlipped(
+            IStablecoinDEX::OrderFlipped {
+                orderId: flipped.order_id,
+                maker: flipped.maker,
+                token: base_token,
+                amount: flipped.amount,
+                isBid: flipped.is_bid,
+                tick: flipped.tick,
+                isFlipOrder: true,
+                flipTick: flipped.flip_tick,
+            },
+        ))?;
+
+        // CHECKPOINT END: commit the state-changing batch
+        batch.commit();
+
+        Ok(())
+    }
+
     /// Partially fill an order with the specified amount. Fill amount is denominated in base token.
     fn partial_fill_order(
         &mut self,
@@ -860,26 +924,41 @@ impl StablecoinDEX {
             // Bid becomes Ask, Ask becomes Bid.
             // The current tick becomes the new flip_tick, and flip_tick becomes the new tick.
             // Uses internal balance only, does not transfer from wallet.
-            //
+            let res = if self.storage.spec().is_t5() {
+                // Post T5: flip the order in place, without creating a new one.
+                self.flip_in_place(order, orderbook.base, orderbook.quote)
+            } else {
+                self.place_flip(
+                    order.maker(),
+                    orderbook.base,
+                    order.amount(),
+                    !order.is_bid(),
+                    order.flip_tick(),
+                    order.tick(),
+                    true,
+                )
+                .map(|_| ())
+            };
+
             // Business logic errors are ignored so that flip failure does not block the swap.
             // System errors (OOG, DB errors, panics) propagate because state may be inconsistent.
-            if let Err(e) = self.place_flip(
-                order.maker(),
-                orderbook.base,
-                order.amount(),
-                !order.is_bid(),
-                order.flip_tick(),
-                order.tick(),
-                true,
-            ) && e.is_system_error()
-                && self.storage.spec().is_t1a()
+            if res.as_ref().is_err_and(|err| err.is_system_error()) && self.storage.spec().is_t1a()
             {
-                return Err(e);
+                return Err(res.unwrap_err());
             }
-        }
 
-        // Delete the filled order
-        self.orders[order.order_id()].delete()?;
+            // T5+: a successful `flip_in_place` already rewrote the order
+            // record under the same `orderId` (TIP-1056). In every other case
+            // (pre-T5, or T5 with a swallowed flip failure) the filled order
+            // record must be deleted to avoid leaving an orphan in storage.
+            let keep_record = self.storage.spec().is_t5() && res.is_ok();
+            if !keep_record {
+                self.orders[order.order_id()].delete()?;
+            }
+        } else {
+            // Non-flip filled order: always delete.
+            self.orders[order.order_id()].delete()?;
+        }
 
         // Advance tick if liquidity is exhausted
         let next_tick_info = if order.next() == 0 {
@@ -2371,17 +2450,18 @@ mod tests {
             // the same tick.
             exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
 
-            // Flip bid is gone, regular bid remains untouched.
-            assert_eq!(exchange.orders[flip_id].read()?.maker(), Address::ZERO);
+            // TIP-1056: regular bid remains untouched; the flip order keeps
+            // its orderId and is rewritten in place as the new ask.
             let resting = exchange.orders[resting_bid_id].read()?;
             assert_eq!(resting.maker(), alice);
             assert_eq!(resting.remaining(), amount);
             assert!(resting.is_bid());
 
-            // The post-fill flip created a new ask at the same tick with
-            // `flip_tick == tick` (the next-allocated id).
-            let new_ask_id = exchange.next_order_id()? - 1;
-            assert_eq!(new_ask_id, resting_bid_id + 1);
+            // The post-fill flip rewrote the same orderId in place as an ask
+            // at the same tick with `flip_tick == tick`. `next_order_id` did
+            // not advance (no new allocation).
+            let new_ask_id = flip_id;
+            assert_eq!(exchange.next_order_id()?, resting_bid_id + 1);
             let new_ask = exchange.orders[new_ask_id].read()?;
             assert_eq!(new_ask.maker(), alice);
             assert!(new_ask.is_ask());
@@ -2423,17 +2503,16 @@ mod tests {
                 base_to_quote(amount, tick, RoundingDirection::Up).expect("quote_in should fit");
             exchange.swap_exact_amount_in(bob, quote_token, base_token, quote_in, 0)?;
 
-            // Ask is gone.
-            assert_eq!(exchange.orders[new_ask_id].read()?.maker(), Address::ZERO);
-
             // Resting bid still untouched.
             let resting_after = exchange.orders[resting_bid_id].read()?;
             assert_eq!(resting_after.maker(), alice);
             assert_eq!(resting_after.remaining(), amount);
 
-            // The post-fill flip from the ask placed a new bid at the same tick.
-            let flipped_back_id = exchange.next_order_id()? - 1;
-            assert_eq!(flipped_back_id, new_ask_id + 1);
+            // TIP-1056: the post-fill flip from the ask reuses the same
+            // orderId and is rewritten in place as a bid at the same tick.
+            // `next_order_id` is still unchanged.
+            let flipped_back_id = new_ask_id;
+            assert_eq!(exchange.next_order_id()?, resting_bid_id + 1);
             let flipped_back = exchange.orders[flipped_back_id].read()?;
             assert_eq!(flipped_back.maker(), alice);
             assert!(flipped_back.is_bid());
@@ -2877,18 +2956,15 @@ mod tests {
                 exchange.place_flip(alice, base_token, amount, true, tick, flip_tick, false)?;
 
             exchange.set_balance(bob, base_token, amount)?;
+            let next_order_id_before = exchange.next_order_id()?;
             exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
 
-            // Original flip bid is fully filled and removed from storage.
-            let filled = exchange.orders[flip_order_id].read()?;
-            assert_eq!(filled.maker(), Address::ZERO);
+            // TIP-1056: the original flip bid is rewritten in place as the
+            // new ask under the same orderId. `next_order_id` does not advance.
+            assert_eq!(exchange.next_order_id()?, next_order_id_before);
 
-            // Post-fill flip created a new ask at the same tick with
-            // `flip_tick == tick`, escrowed via the internal-balance path.
-            let new_order_id = exchange.next_order_id()? - 1;
-            assert_eq!(new_order_id, flip_order_id + 1);
-
-            let new_order = exchange.orders[new_order_id].read()?;
+            let new_order = exchange.orders[flip_order_id].read()?;
+            assert_eq!(new_order.order_id(), flip_order_id);
             assert_eq!(new_order.maker(), alice);
             assert!(new_order.is_ask());
             assert!(new_order.is_flip());
@@ -2908,6 +2984,164 @@ mod tests {
             let book = exchange.books[book_key].read()?;
             assert_eq!(book.best_ask_tick, tick);
             assert_eq!(book.best_bid_tick, i16::MIN);
+
+            Ok(())
+        })
+    }
+
+    /// TIP-1056: a fully-filled flip order is rewritten in place under the
+    /// same `orderId`. `next_order_id` does not advance, the storage record
+    /// holds the flipped resting state, `OrderFlipped` is emitted (and
+    /// `OrderPlaced` is NOT emitted for the flipped liquidity), and a
+    /// subsequent `cancel(orderId)` targets the flipped order.
+    #[test]
+    fn test_flip_in_place_keeps_order_id_t5() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        StorageCtx::enter(&mut storage, || {
+            let FlipOrderTestCtx {
+                mut exchange,
+                alice,
+                bob,
+                base_token,
+                quote_token,
+                book_key,
+                amount,
+                flip_tick,
+                ..
+            } = setup_flip_order_test()?;
+
+            // The flip bid was placed with id = 1 in the helper.
+            let flip_order_id = 1u128;
+            let next_order_id_before = exchange.next_order_id()?;
+
+            // Fund bob and consume the flip bid in full.
+            exchange.set_balance(bob, base_token, amount)?;
+            let events_before = exchange.emitted_events().len();
+            exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
+
+            // Same orderId, no `next_order_id` advance.
+            assert_eq!(exchange.next_order_id()?, next_order_id_before);
+
+            // Storage now holds the flipped ask under the same orderId.
+            let flipped = exchange.get_order(flip_order_id)?;
+            assert_eq!(flipped.order_id(), flip_order_id);
+            assert_eq!(flipped.maker(), alice);
+            assert!(flipped.is_ask());
+            assert!(flipped.is_flip());
+            assert_eq!(flipped.tick(), flip_tick);
+            assert_eq!(flipped.flip_tick(), 100i16); // old tick
+            assert_eq!(flipped.amount(), amount);
+            assert_eq!(flipped.remaining(), amount);
+
+            // Events emitted during the swap: at least OrderFilled +
+            // OrderFlipped, and no OrderPlaced for the flipped liquidity.
+            let new_events = &exchange.emitted_events()[events_before..];
+            let saw_flipped = new_events
+                .iter()
+                .any(|e| e.topics()[0] == IStablecoinDEX::OrderFlipped::SIGNATURE_HASH);
+            let saw_placed = new_events
+                .iter()
+                .any(|e| e.topics()[0] == IStablecoinDEX::OrderPlaced::SIGNATURE_HASH);
+            assert!(saw_flipped, "expected OrderFlipped to be emitted");
+            assert!(
+                !saw_placed,
+                "OrderPlaced must NOT be emitted for an automatic flip"
+            );
+
+            // cancel(orderId) targets the currently-active (flipped) order
+            // and refunds its escrow (base, since flipped is an ask).
+            let alice_base_before = exchange.balance_of(alice, base_token)?;
+            exchange.cancel(alice, flip_order_id)?;
+            let alice_base_after = exchange.balance_of(alice, base_token)?;
+            assert_eq!(alice_base_after, alice_base_before + amount);
+
+            // Order is now gone.
+            assert!(exchange.get_order(flip_order_id).is_err());
+
+            // Ask tick level at flip_tick is empty after cancel.
+            let ask_level = exchange.books[book_key]
+                .tick_level_handler(flip_tick, false)
+                .read()?;
+            assert_eq!(ask_level.head, 0);
+            assert_eq!(ask_level.tail, 0);
+            assert_eq!(ask_level.total_liquidity, 0);
+
+            Ok(())
+        })
+    }
+
+    /// TIP-1056: when `flip_in_place` fails with a business-logic error
+    /// (e.g. policy/pause), the order must be removed from storage rather
+    /// than leaving an orphan record under its `orderId`. Otherwise
+    /// `getOrder(orderId)` and `cancel(orderId)` would observe stale state.
+    #[test]
+    fn test_flip_in_place_failure_no_orphan_t5() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        StorageCtx::enter(&mut storage, || {
+            let FlipOrderTestCtx {
+                mut exchange,
+                alice,
+                bob,
+                admin,
+                base_token,
+                quote_token,
+                book_key,
+                amount,
+                flip_tick,
+            } = setup_flip_order_test()?;
+
+            let flip_order_id = 1u128;
+
+            // Blacklist alice on the base token AFTER order placement so the
+            // post-fill flip's TIP-403 check fails (PolicyForbids = business
+            // logic error → silently swallowed by fill_order).
+            let mut registry = TIP403Registry::new();
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
+            let mut base = TIP20Token::from_address(base_token)?;
+            base.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy_id,
+                },
+            )?;
+            registry.modify_policy_blacklist(
+                admin,
+                ITIP403Registry::modifyPolicyBlacklistCall {
+                    policyId: policy_id,
+                    account: alice,
+                    restricted: true,
+                },
+            )?;
+
+            exchange.set_balance(bob, base_token, amount)?;
+            // Swap succeeds — flip failure is silently swallowed.
+            exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
+
+            // No orphan: the original order record was deleted by fill_order
+            // so getOrder/cancel observe "does not exist".
+            assert!(
+                exchange.get_order(flip_order_id).is_err(),
+                "filled flip order must not remain in storage after a failed flip"
+            );
+            assert!(exchange.cancel(alice, flip_order_id).is_err());
+
+            // Both sides of the book are empty at the relevant ticks: the
+            // source bid was the only order at its tick (level dropped during
+            // tick advancement), and the flip never placed an ask.
+            let bid_level = exchange.books[book_key]
+                .tick_level_handler(100i16, true)
+                .read()?;
+            assert_eq!(bid_level.total_liquidity, 0);
+            let ask_level = exchange.books[book_key]
+                .tick_level_handler(flip_tick, false)
+                .read()?;
+            assert_eq!(ask_level.total_liquidity, 0);
 
             Ok(())
         })

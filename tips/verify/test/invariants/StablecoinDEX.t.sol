@@ -534,8 +534,14 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         } else {
             _swapExactAmountOut(swapper, amount, before, swapperHasOrders);
         }
-        // Read next order id - if a flip order is hit then next order id is incremented.
-        _nextOrderId = exchange.nextOrderId();
+        // TIP-1056 (T5+): swaps must not allocate new order IDs. Flips reuse
+        // the original `orderId`, so the cached counter must equal the on-chain
+        // value after a swap.
+        assertEq(
+            exchange.nextOrderId(),
+            _nextOrderId,
+            "TIP-1056: nextOrderId must not advance during a swap on T5+"
+        );
 
         vm.stopPrank();
     }
@@ -1156,8 +1162,11 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         _nextOrderId += 1;
     }
 
-    /// @notice Processes swap logs: counts fills and tracks any newly created orders
-    /// @dev Must be called after vm.recordLogs() and swap execution
+    /// @notice Processes swap logs: counts fills and asserts TIP-1056 event semantics
+    /// @dev Must be called after vm.recordLogs() and swap execution.
+    /// Under TIP-1056 (T5+), flip orders that fully fill during a swap are rewritten
+    /// in place under the same orderId and emit OrderFlipped. The exchange MUST NOT
+    /// emit OrderPlaced from inside a swap on T5+ (no new order IDs are allocated).
     /// @return count The number of OrderFilled events emitted by the exchange
     function _processSwapLogs() internal returns (uint64 count) {
         Vm.Log[] memory logs = vm.getRecordedLogs();
@@ -1167,10 +1176,11 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
             if (logs[i].emitter != address(exchange) || logs[i].topics.length == 0) continue;
             if (logs[i].topics[0] == orderFilledSelector) {
                 count++;
-            } else if (logs[i].topics[0] == orderPlacedSelector && logs[i].topics.length >= 3) {
-                uint128 orderId = uint128(uint256(logs[i].topics[1]));
-                address maker = address(uint160(uint256(logs[i].topics[2])));
-                _placedOrders[maker].push(orderId);
+            } else if (logs[i].topics[0] == orderPlacedSelector) {
+                // TIP-1056: swaps must not emit OrderPlaced on T5+. Flipped
+                // liquidity is signalled by OrderFlipped under the same
+                // orderId already tracked in `_placedOrders`.
+                revert("TIP-1056: OrderPlaced must not be emitted during a swap on T5+");
             }
         }
     }
