@@ -6,7 +6,7 @@
 use std::{sync::Arc, time::Duration};
 
 use crate::{
-    CONSENSUS_NODE_PREFIX, Setup, TestingNode,
+    CONSENSUS_NODE_PREFIX, Setup, TestingNode, connect_execution_peers,
     execution_runtime::{ExecutionNode, ExecutionRuntimeHandle, test_db_args},
     setup_validators,
 };
@@ -76,6 +76,7 @@ struct FollowerBuilder {
     name: Option<String>,
     partition_prefix: Option<String>,
     runtime: Option<ExecutionRuntimeHandle>,
+    donor: Option<TestingNode<Context>>,
 }
 
 impl FollowerBuilder {
@@ -90,9 +91,24 @@ impl FollowerBuilder {
         }
     }
 
-    fn partition_prefix(self, partition_prefix: &str) -> Self {
+    /// Fully consume a stopped validator and donate its consensus partition
+    /// (`uid`) and execution-layer state to the follower being built.
+    ///
+    /// The donor must already be stopped; both `consensus_handle` and
+    /// `execution_node` must be `None`.
+    fn donor(self, donor: TestingNode<Context>) -> Self {
+        assert!(
+            donor.consensus_handle.is_none(),
+            "donor consensus must be stopped before donation"
+        );
+        assert!(
+            donor.execution_node.is_none(),
+            "donor execution must be stopped before donation"
+        );
+
         Self {
-            partition_prefix: Some(partition_prefix.into()),
+            partition_prefix: Some(donor.uid.clone()),
+            donor: Some(donor),
             ..self
         }
     }
@@ -110,6 +126,7 @@ impl FollowerBuilder {
             name,
             partition_prefix,
             runtime,
+            donor,
         } = self;
         let runtime = runtime.expect("must pass a runtime handle to start a follower");
 
@@ -122,9 +139,6 @@ impl FollowerBuilder {
         let partition_prefix = partition_prefix.unwrap_or_else(|| name.clone());
 
         let feed_state = FeedStateHandle::new();
-        let db_path = runtime.nodes_dir().join(&name).join("db");
-        std::fs::create_dir_all(&db_path).expect("failed to create follower database directory");
-        let db = reth_db::init_db(db_path, test_db_args()).expect("reth db init");
 
         let config = crate::ExecutionNodeConfig {
             secret_key: alloy_primitives::B256::random(),
@@ -132,8 +146,23 @@ impl FollowerBuilder {
             feed_state: Some(feed_state.clone()),
         };
 
+        let (spawn_name, db, rocksdb) = if let Some(donor) = donor {
+            (
+                donor.execution_node_name,
+                donor.execution_database
+                    .expect("donor must have an execution database"),
+                donor.execution_rocksdb,
+            )
+        } else {
+            let db_path = runtime.nodes_dir().join(&name).join("db");
+            std::fs::create_dir_all(&db_path)
+                .expect("failed to create follower database directory");
+            let db = reth_db::init_db(db_path, test_db_args()).expect("reth db init");
+            (name.clone(), db, None)
+        };
+
         let node = runtime
-            .spawn_node(&name, config, db, None)
+            .spawn_node(&spawn_name, config, db, rocksdb)
             .await
             .expect("must be able to spawn follower execution node");
 
@@ -299,21 +328,22 @@ fn follower_starts_from_validator_archives() {
     executor.start(|mut context| async move {
         let (mut validators, execution_runtime) = setup_validators(&mut context, setup).await;
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+        connect_execution_peers(&validators).await;
 
-        // Wait for validator[0] specifically since we'll reuse its archive.
+        // Wait for validator[0] specifically since we'll donate its archive.
         wait_for_height(&context, &validators[0].metric_prefix(), target_height).await;
 
-        // Stop a validator and start the follower from its archive. Block production
-        // continues with 3/4 validators. Much easier than copying archives around.
-        // let validator_partition = validators[0].uid.clone();
-        validators[0].stop().await;
+        // Stop validator[0] and donate both its consensus archive and EL chaindata
+        // to the follower. Block production continues with 3/4 validators.
+        let mut donor = validators.remove(0);
+        donor.stop().await;
 
         let follower = Follower::builder()
             .runtime(execution_runtime.handle())
-            .partition_prefix(&validators[0].uid)
-            .follow(&mut context, &validators[1])
+            .donor(donor)
+            .follow(&mut context, &validators[0])
             .await;
-        follower.connect_peers(&validators[1..]).await;
+        follower.connect_peers(&validators).await;
 
         wait_for_height(&context, &follower.name, follower_target_height).await;
 
