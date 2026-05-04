@@ -60,6 +60,9 @@ pub struct TempoGenesisInfo {
     /// Activation timestamp for T5 hardfork.
     #[serde(skip_serializing_if = "Option::is_none")]
     t5_time: Option<u64>,
+    /// Activation timestamp for T6 hardfork.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    t6_time: Option<u64>,
 }
 
 impl TempoGenesisInfo {
@@ -89,6 +92,7 @@ impl TempoGenesisInfo {
             TempoHardfork::T3 => self.t3_time,
             TempoHardfork::T4 => self.t4_time,
             TempoHardfork::T5 => self.t5_time,
+            TempoHardfork::T6 => self.t6_time,
         }
     }
 }
@@ -438,6 +442,41 @@ mod tests {
         assert_eq!(chainspec.tempo_hardfork_at(u64::MAX), latest);
     }
 
+    #[test]
+    fn test_from_genesis_with_t6_schedule() {
+        use alloy_genesis::Genesis;
+
+        let genesis: Genesis = serde_json::from_value(serde_json::json!({
+            "config": {
+                "chainId": 1234,
+                "t0Time": 0,
+                "t1Time": 10,
+                "t1aTime": 20,
+                "t1bTime": 30,
+                "t1cTime": 40,
+                "t2Time": 50,
+                "t3Time": 60,
+                "t4Time": 70,
+                "t5Time": 80,
+                "t6Time": 90
+            },
+            "alloc": {}
+        }))
+        .unwrap();
+        let chainspec = super::TempoChainSpec::from_genesis(genesis);
+
+        assert_eq!(
+            chainspec.tempo_fork_activation(TempoHardfork::T6),
+            ForkCondition::Timestamp(90)
+        );
+        assert!(!chainspec.is_t6_active_at_timestamp(89));
+        assert!(chainspec.is_t6_active_at_timestamp(90));
+        assert_eq!(chainspec.tempo_hardfork_at(89), TempoHardfork::T5);
+        assert_eq!(chainspec.tempo_hardfork_at(90), TempoHardfork::T6);
+        assert!(chainspec.tempo_hardfork_at(90).is_t5());
+        assert!(chainspec.tempo_hardfork_at(90).is_t6());
+    }
+
     mod tempo_hardfork_at {
         use super::*;
 
@@ -488,6 +527,9 @@ mod tests {
             // At and after T3 activation
             assert!(cs.is_t3_active_at_timestamp(1777298400));
             assert_eq!(cs.tempo_hardfork_at(1777298400), TempoHardfork::T3);
+            assert!(!cs.is_t4_active_at_timestamp(u64::MAX));
+            assert!(!cs.is_t5_active_at_timestamp(u64::MAX));
+            assert!(!cs.is_t6_active_at_timestamp(u64::MAX));
             assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T3);
         }
 
@@ -535,6 +577,9 @@ mod tests {
             // At and after T3 activation
             assert!(cs.is_t3_active_at_timestamp(1776780000));
             assert_eq!(cs.tempo_hardfork_at(1776780000), TempoHardfork::T3);
+            assert!(!cs.is_t4_active_at_timestamp(u64::MAX));
+            assert!(!cs.is_t5_active_at_timestamp(u64::MAX));
+            assert!(!cs.is_t6_active_at_timestamp(u64::MAX));
             assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T3);
         }
 
