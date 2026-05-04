@@ -6,17 +6,30 @@ on:
 
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
+permissions: {}
+
 jobs:
   release-pr:
     name: Release PR
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
+    environment: release-pr
+    permissions: {}
     steps:
+      - name: Mint scoped app token
+        id: app-token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        with:
+          app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          owner: tempoxyz
+          repositories: tempo
+          permission-contents: write
+          permission-pull-requests: write
+          permission-metadata: read
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          token: ${{ secrets.TEMPO_GITHUB_PAT }}
+          token: ${{ steps.app-token.outputs.token }}
           persist-credentials: true
 
       - name: Keep only SDK changelog entries
@@ -57,17 +70,17 @@ jobs:
               path.write_text("---\n" + "".join(kept) + "---\n" + body, encoding="utf-8")
           PY
 
-      - uses: tempoxyz/changelogs@b0179e7300997dfa5a631a6a7a2de248bf63310f # master
+      - uses: tempoxyz/changelogs@b0179e7300997dfa5a631a6a7a2de248bf63310f # master @ 2026-04-08 (post-v0.6.3)
         id: changelogs
         with:
           conventional-commit: true
           post-version-command: cargo update -w
-          github-token: ${{ secrets.TEMPO_GITHUB_PAT }}
+          github-token: ${{ steps.app-token.outputs.token }}
 
       - name: Demote non-v* releases from latest
         if: steps.changelogs.outputs.published == 'true'
         env:
-          GH_TOKEN: ${{ secrets.TEMPO_GITHUB_PAT }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           for tag in $(git tag --points-at HEAD); do
             if [[ "$tag" != v* ]]; then

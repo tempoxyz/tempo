@@ -27,11 +27,7 @@ use reth_execution_types::BlockExecutionOutput;
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
 use reth_payload_primitives::{BuiltPayload, BuiltPayloadExecutedBlock};
 use reth_primitives_traits::{Recovered, transaction::error::InvalidTransactionError};
-use reth_revm::{
-    State,
-    context::{Block, BlockEnv},
-    database::StateProviderDatabase,
-};
+use reth_revm::{State, context::Block, database::StateProviderDatabase};
 use reth_storage_api::{StateProvider, StateProviderFactory};
 use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, TransactionPool, ValidPoolTransaction,
@@ -58,7 +54,7 @@ use tempo_primitives::{
     },
 };
 use tempo_transaction_pool::{
-    TempoTransactionPool,
+    StateAwareBestTransactions, TempoTransactionPool,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
@@ -127,9 +123,14 @@ impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilde
     /// - Subblocks signatures - validates subblock signatures
     fn build_seal_block_txs(
         &self,
-        block_env: &BlockEnv,
+        evm: &TempoEvm<impl Database>,
         subblocks: &[RecoveredSubBlock],
     ) -> Vec<Recovered<TempoTxEnvelope>> {
+        if subblocks.is_empty() && evm.cfg.spec.is_t4() {
+            // Post-T4, omit the subblocks metadata transaction if there are no subblocks
+            return vec![];
+        }
+
         let chain_spec = self.provider.chain_spec();
         let chain_id = Some(chain_spec.chain().id());
 
@@ -140,7 +141,7 @@ impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilde
             .collect::<Vec<SubBlockMetadata>>();
         let subblocks_input = alloy_rlp::encode(&subblocks_metadata)
             .into_iter()
-            .chain(block_env.number.to_be_bytes_vec())
+            .chain(evm.block.number.to_be_bytes_vec())
             .collect();
 
         let subblocks_signatures_tx = Recovered::new_unchecked(
@@ -409,7 +410,7 @@ where
 
         // Prepare system transactions before actual block building and account for their size.
         let prepare_system_txs_start = Instant::now();
-        let system_txs = self.build_seal_block_txs(builder.evm().block(), &subblocks);
+        let system_txs = self.build_seal_block_txs(builder.evm(), &subblocks);
         for tx in &system_txs {
             block_size_used += tx.inner().length();
         }
@@ -421,22 +422,21 @@ where
         let base_fee = builder.evm_mut().block().basefee;
         let validator_fee_token = resolve_validator_fee_token(&mut builder)?;
         let pool_fetch_start = Instant::now();
-        let mut best_txs = best_txs(BestTransactionsAttributes::new(
-            base_fee,
-            builder
-                .evm_mut()
-                .block()
-                .blob_gasprice()
-                .map(|gasprice| gasprice as u64),
-        ));
+        // Wrap best transactions into state-aware wrapper to skip transactions that
+        // get invalidated by already-executed ones.
+        let mut best_txs =
+            StateAwareBestTransactions::new(best_txs(BestTransactionsAttributes::new(
+                base_fee,
+                builder
+                    .evm_mut()
+                    .block()
+                    .blob_gasprice()
+                    .map(|gasprice| gasprice as u64),
+            )));
         self.metrics
             .pool_fetch_duration_seconds
             .record(pool_fetch_start.elapsed());
 
-        // TIP-1016 (EIP-8037 state gas split) gating: when enabled, `block_regular_gas_used`
-        // (excludes state gas) governs block-capacity accounting; otherwise standard
-        // `tx_gas_used` is used. This flag is independent of the T4 hardfork.
-        let amsterdam_eip8037_enabled = builder.evm().cfg.enable_amsterdam_eip8037;
 
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
@@ -530,18 +530,10 @@ where
             let tx_execution_start = Instant::now();
             if let Err(err) =
                 builder.execute_transaction_with_result_closure(tx_with_env, |result| {
-                    // Compute gas usage as either regular-only gas spending (TIP-1016) or
-                    // total gas spending (TIP-1016 disabled).
-                    let gas_used = if amsterdam_eip8037_enabled {
-                        result.result().result.gas().block_regular_gas_used()
-                    } else {
-                        result.result().result.tx_gas_used()
-                    };
-
-                    cumulative_gas_used += gas_used;
-                    cumulative_state_gas_used += result.result().result.gas().state_gas_spent();
+                    cumulative_gas_used += result.block_gas_used();
+                    cumulative_state_gas_used += result.state_gas_used();
                     if !is_payment {
-                        non_payment_gas_used += gas_used;
+                        non_payment_gas_used += result.block_gas_used();
                     }
 
                     // Score payload value by actual validator payout, applying the AMM
@@ -565,6 +557,9 @@ where
                     } else {
                         warn!("no resolved fee token for a pool transaction")
                     }
+
+                    // Notify transactions iterator about the new state.
+                    best_txs.on_new_result(result);
                 })
             {
                 if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
