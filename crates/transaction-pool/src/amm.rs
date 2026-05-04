@@ -74,11 +74,10 @@ impl AmmLiquidityCache {
         {
             let inner = self.inner.read();
             hardfork = inner.hardfork;
-            let two_hop_out = if hardfork.is_t5() {
-                Some(compute_amount_out(amount_out).map_err(ProviderError::other)?)
-            } else {
-                None
-            };
+            let two_hop_out = hardfork
+                .is_t5()
+                .then(|| compute_amount_out(amount_out).map_err(ProviderError::other))
+                .transpose()?;
 
             for &validator_token in &inner.unique_tokens {
                 // Validators always accept fees in their own token.
