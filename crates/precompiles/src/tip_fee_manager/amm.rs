@@ -98,16 +98,8 @@ pub enum FeeRoute {
     TwoHop(Address),
 }
 
-/// Output of [`TipFeeManager::plan_fee_route`]. The chosen `route` plus state-data for every pool
-/// read by the planner, so callers can do pool introspection without redundant SLOADs.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct FeePlan {
-    /// Chosen route, or `None` if no path has sufficient liquidity.
-    pub route: Option<FeeRoute>,
-    /// Pools read during planning, paired with their observed validator-token reserve.
-    /// At most 3 entries: direct + (optionally) two legs. Order is irrelevant.
-    pub pools: Vec<((Address, Address), u128)>,
-}
+/// Pools read during planning, paired with their observed validator-token reserve.
+type PoolData = ((Address, Address), u128);
 
 impl TipFeeManager {
     /// Returns the deterministic pool ID for a directional token pair. Note that the pool id is
@@ -496,8 +488,8 @@ impl TipFeeManager {
     /// under the active hardfork. Read-only; does not reserve.
     ///
     /// On T5+ falls back to a two-hop path through `userToken.quoteToken()` as per [TIP-1033].
-    /// The returned [`FeePlan::route`] is `None` when no path has sufficient liquidity. Every
-    /// pool read by the planner is reported in [`FeePlan::pools`] regardless of route feasibility.
+    /// The returned [`FeeRoute`] is `None` when no path has sufficient liquidity. Every
+    /// [`PoolData`] read by the planner is reported regardless of route feasibility.
     ///
     /// # Errors
     /// - `InvalidToken` — `user_token` does not have a valid TIP-20 prefix
@@ -509,59 +501,54 @@ impl TipFeeManager {
         user_token: Address,
         validator_token: Address,
         max_amount: U256,
-    ) -> Result<FeePlan> {
-        let mut data = FeePlan::default();
+    ) -> Result<(Option<FeeRoute>, Vec<PoolData>)> {
+        let mut data = Vec::new();
 
         if user_token == validator_token {
-            data.route = Some(FeeRoute::SameToken);
-            return Ok(data);
+            return Ok((Some(FeeRoute::SameToken), data));
         }
-
-        let amount_out = compute_amount_out(max_amount)?;
 
         // Direct (single-hop) path — always checked.
         let direct = self.pools[self.pool_id(user_token, validator_token)].read()?;
-        data.pools.push((
+        data.push((
             (user_token, validator_token),
             direct.reserve_validator_token,
         ));
+        let amount_out = compute_amount_out(max_amount)?;
         if amount_out <= U256::from(direct.reserve_validator_token) {
-            data.route = Some(FeeRoute::Direct);
-            return Ok(data);
+            return Ok((Some(FeeRoute::Direct), data));
         }
 
         // T5+: two-hop fallback through `userToken.quoteToken()`.
         if !self.storage.spec().is_t5() {
-            return Ok(data);
+            return Ok((None, data));
         }
 
         // TIP-20 token graph forbids self-quoting, so `intermediate == user_token` is unreachable.
         let intermediate = TIP20Token::from_address(user_token)?.quote_token()?;
         if intermediate.is_zero() || intermediate == validator_token {
-            return Ok(data);
+            return Ok((None, data));
         }
 
         // First leg: user_token -> intermediate.
         let leg1 = self.pools[self.pool_id(user_token, intermediate)].read()?;
-        data.pools
-            .push(((user_token, intermediate), leg1.reserve_validator_token));
+        data.push(((user_token, intermediate), leg1.reserve_validator_token));
         if amount_out > U256::from(leg1.reserve_validator_token) {
-            return Ok(data);
+            return Ok((None, data));
         }
 
         // Second leg: intermediate -> validator_token.
         let amount_out2 = compute_amount_out(amount_out)?;
         let leg2 = self.pools[self.pool_id(intermediate, validator_token)].read()?;
-        data.pools.push((
+        data.push((
             (intermediate, validator_token),
             leg2.reserve_validator_token,
         ));
         if amount_out2 > U256::from(leg2.reserve_validator_token) {
-            return Ok(data);
+            return Ok((None, data));
         }
 
-        data.route = Some(FeeRoute::TwoHop(intermediate));
-        Ok(data)
+        Ok((Some(FeeRoute::TwoHop(intermediate)), data))
     }
 
     /// Executes a fee swap, converting `user_token` to `validator_token` at a fixed rate m = 0.997
