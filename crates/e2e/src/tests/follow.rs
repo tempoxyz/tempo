@@ -144,6 +144,7 @@ impl FollowerBuilder {
             secret_key: alloy_primitives::B256::random(),
             validator_key: None,
             feed_state: Some(feed_state.clone()),
+            share_sparse_trie_with_payload_builder: false,
         };
 
         let (spawn_name, db, rocksdb) = if let Some(donor) = donor {
@@ -170,7 +171,7 @@ impl FollowerBuilder {
         let (upstream, upstream_mailbox) = in_process::init(
             context.with_label("upstream"),
             in_process::Config {
-                execution_node: Arc::new(node.node.clone()),
+                execution_node: node.node.clone().into(),
                 feed: upstream.feed_state(),
             },
         );

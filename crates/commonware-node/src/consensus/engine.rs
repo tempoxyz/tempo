@@ -2,7 +2,7 @@
 //!
 //! [`alto`]: https://github.com/commonwarexyx/alto
 
-use std::{num::NonZeroUsize, time::Duration};
+use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
 use commonware_broadcast::buffered;
 use commonware_consensus::{
@@ -52,7 +52,7 @@ const MAX_PENDING_ACKS: NonZeroUsize = NZUsize!(1);
 pub struct Builder<TBlocker, TPeerManager> {
     pub fee_recipient: Option<alloy_primitives::Address>,
 
-    pub execution_node: Option<TempoFullNode>,
+    pub execution_node: Option<Arc<TempoFullNode>>,
 
     pub blocker: TBlocker,
     pub peer_manager: TPeerManager,
@@ -85,7 +85,7 @@ where
     TBlocker: Blocker<PublicKey = PublicKey> + Sync,
     TPeerManager: AddressableManager<PublicKey = PublicKey> + Sync,
 {
-    pub fn with_execution_node(mut self, execution_node: TempoFullNode) -> Self {
+    pub fn with_execution_node(mut self, execution_node: Arc<TempoFullNode>) -> Self {
         self.execution_node = Some(execution_node);
         self
     }

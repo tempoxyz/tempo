@@ -497,7 +497,7 @@ fn main() -> eyre::Result<()> {
                     ctx.with_label("follow"),
                     args.consensus,
                     follow_url,
-                    node,
+                    Arc::new(node),
                     cl_feed_state_clone,
                 ))
             } else {
@@ -513,7 +513,7 @@ fn main() -> eyre::Result<()> {
                 Either::Right(run_consensus_stack(
                     ctx.with_label("consensus"),
                     args.consensus,
-                    node,
+                    Arc::new(node),
                     cl_feed_state_clone,
                 ))
             };

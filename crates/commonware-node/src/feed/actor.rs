@@ -29,6 +29,7 @@ use std::{
     collections::BTreeMap,
     future::Future,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -107,7 +108,7 @@ impl<TContext: Spawner> Actor<TContext> {
         context: TContext,
         marshal: marshal::Mailbox,
         epocher: FixedEpocher,
-        execution_node: TempoFullNode,
+        execution_node: Arc<TempoFullNode>,
         receiver: Receiver,
         state: FeedStateHandle,
     ) -> Self {

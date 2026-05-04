@@ -20,6 +20,8 @@ pub(crate) mod validators;
 
 pub(crate) mod subblocks;
 
+use std::sync::Arc;
+
 use commonware_consensus::types::FixedEpocher;
 use commonware_cryptography::ed25519::{PrivateKey, PublicKey};
 use commonware_p2p::authenticated::lookup;
@@ -45,7 +47,7 @@ const PARTITION_PREFIX: &str = "engine";
 pub async fn run_consensus_stack(
     context: commonware_runtime::tokio::Context,
     config: Args,
-    execution_node: TempoFullNode,
+    execution_node: Arc<TempoFullNode>,
     feed_state: feed::FeedStateHandle,
 ) -> eyre::Result<()> {
     let share = config
@@ -161,7 +163,7 @@ pub async fn run_follow_stack(
     context: commonware_runtime::tokio::Context,
     config: Args,
     upstream_url: String,
-    execution_node: TempoFullNode,
+    execution_node: Arc<TempoFullNode>,
     feed_state: feed::FeedStateHandle,
 ) -> eyre::Result<()> {
     let epoch_length = execution_node

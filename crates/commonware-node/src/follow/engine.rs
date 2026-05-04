@@ -41,7 +41,7 @@ use crate::{
 #[derive(Clone)]
 pub struct Config<TUpstream> {
     /// The execution node to drive.
-    pub execution_node: TempoFullNode,
+    pub execution_node: Arc<TempoFullNode>,
 
     /// Feed state handle for RPC serving.
     pub feed_state: FeedStateHandle,
@@ -144,12 +144,10 @@ impl<TUpstream> Config<TUpstream> {
             )
         });
 
-        let execution_node = Arc::new(self.execution_node.clone());
-
         let (resolver, resolver_mailbox, resolver_rx) = resolver::try_init(
             context.with_label("resolver"),
             resolver::Config {
-                execution_node: execution_node.clone(),
+                execution_node: self.execution_node.clone(),
                 upstream: self.upstream_mailbox.clone(),
                 mailbox_size: self.mailbox_size,
             },
@@ -166,7 +164,7 @@ impl<TUpstream> Config<TUpstream> {
         let (executor_actor, executor_mailbox) = executor::init(
             context.with_label("executor"),
             executor::Config {
-                execution_node: self.execution_node,
+                execution_node: self.execution_node.clone(),
                 last_finalized_height,
                 marshal: marshal_mailbox.clone(),
                 fcu_heartbeat_interval: self.fcu_heartbeat_interval,
@@ -180,7 +178,7 @@ impl<TUpstream> Config<TUpstream> {
         let (driver, driver_mailbox) = driver::try_init(
             context.with_label("driver"),
             driver::Config {
-                execution_node,
+                execution_node: self.execution_node.clone(),
                 scheme_provider: scheme_provider.clone(),
                 last_finalized_height,
                 marshal: marshal_mailbox,

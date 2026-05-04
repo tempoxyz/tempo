@@ -64,7 +64,7 @@ pub struct FeedStateHandle {
     state: Arc<RwLock<FeedState>>,
     marshal: Arc<OnceLock<marshal::Mailbox>>,
     epocher: Arc<OnceLock<FixedEpocher>>,
-    execution_node: Arc<OnceLock<TempoFullNode>>,
+    execution_node: Arc<OnceLock<Arc<TempoFullNode>>>,
     events_tx: broadcast::Sender<Event>,
     /// Cache for identity transition proofs to avoid re-walking the chain.
     identity_cache: Arc<RwLock<Option<IdentityTransitionCache>>>,
@@ -101,7 +101,7 @@ impl FeedStateHandle {
     }
 
     /// Set the execution node for header lookups. Should only be called once.
-    pub(crate) fn set_execution_node(&self, execution_node: TempoFullNode) {
+    pub(crate) fn set_execution_node(&self, execution_node: Arc<TempoFullNode>) {
         let _ = self.execution_node.set(execution_node);
     }
 

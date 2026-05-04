@@ -209,7 +209,7 @@ struct Inner<TState> {
 
     marshal: crate::alias::marshal::Mailbox,
 
-    execution_node: TempoFullNode,
+    execution_node: Arc<TempoFullNode>,
     executor: crate::executor::Mailbox,
     subblocks: Option<subblocks::Mailbox>,
     scheme_provider: SchemeProvider,

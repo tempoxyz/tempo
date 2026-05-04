@@ -263,7 +263,7 @@ where
         self.consensus_config = self
             .consensus_config
             .clone()
-            .with_execution_node((*execution_node.node).clone());
+            .with_execution_node(execution_node.node.clone().into());
         self.execution_node = Some(execution_node);
         debug!(%self.uid, "started execution node for testing node");
     }
