@@ -99,7 +99,7 @@ pub enum FeeRoute {
 }
 
 /// Pools read during planning, paired with their observed validator-token reserve.
-type PoolData = ((Address, Address), u128);
+pub type PoolData = ((Address, Address), u128);
 
 impl TipFeeManager {
     /// Returns the deterministic pool ID for a directional token pair. Note that the pool id is
