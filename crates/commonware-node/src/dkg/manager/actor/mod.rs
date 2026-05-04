@@ -1,12 +1,13 @@
 use std::{collections::BTreeMap, num::NonZeroU32, task::Poll};
 
-use alloy_consensus::BlockHeader as _;
+use alloy_consensus::{BlockHeader as _, Sealable};
 use alloy_primitives::B256;
 use bytes::{Buf, BufMut};
 use commonware_codec::{Encode as _, EncodeSize, Read, ReadExt as _, Write};
 use commonware_consensus::{
     Heightable as _,
     marshal::{self, Update},
+    simplex::scheme::bls12381_threshold::vrf::Scheme,
     types::{Epoch, EpochPhase, Epocher as _, FixedEpocher, Height},
 };
 use commonware_cryptography::{
@@ -27,7 +28,7 @@ use commonware_p2p::{
 };
 use commonware_parallel::Sequential;
 use commonware_runtime::{Clock, ContextCell, Handle, IoBuf, Metrics as _, Spawner, spawn_cell};
-use commonware_utils::{Acknowledgement, N3f1, NZU32, ordered};
+use commonware_utils::{Acknowledgement, N3f1, NZU32, ordered, vec::NonEmptyVec};
 
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
 use futures::{
@@ -35,15 +36,16 @@ use futures::{
 };
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand_core::CryptoRngCore;
-use reth_ethereum::{chainspec::EthChainSpec, rpc::eth::primitives::BlockNumHash};
 use reth_provider::{BlockIdReader as _, HeaderProvider as _};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::TempoFullNode;
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
+use tempo_primitives::TempoHeader;
 use tracing::{Level, Span, debug, info, info_span, instrument, warn, warn_span};
 
 use crate::{
     consensus::{Digest, block::Block},
+    epoch::SchemeProvider,
     validators::{read_active_and_known_peers_at_block_hash, read_validator_config_at_block_hash},
 };
 
@@ -177,6 +179,8 @@ where
                 let initial_share = self.config.initial_share.clone();
                 let epoch_strategy = self.config.epoch_strategy.clone();
                 let mut marshal = self.config.marshal.clone();
+                let scheme_provider = self.config.scheme_provider.clone();
+                let namespace = self.config.namespace.clone();
                 async move {
                     read_initial_state_and_set_floor(
                         &mut context,
@@ -184,6 +188,8 @@ where
                         initial_share.clone(),
                         &epoch_strategy,
                         &mut marshal,
+                        &scheme_provider,
+                        &namespace,
                     )
                     .await
                 }
@@ -1253,22 +1259,24 @@ async fn read_initial_state_and_set_floor<TContext>(
     share: Option<Share>,
     epoch_strategy: &FixedEpocher,
     marshal: &mut crate::alias::marshal::Mailbox,
+    scheme_provider: &SchemeProvider,
+    namespace: &[u8],
 ) -> eyre::Result<State>
 where
     TContext: Clock + CryptoRngCore,
 {
-    let latest_finalized = node
+    let latest_finalized_number = node
         .provider
-        .finalized_block_num_hash()
+        .finalized_block_number()
         .wrap_err("unable to read highest finalized block from execution layer")?
-        .unwrap_or_else(|| BlockNumHash::new(0, node.chain_spec().genesis_hash()));
+        .unwrap_or(0);
 
     let epoch_info = epoch_strategy
-        .containing(Height::new(latest_finalized.number))
-        .expect("epoch strategy is for all heights");
+        .containing(Height::new(latest_finalized_number))
+        .expect("epoch strategy is for all epochs");
 
-    let latest_boundary = if epoch_info.last().get() == latest_finalized.number {
-        latest_finalized.number
+    let latest_boundary_height = if epoch_info.last().get() == latest_finalized_number {
+        Height::new(latest_finalized_number)
     } else {
         epoch_info
             .epoch()
@@ -1278,38 +1286,22 @@ where
                     .last(previous)
                     .expect("epoch strategy is for all epochs")
             })
-            .get()
     };
+
     info!(
-        %latest_boundary,
-        latest_finalized.number,
-        %latest_finalized.hash,
+        %latest_boundary_height,
+        latest_finalized_number,
         "execution layer reported newest available block, reading on-chain \
         DKG outcome from last boundary height, and validator state from newest \
         block"
     );
 
-    let boundary_header = node
-        .provider
-        .header_by_number(latest_boundary)
-        .map_or_else(
-            |e| Err(eyre::Report::new(e)),
-            |header| header.ok_or_eyre("execution layer reported it had no header"),
-        )
-        .wrap_err_with(|| {
-            format!("failed to read header for latest boundary block number `{latest_boundary}`")
-        })?;
-
-    let onchain_outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
-        &mut boundary_header.extra_data().as_ref(),
-    )
-    .wrap_err("the boundary header did not contain the on-chain DKG outcome")?;
-
+    let (boundary_header, outcome) = get_outcome(node, latest_boundary_height.get())?;
     let share = state::ShareState::Plaintext('verify_initial_share: {
         let Some(share) = share else {
             break 'verify_initial_share None;
         };
-        let Ok(partial) = onchain_outcome.sharing().partial_public(share.index) else {
+        let Ok(partial) = outcome.sharing().partial_public(share.index) else {
             warn!(
                 "the index of the provided share exceeds the polynomial of the \
                 on-chain DKG outcome; ignoring the share"
@@ -1326,18 +1318,70 @@ where
         Some(share)
     });
 
-    info!(%latest_boundary, "setting sync floor");
-    marshal.set_floor(Height::new(latest_boundary)).await;
+    // Ensure the boundary block is available in the marshal
+    if latest_boundary_height > Height::zero() {
+        let epoch = epoch_strategy
+            .containing(latest_boundary_height)
+            .expect("epoch strategy is for all epochs")
+            .epoch();
+
+        // If resolved over p2p, we need to ensure the scheme for this epoch is registered
+        register_initial_signing_scheme(node, epoch_strategy, scheme_provider, namespace, epoch)?;
+
+        let boundary_digest = Digest(boundary_header.hash_slow());
+        info!(%boundary_digest, "subscribing to marshal for the latest boundary block");
+
+        let waiter = marshal.subscribe_by_digest(None, boundary_digest).await;
+
+        let players: Vec<_> = outcome.next_players.iter().cloned().collect();
+        let peers = NonEmptyVec::try_from(players).expect("boundary players must be > 0");
+
+        marshal.hint_finalized(latest_boundary_height, peers).await;
+
+        let _ = waiter.await?;
+    }
+
+    info!(%latest_boundary_height, "setting sync floor");
+    marshal.set_floor(latest_boundary_height).await;
 
     Ok(State {
-        epoch: onchain_outcome.epoch,
+        epoch: outcome.epoch,
         seed: Summary::random(context),
-        output: onchain_outcome.output.clone(),
+        output: outcome.output.clone(),
         share,
-        players: onchain_outcome.next_players,
+        players: outcome.next_players,
         syncers: ordered::Set::default(),
-        is_full_dkg: onchain_outcome.is_next_full_dkg,
+        is_full_dkg: outcome.is_next_full_dkg,
     })
+}
+
+fn register_initial_signing_scheme(
+    node: &TempoFullNode,
+    epoch_strategy: &FixedEpocher,
+    scheme_provider: &SchemeProvider,
+    namespace: &[u8],
+    epoch: Epoch,
+) -> eyre::Result<()> {
+    let boundary_height = match epoch.previous() {
+        None => Height::zero(),
+        Some(prev) => epoch_strategy
+            .last(prev)
+            .expect("epoch strategy is for all epochs"),
+    };
+
+    let (_, outcome) = get_outcome(node, boundary_height.get())?;
+    ensure!(outcome.epoch == epoch);
+
+    let scheme = Scheme::verifier(
+        namespace,
+        outcome.players().clone(),
+        outcome.sharing().clone(),
+    );
+
+    let _ = scheme_provider.register(epoch, scheme);
+    info!(%epoch, "registered initial scheme from for epoch");
+
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -1624,4 +1668,21 @@ pub(crate) fn read_re_dkg_epoch(node: &TempoFullNode, digest: Digest) -> eyre::R
             .map_err(eyre::Report::new)
     })
     .map(|(_, _, epoch)| epoch)
+}
+
+fn get_outcome(
+    execution: &TempoFullNode,
+    height: u64,
+) -> eyre::Result<(TempoHeader, OnchainDkgOutcome)> {
+    let header = execution
+        .provider
+        .header_by_number(height)
+        .ok()
+        .flatten()
+        .ok_or_else(|| eyre::eyre!("header at height {height} not found"))?;
+
+    let outcome = OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
+        .wrap_err_with(|| format!("unable to read dkg outcome from header at height {height}"))?;
+
+    Ok((header, outcome))
 }
