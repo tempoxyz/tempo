@@ -12,7 +12,7 @@ use std::{
 };
 
 use crate::{
-    CONSENSUS_NODE_PREFIX, ExecutionRuntime, Setup, TestingNode,
+    CONSENSUS_NODE_PREFIX, Setup, TestingNode,
     execution_runtime::{ExecutionNode, ExecutionRuntimeHandle, test_db_args},
     setup_validators,
 };
@@ -30,7 +30,6 @@ use rand_core::CryptoRngCore;
 use tempo_commonware_node::{feed::FeedStateHandle, follow};
 use tempo_node::rpc::consensus::{ConsensusFeed as _, Query};
 
-static FOLLOWER_COUNTER: AtomicU32 = AtomicU32::new(0);
 static EPOCH_LENGTH: u64 = 10;
 
 fn next_follower_name() -> String {

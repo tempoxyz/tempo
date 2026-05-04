@@ -82,9 +82,9 @@ pub(super) fn try_init<TContext>(
             .and_then(|maybe_header| maybe_header.ok_or_eyre("execution layer did not have header"))
             .wrap_err_with(|| {
                 format!(
-                    "cannot establish baseline - unable to read the header from \
-                the last boundary block at height `{last_boundary}` from the \
-                excecution layer"
+                    "cannot establish baseline - unable to read the header \
+                    from the last boundary block at height `{last_boundary}` \
+                    from the execution layer"
                 )
             })?
             .extra_data()
