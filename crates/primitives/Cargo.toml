@@ -83,6 +83,8 @@ std = [
 	"reth-ethereum-primitives?/std",
 	"reth-primitives-traits?/std",
 	"revm/std",
+	"revm/blst",
+	"revm/c-kzg",
 	"serde/std",
 	"serde_json/std",
 	"sha2/std",
