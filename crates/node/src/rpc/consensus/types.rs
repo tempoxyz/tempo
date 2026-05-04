@@ -175,9 +175,9 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Response::Success(obj) => write!(f, "success: {obj}`"),
-            Response::NotReady => write!(f, "service not ready"),
-            Response::Missing(msg) => write!(f, "missing: {msg}`"),
+            Self::Success(obj) => write!(f, "success: {obj}`"),
+            Self::NotReady => write!(f, "service not ready"),
+            Self::Missing(msg) => write!(f, "missing: {msg}`"),
         }
     }
 }

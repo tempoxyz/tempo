@@ -149,7 +149,8 @@ impl FollowerBuilder {
         let (spawn_name, db, rocksdb) = if let Some(donor) = donor {
             (
                 donor.execution_node_name,
-                donor.execution_database
+                donor
+                    .execution_database
                     .expect("donor must have an execution database"),
                 donor.execution_rocksdb,
             )

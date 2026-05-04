@@ -29,8 +29,8 @@ pub enum ErrorCode {
 impl ErrorCode {
     fn msg(self) -> &'static str {
         match self {
-            ErrorCode::NoContent => "the requested content was not available",
-            ErrorCode::ServiceUnavailable => {
+            Self::NoContent => "the requested content was not available",
+            Self::ServiceUnavailable => {
                 "the consensus subservice was not available, but the request can be retried later"
             }
         }

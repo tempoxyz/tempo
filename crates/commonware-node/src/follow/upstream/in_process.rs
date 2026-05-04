@@ -1,7 +1,6 @@
-//! An upstream provider to be used in e2e tests inside a
-//! [`commonware_runtime::deterministic::Runtime`]. The [`jsonrpsee`] stack by
-//! the standard [`super::Actor`] requires a tokio runtime, which the tests
-//! don't provide.
+//! An upstream provider to be used in e2e tests The [`jsonrpsee`] stack used by
+//! the standard websocket based provider requires a tokio runtime, which the tests
+//! runtime does not provide.
 
 use std::{sync::Arc, time::Duration};
 

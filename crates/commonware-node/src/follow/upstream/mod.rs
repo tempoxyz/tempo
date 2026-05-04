@@ -1,8 +1,7 @@
 //! Actors to communicate with the upstream node.
 //!
-//! Provides [`Actor`] as a regular connection to an upstream node over
-//! websocket, and `in_process::Actor` as an in-process actor working off of
-//! channels.
+//! Maintains a regular connection to an upstream node over websocker
+//! or `in_process::Actor` as an in-process actor working off of channels.
 
 use commonware_consensus::Reporter;
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner};
