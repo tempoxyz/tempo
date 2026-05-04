@@ -171,6 +171,11 @@ impl TIP20Factory {
         sender: Address,
         call: createTokenWithLogoCall,
     ) -> Result<Address> {
+        // Validate the logo URI up-front so a bad URI does not leave a
+        // partially-created token in storage. Empty strings are permitted
+        // (they skip the subsequent slot write / event emission below).
+        crate::tip20::validate_logo_uri(&call.logoURI)?;
+
         let token_address = self.create_token(
             sender,
             createTokenCall {
@@ -575,6 +580,11 @@ mod tests {
             let path_usd = TIP20Setup::path_usd(sender).apply()?;
 
             let salt = B256::random();
+            // 257 bytes — one over the limit. Use a valid URI so we exercise
+            // the length check, not the URI/scheme check.
+            let prefix = "https://example.com/";
+            let too_long = format!("{prefix}{}", "a".repeat(257 - prefix.len()));
+            assert_eq!(too_long.len(), 257);
             let result = factory.create_token_with_logo(
                 sender,
                 createTokenWithLogoCall {
@@ -584,7 +594,7 @@ mod tests {
                     quoteToken: path_usd.address(),
                     admin: sender,
                     salt,
-                    logoURI: "a".repeat(257),
+                    logoURI: too_long,
                 },
             );
 
@@ -592,6 +602,60 @@ mod tests {
                 result,
                 Err(TempoPrecompileError::TIP20(TIP20Error::LogoURITooLong(_)))
             ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_create_token_with_logo_invalid_scheme_reverts() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let sender = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Setup::factory()?;
+            let path_usd = TIP20Setup::path_usd(sender).apply()?;
+
+            let salt = B256::random();
+            let result = factory.create_token_with_logo(
+                sender,
+                createTokenWithLogoCall {
+                    name: "Bad Scheme".to_string(),
+                    symbol: "BAD".to_string(),
+                    currency: "USD".to_string(),
+                    quoteToken: path_usd.address(),
+                    admin: sender,
+                    salt,
+                    logoURI: "javascript:alert(1)".to_string(),
+                },
+            );
+
+            assert!(
+                matches!(
+                    result,
+                    Err(TempoPrecompileError::TIP20(TIP20Error::InvalidLogoURI(_))),
+                ),
+                "expected InvalidLogoURI; got {result:?}"
+            );
+
+            // Token must not have been created (logo validation must happen
+            // before / atomically with creation; here we accept either, but
+            // the address must not be reachable as a TIP-20 with a bad logo).
+            // Sanity: a follow-up createTokenWithLogo with the same salt and
+            // a valid URI must succeed.
+            let token = factory.create_token_with_logo(
+                sender,
+                createTokenWithLogoCall {
+                    name: "Good".to_string(),
+                    symbol: "GOOD".to_string(),
+                    currency: "USD".to_string(),
+                    quoteToken: path_usd.address(),
+                    admin: sender,
+                    salt,
+                    logoURI: "https://example.com/icon.svg".to_string(),
+                },
+            )?;
+            assert!(factory.is_tip20(token)?);
 
             Ok(())
         })

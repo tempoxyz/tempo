@@ -174,6 +174,7 @@ crate::sol! {
         error PermitExpired();
         error InvalidSignature();
         error LogoURITooLong();
+        error InvalidLogoURI();
     }
 }
 
@@ -318,6 +319,12 @@ impl TIP20Error {
     /// Error when logoURI exceeds 256 bytes (TIP-1026)
     pub const fn logo_uri_too_long() -> Self {
         Self::LogoURITooLong(ITIP20::LogoURITooLong {})
+    }
+
+    /// Error when logoURI is not a syntactically valid URI or its scheme is
+    /// not in the protocol allowlist (TIP-1026).
+    pub const fn invalid_logo_uri() -> Self {
+        Self::InvalidLogoURI(ITIP20::InvalidLogoURI {})
     }
 }
 
