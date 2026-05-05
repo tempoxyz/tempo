@@ -237,6 +237,25 @@ jobs:
               return;
             }
 
+            // E2E currently owns the two-runner consensus harness. The txgen
+            // sender plugs into this path once #3669 lands.
+            if (mode === 'e2e') {
+              const unsupported = [];
+              if (backend !== 'tempo-bench') unsupported.push(`backend=${backend}`);
+              if (forceBloat === 'true') unsupported.push('force-bloat');
+              if (unsupported.length > 0) {
+                const msg = `❌ **Invalid bench command**\n\n\`mode=e2e\` does not support ${unsupported.map(s => `\`${s}\``).join(', ')} yet. The e2e harness currently uses \`backend=tempo-bench\`; \`backend=txgen\` will be wired in the txgen bench PR.`;
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body: msg,
+                });
+                core.setFailed(msg);
+                return;
+              }
+            }
+
             // Validate tracy value
             if (!['off', 'on', 'full'].includes(tracy)) {
               const msg = `❌ **Invalid bench command**\n\n\`tracy=${tracy}\` is not valid. Must be \`off\`, \`on\`, or \`full\`.\n\n${usageStr}`;

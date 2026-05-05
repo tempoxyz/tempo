@@ -1,7 +1,7 @@
 # E2E benchmark job.
 #
-# Called by bench.yml when mode=e2e. Runs `nu tempo.nu bench` for an
-# interleaved B-F-F-B comparison using synthetic transactions.
+# Called by bench.yml when mode=e2e. Runs `nu tempo.nu bench-consensus`
+# for an interleaved B-F-F-B comparison using synthetic transactions.
 
 name: bench-e2e
 
@@ -242,10 +242,19 @@ permissions:
 
 jobs:
   bench-e2e:
-    name: bench-e2e
-    runs-on: [self-hosted, Linux, X64, bare-metal]
+    name: bench-e2e-${{ matrix.role }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - role: red
+            runner: bench-a
+          - role: blue
+            runner: bench-b
+    runs-on: [self-hosted, Linux, X64, "${{ matrix.runner }}"]
     timeout-minutes: 300
     env:
+      BENCH_ROLE: ${{ matrix.role }}
       BENCH_PR: ${{ inputs.pr }}
       BENCH_ACTOR: ${{ inputs.actor || github.actor }}
       BENCH_PRESET: ${{ inputs.preset }}
@@ -287,7 +296,7 @@ jobs:
         run: echo "::add-mask::$GRAFANA_TEMPO"
 
       - name: Mask ClickHouse credentials
-        if: env.CLICKHOUSE_URL
+        if: matrix.role == 'red' && env.CLICKHOUSE_URL
         run: |
           echo "::add-mask::$CLICKHOUSE_URL"
           echo "::add-mask::$CLICKHOUSE_PASSWORD"
@@ -331,7 +340,7 @@ jobs:
           ref: ${{ steps.checkout-ref.outputs.ref }}
 
       - name: Checkout txgen repository
-        if: env.BENCH_BACKEND == 'txgen'
+        if: matrix.role == 'red' && env.BENCH_BACKEND == 'txgen'
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: tempoxyz/txgen
@@ -341,14 +350,14 @@ jobs:
           fetch-depth: 0
 
       - name: Checkout txgen ref
-        if: env.BENCH_BACKEND == 'txgen' && env.BENCH_TXGEN_REF != ''
+        if: matrix.role == 'red' && env.BENCH_BACKEND == 'txgen' && env.BENCH_TXGEN_REF != ''
         working-directory: txgen
         run: |
           git fetch origin "$BENCH_TXGEN_REF" --quiet
           git checkout --detach FETCH_HEAD
 
       - name: Resolve job URL and update status
-        if: env.BENCH_COMMENT_ID
+        if: matrix.role == 'red' && env.BENCH_COMMENT_ID
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           INPUT_BASELINE_NAME: ${{ inputs.baseline-name }}
@@ -361,7 +370,7 @@ jobs:
               repo: context.repo.repo,
               run_id: context.runId,
             });
-            const job = jobs.jobs.find(j => j.name === 'bench-e2e');
+            const job = jobs.jobs.find(j => j.name === 'bench-e2e-red');
             const jobUrl = job ? job.html_url : `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             core.exportVariable('BENCH_JOB_URL', jobUrl);
 
@@ -395,8 +404,19 @@ jobs:
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
         continue-on-error: true
 
+      - name: Validate e2e options
+        run: |
+          if [ "$BENCH_BACKEND" = "txgen" ]; then
+            echo "::error::mode=e2e currently supports backend=tempo-bench only; backend=txgen will be wired in the txgen bench PR."
+            exit 1
+          fi
+          if [ "$BENCH_FORCE_BLOAT" = "true" ]; then
+            echo "::error::mode=e2e does not support force-bloat yet because both runners must use coordinated benchmark snapshots."
+            exit 1
+          fi
+
       - name: Build txgen backend
-        if: env.BENCH_BACKEND == 'txgen'
+        if: matrix.role == 'red' && env.BENCH_BACKEND == 'txgen'
         working-directory: txgen
         run: |
           cargo build --release --bin txgen-tempo --bin bench
@@ -480,6 +500,7 @@ jobs:
             core.setOutput('feature-name', featureName);
 
       - name: Resolve PR attribution
+        if: matrix.role == 'red'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           INPUT_FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
@@ -506,7 +527,7 @@ jobs:
             core.exportVariable('BENCH_PR', pr);
 
       - name: Update status (running benchmark)
-        if: success() && env.BENCH_COMMENT_ID
+        if: matrix.role == 'red' && success() && env.BENCH_COMMENT_ID
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: ${{ secrets.DEREK_PAT }}
@@ -514,36 +535,44 @@ jobs:
             const s = require('./.github/scripts/bench-update-status.js');
             await s({github, context, status: 'Running benchmark...'});
 
-      - name: Run benchmark
+      - name: Run benchmark role
         id: bench
         env:
           BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
           FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
         run: |
-          if [ "$BENCH_BACKEND" = "txgen" ]; then
-            cmd=(nu contrib/bench/bench-txgen.nu run)
-          else
-            cmd=(nu tempo.nu bench)
-          fi
+          cmd=(nu tempo.nu bench-consensus)
           cmd+=(
+            --role "$BENCH_ROLE"
             --preset "$BENCH_PRESET"
-            --mode dev
             --bloat "$BENCH_BLOAT"
             --duration "$BENCH_DURATION"
             --tps "$BENCH_TPS"
-            --no-infra
             --baseline "$BASELINE_REF"
             --feature "$FEATURE_REF"
-            --bench-datadir "/reth-bench/tempo_${BENCH_BLOAT}mb"
+            --baseline-name "${{ steps.refs.outputs.baseline-name }}"
+            --feature-name "${{ steps.refs.outputs.feature-name }}"
+            --peer-url "$BENCH_E2E_PEER_URL"
+            --bench-datadir "$BENCH_E2E_NODE_DIR"
+            --node-dir "$BENCH_E2E_NODE_DIR"
+            --genesis "$BENCH_E2E_GENESIS"
+            --trusted-peers "$BENCH_E2E_TRUSTED_PEERS"
+            --consensus-port "$BENCH_E2E_CONSENSUS_PORT"
+            --benchmark-id "bench-e2e-${GITHUB_RUN_ID}"
+            --reference-epoch "$(date +%s)"
             --tune
             --gas-limit 1000000000000
           )
+          [ -n "${BENCH_E2E_CONSENSUS_IP:-}" ] && cmd+=(--consensus-ip "$BENCH_E2E_CONSENSUS_IP")
           [ "$BENCH_SAMPLY" = "true" ] && cmd+=(--samply)
           [ "$BENCH_TRACY" != "off" ] && cmd+=(--tracy "$BENCH_TRACY" --tracy-seconds "$BENCH_TRACY_SECONDS" --tracy-offset "$BENCH_TRACY_OFFSET")
+          [ -n "$BENCH_BASELINE_HARDFORK" ] && cmd+=(--baseline-hardfork "$BENCH_BASELINE_HARDFORK" --feature-hardfork "$BENCH_FEATURE_HARDFORK")
+          [ -n "${BENCH_E2E_BASELINE_GENESIS:-}" ] && cmd+=(--baseline-genesis "$BENCH_E2E_BASELINE_GENESIS")
+          [ -n "${BENCH_E2E_FEATURE_GENESIS:-}" ] && cmd+=(--feature-genesis "$BENCH_E2E_FEATURE_GENESIS")
+          [ -n "${BENCH_E2E_BASELINE_NODE_DIR:-}" ] && cmd+=(--baseline-node-dir "$BENCH_E2E_BASELINE_NODE_DIR")
+          [ -n "${BENCH_E2E_FEATURE_NODE_DIR:-}" ] && cmd+=(--feature-node-dir "$BENCH_E2E_FEATURE_NODE_DIR")
           [ -n "$BENCH_BASELINE_ARGS" ] && cmd+=(--baseline-args="$BENCH_BASELINE_ARGS")
           [ -n "$BENCH_FEATURE_ARGS" ] && cmd+=(--feature-args="$BENCH_FEATURE_ARGS")
-          [ -n "$BENCH_BASELINE_HARDFORK" ] && cmd+=(--baseline-hardfork "$BENCH_BASELINE_HARDFORK" --feature-hardfork "$BENCH_FEATURE_HARDFORK")
-          [ "$BENCH_FORCE_BLOAT" = "true" ] && cmd+=(--force)
           [ -n "$BENCH_BENCH_ARGS" ] && cmd+=(--bench-args="$BENCH_BENCH_ARGS")
           [ -n "$BENCH_BENCH_ENV" ] && cmd+=(--bench-env="$BENCH_BENCH_ENV")
           [ -n "$BENCH_BASELINE_ENV" ] && cmd+=(--baseline-env="$BENCH_BASELINE_ENV")
@@ -563,14 +592,21 @@ jobs:
           echo "Results directory: $RESULTS_DIR"
 
       - name: Upload results
-        if: "!cancelled()"
+        if: matrix.role == 'red' && !cancelled()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: tempo-bench-results
+          name: tempo-bench-red-results
+          path: bench-results/
+
+      - name: Upload blue results
+        if: matrix.role == 'blue' && !cancelled()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tempo-bench-blue-results
           path: bench-results/
 
       - name: Upload results to ClickHouse
-        if: success()
+        if: matrix.role == 'red' && success()
         env:
           BENCH_BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
           BENCH_FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
@@ -580,7 +616,7 @@ jobs:
         run: bash contrib/bench/upload-clickhouse.sh "$BENCH_RESULTS_DIR"
 
       - name: Post results to PR
-        if: success()
+        if: matrix.role == 'red' && success()
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
@@ -655,12 +691,12 @@ jobs:
               const links = [];
               for (const run of runs) {
                 try {
-                  const url = fs.readFileSync(`${resultsDir}/profile-${run}-url.txt`, 'utf8').trim();
-                  if (url) links.push(`- **${run}**: [Firefox Profiler](${url})`);
+                  const url = fs.readFileSync(`${resultsDir}/profile-${run}-red-url.txt`, 'utf8').trim();
+                  if (url) links.push(`- **${run} / red**: [Firefox Profiler](${url})`);
                 } catch (e) {}
               }
               if (links.length > 0) {
-                samplySection = `\n\n### Samply Profiles\n\n${links.join('\n')}\n`;
+                samplySection = `\n\n### Red Samply Profiles\n\n${links.join('\n')}\n`;
               }
             }
 
@@ -671,12 +707,12 @@ jobs:
               const links = [];
               for (const run of runs) {
                 try {
-                  const url = fs.readFileSync(`${resultsDir}/tracy-${run}-url.txt`, 'utf8').trim();
-                  if (url) links.push(`- **${run}**: [Tracy Viewer](${url})`);
+                  const url = fs.readFileSync(`${resultsDir}/tracy-${run}-red-url.txt`, 'utf8').trim();
+                  if (url) links.push(`- **${run} / red**: [Tracy Viewer](${url})`);
                 } catch (e) {}
               }
               if (links.length > 0) {
-                tracySection = `\n\n### Tracy Profiles\n\n${links.join('\n')}\n`;
+                tracySection = `\n\n### Red Tracy Profiles\n\n${links.join('\n')}\n`;
               }
             }
 
@@ -695,8 +731,81 @@ jobs:
               await core.summary.addRaw(body).write();
             }
 
+      - name: Add blue profile links to PR
+        if: matrix.role == 'blue' && success() && env.BENCH_COMMENT_ID && steps.results-dir.outputs.path
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
+        with:
+          github-token: ${{ secrets.DEREK_PAT }}
+          script: |
+            const fs = require('fs');
+            const resultsDir = process.env.BENCH_RESULTS_DIR;
+            const runs = ['baseline-1', 'feature-1', 'feature-2', 'baseline-2'];
+
+            const sections = [];
+            if (process.env.BENCH_SAMPLY === 'true') {
+              const links = [];
+              for (const run of runs) {
+                try {
+                  const url = fs.readFileSync(`${resultsDir}/profile-${run}-blue-url.txt`, 'utf8').trim();
+                  if (url) links.push(`- **${run} / blue**: [Firefox Profiler](${url})`);
+                } catch (e) {}
+              }
+              if (links.length) sections.push(`### Blue Samply Profiles\n\n${links.join('\n')}`);
+            }
+
+            if (process.env.BENCH_TRACY && process.env.BENCH_TRACY !== 'off') {
+              const links = [];
+              for (const run of runs) {
+                try {
+                  const url = fs.readFileSync(`${resultsDir}/tracy-${run}-blue-url.txt`, 'utf8').trim();
+                  if (url) links.push(`- **${run} / blue**: [Tracy Viewer](${url})`);
+                } catch (e) {}
+              }
+              if (links.length) sections.push(`### Blue Tracy Profiles\n\n${links.join('\n')}`);
+            }
+
+            if (!sections.length) return;
+
+            const markerStart = '<!-- e2e-blue-profiles:start -->';
+            const markerEnd = '<!-- e2e-blue-profiles:end -->';
+            const block = `${markerStart}\n\n${sections.join('\n\n')}\n\n${markerEnd}`;
+            const comment_id = parseInt(process.env.BENCH_COMMENT_ID);
+            const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+            for (let attempt = 0; attempt < 60; attempt++) {
+              const { data: comment } = await github.rest.issues.getComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id,
+              });
+
+              const current = comment.body || '';
+              if (!current.includes('Benchmark complete!')) {
+                await sleep(10000);
+                continue;
+              }
+
+              const escapedStart = markerStart.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+              const escapedEnd = markerEnd.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+              const withoutOldBlock = current
+                .replace(new RegExp(`\\n*${escapedStart}[\\s\\S]*?${escapedEnd}`, 'm'), '')
+                .trimEnd();
+
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id,
+                body: `${withoutOldBlock}\n\n${block}`,
+              });
+              return;
+            }
+
+            core.warning('Timed out waiting for the red result comment; blue profile links were left in the blue artifact.');
+
       - name: Send Slack notification (success)
-        if: success() && steps.results-dir.outputs.path && env.BENCH_NO_SLACK != 'true'
+        if: matrix.role == 'red' && success() && steps.results-dir.outputs.path && env.BENCH_NO_SLACK != 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           BENCH_WORK_DIR: ${{ steps.results-dir.outputs.path }}
@@ -708,7 +817,7 @@ jobs:
             await notify.success({ core, context });
 
       - name: Send Slack notification (failure)
-        if: failure() && env.BENCH_NO_SLACK != 'true'
+        if: matrix.role == 'red' && failure() && env.BENCH_NO_SLACK != 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
@@ -716,7 +825,7 @@ jobs:
             await notify.failure({ core, context, failedStep: 'running benchmark' });
 
       - name: Update status (failed)
-        if: failure() && env.BENCH_COMMENT_ID
+        if: matrix.role == 'red' && failure() && env.BENCH_COMMENT_ID
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: ${{ secrets.DEREK_PAT }}
@@ -730,7 +839,7 @@ jobs:
             });
 
       - name: Update status (cancelled)
-        if: cancelled() && env.BENCH_COMMENT_ID
+        if: matrix.role == 'red' && cancelled() && env.BENCH_COMMENT_ID
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: ${{ secrets.DEREK_PAT }}

@@ -1400,6 +1400,100 @@ def build-consensus-args [node_dir: string, trusted_peers: string, port: int] {
     ]
 }
 
+# Build consensus args for a single validator running on an isolated e2e runner.
+def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int, consensus_ip: string] {
+    let addr = ($node_dir | path basename)
+    let inferred_ip = if ($addr | str contains ":") {
+        $addr | split row ":" | get 0
+    } else {
+        "0.0.0.0"
+    }
+    let ip = if $consensus_ip != "" { $consensus_ip } else { $inferred_ip }
+    let signing_key = $"($node_dir)/signing.key"
+    let signing_share = $"($node_dir)/signing.share"
+    let enode_key = $"($node_dir)/enode.key"
+
+    let execution_p2p_port = $port + 1
+    let metrics_port = $port + 2
+    let authrpc_port = $port + 3
+    let discv5_port = $port + 4
+
+    [
+        "--consensus.signing-key" $signing_key
+        "--consensus.signing-share" $signing_share
+        "--consensus.listen-address" $"($ip):($port)"
+        "--consensus.metrics-address" $"($ip):($metrics_port)"
+        "--trusted-peers" $trusted_peers
+        "--port" $"($execution_p2p_port)"
+        "--discovery.port" $"($execution_p2p_port)"
+        "--discovery.v5.port" $"($discv5_port)"
+        "--p2p-secret-key" $enode_key
+        "--authrpc.port" $"($authrpc_port)"
+        "--consensus.fee-recipient" "0x0000000000000000000000000000000000000000"
+        "--consensus.use-local-defaults"
+        "--consensus.bypass-ip-check"
+    ]
+}
+
+def stop-tempo-processes-gracefully [] {
+    let pids = (find-tempo-pids)
+    if ($pids | length) > 0 {
+        print $"Stopping tempo processes: ($pids | str join ', ')"
+    }
+    for pid in $pids {
+        kill -s 2 $pid
+    }
+    for pid in $pids {
+        mut wait = 0
+        while $wait < 30 {
+            if (ps | where pid == $pid | length) == 0 { break }
+            sleep 1sec
+            $wait = $wait + 1
+        }
+        if $wait >= 30 {
+            print $"  Warning: PID ($pid) did not exit, sending SIGKILL"
+            kill -s 9 $pid
+            sleep 1sec
+        }
+    }
+    if ("/tmp/reth.ipc" | path exists) {
+        rm --force /tmp/reth.ipc
+    }
+}
+
+def stop-tracy-capture [] {
+    print "  Stopping tracy-capture..."
+    let capture_pids = (ps | where name =~ "tracy-capture" | get pid)
+    for pid in $capture_pids {
+        kill -s 2 $pid
+    }
+    mut wait_tracy = 0
+    while $wait_tracy < 30 {
+        if (ps | where name =~ "tracy-capture" | length) == 0 { break }
+        sleep 1sec
+        $wait_tracy = $wait_tracy + 1
+    }
+    if $wait_tracy >= 30 {
+        print "  Warning: tracy-capture did not exit, sending SIGKILL"
+        for pid in (ps | where name =~ "tracy-capture" | get pid) {
+            kill -s 9 $pid
+        }
+    }
+}
+
+def wait-for-samply-profile [] {
+    print "  Waiting for samply to finish saving profile..."
+    mut wait = 0
+    while $wait < 120 {
+        if (ps | where name =~ "samply" | length) == 0 { break }
+        sleep 500ms
+        $wait = $wait + 1
+    }
+    if $wait >= 120 {
+        print "  Warning: samply did not exit in time"
+    }
+}
+
 # ============================================================================
 # System tuning for benchmarks
 # ============================================================================
@@ -1550,6 +1644,536 @@ def "main bench-init" [
     } [[$genesis_path "genesis.json"]] $bloat $bloat_file
 
     print $"Virgin snapshot initialized and promoted."
+}
+
+# Run one side of a 2-runner e2e consensus benchmark phase.
+def "main bench-consensus-phase" [
+    --role: string                                      # Runner role: red sends load, blue validates only
+    --phase: string                                     # Phase label: baseline-1, feature-1, feature-2, baseline-2
+    --ref: string                                       # Git SHA/ref to build and run
+    --peer-url: string                                  # RPC URL for the validator on the other runner
+    --preset: string = ""                               # Preset: tip20, erc20, swap, order, tempo-mix
+    --tps: int = 10000                                  # Target TPS
+    --duration: int = 300                               # Duration in seconds
+    --accounts: int = 1000                              # Number of accounts
+    --max-concurrent-requests: int = 100                # Max concurrent requests
+    --bench-datadir: string = ""                        # Datadir/snapshot path to recover before the phase
+    --bloat: int = 0                                    # State bloat size in MiB; enables bloat mnemonic for the sender
+    --profile: string = $DEFAULT_PROFILE                # Cargo build profile
+    --features: string = $DEFAULT_FEATURES              # Cargo features
+    --samply                                            # Profile this runner's validator with samply
+    --samply-args: list<string> = []                    # Additional samply arguments
+    --tracy: string = "off"                             # Tracy profiling: off, on, full
+    --tracy-filter: string = "debug"                    # Tracy tracing filter level
+    --tracy-seconds: int = 30                           # Tracy capture duration limit in seconds
+    --tracy-offset: int = 120                           # Seconds to wait before starting tracy capture
+    --node-args: string = ""                            # Additional node args for all phases
+    --baseline-args: string = ""                        # Additional node args for baseline phases
+    --feature-args: string = ""                         # Additional node args for feature phases
+    --bench-args: string = ""                           # Additional tempo-bench args
+    --baseline-env: string = ""                         # Environment vars for baseline node phases
+    --feature-env: string = ""                          # Environment vars for feature node phases
+    --bench-env: string = ""                            # Environment vars for the sender process
+    --benchmark-id: string = ""                         # Shared benchmark identifier
+    --reference-epoch: int = 0                           # Shared timestamp for observability correlation
+    --tune                                              # Apply system tuning
+    --loud                                              # Show node debug logs
+    --node-dir: string                                  # Validator node directory for this runner
+    --genesis: string                                   # Shared genesis file path
+    --trusted-peers: string                             # Comma-separated enode peers for the network
+    --consensus-port: int = 8000                        # Consensus listen port for this validator
+    --consensus-ip: string = ""                         # Optional consensus listen IP override
+    --results-dir: string = ""                          # Output root directory
+    --gas-limit: string = ""                            # Optional builder gas limit override
+    --tracing-otlp: string = ""                         # OTLP endpoint for tracing
+    --peer-hold-extra: int = 600                         # Extra seconds to wait for phase peer shutdown
+    --wait-peer-offline                                  # Wait for peer RPC to go offline before returning from sender phase
+    --no-cache                                          # Skip binary cache
+] {
+    if $role not-in ["red" "blue"] {
+        print $"Error: --role must be 'red' or 'blue' \(got '($role)'\)"
+        exit 1
+    }
+    if $preset == "" and $bench_args == "" {
+        print "Error: either --preset or --bench-args must be provided"
+        print $"  Available presets: ($PRESETS | columns | str join ', ')"
+        exit 1
+    }
+    if $preset != "" and not ($preset in $PRESETS) {
+        print $"Unknown preset: ($preset). Available: ($PRESETS | columns | str join ', ')"
+        exit 1
+    }
+    if $tracy not-in ["off" "on" "full"] {
+        print $"Error: --tracy must be one of: off, on, full \(got '($tracy)'\)"
+        exit 1
+    }
+    if $samply and $tracy != "off" {
+        print "Error: --samply and --tracy are mutually exclusive. Choose one."
+        exit 1
+    }
+    if $tracy != "off" {
+        let has_tracy_capture = (which tracy-capture | length) > 0
+        if not $has_tracy_capture {
+            print "Error: tracy-capture not found. Install tracy and ensure tracy-capture is in PATH."
+            exit 1
+        }
+    }
+    if not ($node_dir | path exists) {
+        print $"Error: node dir does not exist: ($node_dir)"
+        exit 1
+    }
+    if not ($genesis | path exists) {
+        print $"Error: genesis file does not exist: ($genesis)"
+        exit 1
+    }
+    for required_file in ["signing.key" "signing.share" "enode.key"] {
+        let path = $"($node_dir)/($required_file)"
+        if not ($path | path exists) {
+            print $"Error: missing validator file: ($path)"
+            exit 1
+        }
+    }
+
+    let run_type = if ($phase | str starts-with "baseline") { "baseline" } else { "feature" }
+    let side_args = if $run_type == "baseline" { $baseline_args } else { $feature_args }
+    let side_env = if $run_type == "baseline" { $baseline_env } else { $feature_env }
+    let effective_node_args = ([$node_args $side_args] | where { |a| $a != "" } | str join " ")
+    let extra_args = if $effective_node_args == "" { [] } else { $effective_node_args | split row " " }
+    let weights = if $preset != "" { $PRESETS | get $preset } else { [0.0, 0.0, 0.0, 0.0] }
+    let datadir = if $bench_datadir != "" { $bench_datadir } else { $node_dir }
+    let phase_results_dir = if $results_dir != "" { $results_dir } else { $"($BENCH_RESULTS_DIR)/($phase)" }
+
+    main kill
+    let tuning_state = if $tune { apply-system-tuning } else { { tuned: false } }
+    bench-recover $datadir
+
+    let worktree_dir = $"($BENCH_WORKTREES_DIR)/e2e-($role)"
+    git worktree prune
+    mkdir $BENCH_WORKTREES_DIR
+    if ($worktree_dir | path exists) {
+        print $"Removing stale e2e worktree: ($worktree_dir)"
+        try { git worktree remove --force $worktree_dir } catch { rm -rf $worktree_dir }
+    }
+    git worktree add $worktree_dir $ref
+    let tbc = (tracy-build-config $features $tracy)
+    let effective_features = $tbc.features
+    let effective_extra_rustflags = $tbc.extra_rustflags
+    let effective_no_cache = $no_cache or ($tracy != "off")
+    if $effective_no_cache {
+        build-in-worktree --no-cache --extra-rustflags $effective_extra_rustflags --bench-features $features $worktree_dir $ref $profile $effective_features $ref
+    } else {
+        build-in-worktree $worktree_dir $ref $profile $effective_features $ref
+    }
+
+    let tempo_bin = (worktree-bin $worktree_dir $profile "tempo")
+    let bench_bin = (worktree-bin $worktree_dir $profile "tempo-bench")
+    if $results_dir == "" and ($phase_results_dir | path exists) { rm -rf $phase_results_dir }
+    mkdir $phase_results_dir
+    for stale in [
+        $"($phase_results_dir)/report-($phase).json"
+        $"($phase_results_dir)/profile-($phase).json.gz"
+        $"($phase_results_dir)/profile-($phase)-($role).json.gz"
+        $"($phase_results_dir)/tracy-profile-($phase).tracy"
+        $"($phase_results_dir)/tracy-profile-($phase)-($role).tracy"
+        $"($phase_results_dir)/logs-($phase)-($role)"
+    ] {
+        if ($stale | path exists) { rm -rf $stale }
+    }
+    if ("report.json" | path exists) { rm report.json }
+
+    let log_dir = $"($LOCALNET_DIR)/logs-e2e-($role)-($phase)"
+    if ($log_dir | path exists) { rm -rf $log_dir }
+    mkdir $log_dir
+
+    let tracing_url = if $tracing_otlp == "" and ($env.GRAFANA_TEMPO? | default "" | str length) > 0 {
+        let base = ($env.GRAFANA_TEMPO | str trim --right --char '/')
+        $"($base)/v1/traces"
+    } else if $tracing_otlp == "" and ($env.TEMPO_TELEMETRY_URL? | default "" | str length) > 0 {
+        let base = ($env.TEMPO_TELEMETRY_URL | str trim --right --char '/')
+        $"($base)/opentelemetry/v1/traces"
+    } else {
+        $tracing_otlp
+    }
+
+    let node_index = (port-to-node-index $consensus_port)
+    let http_port = 8545 + $node_index
+    let reth_metrics_port = 9001 + $node_index
+    let rpc_url = $"http://localhost:($http_port)"
+
+    let base_args = (build-base-args $genesis $node_dir $log_dir "0.0.0.0" $http_port $reth_metrics_port)
+        | append (build-e2e-consensus-args $node_dir $trusted_peers $consensus_port $consensus_ip)
+        | append (log-filter-args $loud)
+        | append (if $gas_limit != "" { ["--builder.gaslimit" $gas_limit] } else { [] })
+        | append (if $tracy != "off" { ["--log.tracy" "--log.tracy.filter" $tracy_filter] } else { [] })
+        | append (if $tracing_url != "" { [$"--tracing-otlp=($tracing_url)"] } else { [] })
+    let args = (dedup-args $base_args $extra_args)
+
+    let tracy_env_prefix = if $tracy == "on" {
+        "TRACY_NO_SYS_TRACE=1 "
+    } else if $tracy == "full" {
+        "TRACY_SAMPLING_HZ=1 "
+    } else { "" }
+    let profile_label = $"($phase)-($role)"
+    let full_samply_args = if $samply {
+        $samply_args | append ["--save-only" "--presymbolicate" "--output" $"($phase_results_dir)/profile-($profile_label).json.gz"]
+    } else { [] }
+    let node_cmd = wrap-samply [$tempo_bin ...$args] $samply $full_samply_args
+    let node_cmd_str = ($node_cmd | str join " ")
+    let otel_attrs = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($benchmark_id),benchmark_run=($phase),runner_role=($role),run_type=($run_type),git_ref=($ref),reference_epoch=($reference_epoch) "
+    let env_prefix = if $side_env != "" { $"($side_env) " } else { "" }
+
+    print $"Starting e2e validator ($role) for ($phase) at ($rpc_url)"
+    job spawn { sh -c $"($env_prefix)($otel_attrs)($tracy_env_prefix)($node_cmd_str) 2>&1" | lines | each { |line| print $"[e2e-($phase)-($role)] ($line)" } }
+
+    sleep 2sec
+    let rpc_timeout = if $bloat > 0 { 600 } else { 300 }
+    wait-for-rpc-online $rpc_url $rpc_timeout
+    wait-for-peers $rpc_url 1 300
+    wait-for-chain-advance $rpc_url 300
+
+    let tracy_output = $"($phase_results_dir)/tracy-profile-($profile_label).tracy"
+    mut tracy_capture_started = false
+    if $tracy != "off" {
+        let seconds_flag = if $tracy_seconds > 0 { $"-s ($tracy_seconds)" } else { "" }
+        let limit_msg = if $tracy_seconds > 0 { $" \(($tracy_seconds)s limit\)" } else { "" }
+        if $tracy_offset > 0 {
+            print $"  Tracy-capture will start in ($tracy_offset)s($limit_msg)..."
+            job spawn { sleep ($"($tracy_offset)sec" | into duration); sh -c $"tracy-capture -f -o ($tracy_output) ($seconds_flag)" }
+        } else {
+            print $"  Starting tracy-capture($limit_msg)..."
+            job spawn { sh -c $"tracy-capture -f -o ($tracy_output) ($seconds_flag)" }
+            sleep 500ms
+        }
+        $tracy_capture_started = true
+    }
+
+    mut phase_exit = 0
+    if $role == "red" {
+        wait-for-rpc-online $peer_url 300
+        let bench_cmd = [
+            $bench_bin
+            "run-max-tps"
+            "--tps" $"($tps)"
+            "--duration" $"($duration)"
+            "--accounts" $"($accounts)"
+            "--max-concurrent-requests" $"($max_concurrent_requests)"
+            "--target-urls" $"($rpc_url),($peer_url)"
+            "--faucet"
+            "--clear-txpool"
+        ]
+        | append (if $preset != "" {
+            [
+                "--tip20-weight" $"($weights | get 0)"
+                "--erc20-weight" $"($weights | get 1)"
+                "--swap-weight" $"($weights | get 2)"
+                "--place-order-weight" $"($weights | get 3)"
+            ]
+        } else { [] })
+        | append (if $bloat > 0 {
+            ["--mnemonic" $"'($BLOAT_MNEMONIC)'"]
+        } else { [] })
+        | append (if $bench_args != "" { $bench_args | split row " " } else { [] })
+        | append ["--node-commit-sha" $ref "--build-profile" $profile "--benchmark-mode" "e2e"]
+
+        let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
+        print $"Running e2e sender: ($bench_cmd | str join ' ')"
+        let bench_result = (bash -c $"($bench_env_export)ulimit -Sn unlimited && ($bench_cmd | str join ' ')" | complete)
+        if $bench_result.stdout != "" { print $bench_result.stdout }
+        if $bench_result.stderr != "" { print $bench_result.stderr }
+        if $bench_result.exit_code != 0 {
+            print $"Sender failed for ($phase) with exit code ($bench_result.exit_code)"
+            $phase_exit = $bench_result.exit_code
+        }
+
+        if ("report.json" | path exists) {
+            cp report.json $"($phase_results_dir)/report-($phase).json"
+            rm report.json
+        } else {
+            print $"ERROR: sender for ($phase) produced no report.json"
+            $phase_exit = 1
+        }
+        if $wait_peer_offline {
+            if $tracy_capture_started {
+                stop-tracy-capture
+                $tracy_capture_started = false
+            }
+            stop-tempo-processes-gracefully
+            if $samply { wait-for-samply-profile }
+            wait-for-rpc-offline $peer_url ($peer_hold_extra + 300)
+        }
+    } else {
+        let hold_seconds = $duration + $peer_hold_extra
+        wait-for-rpc-online $peer_url 300
+        print $"Runner blue is holding validator online until runner red stops \(timeout: ($hold_seconds)s\)..."
+        wait-for-rpc-offline $peer_url $hold_seconds
+    }
+
+    if $tracy_capture_started {
+        stop-tracy-capture
+    }
+    stop-tempo-processes-gracefully
+    if $samply { wait-for-samply-profile }
+    if ($log_dir | path exists) {
+        cp -r $log_dir $"($phase_results_dir)/logs-($phase)-($role)"
+    }
+    try { git worktree remove --force $worktree_dir } catch { }
+    restore-system-tuning $tuning_state
+
+    if $phase_exit != 0 {
+        exit $phase_exit
+    }
+}
+
+# Run the full B-F-F-B e2e sequence on one side of the 2-runner setup.
+def "main bench-consensus" [
+    --role: string                                      # Runner role: red sends load, blue validates only
+    --baseline: string                                  # Baseline git SHA/ref
+    --feature: string                                   # Feature git SHA/ref
+    --peer-url: string                                  # RPC URL for the validator on the other runner
+    --preset: string = ""                               # Preset: tip20, erc20, swap, order, tempo-mix
+    --tps: int = 10000                                  # Target TPS
+    --duration: int = 300                               # Duration in seconds
+    --accounts: int = 1000                              # Number of accounts
+    --max-concurrent-requests: int = 100                # Max concurrent requests
+    --bench-datadir: string = ""                        # Datadir/snapshot path to recover before each phase
+    --bloat: int = 0                                    # State bloat size in MiB
+    --profile: string = $DEFAULT_PROFILE                # Cargo build profile
+    --features: string = $DEFAULT_FEATURES              # Cargo features
+    --samply                                            # Profile validators with samply
+    --samply-args: string = ""                          # Additional samply arguments
+    --tracy: string = "off"                             # Tracy profiling: off, on, full
+    --tracy-filter: string = "debug"                    # Tracy tracing filter level
+    --tracy-seconds: int = 30                           # Tracy capture duration limit in seconds
+    --tracy-offset: int = 120                           # Seconds to wait before starting tracy capture
+    --node-args: string = ""                            # Additional node args for all phases
+    --baseline-args: string = ""                        # Additional node args for baseline phases
+    --feature-args: string = ""                         # Additional node args for feature phases
+    --bench-args: string = ""                           # Additional tempo-bench args
+    --baseline-env: string = ""                         # Environment vars for baseline node phases
+    --feature-env: string = ""                          # Environment vars for feature node phases
+    --bench-env: string = ""                            # Environment vars for the sender process
+    --benchmark-id: string = ""                         # Shared benchmark identifier
+    --reference-epoch: int = 0                           # Shared timestamp for observability correlation
+    --baseline-name: string = ""                         # Baseline display name for summary
+    --feature-name: string = ""                          # Feature display name for summary
+    --tune                                              # Apply system tuning
+    --loud                                              # Show node debug logs
+    --node-dir: string                                  # Validator node directory for this runner
+    --genesis: string                                   # Shared genesis file path
+    --baseline-genesis: string = ""                     # Baseline genesis for hardfork comparison
+    --feature-genesis: string = ""                      # Feature genesis for hardfork comparison
+    --baseline-node-dir: string = ""                    # Baseline validator dir for hardfork comparison
+    --feature-node-dir: string = ""                     # Feature validator dir for hardfork comparison
+    --baseline-hardfork: string = ""                    # Latest active hardfork for baseline phases
+    --feature-hardfork: string = ""                     # Latest active hardfork for feature phases
+    --trusted-peers: string                             # Comma-separated enode peers for the network
+    --consensus-port: int = 8000                        # Consensus listen port for this validator
+    --consensus-ip: string = ""                         # Optional consensus listen IP override
+    --gas-limit: string = ""                            # Optional builder gas limit override
+    --tracing-otlp: string = ""                         # OTLP endpoint for tracing
+    --no-cache                                          # Skip binary cache
+] {
+    if $role not-in ["red" "blue"] {
+        print $"Error: --role must be 'red' or 'blue' \(got '($role)'\)"
+        exit 1
+    }
+
+    let timestamp = (date now | format date "%Y%m%d-%H%M%S")
+    let results_dir = $"($BENCH_RESULTS_DIR)/($timestamp)"
+    mkdir $results_dir
+    print $"BENCH_RESULTS_DIR=($results_dir)"
+
+    let effective_benchmark_id = if $benchmark_id != "" { $benchmark_id } else { $"bench-e2e-($timestamp)" }
+    let effective_reference_epoch = if $reference_epoch != 0 {
+        $reference_epoch
+    } else {
+        ((date now | into int) / 1_000_000_000 | into int)
+    }
+    if $tracy not-in ["off" "on" "full"] {
+        print $"Error: --tracy must be one of: off, on, full \(got '($tracy)'\)"
+        exit 1
+    }
+    if $samply and $tracy != "off" {
+        print "Error: --samply and --tracy are mutually exclusive. Choose one."
+        exit 1
+    }
+    if ($baseline_hardfork != "" or $feature_hardfork != "") and ($baseline_hardfork == "" or $feature_hardfork == "") {
+        print "Error: --baseline-hardfork and --feature-hardfork must both be provided"
+        exit 1
+    }
+    if $baseline_hardfork != "" {
+        let valid = ($TEMPO_HARDFORKS | any { |f| $f == ($baseline_hardfork | str upcase) })
+        if not $valid {
+            print $"Error: unknown baseline hardfork '($baseline_hardfork)'. Valid: ($TEMPO_HARDFORKS | str join ', ')"
+            exit 1
+        }
+    }
+    if $feature_hardfork != "" {
+        let valid = ($TEMPO_HARDFORKS | any { |f| $f == ($feature_hardfork | str upcase) })
+        if not $valid {
+            print $"Error: unknown feature hardfork '($feature_hardfork)'. Valid: ($TEMPO_HARDFORKS | str join ', ')"
+            exit 1
+        }
+    }
+    let dual_hardfork = $baseline_hardfork != "" and $feature_hardfork != ""
+    if $tracy == "full" and (^uname | str trim) == "Linux" {
+        print "Configuring system for tracy CPU sampling..."
+        try { sudo sysctl -w kernel.perf_event_paranoid=-1 } catch { }
+        try { sudo mount -t tracefs tracefs /sys/kernel/tracing -o remount,mode=755 } catch { }
+        try { sudo chmod -R a+r /sys/kernel/tracing } catch { }
+    }
+
+    let env_baseline_genesis = ($env.BENCH_E2E_BASELINE_GENESIS? | default "")
+    let env_feature_genesis = ($env.BENCH_E2E_FEATURE_GENESIS? | default "")
+    let env_baseline_node_dir = ($env.BENCH_E2E_BASELINE_NODE_DIR? | default "")
+    let env_feature_node_dir = ($env.BENCH_E2E_FEATURE_NODE_DIR? | default "")
+    let genesis_dir = ($genesis | path dirname)
+    let baseline_genesis_candidate = $"($genesis_dir)/genesis-baseline.json"
+    let feature_genesis_candidate = $"($genesis_dir)/genesis-feature.json"
+    let effective_baseline_genesis = if $baseline_genesis != "" {
+        $baseline_genesis
+    } else if $env_baseline_genesis != "" {
+        $env_baseline_genesis
+    } else if ($baseline_genesis_candidate | path exists) {
+        $baseline_genesis_candidate
+    } else {
+        $genesis
+    }
+    let effective_feature_genesis = if $feature_genesis != "" {
+        $feature_genesis
+    } else if $env_feature_genesis != "" {
+        $env_feature_genesis
+    } else if ($feature_genesis_candidate | path exists) {
+        $feature_genesis_candidate
+    } else {
+        $genesis
+    }
+    let effective_baseline_node_dir = if $baseline_node_dir != "" {
+        $baseline_node_dir
+    } else if $env_baseline_node_dir != "" {
+        $env_baseline_node_dir
+    } else {
+        $node_dir
+    }
+    let effective_feature_node_dir = if $feature_node_dir != "" {
+        $feature_node_dir
+    } else if $env_feature_node_dir != "" {
+        $env_feature_node_dir
+    } else {
+        $node_dir
+    }
+    if $dual_hardfork {
+        if $effective_baseline_genesis == $genesis or $effective_feature_genesis == $genesis {
+            print "Error: hardfork comparison requires phase-specific e2e genesis files. Set BENCH_E2E_BASELINE_GENESIS and BENCH_E2E_FEATURE_GENESIS, or place genesis-baseline.json and genesis-feature.json next to BENCH_E2E_GENESIS on both runners."
+            exit 1
+        }
+    }
+    for phase_genesis in [$effective_baseline_genesis $effective_feature_genesis] {
+        if not ($phase_genesis | path exists) {
+            print $"Error: e2e genesis file does not exist: ($phase_genesis)"
+            exit 1
+        }
+    }
+    for phase_node_dir in [$effective_baseline_node_dir $effective_feature_node_dir] {
+        if not ($phase_node_dir | path exists) {
+            print $"Error: e2e node dir does not exist: ($phase_node_dir)"
+            exit 1
+        }
+    }
+    let samply_args_list = if $samply_args == "" { [] } else { $samply_args | split row " " }
+    let effective_baseline_datadir = if $effective_baseline_node_dir != $node_dir {
+        $effective_baseline_node_dir
+    } else {
+        $bench_datadir
+    }
+    let effective_feature_datadir = if $effective_feature_node_dir != $node_dir {
+        $effective_feature_node_dir
+    } else {
+        $bench_datadir
+    }
+
+    let runs = [
+        { phase: "baseline-1", ref: $baseline, wait_peer: true, genesis: $effective_baseline_genesis, node_dir: $effective_baseline_node_dir, bench_datadir: $effective_baseline_datadir }
+        { phase: "feature-1", ref: $feature, wait_peer: true, genesis: $effective_feature_genesis, node_dir: $effective_feature_node_dir, bench_datadir: $effective_feature_datadir }
+        { phase: "feature-2", ref: $feature, wait_peer: true, genesis: $effective_feature_genesis, node_dir: $effective_feature_node_dir, bench_datadir: $effective_feature_datadir }
+        { phase: "baseline-2", ref: $baseline, wait_peer: false, genesis: $effective_baseline_genesis, node_dir: $effective_baseline_node_dir, bench_datadir: $effective_baseline_datadir }
+    ]
+
+    for run in $runs {
+        (main bench-consensus-phase
+            --role $role
+            --phase $run.phase
+            --ref $run.ref
+            --peer-url $peer_url
+            --preset $preset
+            --tps $tps
+            --duration $duration
+            --accounts $accounts
+            --max-concurrent-requests $max_concurrent_requests
+            --bench-datadir $run.bench_datadir
+            --bloat $bloat
+            --profile $profile
+            --features $features
+            --samply=$samply
+            --samply-args $samply_args_list
+            --tracy $tracy
+            --tracy-filter $tracy_filter
+            --tracy-seconds $tracy_seconds
+            --tracy-offset $tracy_offset
+            --node-args $node_args
+            --baseline-args $baseline_args
+            --feature-args $feature_args
+            --bench-args $bench_args
+            --baseline-env $baseline_env
+            --feature-env $feature_env
+            --bench-env $bench_env
+            --benchmark-id $effective_benchmark_id
+            --reference-epoch $effective_reference_epoch
+            --tune=$tune
+            --loud=$loud
+            --node-dir $run.node_dir
+            --genesis $run.genesis
+            --trusted-peers $trusted_peers
+            --consensus-port $consensus_port
+            --consensus-ip $consensus_ip
+            --results-dir $results_dir
+            --gas-limit $gas_limit
+            --tracing-otlp $tracing_otlp
+            --peer-hold-extra 600
+            --wait-peer-offline=$run.wait_peer
+            --no-cache=$no_cache)
+    }
+
+    if $samply {
+        print $"\nUploading ($role) samply profiles to Firefox Profiler..."
+        for run in $runs {
+            let profile_label = $"($run.phase)-($role)"
+            let profile = $"($results_dir)/profile-($profile_label).json.gz"
+            let url = (upload-samply-profile $profile)
+            if $url != null {
+                $url | save -f $"($results_dir)/profile-($profile_label)-url.txt"
+            }
+        }
+    }
+    if $tracy != "off" {
+        print $"\nUploading ($role) tracy profiles to R2..."
+        for run in $runs {
+            let profile_label = $"($run.phase)-($role)"
+            let profile = $"($results_dir)/tracy-profile-($profile_label).tracy"
+            let viewer_url = (upload-tracy-profile $profile $profile_label $run.ref)
+            if $viewer_url != null {
+                $viewer_url | save -f $"($results_dir)/tracy-($profile_label)-url.txt"
+            }
+        }
+    }
+
+    if $role == "red" {
+        let baseline_label_base = if $baseline_name != "" { $baseline_name } else { $baseline }
+        let feature_label_base = if $feature_name != "" { $feature_name } else { $feature }
+        let baseline_label = if $dual_hardfork { $"($baseline_label_base) \(($baseline_hardfork | str upcase)\)" } else { $baseline_label_base }
+        let feature_label = if $dual_hardfork { $"($feature_label_base) \(($feature_hardfork | str upcase)\)" } else { $feature_label_base }
+        generate-summary $results_dir $baseline_label $feature_label $bloat $preset $tps $duration --benchmark-id $effective_benchmark_id --reference-epoch $effective_reference_epoch
+    }
 }
 
 # ============================================================================
@@ -2203,10 +2827,43 @@ def "main bench" [
     print "Done."
 }
 
-# Wait for an RPC endpoint to be ready and chain advancing
-def wait-for-rpc [url: string, max_attempts: int = 120] {
+# Fetch the current block number from an RPC endpoint.
+def rpc-block-number [url: string] {
+    let result = (do { curl -sf $url -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' } | complete)
+    if $result.exit_code != 0 {
+        return null
+    }
+    let parsed = (try { $result.stdout | from json } catch { null })
+    if $parsed == null {
+        return null
+    }
+    let hex = ($parsed | get -o result | default "")
+    if $hex == "" {
+        return null
+    }
+    try { $hex | str replace "0x" "" | into int --radix 16 } catch { null }
+}
+
+# Fetch the current peer count from an RPC endpoint.
+def rpc-peer-count [url: string] {
+    let result = (do { curl -sf $url -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"net_peerCount","params":[],"id":1}' } | complete)
+    if $result.exit_code != 0 {
+        return null
+    }
+    let parsed = (try { $result.stdout | from json } catch { null })
+    if $parsed == null {
+        return null
+    }
+    let hex = ($parsed | get -o result | default "")
+    if $hex == "" {
+        return null
+    }
+    try { $hex | str replace "0x" "" | into int --radix 16 } catch { null }
+}
+
+# Wait for an RPC endpoint to answer eth_blockNumber.
+def wait-for-rpc-online [url: string, max_attempts: int = 120] {
     mut attempt = 0
-    mut start_block: int = -1
 
     loop {
         $attempt = $attempt + 1
@@ -2214,21 +2871,10 @@ def wait-for-rpc [url: string, max_attempts: int = 120] {
             print $"  Timeout waiting for ($url)"
             exit 1
         }
-        let result = (do { curl -sf $url -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' } | complete)
-        if $result.exit_code == 0 {
-            let hex = ($result.stdout | from json | get result)
-            let block = ($hex | str replace "0x" "" | into int --radix 16)
-            if $start_block == -1 {
-                $start_block = $block
-                print $"  ($url) connected \(block ($block)\), waiting for chain to advance..."
-            } else if $block > $start_block {
-                print $"  ($url) ready \(block ($start_block) -> ($block)\)"
-                break
-            } else {
-                if ($attempt mod 10) == 0 {
-                    print $"  ($url) still at block ($block)... \(($attempt)s\)"
-                }
-            }
+        let block = (rpc-block-number $url)
+        if $block != null {
+            print $"  ($url) online \(block ($block)\)"
+            break
         } else {
             if ($attempt mod 10) == 0 {
                 print $"  Still waiting for ($url)... \(($attempt)s\)"
@@ -2236,6 +2882,86 @@ def wait-for-rpc [url: string, max_attempts: int = 120] {
         }
         sleep 1sec
     }
+}
+
+# Wait for an RPC endpoint to stop answering eth_blockNumber.
+def wait-for-rpc-offline [url: string, max_attempts: int = 120] {
+    mut attempt = 0
+
+    loop {
+        $attempt = $attempt + 1
+        if $attempt > $max_attempts {
+            print $"  Timeout waiting for ($url) to go offline"
+            exit 1
+        }
+        let block = (rpc-block-number $url)
+        if $block == null {
+            print $"  ($url) offline"
+            break
+        }
+        if ($attempt mod 10) == 0 {
+            print $"  Waiting for ($url) to go offline... \(($attempt)s\)"
+        }
+        sleep 1sec
+    }
+}
+
+# Wait for an RPC endpoint to see at least the requested number of peers.
+def wait-for-peers [url: string, min_peers: int = 1, max_attempts: int = 120] {
+    mut attempt = 0
+
+    loop {
+        $attempt = $attempt + 1
+        if $attempt > $max_attempts {
+            print $"  Timeout waiting for ($url) to reach ($min_peers) peer\(s\)"
+            exit 1
+        }
+        let peers = (rpc-peer-count $url)
+        if $peers != null and $peers >= $min_peers {
+            print $"  ($url) has ($peers) peer\(s\)"
+            break
+        }
+        if ($attempt mod 10) == 0 {
+            let current = if $peers == null { "unknown" } else { $"($peers)" }
+            print $"  ($url) peers: ($current)/($min_peers)... \(($attempt)s\)"
+        }
+        sleep 1sec
+    }
+}
+
+# Wait for an RPC endpoint's chain to advance beyond its first observed block.
+def wait-for-chain-advance [url: string, max_attempts: int = 120] {
+    mut attempt = 0
+    mut start_block: int = -1
+
+    loop {
+        $attempt = $attempt + 1
+        if $attempt > $max_attempts {
+            print $"  Timeout waiting for ($url) chain to advance"
+            exit 1
+        }
+        let block = (rpc-block-number $url)
+        if $block != null {
+            if $start_block == -1 {
+                $start_block = $block
+                print $"  ($url) connected \(block ($block)\), waiting for chain to advance..."
+            } else if $block > $start_block {
+                print $"  ($url) ready \(block ($start_block) -> ($block)\)"
+                break
+            } else if ($attempt mod 10) == 0 {
+                print $"  ($url) still at block ($block)... \(($attempt)s\)"
+            }
+        } else if ($attempt mod 10) == 0 {
+            print $"  Still waiting for ($url)... \(($attempt)s\)"
+        }
+        sleep 1sec
+    }
+}
+
+# Wait for an RPC endpoint to be ready and chain advancing.
+def wait-for-rpc [url: string, max_attempts: int = 120] {
+    wait-for-rpc-online $url $max_attempts
+    wait-for-chain-advance $url $max_attempts
 }
 
 # ============================================================================
