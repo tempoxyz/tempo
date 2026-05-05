@@ -157,7 +157,6 @@ struct TempoArgs {
 }
 
 impl TempoArgs {
-    // When unset, the default is to follow uncertified until the migration is complete
     fn is_following_uncertified(&self) -> bool {
         self.follow.is_some() && !self.follow_certify
     }
