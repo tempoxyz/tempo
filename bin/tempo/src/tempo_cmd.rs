@@ -422,7 +422,7 @@ impl ValidatorTransactionArgs {
             Box::new(std::io::stdout())
         };
 
-        writeln!(output, "{}", &serde_json::json!(tx))?;
+        writeln!(output, "{}", serde_json::json!(tx))?;
         if self.dry_run {
             return Ok(());
         }
