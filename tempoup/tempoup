@@ -6,7 +6,7 @@ set -e
 
 # NOTE: if you make modifications to this script, please increment the version number.
 # WARNING: the SemVer pattern: major.minor.patch must be followed as we use it to determine if the script is up to date.
-TEMPOUP_INSTALLER_VERSION="0.0.8"
+TEMPOUP_INSTALLER_VERSION="0.0.9"
 
 REPO="tempoxyz/tempo"
 # GPG key fingerprint for release signing verification
@@ -400,6 +400,34 @@ main() {
         fi
     else
         info "Skipping GPG signature verification (not available for versions <= 1.1.1)"
+    fi
+
+    # SLSA build provenance + SBOM attestation verification (Sigstore-signed
+    # via GitHub OIDC at release time). Requires the `gh` CLI with
+    # authentication; fall back to a warning so the installer still works on
+    # minimal containers / `curl | sh` flows. Older releases predate the
+    # attestations, so we just try and skip on absence.
+    if check_cmd gh && gh auth status >/dev/null 2>&1; then
+        info "Verifying SLSA build provenance..."
+        if gh attestation verify "$ARCHIVE_PATH" --repo "$REPO" \
+                --predicate-type https://slsa.dev/provenance/v1 >/dev/null 2>&1; then
+            info "SLSA provenance verified ✓"
+        else
+            warn "SLSA provenance attestation not found or failed verification."
+            warn "(Older releases may not carry attestations.)"
+        fi
+
+        info "Verifying SBOM attestation..."
+        if gh attestation verify "$ARCHIVE_PATH" --repo "$REPO" \
+                --predicate-type https://spdx.dev/Document >/dev/null 2>&1; then
+            info "SBOM attestation verified ✓"
+        else
+            warn "SBOM attestation not found or failed verification."
+            warn "(Older releases may not carry attestations.)"
+        fi
+    else
+        warn "gh CLI not found or not authenticated. Skipping SLSA + SBOM attestation verification."
+        warn "Install gh and run 'gh auth login' to enable full attestation verification."
     fi
 
     # Extract archive

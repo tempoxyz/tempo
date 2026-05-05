@@ -146,7 +146,9 @@ See [`SECURITY.md`](https://github.com/tempoxyz/tempo?tab=security-ov-file). Not
 
 ### Verifying release binaries
 
-Each release ships `<binary>-<version>-<target>.tar.gz` plus `.sha256` (archive checksum), `.asc` (GPG signature), and `.spdx.json` (SBOM), as well as a separate `<binary>-<version>-<target>.sha256` for the bare unpacked binary (the durable hash an independent rebuilder will compare against). Releases also carry Sigstore-signed SLSA provenance and SBOM attestations. To verify a download:
+Each release ships `<binary>-<version>-<target>.tar.gz` plus `.sha256` (archive checksum), `.asc` (GPG signature), and `.spdx.json` (SBOM), as well as a separate `<binary>-<version>-<target>.sha256` for the bare unpacked binary (the durable hash an independent rebuilder will compare against). Releases also carry Sigstore-signed SLSA provenance and SBOM attestations.
+
+The [`tempoup`](./tempoup) installer performs the archive checksum, GPG signature, and (if `gh` is installed and authenticated) the SLSA + SBOM attestation checks automatically on every install. The bare-binary checksum below is intended for independent rebuilders and distro packagers — `tempoup` doesn't re-verify it because the archive checksum already covers the binary's bytes transitively. The manual recipe below mirrors the full set of steps for auditability and use without `tempoup`:
 
 ```bash
 TAG=v1.6.0
