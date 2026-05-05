@@ -15,6 +15,7 @@ crate::sol! {
         struct ChannelDescriptor {
             address payer;
             address payee;
+            address operator;
             address token;
             bytes32 salt;
             address authorizedSigner;
@@ -24,7 +25,6 @@ crate::sol! {
         struct ChannelState {
             uint96 settled;
             uint96 deposit;
-            uint32 expiresAt;
             uint32 closeData;
         }
 
@@ -38,11 +38,11 @@ crate::sol! {
 
         function open(
             address payee,
+            address operator,
             address token,
             uint96 deposit,
             bytes32 salt,
-            address authorizedSigner,
-            uint32 expiresAt
+            address authorizedSigner
         )
             external
             returns (bytes32 channelId);
@@ -56,8 +56,7 @@ crate::sol! {
 
         function topUp(
             ChannelDescriptor calldata descriptor,
-            uint96 additionalDeposit,
-            uint32 newExpiresAt
+            uint96 additionalDeposit
         )
             external;
 
@@ -88,6 +87,7 @@ crate::sol! {
         function computeChannelId(
             address payer,
             address payee,
+            address operator,
             address token,
             bytes32 salt,
             address authorizedSigner,
@@ -108,12 +108,12 @@ crate::sol! {
             bytes32 indexed channelId,
             address indexed payer,
             address indexed payee,
+            address operator,
             address token,
             address authorizedSigner,
             bytes32 salt,
             bytes32 openTxHash,
-            uint96 deposit,
-            uint32 expiresAt
+            uint96 deposit
         );
 
         event Settled(
@@ -130,8 +130,7 @@ crate::sol! {
             address indexed payer,
             address indexed payee,
             uint96 additionalDeposit,
-            uint96 newDeposit,
-            uint32 newExpiresAt
+            uint96 newDeposit
         );
 
         event CloseRequested(
@@ -155,18 +154,14 @@ crate::sol! {
             address indexed payee
         );
 
-        event ChannelExpired(bytes32 indexed channelId, address indexed payer, address indexed payee);
-
         error ChannelAlreadyExists();
         error ChannelNotFound();
-        error ChannelFinalized();
         error NotPayer();
         error NotPayee();
+        error NotPayeeOrOperator();
         error InvalidPayee();
         error InvalidToken();
         error ZeroDeposit();
-        error InvalidExpiry();
-        error ChannelExpiredError();
         error InvalidSignature();
         error AmountExceedsDeposit();
         error AmountNotIncreasing();
@@ -186,16 +181,16 @@ impl TIP20ChannelEscrowError {
         Self::ChannelNotFound(ITIP20ChannelEscrow::ChannelNotFound {})
     }
 
-    pub const fn channel_finalized() -> Self {
-        Self::ChannelFinalized(ITIP20ChannelEscrow::ChannelFinalized {})
-    }
-
     pub const fn not_payer() -> Self {
         Self::NotPayer(ITIP20ChannelEscrow::NotPayer {})
     }
 
     pub const fn not_payee() -> Self {
         Self::NotPayee(ITIP20ChannelEscrow::NotPayee {})
+    }
+
+    pub const fn not_payee_or_operator() -> Self {
+        Self::NotPayeeOrOperator(ITIP20ChannelEscrow::NotPayeeOrOperator {})
     }
 
     pub const fn invalid_payee() -> Self {
@@ -208,14 +203,6 @@ impl TIP20ChannelEscrowError {
 
     pub const fn zero_deposit() -> Self {
         Self::ZeroDeposit(ITIP20ChannelEscrow::ZeroDeposit {})
-    }
-
-    pub const fn invalid_expiry() -> Self {
-        Self::InvalidExpiry(ITIP20ChannelEscrow::InvalidExpiry {})
-    }
-
-    pub const fn channel_expired() -> Self {
-        Self::ChannelExpiredError(ITIP20ChannelEscrow::ChannelExpiredError {})
     }
 
     pub const fn invalid_signature() -> Self {

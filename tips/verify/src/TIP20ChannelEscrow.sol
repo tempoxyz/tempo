@@ -16,8 +16,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
     uint64 public constant CLOSE_GRACE_PERIOD = 15 minutes;
 
     uint256 internal constant _DEPOSIT_OFFSET = 96;
-    uint256 internal constant _EXPIRES_AT_OFFSET = 192;
-    uint256 internal constant _CLOSE_DATA_OFFSET = 224;
+    uint256 internal constant _CLOSE_DATA_OFFSET = 192;
 
     bytes32 internal constant _EIP712_DOMAIN_TYPEHASH =
         keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
@@ -26,6 +25,10 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
 
     mapping(bytes32 => uint256) internal channelStates;
     bytes32 internal _openTxHashContext;
+    // Reference-contract-only approximation of the precompile's transient per-transaction guard.
+    // Because `channelId` includes `openTxHash`, this does not block real cross-transaction
+    // reopens, which always use a different transaction hash.
+    mapping(bytes32 => bool) internal _openedChannelIdsForTest;
 
     error OpenTxHashNotSet();
 
@@ -36,38 +39,40 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
 
     function open(
         address payee,
+        address operator,
         address token,
         uint96 deposit,
         bytes32 salt,
-        address authorizedSigner,
-        uint32 expiresAt
+        address authorizedSigner
     ) external returns (bytes32 channelId) {
         if (payee == address(0)) revert InvalidPayee();
         if (token == address(0)) revert InvalidToken();
         if (deposit == 0) revert ZeroDeposit();
-        if (expiresAt <= block.timestamp) revert InvalidExpiry();
 
         bytes32 openTxHash = _consumeOpenTxHash();
-        channelId = computeChannelId(msg.sender, payee, token, salt, authorizedSigner, openTxHash);
+        channelId = computeChannelId(msg.sender, payee, operator, token, salt, authorizedSigner, openTxHash);
         if (channelStates[channelId] != 0) revert ChannelAlreadyExists();
+        if (_openedChannelIdsForTest[channelId]) revert ChannelAlreadyExists();
 
         channelStates[channelId] =
-            _encodeChannelState(ChannelState({settled: 0, deposit: deposit, expiresAt: expiresAt, closeData: 0}));
+            _encodeChannelState(ChannelState({settled: 0, deposit: deposit, closeData: 0}));
 
         // The reference contract keeps ERC-20-style allowance flow for local verification.
         // The enshrined precompile should use TIP-20 `systemTransferFrom` semantics instead.
         bool success = ITIP20(token).transferFrom(msg.sender, address(this), deposit);
         if (!success) revert TransferFailed();
+        _openedChannelIdsForTest[channelId] = true;
 
-        emit ChannelOpened(channelId, msg.sender, payee, token, authorizedSigner, salt, openTxHash, deposit, expiresAt);
+        emit ChannelOpened(channelId, msg.sender, payee, operator, token, authorizedSigner, salt, openTxHash, deposit);
     }
 
     function settle(ChannelDescriptor calldata descriptor, uint96 cumulativeAmount, bytes calldata signature) external {
         bytes32 channelId = _channelId(descriptor);
         ChannelState memory channel = _loadChannelState(channelId);
 
-        if (msg.sender != descriptor.payee) revert NotPayee();
-        if (_isExpired(channel.expiresAt)) revert ChannelExpiredError();
+        if (msg.sender != descriptor.payee && (descriptor.operator == address(0) || msg.sender != descriptor.operator)) {
+            revert NotPayeeOrOperator();
+        }
         if (cumulativeAmount > channel.deposit) revert AmountExceedsDeposit();
         if (cumulativeAmount <= channel.settled) revert AmountNotIncreasing();
 
@@ -83,17 +88,13 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         emit Settled(channelId, descriptor.payer, descriptor.payee, cumulativeAmount, delta, channel.settled);
     }
 
-    function topUp(ChannelDescriptor calldata descriptor, uint96 additionalDeposit, uint32 newExpiresAt) external {
+    function topUp(ChannelDescriptor calldata descriptor, uint96 additionalDeposit) external {
         bytes32 channelId = _channelId(descriptor);
         ChannelState memory channel = _loadChannelState(channelId);
 
         if (msg.sender != descriptor.payer) revert NotPayer();
 
         if (additionalDeposit > type(uint96).max - channel.deposit) revert DepositOverflow();
-        if (newExpiresAt != 0) {
-            if (newExpiresAt <= block.timestamp) revert InvalidExpiry();
-            if (newExpiresAt <= channel.expiresAt) revert InvalidExpiry();
-        }
 
         if (additionalDeposit > 0) {
             channel.deposit += additionalDeposit;
@@ -104,10 +105,6 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
             if (!success) revert TransferFailed();
         }
 
-        if (newExpiresAt != 0) {
-            channel.expiresAt = newExpiresAt;
-        }
-
         if (channel.closeData != 0) {
             channel.closeData = 0;
             emit CloseRequestCancelled(channelId, descriptor.payer, descriptor.payee);
@@ -115,7 +112,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
 
         channelStates[channelId] = _encodeChannelState(channel);
 
-        emit TopUp(channelId, descriptor.payer, descriptor.payee, additionalDeposit, channel.deposit, channel.expiresAt);
+        emit TopUp(channelId, descriptor.payer, descriptor.payee, additionalDeposit, channel.deposit);
     }
 
     function requestClose(ChannelDescriptor calldata descriptor) external {
@@ -151,7 +148,6 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         if (captureAmount > channel.deposit) revert AmountExceedsDeposit();
 
         if (captureAmount > previousSettled) {
-            if (_isExpired(channel.expiresAt)) revert ChannelExpiredError();
             _validateVoucher(descriptor, channelId, cumulativeAmount, signature);
         }
 
@@ -183,7 +179,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         bool closeGracePassed =
             closeRequestedAt != 0 && block.timestamp >= uint256(closeRequestedAt) + CLOSE_GRACE_PERIOD;
 
-        if (!closeGracePassed && !_isExpired(channel.expiresAt)) revert CloseNotReady();
+        if (!closeGracePassed) revert CloseNotReady();
 
         uint96 refund = channel.deposit - channel.settled;
         delete channelStates[channelId];
@@ -193,7 +189,6 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
             if (!success) revert TransferFailed();
         }
 
-        emit ChannelExpired(channelId, descriptor.payer, descriptor.payee);
         emit ChannelClosed(channelId, descriptor.payer, descriptor.payee, channel.settled, refund);
     }
 
@@ -201,6 +196,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         channel.descriptor = ChannelDescriptor({
             payer: descriptor.payer,
             payee: descriptor.payee,
+            operator: descriptor.operator,
             token: descriptor.token,
             salt: descriptor.salt,
             authorizedSigner: descriptor.authorizedSigner,
@@ -225,13 +221,14 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
     function computeChannelId(
         address payer,
         address payee,
+        address operator,
         address token,
         bytes32 salt,
         address authorizedSigner,
         bytes32 openTxHash
     ) public view returns (bytes32) {
         return keccak256(
-            abi.encode(payer, payee, token, salt, authorizedSigner, openTxHash, TIP20_CHANNEL_ESCROW, block.chainid)
+            abi.encode(payer, payee, operator, token, salt, authorizedSigner, openTxHash, TIP20_CHANNEL_ESCROW, block.chainid)
         );
     }
 
@@ -248,6 +245,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         return computeChannelId(
             descriptor.payer,
             descriptor.payee,
+            descriptor.operator,
             descriptor.token,
             descriptor.salt,
             descriptor.authorizedSigner,
@@ -268,23 +266,17 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
 
         state.settled = uint96(packedState);
         state.deposit = uint96(packedState >> _DEPOSIT_OFFSET);
-        state.expiresAt = uint32(packedState >> _EXPIRES_AT_OFFSET);
         state.closeData = uint32(packedState >> _CLOSE_DATA_OFFSET);
     }
 
     function _encodeChannelState(ChannelState memory state) internal pure returns (uint256 packedState) {
         packedState = uint256(state.settled);
         packedState |= uint256(state.deposit) << _DEPOSIT_OFFSET;
-        packedState |= uint256(state.expiresAt) << _EXPIRES_AT_OFFSET;
         packedState |= uint256(state.closeData) << _CLOSE_DATA_OFFSET;
     }
 
     function _closeRequestedAt(uint32 closeData) internal pure returns (uint32) {
         return closeData;
-    }
-
-    function _isExpired(uint32 expiresAt) internal view returns (bool) {
-        return block.timestamp >= expiresAt;
     }
 
     function _validateVoucher(

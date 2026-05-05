@@ -34,7 +34,6 @@ static VERSION_HASH: LazyLock<B256> = LazyLock::new(|| keccak256(b"1"));
 struct PackedChannelState {
     settled: U96,
     deposit: U96,
-    expires_at: u32,
     close_data: u32,
 }
 
@@ -43,7 +42,6 @@ impl From<PackedChannelState> for ITIP20ChannelEscrow::ChannelState {
         Self {
             settled: state.settled,
             deposit: state.deposit,
-            expiresAt: state.expires_at,
             closeData: state.close_data,
         }
     }
@@ -66,8 +64,9 @@ pub struct TIP20ChannelEscrow {
     // WARNING(rusowsky): transient storage slots must always be placed at the very end until the
     // `contract` macro is refactored and has 2 independent layouts (persistent and transient).
     // If new (persistent) storage fields need to be added to the precompile, they must go above
-    // this one.
+    // these ones.
     current_tx_hash: B256,
+    opened_this_tx: Mapping<B256, bool>,
 }
 
 impl TIP20ChannelEscrow {
@@ -99,19 +98,17 @@ impl TIP20ChannelEscrow {
         if deposit.is_zero() {
             return Err(TIP20ChannelEscrowError::zero_deposit().into());
         }
-        if call.expiresAt as u64 <= self.now() {
-            return Err(TIP20ChannelEscrowError::invalid_expiry().into());
-        }
         let open_tx_hash = self.current_tx_hash.t_read()?;
         if open_tx_hash.is_zero() {
-            return Err(
-                crate::error::TempoPrecompileError::Fatal("current tx hash unavailable".into())
-            );
+            return Err(crate::error::TempoPrecompileError::Fatal(
+                "current tx hash unavailable".into(),
+            ));
         }
 
         let channel_id = self.compute_channel_id_inner(
             msg_sender,
             call.payee,
+            call.operator,
             call.token,
             call.salt,
             call.authorizedSigner,
@@ -120,12 +117,14 @@ impl TIP20ChannelEscrow {
         if self.channel_states[channel_id].read()?.exists() {
             return Err(TIP20ChannelEscrowError::channel_already_exists().into());
         }
+        if self.opened_this_tx[channel_id].t_read()? {
+            return Err(TIP20ChannelEscrowError::channel_already_exists().into());
+        }
 
         let batch = self.storage.checkpoint();
         self.channel_states[channel_id].write(PackedChannelState {
             settled: U96::ZERO,
             deposit,
-            expires_at: call.expiresAt,
             close_data: 0,
         })?;
         TIP20Token::from_address(call.token)?.system_transfer_from(
@@ -133,17 +132,18 @@ impl TIP20ChannelEscrow {
             self.address,
             U256::from(call.deposit),
         )?;
+        self.opened_this_tx[channel_id].t_write(true)?;
         self.emit_event(TIP20ChannelEscrowEvent::ChannelOpened(
             ITIP20ChannelEscrow::ChannelOpened {
                 channelId: channel_id,
                 payer: msg_sender,
                 payee: call.payee,
+                operator: call.operator,
                 token: call.token,
                 authorizedSigner: call.authorizedSigner,
                 salt: call.salt,
                 openTxHash: open_tx_hash,
                 deposit: call.deposit,
-                expiresAt: call.expiresAt,
             },
         ))?;
         batch.commit();
@@ -159,11 +159,10 @@ impl TIP20ChannelEscrow {
         let channel_id = self.channel_id(&call.descriptor)?;
         let mut state = self.load_existing_state(channel_id)?;
 
-        if msg_sender != call.descriptor.payee {
-            return Err(TIP20ChannelEscrowError::not_payee().into());
-        }
-        if self.is_expired(state.expires_at) {
-            return Err(TIP20ChannelEscrowError::channel_expired().into());
+        if msg_sender != call.descriptor.payee
+            && (call.descriptor.operator.is_zero() || msg_sender != call.descriptor.operator)
+        {
+            return Err(TIP20ChannelEscrowError::not_payee_or_operator().into());
         }
 
         let cumulative = call.cumulativeAmount;
@@ -226,12 +225,6 @@ impl TIP20ChannelEscrow {
             .checked_add(additional)
             .ok_or_else(TIP20ChannelEscrowError::deposit_overflow)?;
 
-        if call.newExpiresAt != 0 {
-            if call.newExpiresAt as u64 <= self.now() || call.newExpiresAt <= state.expires_at {
-                return Err(TIP20ChannelEscrowError::invalid_expiry().into());
-            }
-        }
-
         let had_close_request = state.close_requested_at().is_some();
         let batch = self.storage.checkpoint();
 
@@ -242,9 +235,6 @@ impl TIP20ChannelEscrow {
                 self.address,
                 U256::from(call.additionalDeposit),
             )?;
-        }
-        if call.newExpiresAt != 0 {
-            state.expires_at = call.newExpiresAt;
         }
         if had_close_request {
             state.close_data = 0;
@@ -266,7 +256,6 @@ impl TIP20ChannelEscrow {
             payee: call.descriptor.payee,
             additionalDeposit: call.additionalDeposit,
             newDeposit: state.deposit,
-            newExpiresAt: state.expires_at,
         }))?;
         batch.commit();
 
@@ -330,9 +319,6 @@ impl TIP20ChannelEscrow {
         }
 
         if capture > previous_settled {
-            if self.is_expired(state.expires_at) {
-                return Err(TIP20ChannelEscrowError::channel_expired().into());
-            }
             self.validate_voucher(
                 &call.descriptor,
                 channel_id,
@@ -389,7 +375,7 @@ impl TIP20ChannelEscrow {
         let close_ready = state
             .close_requested_at()
             .is_some_and(|requested_at| self.now() >= requested_at as u64 + CLOSE_GRACE_PERIOD);
-        if !close_ready && !self.is_expired(state.expires_at) {
+        if !close_ready {
             return Err(TIP20ChannelEscrowError::close_not_ready().into());
         }
 
@@ -407,13 +393,6 @@ impl TIP20ChannelEscrow {
                 U256::from(refund),
             )?;
         }
-        self.emit_event(TIP20ChannelEscrowEvent::ChannelExpired(
-            ITIP20ChannelEscrow::ChannelExpired {
-                channelId: channel_id,
-                payer: call.descriptor.payer,
-                payee: call.descriptor.payee,
-            },
-        ))?;
         self.emit_event(TIP20ChannelEscrowEvent::ChannelClosed(
             ITIP20ChannelEscrow::ChannelClosed {
                 channelId: channel_id,
@@ -463,6 +442,7 @@ impl TIP20ChannelEscrow {
         self.compute_channel_id_inner(
             call.payer,
             call.payee,
+            call.operator,
             call.token,
             call.salt,
             call.authorizedSigner,
@@ -489,14 +469,11 @@ impl TIP20ChannelEscrow {
         self.storage.timestamp().saturating_to::<u32>()
     }
 
-    fn is_expired(&self, expires_at: u32) -> bool {
-        self.now() >= expires_at as u64
-    }
-
     fn channel_id(&self, descriptor: &ITIP20ChannelEscrow::ChannelDescriptor) -> Result<B256> {
         self.compute_channel_id_inner(
             descriptor.payer,
             descriptor.payee,
+            descriptor.operator,
             descriptor.token,
             descriptor.salt,
             descriptor.authorizedSigner,
@@ -508,6 +485,7 @@ impl TIP20ChannelEscrow {
         &self,
         payer: Address,
         payee: Address,
+        operator: Address,
         token: Address,
         salt: B256,
         authorized_signer: Address,
@@ -517,6 +495,7 @@ impl TIP20ChannelEscrow {
             &(
                 payer,
                 payee,
+                operator,
                 token,
                 salt,
                 authorized_signer,
@@ -621,6 +600,7 @@ mod tests {
         ITIP20ChannelEscrow::ChannelDescriptor {
             payer,
             payee,
+            operator: Address::ZERO,
             token,
             salt,
             authorizedSigner: authorized_signer,
@@ -663,17 +643,16 @@ mod tests {
             let mut escrow = TIP20ChannelEscrow::new();
             escrow.initialize()?;
             escrow.set_current_tx_hash(open_tx_hash)?;
-            let now = StorageCtx::default().timestamp().to::<u32>();
 
             let channel_id = escrow.open(
                 payer,
                 ITIP20ChannelEscrow::openCall {
                     payee,
+                    operator: Address::ZERO,
                     token: token.address(),
                     deposit: abi_u96(300),
                     salt,
                     authorizedSigner: Address::ZERO,
-                    expiresAt: now + 1_000,
                 },
             )?;
 
@@ -717,16 +696,32 @@ mod tests {
             assert_eq!(state.deposit, 0);
             assert_eq!(state.settled, 0);
 
+            let same_tx_reopen = escrow.open(
+                payer,
+                ITIP20ChannelEscrow::openCall {
+                    payee,
+                    operator: Address::ZERO,
+                    token: token.address(),
+                    deposit: abi_u96(1),
+                    salt,
+                    authorizedSigner: Address::ZERO,
+                },
+            );
+            assert_eq!(
+                same_tx_reopen.unwrap_err(),
+                TIP20ChannelEscrowError::channel_already_exists().into()
+            );
+
             escrow.set_current_tx_hash(reopen_tx_hash)?;
             let reopened_channel_id = escrow.open(
                 payer,
                 ITIP20ChannelEscrow::openCall {
                     payee,
+                    operator: Address::ZERO,
                     token: token.address(),
                     deposit: abi_u96(1),
                     salt,
                     authorizedSigner: Address::ZERO,
-                    expiresAt: now + 2_000,
                 },
             )?;
             assert_ne!(reopened_channel_id, channel_id);
@@ -754,11 +749,11 @@ mod tests {
                     payer,
                     ITIP20ChannelEscrow::openCall {
                         payee,
+                        operator: Address::ZERO,
                         token: token.address(),
                         deposit: abi_u96(1),
                         salt: B256::random(),
                         authorizedSigner: Address::ZERO,
-                        expiresAt: StorageCtx::default().timestamp().to::<u32>() + 1_000,
                     },
                 )
                 .unwrap_err();
@@ -767,6 +762,71 @@ mod tests {
                 crate::error::TempoPrecompileError::Fatal("current tx hash unavailable".into())
             );
 
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_operator_can_settle_to_payee() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let payer_signer = PrivateKeySigner::random();
+        let payer = payer_signer.address();
+        let payee = Address::random();
+        let operator = Address::random();
+        let salt = B256::random();
+        let open_tx_hash = B256::repeat_byte(0x77);
+
+        StorageCtx::enter(&mut storage, || {
+            let token = TIP20Setup::path_usd(payer)
+                .with_issuer(payer)
+                .with_mint(payer, U256::from(1_000u128))
+                .apply()?;
+            let mut escrow = TIP20ChannelEscrow::new();
+            escrow.initialize()?;
+            escrow.set_current_tx_hash(open_tx_hash)?;
+
+            let channel_id = escrow.open(
+                payer,
+                ITIP20ChannelEscrow::openCall {
+                    payee,
+                    operator,
+                    token: token.address(),
+                    deposit: abi_u96(100),
+                    salt,
+                    authorizedSigner: Address::ZERO,
+                },
+            )?;
+            let digest = escrow.get_voucher_digest(ITIP20ChannelEscrow::getVoucherDigestCall {
+                channelId: channel_id,
+                cumulativeAmount: abi_u96(40),
+            })?;
+            let signature =
+                Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&digest)?.as_bytes());
+
+            let mut channel_descriptor = descriptor(
+                payer,
+                payee,
+                token.address(),
+                salt,
+                Address::ZERO,
+                open_tx_hash,
+            );
+            channel_descriptor.operator = operator;
+            escrow.settle(
+                operator,
+                ITIP20ChannelEscrow::settleCall {
+                    descriptor: channel_descriptor,
+                    cumulativeAmount: abi_u96(40),
+                    signature,
+                },
+            )?;
+
+            assert_eq!(
+                token.balance_of(tempo_contracts::precompiles::ITIP20::balanceOfCall {
+                    account: payee,
+                })?,
+                U256::from(40)
+            );
             Ok(())
         })
     }
@@ -788,7 +848,6 @@ mod tests {
             escrow.initialize()?;
             escrow.set_current_tx_hash(open_tx_hash)?;
 
-            let expires_at = StorageCtx::default().timestamp().to::<u32>() + 1_000;
             let descriptor = descriptor(
                 payer,
                 payee,
@@ -801,11 +860,11 @@ mod tests {
                 payer,
                 ITIP20ChannelEscrow::openCall {
                     payee,
+                    operator: Address::ZERO,
                     token: token.address(),
                     deposit: abi_u96(100),
                     salt,
                     authorizedSigner: Address::ZERO,
-                    expiresAt: expires_at,
                 },
             )?;
 
@@ -820,14 +879,12 @@ mod tests {
                 ITIP20ChannelEscrow::topUpCall {
                     descriptor: descriptor.clone(),
                     additionalDeposit: abi_u96(25),
-                    newExpiresAt: expires_at + 500,
                 },
             )?;
 
             let channel = escrow.get_channel(ITIP20ChannelEscrow::getChannelCall { descriptor })?;
             assert_eq!(channel.state.closeData, 0);
             assert_eq!(channel.state.deposit, 125);
-            assert_eq!(channel.state.expiresAt, expires_at + 500);
 
             Ok(())
         })
@@ -842,11 +899,11 @@ mod tests {
             let result = escrow.call(
                 &ITIP20ChannelEscrow::openCall {
                     payee: Address::random(),
+                    operator: Address::ZERO,
                     token: TIP20_CHANNEL_ESCROW_ADDRESS,
                     deposit: abi_u96(1),
                     salt: B256::ZERO,
                     authorizedSigner: Address::ZERO,
-                    expiresAt: 2,
                 }
                 .abi_encode(),
                 Address::ZERO,
@@ -872,16 +929,15 @@ mod tests {
             let mut escrow = TIP20ChannelEscrow::new();
             escrow.initialize()?;
             escrow.set_current_tx_hash(open_tx_hash)?;
-            let now = StorageCtx::default().timestamp().to::<u32>();
             escrow.open(
                 payer,
                 ITIP20ChannelEscrow::openCall {
                     payee,
+                    operator: Address::ZERO,
                     token: token.address(),
                     deposit: abi_u96(100),
                     salt,
                     authorizedSigner: Address::ZERO,
-                    expiresAt: now + 1_000,
                 },
             )?;
 
@@ -926,16 +982,15 @@ mod tests {
             let mut escrow = TIP20ChannelEscrow::new();
             escrow.initialize()?;
             escrow.set_current_tx_hash(open_tx_hash)?;
-            let now = StorageCtx::default().timestamp().to::<u32>();
             escrow.open(
                 payer,
                 ITIP20ChannelEscrow::openCall {
                     payee,
+                    operator: Address::ZERO,
                     token: token.address(),
                     deposit: abi_u96(100),
                     salt,
                     authorizedSigner: Address::ZERO,
-                    expiresAt: now + 1_000,
                 },
             )?;
 

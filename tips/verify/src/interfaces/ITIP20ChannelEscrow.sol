@@ -7,6 +7,7 @@ interface ITIP20ChannelEscrow {
     struct ChannelDescriptor {
         address payer;
         address payee;
+        address operator;
         address token;
         bytes32 salt;
         address authorizedSigner;
@@ -16,7 +17,6 @@ interface ITIP20ChannelEscrow {
     struct ChannelState {
         uint96 settled;
         uint96 deposit;
-        uint32 expiresAt;
         uint32 closeData;
     }
 
@@ -30,16 +30,16 @@ interface ITIP20ChannelEscrow {
 
     function open(
         address payee,
+        address operator,
         address token,
         uint96 deposit,
         bytes32 salt,
-        address authorizedSigner,
-        uint32 expiresAt
+        address authorizedSigner
     ) external returns (bytes32 channelId);
 
     function settle(ChannelDescriptor calldata descriptor, uint96 cumulativeAmount, bytes calldata signature) external;
 
-    function topUp(ChannelDescriptor calldata descriptor, uint96 additionalDeposit, uint32 newExpiresAt) external;
+    function topUp(ChannelDescriptor calldata descriptor, uint96 additionalDeposit) external;
 
     function close(
         ChannelDescriptor calldata descriptor,
@@ -61,6 +61,7 @@ interface ITIP20ChannelEscrow {
     function computeChannelId(
         address payer,
         address payee,
+        address operator,
         address token,
         bytes32 salt,
         address authorizedSigner,
@@ -75,12 +76,12 @@ interface ITIP20ChannelEscrow {
         bytes32 indexed channelId,
         address indexed payer,
         address indexed payee,
+        address operator,
         address token,
         address authorizedSigner,
         bytes32 salt,
         bytes32 openTxHash,
-        uint96 deposit,
-        uint32 expiresAt
+        uint96 deposit
     );
 
     event Settled(
@@ -97,8 +98,7 @@ interface ITIP20ChannelEscrow {
         address indexed payer,
         address indexed payee,
         uint96 additionalDeposit,
-        uint96 newDeposit,
-        uint32 newExpiresAt
+        uint96 newDeposit
     );
 
     event CloseRequested(
@@ -115,18 +115,14 @@ interface ITIP20ChannelEscrow {
 
     event CloseRequestCancelled(bytes32 indexed channelId, address indexed payer, address indexed payee);
 
-    event ChannelExpired(bytes32 indexed channelId, address indexed payer, address indexed payee);
-
     error ChannelAlreadyExists();
     error ChannelNotFound();
-    error ChannelFinalized();
     error NotPayer();
     error NotPayee();
+    error NotPayeeOrOperator();
     error InvalidPayee();
     error InvalidToken();
     error ZeroDeposit();
-    error InvalidExpiry();
-    error ChannelExpiredError();
     error InvalidSignature();
     error AmountExceedsDeposit();
     error AmountNotIncreasing();

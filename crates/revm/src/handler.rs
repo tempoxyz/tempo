@@ -50,9 +50,9 @@ use tempo_precompiles::{
     storage::{
         Handler as _, PrecompileStorageProvider, StorageCtx, evm::EvmPrecompileStorageProvider,
     },
-    tip20_channel_escrow::TIP20ChannelEscrow,
     tip_fee_manager::TipFeeManager,
     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
+    tip20_channel_escrow::TIP20ChannelEscrow,
 };
 use tempo_primitives::{
     TempoAddressExt,
