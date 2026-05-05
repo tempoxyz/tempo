@@ -275,6 +275,23 @@ def read-bench-marker [datadir: string] {
     }
 }
 
+def validator-dirs-in-localnet [localnet_dir: string] {
+    ls $localnet_dir
+    | where type == "dir"
+    | get name
+    | where { |d| ($d | path basename) =~ '^\d+\.\d+\.\d+\.\d+:\d+$' }
+}
+
+def trusted-peers-from-localnet [localnet_dir: string] {
+    validator-dirs-in-localnet $localnet_dir | each { |d|
+        let addr = ($d | path basename)
+        let ip = ($addr | split row ":" | get 0)
+        let port = ($addr | split row ":" | get 1 | into int)
+        let identity = (open $"($d)/enode.identity" | str trim)
+        $"enode://($identity)@($ip):($port + 1)"
+    } | str join ","
+}
+
 # ============================================================================
 # Comparison mode helpers
 # ============================================================================
@@ -1265,14 +1282,8 @@ def run-consensus-nodes [nodes: int, accounts: int, genesis: string, samply: boo
     let genesis_path = if $genesis != "" { $genesis } else { $"($LOCALNET_DIR)/genesis.json" }
 
     # Build trusted peers from enode.identity files
-    let validator_dirs = (ls $LOCALNET_DIR | where type == "dir" | get name | where { |d| ($d | path basename) =~ '^\d+\.\d+\.\d+\.\d+:\d+$' })
-    let trusted_peers = ($validator_dirs | each { |d|
-        let addr = ($d | path basename)
-        let ip = ($addr | split row ":" | get 0)
-        let port = ($addr | split row ":" | get 1 | into int)
-        let identity = (open $"($d)/enode.identity" | str trim)
-        $"enode://($identity)@($ip):($port + 1)"
-    } | str join ",")
+    let validator_dirs = (validator-dirs-in-localnet $LOCALNET_DIR)
+    let trusted_peers = (trusted-peers-from-localnet $LOCALNET_DIR)
 
     print $"Found ($validator_dirs | length) validator configs"
 
@@ -1644,6 +1655,109 @@ def "main bench-init" [
     } [[$genesis_path "genesis.json"]] $bloat $bloat_file
 
     print $"Virgin snapshot initialized and promoted."
+}
+
+# Initialize the schelk virgin snapshot for the 2-runner e2e consensus bench.
+#
+# This is intended for CI `force-bloat` runs. Both runners call it with the
+# same ordered validator list so they generate identical genesis/trusted-peer
+# data, then each runner copies only its role's validator identity files.
+def "main bench-consensus-init" [
+    --role: string                                      # Runner role: red uses validator 0, blue uses validator 1
+    --validators: string                                # Ordered validator consensus addresses: red_ip:port,blue_ip:port
+    --bench-datadir: string                             # Datadir/snapshot path to initialize and promote
+    --node-dir: string                                  # Validator identity directory for this runner
+    --genesis: string                                   # Destination genesis path for benchmark runs
+    --bloat: int = 0                                    # State bloat size in MiB
+    --accounts: int = 1000                              # Number of benchmark sender accounts
+    --profile: string = $DEFAULT_PROFILE                # Cargo build profile
+    --features: string = $DEFAULT_FEATURES              # Cargo features
+    --seed: int = 42                                    # Deterministic seed shared by both runners
+    --gas-limit: string = ""                            # Optional genesis gas limit override
+] {
+    if $role not-in ["red" "blue"] {
+        print $"Error: --role must be 'red' or 'blue' \(got '($role)'\)"
+        exit 1
+    }
+
+    let validator_list = (
+        $validators
+        | split row ","
+        | each { |v| $v | str trim }
+        | where { |v| $v != "" }
+    )
+    if ($validator_list | length) != 2 {
+        print "Error: --validators must contain exactly two comma-separated consensus addresses ordered as red,blue"
+        exit 1
+    }
+
+    let validator_addr = if $role == "red" {
+        $validator_list | get 0
+    } else {
+        $validator_list | get 1
+    }
+    let validators_arg = ($validator_list | str join ",")
+    let genesis_accounts = ([$accounts 3] | math max) + 1
+    let init_dir = $"($LOCALNET_DIR)/e2e-consensus-init"
+    let generated_genesis = $"($init_dir)/genesis.json"
+    let generated_node_dir = $"($init_dir)/($validator_addr)"
+    let bloat_file = $"($init_dir)/state_bloat.bin"
+    let meta_dir = $"($bench_datadir)/($BENCH_META_SUBDIR)"
+    let generated_trusted_peers = $"($init_dir)/trusted-peers.txt"
+    let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
+
+    if ($init_dir | path exists) { rm -rf $init_dir }
+    mkdir $init_dir
+
+    build-tempo ["tempo"] $profile $features
+    let tempo_bin = if $profile == "dev" { "./target/debug/tempo" } else { $"./target/($profile)/tempo" }
+
+    print $"Generating e2e localnet config for validators: ($validators_arg)"
+    cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $init_dir --accounts $genesis_accounts --validators $validators_arg --seed $seed --force ...$gas_limit_args
+
+    let trusted_peers = (trusted-peers-from-localnet $init_dir)
+    if $trusted_peers == "" {
+        print "Error: generated localnet did not produce trusted peers"
+        exit 1
+    }
+
+    if $bloat > 0 {
+        print $"Generating e2e state bloat \(($bloat) MiB\)..."
+        let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
+        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+    }
+
+    bench-mount
+    bench-clean-datadir $bench_datadir
+    mkdir $bench_datadir
+    mkdir $node_dir
+
+    bench-init-db $tempo_bin $generated_genesis $bench_datadir $bloat $bloat_file
+
+    for file in ["signing.key" "signing.share" "enode.key" "enode.identity"] {
+        cp $"($generated_node_dir)/($file)" $"($node_dir)/($file)"
+    }
+
+    mkdir ($genesis | path dirname)
+    cp $generated_genesis $genesis
+    mkdir $meta_dir
+    $trusted_peers | save -f $generated_trusted_peers
+
+    bench-save-and-promote $bench_datadir $meta_dir {
+        bloat_mib: $bloat
+        accounts: $genesis_accounts
+        bench_datadir: $bench_datadir
+        node_dir: $node_dir
+        validator_role: $role
+        validator_addr: $validator_addr
+        validators: $validators_arg
+        seed: $seed
+        gas_limit: $gas_limit
+        dkg_in_genesis: true
+    } [[$generated_genesis "genesis.json"] [$generated_trusted_peers "trusted-peers.txt"]] 0 ""
+
+    print $"E2E consensus snapshot initialized and promoted for ($role)."
+    print $"Trusted peers: ($trusted_peers)"
 }
 
 # Run one side of a 2-runner e2e consensus benchmark phase.

@@ -237,6 +237,7 @@ env:
   RUSTC_WRAPPER: "sccache"
 
 permissions:
+  actions: read
   contents: read
   pull-requests: write
 
@@ -411,9 +412,95 @@ jobs:
             exit 1
           fi
           if [ "$BENCH_FORCE_BLOAT" = "true" ]; then
-            echo "::error::mode=e2e does not support force-bloat yet because both runners must use coordinated benchmark snapshots."
+            if [ -n "$BENCH_BASELINE_HARDFORK" ] || [ -n "$BENCH_FEATURE_HARDFORK" ]; then
+              echo "::error::mode=e2e force-bloat does not support hardfork comparison yet; use pre-provisioned phase snapshots for hardfork runs."
+              exit 1
+            fi
+          fi
+
+      - name: Refresh e2e bloat snapshot
+        if: env.BENCH_FORCE_BLOAT == 'true'
+        run: |
+          validators="${BENCH_E2E_VALIDATORS:-${{ vars.BENCH_E2E_VALIDATORS }}}"
+          seed="${BENCH_E2E_SEED:-${{ vars.BENCH_E2E_SEED }}}"
+          seed="${seed:-42}"
+          bench_datadir="${BENCH_E2E_DATADIR:-$BENCH_E2E_NODE_DIR}"
+
+          if [ -z "$validators" ]; then
+            echo "::error::force-bloat requires BENCH_E2E_VALIDATORS ordered as red_ip:port,blue_ip:port."
             exit 1
           fi
+          if [ -z "$bench_datadir" ]; then
+            echo "::error::force-bloat requires BENCH_E2E_DATADIR or BENCH_E2E_NODE_DIR."
+            exit 1
+          fi
+          if [ -z "$BENCH_E2E_NODE_DIR" ]; then
+            echo "::error::force-bloat requires BENCH_E2E_NODE_DIR for this runner's validator identity files."
+            exit 1
+          fi
+          if [ -z "$BENCH_E2E_GENESIS" ]; then
+            echo "::error::force-bloat requires BENCH_E2E_GENESIS."
+            exit 1
+          fi
+
+          nu tempo.nu bench-consensus-init \
+            --role "$BENCH_ROLE" \
+            --validators "$validators" \
+            --bench-datadir "$bench_datadir" \
+            --node-dir "$BENCH_E2E_NODE_DIR" \
+            --genesis "$BENCH_E2E_GENESIS" \
+            --bloat "$BENCH_BLOAT" \
+            --seed "$seed" \
+            --gas-limit 1000000000000
+
+          trusted_peers_file="$bench_datadir/.bench-meta/trusted-peers.txt"
+          if [ ! -s "$trusted_peers_file" ]; then
+            echo "::error::force-bloat did not produce $trusted_peers_file."
+            exit 1
+          fi
+          echo "BENCH_E2E_DATADIR=$bench_datadir" >> "$GITHUB_ENV"
+          echo "BENCH_E2E_TRUSTED_PEERS=$(cat "$trusted_peers_file")" >> "$GITHUB_ENV"
+          mkdir -p .bench-e2e-init
+          {
+            echo "role=$BENCH_ROLE"
+            echo "datadir=$bench_datadir"
+            echo "node_dir=$BENCH_E2E_NODE_DIR"
+            echo "genesis=$BENCH_E2E_GENESIS"
+            echo "trusted_peers_file=$trusted_peers_file"
+          } > ".bench-e2e-init/$BENCH_ROLE.txt"
+
+      - name: Upload e2e init marker
+        if: env.BENCH_FORCE_BLOAT == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tempo-bench-e2e-init-${{ matrix.role }}
+          path: .bench-e2e-init/${{ matrix.role }}.txt
+          retention-days: 1
+
+      - name: Wait for e2e init markers
+        if: env.BENCH_FORCE_BLOAT == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const wanted = new Set(['tempo-bench-e2e-init-red', 'tempo-bench-e2e-init-blue']);
+            const deadline = Date.now() + 60 * 60 * 1000;
+            while (Date.now() < deadline) {
+              const { data } = await github.rest.actions.listWorkflowRunArtifacts({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: context.runId,
+                per_page: 100,
+              });
+              const names = new Set(data.artifacts.map(a => a.name));
+              const missing = [...wanted].filter(name => !names.has(name));
+              if (missing.length === 0) {
+                core.info('Both e2e init markers are present.');
+                return;
+              }
+              core.info(`Waiting for e2e init markers: ${missing.join(', ')}`);
+              await new Promise(resolve => setTimeout(resolve, 30_000));
+            }
+            core.setFailed('Timed out waiting for both e2e init markers.');
 
       - name: Build txgen backend
         if: matrix.role == 'red' && env.BENCH_BACKEND == 'txgen'
