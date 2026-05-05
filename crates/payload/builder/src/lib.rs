@@ -1081,7 +1081,6 @@ mod tests {
         let extra_data = Bytes::from(vec![42, 43, 44, 45, 46]);
 
         let attrs = TempoPayloadAttributes::new(
-            Address::default(),
             None,
             1,
             0,

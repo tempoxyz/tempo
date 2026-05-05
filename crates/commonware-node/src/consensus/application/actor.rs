@@ -586,9 +586,6 @@ impl Inner<Init> {
         let parent_hash = parent.block_hash();
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
         let attrs = TempoPayloadAttributes::new(
-            // The block beneficiary is overridden by the validator config v2
-            // contract; the suggested fee recipient here is just a placeholder.
-            alloy_primitives::Address::ZERO,
             Some(proposer_public_key),
             timestamp,
             timestamp_millis_part,

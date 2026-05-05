@@ -9,7 +9,6 @@ use crate::{
     },
 };
 use alloy_primitives::B256;
-use reth_evm::revm::primitives::Address;
 use reth_node_api::{
     AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
     PayloadAttributesBuilder, PayloadTypes,
@@ -320,7 +319,6 @@ impl PayloadAttributesBuilder<TempoPayloadAttributes, TempoHeader>
 
         let (timestamp, timestamp_millis_part) = (millis / 1000, millis % 1000);
         TempoPayloadAttributes::new(
-            Address::ZERO,
             None,
             timestamp,
             timestamp_millis_part,
