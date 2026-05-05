@@ -90,8 +90,8 @@ impl AmmLiquidityCache {
 
                 let mut defer = match direct {
                     Some(r) if r >= out1 => return Ok(true),
-                    Some(_) => false, // Direct cached & insufficient: known answer.
-                    None => true,     // Direct unknown: must consult the planner.
+                    Some(_) => false, // Direct cached and not enough liquidity.
+                    None => true,     // Direct reserve is missing.
                 };
 
                 if let Some(out2) = out2 {
