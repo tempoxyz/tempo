@@ -977,9 +977,10 @@ mod tests {
         let wrong_addr = Address::repeat_byte(0xFF);
         let system_tx = create_system_tx(chain_id, wrong_addr);
 
+        // Use a fixed pre-T4 timestamp so system tx validation is enforced.
         let header = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
-            .timestamp(current_timestamp_millis())
+            .timestamp(1_778_767_199)
             .build();
         let block = create_valid_block(header, vec![system_tx]);
         let sealed = SealedBlock::seal_slow(block);
