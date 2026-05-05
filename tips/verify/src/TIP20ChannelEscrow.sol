@@ -20,7 +20,6 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
 
     uint256 internal constant _DEPOSIT_OFFSET = 96;
     uint256 internal constant _CLOSE_DATA_OFFSET = 192;
-    uint32 internal constant _FINALIZED_CLOSE_DATA = 1;
 
     bytes32 internal constant _EIP712_DOMAIN_TYPEHASH = keccak256(
         "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
@@ -29,6 +28,18 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
     bytes32 internal constant _VERSION_HASH = keccak256("1");
 
     mapping(bytes32 => uint256) internal channelStates;
+    bytes32 internal _openTxHashContext;
+    // Reference-contract-only approximation of the precompile's transient per-transaction guard.
+    // Because `channelId` includes `openTxHash`, this does not block real cross-transaction
+    // reopens, which always use a different transaction hash.
+    mapping(bytes32 => bool) internal _openedChannelIdsForTest;
+
+    error OpenTxHashNotSet();
+
+    /// @dev Reference-contract-only hook. The precompile derives this from the enclosing tx hash.
+    function setOpenTxHashForTest(bytes32 openTxHash) external {
+        _openTxHashContext = openTxHash;
+    }
 
     function open(
         address payee,
@@ -45,23 +56,33 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         if (token == address(0)) revert InvalidToken();
         if (deposit == 0) revert ZeroDeposit();
 
-        channelId = computeChannelId(msg.sender, payee, operator, token, salt, authorizedSigner);
-        if (channelStates[channelId] != 0) revert ChannelAlreadyExists();
-
-        channelStates[channelId] = _encodeChannelState(
-            ChannelState({
-                settled: 0,
-                deposit: deposit,
-                closeData: 0
-            })
+        bytes32 openTxHash = _consumeOpenTxHash();
+        channelId = computeChannelId(
+            msg.sender, payee, operator, token, salt, authorizedSigner, openTxHash
         );
+        if (channelStates[channelId] != 0) revert ChannelAlreadyExists();
+        if (_openedChannelIdsForTest[channelId]) revert ChannelAlreadyExists();
+
+        channelStates[channelId] =
+            _encodeChannelState(ChannelState({ settled: 0, deposit: deposit, closeData: 0 }));
 
         // The reference contract keeps ERC-20-style allowance flow for local verification.
         // The enshrined precompile should use TIP-20 `systemTransferFrom` semantics instead.
         bool success = ITIP20(token).transferFrom(msg.sender, address(this), deposit);
         if (!success) revert TransferFailed();
+        _openedChannelIdsForTest[channelId] = true;
 
-        emit ChannelOpened(channelId, msg.sender, payee, operator, token, authorizedSigner, salt, deposit);
+        emit ChannelOpened(
+            channelId,
+            msg.sender,
+            payee,
+            operator,
+            token,
+            authorizedSigner,
+            salt,
+            openTxHash,
+            deposit
+        );
     }
 
     function settle(
@@ -74,8 +95,12 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         bytes32 channelId = _channelId(descriptor);
         ChannelState memory channel = _loadChannelState(channelId);
 
-        _requirePayeeOrOperator(descriptor);
-        if (_isFinalized(channel.closeData)) revert ChannelFinalized();
+        if (
+            msg.sender != descriptor.payee
+                && (descriptor.operator == address(0) || msg.sender != descriptor.operator)
+        ) {
+            revert NotPayeeOrOperator();
+        }
         if (cumulativeAmount > channel.deposit) revert AmountExceedsDeposit();
         if (cumulativeAmount <= channel.settled) revert AmountNotIncreasing();
 
@@ -93,17 +118,11 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         );
     }
 
-    function topUp(
-        ChannelDescriptor calldata descriptor,
-        uint96 additionalDeposit
-    )
-        external
-    {
+    function topUp(ChannelDescriptor calldata descriptor, uint96 additionalDeposit) external {
         bytes32 channelId = _channelId(descriptor);
         ChannelState memory channel = _loadChannelState(channelId);
 
         if (msg.sender != descriptor.payer) revert NotPayer();
-        if (_isFinalized(channel.closeData)) revert ChannelFinalized();
 
         if (additionalDeposit > type(uint96).max - channel.deposit) revert DepositOverflow();
 
@@ -117,7 +136,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
             if (!success) revert TransferFailed();
         }
 
-        if (_closeRequestedAt(channel.closeData) != 0) {
+        if (channel.closeData != 0) {
             channel.closeData = 0;
             emit CloseRequestCancelled(channelId, descriptor.payer, descriptor.payee);
         }
@@ -125,11 +144,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         channelStates[channelId] = _encodeChannelState(channel);
 
         emit TopUp(
-            channelId,
-            descriptor.payer,
-            descriptor.payee,
-            additionalDeposit,
-            channel.deposit
+            channelId, descriptor.payer, descriptor.payee, additionalDeposit, channel.deposit
         );
     }
 
@@ -138,9 +153,8 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         ChannelState memory channel = _loadChannelState(channelId);
 
         if (msg.sender != descriptor.payer) revert NotPayer();
-        if (_isFinalized(channel.closeData)) revert ChannelFinalized();
 
-        if (_closeRequestedAt(channel.closeData) == 0) {
+        if (channel.closeData == 0) {
             channel.closeData = uint32(block.timestamp);
             channelStates[channelId] = _encodeChannelState(channel);
             emit CloseRequested(
@@ -164,7 +178,6 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         ChannelState memory channel = _loadChannelState(channelId);
 
         if (msg.sender != descriptor.payee) revert NotPayee();
-        if (_isFinalized(channel.closeData)) revert ChannelFinalized();
 
         uint96 previousSettled = channel.settled;
         if (captureAmount < previousSettled || captureAmount > cumulativeAmount) {
@@ -179,9 +192,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         uint96 delta = captureAmount - previousSettled;
         uint96 refund = channel.deposit - captureAmount;
 
-        channel.settled = captureAmount;
-        channel.closeData = _FINALIZED_CLOSE_DATA;
-        channelStates[channelId] = _encodeChannelState(channel);
+        delete channelStates[channelId];
 
         if (delta > 0) {
             bool payeeTransferSucceeded = ITIP20(descriptor.token).transfer(descriptor.payee, delta);
@@ -202,7 +213,6 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         ChannelState memory channel = _loadChannelState(channelId);
 
         if (msg.sender != descriptor.payer) revert NotPayer();
-        if (_isFinalized(channel.closeData)) revert ChannelFinalized();
 
         uint32 closeRequestedAt = _closeRequestedAt(channel.closeData);
         bool closeGracePassed = closeRequestedAt != 0
@@ -211,8 +221,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         if (!closeGracePassed) revert CloseNotReady();
 
         uint96 refund = channel.deposit - channel.settled;
-        channel.closeData = _FINALIZED_CLOSE_DATA;
-        channelStates[channelId] = _encodeChannelState(channel);
+        delete channelStates[channelId];
 
         if (refund > 0) {
             bool success = ITIP20(descriptor.token).transfer(descriptor.payer, refund);
@@ -233,7 +242,8 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
             operator: descriptor.operator,
             token: descriptor.token,
             salt: descriptor.salt,
-            authorizedSigner: descriptor.authorizedSigner
+            authorizedSigner: descriptor.authorizedSigner,
+            openTxHash: descriptor.openTxHash
         });
         channel.state = _decodeChannelState(channelStates[_channelId(descriptor)]);
     }
@@ -261,7 +271,8 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         address operator,
         address token,
         bytes32 salt,
-        address authorizedSigner
+        address authorizedSigner,
+        bytes32 openTxHash
     )
         public
         view
@@ -275,6 +286,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
                 token,
                 salt,
                 authorizedSigner,
+                openTxHash,
                 TIP20_CHANNEL_ESCROW,
                 block.chainid
             )
@@ -304,14 +316,9 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
             descriptor.operator,
             descriptor.token,
             descriptor.salt,
-            descriptor.authorizedSigner
+            descriptor.authorizedSigner,
+            descriptor.openTxHash
         );
-    }
-
-    function _requirePayeeOrOperator(ChannelDescriptor calldata descriptor) internal view {
-        if (msg.sender == descriptor.payee) return;
-        if (descriptor.operator != address(0) && msg.sender == descriptor.operator) return;
-        revert NotPayeeOrOperator();
     }
 
     function _loadChannelState(bytes32 channelId) internal view returns (ChannelState memory) {
@@ -344,12 +351,8 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         packedState |= uint256(state.closeData) << _CLOSE_DATA_OFFSET;
     }
 
-    function _isFinalized(uint32 closeData) internal pure returns (bool) {
-        return closeData == _FINALIZED_CLOSE_DATA;
-    }
-
     function _closeRequestedAt(uint32 closeData) internal pure returns (uint32) {
-        return closeData >= 2 ? closeData : 0;
+        return closeData;
     }
 
     function _validateVoucher(
@@ -394,6 +397,12 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
 
     function _hashTypedData(bytes32 structHash) internal view returns (bytes32) {
         return keccak256(abi.encodePacked("\x19\x01", _domainSeparator(), structHash));
+    }
+
+    function _consumeOpenTxHash() internal returns (bytes32 openTxHash) {
+        openTxHash = _openTxHashContext;
+        if (openTxHash == bytes32(0)) revert OpenTxHashNotSet();
+        delete _openTxHashContext;
     }
 
 }
