@@ -27,6 +27,10 @@ pub enum TempoConsensusError {
     /// End-of-block system transactions are in the wrong order.
     #[error("invalid end-of-block system tx order: expected {expected}, got {actual}")]
     InvalidEndOfBlockSystemTxOrder { expected: Address, actual: Address },
+
+    /// A system transaction appears before the required end-of-block tail window.
+    #[error("system transaction {tx_hash} must be in the end-of-block system tx tail")]
+    SystemTxOutsideTail { tx_hash: B256 },
 }
 
 impl From<TempoConsensusError> for ConsensusError {

@@ -184,9 +184,21 @@ impl Consensus<Block> for TempoConsensus {
             SYSTEM_TX_COUNT
         };
 
+        let tail_start = transactions.len().saturating_sub(expected_system_tx_count);
+        if let Some(tx) = transactions
+            .iter()
+            .take(tail_start)
+            .find(|tx| tx.is_system_tx())
+        {
+            return Err(TempoConsensusError::SystemTxOutsideTail {
+                tx_hash: *tx.tx_hash(),
+            }
+            .into());
+        }
+
         // Get the last END_OF_BLOCK_SYSTEM_TX_COUNT transactions and validate they are end-of-block system txs
         let end_of_block_system_txs = transactions
-            .get(transactions.len().saturating_sub(expected_system_tx_count)..)
+            .get(tail_start..)
             .map(|slice| {
                 slice
                     .iter()
@@ -991,6 +1003,59 @@ mod tests {
                     TempoConsensusError::InvalidEndOfBlockSystemTxOrder { .. }
                 )),
             "Expected InvalidEndOfBlockSystemTxOrder, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_block_pre_execution_rejects_system_tx_before_tail() {
+        let consensus = TempoConsensus::new(MODERATO.clone());
+        let chain_id = MODERATO.chain().id();
+
+        let early_system_tx = create_system_tx(chain_id, SYSTEM_TX_ADDRESSES[0]);
+        let user_tx = create_tx(chain_id);
+        let tail_system_tx = create_system_tx(chain_id, SYSTEM_TX_ADDRESSES[0]);
+
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(current_timestamp_millis())
+            .build();
+        let block = create_valid_block(header, vec![early_system_tx, user_tx, tail_system_tx]);
+        let sealed = SealedBlock::seal_slow(block);
+
+        let result = consensus.validate_block_pre_execution(&sealed);
+        let err = result.unwrap_err();
+        assert!(
+            err.downcast_other_ref::<TempoConsensusError>()
+                .is_some_and(
+                    |e| matches!(e, TempoConsensusError::SystemTxOutsideTail { .. })
+                ),
+            "Expected SystemTxOutsideTail, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_block_pre_execution_t4_rejects_any_system_tx() {
+        let consensus = TempoConsensus::new(DEV.clone());
+        let chain_id = DEV.chain().id();
+
+        let system_tx = create_system_tx(chain_id, SYSTEM_TX_ADDRESSES[0]);
+        let user_tx = create_tx(chain_id);
+
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(0)
+            .build();
+        let block = create_valid_block(header, vec![system_tx, user_tx]);
+        let sealed = SealedBlock::seal_slow(block);
+
+        let result = consensus.validate_block_pre_execution(&sealed);
+        let err = result.unwrap_err();
+        assert!(
+            err.downcast_other_ref::<TempoConsensusError>()
+                .is_some_and(
+                    |e| matches!(e, TempoConsensusError::SystemTxOutsideTail { .. })
+                ),
+            "Expected SystemTxOutsideTail, got: {err:?}"
         );
     }
 }
