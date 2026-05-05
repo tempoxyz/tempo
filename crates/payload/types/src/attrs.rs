@@ -1,4 +1,4 @@
-use alloy_primitives::{Address, B256, Bytes};
+use alloy_primitives::{Address, B256, Bytes, Keccak256};
 use alloy_rpc_types_engine::PayloadId;
 use alloy_rpc_types_eth::Withdrawal;
 use reth_ethereum_engine_primitives::EthPayloadAttributes;
@@ -70,8 +70,11 @@ impl Default for TempoPayloadAttributes {
 
 impl TempoPayloadAttributes {
     /// Creates new `TempoPayloadAttributes` with `inner` attributes.
+    ///
+    /// The inner `suggested_fee_recipient` is always `Address::ZERO`; the
+    /// real beneficiary is resolved from the validator config v2 contract by
+    /// the payload builder.
     pub fn new(
-        suggested_fee_recipient: Address,
         proposer_public_key: Option<B256>,
         timestamp: u64,
         timestamp_millis_part: u64,
@@ -82,7 +85,7 @@ impl TempoPayloadAttributes {
         Self {
             inner: EthPayloadAttributes {
                 timestamp,
-                suggested_fee_recipient,
+                suggested_fee_recipient: Address::ZERO,
                 prev_randao: B256::ZERO,
                 withdrawals: Some(Default::default()),
                 parent_beacon_block_root: Some(B256::ZERO),
@@ -167,7 +170,12 @@ impl PayloadAttributes for TempoPayloadAttributes {
         // the consensus engine will kill the proposal task. Then eventually
         // consensus will circle back to an earlier node, which then
         // has the chance of picking up the old payload.
-        payload_id_from_block_hash(parent_hash)
+        //
+        // The consensus context (epoch, view, parent_view, proposer) is
+        // mixed into the ID so that distinct consensus rounds proposing on
+        // the same parent block produce distinct payload IDs and do not
+        // collide in the payload builder cache.
+        payload_id_from_parent_and_context(parent_hash, self.consensus_context.as_ref())
     }
 
     fn timestamp(&self) -> u64 {
@@ -195,6 +203,34 @@ fn payload_id_from_block_hash(block_hash: &B256) -> PayloadId {
     )
 }
 
+/// Constructs a [`PayloadId`] from the parent block hash and consensus context.
+///
+/// When `consensus_context` is `None`, this is equivalent to
+/// [`payload_id_from_block_hash`] for backwards compatibility with pre-fork
+/// blocks. Otherwise the parent hash and each field of the consensus context
+/// are streamed into a Keccak256 hasher and the first 8 bytes of the digest
+/// form the ID.
+fn payload_id_from_parent_and_context(
+    parent_hash: &B256,
+    consensus_context: Option<&TempoConsensusContext>,
+) -> PayloadId {
+    let Some(ctx) = consensus_context else {
+        return payload_id_from_block_hash(parent_hash);
+    };
+
+    let mut hasher = Keccak256::new();
+    hasher.update(parent_hash);
+    hasher.update(ctx.epoch.to_be_bytes());
+    hasher.update(ctx.view.to_be_bytes());
+    hasher.update(ctx.parent_view.to_be_bytes());
+    hasher.update(B256::from(&ctx.proposer));
+    let digest = hasher.finalize();
+
+    PayloadId::new(
+        <[u8; 8]>::try_from(&digest[0..8]).expect("a 32 byte array always has more than 8 bytes"),
+    )
+}
+
 fn default_subblocks() -> Arc<dyn Fn() -> Vec<RecoveredSubBlock> + Send + Sync + 'static> {
     Arc::new(Vec::new)
 }
@@ -203,6 +239,7 @@ fn default_subblocks() -> Arc<dyn Fn() -> Vec<RecoveredSubBlock> + Send + Sync +
 mod tests {
     use super::*;
     use alloy_rpc_types_eth::Withdrawal;
+    use tempo_primitives::ed25519::PublicKey;
 
     trait TestExt: Sized {
         fn random() -> Self;
@@ -216,7 +253,6 @@ mod tests {
     impl TestExt for TempoPayloadAttributes {
         fn random() -> Self {
             Self::new(
-                Address::random(),
                 None,
                 1, // 1s
                 0,
@@ -271,12 +307,10 @@ mod tests {
     #[test]
     fn test_builder_attributes_construction() {
         let parent = B256::random();
-        let recipient = Address::random();
         let extra_data = Bytes::from(vec![1, 2, 3, 4, 5]);
 
         // With extra_data
         let attrs = TempoPayloadAttributes::new(
-            recipient,
             None,
             1,
             500, // 1.5s
@@ -285,7 +319,7 @@ mod tests {
             Vec::new,
         );
         assert_eq!(attrs.extra_data(), &extra_data);
-        assert_eq!(attrs.suggested_fee_recipient, recipient);
+        assert_eq!(attrs.suggested_fee_recipient, Address::ZERO);
         assert_eq!(
             attrs.payload_id(&parent),
             payload_id_from_block_hash(&parent)
@@ -300,7 +334,6 @@ mod tests {
 
         // Without extra_data
         let attrs2 = TempoPayloadAttributes::new(
-            recipient,
             None,
             2, // +500ms
             0,
@@ -496,5 +529,75 @@ mod tests {
         };
         assert!(attrs_none.withdrawals().is_none());
         assert!(attrs_none.parent_beacon_block_root().is_none());
+    }
+
+    #[test]
+    fn payload_id_includes_consensus_context() {
+        let parent = B256::random();
+        let proposer = PublicKey::from_seed([0xab; 32]);
+
+        let mk = |ctx: Option<TempoConsensusContext>| -> PayloadId {
+            let mut attrs = TempoPayloadAttributes::random();
+            attrs.consensus_context = ctx;
+            attrs.payload_id(&parent)
+        };
+
+        let no_ctx = mk(None);
+        let ctx_a = mk(Some(TempoConsensusContext {
+            epoch: 1,
+            view: 1,
+            parent_view: 0,
+            proposer,
+        }));
+        let ctx_b = mk(Some(TempoConsensusContext {
+            epoch: 1,
+            view: 2,
+            parent_view: 1,
+            proposer,
+        }));
+        let ctx_c = mk(Some(TempoConsensusContext {
+            epoch: 2,
+            view: 1,
+            parent_view: 0,
+            proposer,
+        }));
+        let ctx_d = mk(Some(TempoConsensusContext {
+            epoch: 1,
+            view: 1,
+            parent_view: 0,
+            proposer: PublicKey::from_seed([0xcd; 32]),
+        }));
+
+        // Without context, falls back to parent-hash-only ID.
+        assert_eq!(no_ctx, payload_id_from_block_hash(&parent));
+
+        // Each distinct consensus context produces a distinct ID, and all
+        // differ from the no-context fallback.
+        let ids = [no_ctx, ctx_a, ctx_b, ctx_c, ctx_d];
+        for i in 0..ids.len() {
+            for j in (i + 1)..ids.len() {
+                assert_ne!(ids[i], ids[j], "payload ids {i} and {j} collide");
+            }
+        }
+
+        // Same context on the same parent is deterministic.
+        let ctx_a_again = mk(Some(TempoConsensusContext {
+            epoch: 1,
+            view: 1,
+            parent_view: 0,
+            proposer,
+        }));
+        assert_eq!(ctx_a, ctx_a_again);
+
+        // Different parent with the same context yields a different ID.
+        let other_parent = B256::random();
+        let mut attrs = TempoPayloadAttributes::random();
+        attrs.consensus_context = Some(TempoConsensusContext {
+            epoch: 1,
+            view: 1,
+            parent_view: 0,
+            proposer,
+        });
+        assert_ne!(attrs.payload_id(&parent), attrs.payload_id(&other_parent));
     }
 }
