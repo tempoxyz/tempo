@@ -1,11 +1,16 @@
 //! Tempo precompile implementations.
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+// `dispatch!` is a TT-muncher: each arm consumes a small constant number of recursion
+// frames, and the largest dispatch site (`tip20`, ~50 arms) needs more than the default 128.
+#![recursion_limit = "512"]
 
 pub mod error;
 pub use error::{IntoPrecompileResult, Result};
 
 pub mod storage;
+
+mod dispatch_macro;
 
 pub(crate) mod ip_validation;
 

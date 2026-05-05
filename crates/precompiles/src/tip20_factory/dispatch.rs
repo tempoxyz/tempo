@@ -4,7 +4,7 @@ use crate::{Precompile, charge_input_cost, mutate, tip20_factory::TIP20Factory, 
 use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::ITIP20Factory::ITIP20FactoryCalls;
-use tempo_precompiles_macros::dispatch;
+use crate::dispatch;
 
 impl Precompile for TIP20Factory {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -12,11 +12,11 @@ impl Precompile for TIP20Factory {
             return err;
         }
 
-        dispatch! {
-            ITIP20FactoryCalls::createToken(call) => mutate(call, msg_sender, |s, c| self.create_token(s, c)),
-            ITIP20FactoryCalls::isTIP20(call) => view(call, |c| self.is_tip20(c.token)),
-            ITIP20FactoryCalls::getTokenAddress(call) => view(call, |c| self.get_token_address(c)),
-        }
+        dispatch!(calldata => {
+            ITIP20Factory::createToken(call) => mutate(call, msg_sender, |s, c| self.create_token(s, c)),
+            ITIP20Factory::isTIP20(call) => view(call, |c| self.is_tip20(c.token)),
+            ITIP20Factory::getTokenAddress(call) => view(call, |c| self.get_token_address(c)),
+        })
     }
 }
 

@@ -11,7 +11,7 @@ use alloy::{
 };
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::ITIP403Registry::{self, ITIP403RegistryCalls};
-use tempo_precompiles_macros::dispatch;
+use crate::dispatch;
 
 impl Precompile for TIP403Registry {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -19,45 +19,45 @@ impl Precompile for TIP403Registry {
             return err;
         }
 
-        dispatch! {
-            ITIP403RegistryCalls::policyIdCounter(call) => view(call, |_| self.policy_id_counter()),
-            ITIP403RegistryCalls::policyExists(call) => view(call, |c| self.policy_exists(c)),
-            ITIP403RegistryCalls::policyData(call) => view(call, |c| self.policy_data(c)),
-            ITIP403RegistryCalls::isAuthorized(call) => view(call, |c| {
+        dispatch!(calldata => {
+            ITIP403Registry::policyIdCounter(call) => view(call, |_| self.policy_id_counter()),
+            ITIP403Registry::policyExists(call) => view(call, |c| self.policy_exists(c)),
+            ITIP403Registry::policyData(call) => view(call, |c| self.policy_data(c)),
+            ITIP403Registry::isAuthorized(call) => view(call, |c| {
                 self.is_authorized_as(c.policyId, c.user, AuthRole::Transfer)
             }),
             #[since = T2]
-            ITIP403RegistryCalls::isAuthorizedSender(call) => view(call, |c| {
+            ITIP403Registry::isAuthorizedSender(call) => view(call, |c| {
                 self.is_authorized_as(c.policyId, c.user, AuthRole::Sender)
             }),
             #[since = T2]
-            ITIP403RegistryCalls::isAuthorizedRecipient(call) => view(call, |c| {
+            ITIP403Registry::isAuthorizedRecipient(call) => view(call, |c| {
                 self.is_authorized_as(c.policyId, c.user, AuthRole::Recipient)
             }),
             #[since = T2]
-            ITIP403RegistryCalls::isAuthorizedMintRecipient(call) => view(call, |c| {
+            ITIP403Registry::isAuthorizedMintRecipient(call) => view(call, |c| {
                 self.is_authorized_as(c.policyId, c.user, AuthRole::MintRecipient)
             }),
             #[since = T2]
-            ITIP403RegistryCalls::compoundPolicyData(call) => view(call, |c| self.compound_policy_data(c)),
-            ITIP403RegistryCalls::createPolicy(call) => mutate(call, msg_sender, |s, c| self.create_policy(s, c)),
-            ITIP403RegistryCalls::createPolicyWithAccounts(call) => {
+            ITIP403Registry::compoundPolicyData(call) => view(call, |c| self.compound_policy_data(c)),
+            ITIP403Registry::createPolicy(call) => mutate(call, msg_sender, |s, c| self.create_policy(s, c)),
+            ITIP403Registry::createPolicyWithAccounts(call) => {
                 mutate(call, msg_sender, |s, c| self.create_policy_with_accounts(s, c))
             },
-            ITIP403RegistryCalls::setPolicyAdmin(call) => {
+            ITIP403Registry::setPolicyAdmin(call) => {
                 mutate_void(call, msg_sender, |s, c| self.set_policy_admin(s, c))
             },
-            ITIP403RegistryCalls::modifyPolicyWhitelist(call) => {
+            ITIP403Registry::modifyPolicyWhitelist(call) => {
                 mutate_void(call, msg_sender, |s, c| self.modify_policy_whitelist(s, c))
             },
-            ITIP403RegistryCalls::modifyPolicyBlacklist(call) => {
+            ITIP403Registry::modifyPolicyBlacklist(call) => {
                 mutate_void(call, msg_sender, |s, c| self.modify_policy_blacklist(s, c))
             },
             #[since = T2]
-            ITIP403RegistryCalls::createCompoundPolicy(call) => {
+            ITIP403Registry::createCompoundPolicy(call) => {
                 mutate(call, msg_sender, |s, c| self.create_compound_policy(s, c))
             },
-        }
+        })
     }
 }
 

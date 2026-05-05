@@ -4,7 +4,7 @@ use crate::{Precompile, charge_input_cost, nonce::NonceManager, view};
 use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::INonce::INonceCalls;
-use tempo_precompiles_macros::dispatch;
+use crate::dispatch;
 
 impl Precompile for NonceManager {
     fn call(&mut self, calldata: &[u8], _msg_sender: Address) -> PrecompileResult {
@@ -12,9 +12,9 @@ impl Precompile for NonceManager {
             return err;
         }
 
-        dispatch! {
-            INonceCalls::getNonce(call) => view(call, |c| self.get_nonce(c)),
-        }
+        dispatch!(calldata => {
+            INonce::getNonce(call) => view(call, |c| self.get_nonce(c)),
+        })
     }
 }
 

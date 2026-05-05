@@ -7,8 +7,8 @@ use alloy::{
     sol_types::{SolCall, SolInterface},
 };
 use revm::precompile::PrecompileResult;
+use crate::dispatch;
 use tempo_contracts::precompiles::IValidatorConfig::{self, IValidatorConfigCalls};
-use tempo_precompiles_macros::dispatch;
 
 impl Precompile for ValidatorConfig {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -16,32 +16,32 @@ impl Precompile for ValidatorConfig {
             return err;
         }
 
-        dispatch! {
-            IValidatorConfigCalls::owner(call) => view(call, |_| self.owner()),
-            IValidatorConfigCalls::getValidators(call) => view(call, |_| self.get_validators()),
-            IValidatorConfigCalls::getNextFullDkgCeremony(call) => view(call, |_| self.get_next_full_dkg_ceremony()),
-            IValidatorConfigCalls::validatorsArray(call) => view(call, |c| {
+        dispatch!(calldata => {
+            IValidatorConfig::owner(call) => view(call, |_| self.owner()),
+            IValidatorConfig::getValidators(call) => view(call, |_| self.get_validators()),
+            IValidatorConfig::getNextFullDkgCeremony(call) => view(call, |_| self.get_next_full_dkg_ceremony()),
+            IValidatorConfig::validatorsArray(call) => view(call, |c| {
                 let index = u64::try_from(c.index).map_err(|_| TempoPrecompileError::array_oob())?;
                 self.validators_array(index)
             }),
-            IValidatorConfigCalls::validators(call) => view(call, |c| self.validators(c.validator)),
-            IValidatorConfigCalls::validatorCount(call) => view(call, |_| self.validator_count()),
-            IValidatorConfigCalls::addValidator(call) => mutate_void(call, msg_sender, |s, c| self.add_validator(s, c)),
-            IValidatorConfigCalls::updateValidator(call) => {
+            IValidatorConfig::validators(call) => view(call, |c| self.validators(c.validator)),
+            IValidatorConfig::validatorCount(call) => view(call, |_| self.validator_count()),
+            IValidatorConfig::addValidator(call) => mutate_void(call, msg_sender, |s, c| self.add_validator(s, c)),
+            IValidatorConfig::updateValidator(call) => {
                 mutate_void(call, msg_sender, |s, c| self.update_validator(s, c))
             },
-            IValidatorConfigCalls::changeValidatorStatus(call) => {
+            IValidatorConfig::changeValidatorStatus(call) => {
                 mutate_void(call, msg_sender, |s, c| self.change_validator_status(s, c))
             },
             #[since = T1]
-            IValidatorConfigCalls::changeValidatorStatusByIndex(call) => mutate_void(call, msg_sender, |s, c| {
+            IValidatorConfig::changeValidatorStatusByIndex(call) => mutate_void(call, msg_sender, |s, c| {
                 self.change_validator_status_by_index(s, c)
             }),
-            IValidatorConfigCalls::changeOwner(call) => mutate_void(call, msg_sender, |s, c| self.change_owner(s, c)),
-            IValidatorConfigCalls::setNextFullDkgCeremony(call) => mutate_void(call, msg_sender, |s, c| {
+            IValidatorConfig::changeOwner(call) => mutate_void(call, msg_sender, |s, c| self.change_owner(s, c)),
+            IValidatorConfig::setNextFullDkgCeremony(call) => mutate_void(call, msg_sender, |s, c| {
                 self.set_next_full_dkg_ceremony(s, c)
             }),
-        }
+        })
     }
 }
 

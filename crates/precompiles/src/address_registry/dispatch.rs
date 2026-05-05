@@ -2,7 +2,7 @@ use crate::{Precompile, address_registry::AddressRegistry, charge_input_cost, mu
 use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::IAddressRegistry::IAddressRegistryCalls;
-use tempo_precompiles_macros::dispatch;
+use crate::dispatch;
 use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
 
 impl Precompile for AddressRegistry {
@@ -11,24 +11,24 @@ impl Precompile for AddressRegistry {
             return err;
         }
 
-        dispatch! {
-            IAddressRegistryCalls::registerVirtualMaster(call) => {
+        dispatch!(calldata => {
+            IAddressRegistry::registerVirtualMaster(call) => {
                 mutate(call, msg_sender, |s, c| self.register_virtual_master(s, c))
             },
-            IAddressRegistryCalls::getMaster(call) => view(call, |c| {
+            IAddressRegistry::getMaster(call) => view(call, |c| {
                 Ok(self.get_master(c.masterId)?.unwrap_or(Address::ZERO))
             }),
-            IAddressRegistryCalls::resolveRecipient(call) => view(call, |c| self.resolve_recipient(c.to)),
-            IAddressRegistryCalls::resolveVirtualAddress(call) => view(call, |c| self.resolve_virtual_address(c.virtualAddr)),
-            IAddressRegistryCalls::isVirtualAddress(call) => view(call, |c| Ok(c.addr.is_virtual())),
-            IAddressRegistryCalls::decodeVirtualAddress(call) => view(call, |c| {
+            IAddressRegistry::resolveRecipient(call) => view(call, |c| self.resolve_recipient(c.to)),
+            IAddressRegistry::resolveVirtualAddress(call) => view(call, |c| self.resolve_virtual_address(c.virtualAddr)),
+            IAddressRegistry::isVirtualAddress(call) => view(call, |c| Ok(c.addr.is_virtual())),
+            IAddressRegistry::decodeVirtualAddress(call) => view(call, |c| {
                 let (is_virtual, master_id, user_tag) = match c.addr.decode_virtual() {
                     Some((mid, tag)) => (true, mid, tag),
                     None => (false, MasterId::ZERO, UserTag::ZERO),
                 };
                 Ok((is_virtual, master_id, user_tag).into())
             }),
-        }
+        })
     }
 }
 

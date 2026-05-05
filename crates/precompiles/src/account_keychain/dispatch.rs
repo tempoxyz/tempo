@@ -10,7 +10,7 @@ use tempo_contracts::precompiles::{
     AccountKeychainError,
     IAccountKeychain::{self, IAccountKeychainCalls},
 };
-use tempo_precompiles_macros::dispatch;
+use crate::dispatch;
 
 impl Precompile for AccountKeychain {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -18,8 +18,8 @@ impl Precompile for AccountKeychain {
             return err;
         }
 
-        dispatch! {
-            IAccountKeychainCalls::authorizeKey_0(call) => {
+        dispatch!(calldata => {
+            IAccountKeychain::authorizeKey_0(call) => {
                 if self.storage.spec().is_t3() {
                     return self.storage.error_result(
                         AccountKeychainError::legacy_authorize_key_selector_changed(
@@ -50,14 +50,16 @@ impl Precompile for AccountKeychain {
 
                 mutate_void(call, msg_sender, |sender, c| self.authorize_key(sender, c))
             },
-            #[since = T3, selector = authorizeKeyCall]
-            IAccountKeychainCalls::authorizeKey_1(call) => {
+            // The variant is `authorizeKey_1`, but the call type is `authorizeKeyCall` — the
+            // names differ, so the auto-derived selector doesn't apply. Keep the override.
+            #[since = T3, selector = authorizeKeyCall::SELECTOR]
+            IAccountKeychain::authorizeKey_1(call) => {
                 mutate_void(call, msg_sender, |sender, c| self.authorize_key(sender, c))
             },
-            IAccountKeychainCalls::revokeKey(call) => {
+            IAccountKeychain::revokeKey(call) => {
                 mutate_void(call, msg_sender, |sender, c| self.revoke_key(sender, c))
             },
-            IAccountKeychainCalls::updateSpendingLimit(call) => mutate_void(
+            IAccountKeychain::updateSpendingLimit(call) => mutate_void(
                 call,
                 msg_sender,
                 |sender, c| {
@@ -65,34 +67,34 @@ impl Precompile for AccountKeychain {
                 },
             ),
             #[since = T3]
-            IAccountKeychainCalls::setAllowedCalls(call) => mutate_void(
+            IAccountKeychain::setAllowedCalls(call) => mutate_void(
                 call,
                 msg_sender,
                 |sender, c| self.set_allowed_calls(sender, c),
             ),
             #[since = T3]
-            IAccountKeychainCalls::removeAllowedCalls(call) => mutate_void(
+            IAccountKeychain::removeAllowedCalls(call) => mutate_void(
                 call,
                 msg_sender,
                 |sender, c| self.remove_allowed_calls(sender, c),
             ),
-            IAccountKeychainCalls::getKey(call) => view(call, |c| self.get_key(c)),
+            IAccountKeychain::getKey(call) => view(call, |c| self.get_key(c)),
             #[until = T3]
-            IAccountKeychainCalls::getRemainingLimit(call) => {
+            IAccountKeychain::getRemainingLimit(call) => {
                 view(call, |c| self.get_remaining_limit(c))
             },
             #[since = T3]
-            IAccountKeychainCalls::getRemainingLimitWithPeriod(call) => view(call, |c| {
+            IAccountKeychain::getRemainingLimitWithPeriod(call) => view(call, |c| {
                 self.get_remaining_limit_with_period(c)
             }),
             #[since = T3]
-            IAccountKeychainCalls::getAllowedCalls(call) => {
+            IAccountKeychain::getAllowedCalls(call) => {
                 view(call, |c| self.get_allowed_calls(c))
             },
-            IAccountKeychainCalls::getTransactionKey(call) => {
+            IAccountKeychain::getTransactionKey(call) => {
                 view(call, |c| self.get_transaction_key(c, msg_sender))
             },
-        }
+        })
     }
 }
 

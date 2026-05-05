@@ -27,6 +27,7 @@ tracing.workspace = true
 thiserror.workspace = true
 derive_more.workspace = true
 scoped-tls = "1.0"
+paste.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
