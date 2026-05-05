@@ -1,4 +1,6 @@
 //! The executor is sending fork-choice-updates to the execution layer.
+use std::sync::Arc;
+
 use commonware_consensus::types::Height;
 use commonware_runtime::{Clock, Metrics, Pacer, Spawner};
 
@@ -27,7 +29,7 @@ where
 pub(crate) struct Config {
     /// A handle to the execution node layer. Used to forward finalized blocks
     /// and to update the canonical chain by sending forkchoice updates.
-    pub(crate) execution_node: TempoFullNode,
+    pub(crate) execution_node: Arc<TempoFullNode>,
 
     /// The last finalized height according to the consensus layer.
     /// If on startup there is a mismatch between the execution layer and the
