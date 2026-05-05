@@ -675,11 +675,9 @@ impl EncodeSize for State {
             + self.output.encode_size()
             + self.share.encode_size()
             + self.players.encode_size()
-
             // Until the next state migration, the unused syncers field must
-            // still be written to remain backwards comaptible.
+            // still be written to remain backwards compatible.
             + self.legacy_syncers().encode_size()
-
             + self.is_full_dkg.encode_size()
     }
 }
@@ -692,7 +690,7 @@ impl Write for State {
         self.share.write(buf);
         self.players.write(buf);
         // Until the next state migration, the unused syncers field must
-        // still be written to remain backwards comaptible.
+        // still be written to remain backwards compatible.
         self.legacy_syncers().write(buf);
         self.is_full_dkg.write(buf);
     }
@@ -711,7 +709,7 @@ impl Read for State {
         let share = ReadExt::read(buf)?;
         let players = Read::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), ()))?;
 
-        // Until the next state migration, the unused syncers field must still be read to remain backwards comaptible.
+        // Until the next state migration, the unused syncers field must still be read to remain backwards compatible.
         ordered::Set::<PublicKey>::read_cfg(buf, &(RangeCfg::from(0..=(u16::MAX as usize)), ()))?;
 
         let is_full_dkg = ReadExt::read(buf)?;
