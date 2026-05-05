@@ -42,10 +42,6 @@ pub(super) struct Config<TContext> {
     /// the validator config v2 contract.
     pub(super) public_key: PublicKey,
 
-    /// Deprecated CLI fallback for the fee recipient. Used when the on-chain
-    /// fee recipient is `Address::ZERO` or the V2 contract is not yet active.
-    pub(super) fee_recipient: Option<alloy_primitives::Address>,
-
     /// Number of messages from consensus to hold in our backlog
     /// before blocking.
     pub(super) mailbox_size: usize,

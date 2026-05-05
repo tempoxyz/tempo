@@ -96,8 +96,6 @@ pub async fn run_consensus_stack(
     let subblocks = network.register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, message_backlog);
 
     let consensus_engine = crate::consensus::engine::Builder {
-        fee_recipient: config.fee_recipient,
-
         execution_node: Some(execution_node),
         blocker: oracle.clone(),
         peer_manager: oracle.clone(),

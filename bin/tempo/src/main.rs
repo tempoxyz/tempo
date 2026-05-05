@@ -504,15 +504,6 @@ fn main() -> eyre::Result<()> {
                     cl_feed_state_clone,
                 ))
             } else {
-                if args.consensus.fee_recipient.is_some() {
-                    warn!(
-                        "`--consensus.fee-recipient` is deprecated and will be \
-                         removed. It is only used pre-T2 hardfork, if validator \
-                         config v2 is not yet activated, or if the on-chain fee \
-                         recipient is set to the zero address",
-                    );
-                }
-
                 Either::Right(run_consensus_stack(
                     ctx.with_label("consensus"),
                     args.consensus,

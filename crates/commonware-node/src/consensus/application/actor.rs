@@ -97,7 +97,6 @@ where
 
             inner: Inner {
                 public_key: config.public_key,
-                fee_recipient: config.fee_recipient,
                 epoch_strategy: config.epoch_strategy,
 
                 payload_resolve_time: config.payload_resolve_time,
@@ -200,7 +199,6 @@ where
 #[derive(Clone)]
 struct Inner<TState> {
     public_key: PublicKey,
-    fee_recipient: Option<alloy_primitives::Address>,
     epoch_strategy: FixedEpocher,
     payload_resolve_time: Duration,
     payload_return_time: Duration,
@@ -588,7 +586,6 @@ impl Inner<Init> {
         let parent_hash = parent.block_hash();
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
         let attrs = TempoPayloadAttributes::new(
-            self.fee_recipient.unwrap_or_default(),
             Some(proposer_public_key),
             timestamp,
             timestamp_millis_part,
@@ -805,7 +802,6 @@ impl Inner<Uninit> {
     ) -> eyre::Result<Inner<Init>> {
         let initialized = Inner {
             public_key: self.public_key,
-            fee_recipient: self.fee_recipient,
             epoch_strategy: self.epoch_strategy,
             payload_resolve_time: self.payload_resolve_time,
             payload_return_time: self.payload_return_time,
