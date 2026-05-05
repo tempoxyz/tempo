@@ -54,7 +54,7 @@ impl TIP1028Escrow {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn store_blocked(
+    pub(crate) fn store_blocked(
         &mut self,
         token: Address,
         originator: Address,
@@ -66,27 +66,21 @@ impl TIP1028Escrow {
         kind: InboundKind,
         memo: B256,
     ) -> Result<(u64, u64)> {
-        #[cfg(debug_assertions)]
-        // caller (TIP20 precopmile) should validate and enforce these beforehand.
+        if !token.is_tip20() {
+            return Err(TIP1028EscrowError::invalid_token().into());
+        }
+        if matches!(
+            blocked_reason,
+            ITIP403Registry::BlockedReason::NONE | ITIP403Registry::BlockedReason::__Invalid
+        ) || kind == ITIP1028Escrow::InboundKind::__Invalid
         {
-            if !token.is_tip20() {
-                return Err(TIP1028EscrowError::invalid_token().into());
-            }
-
-            if matches!(
-                blocked_reason,
-                ITIP403Registry::BlockedReason::NONE | ITIP403Registry::BlockedReason::__Invalid
-            ) || kind == ITIP1028Escrow::InboundKind::__Invalid
-            {
-                return Err(TIP1028EscrowError::invalid_receipt_claim().into());
-            }
-
-            let resolved = AddressRegistry::new()
-                .resolve_recipient(recipient)
-                .map_err(|_| TIP1028EscrowError::claim_destination_unauthorized())?;
-            if resolved != receiver {
-                return Err(TIP1028EscrowError::invalid_receipt_claim().into());
-            }
+            return Err(TIP1028EscrowError::invalid_receipt_claim().into());
+        }
+        let resolved = AddressRegistry::new()
+            .resolve_recipient(recipient)
+            .map_err(|_| TIP1028EscrowError::claim_destination_unauthorized())?;
+        if resolved != receiver {
+            return Err(TIP1028EscrowError::invalid_receipt_claim().into());
         }
 
         let blocked_nonce = self.next_blocked_receipt_nonce()?;

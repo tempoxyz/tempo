@@ -25,11 +25,11 @@ use crate::{
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
-    storage::{Handler, Mapping, StorageCtx},
+    storage::{Handler, Mapping},
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
     tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
-    tip1028_escrow::{ITIP1028Escrow, InboundKind, TIP1028Escrow},
+    tip1028_escrow::{ITIP1028Escrow, TIP1028Escrow},
 };
 use alloy::{
     primitives::{Address, B256, U256, keccak256, uint},
@@ -124,6 +124,20 @@ pub static UNPAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"UNPAUSE_R
 pub static ISSUER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"ISSUER_ROLE"));
 /// Role hash that authorizes burning tokens from blocked accounts.
 pub static BURN_BLOCKED_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"BURN_BLOCKED_ROLE"));
+
+#[derive(Debug, Clone, Copy)]
+struct BlockedInbound {
+    blocked_reason: ITIP403Registry::BlockedReason,
+    recovery_contract: Address,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StoredBlockedInbound {
+    blocked_reason: ITIP403Registry::BlockedReason,
+    recovery_contract: Address,
+    blocked_nonce: u64,
+    blocked_at: u64,
+}
 
 impl TIP20Token {
     /// Returns the token name.
@@ -394,14 +408,21 @@ impl TIP20Token {
     /// - `PolicyForbids` — TIP-403 policy rejects the mint recipient
     /// - `SupplyCapExceeded` — minting would push total supply above the cap
     pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
-        let mut to = Recipient::resolve(call.to)?;
-        self._mint(msg_sender, &mut to, call.amount, B256::ZERO)?;
+        let to = Recipient::resolve(call.to)?;
+        let blocked = self._mint(msg_sender, &to, call.amount, B256::ZERO)?;
 
-        self.emit_event(to.build_mint_event(call.amount))?;
-        if let Some(ev) = to.build_blocked_event(self.address) {
-            self.emit_event(ev)?;
-        } else if let Some(ev) = to.build_virtual_transfer_event(call.amount) {
-            self.emit_event(ev)?;
+        self.emit_event(TIP20Event::Mint(ITIP20::Mint {
+            to: if blocked.is_some() {
+                TIP1028_ESCROW_ADDRESS
+            } else {
+                call.to
+            },
+            amount: call.amount,
+        }))?;
+        if let Some(blocked) = blocked {
+            self.emit_mint_blocked(msg_sender, &to, call.amount, B256::ZERO, blocked)?;
+        } else if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
+            self.emit_event(hop)?;
         }
 
         Ok(())
@@ -413,22 +434,29 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::mintWithMemoCall,
     ) -> Result<()> {
-        let mut to = Recipient::resolve(call.to)?;
-        self._mint(msg_sender, &mut to, call.amount, call.memo)?;
+        let to = Recipient::resolve(call.to)?;
+        let blocked = self._mint(msg_sender, &to, call.amount, call.memo)?;
 
-        if let Some(ev) = to.build_blocked_event(self.address) {
-            self.emit_event(to.build_mint_event(call.amount))?;
-            self.emit_event(ev)?;
-        } else {
-            self.emit_event(to.build_transfer_with_memo_event(
-                Address::ZERO,
-                call.amount,
-                call.memo,
-            ))?;
-            self.emit_event(to.build_mint_event(call.amount))?;
-            if let Some(ev) = to.build_virtual_transfer_event(call.amount) {
-                self.emit_event(ev)?;
-            }
+        if blocked.is_none() {
+            self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
+                from: Address::ZERO,
+                to: call.to,
+                amount: call.amount,
+                memo: call.memo,
+            }))?;
+        }
+        self.emit_event(TIP20Event::Mint(ITIP20::Mint {
+            to: if blocked.is_some() {
+                TIP1028_ESCROW_ADDRESS
+            } else {
+                call.to
+            },
+            amount: call.amount,
+        }))?;
+        if let Some(blocked) = blocked {
+            self.emit_mint_blocked(msg_sender, &to, call.amount, call.memo, blocked)?;
+        } else if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
+            self.emit_event(hop)?;
         }
         Ok(())
     }
@@ -437,10 +465,10 @@ impl TIP20Token {
     fn _mint(
         &mut self,
         msg_sender: Address,
-        recipient: &mut Recipient,
+        recipient: &Recipient,
         amount: U256,
         memo: B256,
-    ) -> Result<()> {
+    ) -> Result<Option<StoredBlockedInbound>> {
         self.check_role(msg_sender, *ISSUER_ROLE)?;
         let total_supply = self.total_supply()?;
 
@@ -456,18 +484,38 @@ impl TIP20Token {
             return Err(TIP20Error::supply_cap_exceeded().into());
         }
 
-        recipient.screen_inbound(self.address, msg_sender, amount, InboundKind::MINT, memo)?;
+        let blocked = self.blocked_inbound(msg_sender, recipient.target)?;
+        let credit_to = if blocked.is_some() {
+            Recipient::direct(TIP1028_ESCROW_ADDRESS)
+        } else {
+            *recipient
+        };
 
-        let credit_to = recipient.credit_to();
-        self.handle_rewards_on_mint(credit_to, amount)?;
+        self.handle_rewards_on_mint(credit_to.target, amount)?;
         self.set_total_supply(new_supply)?;
-        let to_balance = self.get_balance(credit_to)?;
+        let to_balance = self.get_balance(credit_to.target)?;
         let new_to_balance = to_balance
             .checked_add(amount)
             .ok_or(TempoPrecompileError::under_overflow())?;
-        self.set_balance(credit_to, new_to_balance)?;
+        self.set_balance(credit_to.target, new_to_balance)?;
 
-        self.emit_event(recipient.build_transfer_event(Address::ZERO, amount))
+        self.emit_event(credit_to.build_transfer_event(Address::ZERO, amount))?;
+
+        if let Some(blocked) = blocked {
+            return self
+                .store_blocked_inbound(
+                    msg_sender,
+                    recipient.target,
+                    recipient.requested(),
+                    blocked,
+                    amount,
+                    ITIP1028Escrow::InboundKind::MINT,
+                    memo,
+                )
+                .map(Some);
+        }
+
+        Ok(None)
     }
 
     /// Burns `amount` from the caller's balance and reduces total supply.
@@ -706,23 +754,13 @@ impl TIP20Token {
     /// - `InsufficientBalance` — sender balance lower than transfer amount
     pub fn transfer(&mut self, msg_sender: Address, call: ITIP20::transferCall) -> Result<bool> {
         trace!(%msg_sender, ?call, "transferring TIP20");
-        let mut to = Recipient::resolve(call.to)?;
+        let to = Recipient::resolve(call.to)?;
         self.validate_transfer(msg_sender, &to)?;
         self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
-        to.screen_inbound(
-            self.address,
-            msg_sender,
-            call.amount,
-            InboundKind::TRANSFER,
-            B256::ZERO,
-        )?;
-
-        self._transfer(msg_sender, &to, call.amount)?;
-        if let Some(ev) = to.build_blocked_event(self.address) {
-            self.emit_event(ev)?;
-        } else if let Some(ev) = to.build_virtual_transfer_event(call.amount) {
-            self.emit_event(ev)?;
+        let blocked = self.transfer_or_blocked(msg_sender, &to, call.amount, B256::ZERO)?;
+        if !blocked && let Some(hop) = to.build_virtual_transfer_event(call.amount) {
+            self.emit_event(hop)?;
         }
         Ok(true)
     }
@@ -741,12 +779,10 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::transferFromCall,
     ) -> Result<bool> {
-        let mut to = Recipient::resolve(call.to)?;
-        self._transfer_from(msg_sender, call.from, &mut to, call.amount, B256::ZERO)?;
-        if let Some(ev) = to.build_blocked_event(self.address) {
-            self.emit_event(ev)?;
-        } else if let Some(ev) = to.build_virtual_transfer_event(call.amount) {
-            self.emit_event(ev)?;
+        let to = Recipient::resolve(call.to)?;
+        let blocked = self._transfer_from(msg_sender, call.from, &to, call.amount, B256::ZERO)?;
+        if !blocked && let Some(hop) = to.build_virtual_transfer_event(call.amount) {
+            self.emit_event(hop)?;
         }
         Ok(true)
     }
@@ -757,14 +793,18 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::transferFromWithMemoCall,
     ) -> Result<bool> {
-        let mut to = Recipient::resolve(call.to)?;
-        self._transfer_from(msg_sender, call.from, &mut to, call.amount, call.memo)?;
-        if let Some(ev) = to.build_blocked_event(self.address) {
-            self.emit_event(ev)?;
-        } else {
-            self.emit_event(to.build_transfer_with_memo_event(call.from, call.amount, call.memo))?;
-            if let Some(ev) = to.build_virtual_transfer_event(call.amount) {
-                self.emit_event(ev)?;
+        let to = Recipient::resolve(call.to)?;
+        let blocked = self._transfer_from(msg_sender, call.from, &to, call.amount, call.memo)?;
+
+        if !blocked {
+            self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
+                from: call.from,
+                to: call.to,
+                amount: call.amount,
+                memo: call.memo,
+            }))?;
+            if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
+                self.emit_event(hop)?;
             }
         }
         Ok(true)
@@ -786,24 +826,15 @@ impl TIP20Token {
         to: Address,
         amount: U256,
     ) -> Result<bool> {
-        let mut to = Recipient::resolve(to)?;
+        let to = Recipient::resolve(to)?;
         self.validate_transfer(from, &to)?;
         self.check_and_update_spending_limit(from, amount)?;
 
-        to.screen_inbound(
-            self.address,
-            from,
-            amount,
-            InboundKind::TRANSFER,
-            B256::ZERO,
-        )?;
-
-        self._transfer(from, &to, amount)?;
-        if let Some(ev) = to.build_blocked_event(self.address) {
-            self.emit_event(ev)?;
-        } else if let Some(ev) = to.build_virtual_transfer_event(amount) {
-            self.emit_event(ev)?;
+        let blocked = self.transfer_or_blocked(from, &to, amount, B256::ZERO)?;
+        if !blocked && let Some(hop) = to.build_virtual_transfer_event(amount) {
+            self.emit_event(hop)?;
         }
+
         Ok(true)
     }
 
@@ -811,10 +842,10 @@ impl TIP20Token {
         &mut self,
         msg_sender: Address,
         from: Address,
-        recipient: &mut Recipient,
+        recipient: &Recipient,
         amount: U256,
         memo: B256,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         self.validate_transfer(from, recipient)?;
 
         let allowed = self.get_allowance(from, msg_sender)?;
@@ -829,9 +860,7 @@ impl TIP20Token {
             self.set_allowance(from, msg_sender, new_allowance)?;
         }
 
-        recipient.screen_inbound(self.address, from, amount, InboundKind::TRANSFER, memo)?;
-
-        self._transfer(from, recipient, amount)
+        self.transfer_or_blocked(from, recipient, amount, memo)
     }
 
     /// Like [`Self::transfer`], but attaches a 32-byte memo.
@@ -840,25 +869,20 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::transferWithMemoCall,
     ) -> Result<()> {
-        let mut to = Recipient::resolve(call.to)?;
+        let to = Recipient::resolve(call.to)?;
         self.validate_transfer(msg_sender, &to)?;
         self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
-        to.screen_inbound(
-            self.address,
-            msg_sender,
-            call.amount,
-            InboundKind::TRANSFER,
-            call.memo,
-        )?;
-
-        self._transfer(msg_sender, &to, call.amount)?;
-        if let Some(ev) = to.build_blocked_event(self.address) {
-            self.emit_event(ev)?;
-        } else {
-            self.emit_event(to.build_transfer_with_memo_event(msg_sender, call.amount, call.memo))?;
-            if let Some(ev) = to.build_virtual_transfer_event(call.amount) {
-                self.emit_event(ev)?;
+        let blocked = self.transfer_or_blocked(msg_sender, &to, call.amount, call.memo)?;
+        if !blocked {
+            self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
+                from: msg_sender,
+                to: call.to,
+                amount: call.amount,
+                memo: call.memo,
+            }))?;
+            if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
+                self.emit_event(hop)?;
             }
         }
         Ok(())
@@ -1021,6 +1045,130 @@ impl TIP20Token {
         AccountKeychain::new().authorize_transfer(from, self.address, amount)
     }
 
+    fn blocked_inbound(
+        &self,
+        sender: Address,
+        receiver: Address,
+    ) -> Result<Option<BlockedInbound>> {
+        if !self.storage.spec().is_t5() {
+            return Ok(None);
+        }
+
+        let registry = TIP403Registry::new();
+        let (authorized, blocked_reason) =
+            registry.validate_receive_policy(self.address, sender, receiver)?;
+        if authorized {
+            return Ok(None);
+        }
+
+        Ok(Some(BlockedInbound {
+            blocked_reason,
+            recovery_contract: registry.receive_policy_recovery_contract(receiver)?,
+        }))
+    }
+
+    fn transfer_or_blocked(
+        &mut self,
+        from: Address,
+        recipient: &Recipient,
+        amount: U256,
+        memo: B256,
+    ) -> Result<bool> {
+        let Some(blocked) = self.blocked_inbound(from, recipient.target)? else {
+            self._transfer(from, recipient, amount)?;
+            return Ok(false);
+        };
+
+        self._transfer(from, &Recipient::direct(TIP1028_ESCROW_ADDRESS), amount)?;
+        let stored = self.store_blocked_inbound(
+            from,
+            recipient.target,
+            recipient.requested(),
+            blocked,
+            amount,
+            ITIP1028Escrow::InboundKind::TRANSFER,
+            memo,
+        )?;
+        self.emit_transfer_blocked(from, recipient, amount, memo, stored)?;
+        Ok(true)
+    }
+
+    fn store_blocked_inbound(
+        &mut self,
+        originator: Address,
+        receiver: Address,
+        recipient: Address,
+        blocked: BlockedInbound,
+        amount: U256,
+        kind: ITIP1028Escrow::InboundKind,
+        memo: B256,
+    ) -> Result<StoredBlockedInbound> {
+        let (blocked_nonce, blocked_at) = TIP1028Escrow::new().store_blocked(
+            self.address,
+            originator,
+            receiver,
+            recipient,
+            blocked.recovery_contract,
+            amount,
+            blocked.blocked_reason,
+            kind,
+            memo,
+        )?;
+
+        Ok(StoredBlockedInbound {
+            blocked_reason: blocked.blocked_reason,
+            recovery_contract: blocked.recovery_contract,
+            blocked_nonce,
+            blocked_at,
+        })
+    }
+
+    fn emit_transfer_blocked(
+        &mut self,
+        from: Address,
+        recipient: &Recipient,
+        amount: U256,
+        memo: B256,
+        blocked: StoredBlockedInbound,
+    ) -> Result<()> {
+        self.emit_event(TIP20Event::TransferBlocked(ITIP20::TransferBlocked {
+            token: self.address,
+            from,
+            receiver: recipient.target,
+            receiptVersion: crate::tip1028_escrow::BLOCKED_RECEIPT_VERSION,
+            blockedNonce: blocked.blocked_nonce,
+            blockedAt: blocked.blocked_at,
+            recipient: recipient.requested(),
+            amount,
+            blockedReason: blocked.blocked_reason.into(),
+            recoveryContract: blocked.recovery_contract,
+            memo,
+        }))
+    }
+
+    fn emit_mint_blocked(
+        &mut self,
+        operator: Address,
+        recipient: &Recipient,
+        amount: U256,
+        memo: B256,
+        blocked: StoredBlockedInbound,
+    ) -> Result<()> {
+        self.emit_event(TIP20Event::MintBlocked(ITIP20::MintBlocked {
+            token: self.address,
+            operator,
+            receiver: recipient.target,
+            receiptVersion: crate::tip1028_escrow::BLOCKED_RECEIPT_VERSION,
+            blockedNonce: blocked.blocked_nonce,
+            blockedAt: blocked.blocked_at,
+            recipient: recipient.requested(),
+            amount,
+            blockedReason: blocked.blocked_reason.into(),
+            recoveryContract: blocked.recovery_contract,
+            memo,
+        }))
+    }
+
     pub fn release_from_tip1028_escrow(
         &mut self,
         receiver: Address,
@@ -1085,7 +1233,7 @@ impl TIP20Token {
         Ok(())
     }
 
-    /// Core transfer: debits `from`, credits `to.creditor()`, emits `Transfer(from, event_addr, amount)`.
+    /// Core transfer: debits `from`, credits `to.target`, emits `Transfer(from, event_addr, amount)`.
     ///
     /// For virtual recipients the event address is the virtual alias; the balance update always
     /// targets `to.target` (the resolved master).
@@ -1097,8 +1245,7 @@ impl TIP20Token {
             );
         }
 
-        let credit_to = to.credit_to();
-        self.handle_rewards_on_transfer(from, credit_to, amount)?;
+        self.handle_rewards_on_transfer(from, to.target, amount)?;
 
         // Adjust balances
         let new_from_balance = from_balance
@@ -1107,13 +1254,13 @@ impl TIP20Token {
 
         self.set_balance(from, new_from_balance)?;
 
-        if credit_to != Address::ZERO {
-            let to_balance = self.get_balance(credit_to)?;
+        if to.target != Address::ZERO {
+            let to_balance = self.get_balance(to.target)?;
             let new_to_balance = to_balance
                 .checked_add(amount)
                 .ok_or(TempoPrecompileError::under_overflow())?;
 
-            self.set_balance(credit_to, new_to_balance)?;
+            self.set_balance(to.target, new_to_balance)?;
         }
 
         self.emit_event(to.build_transfer_event(from, amount))
@@ -1234,59 +1381,31 @@ impl TIP20Token {
     }
 }
 
-/// Persisted record describing a delivery rejected by the receive policy.
+/// Resolved transfer recipient for [TIP-1022] virtual address support.
 ///
-/// Mirrors the on-chain receipt 1:1 plus the policy fields needed to emit the
-/// `TransferBlocked` / `MintBlocked` event. Always paired with a credit to
-/// [`TIP1028_ESCROW_ADDRESS`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct StoredBlockedInbound {
-    blocked_reason: ITIP403Registry::BlockedReason,
-    recovery_contract: Address,
-    blocked_nonce: u64,
-    blocked_at: u64,
-    kind: ITIP1028Escrow::InboundKind,
-    /// Event actor: `from` for transfer variants, `msg_sender` for mint variants.
-    sender: Address,
-    amount: U256,
-    memo: B256,
-}
-
-/// Resolved recipient for [TIP-1022] virtual address + [TIP-1028] inbound address-level policy support.
-///
-/// Each instance carries up to three addresses, populated in order:
-///  1. `target` — set at construction by alias resolution.
-///  2. `virtual_addr` — set at construction if the caller supplied a virtual address.
-///  3. `blocked` — set later by [`Self::screen_inbound`] (T5+) when forbidden by receive policies.
-///
-/// [`Self::credit_to`] informs which is the address that ends up holding the transferred funds.
+/// `target` is always the effective address where the balance is credited. For virtual recipients,
+/// `virtual_addr` carries the original virtual address for event emission and blocked receipts.
 ///
 /// [TIP-1022]: <https://docs.tempo.xyz/protocol/tip1022>
-/// [TIP-1028]: <https://docs.tempo.xyz/protocol/tip1028>
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Recipient {
-    /// The effective (resolved) counterparty of the transfer.
-    /// (T5+) TIP-403 inbound address-level policy checks are evaluated against this address.
+    /// The effective (resolved) address where the balance is credited.
     pub(crate) target: Address,
     /// The virtual address, if registered.
     pub(crate) virtual_addr: Option<Address>,
-    /// When `Some`, the delivery blocked by the inbound address-level checks; balance is credited
-    /// to [`TIP1028_ESCROW_ADDRESS`] and a blocked event is owed.
-    blocked: Option<StoredBlockedInbound>,
 }
 
 impl Recipient {
-    /// Creates a [`Recipient`] with no virtual address indirection nor inbound policy evaluation.
+    /// Creates a [`Recipient`] with no virtual indirection.
     #[inline]
     pub(crate) fn direct(addr: Address) -> Self {
         Self {
             target: addr,
             virtual_addr: None,
-            blocked: None,
         }
     }
 
-    /// Resolves a recipient via the [`AddressRegistry`], without inbound policy evaluation.
+    /// Resolves a recipient via the [`AddressRegistry`].
     ///
     /// If `addr` is a virtual address its registered master is looked up and stored in `target`,
     /// with the original virtual address preserved in `virtual_addr`.
@@ -1298,33 +1417,20 @@ impl Recipient {
             Self {
                 target: effective,
                 virtual_addr: Some(addr),
-                blocked: None,
             }
         })
     }
 
-    /// The original address supplied by the caller (the user's intent).
     #[inline]
     pub(crate) fn requested(&self) -> Address {
         self.virtual_addr.unwrap_or(self.target)
     }
 
-    /// The address that is actually credited with the transfer amount
-    #[inline]
-    pub(crate) fn credit_to(&self) -> Address {
-        if self.blocked.is_some() {
-            TIP1028_ESCROW_ADDRESS
-        } else {
-            self.target
-        }
-    }
-
     /// Validates that the recipient is not:
-    /// - the zero address (preventing accidental burns),
-    /// - an address with the TIP-20 prefix (preventing transfers to token contracts),
-    /// - (+T5) the [`TIP1028_ESCROW_ADDRESS`] (reserved for the receive-policy override).
+    /// - the zero address (preventing accidental burns)
+    /// - an address with the TIP-20 prefix (preventing transfers to token contracts)
     pub(crate) fn validate(&self) -> Result<()> {
-        if StorageCtx.spec().is_t5() && self.target == TIP1028_ESCROW_ADDRESS {
+        if crate::storage::StorageCtx.spec().is_t5() && self.target == TIP1028_ESCROW_ADDRESS {
             return Err(TIP20Error::escrow_address_reserved().into());
         }
         if self.target.is_zero() || self.target.is_tip20() {
@@ -1333,129 +1439,28 @@ impl Recipient {
         Ok(())
     }
 
-    /// (T5+) Evaluates the address-level receive policy. If blocked, sets `self.blocked` + persists
-    /// the receipt via [`TIP1028Escrow::store_blocked`]
-    pub(crate) fn screen_inbound(
-        &mut self,
-        token: Address,
-        sender: Address,
-        amount: U256,
-        kind: ITIP1028Escrow::InboundKind,
-        memo: B256,
-    ) -> Result<()> {
-        if !StorageCtx.spec().is_t5() {
-            return Ok(());
-        }
-
-        let registry = TIP403Registry::new();
-        let (authorized, reason) = registry.validate_receive_policy(token, sender, self.target)?;
-        if authorized {
-            return Ok(());
-        }
-
-        let recovery_contract = registry.receive_policy_recovery_contract(self.target)?;
-        let (blocked_nonce, blocked_at) = TIP1028Escrow::new().store_blocked(
-            token,
-            sender, // TODO: ensure <https://github.com/tempoxyz/tempo/pull/3791/changes#r3178322931> is definitive
-            self.target,
-            self.requested(),
-            recovery_contract,
-            amount,
-            reason,
-            kind,
-            memo,
-        )?;
-
-        self.blocked = Some(StoredBlockedInbound {
-            blocked_reason: reason,
-            recovery_contract,
-            blocked_nonce,
-            blocked_at,
-            kind,
-            sender,
-            amount,
-            memo,
-        });
-        Ok(())
-    }
-
+    /// Builds the primary `Transfer(from, to, amount)` event.
+    ///
+    /// For virtual recipients `to` is the virtual address (first hop); for regular
+    /// recipients this is the only `Transfer` event needed.
     pub(crate) fn build_transfer_event(&self, from: Address, amount: U256) -> TIP20Event {
-        let to = if self.blocked.is_some() {
-            TIP1028_ESCROW_ADDRESS
-        } else {
-            self.requested()
-        };
-        TIP20Event::Transfer(ITIP20::Transfer { from, to, amount })
-    }
-
-    pub(crate) fn build_transfer_with_memo_event(
-        &self,
-        from: Address,
-        amount: U256,
-        memo: B256,
-    ) -> TIP20Event {
-        TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
+        TIP20Event::Transfer(ITIP20::Transfer {
             from,
             to: self.requested(),
             amount,
-            memo,
         })
     }
 
+    /// Builds the forwarding `Transfer(virtual, master, amount)` event for virtual recipients.
+    /// Returns `None` for non-virtual recipients.
     pub(crate) fn build_virtual_transfer_event(&self, amount: U256) -> Option<TIP20Event> {
-        if self.virtual_addr.is_none() || self.blocked.is_some() {
-            return None;
-        }
-        Some(TIP20Event::Transfer(ITIP20::Transfer {
-            from: self.requested(),
-            to: self.target,
-            amount,
-        }))
-    }
-
-    pub(crate) fn build_mint_event(&self, amount: U256) -> TIP20Event {
-        let to = if self.blocked.is_some() {
-            TIP1028_ESCROW_ADDRESS
-        } else {
-            self.requested()
-        };
-        TIP20Event::Mint(ITIP20::Mint { to, amount })
-    }
-
-    pub(crate) fn build_blocked_event(&self, token: Address) -> Option<TIP20Event> {
-        let b = self.blocked.as_ref()?;
-        let event = match b.kind {
-            ITIP1028Escrow::InboundKind::TRANSFER => {
-                TIP20Event::TransferBlocked(ITIP20::TransferBlocked {
-                    token,
-                    from: b.sender,
-                    receiver: self.target,
-                    receiptVersion: crate::tip1028_escrow::BLOCKED_RECEIPT_VERSION,
-                    blockedNonce: b.blocked_nonce,
-                    blockedAt: b.blocked_at,
-                    recipient: self.requested(),
-                    amount: b.amount,
-                    blockedReason: b.blocked_reason.into(),
-                    recoveryContract: b.recovery_contract,
-                    memo: b.memo,
-                })
-            }
-            ITIP1028Escrow::InboundKind::MINT => TIP20Event::MintBlocked(ITIP20::MintBlocked {
-                token,
-                operator: b.sender,
-                receiver: self.target,
-                receiptVersion: crate::tip1028_escrow::BLOCKED_RECEIPT_VERSION,
-                blockedNonce: b.blocked_nonce,
-                blockedAt: b.blocked_at,
-                recipient: self.requested(),
-                amount: b.amount,
-                blockedReason: b.blocked_reason.into(),
-                recoveryContract: b.recovery_contract,
-                memo: b.memo,
-            }),
-            ITIP1028Escrow::InboundKind::__Invalid => return None,
-        };
-        Some(event)
+        self.virtual_addr.map(|virtual_addr| {
+            TIP20Event::Transfer(ITIP20::Transfer {
+                from: virtual_addr,
+                to: self.target,
+                amount,
+            })
+        })
     }
 }
 
@@ -1468,7 +1473,7 @@ mod recipient_tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{VIRTUAL_MASTER, register_virtual_master},
     };
-    use alloy::primitives::{Address, B256, U256};
+    use alloy::primitives::{Address, U256};
     use tempo_chainspec::hardfork::TempoHardfork;
 
     #[test]
@@ -1480,7 +1485,6 @@ mod recipient_tests {
             Recipient {
                 target: addr,
                 virtual_addr: None,
-                blocked: None
             }
         );
 
@@ -1492,8 +1496,7 @@ mod recipient_tests {
                 r,
                 Recipient {
                     target: addr,
-                    virtual_addr: None,
-                    blocked: None
+                    virtual_addr: None
                 }
             );
 
@@ -1505,8 +1508,7 @@ mod recipient_tests {
                 r,
                 Recipient {
                     target: VIRTUAL_MASTER,
-                    virtual_addr: Some(virtual_addr),
-                    blocked: None
+                    virtual_addr: Some(virtual_addr)
                 }
             );
 
@@ -1526,8 +1528,7 @@ mod recipient_tests {
                 r,
                 Recipient {
                     target: virtual_addr,
-                    virtual_addr: None,
-                    blocked: None
+                    virtual_addr: None
                 }
             );
             Ok::<_, TempoPrecompileError>(())
@@ -1571,7 +1572,6 @@ mod recipient_tests {
         let virt = Recipient {
             target,
             virtual_addr: Some(vaddr),
-            blocked: None,
         };
 
         // transfer event uses virtual_addr when present, target otherwise
@@ -1586,62 +1586,6 @@ mod recipient_tests {
         assert!(matches!(hop,
             TIP20Event::Transfer(ITIP20::Transfer { from, to, .. })
             if from == vaddr && to == target));
-
-        // virtual hop suppressed when blocked
-        let blocked_virt = Recipient {
-            virtual_addr: Some(vaddr),
-            target,
-            blocked: Some(StoredBlockedInbound {
-                blocked_reason: ITIP403Registry::BlockedReason::RECEIVE_POLICY,
-                recovery_contract: Address::ZERO,
-                blocked_nonce: 7,
-                blocked_at: 123,
-                kind: ITIP1028Escrow::InboundKind::TRANSFER,
-                sender: from,
-                amount,
-                memo: B256::ZERO,
-            }),
-        };
-        assert!(blocked_virt.build_virtual_transfer_event(amount).is_none());
-        // blocked: primary transfer goes to escrow
-        assert!(matches!(blocked_virt.build_transfer_event(from, amount),
-            TIP20Event::Transfer(ITIP20::Transfer { to, .. }) if to == TIP1028_ESCROW_ADDRESS));
-        // creditor() reflects redirection
-        assert_eq!(direct.credit_to(), target);
-        assert_eq!(virt.credit_to(), target);
-        assert_eq!(blocked_virt.credit_to(), TIP1028_ESCROW_ADDRESS);
-        // build_blocked_event: None when open, Some(TransferBlocked) when blocked TRANSFER
-        assert!(
-            direct
-                .build_blocked_event(Address::repeat_byte(0xAA))
-                .is_none()
-        );
-        let token = Address::repeat_byte(0xAA);
-        assert!(matches!(
-            blocked_virt.build_blocked_event(token).unwrap(),
-            TIP20Event::TransferBlocked(ITIP20::TransferBlocked { from: f, recipient: r, receiver: rc, .. })
-                if f == from && r == vaddr && rc == target
-        ));
-
-        // MintBlocked variant dispatch
-        let blocked_mint = Recipient {
-            virtual_addr: Some(vaddr),
-            target,
-            blocked: Some(StoredBlockedInbound {
-                blocked_reason: ITIP403Registry::BlockedReason::TOKEN_FILTER,
-                recovery_contract: Address::ZERO,
-                blocked_nonce: 1,
-                blocked_at: 0,
-                kind: ITIP1028Escrow::InboundKind::MINT,
-                sender: from,
-                amount,
-                memo: B256::ZERO,
-            }),
-        };
-        assert!(matches!(
-            blocked_mint.build_blocked_event(token).unwrap(),
-            TIP20Event::MintBlocked(ITIP20::MintBlocked { operator, .. }) if operator == from
-        ));
     }
 }
 
