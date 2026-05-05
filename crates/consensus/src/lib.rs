@@ -835,9 +835,11 @@ mod tests {
 
         let user_tx = create_tx(chain_id);
 
+        // Use a fixed timestamp between T3 and T4 activation on moderato so the
+        // block is always pre-T4 regardless of wall-clock time.
         let header = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
-            .timestamp(current_timestamp_millis())
+            .timestamp(1_778_767_199)
             .build();
         let block = create_valid_block(header, vec![user_tx]);
         let sealed = SealedBlock::seal_slow(block);
