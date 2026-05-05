@@ -753,6 +753,11 @@ impl TIP20Token {
     /// by other precompiles only (not exposed via ABI). Enforces
     /// compliance via the [`TIP403Registry`] and [`AccountKeychain`].
     ///
+    /// Per TIP-1035, this entrypoint may only be invoked by precompiles on the
+    /// [`crate::address_registry::IMPLICIT_APPROVAL_LIST`]. Gating is enforced at the call site
+    /// (the function is not ABI-exposed); callers are also expected to pull only from the current
+    /// `msg.sender`.
+    ///
     /// # Errors
     /// - `Paused` — token transfers are currently paused
     /// - `InvalidRecipient` — recipient address is zero
