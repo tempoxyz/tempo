@@ -29,9 +29,17 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
 
     mapping(bytes32 => uint256) internal channelStates;
     bytes32 internal _openTxHashContext;
+
     // Reference-contract-only approximation of the precompile's transient per-transaction guard.
-    // Because `channelId` includes `openTxHash`, this does not block real cross-transaction
-    // reopens, which always use a different transaction hash.
+    // The enshrined precompile should track `openedThisTx[channelId]` in transient storage and
+    // clear it automatically at the end of the top-level transaction. That allows multiple `open`
+    // calls in one AA batch when they derive distinct channel IDs, while preventing the same channel
+    // ID from being reopened after a same-transaction terminal `close` or `withdraw` deletes the
+    // persistent state slot.
+    //
+    // This Solidity reference uses persistent storage because tests cannot model precompile
+    // transient storage directly. Since `channelId` includes `openTxHash`, a real cross-transaction
+    // reopen has a different ID and is not blocked by this persistent approximation.
     mapping(bytes32 => bool) internal _openedChannelIdsForTest;
 
     error OpenTxHashNotSet();
@@ -60,7 +68,14 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         channelId = computeChannelId(
             msg.sender, payee, operator, token, salt, authorizedSigner, openTxHash
         );
+
+        // Reject ordinary duplicate opens while the channel is still active.
         if (channelStates[channelId] != 0) revert ChannelAlreadyExists();
+
+        // Also reject same-top-level-transaction reopens of a channel ID that was opened earlier
+        // and then terminally closed or withdrawn. Without this guard, terminal deletion would make
+        // the persistent state slot look unused again even though the enclosing tx hash, and thus
+        // the derived channel ID, is unchanged for later calls in the same AA batch.
         if (_openedChannelIdsForTest[channelId]) revert ChannelAlreadyExists();
 
         channelStates[channelId] =
@@ -70,6 +85,9 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         // The enshrined precompile should use TIP-20 `systemTransferFrom` semantics instead.
         bool success = ITIP20(token).transferFrom(msg.sender, address(this), deposit);
         if (!success) revert TransferFailed();
+
+        // Mark after the escrow transfer succeeds so failed opens do not poison the guard. The real
+        // precompile marker is transient and only protects the current top-level transaction.
         _openedChannelIdsForTest[channelId] = true;
 
         emit ChannelOpened(
