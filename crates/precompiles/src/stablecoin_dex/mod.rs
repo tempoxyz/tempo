@@ -781,6 +781,11 @@ impl StablecoinDEX {
             (base_token, flipped.amount, quote_token)
         };
 
+        let user_balance = self.balance_of(flipped.maker, escrow_token)?;
+        if user_balance < escrow_amount {
+            return Err(StablecoinDEXError::insufficient_balance().into());
+        }
+
         // Check policy and pause state on escrow token
         // Direction: maker → DEX
         let escrow_tip20 = TIP20Token::from_address(escrow_token)?;
@@ -793,10 +798,6 @@ impl StablecoinDEX {
         non_escrow_tip20.check_not_paused()?;
         non_escrow_tip20.ensure_transfer_authorized(self.address, flipped.maker)?;
 
-        let user_balance = self.balance_of(flipped.maker, escrow_token)?;
-        if user_balance < escrow_amount {
-            return Err(StablecoinDEXError::insufficient_balance().into());
-        }
         self.sub_balance(flipped.maker, escrow_token, escrow_amount)?;
 
         self.commit_order_to_book(flipped)?;
