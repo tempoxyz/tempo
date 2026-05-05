@@ -9,9 +9,7 @@ use std::{ops::RangeInclusive, pin::Pin, sync::Arc, time::Duration};
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadId};
 use commonware_consensus::{Heightable as _, marshal::Update, types::Height};
 use commonware_cryptography::ed25519::PublicKey;
-use commonware_runtime::{
-    Clock, ContextCell, FutureExt, Handle, Pacer, Spawner, spawn_cell,
-};
+use commonware_runtime::{Clock, ContextCell, FutureExt, Handle, Pacer, Spawner, spawn_cell};
 use commonware_utils::{Acknowledgement, acknowledgement::Exact};
 use eyre::{Report, WrapErr as _, ensure};
 use futures::{
