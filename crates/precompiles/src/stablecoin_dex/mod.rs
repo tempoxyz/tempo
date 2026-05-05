@@ -191,18 +191,30 @@ impl StablecoinDEX {
         Ok(())
     }
 
-    /// Decrement user's internal balance or transfer from external wallet
+    /// Decrement user's internal balance or transfer from external wallet.
+    ///
+    /// When `check_pause` is true and the full amount is covered by internal balance,
+    /// verifies the token is not paused (T4+). Callers that already check pause state
+    /// (e.g. swaps via `validate_and_build_route`) should pass `false` to avoid a
+    /// redundant SLOAD.
     fn decrement_balance_or_transfer_from(
         &mut self,
         user: Address,
         token: Address,
         amount: u128,
+        check_pause: bool,
     ) -> Result<()> {
         // Ensure that the token can be transferred
-        TIP20Token::from_address(token)?.ensure_transfer_authorized(user, self.address)?;
+        let tip20 = TIP20Token::from_address(token)?;
+        tip20.ensure_transfer_authorized(user, self.address)?;
 
         let user_balance = self.balance_of(user, token)?;
         if user_balance >= amount {
+            // When fully covered by internal balance, TIP-20 transferFrom won't run,
+            // so we must check the pause state ourselves (spec: T4+).
+            if check_pause && self.storage.spec().is_t4() {
+                tip20.check_not_paused()?;
+            }
             self.sub_balance(user, token, amount)
         } else {
             let remaining = amount
@@ -287,7 +299,8 @@ impl StablecoinDEX {
         let route = self.find_trade_path(token_in, token_out)?;
 
         // Deduct input tokens from sender (only once, at the start)
-        self.decrement_balance_or_transfer_from(sender, token_in, amount_in)?;
+        // Pause already checked in validate_and_build_route
+        self.decrement_balance_or_transfer_from(sender, token_in, amount_in, false)?;
 
         // Execute swaps for each hop - intermediate balances are transitory
         let mut amount = amount_in;
@@ -337,7 +350,8 @@ impl StablecoinDEX {
         }
 
         // Deduct input tokens ONCE at end
-        self.decrement_balance_or_transfer_from(sender, token_in, amount)?;
+        // Pause already checked in validate_and_build_route
+        self.decrement_balance_or_transfer_from(sender, token_in, amount, false)?;
 
         // Transfer only final output ONCE at end
         self.transfer(token_out, sender, amount_out)?;
@@ -495,11 +509,18 @@ impl StablecoinDEX {
 
         // Check policy on non-escrow token (escrow token is checked in decrement_balance_or_transfer_from)
         // Direction: DEX → sender (order placer receives non-escrow token when filled)
-        TIP20Token::from_address(non_escrow_token)?
-            .ensure_transfer_authorized(self.address, sender)?;
+        let non_escrow_tip20 = TIP20Token::from_address(non_escrow_token)?;
+        non_escrow_tip20.ensure_transfer_authorized(self.address, sender)?;
+
+        // On T4+, reject if the non-escrow token is paused. When this order fills, the
+        // non-escrow token may be moved via internal-balance updates that bypass TIP-20's
+        // pause check, so we enforce it at placement.
+        if self.storage.spec().is_t4() {
+            non_escrow_tip20.check_not_paused()?;
+        }
 
         // Debit from user's balance or transfer from wallet
-        self.decrement_balance_or_transfer_from(sender, escrow_token, escrow_amount)?;
+        self.decrement_balance_or_transfer_from(sender, escrow_token, escrow_amount, true)?;
 
         // Create the order
         let order_id = self.next_order_id()?;
@@ -580,7 +601,8 @@ impl StablecoinDEX {
     /// Places a flip order that auto-reverses to the opposite side when
     /// fully filled, acting as perpetual liquidity. Escrows tokens via
     /// [`TIP20Token`] and enforces compliance via [`TIP403Registry`].
-    /// For bids `flip_tick` must be > `tick`; for asks, < `tick`.
+    /// Pre-T5: for bids `flip_tick` must be > `tick`; for asks, < `tick`.
+    /// T5+ (TIP-1030): for bids `flip_tick >= tick`; for asks `flip_tick <= tick`.
     ///
     /// # Errors
     /// - `InvalidBaseToken` — token address does not have a valid TIP-20 prefix
@@ -633,8 +655,15 @@ impl StablecoinDEX {
             return Err(StablecoinDEXError::invalid_flip_tick().into());
         }
 
-        // Validate flip_tick relationship to tick based on order side
-        if (is_bid && flip_tick <= tick) || (!is_bid && flip_tick >= tick) {
+        // Validate flip_tick relationship to tick based on order side.
+        // TIP-1030 (T5): allow flip_tick == tick for same-tick flip orders.
+        // NOTE: `Order::new_flip` performs the same check defensively below; the early
+        // check here is preserved to keep error semantics backwards-compatible
+        // (invalid flip_tick fails with `invalid_flip_tick` before any escrow logic).
+        if (flip_tick == tick && !self.storage.spec().is_t5())
+            || (is_bid && flip_tick < tick)
+            || (!is_bid && flip_tick > tick)
+        {
             return Err(StablecoinDEXError::invalid_flip_tick().into());
         }
 
@@ -656,27 +685,48 @@ impl StablecoinDEX {
 
         // Check policy on non-escrow token (escrow token is checked in decrement_balance_or_transfer_from or below)
         // Direction: DEX → sender (order placer receives non-escrow token when filled)
-        TIP20Token::from_address(non_escrow_token)?
-            .ensure_transfer_authorized(self.address, sender)?;
+        let non_escrow_tip20 = TIP20Token::from_address(non_escrow_token)?;
+        non_escrow_tip20.ensure_transfer_authorized(self.address, sender)?;
+
+        // On T4+, reject if the non-escrow token is paused. When this order fills, the
+        // non-escrow token may be moved via internal-balance updates that bypass TIP-20's
+        // pause check, so we enforce it at placement.
+        if self.storage.spec().is_t4() {
+            non_escrow_tip20.check_not_paused()?;
+        }
 
         // Debit from user's balance only. This is set to true after a flip order is filled and the
         // subsequent flip order is being placed.
         if internal_balance_only {
-            TIP20Token::from_address(escrow_token)?
-                .ensure_transfer_authorized(sender, self.address)?;
+            let tip20 = TIP20Token::from_address(escrow_token)?;
+            tip20.ensure_transfer_authorized(sender, self.address)?;
+            // Internal-balance-only path bypasses TIP-20 transferFrom,
+            // so we must check the pause state ourselves (spec: T4+).
+            if self.storage.spec().is_t4() {
+                tip20.check_not_paused()?;
+            }
             let user_balance = self.balance_of(sender, escrow_token)?;
             if user_balance < escrow_amount {
                 return Err(StablecoinDEXError::insufficient_balance().into());
             }
             self.sub_balance(sender, escrow_token, escrow_amount)?;
         } else {
-            self.decrement_balance_or_transfer_from(sender, escrow_token, escrow_amount)?;
+            self.decrement_balance_or_transfer_from(sender, escrow_token, escrow_amount, true)?;
         }
 
         // Create the flip order
         let order_id = self.next_order_id()?;
-        let order = Order::new_flip(order_id, sender, book_key, amount, tick, is_bid, flip_tick)
-            .map_err(|_| StablecoinDEXError::invalid_flip_tick())?;
+        let order = Order::new_flip(
+            order_id,
+            sender,
+            book_key,
+            amount,
+            tick,
+            is_bid,
+            flip_tick,
+            self.storage.spec(),
+        )
+        .map_err(|_| StablecoinDEXError::invalid_flip_tick())?;
 
         // Commit the flip order
         if self.storage.spec().is_t1c() {
@@ -2152,6 +2202,262 @@ mod tests {
         })
     }
 
+    /// TIP-1030: at the `place_flip` precompile entrypoint, `flip_tick == tick`
+    /// is rejected pre-T5 and accepted on T5+ (with the order stored verbatim).
+    #[test]
+    fn test_place_flip_same_tick_per_hardfork() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T4, TempoHardfork::T5] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || {
+                let mut exchange = StablecoinDEX::new();
+                exchange.initialize()?;
+
+                let alice = Address::random();
+                let admin = Address::random();
+                let tick = 100i16;
+
+                let price = orderbook::tick_to_price(tick);
+                let escrow = (MIN_ORDER_AMOUNT * price as u128) / orderbook::PRICE_SCALE as u128;
+
+                let (base_token, _) = setup_test_tokens(admin, alice, exchange.address, escrow)?;
+                exchange.create_pair(base_token)?;
+
+                let result = exchange.place_flip(
+                    alice,
+                    base_token,
+                    MIN_ORDER_AMOUNT,
+                    true,
+                    tick,
+                    tick,
+                    false,
+                );
+
+                if spec.is_t5() {
+                    let order_id = result.expect("same-tick flip should succeed on T5+");
+                    let stored = exchange.orders[order_id].read()?;
+                    assert_eq!(stored.tick(), tick);
+                    assert_eq!(stored.flip_tick(), tick);
+                    assert!(stored.is_bid());
+                    assert!(stored.is_flip());
+                } else {
+                    assert_eq!(result, Err(StablecoinDEXError::invalid_flip_tick().into()));
+                }
+
+                Ok::<_, eyre::Report>(())
+            })?;
+        }
+        Ok(())
+    }
+
+    /// TIP-1030 invariant: even on T5, `flip_tick` strictly on the wrong side
+    /// of `tick` is still rejected at the `place_flip` precompile entrypoint.
+    /// `Order::new_flip` enforces this in `order.rs`, but the precompile is the
+    /// security boundary so we pin the behavior here too.
+    #[test]
+    fn test_place_flip_wrong_side_still_rejected_t5() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let admin = Address::random();
+            let tick = 100i16;
+
+            let price = orderbook::tick_to_price(tick);
+            let escrow = (MIN_ORDER_AMOUNT * price as u128) / orderbook::PRICE_SCALE as u128;
+
+            let (base_token, _) = setup_test_tokens(admin, alice, exchange.address, escrow)?;
+            exchange.create_pair(base_token)?;
+
+            // Bid with flip_tick < tick is still rejected on T5.
+            let bid_result = exchange.place_flip(
+                alice,
+                base_token,
+                MIN_ORDER_AMOUNT,
+                true,
+                tick,
+                tick - TICK_SPACING,
+                false,
+            );
+            assert_eq!(
+                bid_result,
+                Err(StablecoinDEXError::invalid_flip_tick().into())
+            );
+
+            // Ask with flip_tick > tick is still rejected on T5.
+            let ask_result = exchange.place_flip(
+                alice,
+                base_token,
+                MIN_ORDER_AMOUNT,
+                false,
+                tick,
+                tick + TICK_SPACING,
+                false,
+            );
+            assert_eq!(
+                ask_result,
+                Err(StablecoinDEXError::invalid_flip_tick().into())
+            );
+
+            Ok(())
+        })
+    }
+
+    /// TIP-1030 (T5): pins down the "locked book" implication called out in
+    /// the spec. Same-tick flip orders can produce `best_bid_tick ==
+    /// best_ask_tick`. When a same-tick flip bid fills while another resting
+    /// bid remains at the same tick, the post-fill flip places a new ask at
+    /// that tick; the bid level survives (head advances to the next bid). The
+    /// resulting locked book is well-formed: the original flip is gone, the
+    /// other bid remains, the new ask is owned by the same maker at the same
+    /// tick with `flip_tick == tick`, and a follow-up swap on either side
+    /// consumes only the intended level (it does not reach across into the
+    /// resting bid on the opposite side). The follow-up swap also exercises
+    /// the backrunning case the spec flags under MEV implications.
+    #[test]
+    fn test_flip_same_tick_locked_book_t5() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let bob = Address::random();
+            let admin = Address::random();
+            let amount = MIN_ORDER_AMOUNT;
+            let tick = 100i16;
+
+            let price = orderbook::tick_to_price(tick);
+            let expected_escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+            // Alice escrows two bids' worth of quote; Bob holds enough base
+            // and quote to drive two opposite-direction swaps. Mint externally
+            // so that decrement_balance_or_transfer_from actually moves tokens
+            // into the exchange (so the exchange has the inventory it needs to
+            // pay out the second swap).
+            let base = TIP20Setup::create("BASE", "BASE", admin)
+                .with_issuer(admin)
+                .with_mint(bob, U256::from(amount * 4))
+                .with_approval(bob, exchange.address, U256::MAX)
+                .apply()?;
+            let base_token = base.address();
+            let quote_token = base.quote_token()?;
+
+            TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_mint(alice, U256::from(expected_escrow * 4))
+                .with_mint(bob, U256::from(expected_escrow * 4))
+                .with_approval(alice, exchange.address, U256::MAX)
+                .with_approval(bob, exchange.address, U256::MAX)
+                .apply()?;
+
+            exchange.create_pair(base_token)?;
+
+            // Place same-tick flip bid FIRST so it sits at the head of the bid
+            // level and is the order consumed by the next swap-sell.
+            let flip_id = exchange
+                .place_flip(alice, base_token, amount, true, tick, tick, false)
+                .expect("same-tick flip should succeed on T5");
+
+            // Place a regular bid at the same tick. It will remain after the
+            // flip is consumed, keeping `best_bid_tick == tick`.
+            let resting_bid_id = exchange
+                .place(alice, base_token, amount, true, tick)
+                .expect("regular bid should succeed");
+
+            // Bob sells exactly `amount` base, which fully consumes only the
+            // flip bid (FIFO) and triggers the post-fill flip into an ask at
+            // the same tick.
+            exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
+
+            // Flip bid is gone, regular bid remains untouched.
+            assert_eq!(exchange.orders[flip_id].read()?.maker(), Address::ZERO);
+            let resting = exchange.orders[resting_bid_id].read()?;
+            assert_eq!(resting.maker(), alice);
+            assert_eq!(resting.remaining(), amount);
+            assert!(resting.is_bid());
+
+            // The post-fill flip created a new ask at the same tick with
+            // `flip_tick == tick` (the next-allocated id).
+            let new_ask_id = exchange.next_order_id()? - 1;
+            assert_eq!(new_ask_id, resting_bid_id + 1);
+            let new_ask = exchange.orders[new_ask_id].read()?;
+            assert_eq!(new_ask.maker(), alice);
+            assert!(new_ask.is_ask());
+            assert!(new_ask.is_flip());
+            assert_eq!(new_ask.tick(), tick);
+            assert_eq!(new_ask.flip_tick(), tick);
+            assert_eq!(new_ask.remaining(), amount);
+
+            // Book invariants: bid level advanced to the resting bid; ask level
+            // contains exactly the new flip ask; both bests point at `tick`.
+            let book_key = compute_book_key(base_token, quote_token);
+            let bid_level = exchange.books[book_key]
+                .tick_level_handler(tick, true)
+                .read()?;
+            assert_eq!(bid_level.head, resting_bid_id);
+            assert_eq!(bid_level.tail, resting_bid_id);
+            assert_eq!(bid_level.total_liquidity, amount);
+
+            let ask_level = exchange.books[book_key]
+                .tick_level_handler(tick, false)
+                .read()?;
+            assert_eq!(ask_level.head, new_ask_id);
+            assert_eq!(ask_level.tail, new_ask_id);
+            assert_eq!(ask_level.total_liquidity, amount);
+
+            let book = exchange.books[book_key].read()?;
+            // TIP-1030 "locked book": best bid and best ask both at `tick`.
+            assert_eq!(book.best_bid_tick, tick, "best bid should remain at tick");
+            assert_eq!(
+                book.best_ask_tick, tick,
+                "best ask should now equal best bid (locked)"
+            );
+
+            // Follow-up swap-buy at the locked tick consumes only the new ask
+            // (not the resting bid on the other side) and the ask flips back
+            // into a bid at the same tick. This is the backrunning shape the
+            // TIP-1030 MEV implications section calls out.
+            let quote_in =
+                base_to_quote(amount, tick, RoundingDirection::Up).expect("quote_in should fit");
+            exchange.swap_exact_amount_in(bob, quote_token, base_token, quote_in, 0)?;
+
+            // Ask is gone.
+            assert_eq!(exchange.orders[new_ask_id].read()?.maker(), Address::ZERO);
+
+            // Resting bid still untouched.
+            let resting_after = exchange.orders[resting_bid_id].read()?;
+            assert_eq!(resting_after.maker(), alice);
+            assert_eq!(resting_after.remaining(), amount);
+
+            // The post-fill flip from the ask placed a new bid at the same tick.
+            let flipped_back_id = exchange.next_order_id()? - 1;
+            assert_eq!(flipped_back_id, new_ask_id + 1);
+            let flipped_back = exchange.orders[flipped_back_id].read()?;
+            assert_eq!(flipped_back.maker(), alice);
+            assert!(flipped_back.is_bid());
+            assert!(flipped_back.is_flip());
+            assert_eq!(flipped_back.tick(), tick);
+            assert_eq!(flipped_back.flip_tick(), tick);
+
+            // Ask level is empty (best_ask_tick reset), bid level holds both
+            // the resting bid and the freshly flipped-back bid.
+            let book_after = exchange.books[book_key].read()?;
+            assert_eq!(book_after.best_bid_tick, tick);
+            assert_eq!(book_after.best_ask_tick, i16::MAX);
+
+            let bid_level_after = exchange.books[book_key]
+                .tick_level_handler(tick, true)
+                .read()?;
+            assert_eq!(bid_level_after.head, resting_bid_id);
+            assert_eq!(bid_level_after.tail, flipped_back_id);
+            assert_eq!(bid_level_after.total_liquidity, amount * 2);
+
+            Ok(())
+        })
+    }
+
     #[test]
     fn test_withdraw() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
@@ -2535,6 +2841,73 @@ mod tests {
             assert!(new_order.is_ask());
             assert_eq!(new_order.amount(), amount);
             assert_eq!(new_order.remaining(), amount);
+
+            Ok(())
+        })
+    }
+
+    /// TIP-1030 happy-path mirror of `test_flip_order_execution` with
+    /// `tick == flip_tick` on T5. Isolates the basic fill-and-flip-back
+    /// behavior (separate from the locked-book scenario) so a regression in
+    /// the inner `place_flip(internal_balance_only=true)` path bisects to
+    /// just this case.
+    #[test]
+    fn test_flip_same_tick_execution_t5() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let bob = Address::random();
+            let admin = Address::random();
+            let amount = MIN_ORDER_AMOUNT;
+            let tick = 100i16;
+            // TIP-1030: flip_tick equal to tick is allowed on T5+.
+            let flip_tick = tick;
+
+            let price = orderbook::tick_to_price(tick);
+            let expected_escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, alice, exchange.address, expected_escrow * 2)?;
+            exchange.create_pair(base_token)?;
+
+            let flip_order_id =
+                exchange.place_flip(alice, base_token, amount, true, tick, flip_tick, false)?;
+
+            exchange.set_balance(bob, base_token, amount)?;
+            exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
+
+            // Original flip bid is fully filled and removed from storage.
+            let filled = exchange.orders[flip_order_id].read()?;
+            assert_eq!(filled.maker(), Address::ZERO);
+
+            // Post-fill flip created a new ask at the same tick with
+            // `flip_tick == tick`, escrowed via the internal-balance path.
+            let new_order_id = exchange.next_order_id()? - 1;
+            assert_eq!(new_order_id, flip_order_id + 1);
+
+            let new_order = exchange.orders[new_order_id].read()?;
+            assert_eq!(new_order.maker(), alice);
+            assert!(new_order.is_ask());
+            assert!(new_order.is_flip());
+            assert_eq!(new_order.tick(), tick);
+            assert_eq!(new_order.flip_tick(), tick);
+            assert_eq!(new_order.amount(), amount);
+            assert_eq!(new_order.remaining(), amount);
+
+            // Internal-balance bookkeeping: the post-fill flip credited alice
+            // with `amount` base from the fill and immediately debited the
+            // same `amount` to escrow the new ask, so alice nets to zero.
+            assert_eq!(exchange.balance_of(alice, base_token)?, 0);
+            assert_eq!(exchange.balance_of(alice, quote_token)?, 0);
+
+            // Best ask collapses to `tick` (no asks before, now one at tick).
+            let book_key = compute_book_key(base_token, quote_token);
+            let book = exchange.books[book_key].read()?;
+            assert_eq!(book.best_ask_tick, tick);
+            assert_eq!(book.best_bid_tick, i16::MIN);
 
             Ok(())
         })
@@ -5149,6 +5522,183 @@ mod tests {
             })?;
         }
         Ok(())
+    }
+
+    /// Shared helper for paused-token order placement tests across T3 (no enforcement) and T4
+    /// (rejection). Pauses either the escrow or non-escrow side of the pair and asserts whether
+    /// `place_order` succeeds based on the pause side, internal balance, and active hardfork.
+    fn assert_paused_token_order<F>(
+        pause_escrow_side: bool,
+        internal_balance_amount: u128,
+        is_bid: bool,
+        mut place_order: F,
+    ) -> eyre::Result<()>
+    where
+        F: FnMut(&mut StablecoinDEX, Address, Address, u128) -> Result<u128>,
+    {
+        for spec in [TempoHardfork::T3, TempoHardfork::T4] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || {
+                let mut exchange = StablecoinDEX::new();
+                exchange.initialize()?;
+
+                let (alice, admin) = (Address::random(), Address::random());
+                let amount = MIN_ORDER_AMOUNT;
+
+                let (base_token, quote_token) =
+                    setup_test_tokens(admin, alice, exchange.address, 500_000_000u128)?;
+                exchange.create_pair(base_token)?;
+
+                let escrow_token = if is_bid { quote_token } else { base_token };
+                let non_escrow_token = if is_bid { base_token } else { quote_token };
+                exchange.set_balance(alice, escrow_token, internal_balance_amount)?;
+
+                let token_to_pause = if pause_escrow_side {
+                    escrow_token
+                } else {
+                    non_escrow_token
+                };
+                let mut tip20 = TIP20Token::from_address(token_to_pause)?;
+                tip20.grant_role_internal(admin, *PAUSE_ROLE)?;
+                tip20.pause(admin, ITIP20::pauseCall {})?;
+
+                let next_order_id_before = exchange.next_order_id()?;
+                let escrow_balance_before = exchange.balance_of(alice, escrow_token)?;
+                let res = place_order(&mut exchange, alice, base_token, amount);
+
+                // Pre-T4: succeeds iff there's a debit path that doesn't touch the paused token.
+                // - escrow paused: only the internal-only fast path avoids it (requires
+                //   balance >= amount)
+                // - non-escrow paused: escrow itself is unpaused, so any debit path works
+                // T4: rejected regardless.
+                let should_succeed =
+                    !spec.is_t4() && (!pause_escrow_side || internal_balance_amount >= amount);
+
+                if should_succeed {
+                    let order_id = res?;
+                    assert_eq!(order_id, next_order_id_before);
+                    assert_eq!(exchange.next_order_id()?, next_order_id_before + 1);
+                    assert_eq!(
+                        exchange.balance_of(alice, escrow_token)?,
+                        escrow_balance_before.saturating_sub(amount)
+                    );
+                } else {
+                    assert_eq!(res.unwrap_err(), TIP20Error::contract_paused().into());
+                    assert_eq!(exchange.next_order_id()?, next_order_id_before);
+                    assert_eq!(
+                        exchange.balance_of(alice, escrow_token)?,
+                        escrow_balance_before
+                    );
+                }
+
+                Ok::<_, eyre::Report>(())
+            })?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_place_orders_on_paused_token_respects_internal_balance_path() -> eyre::Result<()> {
+        let partial_internal_balance = MIN_ORDER_AMOUNT - 1;
+
+        // Full internal balance uses the internal-only path pre-T4, but T4 still rejects
+        // paused-token orders.
+        assert_paused_token_order(
+            true,
+            MIN_ORDER_AMOUNT,
+            false,
+            |exchange, alice, base, amount| exchange.place(alice, base, amount, false, 0),
+        )?;
+        assert_paused_token_order(
+            true,
+            MIN_ORDER_AMOUNT,
+            true,
+            |exchange, alice, base, amount| exchange.place(alice, base, amount, true, 0),
+        )?;
+        assert_paused_token_order(
+            true,
+            MIN_ORDER_AMOUNT,
+            false,
+            |exchange, alice, base, amount| {
+                exchange.place_flip(alice, base, amount, false, 100, 0, true)
+            },
+        )?;
+        assert_paused_token_order(
+            true,
+            MIN_ORDER_AMOUNT,
+            true,
+            |exchange, alice, base, amount| {
+                exchange.place_flip(alice, base, amount, true, 0, 100, true)
+            },
+        )?;
+
+        // Partial internal balance: the fallback transferFrom hits the paused escrow token and
+        // fails on both T3 and T4 without consuming the partial balance.
+        assert_paused_token_order(
+            true,
+            partial_internal_balance,
+            false,
+            |exchange, alice, base, amount| exchange.place(alice, base, amount, false, 0),
+        )?;
+        assert_paused_token_order(
+            true,
+            partial_internal_balance,
+            true,
+            |exchange, alice, base, amount| exchange.place(alice, base, amount, true, 0),
+        )?;
+        assert_paused_token_order(
+            true,
+            partial_internal_balance,
+            false,
+            |exchange, alice, base, amount| {
+                exchange.place_flip(alice, base, amount, false, 100, 0, false)
+            },
+        )?;
+        assert_paused_token_order(
+            true,
+            partial_internal_balance,
+            true,
+            |exchange, alice, base, amount| {
+                exchange.place_flip(alice, base, amount, true, 0, 100, false)
+            },
+        )
+    }
+
+    #[test]
+    fn test_place_orders_on_paused_non_escrow_token_blocked_on_t4() -> eyre::Result<()> {
+        // place: ask + bid (transferFrom path, escrow is unpaused so this succeeds pre-T4)
+        assert_paused_token_order(false, 0, false, |exchange, alice, base, amount| {
+            exchange.place(alice, base, amount, false, 0)
+        })?;
+        assert_paused_token_order(false, 0, true, |exchange, alice, base, amount| {
+            exchange.place(alice, base, amount, true, 0)
+        })?;
+
+        // place_flip non-internal-only: ask + bid
+        assert_paused_token_order(false, 0, false, |exchange, alice, base, amount| {
+            exchange.place_flip(alice, base, amount, false, 100, 0, false)
+        })?;
+        assert_paused_token_order(false, 0, true, |exchange, alice, base, amount| {
+            exchange.place_flip(alice, base, amount, true, 0, 100, false)
+        })?;
+
+        // place_flip internal-only: ask + bid (requires escrow internal balance)
+        assert_paused_token_order(
+            false,
+            MIN_ORDER_AMOUNT,
+            false,
+            |exchange, alice, base, amount| {
+                exchange.place_flip(alice, base, amount, false, 100, 0, true)
+            },
+        )?;
+        assert_paused_token_order(
+            false,
+            MIN_ORDER_AMOUNT,
+            true,
+            |exchange, alice, base, amount| {
+                exchange.place_flip(alice, base, amount, true, 0, 100, true)
+            },
+        )
     }
 
     #[test]

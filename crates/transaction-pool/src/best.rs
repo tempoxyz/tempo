@@ -1,10 +1,16 @@
 //! An iterator over the best transactions in the tempo pool.
 
 use crate::transaction::TempoPooledTransaction;
+use alloy_primitives::{Address, U256, map::HashMap};
+use reth_evm::block::TxResult;
+use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
-    BestTransactions, CoinbaseTipOrdering, Priority, TransactionOrdering,
+    BestTransactions, CoinbaseTipOrdering, Priority, TransactionOrdering, ValidPoolTransaction,
     error::InvalidPoolTransactionError,
 };
+use std::sync::Arc;
+use tempo_evm::TempoTxResult;
+use tempo_precompiles::tip20::is_tip20_prefix;
 
 /// An extension trait for [`BestTransactions`] that in addition to the transaction also yields the priority value.
 pub trait BestPriorityTransactions<T: TransactionOrdering>: BestTransactions {
@@ -153,6 +159,98 @@ where
     fn set_skip_blobs(&mut self, skip_blobs: bool) {
         self.left.set_skip_blobs(skip_blobs);
         self.right.set_skip_blobs(skip_blobs);
+    }
+}
+
+/// A [`BestTransactions`] wrapper that tracks execution state changes and skips
+/// transactions that would fail due to state mutations from previously
+/// included transactions.
+pub struct StateAwareBestTransactions<I> {
+    inner: I,
+    /// Tracks decreased TIP20 balance slots: `(token_address, slot) -> new_balance`.
+    /// Updated after each executed transaction. Used to check if a candidate
+    /// transaction's fee payer can still cover its fee cost.
+    decreased_balances: HashMap<(Address, U256), U256>,
+}
+
+impl<I> StateAwareBestTransactions<I>
+where
+    I: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+{
+    /// Wraps an existing [`BestTransactions`] iterator.
+    pub fn new(inner: I) -> Self {
+        Self {
+            inner,
+            decreased_balances: HashMap::default(),
+        }
+    }
+
+    /// Processes a new transaction execution result and collects any relevant
+    /// state changes that might affect other transactions validity.
+    pub fn on_new_result(&mut self, result: &TempoTxResult) {
+        for (&address, account) in &result.result().state {
+            if !is_tip20_prefix(address) {
+                continue;
+            }
+
+            for (&slot, storage_slot) in &account.storage {
+                if storage_slot.present_value < storage_slot.original_value {
+                    self.decreased_balances
+                        .insert((address, slot), storage_slot.present_value);
+                }
+            }
+        }
+    }
+}
+
+impl<I> Iterator for StateAwareBestTransactions<I>
+where
+    I: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+{
+    type Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let tx = self.inner.next()?;
+
+            let Some(key) = tx.transaction.fee_balance_slot() else {
+                debug_assert!(false, "pool transaction must have cached fee_balance_slot");
+                continue;
+            };
+
+            if let Some(&balance) = self.decreased_balances.get(&key)
+                && balance < tx.transaction.fee_token_cost()
+            {
+                self.inner.mark_invalid(
+                    &tx,
+                    &InvalidPoolTransactionError::Consensus(
+                        InvalidTransactionError::InsufficientFunds(
+                            (balance, tx.transaction.fee_token_cost()).into(),
+                        ),
+                    ),
+                );
+                continue;
+            }
+
+            return Some(tx);
+        }
+    }
+}
+
+impl<I> BestTransactions for StateAwareBestTransactions<I>
+where
+    I: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + Send,
+{
+    fn mark_invalid(&mut self, transaction: &Self::Item, kind: &InvalidPoolTransactionError) {
+        self.inner.mark_invalid(transaction, kind);
+    }
+
+    fn no_updates(&mut self) {
+        self.inner.no_updates();
+    }
+
+    fn set_skip_blobs(&mut self, skip_blobs: bool) {
+        self.inner.set_skip_blobs(skip_blobs);
     }
 }
 

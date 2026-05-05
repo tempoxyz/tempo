@@ -53,11 +53,18 @@ const T4_CODE_DEPOSIT_STATE: u64 = 2_300;
 const T4_SSTORE_SET_REFUND: u64 = T4_SSTORE_SET_STATE + 17_800; // 230,000 + 17,800 = 247,800
 
 /// Tempo gas params override.
+///
+/// `amsterdam_eip8037_enabled` mirrors `CfgEnv::enable_amsterdam_eip8037` and gates the
+/// TIP-1016 regular/state gas split. When `false`, TIP-1000 (T1) costs are used regardless
+/// of the spec, so TIP-1016 can be deferred independently of the T4 hardfork activation.
 #[inline]
-pub fn tempo_gas_params(spec: TempoHardfork) -> GasParams {
+pub fn tempo_gas_params_with_amsterdam(
+    spec: TempoHardfork,
+    amsterdam_eip8037_enabled: bool,
+) -> GasParams {
     let mut gas_params = GasParams::new_spec(spec.into());
     let mut overrides = vec![];
-    if spec.is_t4() {
+    if amsterdam_eip8037_enabled {
         // TIP-1016: Split storage creation costs into regular gas + state gas.
         // Regular gas (computational overhead) = at least pre-TIP-1000 EVM cost.
         // State gas (permanent storage burden) = total - regular.
@@ -118,13 +125,22 @@ pub fn tempo_gas_params(spec: TempoHardfork) -> GasParams {
     gas_params
 }
 
+/// Backward-compatible alias for [`tempo_gas_params_with_amsterdam`] with TIP-1016 disabled.
+///
+/// External consumers (e.g. foundry) that depend on the single-argument signature continue
+/// to work: TIP-1016 is opt-in via `tempo_gas_params_with_amsterdam(spec, true)`.
+#[inline]
+pub fn tempo_gas_params(spec: TempoHardfork) -> GasParams {
+    tempo_gas_params_with_amsterdam(spec, false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_t1_gas_params_no_state_gas_split() {
-        let gas_params = tempo_gas_params(TempoHardfork::T1);
+        let gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T1, false);
 
         // T1 has full 250k costs in regular gas, no state gas split
         assert_eq!(
@@ -168,7 +184,7 @@ mod tests {
     /// + cold slot surcharge (2,100) + state gas (230,000) = 252,200.
     #[test]
     fn test_t4_gas_params_splits_storage_costs() {
-        let gas_params = tempo_gas_params(TempoHardfork::T4);
+        let gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
 
         // T4 execution gas (regular/computational overhead)
         // SSTORE keeps revm's decomposed accounting: static(100) + sstore_set_without_load(20,000),
@@ -269,7 +285,7 @@ mod tests {
     /// T4 cold SSTORE = warm path + cold_slot_access(2,100) = 252,200.
     #[test]
     fn test_t4_totals_match_spec() {
-        let t4 = tempo_gas_params(TempoHardfork::T4);
+        let t4 = tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
 
         // Warm SSTORE total: write component(20,000) + warm read(100) + state(230,000)
         let warm_sstore_regular =
