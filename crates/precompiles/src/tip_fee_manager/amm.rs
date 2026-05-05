@@ -488,8 +488,12 @@ impl TipFeeManager {
     /// under the active hardfork. Read-only; does not reserve.
     ///
     /// On T5+ falls back to a two-hop path through `userToken.quoteToken()` as per [TIP-1033].
-    /// The returned [`FeeRoute`] is `None` when no path has sufficient liquidity. Every
-    /// [`PoolData`] read by the planner is reported regardless of route feasibility.
+    /// Returns `(route, queried_intermediate, pools)`:
+    /// - `route` is `None` when no path has sufficient liquidity.
+    /// - `queried_intermediate` is `Some(addr)` whenever `userToken.quoteToken()` was read,
+    ///   regardless of whether the value is usable. Callers can cache it to skip the cold
+    ///   storage read on subsequent admissions.
+    /// - `pools` lists every pool slot read during planning, paired with its observed reserve.
     ///
     /// # Errors
     /// - `InvalidToken` — `user_token` does not have a valid TIP-20 prefix
@@ -501,11 +505,11 @@ impl TipFeeManager {
         user_token: Address,
         validator_token: Address,
         max_amount: U256,
-    ) -> Result<(Option<FeeRoute>, Vec<PoolData>)> {
+    ) -> Result<(Option<FeeRoute>, Option<Address>, Vec<PoolData>)> {
         let mut data = Vec::new();
 
         if user_token == validator_token {
-            return Ok((Some(FeeRoute::SameToken), data));
+            return Ok((Some(FeeRoute::SameToken), None, data));
         }
 
         // Direct (single-hop) path — always checked.
@@ -516,25 +520,25 @@ impl TipFeeManager {
         ));
         let amount_out = compute_amount_out(max_amount)?;
         if amount_out <= U256::from(direct.reserve_validator_token) {
-            return Ok((Some(FeeRoute::Direct), data));
+            return Ok((Some(FeeRoute::Direct), None, data));
         }
 
         // T5+: two-hop fallback through `userToken.quoteToken()`.
         if !self.storage.spec().is_t5() {
-            return Ok((None, data));
+            return Ok((None, None, data));
         }
 
         // TIP-20 token graph forbids self-quoting, so `intermediate == user_token` is unreachable.
         let intermediate = TIP20Token::from_address(user_token)?.quote_token()?;
         if intermediate.is_zero() || intermediate == validator_token {
-            return Ok((None, data));
+            return Ok((None, Some(intermediate), data));
         }
 
         // First leg: user_token -> intermediate.
         let leg1 = self.pools[self.pool_id(user_token, intermediate)].read()?;
         data.push(((user_token, intermediate), leg1.reserve_validator_token));
         if amount_out > U256::from(leg1.reserve_validator_token) {
-            return Ok((None, data));
+            return Ok((None, Some(intermediate), data));
         }
 
         // Second leg: intermediate -> validator_token.
@@ -545,10 +549,14 @@ impl TipFeeManager {
             leg2.reserve_validator_token,
         ));
         if amount_out2 > U256::from(leg2.reserve_validator_token) {
-            return Ok((None, data));
+            return Ok((None, Some(intermediate), data));
         }
 
-        Ok((Some(FeeRoute::TwoHop(intermediate)), data))
+        Ok((
+            Some(FeeRoute::TwoHop(intermediate)),
+            Some(intermediate),
+            data,
+        ))
     }
 
     /// Executes a fee swap, converting `user_token` to `validator_token` at a fixed rate m = 0.997

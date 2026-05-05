@@ -22,7 +22,7 @@ use tempo_precompiles::{
     error::Result as TempoResult,
     tip_fee_manager::{
         TipFeeManager,
-        amm::{FeeRoute, Pool, compute_amount_out},
+        amm::{Pool, compute_amount_out},
     },
     tip20,
 };
@@ -65,15 +65,18 @@ impl AmmLiquidityCache {
         fee: U256,
         state_provider: &mut impl StateProvider,
     ) -> Result<bool, ProviderError> {
-        let amount_out = compute_amount_out(fee).map_err(ProviderError::other)?;
-
         let mut missing_in_cache = Vec::new();
-        let current_fork;
+        let hardfork;
 
         // Hot path: decide each `(user, validator)` pair entirely from the primitive cache.
         {
             let inner = self.inner.read();
-            current_fork = inner.current_fork;
+            hardfork = inner.current_fork;
+
+            let calc_swap = |input| compute_amount_out(input).map_err(ProviderError::other);
+            let out1 = calc_swap(fee)?;
+            let out2 = hardfork.is_t5().then(|| calc_swap(out1)).transpose()?;
+
             for &validator_token in &inner.unique_tokens {
                 // Validators always accept fees in their own token.
                 if validator_token == user_token {
@@ -84,39 +87,32 @@ impl AmmLiquidityCache {
                     .pool_cache
                     .get(&(user_token, validator_token))
                     .copied();
-                if matches!(direct, Some(r) if r >= amount_out) {
-                    return Ok(true);
-                }
 
-                if current_fork.is_t5() {
-                    match inner.quote_token_cache.get(&user_token).copied() {
-                        Some(h) if !h.is_zero() && h != validator_token => {
-                            let r1 = inner.pool_cache.get(&(user_token, h)).copied();
-                            let r2 = inner.pool_cache.get(&(h, validator_token)).copied();
-                            let out1 = amount_out;
-                            let out2 = compute_amount_out(out1).map_err(ProviderError::other)?;
+                let mut defer = match direct {
+                    Some(r) if r >= out1 => return Ok(true),
+                    Some(_) => false, // Direct cached & insufficient: known answer.
+                    None => true,     // Direct unknown: must consult the planner.
+                };
+
+                if let Some(out2) = out2 {
+                    if let Some(hop) = inner.quote_token_cache.get(&user_token).copied() {
+                        if !hop.is_zero() && hop != validator_token {
+                            let r1 = inner.pool_cache.get(&(user_token, hop)).copied();
+                            let r2 = inner.pool_cache.get(&(hop, validator_token)).copied();
                             match (r1, r2) {
                                 (Some(r1), Some(r2)) if r1 >= out1 && r2 >= out2 => {
                                     return Ok(true);
                                 }
                                 (Some(_), Some(_)) => {} // Both cached and not enough liquidity.
-                                _ => {
-                                    // A leg's reserve is missing: defer.
-                                    missing_in_cache.push(validator_token);
-                                    continue;
-                                }
+                                _ => defer = true,       // A leg's reserve is missing.
                             }
                         }
-                        Some(_) => {} // Cached as zero / equal to validator: no two-hop path possible.
-                        None => {
-                            missing_in_cache.push(validator_token);
-                            continue;
-                        }
+                    } else {
+                        defer = true; // Quote token not yet cached.
                     }
                 }
 
-                // Direct unknown and (pre-T5 || two-hop ruled out): defer.
-                if direct.is_none() {
+                if defer {
                     missing_in_cache.push(validator_token);
                 }
             }
@@ -129,12 +125,12 @@ impl AmmLiquidityCache {
         // Slow path: ask the planner. Unconditionally warm all its reported `data.pools`.
         // This might race other fetches but we're OK with it.
         state_provider
-            .with_read_only_storage_ctx(current_fork, || -> TempoResult<bool> {
+            .with_read_only_storage_ctx(hardfork, || -> TempoResult<bool> {
                 let manager = TipFeeManager::new();
                 for validator_token in missing_in_cache {
-                    let (route, pools) =
+                    let (route, intermediate, pools) =
                         manager.plan_fee_route(user_token, validator_token, fee)?;
-                    if !pools.is_empty() {
+                    if !pools.is_empty() || intermediate.is_some() {
                         let mut inner = self.inner.write();
                         for &(pair, reserve) in &pools {
                             let id = manager.pool_id(pair.0, pair.1);
@@ -142,7 +138,7 @@ impl AmmLiquidityCache {
                             inner.pool_cache.insert(pair, U256::from(reserve));
                             inner.slot_to_pool.insert(slot, pair);
                         }
-                        if let Some(FeeRoute::TwoHop(hop)) = route {
+                        if let Some(hop) = intermediate {
                             inner.quote_token_cache.insert(user_token, hop);
                         }
                     }

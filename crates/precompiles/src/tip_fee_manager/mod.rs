@@ -181,9 +181,9 @@ impl TipFeeManager {
 
         if !skip_liquidity_check {
             match self.plan_fee_route(user_token, validator_token, max_amount)? {
-                (None, _) => return Err(TIPFeeAMMError::insufficient_liquidity().into()),
-                (Some(FeeRoute::SameToken), _) => {}
-                (Some(FeeRoute::Direct), _) => {
+                (None, ..) => return Err(TIPFeeAMMError::insufficient_liquidity().into()),
+                (Some(FeeRoute::SameToken), ..) => {}
+                (Some(FeeRoute::Direct), ..) => {
                     if self.storage.spec().is_t1c() {
                         let amount_out: u128 = compute_amount_out(max_amount)?
                             .try_into()
@@ -194,7 +194,7 @@ impl TipFeeManager {
                         )?;
                     }
                 }
-                (Some(FeeRoute::TwoHop(intermediate)), _) => {
+                (Some(FeeRoute::TwoHop(intermediate)), ..) => {
                     // T5+ implies T1C+, so reservation is always required here.
                     let out1: u128 = compute_amount_out(max_amount)?
                         .try_into()
