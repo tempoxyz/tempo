@@ -1080,14 +1080,7 @@ mod tests {
         // Test that extra_data in attributes can be accessed correctly
         let extra_data = Bytes::from(vec![42, 43, 44, 45, 46]);
 
-        let attrs = TempoPayloadAttributes::new(
-            None,
-            1,
-            0,
-            extra_data.clone(),
-            None,
-            Vec::new,
-        );
+        let attrs = TempoPayloadAttributes::new(None, 1, 0, extra_data.clone(), None, Vec::new);
 
         assert_eq!(attrs.extra_data(), &extra_data);
 
