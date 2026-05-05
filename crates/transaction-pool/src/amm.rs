@@ -71,7 +71,7 @@ impl AmmLiquidityCache {
         // Hot path: decide each `(user, validator)` pair entirely from the primitive cache.
         {
             let inner = self.inner.read();
-            hardfork = inner.current_fork;
+            hardfork = inner.hardfork;
 
             let calc_swap = |input| compute_amount_out(input).map_err(ProviderError::other);
             let out1 = calc_swap(fee)?;
@@ -299,7 +299,7 @@ impl AmmLiquidityCache {
         }
 
         // Refresh the cached active hardfork from the latest seen header.
-        self.inner.write().current_fork = client.chain_spec().tempo_hardfork_at(latest_timestamp);
+        self.inner.write().hardfork = client.chain_spec().tempo_hardfork_at(latest_timestamp);
 
         Ok(())
     }
@@ -308,7 +308,7 @@ impl AmmLiquidityCache {
 #[derive(Debug, Default)]
 struct AmmLiquidityCacheInner {
     /// Hardfork active at the most recently observed canonical header.
-    current_fork: TempoHardfork,
+    hardfork: TempoHardfork,
 
     /// Cache for (user_token, validator_token) -> liquidity
     pool_cache: HashMap<(Address, Address), U256>,
@@ -513,7 +513,7 @@ mod tests {
 
         let cache = AmmLiquidityCache {
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
-                current_fork: TempoHardfork::T5,
+                hardfork: TempoHardfork::T5,
                 unique_tokens: vec![validator],
                 pool_cache: {
                     let mut m = HashMap::default();
