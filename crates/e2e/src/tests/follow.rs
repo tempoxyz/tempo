@@ -3,7 +3,7 @@
 //! These tests verify that a follower node can sync blocks from an upstream
 //! node (validator or another follower) using in-process direct access.
 
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 use crate::{
     CONSENSUS_NODE_PREFIX, Setup, TestingNode, connect_execution_peers,
@@ -177,7 +177,7 @@ impl FollowerBuilder {
         );
 
         let config = follow::Config {
-            execution_node: node.node.clone(),
+            execution_node: node.node.clone().into(),
             feed_state: feed_state.clone(),
             partition_prefix,
             epoch_strategy: FixedEpocher::new(NZU64!(EPOCH_LENGTH)),
