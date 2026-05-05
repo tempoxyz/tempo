@@ -332,8 +332,9 @@ where
         let activity = Activity::Finalization(finalization);
         let verified = self.config.marshal.verified(round, consensus_block).await;
         if !verified {
-            warn_span!("follow_driver")
-                .in_scope(|| warn!(?round, %height, "failed to verify incoming block"))
+            warn_span!("follow_driver").in_scope(
+                || warn!(?round, %height, "failed to persist the incoming block with the marshal"),
+            )
         }
 
         self.config.marshal.report(activity.clone()).await;
