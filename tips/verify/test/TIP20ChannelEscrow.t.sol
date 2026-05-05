@@ -223,6 +223,27 @@ contract TIP20ChannelEscrowTest is Test {
         assertNotEq(channelId1, channelId2);
     }
 
+    function test_open_allows_distinct_channel_ids_with_same_open_tx_hash() public {
+        bytes32 sharedOpenTxHash = keccak256("same top-level tx");
+
+        channel.setOpenTxHashForTest(sharedOpenTxHash);
+        vm.prank(payer);
+        bytes32 channelId1 =
+            channel.open(payee, address(0), address(token), DEPOSIT, SALT, address(0));
+
+        channel.setOpenTxHashForTest(sharedOpenTxHash);
+        vm.prank(payer);
+        bytes32 channelId2 = channel.open(
+            payee, address(0), address(token), DEPOSIT, bytes32(uint256(2)), address(0)
+        );
+
+        // Same top-level transaction means the same openTxHash, but distinct descriptors still
+        // derive independent channel IDs and are safe to open atomically in one AA batch.
+        assertNotEq(channelId1, channelId2);
+        assertEq(channel.getChannelState(channelId1).deposit, DEPOSIT);
+        assertEq(channel.getChannelState(channelId2).deposit, DEPOSIT);
+    }
+
     function test_settle_success() public {
         bytes32 channelId = _openChannel();
         bytes memory sig = _signVoucher(channelId, 500_000);
@@ -404,11 +425,16 @@ contract TIP20ChannelEscrowTest is Test {
 
         assertEq(channel.getChannelState(channelId).closeData, 0);
 
+        // Reusing the original openTxHash approximates a later call in the same top-level AA batch.
+        // The persistent channel slot has been deleted by close, so the per-transaction opened-ID
+        // guard is what prevents reopening the same channel ID before the transaction ends.
         channel.setOpenTxHashForTest(originalOpenTxHash);
         vm.prank(payer);
         vm.expectRevert(ITIP20ChannelEscrow.ChannelAlreadyExists.selector);
         channel.open(payee, address(0), address(token), DEPOSIT, SALT, address(0));
 
+        // A later transaction has a fresh openTxHash, so the same logical descriptor derives a new
+        // channel ID and may be opened after the previous channel terminally closed.
         bytes32 reopenedChannelId = _openChannel();
         assertNotEq(reopenedChannelId, channelId);
     }
