@@ -330,10 +330,9 @@ where
         // Store the Finalized Block
         let round = Round::new(Epoch::new(certified.epoch), View::new(certified.view));
         let activity = Activity::Finalization(finalization);
-        let verified = self.config.marshal.verified(round, consensus_block).await;
-        if !verified {
+        if !self.config.marshal.verified(round, consensus_block).await {
             warn_span!("follow_driver").in_scope(
-                || warn!(?round, %height, "failed to persist the incoming block with the marshal"),
+                || warn!(?round, %height, "marshal refused to persist the verified block"),
             )
         }
 
