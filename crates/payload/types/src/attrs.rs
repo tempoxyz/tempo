@@ -224,8 +224,7 @@ fn payload_id_from_parent_and_context(
     let digest = hasher.finalize();
 
     PayloadId::new(
-        <[u8; 8]>::try_from(&digest[0..8])
-            .expect("a 32 byte array always has more than 8 bytes"),
+        <[u8; 8]>::try_from(&digest[0..8]).expect("a 32 byte array always has more than 8 bytes"),
     )
 }
 
