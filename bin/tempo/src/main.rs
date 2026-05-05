@@ -467,15 +467,6 @@ fn main() -> eyre::Result<()> {
                     .wrap_err("failed to start Prometheus metrics exporter")?;
                 }
 
-                if args.consensus.fee_recipient.is_some() {
-                    warn!(
-                        "`--consensus.fee-recipient` is deprecated and will be \
-                         removed. It is only used pre-T2 hardfork, if validator \
-                         config v2 is not yet activated, or if the on-chain fee \
-                         recipient is set to the zero address",
-                    );
-                }
-
                 let consensus_stack =
                     run_consensus_stack(&ctx, args.consensus, node, cl_feed_state_clone);
                 tokio::pin!(consensus_stack);
