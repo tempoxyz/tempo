@@ -2,6 +2,7 @@
 use std::sync::Arc;
 
 use commonware_consensus::types::Height;
+use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{Clock, Metrics, Pacer, Spawner};
 
 mod actor;
@@ -43,4 +44,8 @@ pub(crate) struct Config {
     /// The interval at which to send a forkchoice update heartbeat to the
     /// execution layer.
     pub(crate) fcu_heartbeat_interval: std::time::Duration,
+
+    /// The node's ed25519 public key. Used to track how many finalized blocks
+    /// were proposed by this node.
+    pub(crate) public_key: PublicKey,
 }

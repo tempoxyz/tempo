@@ -8,9 +8,9 @@ use std::{ops::RangeInclusive, pin::Pin, sync::Arc, time::Duration};
 
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadId};
 use commonware_consensus::{Heightable as _, marshal::Update, types::Height};
-
+use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{
-    Clock, ContextCell, FutureExt, Handle, Metrics, Pacer, Spawner, spawn_cell,
+    Clock, ContextCell, FutureExt, Handle, Pacer, Spawner, spawn_cell,
 };
 use commonware_utils::{Acknowledgement, acknowledgement::Exact};
 use eyre::{Report, WrapErr as _, ensure};
@@ -23,6 +23,7 @@ use futures::{
     future::{BoxFuture, Ready, ready},
     stream::FuturesOrdered,
 };
+use prometheus_client::metrics::counter::Counter;
 use reth_ethereum::{chainspec::EthChainSpec, rpc::eth::primitives::BlockNumHash};
 use reth_provider::BlockNumReader as _;
 use tempo_node::{TempoExecutionData, TempoFullNode};
@@ -137,11 +138,39 @@ pub(crate) struct Actor<TContext> {
     pending_finalizations: FuturesOrdered<Ready<(Span, Block, Exact)>>,
 
     latest_observed_finalized_tip: Option<(Height, Digest)>,
+
+    /// The node's ed25519 public key.
+    public_key: PublicKey,
+
+    metrics: Metrics,
+}
+
+#[derive(Clone)]
+struct Metrics {
+    /// Number of finalized blocks whose proposer matches this node's public key.
+    finalized_blocks_proposed_by_self: Counter,
+}
+
+impl Metrics {
+    fn init<TContext>(context: &TContext) -> Self
+    where
+        TContext: commonware_runtime::Metrics,
+    {
+        let finalized_blocks_proposed_by_self = Counter::default();
+        context.register(
+            "finalized_blocks_proposed_by_self",
+            "number of finalized blocks whose proposer matches this node's public key",
+            finalized_blocks_proposed_by_self.clone(),
+        );
+        Self {
+            finalized_blocks_proposed_by_self,
+        }
+    }
 }
 
 impl<TContext> Actor<TContext>
 where
-    TContext: Clock + Metrics + Pacer + Spawner,
+    TContext: Clock + commonware_runtime::Metrics + Pacer + Spawner,
 {
     pub(super) fn init(
         context: TContext,
@@ -153,7 +182,9 @@ where
             last_finalized_height,
             marshal,
             fcu_heartbeat_interval,
+            public_key,
         } = config;
+        let metrics = Metrics::init(&context);
         let last_execution_finalized_height = execution_node
             .provider
             .last_block_number()
@@ -193,6 +224,9 @@ where
             pending_finalizations: FuturesOrdered::new(),
 
             latest_observed_finalized_tip: None,
+
+            public_key,
+            metrics,
         })
     }
 
@@ -542,6 +576,7 @@ where
             .and_then(|res| res)?;
 
         let block = block.into_inner();
+        let consensus_context = block.header().consensus_context;
         let payload_status = self
             .execution_node
             .add_ons_handle
@@ -563,6 +598,13 @@ where
             "this is a problem: payload status of block-to-be-finalized was \
             neither valid nor syncing: `{payload_status}`"
         );
+
+        if let Some(ctx) = consensus_context {
+            let proposer: PublicKey = ctx.proposer.get().into();
+            if proposer == self.public_key {
+                self.metrics.finalized_blocks_proposed_by_self.inc();
+            }
+        }
 
         acknowledgment.acknowledge();
 
