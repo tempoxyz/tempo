@@ -835,11 +835,11 @@ mod tests {
 
         let user_tx = create_tx(chain_id);
 
-        // Use a fixed timestamp between T3 and T4 activation on moderato so the
-        // block is always pre-T4 regardless of wall-clock time.
+        use tempo_chainspec::constants::moderato::MODERATO_T4_TIMESTAMP;
+
         let header = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
-            .timestamp(1_778_767_199)
+            .timestamp(MODERATO_T4_TIMESTAMP - 1)
             .build();
         let block = create_valid_block(header, vec![user_tx]);
         let sealed = SealedBlock::seal_slow(block);
@@ -977,10 +977,11 @@ mod tests {
         let wrong_addr = Address::repeat_byte(0xFF);
         let system_tx = create_system_tx(chain_id, wrong_addr);
 
-        // Use a fixed pre-T4 timestamp so system tx validation is enforced.
+        use tempo_chainspec::constants::moderato::MODERATO_T4_TIMESTAMP;
+
         let header = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
-            .timestamp(1_778_767_199)
+            .timestamp(MODERATO_T4_TIMESTAMP - 1)
             .build();
         let block = create_valid_block(header, vec![system_tx]);
         let sealed = SealedBlock::seal_slow(block);
