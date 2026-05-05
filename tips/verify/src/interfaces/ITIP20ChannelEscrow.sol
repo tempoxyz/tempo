@@ -12,6 +12,7 @@ interface ITIP20ChannelEscrow {
         address token;
         bytes32 salt;
         address authorizedSigner;
+        bytes32 openTxHash;
     }
 
     struct ChannelState {
@@ -46,11 +47,7 @@ interface ITIP20ChannelEscrow {
     )
         external;
 
-    function topUp(
-        ChannelDescriptor calldata descriptor,
-        uint96 additionalDeposit
-    )
-        external;
+    function topUp(ChannelDescriptor calldata descriptor, uint96 additionalDeposit) external;
 
     function close(
         ChannelDescriptor calldata descriptor,
@@ -82,7 +79,8 @@ interface ITIP20ChannelEscrow {
         address operator,
         address token,
         bytes32 salt,
-        address authorizedSigner
+        address authorizedSigner,
+        bytes32 openTxHash
     )
         external
         view
@@ -106,6 +104,7 @@ interface ITIP20ChannelEscrow {
         address token,
         address authorizedSigner,
         bytes32 salt,
+        bytes32 openTxHash,
         uint96 deposit
     );
 
@@ -147,7 +146,6 @@ interface ITIP20ChannelEscrow {
 
     error ChannelAlreadyExists();
     error ChannelNotFound();
-    error ChannelFinalized();
     error NotPayer();
     error NotPayee();
     error NotPayeeOrOperator();
