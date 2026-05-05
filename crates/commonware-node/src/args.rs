@@ -56,12 +56,6 @@ pub struct Args {
     #[arg(long = "consensus.deque-size", default_value_t = 10)]
     pub deque_size: usize,
 
-    /// Deprecated: the fee recipient is now read from the validator config v2
-    /// contract. This value is used as a fallback when the on-chain fee
-    /// recipient is `Address::ZERO` or when the v2 contract is not yet active.
-    #[arg(long = "consensus.fee-recipient")]
-    pub fee_recipient: Option<alloy_primitives::Address>,
-
     /// The amount of time to wait for a peer to respond to a consensus request.
     #[arg(long = "consensus.wait-for-peer-response", default_value = "2s")]
     pub wait_for_peer_response: PositiveDuration,

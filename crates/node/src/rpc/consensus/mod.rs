@@ -18,6 +18,43 @@ pub use types::{
     IdentityTransitionResponse, Query, TransitionProofData,
 };
 
+/// Custom error codes for the consensus RPC.
+#[derive(Copy, Clone, PartialEq, Eq)]
+#[repr(i32)]
+pub enum ErrorCode {
+    NoContent = 204,
+    ServiceUnavailable = 503,
+}
+
+impl ErrorCode {
+    fn msg(self) -> &'static str {
+        match self {
+            Self::NoContent => "the requested content was not available",
+            Self::ServiceUnavailable => {
+                "the consensus subservice was not available, but the request can be retried later"
+            }
+        }
+    }
+}
+
+impl<T> From<types::Response<T>> for RpcResult<T> {
+    fn from(value: types::Response<T>) -> Self {
+        match value {
+            types::Response::Success(val) => Ok(val),
+            types::Response::NotReady => Err(ErrorObject::owned(
+                ErrorCode::NoContent as i32,
+                ErrorCode::NoContent.msg(),
+                None::<()>,
+            )),
+            types::Response::Missing(msg) => Err(ErrorObject::owned(
+                ErrorCode::ServiceUnavailable as i32,
+                ErrorCode::ServiceUnavailable.msg(),
+                Some(msg),
+            )),
+        }
+    }
+}
+
 /// Consensus namespace RPC trait.
 #[rpc(server, client, namespace = "consensus")]
 pub trait TempoConsensusApi {
@@ -25,7 +62,7 @@ pub trait TempoConsensusApi {
     ///
     /// Use `"latest"` to get the most recent finalization, or `{"height": N}` for a specific height.
     #[method(name = "getFinalization")]
-    async fn get_finalization(&self, query: Query) -> RpcResult<Option<CertifiedBlock>>;
+    async fn get_finalization(&self, query: Query) -> RpcResult<CertifiedBlock>;
 
     /// Get the current consensus state snapshot.
     ///
@@ -68,8 +105,12 @@ impl<I: ConsensusFeed> TempoConsensusRpc<I> {
 
 #[async_trait::async_trait]
 impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
-    async fn get_finalization(&self, query: Query) -> RpcResult<Option<CertifiedBlock>> {
-        Ok(self.consensus_feed.get_finalization(query).await)
+    async fn get_finalization(&self, query: Query) -> RpcResult<CertifiedBlock> {
+        match self.consensus_feed.get_finalization(query).await {
+            types::Response::Success(obj) => Ok(obj),
+            types::Response::NotReady => todo!(),
+            types::Response::Missing(_) => todo!(),
+        }
     }
 
     async fn get_latest(&self) -> RpcResult<ConsensusState> {

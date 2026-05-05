@@ -102,7 +102,7 @@ pub(crate) struct Actor<TContext> {
 
     /// A handle to the execution node layer. Used to forward finalized blocks
     /// and to update the canonical chain by sending forkchoice updates.
-    execution_node: TempoFullNode,
+    execution_node: Arc<TempoFullNode>,
 
     last_consensus_finalized_height: Height,
     last_execution_finalized_height: Height,
