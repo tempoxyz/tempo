@@ -96,7 +96,7 @@ contract TIP20ChannelEscrowTest is BaseTest {
 
     function _openChannel() internal returns (bytes32) {
         vm.prank(payer);
-        return channel.open(payee, address(token), DEPOSIT, SALT, address(0));
+        return channel.open(payee, address(0), address(token), DEPOSIT, SALT, address(0));
     }
 
     function _descriptor() internal view returns (ITIP20ChannelEscrow.ChannelDescriptor memory) {
@@ -111,9 +111,22 @@ contract TIP20ChannelEscrowTest is BaseTest {
         view
         returns (ITIP20ChannelEscrow.ChannelDescriptor memory)
     {
+        return _descriptor(salt, address(0), authorizedSigner);
+    }
+
+    function _descriptor(
+        bytes32 salt,
+        address operator,
+        address authorizedSigner
+    )
+        internal
+        view
+        returns (ITIP20ChannelEscrow.ChannelDescriptor memory)
+    {
         return ITIP20ChannelEscrow.ChannelDescriptor({
             payer: payer,
             payee: payee,
+            operator: operator,
             token: address(token),
             salt: salt,
             authorizedSigner: authorizedSigner
@@ -144,11 +157,13 @@ contract TIP20ChannelEscrowTest is BaseTest {
 
     function test_open_success() public {
         vm.prank(payer);
-        bytes32 channelId = channel.open(payee, address(token), DEPOSIT, SALT, address(0));
+        bytes32 channelId =
+            channel.open(payee, address(0), address(token), DEPOSIT, SALT, address(0));
 
         ITIP20ChannelEscrow.Channel memory ch = channel.getChannel(_descriptor());
         assertEq(ch.descriptor.payer, payer);
         assertEq(ch.descriptor.payee, payee);
+        assertEq(ch.descriptor.operator, address(0));
         assertEq(ch.descriptor.token, address(token));
         assertEq(ch.descriptor.authorizedSigner, address(0));
         assertEq(ch.state.settled, 0);
@@ -160,19 +175,19 @@ contract TIP20ChannelEscrowTest is BaseTest {
     function test_open_revert_zeroPayee() public {
         vm.prank(payer);
         vm.expectRevert(ITIP20ChannelEscrow.InvalidPayee.selector);
-        channel.open(address(0), address(token), DEPOSIT, SALT, address(0));
+        channel.open(address(0), address(0), address(token), DEPOSIT, SALT, address(0));
     }
 
     function test_open_revert_zeroToken() public {
         vm.prank(payer);
         vm.expectRevert(ITIP20ChannelEscrow.InvalidToken.selector);
-        channel.open(payee, address(0), DEPOSIT, SALT, address(0));
+        channel.open(payee, address(0), address(0), DEPOSIT, SALT, address(0));
     }
 
     function test_open_revert_zeroDeposit() public {
         vm.prank(payer);
         vm.expectRevert(ITIP20ChannelEscrow.ZeroDeposit.selector);
-        channel.open(payee, address(token), 0, SALT, address(0));
+        channel.open(payee, address(0), address(token), 0, SALT, address(0));
     }
 
     function test_open_revert_duplicate() public {
@@ -180,7 +195,7 @@ contract TIP20ChannelEscrowTest is BaseTest {
 
         vm.prank(payer);
         vm.expectRevert(ITIP20ChannelEscrow.ChannelAlreadyExists.selector);
-        channel.open(payee, address(token), DEPOSIT, SALT, address(0));
+        channel.open(payee, address(0), address(token), DEPOSIT, SALT, address(0));
     }
 
     function test_settle_success() public {
@@ -217,7 +232,8 @@ contract TIP20ChannelEscrowTest is BaseTest {
         (address delegateSigner, uint256 delegateKey) = makeAddrAndKey("delegate");
 
         vm.prank(payer);
-        bytes32 channelId = channel.open(payee, address(token), DEPOSIT, SALT, delegateSigner);
+        bytes32 channelId =
+            channel.open(payee, address(0), address(token), DEPOSIT, SALT, delegateSigner);
 
         bytes memory sig = _signVoucher(channelId, 500_000, delegateKey);
 
@@ -225,6 +241,32 @@ contract TIP20ChannelEscrowTest is BaseTest {
         channel.settle(_descriptor(SALT, delegateSigner), 500_000, sig);
 
         assertEq(channel.getChannelState(channelId).settled, 500_000);
+    }
+
+    function test_operator_settleSuccess() public {
+        address operator = makeAddr("operator");
+
+        vm.prank(payer);
+        bytes32 channelId =
+            channel.open(payee, operator, address(token), DEPOSIT, SALT, address(0));
+
+        bytes memory sig = _signVoucher(channelId, 500_000);
+
+        vm.prank(operator);
+        channel.settle(_descriptor(SALT, operator, address(0)), 500_000, sig);
+
+        assertEq(channel.getChannelState(channelId).settled, 500_000);
+        assertEq(token.balanceOf(payee), 500_000);
+    }
+
+    function test_operator_zeroDoesNotAuthorizeArbitrarySettler() public {
+        address operator = makeAddr("operator");
+        bytes32 channelId = _openChannel();
+        bytes memory sig = _signVoucher(channelId, 500_000);
+
+        vm.prank(operator);
+        vm.expectRevert(ITIP20ChannelEscrow.NotPayeeOrOperator.selector);
+        channel.settle(_descriptor(), 500_000, sig);
     }
 
     function test_topUp_updatesDeposit() public {
@@ -350,7 +392,7 @@ contract TIP20ChannelEscrowTest is BaseTest {
 
         vm.prank(payer);
         vm.expectRevert(ITIP20ChannelEscrow.ChannelAlreadyExists.selector);
-        channel.open(payee, address(token), DEPOSIT, SALT, address(0));
+        channel.open(payee, address(0), address(token), DEPOSIT, SALT, address(0));
     }
 
     function test_withdraw_afterGracePeriod() public {
@@ -381,8 +423,9 @@ contract TIP20ChannelEscrowTest is BaseTest {
         bytes32 channelId1 = _openChannel();
 
         vm.prank(payer);
-        bytes32 channelId2 =
-            channel.open(payee, address(token), DEPOSIT, bytes32(uint256(2)), address(0));
+        bytes32 channelId2 = channel.open(
+            payee, address(0), address(token), DEPOSIT, bytes32(uint256(2)), address(0)
+        );
 
         bytes memory sig = _signVoucher(channelId1, 400_000);
         vm.prank(payee);
@@ -401,8 +444,10 @@ contract TIP20ChannelEscrowTest is BaseTest {
     function test_computeChannelId_usesFixedPrecompileAddress() public {
         TIP20ChannelEscrow other = new TIP20ChannelEscrow();
 
-        bytes32 id1 = channel.computeChannelId(payer, payee, address(token), SALT, address(0));
-        bytes32 id2 = other.computeChannelId(payer, payee, address(token), SALT, address(0));
+        bytes32 id1 =
+            channel.computeChannelId(payer, payee, address(0), address(token), SALT, address(0));
+        bytes32 id2 =
+            other.computeChannelId(payer, payee, address(0), address(token), SALT, address(0));
 
         assertEq(id1, id2);
         assertEq(channel.domainSeparator(), other.domainSeparator());

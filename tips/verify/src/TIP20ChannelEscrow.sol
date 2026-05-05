@@ -32,6 +32,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
 
     function open(
         address payee,
+        address operator,
         address token,
         uint96 deposit,
         bytes32 salt,
@@ -44,7 +45,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         if (token == address(0)) revert InvalidToken();
         if (deposit == 0) revert ZeroDeposit();
 
-        channelId = computeChannelId(msg.sender, payee, token, salt, authorizedSigner);
+        channelId = computeChannelId(msg.sender, payee, operator, token, salt, authorizedSigner);
         if (channelStates[channelId] != 0) revert ChannelAlreadyExists();
 
         channelStates[channelId] = _encodeChannelState(
@@ -60,7 +61,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         bool success = ITIP20(token).transferFrom(msg.sender, address(this), deposit);
         if (!success) revert TransferFailed();
 
-        emit ChannelOpened(channelId, msg.sender, payee, token, authorizedSigner, salt, deposit);
+        emit ChannelOpened(channelId, msg.sender, payee, operator, token, authorizedSigner, salt, deposit);
     }
 
     function settle(
@@ -73,7 +74,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         bytes32 channelId = _channelId(descriptor);
         ChannelState memory channel = _loadChannelState(channelId);
 
-        if (msg.sender != descriptor.payee) revert NotPayee();
+        _requirePayeeOrOperator(descriptor);
         if (_isFinalized(channel.closeData)) revert ChannelFinalized();
         if (cumulativeAmount > channel.deposit) revert AmountExceedsDeposit();
         if (cumulativeAmount <= channel.settled) revert AmountNotIncreasing();
@@ -229,6 +230,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         channel.descriptor = ChannelDescriptor({
             payer: descriptor.payer,
             payee: descriptor.payee,
+            operator: descriptor.operator,
             token: descriptor.token,
             salt: descriptor.salt,
             authorizedSigner: descriptor.authorizedSigner
@@ -256,6 +258,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
     function computeChannelId(
         address payer,
         address payee,
+        address operator,
         address token,
         bytes32 salt,
         address authorizedSigner
@@ -266,7 +269,14 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
     {
         return keccak256(
             abi.encode(
-                payer, payee, token, salt, authorizedSigner, TIP20_CHANNEL_ESCROW, block.chainid
+                payer,
+                payee,
+                operator,
+                token,
+                salt,
+                authorizedSigner,
+                TIP20_CHANNEL_ESCROW,
+                block.chainid
             )
         );
     }
@@ -291,10 +301,17 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         return computeChannelId(
             descriptor.payer,
             descriptor.payee,
+            descriptor.operator,
             descriptor.token,
             descriptor.salt,
             descriptor.authorizedSigner
         );
+    }
+
+    function _requirePayeeOrOperator(ChannelDescriptor calldata descriptor) internal view {
+        if (msg.sender == descriptor.payee) return;
+        if (descriptor.operator != address(0) && msg.sender == descriptor.operator) return;
+        revert NotPayeeOrOperator();
     }
 
     function _loadChannelState(bytes32 channelId) internal view returns (ChannelState memory) {
