@@ -13,7 +13,7 @@ const BENCH_RESULTS_DIR = "bench-results"
 const BLOAT_MNEMONIC = "test test test test test test test test test test test junk"
 const METRICS_PROXY_SCRIPT = "contrib/bench/bench-metrics-proxy.py"
 const METRICS_LABELS_FILE = "/tmp/bench-metrics-labels.json"
-const MINIO_BUCKET = "minio/tempo-binaries"
+const MINIO_BUCKET = "minio/reth-binaries"
 const BENCH_META_SUBDIR = ".bench-meta"
 
 # Preset weight configurations: [tip20, erc20, swap, order]
