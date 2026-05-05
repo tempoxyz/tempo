@@ -8,6 +8,7 @@ interface ITIP20ChannelEscrow {
     struct ChannelDescriptor {
         address payer;
         address payee;
+        address operator;
         address token;
         bytes32 salt;
         address authorizedSigner;
@@ -29,6 +30,7 @@ interface ITIP20ChannelEscrow {
 
     function open(
         address payee,
+        address operator,
         address token,
         uint96 deposit,
         bytes32 salt,
@@ -77,6 +79,7 @@ interface ITIP20ChannelEscrow {
     function computeChannelId(
         address payer,
         address payee,
+        address operator,
         address token,
         bytes32 salt,
         address authorizedSigner
@@ -99,6 +102,7 @@ interface ITIP20ChannelEscrow {
         bytes32 indexed channelId,
         address indexed payer,
         address indexed payee,
+        address operator,
         address token,
         address authorizedSigner,
         bytes32 salt,
@@ -146,6 +150,7 @@ interface ITIP20ChannelEscrow {
     error ChannelFinalized();
     error NotPayer();
     error NotPayee();
+    error NotPayeeOrOperator();
     error InvalidPayee();
     error InvalidToken();
     error ZeroDeposit();
