@@ -70,8 +70,11 @@ impl Default for TempoPayloadAttributes {
 
 impl TempoPayloadAttributes {
     /// Creates new `TempoPayloadAttributes` with `inner` attributes.
+    ///
+    /// The inner `suggested_fee_recipient` is always `Address::ZERO`; the
+    /// real beneficiary is resolved from the validator config v2 contract by
+    /// the payload builder.
     pub fn new(
-        suggested_fee_recipient: Address,
         proposer_public_key: Option<B256>,
         timestamp: u64,
         timestamp_millis_part: u64,
@@ -82,7 +85,7 @@ impl TempoPayloadAttributes {
         Self {
             inner: EthPayloadAttributes {
                 timestamp,
-                suggested_fee_recipient,
+                suggested_fee_recipient: Address::ZERO,
                 prev_randao: B256::ZERO,
                 withdrawals: Some(Default::default()),
                 parent_beacon_block_root: Some(B256::ZERO),
@@ -216,7 +219,6 @@ mod tests {
     impl TestExt for TempoPayloadAttributes {
         fn random() -> Self {
             Self::new(
-                Address::random(),
                 None,
                 1, // 1s
                 0,
@@ -271,12 +273,10 @@ mod tests {
     #[test]
     fn test_builder_attributes_construction() {
         let parent = B256::random();
-        let recipient = Address::random();
         let extra_data = Bytes::from(vec![1, 2, 3, 4, 5]);
 
         // With extra_data
         let attrs = TempoPayloadAttributes::new(
-            recipient,
             None,
             1,
             500, // 1.5s
@@ -285,7 +285,7 @@ mod tests {
             Vec::new,
         );
         assert_eq!(attrs.extra_data(), &extra_data);
-        assert_eq!(attrs.suggested_fee_recipient, recipient);
+        assert_eq!(attrs.suggested_fee_recipient, Address::ZERO);
         assert_eq!(
             attrs.payload_id(&parent),
             payload_id_from_block_hash(&parent)
@@ -300,7 +300,6 @@ mod tests {
 
         // Without extra_data
         let attrs2 = TempoPayloadAttributes::new(
-            recipient,
             None,
             2, // +500ms
             0,
