@@ -320,6 +320,8 @@ where
             .unwrap_or(0)
             + 1024;
         let mut payment_transactions = 0u64;
+        let mut pool_transactions_yielded = 0u64;
+        let mut pool_transactions_included = 0u64;
         let mut total_fees = U256::ZERO;
 
         // If building an empty payload, don't include any subblocks
@@ -451,6 +453,7 @@ where
                 }
                 break;
             };
+            pool_transactions_yielded += 1;
 
             let max_regular_gas_used = core::cmp::min(
                 pool_tx.gas_limit(),
@@ -595,6 +598,7 @@ where
                 .record(elapsed);
             trace!(?elapsed, "Transaction executed");
 
+            pool_transactions_included += 1;
             block_size_used += tx_rlp_length;
         }
         drop(_block_fill_span);
@@ -800,6 +804,30 @@ where
             }));
         }
 
+        let pool_transactions_inclusion_ratio = if pool_transactions_yielded == 0 {
+            0.0
+        } else {
+            pool_transactions_included as f64 / pool_transactions_yielded as f64
+        };
+        self.metrics
+            .pool_transactions_yielded
+            .record(pool_transactions_yielded as f64);
+        self.metrics
+            .pool_transactions_yielded_last
+            .set(pool_transactions_yielded as f64);
+        self.metrics
+            .pool_transactions_included
+            .record(pool_transactions_included as f64);
+        self.metrics
+            .pool_transactions_included_last
+            .set(pool_transactions_included as f64);
+        self.metrics
+            .pool_transactions_inclusion_ratio
+            .record(pool_transactions_inclusion_ratio);
+        self.metrics
+            .pool_transactions_inclusion_ratio_last
+            .set(pool_transactions_inclusion_ratio);
+
         let elapsed = start.elapsed();
         self.metrics.payload_build_duration_seconds.record(elapsed);
         let gas_per_second = sealed_block.gas_used() as f64 / elapsed.as_secs_f64();
@@ -821,6 +849,9 @@ where
             extra_data = %sealed_block.extra_data(),
             subblocks_count,
             payment_transactions,
+            pool_transactions_yielded,
+            pool_transactions_included,
+            pool_transactions_inclusion_ratio,
             subblock_transactions,
             total_transactions,
             ?elapsed,

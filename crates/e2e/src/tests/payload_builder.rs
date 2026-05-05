@@ -1,4 +1,7 @@
-use std::time::Duration;
+use std::{
+    sync::{Mutex, MutexGuard},
+    time::Duration,
+};
 
 use commonware_macros::test_traced;
 use commonware_runtime::{
@@ -14,16 +17,28 @@ const PAYLOAD_FINALIZATION_COUNT_METRIC: &str =
     "reth_tempo_payload_builder_payload_finalization_duration_seconds_count";
 const STATE_ROOT_WITH_UPDATES_COUNT_METRIC: &str =
     "reth_tempo_payload_builder_state_root_with_updates_duration_seconds_count";
+const POOL_TRANSACTIONS_YIELDED_COUNT_METRIC: &str =
+    "reth_tempo_payload_builder_pool_transactions_yielded_count";
+const POOL_TRANSACTIONS_INCLUDED_COUNT_METRIC: &str =
+    "reth_tempo_payload_builder_pool_transactions_included_count";
+const POOL_TRANSACTIONS_INCLUSION_RATIO_COUNT_METRIC: &str =
+    "reth_tempo_payload_builder_pool_transactions_inclusion_ratio_count";
+const POOL_TRANSACTIONS_INCLUSION_RATIO_LAST_METRIC: &str =
+    "reth_tempo_payload_builder_pool_transactions_inclusion_ratio_last";
 const NULLIFICATIONS_PER_LEADER_METRIC_SUFFIX: &str = "_nullifications_per_leader";
+
+static PAYLOAD_BUILDER_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[test_traced]
 fn shared_sparse_trie_single_validator_bypasses_sync_state_root() {
+    let _guard = payload_builder_test_lock();
     let deltas = run_payload_builder_test(&[true], 10);
 
     assert!(
         deltas.finalization_count > 0,
         "expected payload builder finalization metrics to increase"
     );
+    assert_pool_inclusion_metrics(&deltas);
     assert_eq!(
         deltas.state_root_count, 0,
         "expected shared sparse trie to bypass sync state-root work"
@@ -32,12 +47,20 @@ fn shared_sparse_trie_single_validator_bypasses_sync_state_root() {
 
 #[test_traced]
 fn mixed_validators_build_blocks_with_and_without_shared_sparse_trie_payload_builder() {
+    let _guard = payload_builder_test_lock();
     let deltas = run_payload_builder_test(&[true, false], 10);
 
+    assert_pool_inclusion_metrics(&deltas);
     assert_eq!(
         deltas.nullification_count, 0,
         "expected mixed sparse trie configuration to build without consensus nullifications"
     );
+}
+
+fn payload_builder_test_lock() -> MutexGuard<'static, ()> {
+    PAYLOAD_BUILDER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn run_payload_builder_test(
@@ -50,6 +73,14 @@ fn run_payload_builder_test(
         prometheus_histogram_count(metrics_recorder, PAYLOAD_FINALIZATION_COUNT_METRIC);
     let initial_state_root_count =
         prometheus_histogram_count(metrics_recorder, STATE_ROOT_WITH_UPDATES_COUNT_METRIC);
+    let initial_pool_transactions_yielded_count =
+        prometheus_histogram_count(metrics_recorder, POOL_TRANSACTIONS_YIELDED_COUNT_METRIC);
+    let initial_pool_transactions_included_count =
+        prometheus_histogram_count(metrics_recorder, POOL_TRANSACTIONS_INCLUDED_COUNT_METRIC);
+    let initial_pool_transactions_inclusion_ratio_count = prometheus_histogram_count(
+        metrics_recorder,
+        POOL_TRANSACTIONS_INCLUSION_RATIO_COUNT_METRIC,
+    );
 
     let nullification_count =
         Runner::from(Config::default().with_seed(0)).start(|mut context| async move {
@@ -84,10 +115,29 @@ fn run_payload_builder_test(
         prometheus_histogram_count(metrics_recorder, PAYLOAD_FINALIZATION_COUNT_METRIC);
     let final_state_root_count =
         prometheus_histogram_count(metrics_recorder, STATE_ROOT_WITH_UPDATES_COUNT_METRIC);
+    let final_pool_transactions_yielded_count =
+        prometheus_histogram_count(metrics_recorder, POOL_TRANSACTIONS_YIELDED_COUNT_METRIC);
+    let final_pool_transactions_included_count =
+        prometheus_histogram_count(metrics_recorder, POOL_TRANSACTIONS_INCLUDED_COUNT_METRIC);
+    let final_pool_transactions_inclusion_ratio_count = prometheus_histogram_count(
+        metrics_recorder,
+        POOL_TRANSACTIONS_INCLUSION_RATIO_COUNT_METRIC,
+    );
+    let pool_transactions_inclusion_ratio_last = prometheus_metric_value(
+        metrics_recorder,
+        POOL_TRANSACTIONS_INCLUSION_RATIO_LAST_METRIC,
+    );
 
     MetricDelta {
         finalization_count: final_finalization_count - initial_finalization_count,
         state_root_count: final_state_root_count - initial_state_root_count,
+        pool_transactions_yielded_count: final_pool_transactions_yielded_count
+            - initial_pool_transactions_yielded_count,
+        pool_transactions_included_count: final_pool_transactions_included_count
+            - initial_pool_transactions_included_count,
+        pool_transactions_inclusion_ratio_count: final_pool_transactions_inclusion_ratio_count
+            - initial_pool_transactions_inclusion_ratio_count,
+        pool_transactions_inclusion_ratio_last,
         nullification_count,
     }
 }
@@ -95,7 +145,34 @@ fn run_payload_builder_test(
 struct MetricDelta {
     finalization_count: u64,
     state_root_count: u64,
+    pool_transactions_yielded_count: u64,
+    pool_transactions_included_count: u64,
+    pool_transactions_inclusion_ratio_count: u64,
+    pool_transactions_inclusion_ratio_last: Option<f64>,
     nullification_count: u64,
+}
+
+fn assert_pool_inclusion_metrics(deltas: &MetricDelta) {
+    assert!(
+        deltas.pool_transactions_yielded_count > 0,
+        "expected pool transactions yielded metric to be recorded"
+    );
+    assert!(
+        deltas.pool_transactions_included_count > 0,
+        "expected pool transactions included metric to be recorded"
+    );
+    assert!(
+        deltas.pool_transactions_inclusion_ratio_count > 0,
+        "expected pool transactions inclusion ratio metric to be recorded"
+    );
+
+    let ratio = deltas
+        .pool_transactions_inclusion_ratio_last
+        .expect("expected pool transactions inclusion ratio last metric to be exported");
+    assert!(
+        (0.0..=1.0).contains(&ratio),
+        "expected pool transactions inclusion ratio last to be within 0.0..=1.0, got {ratio}"
+    );
 }
 
 async fn wait_for_height(context: &Context, expected_validators: u32, target_height: u64) {
@@ -150,4 +227,12 @@ fn prometheus_histogram_count(recorder: &PrometheusRecorder, metric: &str) -> u6
             (parts.next()? == metric).then(|| parts.next()?.parse().ok())?
         })
         .unwrap_or(0)
+}
+
+fn prometheus_metric_value(recorder: &PrometheusRecorder, metric: &str) -> Option<f64> {
+    recorder.handle().run_upkeep();
+    recorder.handle().render().lines().find_map(|line| {
+        let mut parts = line.split_whitespace();
+        (parts.next()? == metric).then(|| parts.next()?.parse().ok())?
+    })
 }
