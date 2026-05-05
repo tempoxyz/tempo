@@ -1213,6 +1213,10 @@ def build-base-args [genesis_path: string, datadir: string, log_dir: string, bin
         "--http.addr" $bind_ip
         "--http.port" $"($http_port)"
         "--http.api" "all"
+        "--ws"
+        "--ws.addr" $bind_ip
+        "--ws.port" $"($http_port)"
+        "--ws.api" "all"
         "--metrics" $"($bind_ip):($reth_metrics_port)"
         "--log.file.directory" $log_dir
         "--faucet.enabled"
@@ -1394,10 +1398,89 @@ def build-consensus-args [node_dir: string, trusted_peers: string, port: int] {
         "--discovery.v5.port" $"($discv5_port)"
         "--p2p-secret-key" $enode_key
         "--authrpc.port" $"($authrpc_port)"
-        "--consensus.fee-recipient" "0x0000000000000000000000000000000000000000"
         "--consensus.use-local-defaults"
         "--consensus.bypass-ip-check"
     ]
+}
+
+# ============================================================================
+# Follower command
+# ============================================================================
+
+# Start a follower node (requires a running localnet)
+def "main follower" [
+    --profile: string = $DEFAULT_PROFILE # Cargo build profile
+    --features: string = $DEFAULT_FEATURES # Cargo features
+    --loud                      # Show all node logs (WARN/ERROR shown by default)
+    --node-args: string = ""    # Additional node arguments (space-separated)
+    --skip-build                # Skip building (assumes binary is already built)
+    --reset                     # Wipe follower data before starting
+] {
+    # Validate localnet exists
+    if not ($LOCALNET_DIR | path exists) {
+        print "Error: localnet not found. Run `nu tempo.nu localnet --mode consensus` first."
+        exit 1
+    }
+
+    let genesis_path = $"($LOCALNET_DIR)/genesis.json"
+    if not ($genesis_path | path exists) {
+        print $"Error: genesis file not found at ($genesis_path)"
+        exit 1
+    }
+
+    let extra_args = if $node_args == "" { [] } else { $node_args | split row " " }
+
+    if not $skip_build {
+        build-tempo ["tempo"] $profile $features
+    }
+
+    let tempo_bin = if $profile == "dev" {
+        "./target/debug/tempo"
+    } else {
+        $"./target/($profile)/tempo"
+    }
+
+    # Auto-detect validators from localnet directory structure
+    let validator_dirs = (ls $LOCALNET_DIR | where type == "dir" | get name | where { |d| ($d | path basename) =~ '^\d+\.\d+\.\d+\.\d+:\d+$' })
+    let trusted_peers = ($validator_dirs | each { |d|
+        let addr = ($d | path basename)
+        let port = ($addr | split row ":" | get 1 | into int)
+        let identity = (open $"($d)/enode.identity" | str trim)
+        $"enode://($identity)@127.0.0.1:($port + 1)"
+    } | str join ",")
+
+    let follower_dir = $"($LOCALNET_DIR)/follower"
+
+    if $reset and ($follower_dir | path exists) {
+        print "Resetting follower data..."
+        rm -rf $follower_dir
+    }
+    mkdir $follower_dir
+
+    # Use ports below the first validator to avoid conflicts
+    let http_port = 8545 - 1
+    let reth_metrics_port = 9001 - 1
+    let el_p2p_port = 30303 - 1
+    let authrpc_port = 8551 - 1
+    let log_dir = $"($LOGS_DIR)/follower"
+    mkdir $log_dir
+
+    let args = (build-base-args $genesis_path $follower_dir $log_dir "0.0.0.0" $http_port $reth_metrics_port)
+        | append [
+            "--follow" $"ws://127.0.0.1:8545"
+            "--trusted-peers" $trusted_peers
+            "--port" $"($el_p2p_port)"
+            "--discovery.port" $"($el_p2p_port)"
+            "--authrpc.port" $"($authrpc_port)"
+            "--ipcdisable"
+        ]
+        | append (log-filter-args $loud)
+        | append $extra_args
+
+    let cmd = [$tempo_bin ...$args]
+    print $"Follower -> http://localhost:($http_port)"
+    print "Press Ctrl+C to stop."
+    run-external ($cmd | first) ...($cmd | skip 1)
 }
 
 # ============================================================================
@@ -2243,9 +2326,9 @@ def wait-for-rpc [url: string, max_attempts: int = 120] {
 # ============================================================================
 
 const COV_DIR = "coverage"
-const INVARIANT_DIR = "tips/ref-impls"
+const INVARIANT_DIR = "tips/verify"
 
-# Find tempo-foundry checkout (same search as tempo-forge script)
+# Find a local tempo-foundry checkout for coverage runs.
 def find-tempo-foundry [] {
     let env_path = (if "TEMPO_FOUNDRY_PATH" in $env { $env.TEMPO_FOUNDRY_PATH } else { "" })
     if $env_path != "" and ($env_path | path exists) {
@@ -2648,6 +2731,7 @@ def main [] {
     print "  nu tempo.nu bench [flags]            Run full benchmark (infra + localnet + bench)"
     print "  nu tempo.nu localnet [flags]         Run Tempo localnet"
     print "  nu tempo.nu coverage [flags]         Run coverage (tests, live node, or both)"
+    print "  nu tempo.nu follower [flags]         Start a follower node (requires running localnet)"
     print "  nu tempo.nu infra up                 Start Grafana + Prometheus"
     print "  nu tempo.nu infra down               Stop the observability stack"
     print "  nu tempo.nu kill                     Kill any running tempo processes"
@@ -2706,6 +2790,13 @@ def main [] {
     print "  --open                   Open HTML report in browser"
     print "  --reset                  Wipe localnet data before live run"
     print ""
+    print "Follower flags:"
+    print "  --loud                   Show all node logs (WARN/ERROR shown by default)"
+    print "  --reset                  Wipe follower data before starting"
+    print $"  --profile <P>            Cargo profile \(default: ($DEFAULT_PROFILE)\)"
+    print $"  --features <F>           Cargo features \(default: ($DEFAULT_FEATURES)\)"
+    print "  --node-args <ARGS>       Additional node arguments (space-separated)"
+    print ""
     print "Examples:"
     print "  nu tempo.nu bench --preset tip20 --tps 20000 --duration 60"
     print "  nu tempo.nu bench --preset tempo-mix --tps 5000 --samply --reset"
@@ -2720,6 +2811,7 @@ def main [] {
     print "  nu tempo.nu localnet --mode dev --samply --accounts 50000 --reset"
     print "  nu tempo.nu localnet --mode dev --bloat 1024 --reset"
     print "  nu tempo.nu localnet --mode consensus --nodes 3"
+    print "  nu tempo.nu follower --reset --loud     # start follower after localnet is running"
     print ""
     print "Port assignments (consensus mode, per node N=0,1,2...):"
     print "  Consensus:     8000 + N*100"

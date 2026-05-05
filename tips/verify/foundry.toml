@@ -1,0 +1,32 @@
+[profile.default]
+hardfork = "tempo:T3"
+
+# layout and file system
+src = "src"
+out = "out"
+libs = ["lib"]
+extra_output = ["storageLayout"]
+fs_permissions = [{ access = "read-write", path = "./"}]
+remappings = [
+    "tempo-std/=lib/tempo-std/src/",
+    "forge-std/=lib/forge-std/src/",
+    "solady/=lib/solady/src/"
+]
+
+# optimizer and invariants
+via-ir = true
+optimizer = true
+invariant = { runs = 10, depth = 50, fail_on_revert = true, show_solidity = true }
+
+[profile.fuzz500]
+invariant = { runs = 500, depth = 500, fail_on_revert = true, show_solidity = true }
+
+[fmt]
+line_length = 100
+sort_imports = true
+contract_new_lines = true
+bracket_spacing = true
+number_underscore = "thousands"
+multiline_func_header = "all"
+
+# See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

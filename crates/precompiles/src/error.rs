@@ -397,6 +397,26 @@ mod tests {
     }
 
     #[test]
+    fn test_into_precompile_result_revert() {
+        let error = TempoPrecompileError::StablecoinDEX(StablecoinDEXError::order_does_not_exist());
+        let result = error.into_precompile_result(0, 0);
+
+        let output = result.expect("business-logic revert should be Ok");
+        assert!(output.status.is_revert());
+    }
+
+    #[test]
+    fn test_into_precompile_result_trait_success() {
+        let result: Result<u64> = Ok(42);
+        let precompile_result = result.into_precompile_result(0, 0, |val| {
+            alloy::primitives::Bytes::from(val.to_be_bytes().to_vec())
+        });
+
+        let output = precompile_result.expect("success should be Ok");
+        assert!(output.status.is_success());
+    }
+
+    #[test]
     fn test_decode_error_with_tip20_error() {
         // Use insufficient_allowance which has a unique selector (no collision with other errors)
         let error = TIP20Error::insufficient_allowance();

@@ -9,7 +9,7 @@ use alloy_primitives::Address;
 use alloy_rlp::Decodable;
 pub use assemble::TempoBlockAssembler;
 mod block;
-pub use block::TempoReceiptBuilder;
+pub use block::{TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
 mod context;
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
 #[cfg(feature = "engine")]
@@ -23,7 +23,7 @@ use std::{borrow::Cow, sync::Arc};
 
 use alloy_evm::{
     self, EvmEnv,
-    block::{BlockExecutorFactory, BlockExecutorFor},
+    block::BlockExecutorFactory,
     eth::{EthBlockExecutionCtx, NextEvmEnvAttributes},
     revm::Inspector,
 };
@@ -36,10 +36,10 @@ use tempo_primitives::{
     subblock::PartialValidatorKey,
 };
 
-use crate::{block::TempoBlockExecutor, evm::TempoEvm};
+use crate::evm::TempoEvm;
 use reth_evm_ethereum::EthEvmConfig;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_revm::{evm::TempoContext, gas_params::tempo_gas_params};
+use tempo_revm::{evm::TempoContext, gas_params::tempo_gas_params_with_amsterdam};
 
 pub use tempo_revm::{TempoBlockEnv, TempoHaltReason, TempoStateAccess};
 
@@ -93,6 +93,8 @@ impl BlockExecutorFactory for TempoEvmConfig {
     type ExecutionCtx<'a> = TempoBlockExecutionCtx<'a>;
     type Transaction = TempoTxEnvelope;
     type Receipt = TempoReceipt;
+    type TxExecutionResult = TempoTxResult;
+    type Executor<'a, DB: StateDB, I: Inspector<TempoContext<DB>>> = TempoBlockExecutor<'a, DB, I>;
 
     fn evm_factory(&self) -> &Self::EvmFactory {
         self.inner.executor_factory.evm_factory()
@@ -102,10 +104,10 @@ impl BlockExecutorFactory for TempoEvmConfig {
         &'a self,
         evm: TempoEvm<DB, I>,
         ctx: Self::ExecutionCtx<'a>,
-    ) -> impl BlockExecutorFor<'a, Self, DB, I>
+    ) -> Self::Executor<'a, DB, I>
     where
-        DB: StateDB + 'a,
-        I: Inspector<TempoContext<DB>> + 'a,
+        DB: StateDB,
+        I: Inspector<TempoContext<DB>>,
     {
         TempoBlockExecutor::new(evm, ctx, self.chain_spec())
     }
@@ -138,7 +140,21 @@ impl ConfigureEvm for TempoEvmConfig {
         let spec = self.chain_spec().tempo_hardfork_at(header.timestamp());
 
         // Apply TIP-1000 gas params for T1 hardfork.
-        let mut cfg_env = cfg_env.with_spec_and_gas_params(spec, tempo_gas_params(spec));
+        //
+        // TIP-1016 (EIP-8037 state gas split) is gated by `cfg_env.enable_amsterdam_eip8037`
+        // and is independent of the T4 hardfork. The flag is currently left at its default
+        // (`false`) so TIP-1016 is disabled even on T4; flipping it on enables the regular/
+        // state gas split everywhere it is checked downstream.
+        //
+        // TODO(TIP-1016): this is the place where we previously did
+        // `cfg_env.enable_amsterdam_eip8037 = spec.is_t4();`. When TIP-1016 is ready to
+        // ship, re-enable it here (or wire it through chain spec / cfg defaults) so the
+        // state gas split activates on the appropriate hardfork.
+        let amsterdam_eip8037_enabled = cfg_env.enable_amsterdam_eip8037;
+        let mut cfg_env = cfg_env.with_spec_and_gas_params(
+            spec,
+            tempo_gas_params_with_amsterdam(spec, amsterdam_eip8037_enabled),
+        );
         cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
 
         Ok(EvmEnv {
@@ -175,8 +191,19 @@ impl ConfigureEvm for TempoEvmConfig {
 
         let spec = self.chain_spec().tempo_hardfork_at(attributes.timestamp);
 
-        // Apply TIP-1000 gas params for T1 hardfork.
-        let mut cfg_env = cfg_env.with_spec_and_gas_params(spec, tempo_gas_params(spec));
+        // Apply TIP-1000 gas params for T1 hardfork. TIP-1016 is gated by
+        // `cfg_env.enable_amsterdam_eip8037`, independent of the T4 hardfork
+        // (see `evm_env_for_block` for details).
+        //
+        // TODO(TIP-1016): this is the place where we previously did
+        // `cfg_env.enable_amsterdam_eip8037 = spec.is_t4();`. When TIP-1016 is ready to
+        // ship, re-enable it here (or wire it through chain spec / cfg defaults) so the
+        // state gas split activates on the appropriate hardfork.
+        let amsterdam_eip8037_enabled = cfg_env.enable_amsterdam_eip8037;
+        let mut cfg_env = cfg_env.with_spec_and_gas_params(
+            spec,
+            tempo_gas_params_with_amsterdam(spec, amsterdam_eip8037_enabled),
+        );
         cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
 
         Ok(EvmEnv {
@@ -200,7 +227,7 @@ impl ConfigureEvm for TempoEvmConfig {
             .rev()
             .filter(|tx| (*tx).to() == Some(Address::ZERO))
             .find_map(|tx| Vec::<SubBlockMetadata>::decode(&mut tx.input().as_ref()).ok())
-            .ok_or(TempoEvmError::NoSubblockMetadataFound)?
+            .unwrap_or_default()
             .into_iter()
             .map(|metadata| {
                 (
@@ -223,6 +250,7 @@ impl ConfigureEvm for TempoEvmConfig {
                     .map(|w| Cow::Borrowed(w.as_slice())),
                 extra_data: block.extra_data().clone(),
                 tx_count_hint: Some(block.body().transactions.len()),
+                slot_number: block.slot_number(),
             },
             general_gas_limit: block.header().general_gas_limit,
             shared_gas_limit: block.header().gas_limit()
@@ -243,6 +271,7 @@ impl ConfigureEvm for TempoEvmConfig {
             inner: EthBlockExecutionCtx {
                 parent_hash: parent.hash(),
                 parent_beacon_block_root: attributes.parent_beacon_block_root,
+                slot_number: attributes.slot_number,
                 ommers: &[],
                 withdrawals: attributes
                     .inner
@@ -267,7 +296,7 @@ mod tests {
     use super::*;
     use crate::test_utils::test_chainspec;
     use alloy_consensus::{BlockHeader, Signed, TxLegacy};
-    use alloy_primitives::{B256, Bytes, Signature, TxKind, U256};
+    use alloy_primitives::{B256, Bytes, TxKind, U256};
     use alloy_rlp::{Encodable, bytes::BytesMut};
     use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
     use std::collections::HashMap;
@@ -492,28 +521,18 @@ mod tests {
     }
 
     #[test]
-    fn test_context_for_block_no_subblock_metadata() {
-        let evm_config = TempoEvmConfig::new(test_chainspec());
+    fn test_context_for_block_t4_without_metadata_has_empty_fee_recipients() {
+        use tempo_chainspec::spec::DEV;
 
-        // Create a block without subblock metadata system tx
-        let regular_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
-            TxLegacy {
-                chain_id: Some(1),
-                nonce: 0,
-                gas_price: 1,
-                gas_limit: 21000,
-                to: TxKind::Call(alloy_primitives::Address::repeat_byte(0x01)),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            },
-            Signature::test_signature(),
-        ));
+        let chainspec = DEV.clone();
+        let evm_config = TempoEvmConfig::new(chainspec);
 
         let header = TempoHeader {
             inner: alloy_consensus::Header {
                 number: 1,
                 timestamp: 1000,
                 gas_limit: 30_000_000,
+                parent_beacon_block_root: Some(B256::ZERO),
                 ..Default::default()
             },
             general_gas_limit: 10_000_000,
@@ -523,7 +542,7 @@ mod tests {
         };
 
         let body = BlockBody {
-            transactions: vec![regular_tx],
+            transactions: vec![],
             ommers: vec![],
             withdrawals: None,
         };
@@ -531,14 +550,8 @@ mod tests {
         let block = Block { header, body };
         let sealed_block = SealedBlock::seal_slow(block);
 
-        let result = evm_config.context_for_block(&sealed_block);
-
-        // Should fail because no subblock metadata tx was found
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            TempoEvmError::NoSubblockMetadataFound
-        ));
+        let context = evm_config.context_for_block(&sealed_block).unwrap();
+        assert!(context.subblock_fee_recipients.is_empty());
     }
 
     #[test]

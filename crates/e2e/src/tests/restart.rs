@@ -14,11 +14,13 @@ use commonware_runtime::{
 use commonware_utils::NZU64;
 use futures::future::join_all;
 use rand_08::Rng;
+use reth_ethereum::storage::BlockNumReader;
+use reth_node_metrics::recorder::install_prometheus_recorder;
 use tracing::debug;
 
 use crate::{
     CONSENSUS_NODE_PREFIX, Setup, connect_execution_peers, connect_execution_to_peers,
-    setup_validators,
+    get_pipeline_runs, setup_validators,
 };
 
 #[test_traced("WARN")]
@@ -553,4 +555,117 @@ impl AssertNodeRecoversAfterFinalizingBlock {
             }
         });
     }
+}
+
+/// After a clean stop, unwind reth's DB by 2 blocks, then restart. The CL's
+/// marshal storage still has the higher finalized height, so the executor's
+/// `backfill_on_start` path fires to replay the missing blocks.
+///
+/// This also simulates regular expected EL behavior, where the last few
+/// blocks are not guaranteed to be persisted even if finalized.
+#[test_traced]
+fn backfill_on_start_after_crash() {
+    let _ = tempo_eyre::install();
+
+    let setup = Setup::new().how_many_signers(1).epoch_length(100);
+
+    let cfg = deterministic::Config::default().with_seed(setup.seed);
+    Runner::from(cfg).start(|mut context| async move {
+        let (mut validators, _execution_runtime) =
+            setup_validators(&mut context, setup.clone()).await;
+
+        join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+
+        // Wait for chain to advance past 10
+        wait_for_height(&context, 1, 10, false).await;
+
+        validators[0].stop().await;
+
+        // Unwind EL by 2 blocks to simulate crash
+        let (el_before, el_after) = validators[0].unwind(2);
+        assert!(el_before > el_after);
+
+        // Restart — should trigger backfill_on_start
+        validators[0].start(&context).await;
+
+        // Wait for the node to recover and produce past the pre-unwind height
+        wait_for_height(&context, 1, el_before + 5, false).await;
+
+        // Verify EL actually persisted the recovered blocks
+        let el_recovered = validators[0]
+            .execution_provider()
+            .last_block_number()
+            .unwrap();
+        assert!(
+            el_recovered >= el_before,
+            "EL should have recovered to at least {el_before} after backfill, \
+            got {el_recovered}"
+        );
+    });
+}
+
+/// Reproduces the race where a large EL gap triggers a pipeline run on
+/// restart.
+///
+/// On restart with a 50-block gap, `select_biased!` in the consensus loop
+/// falls through to the mailbox while `marshal.get_block()` is still
+/// pending. A `Finalize` for `CL_tip + 1` arrives from live consensus;
+/// its FCU triggers a download from EL peers. The downloaded block is
+/// disconnected from the local chain and the gap exceeds 32, so reth
+/// triggers a pipeline run.
+///
+/// The test asserts that **no** pipeline runs occur — the node should
+/// recover purely via backfill + live sync.
+#[test_traced]
+fn backfill_on_start_large_gap_does_not_trigger_pipeline_sync() {
+    let _ = tempo_eyre::install();
+    let metrics_recorder = install_prometheus_recorder();
+
+    let setup = Setup::new().how_many_signers(4).epoch_length(100);
+
+    let cfg = deterministic::Config::default().with_seed(setup.seed);
+    Runner::from(cfg).start(|mut context| async move {
+        let (mut validators, _execution_runtime) =
+            setup_validators(&mut context, setup.clone()).await;
+
+        join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+        connect_execution_peers(&validators).await;
+
+        // Let the network reach height 40.
+        wait_for_height(&context, 4, 40, false).await;
+
+        // Stop validator[0] and unwind its EL by 35 blocks (exceeds 32-block pipeline sync threshold).
+        validators[0].stop().await;
+        let (el_before, el_after) = validators[0].unwind(35);
+        debug!(el_before, el_after, "unwound validator[0] by 35 blocks");
+
+        // Let the remaining 3 validators advance 10 more blocks.
+        wait_for_height(&context, 3, 50, false).await;
+
+        let pipeline_runs_before = get_pipeline_runs(metrics_recorder);
+
+        // Restart validator[0] with EL peers connected.
+        validators[0].start(&context).await;
+        connect_execution_to_peers(&validators[0], &validators).await;
+
+        // Wait up to 60s for the node to recover.
+        let mut recovered = false;
+        for _ in 0..60 {
+            context.sleep(Duration::from_secs(1)).await;
+            let current = validators[0]
+                .execution_provider()
+                .last_block_number()
+                .unwrap();
+
+            if current >= el_before + 5 {
+                recovered = true;
+                break;
+            }
+        }
+
+        assert!(recovered, "unwound validator did not recover");
+
+        let new_pipeline_runs = get_pipeline_runs(metrics_recorder) - pipeline_runs_before;
+        assert_eq!(new_pipeline_runs, 0);
+    });
 }

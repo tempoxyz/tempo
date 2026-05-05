@@ -151,9 +151,13 @@ impl commonware_consensus::CertifiableBlock for Block {
                 parent: (View::new(ctx.parent_view), self.parent_digest()),
             },
             None => {
-                // Pre-T4: Unused deterministic sentinel.
-                // Post-T4: Panic, all blocks where this is called must have a context.
-                //          Historical Pre-T4 blocks are never replayed in consensus
+                // Returns a deterministic sentinel `Context`.
+                //
+                // Pre-T4: Unused; consensus does not consult this context.
+                // Post-T4: All blocks must carry a `consensus_context`, so reaching
+                // this branch indicates a malformed block. The sentinel intentionally
+                // does not match any real consensus values, so it will fail
+                // verification rather than panic.
                 let leader = PublicKey::from(PrivateKey::from_seed(0));
                 Context {
                     leader,

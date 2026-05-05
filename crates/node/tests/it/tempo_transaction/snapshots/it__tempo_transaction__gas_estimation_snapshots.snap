@@ -1,6 +1,5 @@
 ---
 source: crates/node/tests/it/tempo_transaction/mod.rs
-assertion_line: 118
 expression: gas_estimation
 ---
 baseline: 274318

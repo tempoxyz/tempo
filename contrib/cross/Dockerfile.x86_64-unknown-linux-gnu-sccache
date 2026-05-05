@@ -1,4 +1,4 @@
-FROM ghcr.io/cross-rs/x86_64-unknown-linux-gnu:main
+FROM ghcr.io/cross-rs/x86_64-unknown-linux-gnu:main@sha256:5c1914f4c324b0d6c987b734ba41841606e4f37213e0414ad2fa86dec79630d7
 ARG DEBIAN_FRONTEND=noninteractive
 
 # note you can also use sccache-source.sh

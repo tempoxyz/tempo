@@ -55,7 +55,7 @@ pub(crate) struct Config<TContext> {
     pub(crate) context: TContext,
     pub(crate) signer: PrivateKey,
     pub(crate) scheme_provider: SchemeProvider,
-    pub(crate) node: TempoFullNode,
+    pub(crate) node: Arc<TempoFullNode>,
     pub(crate) fee_recipient: Address,
     pub(crate) time_to_build_subblock: Duration,
     pub(crate) subblock_broadcast_interval: Duration,
@@ -89,7 +89,7 @@ pub(crate) struct Actor<TContext> {
     /// ed25519 private key used for consensus.
     signer: PrivateKey,
     /// Execution layer node.
-    node: TempoFullNode,
+    node: Arc<TempoFullNode>,
     /// Fee recipient address to set for subblocks.
     fee_recipient: Address,
     /// Timeout for building a subblock.
@@ -692,7 +692,7 @@ fn evm_at_block(
 #[instrument(skip_all, fields(parent_hash = %parent_hash))]
 async fn build_subblock(
     transactions: Arc<Mutex<IndexMap<TxHash, Arc<Recovered<TempoTxEnvelope>>>>>,
-    node: TempoFullNode,
+    node: Arc<TempoFullNode>,
     parent_hash: BlockHash,
     num_validators: usize,
     signer: PrivateKey,
@@ -712,11 +712,14 @@ async fn build_subblock(
             let txs = transactions.lock().clone();
 
             for (tx_hash, tx) in txs {
+                let max_regular_gas =
+                    core::cmp::min(tx.gas_limit(), evm.cfg.tx_gas_limit_cap.unwrap_or(u64::MAX));
                 // Remove transactions over subblock gas budget
-                if tx.gas_limit() > gas_budget {
+                if max_regular_gas > gas_budget {
                     warn!(
                         %tx_hash,
                         tx_gas_limit = tx.gas_limit(),
+                        max_regular_gas,
                         gas_budget,
                         "removing transaction with gas limit exceeding maximum subblock gas budget"
                     );
@@ -725,7 +728,7 @@ async fn build_subblock(
                 }
 
                 // Skip transactions that don't fit in remaining budget (may fit in future rounds)
-                if tx.gas_limit() > gas_left {
+                if max_regular_gas > gas_left {
                     continue;
                 }
 
@@ -735,7 +738,7 @@ async fn build_subblock(
                     continue;
                 }
 
-                gas_left -= tx.gas_limit();
+                gas_left -= max_regular_gas;
                 selected.push(tx.inner().clone());
                 senders.push(tx.signer());
 
@@ -792,7 +795,7 @@ async fn build_subblock(
 #[instrument(skip_all, err(level = Level::WARN), fields(sender = %sender))]
 async fn validate_subblock(
     sender: PublicKey,
-    node: TempoFullNode,
+    node: Arc<TempoFullNode>,
     subblock: SignedSubBlock,
     actions_tx: mpsc::UnboundedSender<Message>,
     scheme_provider: SchemeProvider,
@@ -853,7 +856,9 @@ async fn validate_subblock(
     let gas_budget = evm.block().gas_limit / TEMPO_SHARED_GAS_DIVISOR / participants as u64;
     let mut total_gas = 0u64;
     for tx in subblock.transactions_recovered() {
-        total_gas = total_gas.saturating_add(tx.gas_limit());
+        let max_regular_gas =
+            core::cmp::min(tx.gas_limit(), evm.cfg.tx_gas_limit_cap.unwrap_or(u64::MAX));
+        total_gas = total_gas.saturating_add(max_regular_gas);
         if total_gas > gas_budget {
             warn!(
                 total_gas,

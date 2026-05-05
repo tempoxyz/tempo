@@ -29,7 +29,11 @@ fn validator_can_fast_sync_after_full_dkg() {
     let _ = tempo_eyre::install();
 
     let how_many_signers = 4;
-    let epoch_length = 20;
+
+    // MAX_REPAIR (concurrency) by default is 20, so we increase the epoch length such
+    // that the gap repair takes a long enough time that the DKG simply skips it
+    let epoch_length = 30;
+
     let full_dkg_epoch = 1;
     let blocks_before_late_join = 3 * epoch_length + 1;
 

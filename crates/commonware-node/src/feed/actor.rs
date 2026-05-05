@@ -29,6 +29,7 @@ use std::{
     collections::BTreeMap,
     future::Future,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -36,7 +37,7 @@ use tempo_node::{
     TempoFullNode,
     rpc::consensus::{CertifiedBlock, Event},
 };
-use tracing::{error, info_span, instrument, warn, warn_span};
+use tracing::{debug, error, info_span, instrument, warn, warn_span};
 
 use super::state::FeedStateHandle;
 use crate::{
@@ -107,7 +108,7 @@ impl<TContext: Spawner> Actor<TContext> {
         context: TContext,
         marshal: marshal::Mailbox,
         epocher: FixedEpocher,
-        execution_node: TempoFullNode,
+        execution_node: Arc<TempoFullNode>,
         receiver: Receiver,
         state: FeedStateHandle,
     ) -> Self {
@@ -126,14 +127,14 @@ impl<TContext: Spawner> Actor<TContext> {
 
     /// Start the actor, returning a handle to the spawned task.
     pub(crate) fn start(mut self) -> Handle<()> {
-        spawn_cell!(self.context, self.run().await)
+        spawn_cell!(self.context, self.run())
     }
 
     /// Run the actor's main loop.
     ///
     /// The loop races the oldest pending block subscription
     /// against incoming activity so events are emitted in order.
-    async fn run(&mut self) {
+    async fn run(mut self) {
         let reason = loop {
             // We need a mutable reference to poll pending subscription. Thus if a new activity arrives,
             // we also need to re-insert this popped subscription.
@@ -247,6 +248,10 @@ impl<TContext: Spawner> Actor<TContext> {
             }
 
             Activity::Finalization(_) => {
+                debug!(
+                    subscribers = self.state.events_tx().receiver_count(),
+                    "sending finalized event",
+                );
                 let _ = self.state.events_tx().send(Event::Finalized {
                     block: certified.clone(),
                     seen: now_millis(),

@@ -4,6 +4,7 @@
 //! verifying that fields are correctly packed into slots according to Solidity's rules.
 
 use alloy::primitives::FixedBytes;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
     storage::{FromWord, Layout, StorableType, StorageCtx, packing::insert_into_word},
     test_util::gen_word_from,
@@ -799,4 +800,274 @@ fn test_fixed_bytes_multi_field_packing() {
         "0x11223344",         // offset 0 (4 bytes)
     ]);
     assert_eq!(slot, expected, "slot layout should match expected pattern");
+}
+
+/// On T4, storing a struct with packed fields skips the SLOAD for the first packed slot
+/// (starts from `U256::ZERO` instead). This verifies both:
+/// - The SLOAD counter: T4 issues 0 SLOADs for the store, pre-T4 issues 1.
+/// - The slot contents: T4 zeroes unused bytes, pre-T4 preserves them from the SLOAD.
+#[test]
+fn test_t4_store_packed_struct_skips_sload() -> eyre::Result<()> {
+    let garbage = U256::MAX;
+    let base_slot = U256::from(42);
+    let address = Address::random();
+
+    let packed = PackedTwo {
+        addr: Address::from([0x11; 20]),
+        count: 0x1234567890ABCDEF,
+    };
+
+    // PackedTwo uses 28 bytes (addr: 20 + count: 8), leaving 4 unused bytes in the slot.
+    let expected_field_bytes = gen_word_from(&[
+        "0x1234567890ABCDEF",                         // offset 20 (8 bytes)
+        "0x1111111111111111111111111111111111111111", // offset 0 (20 bytes)
+    ]);
+
+    // -- Pre-T4: SLOAD is performed, so unused bytes retain the garbage --
+    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
+    StorageCtx::enter(&mut storage, || {
+        // Pre-fill the slot with garbage
+        U256::handle(base_slot, LayoutCtx::FULL, address).write(garbage)?;
+        StorageCtx.reset_counters();
+
+        // Store the packed struct (SLOAD reads back the garbage first)
+        PackedTwo::handle(base_slot, LayoutCtx::FULL, address).write(packed.clone())?;
+
+        // 1 SLOAD (reads existing slot), 1 SSTORE
+        assert_eq!(StorageCtx.counter_sload(), 1);
+        assert_eq!(StorageCtx.counter_sstore(), 1);
+
+        // Unused 4 bytes at the top must retain the garbage — proves SLOAD happened
+        let slot = U256::handle(base_slot, LayoutCtx::FULL, address).read()?;
+        let expected_with_garbage = expected_field_bytes | (U256::MAX << 224);
+        assert_eq!(slot, expected_with_garbage);
+
+        Ok::<(), error::TempoPrecompileError>(())
+    })?;
+
+    // -- T4: SLOAD is skipped, so unused bytes are zero (not garbage) --
+    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+    StorageCtx::enter(&mut storage, || {
+        // Pre-fill the slot with garbage
+        U256::handle(base_slot, LayoutCtx::FULL, address).write(garbage)?;
+        StorageCtx.reset_counters();
+
+        // Store the packed struct (should NOT read back the garbage)
+        PackedTwo::handle(base_slot, LayoutCtx::FULL, address).write(packed.clone())?;
+
+        // 0 SLOADs (the optimization), 1 SSTORE for the single packed slot
+        assert_eq!(StorageCtx.counter_sload(), 0,);
+        assert_eq!(StorageCtx.counter_sstore(), 1,);
+
+        // Unused 4 bytes at the top must be zero — proves no SLOAD happened
+        let slot = U256::handle(base_slot, LayoutCtx::FULL, address).read()?;
+        assert_eq!(slot, expected_field_bytes);
+
+        Ok(())
+    })
+}
+
+/// Verifies that on T4, the SLOAD elision for packed struct fields doesn't corrupt neighbor slots.
+///
+/// Even though `Rule4Test { before: u8, nested: PackedTwo, after: u8 }` has:
+///   - `before` (1 byte) + `nested` (28 bytes) = 29 bytes < 32 (could theoretically pack)
+///   - `nested` (28 bytes) + `after` (1 byte)  = 29 bytes < 32 (could theoretically pack)
+///
+/// Structs always start a new slot, so neighbors are isolated. Starting from `U256::ZERO`
+/// on T4 doesn't bleed into adjacent slots.
+#[test]
+fn test_t4_struct_store_preserves_neighbor_slots() -> eyre::Result<()> {
+    let address = Address::random();
+    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+
+    StorageCtx::enter(&mut storage, || {
+        let base_slot = U256::from(100);
+
+        // Store the full struct with known neighbor values
+        let original = Rule4Test {
+            before: 0x42,
+            nested: PackedTwo {
+                addr: Address::from([0xAA; 20]),
+                count: 0x1111111111111111,
+            },
+            after: 0xFF,
+        };
+        Rule4Test::handle(base_slot, LayoutCtx::FULL, address).write(original)?;
+
+        // Snapshot neighbor slot values
+        let slot0 = U256::handle(base_slot, LayoutCtx::FULL, address).read()?;
+        let slot2 = U256::handle(base_slot + U256::from(2), LayoutCtx::FULL, address).read()?;
+        assert_ne!(slot0, U256::ZERO, "before-slot should be non-zero");
+        assert_ne!(slot2, U256::ZERO, "after-slot should be non-zero");
+
+        // Overwrite the full struct with different nested values
+        let updated = Rule4Test {
+            before: 0x42, // same
+            nested: PackedTwo {
+                // different
+                addr: Address::from([0xBB; 20]),
+                count: 0x2222222222222222,
+            },
+            after: 0xFF, // same
+        };
+        Rule4Test::handle(base_slot, LayoutCtx::FULL, address).write(updated)?;
+
+        // Verify neighbor slots are untouched
+        let slot0_after = U256::handle(base_slot, LayoutCtx::FULL, address).read()?;
+        let slot2_after =
+            U256::handle(base_slot + U256::from(2), LayoutCtx::FULL, address).read()?;
+        assert_eq!(slot0_after, slot0,);
+        assert_eq!(slot2_after, slot2,);
+
+        // Verify the nested struct slot was actually updated
+        let slot1 = U256::handle(base_slot + U256::ONE, LayoutCtx::FULL, address).read()?;
+        let expected_nested = gen_word_from(&[
+            "0x2222222222222222",                         // offset 20 (8 bytes)
+            "0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", // offset 0 (20 bytes)
+        ]);
+        assert_eq!(slot1, expected_nested,);
+
+        Ok(())
+    })
+}
+
+/// On T4, storing a multi-slot struct with packed fields in *different* slots
+/// skips the SLOAD for each new packed slot (the "else if IS_PACKABLE" branch).
+///
+/// `Rule3TestPartial { a: u128, b: u128, c: u8 }` packs `a` and `b` in slot 0,
+/// then `c` starts a new slot 1. The T4 optimisation should skip the SLOAD for
+/// both slot 0 (first-field branch) *and* slot 1 (new-slot-but-packable branch).
+#[test]
+fn test_t4_store_multi_slot_packed_skips_sload() -> eyre::Result<()> {
+    let garbage = U256::MAX;
+    let base_slot = U256::from(50);
+    let address = Address::random();
+
+    let value = Rule3TestPartial {
+        a: 0x1111_2222_3333_4444_5555_6666_7777_8888,
+        b: 0xAAAA_BBBB_CCCC_DDDD_EEEE_FFFF_0000_1111,
+        c: 0x42,
+    };
+
+    // -- Pre-T4: SLOADs are performed for each packed slot --
+    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
+    StorageCtx::enter(&mut storage, || {
+        // Pre-fill both slots with garbage
+        U256::handle(base_slot, LayoutCtx::FULL, address).write(garbage)?;
+        U256::handle(base_slot + U256::from(1), LayoutCtx::FULL, address).write(garbage)?;
+        StorageCtx.reset_counters();
+
+        Rule3TestPartial::handle(base_slot, LayoutCtx::FULL, address).write(value.clone())?;
+
+        // Pre-T4: 2 SLOADs (one per packed slot), 2 SSTOREs
+        assert_eq!(
+            StorageCtx.counter_sload(),
+            2,
+            "pre-T4 should SLOAD both packed slots"
+        );
+        assert_eq!(StorageCtx.counter_sstore(), 2);
+
+        // Slot 1 unused bytes (31 bytes unused) should retain garbage from the SLOAD
+        let slot1 = U256::handle(base_slot + U256::from(1), LayoutCtx::FULL, address).read()?;
+        assert_ne!(
+            slot1,
+            U256::from(0x42u8),
+            "pre-T4 should preserve garbage in unused bytes"
+        );
+
+        Ok::<(), error::TempoPrecompileError>(())
+    })?;
+
+    // -- T4: SLOADs are skipped for both packed slots --
+    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+    StorageCtx::enter(&mut storage, || {
+        // Pre-fill both slots with garbage
+        U256::handle(base_slot, LayoutCtx::FULL, address).write(garbage)?;
+        U256::handle(base_slot + U256::from(1), LayoutCtx::FULL, address).write(garbage)?;
+        StorageCtx.reset_counters();
+
+        Rule3TestPartial::handle(base_slot, LayoutCtx::FULL, address).write(value)?;
+
+        // T4: 0 SLOADs (elided for both slots), 2 SSTOREs
+        assert_eq!(
+            StorageCtx.counter_sload(),
+            0,
+            "T4 should elide SLOADs for all packed slots"
+        );
+        assert_eq!(StorageCtx.counter_sstore(), 2);
+
+        // Slot 1 unused bytes should be zero — proves SLOAD was skipped
+        let slot1 = U256::handle(base_slot + U256::from(1), LayoutCtx::FULL, address).read()?;
+        assert_eq!(
+            slot1,
+            U256::from(0x42u8),
+            "T4 should zero unused bytes in new packed slot"
+        );
+
+        Ok(())
+    })
+}
+
+/// Verifies that on T4, the SLOAD elision on non-first packed slots doesn't corrupt
+/// neighbor slots. Uses `PackedThreeSlot` which spans 3 slots with packing on slots 1 and 2.
+#[test]
+fn test_t4_multi_slot_packed_preserves_neighbor_slots() -> eyre::Result<()> {
+    let address = Address::random();
+    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+
+    StorageCtx::enter(&mut storage, || {
+        let base_slot = U256::from(200);
+
+        let original = PackedThreeSlot {
+            value: U256::from(0xDEAD_u64),
+            timestamp: 0x1111111111111111,
+            start_time: 0x2222222222222222,
+            end_time: 0x3333333333333333,
+            nonce: 0x4444444444444444,
+            owner: Address::from([0xAA; 20]),
+            active: true,
+        };
+        PackedThreeSlot::handle(base_slot, LayoutCtx::FULL, address).write(original)?;
+
+        // Snapshot all three slot values
+        let slot0 = U256::handle(base_slot, LayoutCtx::FULL, address).read()?;
+        let slot1 = U256::handle(base_slot + U256::from(1), LayoutCtx::FULL, address).read()?;
+        let slot2 = U256::handle(base_slot + U256::from(2), LayoutCtx::FULL, address).read()?;
+
+        // Overwrite with different packed fields in slots 1 and 2
+        let updated = PackedThreeSlot {
+            value: U256::from(0xDEAD_u64),    // slot 0, same
+            timestamp: 0xAAAAAAAAAAAAAAAA,    // slot 1, different
+            start_time: 0xBBBBBBBBBBBBBBBB,   // slot 1, different
+            end_time: 0xCCCCCCCCCCCCCCCC,     // slot 1, different
+            nonce: 0xDDDDDDDDDDDDDDDD,        // slot 1, different
+            owner: Address::from([0xBB; 20]), // slot 2, different
+            active: false,                    // slot 2, different
+        };
+        PackedThreeSlot::handle(base_slot, LayoutCtx::FULL, address).write(updated)?;
+
+        // Slot 0 should be unchanged (non-packable U256, direct store)
+        let slot0_after = U256::handle(base_slot, LayoutCtx::FULL, address).read()?;
+        assert_eq!(slot0_after, slot0, "slot 0 should be unchanged");
+
+        // Slots 1 and 2 should be updated (not equal to original snapshots)
+        let slot1_after =
+            U256::handle(base_slot + U256::from(1), LayoutCtx::FULL, address).read()?;
+        let slot2_after =
+            U256::handle(base_slot + U256::from(2), LayoutCtx::FULL, address).read()?;
+        assert_ne!(slot1_after, slot1, "slot 1 should be updated");
+        assert_ne!(slot2_after, slot2, "slot 2 should be updated");
+
+        // Roundtrip: read back and verify all fields are correct
+        let loaded = PackedThreeSlot::handle(base_slot, LayoutCtx::FULL, address).read()?;
+        assert_eq!(loaded.value, U256::from(0xDEAD_u64));
+        assert_eq!(loaded.timestamp, 0xAAAAAAAAAAAAAAAA);
+        assert_eq!(loaded.start_time, 0xBBBBBBBBBBBBBBBB);
+        assert_eq!(loaded.end_time, 0xCCCCCCCCCCCCCCCC);
+        assert_eq!(loaded.nonce, 0xDDDDDDDDDDDDDDDD);
+        assert_eq!(loaded.owner, Address::from([0xBB; 20]));
+        assert!(!loaded.active);
+
+        Ok(())
+    })
 }

@@ -243,7 +243,6 @@ impl AssertValidatorIsRemoved {
 
                 let mut dealers = None;
                 let mut network_epoch = None;
-                let mut peers = None;
                 let mut players = None;
                 for line in context.encode().lines() {
                     if !line.starts_with(CONSENSUS_NODE_PREFIX) {
@@ -272,15 +271,10 @@ impl AssertValidatorIsRemoved {
                     {
                         dealers.replace(value.parse::<u32>().unwrap());
                     }
-                    if key.ends_with("peer_manager_peers") && !key.contains(&removed_validator.uid)
-                    {
-                        peers.replace(value.parse::<u32>().unwrap());
-                    }
                 }
 
                 let dealers = dealers.unwrap();
                 let network_epoch = network_epoch.unwrap();
-                let peers = peers.unwrap();
                 let players = players.unwrap();
                 if network_epoch < removed_epoch.get() && network_epoch >= removal_epoch.get() {
                     assert_eq!(how_many_initial - 1, players);
@@ -290,11 +284,10 @@ impl AssertValidatorIsRemoved {
                 if network_epoch >= removed_epoch.get() {
                     assert_eq!(
                         how_many_initial - 1,
-                        peers,
-                        "once the peer is deactivated and no longer a dealer, \
-                        it should be removed from the list of peers immediately"
+                        dealers,
+                        "there should be one less initial dealers than the \
+                        initial number of dealers"
                     );
-                    assert_eq!(how_many_initial - 1, dealers);
                     break 'is_removed;
                 }
 

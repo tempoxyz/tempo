@@ -82,8 +82,14 @@ pub trait PrecompileStorageProvider {
     /// Add refund to the refund gas counter.
     fn refund_gas(&mut self, gas: i64);
 
+    /// Returns the gas limit for this precompile call.
+    fn gas_limit(&self) -> u64;
+
     /// Returns the gas used so far.
     fn gas_used(&self) -> u64;
+
+    /// Returns the state-creating gas used so far (cold SSTORE zero->non-zero, code deposit).
+    fn state_gas_used(&self) -> u64;
 
     /// Returns the gas refunded so far.
     fn gas_refunded(&self) -> i64;
@@ -93,6 +99,10 @@ pub trait PrecompileStorageProvider {
 
     /// Returns the currently active hardfork.
     fn spec(&self) -> TempoHardfork;
+
+    /// Mirrors `CfgEnv::enable_amsterdam_eip8037`. Used by precompiles to gate the TIP-1016
+    /// regular/state gas split independently of the active hardfork.
+    fn amsterdam_eip8037_enabled(&self) -> bool;
 
     /// Returns whether the current call context is static.
     fn is_static(&self) -> bool;

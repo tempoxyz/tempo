@@ -167,12 +167,12 @@ mod tests {
             }
             .abi_encode();
             let result = fee_manager.call(&calldata, validator)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
 
             // Verify token was set
             let calldata = IFeeManager::validatorTokensCall { validator }.abi_encode();
             let result = fee_manager.call(&calldata, validator)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
             let returned_token = Address::abi_decode(&result.bytes)?;
             assert_eq!(returned_token, token.address());
 
@@ -212,12 +212,12 @@ mod tests {
             }
             .abi_encode();
             let result = fee_manager.call(&calldata, user)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
 
             // Verify token was set
             let calldata = IFeeManager::userTokensCall { user }.abi_encode();
             let result = fee_manager.call(&calldata, user)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
             let returned_token = Address::abi_decode(&result.bytes)?;
             assert_eq!(returned_token, token.address());
 
@@ -258,7 +258,7 @@ mod tests {
             }
             .abi_encode();
             let result = fee_manager.call(&calldata, sender)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
 
             let returned_id = B256::abi_decode(&result.bytes)?;
             let expected_id = PoolKey::new(token_a, token_b).get_id();
@@ -284,7 +284,7 @@ mod tests {
             };
             let calldata = get_pool_call.abi_encode();
             let result = fee_manager.call(&calldata, sender)?;
-            assert_eq!(result.gas_used, 0);
+            assert!(result.status.is_success());
 
             // Decode and verify pool (should be empty initially)
             let pool = ITIPFeeAMM::Pool::abi_decode(&result.bytes)?;

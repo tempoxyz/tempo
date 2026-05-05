@@ -348,6 +348,16 @@ where
         self.spec
     }
 
+    fn amsterdam_eip8037_enabled(&self) -> bool {
+        // Read-only context never executes TIP-1016 state gas paths (set_code, fill_state_gas);
+        // the flag is not propagated through `with_read_only_storage_ctx`, so default to `false`.
+        false
+    }
+
+    fn gas_limit(&self) -> u64 {
+        0
+    }
+
     fn is_static(&self) -> bool {
         // read-only operations should always be static
         true
@@ -399,6 +409,10 @@ where
 
     fn gas_used(&self) -> u64 {
         unreachable!("'gas_used' not implemented in read-only context yet")
+    }
+
+    fn state_gas_used(&self) -> u64 {
+        unreachable!("'state_gas_used' not implemented in read-only context yet")
     }
 
     fn gas_refunded(&self) -> i64 {

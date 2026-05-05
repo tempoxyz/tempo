@@ -9,7 +9,6 @@ use crate::metrics::{InstrumentedFinishProvider, TempoPayloadBuilderMetrics};
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy};
 use alloy_primitives::{Address, U256};
 use alloy_rlp::{Decodable, Encodable};
-use either::Either;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
     is_better_payload,
@@ -20,18 +19,14 @@ use reth_engine_tree::tree::instrumented_state::InstrumentedStateProvider;
 use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
     ConfigureEvm, Database, Evm, NextBlockEnvAttributes,
-    block::{BlockExecutionError, BlockExecutor, BlockValidationError},
+    block::{BlockExecutionError, BlockExecutor, BlockValidationError, TxResult},
     execute::{BlockBuilder, BlockBuilderOutcome},
 };
 use reth_execution_types::BlockExecutionOutput;
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
 use reth_payload_primitives::{BuiltPayload, BuiltPayloadExecutedBlock};
 use reth_primitives_traits::{Recovered, transaction::error::InvalidTransactionError};
-use reth_revm::{
-    State,
-    context::{Block, BlockEnv},
-    database::StateProviderDatabase,
-};
+use reth_revm::{State, context::Block, database::StateProviderDatabase};
 use reth_storage_api::{StateProvider, StateProviderFactory};
 use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, TransactionPool, ValidPoolTransaction,
@@ -58,7 +53,7 @@ use tempo_primitives::{
     },
 };
 use tempo_transaction_pool::{
-    TempoTransactionPool,
+    StateAwareBestTransactions, TempoTransactionPool,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
@@ -127,9 +122,14 @@ impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilde
     /// - Subblocks signatures - validates subblock signatures
     fn build_seal_block_txs(
         &self,
-        block_env: &BlockEnv,
+        evm: &TempoEvm<impl Database>,
         subblocks: &[RecoveredSubBlock],
     ) -> Vec<Recovered<TempoTxEnvelope>> {
+        if subblocks.is_empty() && evm.cfg.spec.is_t4() {
+            // Post-T4, omit the subblocks metadata transaction if there are no subblocks
+            return vec![];
+        }
+
         let chain_spec = self.provider.chain_spec();
         let chain_id = Some(chain_spec.chain().id());
 
@@ -140,7 +140,7 @@ impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilde
             .collect::<Vec<SubBlockMetadata>>();
         let subblocks_input = alloy_rlp::encode(&subblocks_metadata)
             .into_iter()
-            .chain(block_env.number.to_be_bytes_vec())
+            .chain(evm.block.number.to_be_bytes_vec())
             .collect();
 
         let subblocks_signatures_tx = Recovered::new_unchecked(
@@ -310,6 +310,7 @@ where
         );
 
         let mut cumulative_gas_used = 0;
+        let mut cumulative_state_gas_used = 0u64;
         let mut non_payment_gas_used = 0;
         // initial block size usage - size of withdrawals plus 1Kb of overhead for the block header
         let mut block_size_used = attributes
@@ -408,7 +409,7 @@ where
 
         // Prepare system transactions before actual block building and account for their size.
         let prepare_system_txs_start = Instant::now();
-        let system_txs = self.build_seal_block_txs(builder.evm().block(), &subblocks);
+        let system_txs = self.build_seal_block_txs(builder.evm(), &subblocks);
         for tx in &system_txs {
             block_size_used += tx.inner().length();
         }
@@ -420,14 +421,17 @@ where
         let base_fee = builder.evm_mut().block().basefee;
         let validator_fee_token = resolve_validator_fee_token(&mut builder)?;
         let pool_fetch_start = Instant::now();
-        let mut best_txs = best_txs(BestTransactionsAttributes::new(
-            base_fee,
-            builder
-                .evm_mut()
-                .block()
-                .blob_gasprice()
-                .map(|gasprice| gasprice as u64),
-        ));
+        // Wrap best transactions into state-aware wrapper to skip transactions that
+        // get invalidated by already-executed ones.
+        let mut best_txs =
+            StateAwareBestTransactions::new(best_txs(BestTransactionsAttributes::new(
+                base_fee,
+                builder
+                    .evm_mut()
+                    .block()
+                    .blob_gasprice()
+                    .map(|gasprice| gasprice as u64),
+            )));
         self.metrics
             .pool_fetch_duration_seconds
             .record(pool_fetch_start.elapsed());
@@ -449,10 +453,15 @@ where
                 break;
             };
 
+            let max_regular_gas_used = core::cmp::min(
+                pool_tx.gas_limit(),
+                builder.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
+            );
+
             // Ensure we still have capacity for this transaction within the non-shared gas limit.
             // The remaining `shared_gas_limit` is reserved for validator subblocks and must not
             // be consumed by proposer's pool transactions.
-            if cumulative_gas_used + pool_tx.gas_limit() > non_shared_gas_limit {
+            if cumulative_gas_used + max_regular_gas_used > non_shared_gas_limit {
                 // Mark this transaction as invalid since it doesn't fit
                 // The iterator will handle lane switching internally when appropriate
                 best_txs.mark_invalid(
@@ -470,7 +479,7 @@ where
             // If the tx is not a payment and will exceed the general gas limit
             // mark the tx as invalid and continue
             if !pool_tx.transaction.is_payment()
-                && non_payment_gas_used + pool_tx.gas_limit() > general_gas_limit
+                && non_payment_gas_used + max_regular_gas_used > general_gas_limit
             {
                 best_txs.mark_invalid(
                     &pool_tx,
@@ -517,12 +526,45 @@ where
 
             let tx_with_env = pool_tx.transaction.clone().into_with_tx_env();
             let tx_execution_start = Instant::now();
-            let gas_used = match builder.execute_transaction(tx_with_env) {
-                Ok(gas_used) => gas_used,
-                Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
+            if let Err(err) =
+                builder.execute_transaction_with_result_closure(tx_with_env, |result| {
+                    cumulative_gas_used += result.block_gas_used();
+                    cumulative_state_gas_used += result.state_gas_used();
+                    if !is_payment {
+                        non_payment_gas_used += result.block_gas_used();
+                    }
+
+                    // Score payload value by actual validator payout, applying the AMM
+                    // haircut when the transaction's fee token differs from the validator's.
+                    let nominal_spending = calc_gas_balance_spending(
+                        result.result().result.tx_gas_used(),
+                        effective_gas_price,
+                    );
+                    if let Some(fee_token) = pool_tx.transaction.resolved_fee_token() {
+                        if fee_token == validator_fee_token {
+                            total_fees += nominal_spending;
+                        } else {
+                            total_fees +=
+                                tempo_precompiles::tip_fee_manager::amm::compute_amount_out(
+                                    nominal_spending,
+                                )
+                                .expect(
+                                    "execution succeeded, so compute_amount_out should not fail",
+                                );
+                        }
+                    } else {
+                        warn!("no resolved fee token for a pool transaction")
+                    }
+
+                    // Notify transactions iterator about the new state.
+                    best_txs.on_new_result(result);
+                })
+            {
+                if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
                     error,
                     ..
-                })) => {
+                }) = &err
+                {
                     if error.is_nonce_too_low() {
                         // if the nonce is too low, we can skip this transaction
                         trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
@@ -540,9 +582,9 @@ where
                         self.metrics.inc_pool_tx_skipped("invalid_tx");
                     }
                     continue;
+                } else {
+                    return Err(PayloadBuilderError::evm(err));
                 }
-                // this is an error that we should treat as fatal for this attempt
-                Err(err) => return Err(PayloadBuilderError::evm(err)),
             };
             let elapsed = tx_execution_start.elapsed();
             self.metrics
@@ -550,25 +592,6 @@ where
                 .record(elapsed);
             trace!(?elapsed, "Transaction executed");
 
-            // Score payload value by actual validator payout, applying the AMM
-            // haircut when the transaction's fee token differs from the validator's.
-            let nominal_spending = calc_gas_balance_spending(gas_used, effective_gas_price);
-            if let Some(fee_token) = pool_tx.transaction.resolved_fee_token() {
-                if fee_token == validator_fee_token {
-                    total_fees += nominal_spending;
-                } else {
-                    total_fees += tempo_precompiles::tip_fee_manager::amm::compute_amount_out(
-                        nominal_spending,
-                    )
-                    .map_err(PayloadBuilderError::other)?;
-                }
-            } else {
-                warn!("no resolved fee token for a pool transaction")
-            }
-            cumulative_gas_used += gas_used;
-            if !is_payment {
-                non_payment_gas_used += gas_used;
-            }
             block_size_used += tx_rlp_length;
         }
         drop(_block_fill_span);
@@ -739,6 +762,12 @@ where
         self.metrics.gas_used.record(gas_used as f64);
         self.metrics.gas_used_last.set(gas_used as f64);
         self.metrics
+            .state_gas_used
+            .record(cumulative_state_gas_used as f64);
+        self.metrics
+            .state_gas_used_last
+            .set(cumulative_state_gas_used as f64);
+        self.metrics
             .general_gas_used_last
             .set(non_payment_gas_used as f64);
         self.metrics
@@ -785,6 +814,7 @@ where
             timestamp = sealed_block.timestamp_millis(),
             gas_limit = sealed_block.gas_limit(),
             gas_used,
+            cumulative_state_gas_used,
             extra_data = %sealed_block.extra_data(),
             subblocks_count,
             payment_transactions,
@@ -808,8 +838,8 @@ where
         let executed_block = BuiltPayloadExecutedBlock {
             recovered_block: Arc::new(block),
             execution_output: Arc::new(execution_output),
-            hashed_state: Either::Left(Arc::new(hashed_state)),
-            trie_updates: Either::Left(Arc::new(trie_updates)),
+            hashed_state: Arc::new(hashed_state),
+            trie_updates: Arc::new(trie_updates),
         };
 
         let payload = TempoBuiltPayload::new(eth_payload, Some(executed_block));
@@ -1049,15 +1079,7 @@ mod tests {
         // Test that extra_data in attributes can be accessed correctly
         let extra_data = Bytes::from(vec![42, 43, 44, 45, 46]);
 
-        let attrs = TempoPayloadAttributes::new(
-            Address::default(),
-            None,
-            1,
-            0,
-            extra_data.clone(),
-            None,
-            Vec::new,
-        );
+        let attrs = TempoPayloadAttributes::new(None, 1, 0, extra_data.clone(), None, Vec::new);
 
         assert_eq!(attrs.extra_data(), &extra_data);
 
