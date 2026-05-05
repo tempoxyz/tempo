@@ -1394,7 +1394,6 @@ def build-consensus-args [node_dir: string, trusted_peers: string, port: int] {
         "--discovery.v5.port" $"($discv5_port)"
         "--p2p-secret-key" $enode_key
         "--authrpc.port" $"($authrpc_port)"
-        "--consensus.fee-recipient" "0x0000000000000000000000000000000000000000"
         "--consensus.use-local-defaults"
         "--consensus.bypass-ip-check"
     ]
