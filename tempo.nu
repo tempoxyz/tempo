@@ -1657,7 +1657,7 @@ def "main bench-consensus-phase" [
     --duration: int = 300                               # Duration in seconds
     --accounts: int = 1000                              # Number of accounts
     --max-concurrent-requests: int = 100                # Max concurrent requests
-    --bench-datadir: string = ""                        # Datadir/snapshot path to recover before the phase
+    --bench-datadir: string = ""                        # Datadir/snapshot path to recover and pass to the node
     --bloat: int = 0                                    # State bloat size in MiB; enables bloat mnemonic for the sender
     --profile: string = $DEFAULT_PROFILE                # Cargo build profile
     --features: string = $DEFAULT_FEATURES              # Cargo features
@@ -1678,7 +1678,7 @@ def "main bench-consensus-phase" [
     --reference-epoch: int = 0                           # Shared timestamp for observability correlation
     --tune                                              # Apply system tuning
     --loud                                              # Show node debug logs
-    --node-dir: string                                  # Validator node directory for this runner
+    --node-dir: string                                  # Validator identity directory for this runner
     --genesis: string                                   # Shared genesis file path
     --trusted-peers: string                             # Comma-separated enode peers for the network
     --consensus-port: int = 8000                        # Consensus listen port for this validator
@@ -1718,22 +1718,6 @@ def "main bench-consensus-phase" [
             exit 1
         }
     }
-    if not ($node_dir | path exists) {
-        print $"Error: node dir does not exist: ($node_dir)"
-        exit 1
-    }
-    if not ($genesis | path exists) {
-        print $"Error: genesis file does not exist: ($genesis)"
-        exit 1
-    }
-    for required_file in ["signing.key" "signing.share" "enode.key"] {
-        let path = $"($node_dir)/($required_file)"
-        if not ($path | path exists) {
-            print $"Error: missing validator file: ($path)"
-            exit 1
-        }
-    }
-
     let run_type = if ($phase | str starts-with "baseline") { "baseline" } else { "feature" }
     let side_args = if $run_type == "baseline" { $baseline_args } else { $feature_args }
     let side_env = if $run_type == "baseline" { $baseline_env } else { $feature_env }
@@ -1746,6 +1730,22 @@ def "main bench-consensus-phase" [
     main kill
     let tuning_state = if $tune { apply-system-tuning } else { { tuned: false } }
     bench-recover $datadir
+
+    if not ($node_dir | path exists) {
+        print $"Error: node dir does not exist after snapshot recovery: ($node_dir)"
+        exit 1
+    }
+    if not ($genesis | path exists) {
+        print $"Error: genesis file does not exist after snapshot recovery: ($genesis)"
+        exit 1
+    }
+    for required_file in ["signing.key" "signing.share" "enode.key"] {
+        let path = $"($node_dir)/($required_file)"
+        if not ($path | path exists) {
+            print $"Error: missing validator file after snapshot recovery: ($path)"
+            exit 1
+        }
+    }
 
     let worktree_dir = $"($BENCH_WORKTREES_DIR)/e2e-($role)"
     git worktree prune
@@ -1800,7 +1800,7 @@ def "main bench-consensus-phase" [
     let reth_metrics_port = 9001 + $node_index
     let rpc_url = $"http://localhost:($http_port)"
 
-    let base_args = (build-base-args $genesis $node_dir $log_dir "0.0.0.0" $http_port $reth_metrics_port)
+    let base_args = (build-base-args $genesis $datadir $log_dir "0.0.0.0" $http_port $reth_metrics_port)
         | append (build-e2e-consensus-args $node_dir $trusted_peers $consensus_port $consensus_ip)
         | append (log-filter-args $loud)
         | append (if $gas_limit != "" { ["--builder.gaslimit" $gas_limit] } else { [] })
@@ -1935,7 +1935,7 @@ def "main bench-consensus" [
     --duration: int = 300                               # Duration in seconds
     --accounts: int = 1000                              # Number of accounts
     --max-concurrent-requests: int = 100                # Max concurrent requests
-    --bench-datadir: string = ""                        # Datadir/snapshot path to recover before each phase
+    --bench-datadir: string = ""                        # Datadir/snapshot path to recover and pass to the node
     --bloat: int = 0                                    # State bloat size in MiB
     --profile: string = $DEFAULT_PROFILE                # Cargo build profile
     --features: string = $DEFAULT_FEATURES              # Cargo features
@@ -1958,12 +1958,14 @@ def "main bench-consensus" [
     --feature-name: string = ""                          # Feature display name for summary
     --tune                                              # Apply system tuning
     --loud                                              # Show node debug logs
-    --node-dir: string                                  # Validator node directory for this runner
+    --node-dir: string                                  # Validator identity directory for this runner
     --genesis: string                                   # Shared genesis file path
     --baseline-genesis: string = ""                     # Baseline genesis for hardfork comparison
     --feature-genesis: string = ""                      # Feature genesis for hardfork comparison
-    --baseline-node-dir: string = ""                    # Baseline validator dir for hardfork comparison
-    --feature-node-dir: string = ""                     # Feature validator dir for hardfork comparison
+    --baseline-node-dir: string = ""                    # Baseline validator identity dir for hardfork comparison
+    --feature-node-dir: string = ""                     # Feature validator identity dir for hardfork comparison
+    --baseline-bench-datadir: string = ""               # Baseline datadir/snapshot path for hardfork comparison
+    --feature-bench-datadir: string = ""                # Feature datadir/snapshot path for hardfork comparison
     --baseline-hardfork: string = ""                    # Latest active hardfork for baseline phases
     --feature-hardfork: string = ""                     # Latest active hardfork for feature phases
     --trusted-peers: string                             # Comma-separated enode peers for the network
@@ -2027,6 +2029,8 @@ def "main bench-consensus" [
     let env_feature_genesis = ($env.BENCH_E2E_FEATURE_GENESIS? | default "")
     let env_baseline_node_dir = ($env.BENCH_E2E_BASELINE_NODE_DIR? | default "")
     let env_feature_node_dir = ($env.BENCH_E2E_FEATURE_NODE_DIR? | default "")
+    let env_baseline_datadir = ($env.BENCH_E2E_BASELINE_DATADIR? | default "")
+    let env_feature_datadir = ($env.BENCH_E2E_FEATURE_DATADIR? | default "")
     let genesis_dir = ($genesis | path dirname)
     let baseline_genesis_candidate = $"($genesis_dir)/genesis-baseline.json"
     let feature_genesis_candidate = $"($genesis_dir)/genesis-feature.json"
@@ -2068,28 +2072,21 @@ def "main bench-consensus" [
             exit 1
         }
     }
-    for phase_genesis in [$effective_baseline_genesis $effective_feature_genesis] {
-        if not ($phase_genesis | path exists) {
-            print $"Error: e2e genesis file does not exist: ($phase_genesis)"
-            exit 1
-        }
-    }
-    for phase_node_dir in [$effective_baseline_node_dir $effective_feature_node_dir] {
-        if not ($phase_node_dir | path exists) {
-            print $"Error: e2e node dir does not exist: ($phase_node_dir)"
-            exit 1
-        }
-    }
     let samply_args_list = if $samply_args == "" { [] } else { $samply_args | split row " " }
-    let effective_baseline_datadir = if $effective_baseline_node_dir != $node_dir {
-        $effective_baseline_node_dir
+    let effective_bench_datadir = if $bench_datadir != "" { $bench_datadir } else { $node_dir }
+    let effective_baseline_datadir = if $baseline_bench_datadir != "" {
+        $baseline_bench_datadir
+    } else if $env_baseline_datadir != "" {
+        $env_baseline_datadir
     } else {
-        $bench_datadir
+        $effective_bench_datadir
     }
-    let effective_feature_datadir = if $effective_feature_node_dir != $node_dir {
-        $effective_feature_node_dir
+    let effective_feature_datadir = if $feature_bench_datadir != "" {
+        $feature_bench_datadir
+    } else if $env_feature_datadir != "" {
+        $env_feature_datadir
     } else {
-        $bench_datadir
+        $effective_bench_datadir
     }
 
     let runs = [

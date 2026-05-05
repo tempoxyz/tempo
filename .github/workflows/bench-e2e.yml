@@ -553,7 +553,7 @@ jobs:
             --baseline-name "${{ steps.refs.outputs.baseline-name }}"
             --feature-name "${{ steps.refs.outputs.feature-name }}"
             --peer-url "$BENCH_E2E_PEER_URL"
-            --bench-datadir "$BENCH_E2E_NODE_DIR"
+            --bench-datadir "${BENCH_E2E_DATADIR:-$BENCH_E2E_NODE_DIR}"
             --node-dir "$BENCH_E2E_NODE_DIR"
             --genesis "$BENCH_E2E_GENESIS"
             --trusted-peers "$BENCH_E2E_TRUSTED_PEERS"
@@ -571,6 +571,8 @@ jobs:
           [ -n "${BENCH_E2E_FEATURE_GENESIS:-}" ] && cmd+=(--feature-genesis "$BENCH_E2E_FEATURE_GENESIS")
           [ -n "${BENCH_E2E_BASELINE_NODE_DIR:-}" ] && cmd+=(--baseline-node-dir "$BENCH_E2E_BASELINE_NODE_DIR")
           [ -n "${BENCH_E2E_FEATURE_NODE_DIR:-}" ] && cmd+=(--feature-node-dir "$BENCH_E2E_FEATURE_NODE_DIR")
+          [ -n "${BENCH_E2E_BASELINE_DATADIR:-}" ] && cmd+=(--baseline-bench-datadir "$BENCH_E2E_BASELINE_DATADIR")
+          [ -n "${BENCH_E2E_FEATURE_DATADIR:-}" ] && cmd+=(--feature-bench-datadir "$BENCH_E2E_FEATURE_DATADIR")
           [ -n "$BENCH_BASELINE_ARGS" ] && cmd+=(--baseline-args="$BENCH_BASELINE_ARGS")
           [ -n "$BENCH_FEATURE_ARGS" ] && cmd+=(--feature-args="$BENCH_FEATURE_ARGS")
           [ -n "$BENCH_BENCH_ARGS" ] && cmd+=(--bench-args="$BENCH_BENCH_ARGS")
