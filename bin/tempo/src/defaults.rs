@@ -217,6 +217,8 @@ fn init_engine_defaults() {
         //
         // This setting allows reth to process payload attributes even if `headBlockHash` is an ancestor of the canonical tip.
         .with_always_process_payload_attributes_on_canonical_head(true)
+        // Defer persistence I/O during active payload builds.
+        .with_suppress_persistence_during_build(true)
         .try_init()
         .expect("failed to initialize engine defaults");
 }

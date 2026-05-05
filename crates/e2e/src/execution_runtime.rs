@@ -888,6 +888,8 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
             c.network.discovery.disable_discovery = true;
             c.network = c.network.with_unused_ports();
             c.network.p2p_secret_key_hex = Some(secret_key);
+            // Match Tempo's engine default for nodes launched by tests.
+            c.engine.suppress_persistence_during_build = true;
             c.engine.share_sparse_trie_with_payload_builder =
                 share_sparse_trie_with_payload_builder;
             c
