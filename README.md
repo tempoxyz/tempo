@@ -146,44 +146,35 @@ See [`SECURITY.md`](https://github.com/tempoxyz/tempo?tab=security-ov-file). Not
 
 ### Verifying release binaries
 
-Each release ships `<binary>-<version>-<target>.tar.gz` plus `.sha256` (archive checksum), `.asc` (GPG signature), and `.spdx.json` (SBOM), as well as a separate `<binary>-<version>-<target>.sha256` for the bare unpacked binary (the durable hash an independent rebuilder will compare against). Releases also carry Sigstore-signed SLSA provenance and SBOM attestations.
+Each release ships `<binary>-<version>-<target>.tar.gz` plus `.sha256` (archive checksum) and `.asc` (GPG signature), and is also covered by Sigstore-signed SLSA build provenance.
 
-The [`tempoup`](./tempoup) installer performs the archive checksum, GPG signature, and (if `gh` is installed and authenticated) the SLSA + SBOM attestation checks automatically on every install. The bare-binary checksum below is intended for independent rebuilders and distro packagers — `tempoup` doesn't re-verify it because the archive checksum already covers the binary's bytes transitively. The manual recipe below mirrors the full set of steps for auditability and use without `tempoup`:
+The [`tempoup`](./tempoup) installer performs these checks automatically on every install. To verify manually, pick **one** of the two paths below — both prove the archive came from the tagged commit, signed by tempoxyz.
+
+**Path A — offline / no GitHub auth required (checksum + GPG):**
 
 ```bash
 TAG=v1.6.0
-BIN=tempo-${TAG}-x86_64-unknown-linux-gnu
-ARCHIVE=${BIN}.tar.gz
+ARCHIVE=tempo-${TAG}-x86_64-unknown-linux-gnu.tar.gz
 
-# 1. Download the archive and its sidecars from the release.
 gh release download "$TAG" --repo tempoxyz/tempo \
-  -p "$ARCHIVE" -p "$ARCHIVE.sha256" -p "$ARCHIVE.asc" \
-  -p "$ARCHIVE.spdx.json" -p "$BIN.sha256"
+  -p "$ARCHIVE" -p "$ARCHIVE.sha256" -p "$ARCHIVE.asc"
 
-# 2. Checksum the archive (and, after extraction, the bare binary).
 sha256sum -c "$ARCHIVE.sha256"
-tar xzf "$ARCHIVE" && sha256sum -c "$BIN.sha256"
 
-# 3. GPG signature. See https://docs.tempo.xyz/guide/node/installation#verifying-releases
-#    for the public key, fingerprint, and `gpg --recv-keys` command.
+# Public key + fingerprint:
+# https://docs.tempo.xyz/guide/node/installation#verifying-releases
 gpg --verify "$ARCHIVE.asc" "$ARCHIVE"
+```
 
-# 4. GitHub release attestation (tag + asset digests, signed by GitHub).
-gh release verify "$TAG" --repo tempoxyz/tempo
+**Path B — Sigstore (requires `gh` installed and authenticated):**
 
-# 5. SLSA build provenance (proves the workflow + commit that built it).
-#    Both the archive and the bare binary are listed as subjects of the
-#    same attestation, so either path verifies.
+```bash
+TAG=v1.6.0
+ARCHIVE=tempo-${TAG}-x86_64-unknown-linux-gnu.tar.gz
+
+gh release download "$TAG" --repo tempoxyz/tempo -p "$ARCHIVE"
 gh attestation verify "$ARCHIVE" --repo tempoxyz/tempo \
   --predicate-type https://slsa.dev/provenance/v1
-gh attestation verify "$BIN"     --repo tempoxyz/tempo \
-  --predicate-type https://slsa.dev/provenance/v1
-
-# 6. SBOM attestation (binds $ARCHIVE.spdx.json to the artifact digest).
-gh attestation verify "$ARCHIVE" --repo tempoxyz/tempo \
-  --predicate-type https://spdx.dev/Document
-gh attestation verify "$BIN"     --repo tempoxyz/tempo \
-  --predicate-type https://spdx.dev/Document
 ```
 
 ## License
