@@ -835,6 +835,20 @@ impl TIP20Token {
         Ok(true)
     }
 
+    fn _transfer_from(
+        &mut self,
+        msg_sender: Address,
+        from: Address,
+        to: &Recipient,
+        amount: U256,
+    ) -> Result<bool> {
+        self.validate_transfer(from, to)?;
+        self.consume_allowance(from, msg_sender, amount)?;
+        self._transfer(from, to, amount)?;
+
+        Ok(true)
+    }
+
     fn consume_allowance(&mut self, owner: Address, spender: Address, amount: U256) -> Result<()> {
         let allowed = self.get_allowance(owner, spender)?;
         if amount > allowed {
