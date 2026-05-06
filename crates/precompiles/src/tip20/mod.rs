@@ -2242,16 +2242,66 @@ pub(crate) mod tests {
         })
     }
 
+    /// Direct table-driven test of [`validate_logo_uri`] — the single source
+    /// of truth for TIP-1026 URI validation.
+    ///
+    /// `set_logo_uri` and `create_token_with_logo` both delegate here, so
+    /// integration tests in this file only need to verify the wiring (one
+    /// success case, one length-cap case, one auth case); enumerating every
+    /// scheme/syntax variant belongs at the validator level.
     #[test]
-    fn test_logo_uri_default_empty() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
+    fn test_validate_logo_uri() {
+        // Valid: empty (clears), all allowlisted schemes (case-insensitive),
+        // and exactly at the 256-byte cap.
+        let prefix = "https://example.com/";
+        let at_cap = format!("{prefix}{}", "a".repeat(MAX_LOGO_URI_BYTES - prefix.len()));
+        assert_eq!(at_cap.len(), MAX_LOGO_URI_BYTES);
+        for ok in [
+            "",
+            "https://example.com/icon.svg",
+            "http://example.com/icon.png",
+            "ipfs://QmXfzKRvjZz3u5JRgC4v5mGVbm9ahrUiB4DgzHBsnWbTMM",
+            "data:image/svg+xml;base64,PHN2Zy8+",
+            "HTTPS://example.com/ICON.svg",
+            "IPFS://Qm123",
+            &at_cap,
+        ] {
+            assert!(validate_logo_uri(ok).is_ok(), "expected Ok for {ok:?}");
+        }
 
-        StorageCtx::enter(&mut storage, || {
-            let token = TIP20Setup::create("Test", "TST", admin).apply()?;
-            assert_eq!(token.logo_uri()?, "");
-            Ok(())
-        })
+        // 257 bytes — one over the limit. Use a syntactically valid URI so
+        // we exercise the length check, not the URI/scheme check.
+        let too_long = format!(
+            "{prefix}{}",
+            "a".repeat(MAX_LOGO_URI_BYTES + 1 - prefix.len())
+        );
+        assert_eq!(too_long.len(), MAX_LOGO_URI_BYTES + 1);
+        assert!(matches!(
+            validate_logo_uri(&too_long),
+            Err(TempoPrecompileError::TIP20(TIP20Error::LogoURITooLong(_))),
+        ));
+
+        // Disallowed schemes (canonical examples from the spec's security
+        // considerations and the Slack discussion) and malformed URIs (no
+        // parseable scheme per RFC 3986 §3.1) both surface as InvalidLogoURI.
+        for bad in [
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "ftp://x.test/icon.png",
+            "no-scheme-here",
+            "://missing-scheme.test",
+            "1https://digit-leading.test",
+            ":empty-scheme",
+            " https://leading-space.test",
+        ] {
+            assert!(
+                matches!(
+                    validate_logo_uri(bad),
+                    Err(TempoPrecompileError::TIP20(TIP20Error::InvalidLogoURI(_))),
+                ),
+                "expected InvalidLogoURI for {bad:?}"
+            );
+        }
     }
 
     #[test]
@@ -2324,6 +2374,11 @@ pub(crate) mod tests {
         })
     }
 
+    /// Wiring test: a successful `set_logo_uri` writes the slot and emits
+    /// `LogoURIUpdated`. Also pins the default-empty initial value (folded in
+    /// from a previous standalone test). Validation behavior is exhaustively
+    /// tested in [`test_validate_logo_uri`]; this test only needs one
+    /// success case to prove the integration path is wired.
     #[test]
     fn test_set_logo_uri_writes_and_emits() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
@@ -2333,6 +2388,9 @@ pub(crate) mod tests {
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .clear_events()
                 .apply()?;
+
+            // Default is empty for a freshly-created token.
+            assert_eq!(token.logo_uri()?, "");
 
             let uri = "https://example.com/icon.svg".to_string();
             token.set_logo_uri(
@@ -2348,105 +2406,6 @@ pub(crate) mod tests {
                 updater: admin,
                 newLogoURI: uri,
             })]);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_set_logo_uri_rejects_disallowed_scheme() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
-
-            // javascript: is the canonical example from the spec's security
-            // considerations and the Slack discussion — must be rejected
-            // (scheme not in the protocol allowlist).
-            for bad in [
-                "javascript:alert(1)",
-                "file:///etc/passwd",
-                "ftp://x.test/icon.png",
-            ] {
-                assert!(
-                    matches!(
-                        token.set_logo_uri(
-                            admin,
-                            ITIP20::setLogoURICall {
-                                newLogoURI: bad.to_string()
-                            },
-                        ),
-                        Err(TempoPrecompileError::TIP20(TIP20Error::InvalidLogoURI(_))),
-                    ),
-                    "expected InvalidLogoURI for {bad:?}"
-                );
-                assert_eq!(token.logo_uri()?, "", "{bad:?} must not be persisted");
-            }
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_set_logo_uri_rejects_malformed_uri() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
-
-            // Anything without a parseable scheme is rejected.
-            for bad in [
-                "no-scheme-here",
-                "://missing-scheme.test",
-                "1https://digit-leading.test", // scheme must start with ALPHA per RFC 3986
-                ":empty-scheme",
-                " https://leading-space.test",
-            ] {
-                assert!(
-                    matches!(
-                        token.set_logo_uri(
-                            admin,
-                            ITIP20::setLogoURICall {
-                                newLogoURI: bad.to_string()
-                            },
-                        ),
-                        Err(TempoPrecompileError::TIP20(TIP20Error::InvalidLogoURI(_))),
-                    ),
-                    "expected InvalidLogoURI for {bad:?}"
-                );
-            }
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_set_logo_uri_accepts_allowed_schemes() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
-
-            for uri in [
-                "https://example.com/icon.svg",
-                "http://example.com/icon.png",
-                "ipfs://QmXfzKRvjZz3u5JRgC4v5mGVbm9ahrUiB4DgzHBsnWbTMM",
-                "data:image/svg+xml;base64,PHN2Zy8+",
-                // scheme matching is case-insensitive per RFC 3986 §3.1.
-                "HTTPS://example.com/ICON.svg",
-                "IPFS://Qm123",
-            ] {
-                token.set_logo_uri(
-                    admin,
-                    ITIP20::setLogoURICall {
-                        newLogoURI: uri.to_string(),
-                    },
-                )?;
-                assert_eq!(token.logo_uri()?, uri);
-            }
 
             Ok(())
         })

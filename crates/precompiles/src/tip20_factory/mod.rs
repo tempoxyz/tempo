@@ -607,91 +607,54 @@ mod tests {
         })
     }
 
+    /// Wiring + atomicity test for `createTokenWithLogo` rejection paths.
+    ///
+    /// The validator itself is exhaustively unit-tested in
+    /// [`crate::tip20::tests::test_validate_logo_uri`]; this test only needs to
+    /// verify (a) both error variants surface through the factory, and (b)
+    /// rejection is *atomic* — no partially-created token is observable, as
+    /// proven by the same salt being reusable with a valid URI.
     #[test]
-    fn test_create_token_with_logo_too_long_reverts() -> eyre::Result<()> {
+    fn test_create_token_with_logo_rejects_atomically() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
 
         StorageCtx::enter(&mut storage, || {
             let mut factory = TIP20Setup::factory()?;
             let path_usd = TIP20Setup::path_usd(sender).apply()?;
-
             let salt = B256::random();
-            // 257 bytes — one over the limit. Use a valid URI so we exercise
-            // the length check, not the URI/scheme check.
+
+            let call = |logo_uri: &str| createTokenWithLogoCall {
+                name: "Tok".to_string(),
+                symbol: "TOK".to_string(),
+                currency: "USD".to_string(),
+                quoteToken: path_usd.address(),
+                admin: sender,
+                salt,
+                logoURI: logo_uri.to_string(),
+            };
+
+            // (a1) Length cap: 257 bytes — one over the limit. Valid scheme
+            // so we exercise the length check, not the URI/scheme check.
             let prefix = "https://example.com/";
             let too_long = format!("{prefix}{}", "a".repeat(257 - prefix.len()));
             assert_eq!(too_long.len(), 257);
-            let result = factory.create_token_with_logo(
-                sender,
-                createTokenWithLogoCall {
-                    name: "Too Long".to_string(),
-                    symbol: "TL".to_string(),
-                    currency: "USD".to_string(),
-                    quoteToken: path_usd.address(),
-                    admin: sender,
-                    salt,
-                    logoURI: too_long,
-                },
-            );
-
             assert!(matches!(
-                result,
+                factory.create_token_with_logo(sender, call(&too_long)),
                 Err(TempoPrecompileError::TIP20(TIP20Error::LogoURITooLong(_)))
             ));
 
-            Ok(())
-        })
-    }
+            // (a2) Disallowed scheme — `javascript:` is the canonical example
+            // from the spec's security considerations.
+            assert!(matches!(
+                factory.create_token_with_logo(sender, call("javascript:alert(1)")),
+                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidLogoURI(_)))
+            ));
 
-    #[test]
-    fn test_create_token_with_logo_invalid_scheme_reverts() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let sender = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut factory = TIP20Setup::factory()?;
-            let path_usd = TIP20Setup::path_usd(sender).apply()?;
-
-            let salt = B256::random();
-            let result = factory.create_token_with_logo(
-                sender,
-                createTokenWithLogoCall {
-                    name: "Bad Scheme".to_string(),
-                    symbol: "BAD".to_string(),
-                    currency: "USD".to_string(),
-                    quoteToken: path_usd.address(),
-                    admin: sender,
-                    salt,
-                    logoURI: "javascript:alert(1)".to_string(),
-                },
-            );
-
-            assert!(
-                matches!(
-                    result,
-                    Err(TempoPrecompileError::TIP20(TIP20Error::InvalidLogoURI(_))),
-                ),
-                "expected InvalidLogoURI; got {result:?}"
-            );
-
-            // Token must not have been created (logo validation must happen
-            // before / atomically with creation; here we accept either, but
-            // the address must not be reachable as a TIP-20 with a bad logo).
-            // Sanity: a follow-up createTokenWithLogo with the same salt and
-            // a valid URI must succeed.
-            let token = factory.create_token_with_logo(
-                sender,
-                createTokenWithLogoCall {
-                    name: "Good".to_string(),
-                    symbol: "GOOD".to_string(),
-                    currency: "USD".to_string(),
-                    quoteToken: path_usd.address(),
-                    admin: sender,
-                    salt,
-                    logoURI: "https://example.com/icon.svg".to_string(),
-                },
-            )?;
+            // (b) Atomicity: the same salt is reusable with a valid URI,
+            // proving no partial token was left behind by either rejection.
+            let token =
+                factory.create_token_with_logo(sender, call("https://example.com/icon.svg"))?;
             assert!(factory.is_tip20(token)?);
 
             Ok(())
