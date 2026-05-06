@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use commonware_consensus::types::FixedEpocher;
 use commonware_cryptography::{bls12381::primitives::group::Share, ed25519::PrivateKey};
 use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage};
@@ -58,7 +60,7 @@ pub(crate) struct Config {
     ///
     /// During normal operation, used to read the validator config at the end
     /// of each epoch.
-    pub(crate) execution_node: TempoFullNode,
+    pub(crate) execution_node: Arc<TempoFullNode>,
 
     /// This node's initial share of the bls12381 private key.
     pub(crate) initial_share: Option<Share>,

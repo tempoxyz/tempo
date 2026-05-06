@@ -529,7 +529,14 @@ fn gen_store_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
                     if let Some(offset) = pending_offset {
                         storage.store(base_slot + ::alloy::primitives::U256::from(offset), pending_val)?;
                     }
-                    pending_val = storage.load(#slot_addr)?;
+                    pending_val = if crate::storage::StorageCtx.spec().is_t4() {
+                        // This slot group is exclusively owned by the struct and all
+                        // declared packed fields are written before commit, so previous
+                        // contents are irrelevant; zero-init only clears unowned padding.
+                        ::alloy::primitives::U256::ZERO
+                    } else {
+                        storage.load(#slot_addr)?
+                    };
                     pending_offset = Some(curr_offset);
                     let mut packed = crate::storage::packing::PackedSlot(pending_val);
                     <#ty as crate::storage::Storable>::store(&self.#name, &mut packed, ::alloy::primitives::U256::ZERO, #packed_ctx)?;
@@ -553,7 +560,14 @@ fn gen_store_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
             // First field
             quote! {{
                 if <#ty as crate::storage::StorableType>::IS_PACKABLE {
-                    pending_val = storage.load(#slot_addr)?;
+                    pending_val = if crate::storage::StorageCtx.spec().is_t4() {
+                        // This slot group is exclusively owned by the struct and all
+                        // declared packed fields are written before commit, so previous
+                        // contents are irrelevant; zero-init only clears unowned padding.
+                        ::alloy::primitives::U256::ZERO
+                    } else {
+                        storage.load(#slot_addr)?
+                    };
                     pending_offset = Some(#packing::#loc_const.offset_slots);
                     let mut packed = crate::storage::packing::PackedSlot(pending_val);
                     <#ty as crate::storage::Storable>::store(&self.#name, &mut packed, ::alloy::primitives::U256::ZERO, #packed_ctx)?;

@@ -1,3 +1,5 @@
+use std::io::Write as _;
+
 use commonware_cryptography::{
     Signer as _,
     bls12381::{dkg, primitives::variant::MinSig},
@@ -11,9 +13,23 @@ use crate::{SigningKey, SigningShare};
 const SIGNING_KEY: &str = "0x7848b5d711bc9883996317a3f9c90269d56771005d540a19184939c9e8d0db2a";
 const SIGNING_SHARE: &str = "0x00594108e8326f1a4f1dcfd0a473141bb95c54c9a591983922158f1f082c671e31";
 
+fn write_tempfile(contents: &str) -> tempfile::NamedTempFile {
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    file.write_all(contents.as_bytes()).unwrap();
+    file
+}
+
 #[test]
 fn signing_key_snapshot() {
     SigningKey::try_from_hex(SIGNING_KEY).unwrap();
+}
+
+#[test]
+fn signing_key_read_from_file_trims_whitespace() {
+    let file = write_tempfile(&format!("{SIGNING_KEY}\n"));
+    SigningKey::read_from_file(file.path()).unwrap();
+    let file = write_tempfile(&format!("  {SIGNING_KEY}\r\n"));
+    SigningKey::read_from_file(file.path()).unwrap();
 }
 
 #[test]
@@ -30,6 +46,14 @@ fn signing_key_roundtrip() {
 #[test]
 fn signing_share_snapshot() {
     SigningShare::try_from_hex(SIGNING_SHARE).unwrap();
+}
+
+#[test]
+fn signing_share_read_from_file_trims_whitespace() {
+    let file = write_tempfile(&format!("{SIGNING_SHARE}\n"));
+    SigningShare::read_from_file(file.path()).unwrap();
+    let file = write_tempfile(&format!("  {SIGNING_SHARE}\r\n"));
+    SigningShare::read_from_file(file.path()).unwrap();
 }
 
 #[test]

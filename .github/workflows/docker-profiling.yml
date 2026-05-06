@@ -59,6 +59,8 @@ jobs:
           targets: tempo
           project: 0c6tg19qsp
           push: true
+          no-cache: true
+          pull: true
         env:
           VERGEN_GIT_SHA: ${{ github.sha }}
           VERGEN_GIT_SHA_SHORT: ${{ steps.shortsha.outputs.shortsha }}

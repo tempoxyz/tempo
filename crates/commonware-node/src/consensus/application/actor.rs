@@ -32,14 +32,16 @@ use commonware_runtime::{
 };
 use prometheus_client::metrics::counter::Counter;
 
-use commonware_utils::{SystemTimeExt, channel::oneshot};
+use commonware_utils::SystemTimeExt;
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
-use futures::{StreamExt as _, TryFutureExt as _, channel::mpsc, future::try_join};
+use futures::{
+    StreamExt as _, TryFutureExt as _,
+    channel::{mpsc, oneshot},
+    future::try_join,
+};
 use rand_08::{CryptoRng, Rng};
 use reth_ethereum::chainspec::EthChainSpec as _;
-use reth_node_builder::{
-    Block as _, BuiltPayload, ConsensusEngineHandle, PayloadAttributes, PayloadKind,
-};
+use reth_node_builder::{Block as _, BuiltPayload, ConsensusEngineHandle, PayloadKind};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks as _};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
@@ -95,7 +97,6 @@ where
 
             inner: Inner {
                 public_key: config.public_key,
-                fee_recipient: config.fee_recipient,
                 epoch_strategy: config.epoch_strategy,
 
                 payload_resolve_time: config.payload_resolve_time,
@@ -198,7 +199,6 @@ where
 #[derive(Clone)]
 struct Inner<TState> {
     public_key: PublicKey,
-    fee_recipient: Option<alloy_primitives::Address>,
     epoch_strategy: FixedEpocher,
     payload_resolve_time: Duration,
     payload_return_time: Duration,
@@ -207,7 +207,7 @@ struct Inner<TState> {
 
     marshal: crate::alias::marshal::Mailbox,
 
-    execution_node: TempoFullNode,
+    execution_node: Arc<TempoFullNode>,
     executor: crate::executor::Mailbox,
     subblocks: Option<subblocks::Mailbox>,
     scheme_provider: SchemeProvider,
@@ -311,17 +311,19 @@ impl Inner<Init> {
             leader,
         } = request;
 
-        let (payload_id_tx, mut payload_id_rx) = oneshot::channel();
+        let mut payload_id_rx: Option<oneshot::Receiver<eyre::Result<PayloadId>>> = None;
 
         let proposal_digest = select!(
             () = response.closed() => {
-                // If we got interrupted, fetch payload resolve future and drop it
-                // to make sure that payload building is canceled.
-                if let Ok(payload_id) = payload_id_rx.try_recv() {
+                if let Some(rx) = payload_id_rx.as_mut() {
+                    let id = rx
+                        .await
+                        .wrap_err("executor dropped response")?
+                        .wrap_err("failed requesting a new payload build")?;
                     let fut = self
                         .execution_node
                         .payload_builder_handle
-                        .resolve_kind_fut(payload_id, PayloadKind::WaitForPending)
+                        .resolve_kind_fut(id, PayloadKind::WaitForPending)
                         .await
                         .wrap_err("failed resolving payload")?;
                     drop(fut);
@@ -338,7 +340,7 @@ impl Inner<Init> {
                 parent_view,
                 parent_digest,
                 round,
-                payload_id_tx,
+                &mut payload_id_rx,
                 leader,
             ) => {
                 res.wrap_err("failed creating a proposal")
@@ -420,7 +422,7 @@ impl Inner<Init> {
         parent_view: View,
         parent_digest: Digest,
         round: Round,
-        payload_id_tx: oneshot::Sender<PayloadId>,
+        payload_id_rx: &mut Option<oneshot::Receiver<eyre::Result<PayloadId>>>,
         leader: PublicKey,
     ) -> eyre::Result<Digest> {
         let propose_start = Instant::now();
@@ -584,7 +586,6 @@ impl Inner<Init> {
         let parent_hash = parent.block_hash();
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
         let attrs = TempoPayloadAttributes::new(
-            self.fee_recipient.unwrap_or_default(),
             Some(proposer_public_key),
             timestamp,
             timestamp_millis_part,
@@ -598,17 +599,29 @@ impl Inner<Init> {
             },
         );
 
-        let payload_id = attrs.payload_id(&parent.digest().0);
-        payload_id_tx.send(payload_id).map_err(|_| {
-            eyre!("caller went away before payload job ID could be returned; aborting proposal")
-        })?;
         let interrupt_handle = attrs.interrupt_handle().clone();
 
-        self.state
-            .executor
-            .canonicalize_and_build(parent.height(), parent.digest(), attrs)
+        // Share the dispatch receiver with the cancel branch so that, if cancellation
+        // hits between dispatch send and receiving `payload_id`, the cancel branch can
+        // still drain the rx, learn `payload_id`, and cancel the now-registered job.
+        *payload_id_rx = Some(self.state.executor.canonicalize_and_build(
+            parent.height(),
+            parent.digest(),
+            attrs,
+        )?);
+
+        let payload_id = payload_id_rx
+            .as_mut()
+            .expect("just set")
             .await
+            .wrap_err("executor dropped response")?
             .wrap_err("failed requesting a new payload build")?;
+
+        // Replace the slot with a pre-filled oneshot so the cancel branch can keep
+        // unconditionally awaiting `payload_id_rx` and immediately get back `payload_id`.
+        let (tx, rx) = oneshot::channel();
+        let _ = tx.send(Ok(payload_id));
+        *payload_id_rx = Some(rx);
 
         let elapsed = propose_start.elapsed();
         let remaining_resolve = self.payload_resolve_time.saturating_sub(elapsed);
@@ -789,7 +802,6 @@ impl Inner<Uninit> {
     ) -> eyre::Result<Inner<Init>> {
         let initialized = Inner {
             public_key: self.public_key,
-            fee_recipient: self.fee_recipient,
             epoch_strategy: self.epoch_strategy,
             payload_resolve_time: self.payload_resolve_time,
             payload_return_time: self.payload_return_time,

@@ -8,7 +8,11 @@ import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 
 /// @title StablecoinDEX Invariant Tests
 /// @notice Fuzz-based invariant tests for the StablecoinDEX orderbook exchange
-/// @dev Tests invariants TEMPO-DEX1 through TEMPO-DEX19 as documented in README.md
+/// @dev Tests invariants TEMPO-DEX1 through TEMPO-DEX19 as documented in README.md.
+/// Pinned to T5 so TEMPO-DEX17 covers TIP-1030's same-tick flip path
+/// (`flipTick == tick`).
+/// forge-config: default.hardfork = "tempo:T5"
+/// forge-config: fuzz500.hardfork = "tempo:T5"
 contract StablecoinDEXInvariantTest is InvariantBaseTest {
 
     /// @dev Mapping of actor address to their placed order IDs
@@ -206,8 +210,9 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         return a;
     }
 
-    /// @dev Picks a flip tick from _ticks on the correct side of tick (strict inequality).
-    /// Returns (false, 0) if no valid flip tick exists (tick is at a boundary).
+    /// @dev Picks a flip tick from _ticks on the correct side of tick.
+    /// On T5+ (TIP-1030) `flipTick == tick` is allowed, so the comparison is non-strict.
+    /// Returns (false, 0) if no valid flip tick exists.
     function _pickFlipTick(
         int16 tick,
         bool isBid,
@@ -220,14 +225,14 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         uint256 count = 0;
         for (uint256 i = 0; i < _ticks.length; i++) {
             int16 t = _ticks[i];
-            if (isBid ? (t > tick) : (t < tick)) count++;
+            if (isBid ? (t >= tick) : (t <= tick)) count++;
         }
         if (count == 0) return (false, int16(0));
 
         uint256 k = rnd % count;
         for (uint256 i = 0; i < _ticks.length; i++) {
             int16 t = _ticks[i];
-            if (isBid ? (t > tick) : (t < tick)) {
+            if (isBid ? (t >= tick) : (t <= tick)) {
                 if (k == 0) return (true, t);
                 k--;
             }
@@ -451,16 +456,16 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         uint128 orderId = exchange.placeFlip(address(token), amount, isBid, tick, flipTick);
         _assertNextOrderId(orderId);
 
-        // TEMPO-DEX17: Flip order constraints
+        // TEMPO-DEX17: Flip order constraints. T5+ (TIP-1030) allows flipTick == tick.
         IStablecoinDEX.Order memory order = exchange.getOrder(orderId);
         assertTrue(order.isFlip, "TEMPO-DEX17: flip order not marked as flip");
         if (isBid) {
             assertTrue(
-                order.flipTick > order.tick, "TEMPO-DEX17: bid flip tick must be > order tick"
+                order.flipTick >= order.tick, "TEMPO-DEX17: bid flip tick must be >= order tick"
             );
         } else {
             assertTrue(
-                order.flipTick < order.tick, "TEMPO-DEX17: ask flip tick must be < order tick"
+                order.flipTick <= order.tick, "TEMPO-DEX17: ask flip tick must be <= order tick"
             );
         }
 
