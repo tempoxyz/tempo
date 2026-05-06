@@ -411,11 +411,11 @@ main() {
         info "Skipping GPG signature verification (not available for versions <= 1.1.1)"
     fi
 
-    # SLSA build provenance + SBOM attestation verification (Sigstore-signed
-    # via GitHub OIDC at release time). Requires the `gh` CLI with
-    # authentication; fall back to a warning so the installer still works on
-    # minimal containers / `curl | sh` flows. Older releases predate the
-    # attestations, so we just try and skip on absence.
+    # SLSA build provenance verification (Sigstore-signed via GitHub OIDC at
+    # release time). Requires the `gh` CLI with authentication; fall back to
+    # a warning so the installer still works on minimal containers /
+    # `curl | sh` flows. Older releases predate the attestations, so we just
+    # try and skip on absence.
     if check_cmd gh && gh auth status >/dev/null 2>&1; then
         info "Verifying SLSA build provenance..."
         if gh attestation verify "$ARCHIVE_PATH" --repo "$REPO" \
@@ -423,15 +423,6 @@ main() {
             info "SLSA provenance verified ✓"
         else
             warn "SLSA provenance attestation not found or failed verification."
-            warn "(Older releases may not carry attestations.)"
-        fi
-
-        info "Verifying SBOM attestation..."
-        if gh attestation verify "$ARCHIVE_PATH" --repo "$REPO" \
-                --predicate-type https://spdx.dev/Document >/dev/null 2>&1; then
-            info "SBOM attestation verified ✓"
-        else
-            warn "SBOM attestation not found or failed verification."
             warn "(Older releases may not carry attestations.)"
         fi
     else
@@ -442,7 +433,7 @@ main() {
         fi
 
         if [[ "$UNSAFE_SKIP_VERIFY" == "1" ]]; then
-            warn "$GH_MSG. Skipping SLSA + SBOM attestation verification (--unsafe-skip-verify)."
+            warn "$GH_MSG. Skipping SLSA attestation verification (--unsafe-skip-verify)."
         else
             error "$GH_MSG. Re-run with --unsafe-skip-verify to bypass attestation verification."
         fi
