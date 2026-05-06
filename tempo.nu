@@ -793,7 +793,28 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             continue
         }
         let report = (open $report_path)
-        let blocks = ($report | get blocks)
+        let blocks = ($report | get blocks | each { |b|
+            let tx_count = ($b | get tx_count)
+            let timestamp = if (($b | get -o timestamp | default null) != null) {
+                $b | get timestamp
+            } else {
+                $b | get timestamp_ms
+            }
+            let latency_ms = if (($b | get -o latency_ms | default null) != null) {
+                $b | get latency_ms
+            } else {
+                $b | get -o block_time_ms | default null
+            }
+            {
+                number: ($b | get number)
+                timestamp: $timestamp
+                tx_count: $tx_count
+                ok_count: ($b | get -o ok_count | default $tx_count)
+                err_count: ($b | get -o err_count | default 0)
+                gas_used: ($b | get gas_used)
+                latency_ms: $latency_ms
+            }
+        })
         if ($blocks | length) == 0 {
             print $"Warning: ($label) report has no blocks, skipping"
             continue

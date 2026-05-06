@@ -573,7 +573,12 @@ jobs:
           BENCH_RUN_TYPE: ${{ env.BENCH_RUN_TYPE }}
           BENCH_JOB_URL: ${{ env.BENCH_JOB_URL }}
           BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
-        run: bash contrib/bench/upload-clickhouse.sh "$BENCH_RESULTS_DIR"
+        run: |
+          if [ "$BENCH_BACKEND" = "txgen" ]; then
+            bash contrib/bench/upload-clickhouse-txgen.sh "$BENCH_RESULTS_DIR"
+          else
+            bash contrib/bench/upload-clickhouse.sh "$BENCH_RESULTS_DIR"
+          fi
 
       - name: Post results to PR
         if: success()

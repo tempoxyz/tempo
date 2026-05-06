@@ -192,10 +192,6 @@ def fund-txgen-accounts [txgen_bin: string, spec_path: string, rpc_url: string] 
     wait-for-txpool-drain $rpc_url $TXGEN_FUND_DRAIN_TIMEOUT_SECS
 }
 
-def adapt-txgen-report [raw_report: string, adapted_report: string] {
-    ^python3 contrib/bench/txgen-report-adapter.py $raw_report $adapted_report
-}
-
 def run-txgen-bench-single [
     --tempo-bin: string
     --txgen-tempo-bin: string
@@ -317,7 +313,7 @@ def run-txgen-bench-single [
     $env.TXGEN_ACCOUNTS = ($accounts | into string)
     fund-txgen-accounts $txgen_tempo_bin $spec_path "http://localhost:8545"
 
-    let raw_report_path = $"($results_dir)/txgen-report-($run_label).json"
+    let report_path = $"($results_dir)/report-($run_label).json"
     let tx_count = [($tps * $duration) 1] | math max
     let txgen_cmd = [
         $txgen_tempo_bin
@@ -336,7 +332,7 @@ def run-txgen-bench-single [
         "--metrics-url" "http://127.0.0.1:9090/metrics"
         "--scrape-interval-ms" $TXGEN_SCRAPE_INTERVAL_MS
         "--drain-timeout" $TXGEN_DRAIN_TIMEOUT_SECS
-        "--report" $"json:($raw_report_path)"
+        "--report" $"json:($report_path)"
         "-m" $"chain_id=($chain_id)"
         "-m" $"target_tps=($tps)"
         "-m" $"run_duration_secs=($duration)"
@@ -363,7 +359,6 @@ def run-txgen-bench-single [
         error make { msg: $"txgen benchmark run ($run_label) failed" }
     }
 
-    adapt-txgen-report $raw_report_path $"($results_dir)/report-($run_label).json"
     print $"  Report saved: report-($run_label).json"
 
     if $tracy_capture_started {
