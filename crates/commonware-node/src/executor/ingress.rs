@@ -131,7 +131,6 @@ pub(super) struct FinalizedBlock {
 pub(super) struct FinalizedTip {
     pub(super) round: Round,
     pub(super) height: Height,
-    pub(super) digest: Digest,
 }
 
 impl From<CanonicalizeAndBuild> for Message {
@@ -179,12 +178,7 @@ impl Reporter for MarshalReporter {
                 acknowledgement,
             }
             .into(),
-            Update::Tip(round, height, digest) => FinalizedTip {
-                round,
-                height,
-                digest,
-            }
-            .into(),
+            Update::Tip(round, height, _) => FinalizedTip { round, height }.into(),
         };
         self.0
             .inner

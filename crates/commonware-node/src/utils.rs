@@ -55,10 +55,6 @@ impl<F> OptionFuture<F> {
     pub(crate) fn is_some(&self) -> bool {
         self.0.is_some()
     }
-
-    pub(crate) fn as_ref(&mut self) -> Option<&F> {
-        self.0.as_ref()
-    }
 }
 
 impl<F> Default for OptionFuture<F> {

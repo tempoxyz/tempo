@@ -53,7 +53,6 @@ use tracing::{debug, error, info, instrument, warn};
 
 use super::{Config, ingress::MessageWithSpan};
 use crate::{
-    alias::simplex::Notarization,
     consensus::{Digest, block::Block},
     executor::ingress::{CanonicalizeAndBuild, FinalizedBlock, FinalizedTip},
     utils::OptionFuture,
@@ -406,7 +405,6 @@ where
                     let subscription = self.marshal.subscribe_by_digest(None, current_digest).await;
                     return Some(SyncFetch {
                         target_digest: current_digest,
-                        target_height: None,
                         target_notarized: sync.target_notarized
                             && current_digest == sync.target_digest,
                         subscription,
@@ -706,7 +704,6 @@ enum SubmissionType {
 
 struct SyncFetch {
     target_digest: Digest,
-    target_height: Option<Height>,
     target_notarized: bool,
     subscription: tokio::sync::oneshot::Receiver<Block>,
 }
@@ -714,7 +711,6 @@ struct SyncFetch {
 #[derive(Debug)]
 struct SyncFetchResponse {
     target_digest: Digest,
-    target_height: Option<Height>,
     target_notarized: bool,
     block_response: Result<Block, tokio::sync::oneshot::error::RecvError>,
 }
@@ -726,7 +722,6 @@ impl Future for SyncFetch {
         let block_response = ready!(self.subscription.poll_unpin(cx));
         Poll::Ready(SyncFetchResponse {
             target_digest: self.target_digest,
-            target_height: self.target_height,
             target_notarized: self.target_notarized,
             block_response,
         })
@@ -759,60 +754,6 @@ enum SyncAction {
         payload_attributes: Box<TempoPayloadAttributes>,
         response: oneshot::Sender<eyre::Result<PayloadId>>,
     },
-}
-
-struct FetchCertifiedBlockResponse {
-    /// The notarization that kicked off the request.
-    /// Note: this notarization is not expected to be certified at the moment
-    /// of receipt!
-    source_notarization: Notarization,
-
-    /// The digest of the block fetched.
-    fetch_digest: Digest,
-
-    /// The height of the block fetched (if known at the moment the block was
-    /// scheduled).
-    fetch_height: Option<Height>,
-
-    /// The mailbox of the marshal actor to which the request will be made.
-    marshal: crate::alias::marshal::Mailbox,
-
-    block_response: Result<Block, tokio::sync::oneshot::error::RecvError>,
-}
-
-/// A request to the marshal actor to return a given block.
-struct FetchCertifiedBlock {
-    /// The notarization that kicked off the request.
-    /// Note: this notarization is not expected to be certified at the moment
-    /// of receipt!
-    source_notarization: Notarization,
-
-    /// The digest of the block to be fetched.
-    fetch_digest: Digest,
-
-    /// The height of the block to be fetched, if known.
-    fetch_height: Option<Height>,
-
-    /// The mailbox of the marshal actor to which the request will be made.
-    marshal: crate::alias::marshal::Mailbox,
-
-    /// An ongoing subscription to the
-    subscription: tokio::sync::oneshot::Receiver<Block>,
-}
-
-impl Future for FetchCertifiedBlock {
-    type Output = FetchCertifiedBlockResponse;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
-        let block_response = ready!(self.subscription.poll_unpin(cx));
-        Poll::Ready(FetchCertifiedBlockResponse {
-            source_notarization: self.source_notarization.clone(),
-            marshal: self.marshal.clone(),
-            block_response,
-            fetch_digest: self.fetch_digest,
-            fetch_height: self.fetch_height,
-        })
-    }
 }
 
 /// A state submission that is currently in flight to the execution layer.
