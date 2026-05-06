@@ -27,4 +27,5 @@ derive_more.workspace = true
 serde.workspace = true
 
 [dev-dependencies]
+tempo-primitives = { workspace = true, features = ["arbitrary", "reth-codec", "serde"] }
 serde_json.workspace = true
