@@ -697,7 +697,7 @@ impl TIP20Token {
     pub fn transfer(&mut self, msg_sender: Address, call: ITIP20::transferCall) -> Result<bool> {
         trace!(%msg_sender, ?call, "transferring TIP20");
         let to = Recipient::resolve(call.to)?;
-        if self.storage.spec().is_t5() && (call.to == ESCROW_ADDRESS || to.target == ESCROW_ADDRESS)
+        if self.storage.spec().is_t6() && (call.to == ESCROW_ADDRESS || to.target == ESCROW_ADDRESS)
         {
             return Err(TIP1028EscrowError::escrow_address_reserved().into());
         }
@@ -705,12 +705,10 @@ impl TIP20Token {
         self.validate_transfer(msg_sender, &to)?;
         self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
-        // T5+ validate the receive policy
-        if self.storage.spec().is_t5() {
+        if self.storage.spec().is_t6() {
             let (authorized, blocked_reason, recovery_address) = TIP403Registry::new()
                 .validate_receive_policy(self.address, msg_sender, to.target)?;
 
-            // If not authorized, escrow funds and return
             if !authorized {
                 self.escrow_funds(
                     msg_sender,

@@ -21,7 +21,7 @@ const T2_ADDED: &[[u8; 4]] = &[
     ITIP403Registry::createCompoundPolicyCall::SELECTOR,
 ];
 
-const T5_ADDED: &[[u8; 4]] = &[
+const T6_ADDED: &[[u8; 4]] = &[
     ITIP403Registry::receivePolicyCall::SELECTOR,
     ITIP403Registry::validateReceivePolicyCall::SELECTOR,
     ITIP403Registry::setReceivePolicyCall::SELECTOR,
@@ -37,7 +37,7 @@ impl Precompile for TIP403Registry {
             calldata,
             &[
                 SelectorSchedule::new(TempoHardfork::T2).with_added(T2_ADDED),
-                SelectorSchedule::new(TempoHardfork::T5).with_added(T5_ADDED),
+                SelectorSchedule::new(TempoHardfork::T6).with_added(T6_ADDED),
             ],
             ITIP403RegistryCalls::abi_decode,
             |call| match call {

@@ -139,7 +139,7 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
             Some(ValidatorConfigV2::create_precompile(&cfg))
         } else if *address == SIGNATURE_VERIFIER_ADDRESS && cfg.spec.is_t3() {
             Some(SignatureVerifier::create_precompile(&cfg))
-        } else if *address == ESCROW_ADDRESS && cfg.spec.is_t5() {
+        } else if *address == ESCROW_ADDRESS && cfg.spec.is_t6() {
             Some(TIP1028Escrow::create_precompile(&cfg))
         } else {
             None
