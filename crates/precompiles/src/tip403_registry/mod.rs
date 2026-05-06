@@ -50,8 +50,6 @@ pub struct TIP403Registry {
     policy_set: Mapping<u64, Mapping<Address, bool>>,
     /// Account receive policy configuration.
     address_receive_config: Mapping<Address, ReceivePolicyConfig>,
-    /// Account current recovery address to record in blocked receipts.
-    address_recovery_address: Mapping<Address, Address>,
 }
 
 #[derive(Debug, Clone, Default, Storable)]
@@ -59,6 +57,7 @@ struct ReceivePolicyConfig {
     has_receive_policy: bool,
     sender_policy_id: u64,
     token_filter_id: u64,
+    recovery_address: Address,
 }
 
 /// Policy record containing base data and optional data for compound policies ([TIP-1015])
@@ -252,11 +251,23 @@ impl TIP403Registry {
             senderPolicyType: self.receive_policy_type(config.sender_policy_id)?,
             tokenFilterId: config.token_filter_id,
             tokenFilterType: self.receive_policy_type(config.token_filter_id)?,
-            recoveryAddress: self.address_recovery_address[call.account].read()?,
+            recoveryAddress: config.recovery_address,
         })
     }
 
     pub fn validate_receive_policy(
+        &self,
+        call: ITIP403Registry::validateReceivePolicyCall,
+    ) -> Result<ITIP403Registry::validateReceivePolicyReturn> {
+        let (authorized, blocked_reason) =
+            self.check_receive_policy(call.token, call.sender, call.receiver)?;
+        Ok(ITIP403Registry::validateReceivePolicyReturn {
+            authorized,
+            blockedReason: blocked_reason,
+        })
+    }
+
+    pub fn check_receive_policy(
         &self,
         token: Address,
         sender: Address,
@@ -276,22 +287,6 @@ impl TIP403Registry {
         }
 
         Ok((true, ITIP403Registry::BlockedReason::NONE))
-    }
-
-    pub fn validate_receive_policy_call(
-        &self,
-        call: ITIP403Registry::validateReceivePolicyCall,
-    ) -> Result<ITIP403Registry::validateReceivePolicyReturn> {
-        let (authorized, blocked_reason) =
-            self.validate_receive_policy(call.token, call.sender, call.receiver)?;
-        Ok(ITIP403Registry::validateReceivePolicyReturn {
-            authorized,
-            blockedReason: blocked_reason,
-        })
-    }
-
-    pub fn receive_policy_recovery_address(&self, account: Address) -> Result<Address> {
-        self.address_recovery_address[account].read()
     }
 
     /// Creates a new simple (whitelist or blacklist) policy and returns its ID.
@@ -359,8 +354,8 @@ impl TIP403Registry {
             has_receive_policy: true,
             sender_policy_id: call.senderPolicyId,
             token_filter_id: call.tokenFilterId,
+            recovery_address: call.recoveryAddress,
         })?;
-        self.address_recovery_address[msg_sender].write(call.recoveryAddress)?;
 
         self.emit_event(TIP403RegistryEvent::ReceivePolicyUpdated(
             ITIP403Registry::ReceivePolicyUpdated {
