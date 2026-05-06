@@ -35,16 +35,20 @@ pub(crate) fn public_key_to_tempo_primitive(
 pub(crate) struct OptionFuture<F>(#[pin] Option<F>);
 
 impl<F> OptionFuture<F> {
-    pub(crate) fn new(fut: Option<F>) -> Self {
-        Self(fut)
-    }
-
-    pub(crate) fn is_none(&self) -> bool {
-        self.0.is_none()
+    pub(crate) fn new(maybe_fut: Option<F>) -> Self {
+        Self(maybe_fut)
     }
 
     pub(crate) fn none() -> Self {
         Self::new(None)
+    }
+
+    pub(crate) fn some(fut: F) -> Self {
+        Self::new(Some(fut))
+    }
+
+    pub(crate) fn is_none(&self) -> bool {
+        self.0.is_none()
     }
 
     pub(crate) fn replace(&mut self, fut: F) -> Option<F> {
@@ -60,7 +64,7 @@ impl<F: Future> Default for OptionFuture<F> {
 
 impl<F: Future> From<Option<F>> for OptionFuture<F> {
     fn from(opt: Option<F>) -> Self {
-        Self(opt)
+        Self::new(opt)
     }
 }
 
