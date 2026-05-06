@@ -395,10 +395,6 @@ impl TIP20Token {
     /// - `SupplyCapExceeded` — minting would push total supply above the cap
     pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
         let to = Recipient::resolve(call.to)?;
-        if self.storage.spec().is_t6() && to.target == ESCROW_ADDRESS {
-            return Err(TIP1028EscrowError::escrow_address_reserved().into());
-        }
-
         let minted = self.mint_or_escrow(msg_sender, &to, call.amount, B256::ZERO)?;
         if minted {
             self.emit_event(TIP20Event::Mint(ITIP20::Mint {
@@ -420,10 +416,6 @@ impl TIP20Token {
         call: ITIP20::mintWithMemoCall,
     ) -> Result<()> {
         let to = Recipient::resolve(call.to)?;
-        if self.storage.spec().is_t6() && to.target == ESCROW_ADDRESS {
-            return Err(TIP1028EscrowError::escrow_address_reserved().into());
-        }
-
         let minted = self.mint_or_escrow(msg_sender, &to, call.amount, call.memo)?;
         if minted {
             self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
@@ -703,10 +695,6 @@ impl TIP20Token {
     pub fn transfer(&mut self, msg_sender: Address, call: ITIP20::transferCall) -> Result<bool> {
         trace!(%msg_sender, ?call, "transferring TIP20");
         let to = Recipient::resolve(call.to)?;
-        if self.storage.spec().is_t6() && to.target == ESCROW_ADDRESS {
-            return Err(TIP1028EscrowError::escrow_address_reserved().into());
-        }
-
         self.validate_transfer(msg_sender, &to)?;
         self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
@@ -739,10 +727,6 @@ impl TIP20Token {
         call: ITIP20::transferFromCall,
     ) -> Result<bool> {
         let to = Recipient::resolve(call.to)?;
-        if self.storage.spec().is_t6() && to.target == ESCROW_ADDRESS {
-            return Err(TIP1028EscrowError::escrow_address_reserved().into());
-        }
-
         let transferred = self._transfer_from(
             msg_sender,
             call.from,
@@ -764,10 +748,6 @@ impl TIP20Token {
         call: ITIP20::transferFromWithMemoCall,
     ) -> Result<bool> {
         let to = Recipient::resolve(call.to)?;
-        if self.storage.spec().is_t6() && to.target == ESCROW_ADDRESS {
-            return Err(TIP1028EscrowError::escrow_address_reserved().into());
-        }
-
         let transferred = self._transfer_from(
             msg_sender,
             call.from,
@@ -807,10 +787,6 @@ impl TIP20Token {
         amount: U256,
     ) -> Result<bool> {
         let to = Recipient::resolve(to)?;
-        if self.storage.spec().is_t6() && to.target == ESCROW_ADDRESS {
-            return Err(TIP1028EscrowError::escrow_address_reserved().into());
-        }
-
         self.validate_transfer(from, &to)?;
         self.check_and_update_spending_limit(from, amount)?;
 
@@ -861,10 +837,6 @@ impl TIP20Token {
         call: ITIP20::transferWithMemoCall,
     ) -> Result<()> {
         let to = Recipient::resolve(call.to)?;
-        if self.storage.spec().is_t6() && to.target == ESCROW_ADDRESS {
-            return Err(TIP1028EscrowError::escrow_address_reserved().into());
-        }
-
         self.validate_transfer(msg_sender, &to)?;
         self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
