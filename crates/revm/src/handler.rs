@@ -41,6 +41,7 @@ use tempo_precompiles::{
     account_keychain::{
         AccountKeychain, CallScope as PrecompileCallScope, KeyRestrictions,
         SelectorRule as PrecompileSelectorRule, TokenLimit, authorizeKeyCall,
+        authorizeKeyWithNonceCall,
     },
     error::TempoPrecompileError,
     nonce::{
@@ -347,14 +348,23 @@ fn calculate_key_authorization_gas(
             num_limits
         };
 
+        let has_t5_nonce = spec.is_t5() && key_auth.has_nonce();
         let mut num_sstores = 1 + limit_slots;
 
         if spec.is_t3() {
             num_sstores += call_scope_storage_slots(&key_auth.authorization, spec);
         }
 
+        if has_t5_nonce {
+            num_sstores += 1;
+        }
+
         let sstore_cost = gas_params.get(GasId::sstore_set_without_load_cost());
         let mut total_gas = sig_gas + sload_cost + sstore_cost * num_sstores + BUFFER;
+
+        if has_t5_nonce {
+            total_gas += sload_cost;
+        }
 
         // T4+: include extra gas for call scopes configuration
         if spec.is_t4() {
@@ -1342,21 +1352,37 @@ where
                 let allow_any_calls = key_auth.allowed_calls.is_none();
                 let precompile_allowed_calls = translate_allowed_calls_for_precompile(key_auth);
 
-                // Create the authorize key call
-                let authorize_call = authorizeKeyCall {
-                    keyId: access_key_addr,
-                    signatureType: signature_type,
-                    config: KeyRestrictions {
-                        expiry,
-                        enforceLimits: enforce_limits,
-                        limits: precompile_limits,
-                        allowAnyCalls: allow_any_calls,
-                        allowedCalls: precompile_allowed_calls,
-                    },
+                let config = KeyRestrictions {
+                    expiry,
+                    enforceLimits: enforce_limits,
+                    limits: precompile_limits,
+                    allowAnyCalls: allow_any_calls,
+                    allowedCalls: precompile_allowed_calls,
                 };
 
                 // Call precompile to authorize the key (same phase as nonce increment)
-                match keychain.authorize_key(tx.caller, authorize_call) {
+                let result = if let Some(nonce) = key_auth.nonce() {
+                    keychain.authorize_key_with_nonce(
+                        tx.caller,
+                        authorizeKeyWithNonceCall {
+                            keyId: access_key_addr,
+                            signatureType: signature_type,
+                            config,
+                            nonce,
+                        },
+                    )
+                } else {
+                    keychain.authorize_key(
+                        tx.caller,
+                        authorizeKeyCall {
+                            keyId: access_key_addr,
+                            signatureType: signature_type,
+                            config,
+                        },
+                    )
+                };
+
+                match result {
                     // all is good, we can do execution.
                     Ok(_) => Ok(false),
                     // on out of gas we are skipping execution but not invalidating the transaction.
@@ -1625,6 +1651,13 @@ where
                 key_auth
                     .validate_chain_id(cfg.chain_id(), cfg.spec.is_t1c())
                     .map_err(TempoInvalidTransaction::from)?;
+
+                if key_auth.has_nonce() && !cfg.spec.is_t5() {
+                    return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                        reason: "key authorization nonces are not active before T5".to_string(),
+                    }
+                    .into());
+                }
 
                 // T3 gates all TIP-1011 fields. Before activation, transaction semantics must stay
                 // unchanged, so periodic limits and call scopes are rejected.
@@ -3026,6 +3059,35 @@ mod tests {
                 "T4 state gas with {num_limits} limits"
             );
         }
+
+        let t5_gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T5);
+        let t5_sstore =
+            t5_gas_params.get(revm::context_interface::cfg::GasId::sstore_set_without_load_cost());
+        let t5_sload =
+            t5_gas_params.warm_storage_read_cost() + t5_gas_params.cold_storage_additional_cost();
+        let t5_sstore_state =
+            t5_gas_params.get(revm::context_interface::cfg::GasId::sstore_set_state_gas());
+        let base_t5_key_auth = create_key_auth(0);
+        let mut nonce_t5_key_auth = create_key_auth(0);
+        nonce_t5_key_auth.authorization = nonce_t5_key_auth
+            .authorization
+            .with_nonce(B256::repeat_byte(0x53));
+
+        let (base_t5_gas, base_t5_state_gas) =
+            calculate_key_authorization_gas(&base_t5_key_auth, &t5_gas_params, TempoHardfork::T5);
+        let (nonce_t5_gas, nonce_t5_state_gas) =
+            calculate_key_authorization_gas(&nonce_t5_key_auth, &t5_gas_params, TempoHardfork::T5);
+
+        assert_eq!(
+            nonce_t5_gas - base_t5_gas,
+            t5_sload + t5_sstore + t5_sstore_state,
+            "T5 nonce adds one consumed-nonce SLOAD and one consumed-nonce SSTORE"
+        );
+        assert_eq!(
+            nonce_t5_state_gas - base_t5_state_gas,
+            t5_sstore_state,
+            "T5 nonce adds state gas for one consumed-nonce SSTORE"
+        );
 
         let scoped = SignedKeyAuthorization {
             authorization: KeyAuthorization::unrestricted(
@@ -4700,6 +4762,62 @@ mod tests {
 
             let _ = h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
             assert_eq!(evm.key_expiry, Some(expiry));
+        }
+
+        #[test]
+        fn test_key_authorization_nonce_rejected_before_t5() {
+            let (signer, user) = generate_keypair();
+            let key = Address::random();
+            let signed = sign_key_auth(
+                &signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key)
+                    .with_nonce(B256::repeat_byte(0x53)),
+            );
+            let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T4, None, false);
+
+            let result = h.validate_env(&mut evm);
+            assert!(
+                matches!(
+                    &result,
+                    Err(EVMError::Transaction(TempoInvalidTransaction::KeychainValidationFailed { reason }))
+                        if reason.contains("before T5")
+                ),
+                "nonce-bearing key authorization should be rejected before T5, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_t5_key_authorization_consumes_nonce_in_state() {
+            use tempo_precompiles::account_keychain::isKeyAuthorizationNonceUsedCall;
+
+            let (signer, user) = generate_keypair();
+            let key = Address::random();
+            let nonce = B256::repeat_byte(0x54);
+            let signed = sign_key_auth(
+                &signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key).with_nonce(nonce),
+            );
+            let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T5, None, false);
+
+            let result =
+                h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
+            assert!(
+                result.is_ok(),
+                "T5 nonce authorization should pass: {result:?}"
+            );
+
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+                let keychain = AccountKeychain::new();
+                assert!(
+                    keychain
+                        .is_key_authorization_nonce_used(isKeyAuthorizationNonceUsedCall {
+                            account: user,
+                            nonce,
+                        })
+                        .expect("nonce read succeeds"),
+                    "T5 key authorization must consume its nonce"
+                );
+            });
         }
 
         #[test]
