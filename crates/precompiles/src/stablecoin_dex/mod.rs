@@ -182,8 +182,8 @@ impl StablecoinDEX {
     fn transfer_from(&mut self, token: Address, sender: Address, amount: u128) -> Result<()> {
         if self.storage.spec().is_t5() {
             TIP20Token::from_address(token)?.system_transfer_from(
-                sender,
                 self.address,
+                sender,
                 U256::from(amount),
             )?;
         } else {

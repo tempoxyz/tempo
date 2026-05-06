@@ -749,16 +749,20 @@ impl TIP20Token {
         Ok(true)
     }
 
-    /// Transfers `amount` from `from` to `to` without approval, for use
-    /// by other precompiles only (not exposed via ABI). Enforces
-    /// compliance via the [`TIP403Registry`] and [`AccountKeychain`].
+    /// Transfers `amount` from `from` to `to` without checking allowances. For use by precompiles
+    /// on the [`crate::address_registry::IMPLICIT_APPROVAL_LIST`] only — not exposed via ABI.
+    /// Enforces compliance via the [`TIP403Registry`] and [`AccountKeychain`].
     ///
-    /// Per TIP-1035, this entrypoint may only be invoked by precompiles on the
-    /// [`crate::address_registry::IMPLICIT_APPROVAL_LIST`]. Gating is enforced at the call site
-    /// (the function is not ABI-exposed); callers are also expected to pull only from the current
-    /// `msg.sender`.
+    /// `caller` is the address of the precompile invoking this function. Starting at
+    /// `TempoHardfork::T5` (TIP-1035), the call returns `Unauthorized` unless `caller` is on the
+    /// Implicit Approval List. Pre-T5, `caller` is unchecked (preserves pre-TIP-1035 behavior of
+    /// the existing internal-only caller, `TipFeeManager`).
+    ///
+    /// Callers are also expected to pull only from the current `msg.sender`; this is a security
+    /// guideline of TIP-1035 enforced at the call site, not by this function.
     ///
     /// # Errors
+    /// - `Unauthorized` — `caller` is not on the Implicit Approval List (T5+)
     /// - `Paused` — token transfers are currently paused
     /// - `InvalidRecipient` — recipient address is zero
     /// - `PolicyForbids` — TIP-403 policy rejects sender or recipient
@@ -766,11 +770,17 @@ impl TIP20Token {
     /// - `InsufficientBalance` — `from` balance lower than transfer amount
     pub fn system_transfer_from(
         &mut self,
+        caller: Address,
         from: Address,
-        to: Address,
         amount: U256,
     ) -> Result<bool> {
-        let to = Recipient::resolve(to)?;
+        // [TIP-1035] List gating: at T5+, only listed precompiles may invoke this entrypoint.
+        let spec = self.storage.spec();
+        if spec.is_t5() && !crate::address_registry::is_implicitly_approved(caller, spec) {
+            return Err(TIP20Error::unauthorized().into());
+        }
+
+        let to = Recipient::resolve(caller)?;
         self.validate_transfer(from, &to)?;
         self.check_and_update_spending_limit(from, amount)?;
 
@@ -1832,11 +1842,64 @@ pub(crate) mod tests {
                 .with_mint(from, amount)
                 .apply()?;
 
-            assert!(token.system_transfer_from(from, to, amount).is_ok());
+            // Pre-T5: caller is unchecked (preserves pre-TIP-1035 FeeAMM behavior).
+            assert!(
+                token
+                    .system_transfer_from(Address::random(), from, amount)
+                    .is_ok()
+            );
             assert_eq!(
                 token.emitted_events().last().unwrap(),
                 &TIP20Event::Transfer(ITIP20::Transfer { from, to, amount }).into_log_data()
             );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_system_transfer_from_t5_authorized() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let admin = Address::random();
+        let from = Address::random();
+        let amount = U256::random() % U256::from(u128::MAX);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(from, amount)
+                .apply()?;
+
+            // Listed precompile is allowed to invoke `system_transfer_from`.
+            assert!(
+                token
+                    .system_transfer_from(TIP_FEE_MANAGER_ADDRESS, from, amount)
+                    .is_ok()
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_system_transfer_from_t5_unauthorized_reverts() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let admin = Address::random();
+        let unlisted = Address::random();
+        let from = Address::random();
+        let amount = U256::random() % U256::from(u128::MAX);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(from, amount)
+                .apply()?;
+
+            // Unlisted callers are rejected with `Unauthorized` at T5+.
+            assert!(matches!(
+                token.system_transfer_from(unlisted, from, amount),
+                Err(TempoPrecompileError::TIP20(TIP20Error::Unauthorized(_)))
+            ));
 
             Ok(())
         })
