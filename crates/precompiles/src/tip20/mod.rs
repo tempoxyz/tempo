@@ -708,7 +708,6 @@ impl TIP20Token {
         let transferred = self.transfer_or_escrow(
             msg_sender,
             &to,
-            call.to,
             call.amount,
             InboundKind::TRANSFER,
             B256::ZERO,
@@ -994,7 +993,6 @@ impl TIP20Token {
         &mut self,
         from: Address,
         to: &Recipient,
-        recipient: Address,
         amount: U256,
         kind: InboundKind,
         memo: B256,
@@ -1004,9 +1002,14 @@ impl TIP20Token {
             return Ok(true);
         }
 
-        if recipient == ESCROW_ADDRESS || to.target == ESCROW_ADDRESS {
+        if to.target == ESCROW_ADDRESS {
             return Err(TIP1028EscrowError::escrow_address_reserved().into());
         }
+        let recipient = if let Some(virtual_addr) = to.virtual_addr {
+            virtual_addr
+        } else {
+            to.target
+        };
 
         let (authorized, blocked_reason, recovery_address) =
             TIP403Registry::new().validate_receive_policy(self.address, from, to.target)?;
