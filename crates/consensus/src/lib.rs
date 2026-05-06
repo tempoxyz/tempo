@@ -835,9 +835,11 @@ mod tests {
 
         let user_tx = create_tx(chain_id);
 
+        use tempo_chainspec::constants::moderato::MODERATO_T4_TIMESTAMP;
+
         let header = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
-            .timestamp(current_timestamp_millis())
+            .timestamp(MODERATO_T4_TIMESTAMP - 1)
             .build();
         let block = create_valid_block(header, vec![user_tx]);
         let sealed = SealedBlock::seal_slow(block);
@@ -975,9 +977,11 @@ mod tests {
         let wrong_addr = Address::repeat_byte(0xFF);
         let system_tx = create_system_tx(chain_id, wrong_addr);
 
+        use tempo_chainspec::constants::moderato::MODERATO_T4_TIMESTAMP;
+
         let header = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
-            .timestamp(current_timestamp_millis())
+            .timestamp(MODERATO_T4_TIMESTAMP - 1)
             .build();
         let block = create_valid_block(header, vec![system_tx]);
         let sealed = SealedBlock::seal_slow(block);

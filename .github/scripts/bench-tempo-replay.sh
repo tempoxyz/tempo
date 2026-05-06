@@ -50,12 +50,21 @@ WARMUP="${BENCH_WARMUP_BLOCKS:-1000}"
 
 mkdir -p "$BENCH_WORK_DIR"
 
+# `cargo install` writes binaries to CARGO_HOME/bin, but self-hosted runner
+# services do not necessarily inherit a login-shell PATH for the runner user.
+CARGO_BIN_DIR="${CARGO_HOME:-$HOME/.cargo}/bin"
+export PATH="$CARGO_BIN_DIR:$PATH"
+TXGEN_TEMPO_BIN="${TXGEN_TEMPO_BIN:-txgen-tempo}"
+TXGEN_BENCH_BIN="${TXGEN_BENCH_BIN:-bench}"
+
 # ============================================================================
 # Install txgen-tempo and bench-cli
 # ============================================================================
 
 echo "Installing txgen-tempo and bench-cli..."
-cargo install --git "https://x-access-token:${DEREK_PAT}@github.com/tempoxyz/txgen" --locked txgen-tempo bench-cli
+cargo install --git "https://x-access-token:${DEREK_BENCH_REPLAY_TOKEN}@github.com/tempoxyz/txgen" --locked txgen-tempo bench-cli
+command -v "$TXGEN_TEMPO_BIN"
+command -v "$TXGEN_BENCH_BIN"
 
 # ============================================================================
 # Build baseline + feature binaries
@@ -253,8 +262,8 @@ run_single() {
   if [ "$WARMUP" -gt 0 ]; then
     local warmup_to=$(( from_block + WARMUP - 1 ))
     echo "Running warmup ($WARMUP blocks: $from_block..$warmup_to)..."
-    txgen-tempo extract --rpc "$REPLAY_RPC_URL" --from "$from_block" --to "$warmup_to" \
-      | bench send-blocks \
+    "$TXGEN_TEMPO_BIN" extract --rpc "$REPLAY_RPC_URL" --from "$from_block" --to "$warmup_to" \
+      | "$TXGEN_BENCH_BIN" send-blocks \
         --engine http://127.0.0.1:8551 \
         --jwt-secret "$DATADIR/jwt.hex" 2>&1 | sed -u "s/^/[bench] /"
     from_block=$(( warmup_to + 1 ))
@@ -263,8 +272,8 @@ run_single() {
   # Benchmark
   local bench_to=$(( from_block + BLOCKS - 1 ))
   echo "Running benchmark ($BLOCKS blocks: $from_block..$bench_to)..."
-  txgen-tempo extract --rpc "$REPLAY_RPC_URL" --from "$from_block" --to "$bench_to" \
-    | bench send-blocks \
+  "$TXGEN_TEMPO_BIN" extract --rpc "$REPLAY_RPC_URL" --from "$from_block" --to "$bench_to" \
+    | "$TXGEN_BENCH_BIN" send-blocks \
       --engine http://127.0.0.1:8551 \
       --jwt-secret "$DATADIR/jwt.hex" \
       --metrics-url http://localhost:9001 \
