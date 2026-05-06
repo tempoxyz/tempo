@@ -747,10 +747,8 @@ impl TIP20Token {
             return Err(TIP1028EscrowError::escrow_address_reserved().into());
         }
 
-        self.validate_transfer(call.from, &to)?;
-        self.consume_allowance(call.from, msg_sender, call.amount)?;
-
-        let transferred = self.transfer_or_escrow(
+        let transferred = self._transfer_from(
+            msg_sender,
             call.from,
             &to,
             call.amount,
@@ -775,10 +773,8 @@ impl TIP20Token {
             return Err(TIP1028EscrowError::escrow_address_reserved().into());
         }
 
-        self.validate_transfer(call.from, &to)?;
-        self.consume_allowance(call.from, msg_sender, call.amount)?;
-
-        let transferred = self.transfer_or_escrow(
+        let transferred = self._transfer_from(
+            msg_sender,
             call.from,
             &to,
             call.amount,
@@ -841,12 +837,12 @@ impl TIP20Token {
         from: Address,
         to: &Recipient,
         amount: U256,
+        kind: InboundKind,
+        memo: B256,
     ) -> Result<bool> {
         self.validate_transfer(from, to)?;
         self.consume_allowance(from, msg_sender, amount)?;
-        self._transfer(from, to, amount)?;
-
-        Ok(true)
+        self.transfer_or_escrow(from, to, amount, kind, memo)
     }
 
     fn consume_allowance(&mut self, owner: Address, spender: Address, amount: U256) -> Result<()> {
