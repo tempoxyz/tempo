@@ -437,7 +437,7 @@ jobs:
       feature-env: ${{ needs.tempo-bench-ack.outputs.feature-env }}
       comment-id: ${{ needs.tempo-bench-ack.outputs.comment-id }}
     secrets:
-      DEREK_BENCH_REPLAY_TOKEN: ${{ secrets.DEREK_BENCH_REPLAY_TOKEN }}
+      DEREK_PAT: ${{ secrets.DEREK_BENCH_REPLAY_TOKEN }}
       TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
       GRAFANA_TEMPO: ${{ secrets.GRAFANA_TEMPO }}
       CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
