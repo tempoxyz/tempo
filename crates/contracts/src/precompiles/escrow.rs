@@ -28,9 +28,9 @@ crate::sol! {
 
         error UnauthorizedClaimer();
         error InvalidReceiptClaim();
-        error ClaimDestinationUnauthorized();
         error InsufficientEscrowBalance();
         error EscrowAddressReserved();
+        error InvalidClaimAddress();
         error InvalidToken();
     }
 }
@@ -44,16 +44,16 @@ impl TIP1028EscrowError {
         Self::InvalidReceiptClaim(ITIP1028Escrow::InvalidReceiptClaim {})
     }
 
-    pub const fn claim_destination_unauthorized() -> Self {
-        Self::ClaimDestinationUnauthorized(ITIP1028Escrow::ClaimDestinationUnauthorized {})
-    }
-
     pub const fn insufficient_escrow_balance() -> Self {
         Self::InsufficientEscrowBalance(ITIP1028Escrow::InsufficientEscrowBalance {})
     }
 
     pub const fn escrow_address_reserved() -> Self {
         Self::EscrowAddressReserved(ITIP1028Escrow::EscrowAddressReserved {})
+    }
+
+    pub const fn invalid_claim_address() -> Self {
+        Self::InvalidClaimAddress(ITIP1028Escrow::InvalidClaimAddress {})
     }
 
     pub const fn invalid_token() -> Self {

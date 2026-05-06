@@ -22,7 +22,8 @@ use revm::{
 use tempo_contracts::precompiles::{
     AccountKeychainError, AddrRegistryError, FeeManagerError, NonceError, RolesAuthError,
     SignatureVerifierError, StablecoinDEXError, TIP20FactoryError, TIP403RegistryError,
-    TIPFeeAMMError, UnknownFunctionSelector, ValidatorConfigError, ValidatorConfigV2Error,
+    TIP1028EscrowError, TIPFeeAMMError, UnknownFunctionSelector, ValidatorConfigError,
+    ValidatorConfigV2Error,
 };
 
 /// Top-level error type for all Tempo precompile operations
@@ -86,6 +87,10 @@ pub enum TempoPrecompileError {
     #[error("Signature verifier error: {0:?}")]
     SignatureVerifierError(SignatureVerifierError),
 
+    /// Error from TIP-1028 escrow precompile
+    #[error("TIP1028 escrow error: {0:?}")]
+    TIP1028EscrowError(TIP1028EscrowError),
+
     /// Gas limit exceeded during precompile execution.
     #[error("Gas limit exceeded")]
     OutOfGas,
@@ -148,6 +153,7 @@ impl TempoPrecompileError {
             | Self::ValidatorConfigV2Error(_)
             | Self::AccountKeychainError(_)
             | Self::SignatureVerifierError(_)
+            | Self::TIP1028EscrowError(_)
             | Self::UnknownFunctionSelector(_) => false,
         }
     }
@@ -194,6 +200,7 @@ impl TempoPrecompileError {
             Self::ValidatorConfigV2Error(e) => e.abi_encode().into(),
             Self::AccountKeychainError(e) => e.abi_encode().into(),
             Self::SignatureVerifierError(e) => e.abi_encode().into(),
+            Self::TIP1028EscrowError(e) => e.abi_encode().into(),
             Self::OutOfGas => {
                 return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, reservoir));
             }
@@ -261,6 +268,7 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     add_errors_to_registry(&mut registry, TempoPrecompileError::ValidatorConfigV2Error);
     add_errors_to_registry(&mut registry, TempoPrecompileError::AccountKeychainError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::SignatureVerifierError);
+    add_errors_to_registry(&mut registry, TempoPrecompileError::TIP1028EscrowError);
 
     registry
 }

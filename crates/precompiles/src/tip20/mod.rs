@@ -12,7 +12,7 @@ pub mod dispatch;
 pub mod rewards;
 pub mod roles;
 
-use tempo_contracts::precompiles::STABLECOIN_DEX_ADDRESS;
+use tempo_contracts::precompiles::{ESCROW_ADDRESS, STABLECOIN_DEX_ADDRESS, TIP1028EscrowError};
 pub use tempo_contracts::precompiles::{
     IRolesAuth, ITIP20, RolesAuthError, RolesAuthEvent, TIP20Error, TIP20Event, USD_CURRENCY,
 };

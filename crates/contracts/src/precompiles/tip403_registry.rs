@@ -13,6 +13,12 @@ crate::sol! {
             COMPOUND
         }
 
+        enum BlockedReason {
+            NONE,
+            TOKEN_FILTER,
+            RECEIVE_POLICY
+        }
+
         // View Functions
         function policyIdCounter() external view returns (uint64);
         function policyExists(uint64 policyId) external view returns (bool);
