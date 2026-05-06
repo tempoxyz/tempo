@@ -734,8 +734,22 @@ impl TIP20Token {
         call: ITIP20::transferFromCall,
     ) -> Result<bool> {
         let to = Recipient::resolve(call.to)?;
-        self._transfer_from(msg_sender, call.from, &to, call.amount)?;
-        if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
+        if self.storage.spec().is_t6() && (call.to == ESCROW_ADDRESS || to.target == ESCROW_ADDRESS)
+        {
+            return Err(TIP1028EscrowError::escrow_address_reserved().into());
+        }
+
+        self.validate_transfer(call.from, &to)?;
+        self.consume_allowance(call.from, msg_sender, call.amount)?;
+
+        let transferred = self.transfer_or_escrow(
+            call.from,
+            &to,
+            call.amount,
+            InboundKind::TRANSFER,
+            B256::ZERO,
+        )?;
+        if transferred && let Some(hop) = to.build_virtual_transfer_event(call.amount) {
             self.emit_event(hop)?;
         }
         Ok(true)
@@ -798,8 +812,14 @@ impl TIP20Token {
         amount: U256,
     ) -> Result<bool> {
         self.validate_transfer(from, to)?;
+        self.consume_allowance(from, msg_sender, amount)?;
+        self._transfer(from, to, amount)?;
 
-        let allowed = self.get_allowance(from, msg_sender)?;
+        Ok(true)
+    }
+
+    fn consume_allowance(&mut self, owner: Address, spender: Address, amount: U256) -> Result<()> {
+        let allowed = self.get_allowance(owner, spender)?;
         if amount > allowed {
             return Err(TIP20Error::insufficient_allowance().into());
         }
@@ -808,12 +828,9 @@ impl TIP20Token {
             let new_allowance = allowed
                 .checked_sub(amount)
                 .ok_or(TIP20Error::insufficient_allowance())?;
-            self.set_allowance(from, msg_sender, new_allowance)?;
+            self.set_allowance(owner, spender, new_allowance)?;
         }
-
-        self._transfer(from, to, amount)?;
-
-        Ok(true)
+        Ok(())
     }
 
     /// Like [`Self::transfer`], but attaches a 32-byte memo.
