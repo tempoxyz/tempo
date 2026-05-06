@@ -45,7 +45,7 @@ pub(crate) struct Config {
     /// execution layer.
     pub(crate) fcu_heartbeat_interval: std::time::Duration,
 
-    /// The node's ed25519 public key. Used to track how many finalized blocks
-    /// were proposed by this node.
-    pub(crate) public_key: PublicKey,
+    /// The node's ed25519 public key if the node is participating in
+    /// consensus. Not set if not, for example for followers.
+    pub(crate) public_key: Option<PublicKey>,
 }

@@ -137,8 +137,9 @@ pub(crate) struct Actor<TContext> {
 
     latest_observed_finalized_tip: Option<(Height, Digest)>,
 
-    /// The node's ed25519 public key.
-    public_key: PublicKey,
+    /// The node's ed25519 public key if the node is participating in
+    /// consensus. Not set if not, for example for followers.
+    public_key: Option<PublicKey>,
 
     metrics: Metrics,
 }
@@ -597,11 +598,11 @@ where
             neither valid nor syncing: `{payload_status}`"
         );
 
-        if let Some(ctx) = consensus_context {
-            let proposer: PublicKey = ctx.proposer.get().into();
-            if proposer == self.public_key {
-                self.metrics.finalized_blocks_proposed_by_self.inc();
-            }
+        if let Some(public_key) = self.public_key.as_ref()
+            && consensus_context
+                .is_some_and(|context| &PublicKey::from(context.proposer.get()) == public_key)
+        {
+            self.metrics.finalized_blocks_proposed_by_self.inc();
         }
 
         acknowledgment.acknowledge();
