@@ -5,11 +5,10 @@ use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::IStablecoinDEX::IStablecoinDEXCalls;
 
 use crate::{
-    Precompile, charge_input_cost, mutate, mutate_void,
+    Precompile, charge_input_cost, dispatch, mutate, mutate_void,
     stablecoin_dex::{StablecoinDEX, orderbook::compute_book_key},
     view,
 };
-use crate::dispatch;
 
 impl Precompile for StablecoinDEX {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {

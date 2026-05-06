@@ -8,9 +8,10 @@
 pub mod error;
 pub use error::{IntoPrecompileResult, Result};
 
-pub mod storage;
+mod dispatch;
+pub(crate) use dispatch::{SelectorSchedule, dispatch_call, metadata, mutate, mutate_void, view};
 
-mod dispatch_macro;
+pub mod storage;
 
 pub(crate) mod ip_validation;
 
@@ -39,13 +40,7 @@ use crate::{
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::TempoAddressExt;
 
-#[cfg(test)]
-use alloy::sol_types::SolInterface;
-use alloy::{
-    primitives::{Address, Bytes},
-    sol,
-    sol_types::{SolCall, SolError},
-};
+use alloy::{primitives::Address, sol, sol_types::SolError};
 use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
 use revm::{
     context::CfgEnv,
@@ -149,10 +144,7 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
     });
 }
 
-sol! {
-    error DelegateCallNotAllowed();
-    error StaticCallNotAllowed();
-}
+sol! { error DelegateCallNotAllowed(); }
 
 macro_rules! tempo_precompile {
     ($id:expr, $cfg:expr, |$input:ident| $impl:expr) => {{
@@ -260,56 +252,6 @@ impl SignatureVerifier {
     }
 }
 
-/// Dispatches a parameterless view call, encoding the return via `T`.
-#[inline]
-fn metadata<T: SolCall>(f: impl FnOnce() -> Result<T::Return>) -> PrecompileResult {
-    f().into_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
-}
-
-/// Dispatches a read-only call with decoded arguments, encoding the return via `T`.
-#[inline]
-fn view<T: SolCall>(call: T, f: impl FnOnce(T) -> Result<T::Return>) -> PrecompileResult {
-    f(call).into_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
-}
-
-/// Dispatches a state-mutating call that returns ABI-encoded data.
-///
-/// Rejects static calls with [`StaticCallNotAllowed`].
-#[inline]
-fn mutate<T: SolCall>(
-    call: T,
-    sender: Address,
-    f: impl FnOnce(Address, T) -> Result<T::Return>,
-) -> PrecompileResult {
-    if StorageCtx.is_static() {
-        return Ok(PrecompileOutput::revert(
-            0,
-            StaticCallNotAllowed {}.abi_encode().into(),
-            StorageCtx.reservoir(),
-        ));
-    }
-    f(sender, call).into_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
-}
-
-/// Dispatches a state-mutating call that returns no data (e.g. `approve`, `transfer`).
-///
-/// Rejects static calls with [`StaticCallNotAllowed`].
-#[inline]
-fn mutate_void<T: SolCall>(
-    call: T,
-    sender: Address,
-    f: impl FnOnce(Address, T) -> Result<()>,
-) -> PrecompileResult {
-    if StorageCtx.is_static() {
-        return Ok(PrecompileOutput::revert(
-            0,
-            StaticCallNotAllowed {}.abi_encode().into(),
-            StorageCtx.reservoir(),
-        ));
-    }
-    f(sender, call).into_precompile_result(0, 0, |()| Bytes::new())
-}
-
 /// Deducts the calldata input cost, returning an OOG halt result if insufficient gas.
 #[inline]
 pub(crate) fn charge_input_cost(
@@ -348,131 +290,16 @@ fn fill_state_gas(output: &mut PrecompileOutput, storage: &StorageCtx) {
     }
 }
 
-/// A selector schedule at a given hardfork boundary.
-///
-/// Before the hardfork activates, selectors in `added` are treated as unknown.
-/// After it activates, selectors in `dropped` are treated as unknown.
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct SelectorSchedule<'a> {
-    hardfork: TempoHardfork,
-    added: &'a [[u8; 4]],
-    dropped: &'a [[u8; 4]],
-}
-
-impl<'a> SelectorSchedule<'a> {
-    /// Creates a new schedule anchored at `hardfork` with no selectors registered yet.
-    pub(crate) const fn new(hardfork: TempoHardfork) -> Self {
-        Self {
-            hardfork,
-            added: &[],
-            dropped: &[],
-        }
-    }
-
-    /// Registers selectors that are introduced at this hardfork boundary.
-    ///
-    /// These selectors are treated as unknown BEFORE `hardfork` activates.
-    pub(crate) const fn with_added(mut self, selectors: &'a [[u8; 4]]) -> Self {
-        self.added = selectors;
-        self
-    }
-
-    /// Registers selectors that are removed at this hardfork boundary.
-    ///
-    /// These selectors are treated as unknown ONCE `hardfork` activates.
-    pub(crate) const fn with_dropped(mut self, selectors: &'a [[u8; 4]]) -> Self {
-        self.dropped = selectors;
-        self
-    }
-
-    /// Returns `true` if this schedule gates out `selector` under the `active` hardfork.
-    #[inline]
-    fn rejects(self, selector: [u8; 4], active: TempoHardfork) -> bool {
-        if self.hardfork <= active {
-            self.dropped
-        } else {
-            self.added
-        }
-        .contains(&selector)
-    }
-}
-
-/// Applies hardfork selector schedules, decodes calldata via `decode`, then dispatches to `f`.
-///
-/// Handles missing selectors (revert on T1+, error on earlier forks), hardfork-gated selectors,
-/// unknown selectors (ABI-encoded `UnknownFunctionSelector`), and malformed ABI data (empty
-/// revert).
-#[inline]
-pub(crate) fn dispatch_call<T>(
-    calldata: &[u8],
-    hardforks: &[SelectorSchedule<'_>],
-    decode: impl FnOnce(&[u8]) -> core::result::Result<T, alloy::sol_types::Error>,
-    f: impl FnOnce(T) -> PrecompileResult,
-) -> PrecompileResult {
-    let storage = StorageCtx::default();
-
-    if calldata.len() < 4 {
-        if storage.spec().is_t1() {
-            return Ok(storage.revert_output(Bytes::new()));
-        } else {
-            return Ok(storage.halt_output(PrecompileHalt::Other(
-                "Invalid input: missing function selector".into(),
-            )));
-        }
-    }
-
-    let selector: [u8; 4] = calldata[..4].try_into().expect("calldata len >= 4");
-    if hardforks
-        .iter()
-        .any(|schedule| schedule.rejects(selector, storage.spec()))
-    {
-        return storage.error_result(error::TempoPrecompileError::UnknownFunctionSelector(
-            selector,
-        ));
-    }
-
-    let result = decode(calldata);
-
-    match result {
-        Ok(call) => f(call).map(|mut res| {
-            // TODO: fix this, each precompile handler should either return output with proper gas values or don't return any gas values at all.
-            res.gas_used = storage.gas_used();
-            fill_state_gas(&mut res, &storage);
-            res
-        }),
-        Err(alloy::sol_types::Error::UnknownSelector { selector, .. }) => storage.error_result(
-            error::TempoPrecompileError::UnknownFunctionSelector(*selector),
-        ),
-        Err(_) => Ok(storage.revert_output(Bytes::new())),
-    }
-}
-
-/// Asserts that `result` is a reverted output whose bytes decode to `expected_error`.
-#[cfg(test)]
-pub fn expect_precompile_revert<E>(result: &PrecompileResult, expected_error: E)
-where
-    E: SolInterface + PartialEq + std::fmt::Debug,
-{
-    match result {
-        Ok(result) => {
-            assert!(result.is_revert());
-            let decoded = E::abi_decode(&result.bytes).unwrap();
-            assert_eq!(decoded, expected_error);
-        }
-        Err(other) => {
-            panic!("expected reverted output, got: {other:?}");
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
-        storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        tip20::TIP20Token,
+        dispatch::StaticCallNotAllowed, storage::hashmap::HashMapStorageProvider, tip20::TIP20Token,
     };
-    use alloy::primitives::{Address, Bytes, U256, bytes};
+    use alloy::{
+        primitives::{Address, Bytes, U256, bytes},
+        sol_types::{SolCall, SolInterface},
+    };
     use alloy_evm::{
         EthEvmFactory, EvmEnv, EvmFactory, EvmInternals,
         precompiles::{Precompile as AlloyEvmPrecompile, PrecompileInput},
@@ -651,74 +478,6 @@ mod tests {
             output.gas_used > 0,
             "early-return revert should report non-zero gas_used, got {}",
             output.gas_used
-        );
-    }
-
-    #[test]
-    fn test_invalid_calldata_hardfork_behavior() {
-        let call_with_spec = |calldata: Bytes, spec: TempoHardfork| {
-            let mut cfg = CfgEnv::<TempoHardfork>::default();
-            cfg.set_spec_and_mainnet_gas_params(spec);
-            let tx = TxEnv::default();
-            let precompile = tempo_precompile!("TIP20Token", &cfg, |input| {
-                TIP20Token::from_address(PATH_USD_ADDRESS).expect("PATH_USD_ADDRESS is valid")
-            });
-
-            let mut db = CacheDB::new(EmptyDB::new());
-            db.insert_account_info(
-                PATH_USD_ADDRESS,
-                AccountInfo {
-                    code: Some(Bytecode::new_raw(bytes!("0xEF"))),
-                    ..Default::default()
-                },
-            );
-            let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
-            let block = evm.block.clone();
-            let evm_internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
-
-            let input = PrecompileInput {
-                data: &calldata,
-                caller: Address::ZERO,
-                internals: evm_internals,
-                gas: 1_000_000,
-                is_static: false,
-                value: U256::ZERO,
-                target_address: PATH_USD_ADDRESS,
-                bytecode_address: PATH_USD_ADDRESS,
-                reservoir: 0,
-            };
-
-            AlloyEvmPrecompile::call(&precompile, input)
-        };
-
-        // T1: empty calldata (missing selector) should return a reverted output
-        let empty = call_with_spec(Bytes::new(), TempoHardfork::T1)
-            .expect("T1: expected Ok with reverted output");
-        assert!(empty.is_revert(), "T1: expected reverted output");
-        assert!(empty.bytes.is_empty());
-        // Gas was consumed
-        assert!(empty.gas_used > 0);
-
-        // T1: unknown selector should return a reverted output with UnknownFunctionSelector error
-        let unknown = call_with_spec(Bytes::from([0xAA; 4]), TempoHardfork::T1)
-            .expect("T1: expected Ok with reverted output");
-        assert!(unknown.is_revert(), "T1: expected reverted output");
-
-        // Verify it's an UnknownFunctionSelector error with the correct selector
-        let decoded =
-            tempo_contracts::precompiles::UnknownFunctionSelector::abi_decode(&unknown.bytes)
-                .expect("T1: expected UnknownFunctionSelector error");
-        assert_eq!(decoded.selector.as_slice(), &[0xAA, 0xAA, 0xAA, 0xAA]);
-
-        // Verify gas is tracked for both cases (unknown selector may cost slightly more due `INPUT_PER_WORD_COST`)
-        assert!(unknown.gas_used >= empty.gas_used);
-
-        // Pre-T1 (T0): invalid calldata should return a halted output
-        let result = call_with_spec(Bytes::new(), TempoHardfork::T0);
-        let output = result.expect("T0: expected Ok(halt) for invalid calldata");
-        assert!(
-            output.is_halt(),
-            "T0: expected halted output for invalid calldata"
         );
     }
 

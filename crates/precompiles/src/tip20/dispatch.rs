@@ -1,8 +1,7 @@
 //! ABI dispatch for the [`TIP20Token`] precompile.
 
-use crate::dispatch;
 use crate::{
-    Precompile, charge_input_cost, metadata, mutate, mutate_void,
+    Precompile, charge_input_cost, dispatch, metadata, mutate, mutate_void,
     storage::ContractStorage,
     tip20::{ITIP20, TIP20Token},
     view,

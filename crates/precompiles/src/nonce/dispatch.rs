@@ -1,10 +1,9 @@
 //! ABI dispatch for the [`NonceManager`] precompile.
 
-use crate::{Precompile, charge_input_cost, nonce::NonceManager, view};
+use crate::{Precompile, charge_input_cost, dispatch, nonce::NonceManager, view};
 use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::INonce::INonceCalls;
-use crate::dispatch;
 
 impl Precompile for NonceManager {
     fn call(&mut self, calldata: &[u8], _msg_sender: Address) -> PrecompileResult {

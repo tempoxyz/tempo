@@ -1,11 +1,10 @@
 use super::SignatureVerifier;
-use crate::{Precompile, charge_input_cost, view};
+use crate::{Precompile, charge_input_cost, dispatch, view};
 use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::{
     ISignatureVerifier::ISignatureVerifierCalls as ISVCalls, SignatureVerifierError,
 };
-use crate::dispatch;
 use tempo_primitives::MAX_WEBAUTHN_SIGNATURE_LENGTH;
 
 /// Maximum valid calldata size: `verify(address,bytes32,bytes)` with a WebAuthn signature is the
@@ -39,9 +38,9 @@ impl Precompile for SignatureVerifier {
 mod tests {
     use super::*;
     use crate::{
-        Precompile, expect_precompile_revert,
+        Precompile,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{assert_full_coverage, check_selector_coverage},
+        test_util::{assert_full_coverage, check_selector_coverage, expect_precompile_revert},
     };
     use alloy::{primitives::B256, sol_types::SolCall};
     use alloy_signer::SignerSync;

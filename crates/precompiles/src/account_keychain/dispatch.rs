@@ -1,6 +1,6 @@
 //! ABI dispatch for the [`AccountKeychain`] precompile.
 use super::{AccountKeychain, KeyRestrictions, TokenLimit, authorizeKeyCall};
-use crate::{Precompile, charge_input_cost, mutate_void, view};
+use crate::{Precompile, charge_input_cost, dispatch, mutate_void, view};
 use alloy::{
     primitives::Address,
     sol_types::{SolCall, SolInterface},
@@ -10,7 +10,6 @@ use tempo_contracts::precompiles::{
     AccountKeychainError,
     IAccountKeychain::{self, IAccountKeychainCalls},
 };
-use crate::dispatch;
 
 impl Precompile for AccountKeychain {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {

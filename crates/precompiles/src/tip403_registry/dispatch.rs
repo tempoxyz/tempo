@@ -1,7 +1,7 @@
 //! ABI dispatch for the [`TIP403Registry`] precompile.
 
 use crate::{
-    Precompile, charge_input_cost, mutate, mutate_void,
+    Precompile, charge_input_cost, dispatch, mutate, mutate_void,
     tip403_registry::{AuthRole, TIP403Registry},
     view,
 };
@@ -11,7 +11,6 @@ use alloy::{
 };
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::ITIP403Registry::{self, ITIP403RegistryCalls};
-use crate::dispatch;
 
 impl Precompile for TIP403Registry {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {

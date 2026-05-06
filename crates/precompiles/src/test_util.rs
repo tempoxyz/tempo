@@ -11,9 +11,9 @@ use crate::{
 };
 use alloy::{
     primitives::{Address, B256, U256, address, hex_literal::hex},
-    sol_types::SolError,
+    sol_types::{SolError, SolInterface},
 };
-use revm::precompile::PrecompileError;
+use revm::precompile::{PrecompileError, PrecompileResult};
 #[cfg(any(test, feature = "test-utils"))]
 use tempo_contracts::precompiles::TIP20Error;
 use tempo_contracts::precompiles::{TIP20_FACTORY_ADDRESS, UnknownFunctionSelector};
@@ -470,4 +470,21 @@ pub fn register_virtual_master(registry: &mut AddressRegistry) -> Result<(Master
     )?;
     let virtual_addr = Address::new_virtual(master_id, UserTag::new(hex!("010203040506")));
     Ok((master_id, virtual_addr))
+}
+
+/// Asserts that `result` is a reverted output whose bytes decode to `expected_error`.
+pub fn expect_precompile_revert<E>(result: &PrecompileResult, expected_error: E)
+where
+    E: SolInterface + PartialEq + std::fmt::Debug,
+{
+    match result {
+        Ok(result) => {
+            assert!(result.is_revert());
+            let decoded = E::abi_decode(&result.bytes).unwrap();
+            assert_eq!(decoded, expected_error);
+        }
+        Err(other) => {
+            panic!("expected reverted output, got: {other:?}");
+        }
+    }
 }

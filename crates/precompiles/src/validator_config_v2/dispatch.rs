@@ -1,11 +1,10 @@
 //! ABI dispatch for the [`ValidatorConfigV2`] precompile (T2+).
 
 use super::*;
-use crate::{Precompile, charge_input_cost, mutate, mutate_void, view};
+use crate::{Precompile, charge_input_cost, dispatch, mutate, mutate_void, view};
 use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::IValidatorConfigV2::IValidatorConfigV2Calls;
-use crate::dispatch;
 
 impl Precompile for ValidatorConfigV2 {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -66,9 +65,8 @@ impl Precompile for ValidatorConfigV2 {
 mod tests {
     use super::*;
     use crate::{
-        expect_precompile_revert,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{assert_full_coverage, check_selector_coverage},
+        test_util::{assert_full_coverage, check_selector_coverage, expect_precompile_revert},
     };
     use alloy::{
         primitives::{Address, FixedBytes},

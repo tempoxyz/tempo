@@ -1,10 +1,9 @@
 //! ABI dispatch for the [`TIP20Factory`] precompile.
 
-use crate::{Precompile, charge_input_cost, mutate, tip20_factory::TIP20Factory, view};
+use crate::{Precompile, charge_input_cost, dispatch, mutate, tip20_factory::TIP20Factory, view};
 use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::ITIP20Factory::ITIP20FactoryCalls;
-use crate::dispatch;
 
 impl Precompile for TIP20Factory {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {

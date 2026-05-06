@@ -1,7 +1,7 @@
 //! ABI dispatch for the [`TipFeeManager`] precompile.
 
 use crate::{
-    Precompile, charge_input_cost, metadata, mutate, mutate_void,
+    Precompile, charge_input_cost, dispatch, metadata, mutate, mutate_void,
     storage::Handler,
     tip_fee_manager::{
         ITIPFeeAMM, TipFeeManager,
@@ -12,7 +12,6 @@ use crate::{
 use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::{IFeeManager::IFeeManagerCalls, ITIPFeeAMM::ITIPFeeAMMCalls};
-use crate::dispatch;
 
 /// Unified calldata discriminant for both `IFeeManager` and `ITIPFeeAMM` selectors.
 ///
@@ -117,9 +116,11 @@ impl Precompile for TipFeeManager {
 mod tests {
     use super::*;
     use crate::{
-        Precompile, expect_precompile_revert,
+        Precompile,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
+        test_util::{
+            TIP20Setup, assert_full_coverage, check_selector_coverage, expect_precompile_revert,
+        },
         tip_fee_manager::{
             FeeManagerError,
             amm::{M, MIN_LIQUIDITY, N, PoolKey, SCALE},
