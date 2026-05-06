@@ -132,6 +132,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
         Ok(TempoTxEnv {
             fee_token,
             is_system_tx: false,
+            channel_open_context_hash: None,
             fee_payer,
             tempo_tx_env: if !calls.is_empty()
                 || !tempo_authorization_list.is_empty()
