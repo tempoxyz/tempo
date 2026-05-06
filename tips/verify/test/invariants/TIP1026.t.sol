@@ -235,13 +235,16 @@ contract TIP1026InvariantTest is InvariantBaseTest {
     ///      a well-formed URI with an allowlisted scheme (i.e. the protocol
     ///      should accept it, ignoring the length cap).
     ///
-    ///      If the requested length is shorter than the chosen scheme prefix,
-    ///      the prefix is truncated — producing a string with no `:` — and
-    ///      `wellFormedAllowed` is `false` since the protocol will reject it
-    ///      as `InvalidLogoURI`. This intentionally exercises both the
-    ///      "no parseable scheme" and "scheme not in allowlist" branches of
-    ///      `setLogoURI`/`createToken`. `len == 0` returns `("", false)` —
-    ///      callers handle empty as a separate accepted case.
+    ///      If the requested length is shorter than the scheme prefix's `:`
+    ///      separator, the produced slice has no parseable scheme and
+    ///      `wellFormedAllowed` is `false` (the protocol rejects it as
+    ///      `InvalidLogoURI`). Once the slice includes the `:`, however, the
+    ///      protocol parses the full scheme name and accepts the URI iff that
+    ///      scheme is allowlisted — so e.g. `"https:"`, `"https:/"`, `"http:"`,
+    ///      `"ipfs:"`, `"data:"` are all accepted (`split_once(':')` yields
+    ///      the allowlisted scheme name and an empty / partial path is fine
+    ///      per RFC 3986 §3.1). `len == 0` returns `("", false)` — callers
+    ///      handle empty as a separate accepted case.
     function _buildUri(
         uint256 schemeSeed,
         uint256 len
@@ -254,9 +257,12 @@ contract TIP1026InvariantTest is InvariantBaseTest {
 
         // Mix of allowed, disallowed, and malformed schemes so the fuzzer
         // exercises every revert/accept path. The first four are in the
-        // TIP-1026 allowlist; the rest are not.
+        // TIP-1026 allowlist; the rest are not. `colonPos[i]` is the byte
+        // offset of `:` inside `schemes[i]` and is used to decide whether a
+        // truncated slice still contains the scheme separator.
         string[8] memory schemes =
             ["https://", "http://", "ipfs://", "data:", "javascript:", "ftp://", "file://", "://"];
+        uint256[8] memory colonPos = [uint256(5), 4, 4, 4, 10, 3, 4, 0];
         uint256 idx = schemeSeed % schemes.length;
         bytes memory prefix = bytes(schemes[idx]);
 
@@ -269,10 +275,11 @@ contract TIP1026InvariantTest is InvariantBaseTest {
             out[i] = "a";
         }
 
-        // Accepted iff the scheme prefix fully fits AND it is allowlisted.
-        // A truncated prefix is necessarily missing its `:` separator, so
-        // the protocol rejects it as `InvalidLogoURI`.
-        wellFormedAllowed = (prefix.length <= len) && (idx < 4);
+        // Accepted iff the slice contains the scheme's `:` AND the scheme is
+        // allowlisted. The protocol parses the scheme as everything before
+        // the first `:` (RFC 3986 §3.1), so e.g. `"https:"` is acceptable
+        // even though the trailing `//` was truncated.
+        wellFormedAllowed = (idx < 4) && (len > colonPos[idx]);
         return (string(out), wellFormedAllowed);
     }
 
