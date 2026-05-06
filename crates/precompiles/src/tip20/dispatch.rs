@@ -824,6 +824,41 @@ mod tests {
     }
 
     #[test]
+    fn test_logo_uri_pre_t5_deploy_post_t5_read_returns_empty() -> eyre::Result<()> {
+        // Storage append-only invariant: a token deployed before T5 must,
+        // after a T5 hardfork transition, expose `logoURI()` as the empty
+        // string (the freshly-introduced slot is uninitialized). This pins
+        // the assumption that the new `logo_uri: String` field at the end
+        // of `TIP20Token` does not collide with any pre-existing slot of
+        // pre-T5 tokens.
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+        let admin = Address::random();
+        let token_address = StorageCtx::enter(&mut storage, || -> eyre::Result<Address> {
+            let token = TIP20Setup::create("Test", "TST", admin).apply()?;
+            Ok(token.address())
+        })?;
+
+        // Activate T5; the token deployed under T4 is now read under T5.
+        storage.set_spec(TempoHardfork::T5);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Token::from_address(token_address)?;
+
+            // Direct accessor: empty by default for pre-T5-deployed tokens.
+            assert_eq!(token.logo_uri()?, "");
+
+            // ABI-level: the previously-gated selector now dispatches and returns "".
+            let calldata = ITIP20::logoURICall {}.abi_encode();
+            let result = token.call(&calldata, admin)?;
+            assert!(!result.is_revert(), "logoURI() must succeed post-T5");
+            let decoded = ITIP20::logoURICall::abi_decode_returns(&result.bytes)?;
+            assert_eq!(decoded, "");
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_permit_selectors_gated_behind_t2() -> eyre::Result<()> {
         // Pre-T2: permit/nonces/DOMAIN_SEPARATOR should return unknown selector
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
