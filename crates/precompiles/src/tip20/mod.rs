@@ -457,8 +457,7 @@ impl TIP20Token {
         Ok(())
     }
 
-    /// Raw mint: bumps supply, credits `to.target`, emits the transfer event from the
-    /// zero address. Callers enforce role and policy checks.
+    /// Internal helper to mint new tokens and update balances.
     fn _mint(&mut self, to: &Recipient, amount: U256) -> Result<()> {
         let total_supply = self.total_supply()?;
         let new_supply = total_supply
