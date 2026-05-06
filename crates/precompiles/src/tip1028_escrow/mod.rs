@@ -56,8 +56,8 @@ impl TIP1028Escrow {
         .read()
     }
 
-    /// Records a blocked inbound `(token, sender, recipient)` and emits `TransferBlocked`
-    /// (transfers only). Caller moves the funds into escrow in the same checkpoint.
+    /// Records a blocked inbound transfer or mint and emits `TransferBlocked` for
+    /// transfers. Caller moves the funds into escrow in the same checkpoint.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn store_blocked(
         &mut self,
@@ -204,7 +204,7 @@ impl TIP1028Escrow {
             .map_err(|_| TIP1028EscrowError::invalid_receipt_claim().into())
     }
 
-    /// Content hash over every receipt field; any mutation yields a different (empty) slot.
+    /// Content hash over every receipt field. Any mutation yields a different empty slot.
     fn receipt_key(
         &self,
         receipt_version: u8,

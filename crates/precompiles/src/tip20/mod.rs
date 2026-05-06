@@ -443,8 +443,8 @@ impl TIP20Token {
         Ok(())
     }
 
-    /// Raw mint: bumps supply, credits `to.target`, emits `Transfer(0, to, amount)`.
-    /// Callers enforce role and policy checks.
+    /// Raw mint: bumps supply, credits `to.target`, emits the transfer event from the
+    /// zero address. Callers enforce role and policy checks.
     fn _mint(&mut self, to: &Recipient, amount: U256) -> Result<()> {
         let total_supply = self.total_supply()?;
         let new_supply = total_supply
@@ -838,8 +838,7 @@ impl TIP20Token {
         self.transfer_or_escrow(from, to, amount, kind, memo)
     }
 
-    /// Decrements `spender`'s allowance on `owner` by `amount`. No-op for infinite
-    /// allowances (`U256::MAX`). Errors with `InsufficientAllowance` if `amount > allowed`.
+    /// Debits `spender`'s allowance on `owner`. No-op when unlimited.
     fn consume_allowance(&mut self, owner: Address, spender: Address, amount: U256) -> Result<()> {
         let allowed = self.get_allowance(owner, spender)?;
         if amount > allowed {
@@ -1039,11 +1038,8 @@ impl TIP20Token {
         AccountKeychain::new().authorize_transfer(from, self.address, amount)
     }
 
-    /// TIP-1028 receive-policy gate for inbound transfers. Pre-T6 or when the recipient's
-    /// receive policy authorizes `from`, performs a normal [`Self::_transfer`] and returns
-    /// `true`. Otherwise debits `from` to [`ESCROW_ADDRESS`] and records a blocked entry
-    /// tagged with `kind` and `memo`, returning `false`. Callers must suppress
-    /// follow-up events (virtual hops, `TransferWithMemo`) when this returns `false`.
+    /// Transfers `amount` from `from` to `to`, escrowing if `to`'s receive policy blocks
+    /// `from`. Returns `true` on direct transfer, `false` on escrow.
     fn transfer_or_escrow(
         &mut self,
         from: Address,
@@ -1085,12 +1081,8 @@ impl TIP20Token {
         Ok(false)
     }
 
-    /// TIP-1028 receive-policy gate for mints. Enforces `ISSUER_ROLE` and the TIP-403
-    /// mint-recipient check on `to`. Pre-T6 or when the recipient's receive policy
-    /// authorizes the mint, mints to `to` and returns `true`. Otherwise mints into
-    /// [`ESCROW_ADDRESS`] and records a blocked entry tagged with [`InboundKind::MINT`]
-    /// and `memo`, returning `false`. Callers must suppress follow-up events
-    /// (`Mint`, `TransferWithMemo`, virtual hops) when this returns `false`.
+    /// Mints `amount` to `to`, escrowing if `to`'s receive policy blocks the mint.
+    /// Returns `true` on direct mint, `false` on escrow.
     fn mint_or_escrow(
         &mut self,
         msg_sender: Address,
@@ -1173,9 +1165,8 @@ impl TIP20Token {
         self.emit_event(to.build_transfer_event(from, amount))
     }
 
-    /// Atomically debits `originator` to [`ESCROW_ADDRESS`] and records the blocked
-    /// receipt under the master address resolved from `recipient`. The transfer and
-    /// escrow write are checkpointed together so a failure rolls back both.
+    /// Atomically debits `originator` to [`ESCROW_ADDRESS`] and stores the blocked
+    /// receipt under the resolved master of `recipient`.
     fn escrow_funds(
         &mut self,
         originator: Address,

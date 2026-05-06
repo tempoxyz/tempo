@@ -255,8 +255,8 @@ impl TIP403Registry {
         })
     }
 
-    /// Checks `receiver`'s receive policy against `(token, sender)`; returns
-    /// `(authorized, reason, recovery_address)`.
+    /// Checks `receiver`'s receive policy for an inbound transfer. Returns whether the
+    /// transfer is authorized, the blocked reason, and the recovery address.
     pub fn validate_receive_policy(
         &self,
         token: Address,
