@@ -1119,7 +1119,7 @@ impl TIP20Token {
 
     /// Releases escrowed funds to `to`. Self-recovery skips policy checks. Redirects
     /// revalidate the transfer and receive policies and meter the spending limit when set.
-    pub(crate) fn release_from_tip1028_escrow(
+    pub(crate) fn release_from_escrow(
         &mut self,
         originator: Address,
         receiver: Address,

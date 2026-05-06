@@ -157,7 +157,7 @@ impl TIP1028Escrow {
         let guard = self.storage.checkpoint();
         self.blocked_receipt_amount[key].write(U256::ZERO)?;
 
-        TIP20Token::from_address(call.token)?.release_from_tip1028_escrow(
+        TIP20Token::from_address(call.token)?.release_from_escrow(
             receipt.originator,
             receiver,
             call.to,
