@@ -16,12 +16,18 @@ impl Precompile for AddressRegistry {
             IAddressRegistry::registerVirtualMaster(call) => {
                 mutate(call, msg_sender, |s, c| self.register_virtual_master(s, c))
             },
-            IAddressRegistry::getMaster(call) => view(call, |c| {
-                Ok(self.get_master(c.masterId)?.unwrap_or(Address::ZERO))
-            }),
-            IAddressRegistry::resolveRecipient(call) => view(call, |c| self.resolve_recipient(c.to)),
-            IAddressRegistry::resolveVirtualAddress(call) => view(call, |c| self.resolve_virtual_address(c.virtualAddr)),
-            IAddressRegistry::isVirtualAddress(call) => view(call, |c| Ok(c.addr.is_virtual())),
+            IAddressRegistry::getMaster(call) => {
+                view(call, |c| Ok(self.get_master(c.masterId)?.unwrap_or(Address::ZERO)))
+            },
+            IAddressRegistry::resolveRecipient(call) => {
+                view(call, |c| self.resolve_recipient(c.to))
+            },
+            IAddressRegistry::resolveVirtualAddress(call) => {
+                view(call, |c| self.resolve_virtual_address(c.virtualAddr))
+            },
+            IAddressRegistry::isVirtualAddress(call) => {
+                view(call, |c| Ok(c.addr.is_virtual()))
+            },
             IAddressRegistry::decodeVirtualAddress(call) => view(call, |c| {
                 let (is_virtual, master_id, user_tag) = match c.addr.decode_virtual() {
                     Some((mid, tag)) => (true, mid, tag),

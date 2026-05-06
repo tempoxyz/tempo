@@ -18,6 +18,7 @@ impl Precompile for AccountKeychain {
         }
 
         dispatch!(calldata => {
+            // Since T3+ reverts with a custom error, we handle it manually
             IAccountKeychain::authorizeKey_0(call) => {
                 if self.storage.spec().is_t3() {
                     return self.storage.error_result(
@@ -49,50 +50,43 @@ impl Precompile for AccountKeychain {
 
                 mutate_void(call, msg_sender, |sender, c| self.authorize_key(sender, c))
             },
-            // The variant is `authorizeKey_1`, but the call type is `authorizeKeyCall` — the
-            // names differ, so the auto-derived selector doesn't apply. Keep the override.
+            // Since call type `authorizeKeyCall != authorizeKey_1<Call>`, so override its selector.
             #[since = T3, selector = authorizeKeyCall::SELECTOR]
-            IAccountKeychain::authorizeKey_1(call) => {
-                mutate_void(call, msg_sender, |sender, c| self.authorize_key(sender, c))
-            },
-            IAccountKeychain::revokeKey(call) => {
-                mutate_void(call, msg_sender, |sender, c| self.revoke_key(sender, c))
-            },
-            IAccountKeychain::updateSpendingLimit(call) => mutate_void(
-                call,
-                msg_sender,
-                |sender, c| {
+            IAccountKeychain::authorizeKey_1(call) => mutate_void(call, msg_sender, |sender, c| {
+                self.authorize_key(sender, c)
+            }),
+            IAccountKeychain::getKey(call) => view(call, |c| {
+                self.get_key(c)
+            }),
+            IAccountKeychain::revokeKey(call) => mutate_void(call, msg_sender, |sender, c| {
+                self.revoke_key(sender, c)
+            }),
+            IAccountKeychain::updateSpendingLimit(call) => mutate_void(call, msg_sender, |sender, c| {
                 self.update_spending_limit(sender, c)
-                },
-            ),
+            }),
+            IAccountKeychain::getTransactionKey(call) => view(call, |c| {
+                self.get_transaction_key(c, msg_sender)
+            }),
             #[since = T3]
-            IAccountKeychain::setAllowedCalls(call) => mutate_void(
-                call,
-                msg_sender,
-                |sender, c| self.set_allowed_calls(sender, c),
-            ),
+            IAccountKeychain::setAllowedCalls(call) => mutate_void(call, msg_sender, |sender, c| {
+                self.set_allowed_calls(sender, c)
+            }),
             #[since = T3]
-            IAccountKeychain::removeAllowedCalls(call) => mutate_void(
-                call,
-                msg_sender,
-                |sender, c| self.remove_allowed_calls(sender, c),
-            ),
-            IAccountKeychain::getKey(call) => view(call, |c| self.get_key(c)),
+            IAccountKeychain::removeAllowedCalls(call) => mutate_void(call, msg_sender, |sender, c| {
+                self.remove_allowed_calls(sender, c)
+            }),
             #[until = T3]
-            IAccountKeychain::getRemainingLimit(call) => {
-                view(call, |c| self.get_remaining_limit(c))
-            },
+            IAccountKeychain::getRemainingLimit(call) => view(call, |c| {
+                self.get_remaining_limit(c)
+            }),
             #[since = T3]
             IAccountKeychain::getRemainingLimitWithPeriod(call) => view(call, |c| {
                 self.get_remaining_limit_with_period(c)
             }),
             #[since = T3]
-            IAccountKeychain::getAllowedCalls(call) => {
-                view(call, |c| self.get_allowed_calls(c))
-            },
-            IAccountKeychain::getTransactionKey(call) => {
-                view(call, |c| self.get_transaction_key(c, msg_sender))
-            },
+            IAccountKeychain::getAllowedCalls(call) => view(call, |c| {
+                self.get_allowed_calls(c)
+            }),
         })
     }
 }

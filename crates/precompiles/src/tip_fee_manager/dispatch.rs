@@ -42,58 +42,40 @@ impl Precompile for TipFeeManager {
         }
 
         dispatch!(@call = TipFeeManagerCall, calldata => {
-            IFeeManager::userTokens(call) => {
-                view(call, |c| self.user_tokens(c))
-            },
-            IFeeManager::validatorTokens(call) => {
-                view(call, |c| self.get_validator_token(c.validator))
-            },
-            IFeeManager::collectedFees(call) => {
-                view(call, |c| self.collected_fees[c.validator][c.token].read())
-            },
-            IFeeManager::setValidatorToken(call) => {
-                mutate_void(call, msg_sender, |s, c| {
-                    let beneficiary = self.storage.beneficiary();
-                    self.set_validator_token(s, c, beneficiary)
-                })
-            },
-            IFeeManager::setUserToken(call) => {
-                mutate_void(call, msg_sender, |s, c| self.set_user_token(s, c))
-            },
-            IFeeManager::distributeFees(call) => {
-                mutate_void(call, msg_sender, |_, c| self.distribute_fees(c.validator, c.token))
-            },
+            IFeeManager::userTokens(call) => view(call, |c| self.user_tokens(c)),
+            IFeeManager::validatorTokens(call) => view(call, |c| {
+                self.get_validator_token(c.validator)
+            }),
+            IFeeManager::collectedFees(call) => view(call, |c| {
+                self.collected_fees[c.validator][c.token].read()
+            }),
+            IFeeManager::setValidatorToken(call) => mutate_void(call, msg_sender, |s, c| {
+                let beneficiary = self.storage.beneficiary();
+                self.set_validator_token(s, c, beneficiary)
+            }),
+            IFeeManager::setUserToken(call) => mutate_void(call, msg_sender, |s, c| {
+                self.set_user_token(s, c)
+            }),
+            IFeeManager::distributeFees(call) => mutate_void(call, msg_sender, |_, c| {
+                self.distribute_fees(c.validator, c.token)
+            }),
             ITIPFeeAMM::M(_) => metadata::<ITIPFeeAMM::MCall>(|| Ok(M)),
             ITIPFeeAMM::N(_) => metadata::<ITIPFeeAMM::NCall>(|| Ok(N)),
-            ITIPFeeAMM::SCALE(_) => {
-                metadata::<ITIPFeeAMM::SCALECall>(|| Ok(SCALE))
-            },
-            ITIPFeeAMM::MIN_LIQUIDITY(_) => {
-                metadata::<ITIPFeeAMM::MIN_LIQUIDITYCall>(|| Ok(MIN_LIQUIDITY))
-            },
-            ITIPFeeAMM::getPoolId(call) => {
-                view(call, |c| Ok(self.pool_id(c.userToken, c.validatorToken)))
-            },
-            ITIPFeeAMM::getPool(call) => {
-                view(call, |c| Ok(self.get_pool(c)?.into()))
-            },
-            ITIPFeeAMM::pools(call) => {
-                view(call, |c| Ok(self.pools[c.poolId].read()?.into()))
-            },
-            ITIPFeeAMM::totalSupply(call) => {
-                view(call, |c| self.total_supply[c.poolId].read())
-            },
-            ITIPFeeAMM::liquidityBalances(call) => {
-                view(call, |c| self.liquidity_balances[c.poolId][c.user].read())
-            },
+            ITIPFeeAMM::SCALE(_) => metadata::<ITIPFeeAMM::SCALECall>(|| Ok(SCALE)),
+            ITIPFeeAMM::MIN_LIQUIDITY(_) => metadata::<ITIPFeeAMM::MIN_LIQUIDITYCall>(|| {
+                Ok(MIN_LIQUIDITY)
+            }),
+            ITIPFeeAMM::getPoolId(call) => view(call, |c| {
+                Ok(self.pool_id(c.userToken, c.validatorToken))
+            }),
+            ITIPFeeAMM::getPool(call) => view(call, |c| Ok(self.get_pool(c)?.into())),
+            ITIPFeeAMM::pools(call) => view(call, |c| Ok(self.pools[c.poolId].read()?.into())),
+            ITIPFeeAMM::totalSupply(call) => view(call, |c| self.total_supply[c.poolId].read()),
+            ITIPFeeAMM::liquidityBalances(call) => view(call, |c| {
+                self.liquidity_balances[c.poolId][c.user].read()
+            }),
             ITIPFeeAMM::mint(call) => mutate(call, msg_sender, |s, c| {
-                self.mint(
-                    s,
-                    c.userToken,
-                    c.validatorToken,
-                    c.amountValidatorToken,
-                    c.to,
-                )
+                self.mint(s, c.userToken, c.validatorToken, c.amountValidatorToken, c.to)
             }),
             ITIPFeeAMM::burn(call) => mutate(call, msg_sender, |s, c| {
                 let (amount_user_token, amount_validator_token) =
@@ -103,11 +85,9 @@ impl Precompile for TipFeeManager {
                     amountValidatorToken: amount_validator_token,
                 })
             }),
-            ITIPFeeAMM::rebalanceSwap(call) => {
-                mutate(call, msg_sender, |s, c| {
-                    self.rebalance_swap(s, c.userToken, c.validatorToken, c.amountOut, c.to)
-                })
-            },
+            ITIPFeeAMM::rebalanceSwap(call) => mutate(call, msg_sender, |s, c| {
+                self.rebalance_swap(s, c.userToken, c.validatorToken, c.amountOut, c.to)
+            }),
         })
     }
 }

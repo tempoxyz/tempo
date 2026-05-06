@@ -6,8 +6,6 @@
 //! - `storable_alloy_ints!` macro for generating alloy integer storage implementations
 //! - `storable_alloy_bytes!` macro for generating alloy FixedBytes storage implementations
 //! - `storable_rust_ints!` macro for generating standard Rust integer storage implementations
-//!
-//! The `dispatch!` macro lives in `tempo-precompiles` as a `macro_rules!` definition.
 
 mod layout;
 mod packing;

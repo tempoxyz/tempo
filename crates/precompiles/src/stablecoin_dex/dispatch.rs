@@ -6,7 +6,7 @@ use tempo_contracts::precompiles::IStablecoinDEX::IStablecoinDEXCalls;
 
 use crate::{
     Precompile, charge_input_cost, dispatch, mutate, mutate_void,
-    stablecoin_dex::{StablecoinDEX, orderbook::compute_book_key},
+    stablecoin_dex::{self, StablecoinDEX, orderbook::compute_book_key},
     view,
 };
 
@@ -23,50 +23,58 @@ impl Precompile for StablecoinDEX {
             IStablecoinDEX::placeFlip(call) => mutate(call, msg_sender, |s, c| {
                 self.place_flip(s, c.token, c.amount, c.isBid, c.tick, c.flipTick, false)
             }),
-            IStablecoinDEX::balanceOf(call) => view(call, |c| self.balance_of(c.user, c.token)),
-            IStablecoinDEX::getOrder(call) => view(call, |c| self.get_order(c.orderId).map(|order| order.into())),
+            IStablecoinDEX::balanceOf(call) => view(call, |c| {
+                self.balance_of(c.user, c.token)
+            }),
+            IStablecoinDEX::getOrder(call) => view(call, |c| {
+                self.get_order(c.orderId).map(|order| order.into())
+            }),
             IStablecoinDEX::getTickLevel(call) => view(call, |c| {
                 let level = self.get_price_level(c.base, c.tick, c.isBid)?;
                 Ok((level.head, level.tail, level.total_liquidity).into())
             }),
-            IStablecoinDEX::pairKey(call) => view(call, |c| Ok(compute_book_key(c.tokenA, c.tokenB))),
-            IStablecoinDEX::books(call) => view(call, |c| self.books(c.pairKey).map(Into::into)),
-            IStablecoinDEX::nextOrderId(call) => view(call, |_| self.next_order_id()),
-            IStablecoinDEX::createPair(call) => mutate(call, msg_sender, |_, c| self.create_pair(c.base)),
-            IStablecoinDEX::withdraw(call) => {
-                mutate_void(call, msg_sender, |s, c| self.withdraw(s, c.token, c.amount))
-            },
-            IStablecoinDEX::cancel(call) => mutate_void(call, msg_sender, |s, c| self.cancel(s, c.orderId)),
-            IStablecoinDEX::cancelStaleOrder(call) => {
-                mutate_void(call, msg_sender, |_, c| self.cancel_stale_order(c.orderId))
-            },
+            IStablecoinDEX::pairKey(call) => view(call, |c| {
+                Ok(compute_book_key(c.tokenA, c.tokenB))
+            }),
+            IStablecoinDEX::books(call) => view(call, |c| {
+                self.books(c.pairKey).map(Into::into)
+            }),
+            IStablecoinDEX::nextOrderId(call) => view(call, |_| {
+                self.next_order_id()
+            }),
+            IStablecoinDEX::createPair(call) => mutate(call, msg_sender, |_, c| {
+                self.create_pair(c.base)
+            }),
+            IStablecoinDEX::withdraw(call) => mutate_void(call, msg_sender, |s, c| {
+                self.withdraw(s, c.token, c.amount)
+            }),
+            IStablecoinDEX::cancel(call) => mutate_void(call, msg_sender, |s, c| {
+                self.cancel(s, c.orderId)
+            }),
+            IStablecoinDEX::cancelStaleOrder(call) => mutate_void(call, msg_sender, |_, c| {
+                self.cancel_stale_order(c.orderId)
+            }),
             IStablecoinDEX::swapExactAmountIn(call) => mutate(call, msg_sender, |s, c| {
                 self.swap_exact_amount_in(s, c.tokenIn, c.tokenOut, c.amountIn, c.minAmountOut)
             }),
             IStablecoinDEX::swapExactAmountOut(call) => mutate(call, msg_sender, |s, c| {
-                self.swap_exact_amount_out(
-                    s,
-                    c.tokenIn,
-                    c.tokenOut,
-                    c.amountOut,
-                    c.maxAmountIn,
-                )
+                self.swap_exact_amount_out(s, c.tokenIn, c.tokenOut, c.amountOut, c.maxAmountIn)
             }),
-            IStablecoinDEX::quoteSwapExactAmountIn(call) => {
-                view(call, |c| self.quote_swap_exact_amount_in(c.tokenIn, c.tokenOut, c.amountIn))
-            },
-            IStablecoinDEX::quoteSwapExactAmountOut(call) => {
-                view(call, |c| self.quote_swap_exact_amount_out(c.tokenIn, c.tokenOut, c.amountOut))
-            },
-            IStablecoinDEX::MIN_TICK(call) => view(call, |_| Ok(crate::stablecoin_dex::MIN_TICK)),
-            IStablecoinDEX::MAX_TICK(call) => view(call, |_| Ok(crate::stablecoin_dex::MAX_TICK)),
-            IStablecoinDEX::TICK_SPACING(call) => view(call, |_| Ok(crate::stablecoin_dex::TICK_SPACING)),
-            IStablecoinDEX::PRICE_SCALE(call) => view(call, |_| Ok(crate::stablecoin_dex::PRICE_SCALE)),
-            IStablecoinDEX::MIN_ORDER_AMOUNT(call) => view(call, |_| Ok(crate::stablecoin_dex::MIN_ORDER_AMOUNT)),
+            IStablecoinDEX::quoteSwapExactAmountIn(call) => view(call, |c| {
+                self.quote_swap_exact_amount_in(c.tokenIn, c.tokenOut, c.amountIn)
+            }),
+            IStablecoinDEX::quoteSwapExactAmountOut(call) => view(call, |c| {
+                self.quote_swap_exact_amount_out(c.tokenIn, c.tokenOut, c.amountOut)
+            }),
             IStablecoinDEX::MIN_PRICE(call) => view(call, |_| Ok(self.min_price())),
             IStablecoinDEX::MAX_PRICE(call) => view(call, |_| Ok(self.max_price())),
             IStablecoinDEX::tickToPrice(call) => view(call, |c| self.tick_to_price(c.tick)),
             IStablecoinDEX::priceToTick(call) => view(call, |c| self.price_to_tick(c.price)),
+            IStablecoinDEX::MIN_TICK(call) => view(call, |_| Ok(stablecoin_dex::MIN_TICK)),
+            IStablecoinDEX::MAX_TICK(call) => view(call, |_| Ok(stablecoin_dex::MAX_TICK)),
+            IStablecoinDEX::PRICE_SCALE(call) => view(call, |_| Ok(stablecoin_dex::PRICE_SCALE)),
+            IStablecoinDEX::TICK_SPACING(call) => view(call, |_| Ok(stablecoin_dex::TICK_SPACING)),
+            IStablecoinDEX::MIN_ORDER_AMOUNT(call) => view(call, |_| Ok(stablecoin_dex::MIN_ORDER_AMOUNT)),
         })
     }
 }
