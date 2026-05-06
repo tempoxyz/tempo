@@ -256,36 +256,36 @@ impl TIP403Registry {
 
     pub fn validate_receive_policy(
         &self,
-        call: ITIP403Registry::validateReceivePolicyCall,
-    ) -> Result<ITIP403Registry::validateReceivePolicyReturn> {
-        let (authorized, blocked_reason) =
-            self.check_receive_policy(call.token, call.sender, call.receiver)?;
-        Ok(ITIP403Registry::validateReceivePolicyReturn {
-            authorized,
-            blockedReason: blocked_reason,
-        })
-    }
-
-    pub fn check_receive_policy(
-        &self,
         token: Address,
         sender: Address,
         receiver: Address,
-    ) -> Result<(bool, ITIP403Registry::BlockedReason)> {
+    ) -> Result<(bool, ITIP403Registry::BlockedReason, Address)> {
         let config = self.address_receive_config[receiver].read()?;
         if !config.has_receive_policy {
-            return Ok((true, ITIP403Registry::BlockedReason::NONE));
+            return Ok((true, ITIP403Registry::BlockedReason::NONE, Address::ZERO));
         }
 
         if !self.is_authorized_simple(config.token_filter_id, token)? {
-            return Ok((false, ITIP403Registry::BlockedReason::TOKEN_FILTER));
+            return Ok((
+                false,
+                ITIP403Registry::BlockedReason::TOKEN_FILTER,
+                config.recovery_address,
+            ));
         }
 
         if !self.is_authorized_simple(config.sender_policy_id, sender)? {
-            return Ok((false, ITIP403Registry::BlockedReason::RECEIVE_POLICY));
+            return Ok((
+                false,
+                ITIP403Registry::BlockedReason::RECEIVE_POLICY,
+                config.recovery_address,
+            ));
         }
 
-        Ok((true, ITIP403Registry::BlockedReason::NONE))
+        Ok((
+            true,
+            ITIP403Registry::BlockedReason::NONE,
+            config.recovery_address,
+        ))
     }
 
     /// Creates a new simple (whitelist or blacklist) policy and returns its ID.

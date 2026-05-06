@@ -63,9 +63,14 @@ impl Precompile for TIP403Registry {
                     view(call, |c| self.compound_policy_data(c))
                 }
                 ITIP403RegistryCalls::receivePolicy(call) => view(call, |c| self.receive_policy(c)),
-                ITIP403RegistryCalls::validateReceivePolicy(call) => {
-                    view(call, |c| self.validate_receive_policy(c))
-                }
+                ITIP403RegistryCalls::validateReceivePolicy(call) => view(call, |c| {
+                    let (authorized, blocked_reason, _) =
+                        self.validate_receive_policy(c.token, c.sender, c.receiver)?;
+                    Ok(ITIP403Registry::validateReceivePolicyReturn {
+                        authorized,
+                        blockedReason: blocked_reason,
+                    })
+                }),
                 ITIP403RegistryCalls::setReceivePolicy(call) => {
                     mutate_void(call, msg_sender, |s, c| self.set_receive_policy(s, c))
                 }
