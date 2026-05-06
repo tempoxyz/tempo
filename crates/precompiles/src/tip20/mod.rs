@@ -705,7 +705,14 @@ impl TIP20Token {
         self.validate_transfer(msg_sender, &to)?;
         self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
-        let transferred = self.transfer_or_escrow(msg_sender, &to, call.to, call.amount)?;
+        let transferred = self.transfer_or_escrow(
+            msg_sender,
+            &to,
+            call.to,
+            call.amount,
+            InboundKind::TRANSFER,
+            B256::ZERO,
+        )?;
         if transferred && let Some(hop) = to.build_virtual_transfer_event(call.amount) {
             self.emit_event(hop)?;
         }
@@ -989,6 +996,8 @@ impl TIP20Token {
         to: &Recipient,
         recipient: Address,
         amount: U256,
+        kind: InboundKind,
+        memo: B256,
     ) -> Result<bool> {
         if !self.storage.spec().is_t6() {
             self._transfer(from, to, amount)?;
@@ -1012,8 +1021,8 @@ impl TIP20Token {
             amount,
             recovery_address,
             blocked_reason,
-            InboundKind::TRANSFER,
-            B256::ZERO,
+            kind,
+            memo,
         )?;
         Ok(false)
     }
