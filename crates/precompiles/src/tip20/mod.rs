@@ -443,8 +443,8 @@ impl TIP20Token {
         Ok(())
     }
 
-    /// Raw mint primitive: bumps total supply, credits `to.target`, emits the transfer event.
-    /// Callers must enforce the `ISSUER_ROLE` and TIP-403 mint-recipient checks upstream.
+    /// Raw mint: bumps supply, credits `to.target`, emits `Transfer(0, to, amount)`.
+    /// Callers enforce role and policy checks.
     fn _mint(&mut self, to: &Recipient, amount: U256) -> Result<()> {
         let total_supply = self.total_supply()?;
         let new_supply = total_supply
@@ -823,9 +823,7 @@ impl TIP20Token {
         Ok(true)
     }
 
-    /// Allowance-aware inbound transfer: validates, consumes `msg_sender`'s allowance on
-    /// `from`, then routes through [`Self::transfer_or_escrow`]. Returns `true` if funds
-    /// reached the recipient, `false` if they were escrowed.
+    /// Allowance-aware inbound transfer routed through [`Self::transfer_or_escrow`].
     fn _transfer_from(
         &mut self,
         msg_sender: Address,

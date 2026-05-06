@@ -118,18 +118,7 @@ impl TIP1028Escrow {
         Ok((blocked_nonce, blocked_at))
     }
 
-    /// Releases an escrowed receipt's funds to `call.to`. When `recoveryContract` is
-    /// zero the resolved master of `receipt.recipient` must be the caller; otherwise
-    /// only the recovery contract can claim. Zeroes the receipt amount and emits
-    /// `BlockedReceiptClaimed`. Atomic with the underlying token release.
-    ///
-    /// # Errors
-    /// - `InvalidToken` — `call.token` is not a TIP-20 address
-    /// - `InvalidClaimAddress` — `call.to` is the escrow address or the recipient
-    ///   cannot be resolved
-    /// - `UnauthorizedClaimer` — caller is neither the resolved receiver nor the
-    ///   recovery contract
-    /// - `InvalidReceiptClaim` — receipt is unknown, already claimed, or fails to decode
+    /// Releases escrowed receipt funds to the authorized recipient.
     pub fn claim_blocked(
         &mut self,
         msg_sender: Address,
@@ -195,8 +184,7 @@ impl TIP1028Escrow {
         Ok(())
     }
 
-    /// Returns the next blocked-receipt nonce and bumps the counter. Skips zero so
-    /// nonces are always nonzero (zero is reserved as "unset").
+    /// Allocates the next nonzero receipt nonce.
     fn next_blocked_receipt_nonce(&mut self) -> Result<u64> {
         let nonce = self.blocked_receipt_nonce.read()?.max(1);
         self.blocked_receipt_nonce.write(
@@ -207,7 +195,7 @@ impl TIP1028Escrow {
         Ok(nonce)
     }
 
-    /// ABI-decodes a v1 receipt. Errors if `receipt_version` is unsupported.
+    /// ABI-decodes a v1 receipt.
     fn decode_v1(receipt_version: u8, receipt: &[u8]) -> Result<ITIP1028Escrow::ClaimReceiptV1> {
         if receipt_version != BLOCKED_RECEIPT_VERSION {
             return Err(TIP1028EscrowError::invalid_receipt_claim().into());
@@ -216,8 +204,7 @@ impl TIP1028Escrow {
             .map_err(|_| TIP1028EscrowError::invalid_receipt_claim().into())
     }
 
-    /// Content-addressed key for the receipt amount mapping. Hashes every immutable
-    /// receipt field so any tampering yields a different (and empty) slot.
+    /// Content hash over every receipt field; any mutation yields a different (empty) slot.
     fn receipt_key(
         &self,
         receipt_version: u8,
