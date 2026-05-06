@@ -97,9 +97,6 @@ impl Precompile for TIP20Token {
                 TIP20Call::TIP20(ITIP20Calls::logoURI(_)) => {
                     metadata::<ITIP20::logoURICall>(|| self.logo_uri())
                 }
-                TIP20Call::TIP20(ITIP20Calls::setLogoURI(call)) => {
-                    mutate_void(call, msg_sender, |s, c| self.set_logo_uri(s, c))
-                }
 
                 // View functions
                 TIP20Call::TIP20(ITIP20Calls::balanceOf(call)) => {
@@ -142,6 +139,9 @@ impl Precompile for TIP20Token {
                 }
                 TIP20Call::TIP20(ITIP20Calls::setSupplyCap(call)) => {
                     mutate_void(call, msg_sender, |s, c| self.set_supply_cap(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::setLogoURI(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.set_logo_uri(s, c))
                 }
                 TIP20Call::TIP20(ITIP20Calls::pause(call)) => {
                     mutate_void(call, msg_sender, |s, c| self.pause(s, c))

@@ -351,12 +351,15 @@ impl TIP20Token {
         }))
     }
 
-    /// Sets the logo URI for this token (TIP-1026).
+    /// Sets the logo URI for this token (TIP-1026). Empty strings are valid
+    /// and clear the URI.
     ///
-    /// Restricted to `DEFAULT_ADMIN_ROLE`. Reverts with `LogoURITooLong` if the URI
-    /// exceeds 256 bytes, or with `InvalidLogoURI` if the URI is non-empty and
-    /// either has no parseable scheme (RFC 3986 §3.1) or its scheme is not in
-    /// [`ALLOWED_LOGO_URI_SCHEMES`]. Empty strings are valid and clear the URI.
+    /// # Errors
+    /// - `Unauthorized` — caller does not hold `DEFAULT_ADMIN_ROLE`
+    /// - `LogoURITooLong` — `bytes(newLogoURI).length > 256`
+    /// - `InvalidLogoURI` — `newLogoURI` is non-empty and either has no
+    ///   parseable scheme (RFC 3986 §3.1) or its scheme is not in
+    ///   [`ALLOWED_LOGO_URI_SCHEMES`]
     pub fn set_logo_uri(
         &mut self,
         msg_sender: Address,

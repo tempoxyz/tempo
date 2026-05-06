@@ -160,17 +160,27 @@ impl TIP20Factory {
 
     /// Creates a token and atomically sets its `logoURI` (TIP-1026).
     ///
-    /// Behaves identically to `create_token` plus, when `logoURI` is non-empty,
-    /// writes the URI to the new token's storage and emits `LogoURIUpdated` from
-    /// the new token's address with `updater = sender`. An empty `logoURI` is
-    /// valid and is treated as "no logo set" — no slot write, no event.
-    ///
+    /// Behaves identically to [`Self::create_token`] plus, when `logoURI` is
+    /// non-empty, writes the URI to the new token's storage and emits
+    /// `LogoURIUpdated` from the new token's address with `updater = sender`.
     /// The logo URI is validated **before** the token is deployed so a rejected
-    /// URI does not leave a partially-created token in storage. Reverts with
-    /// `LogoURITooLong` if `bytes(logoURI).length > 256`, or with
-    /// `InvalidLogoURI` if `logoURI` is non-empty and either has no parseable
-    /// scheme (RFC 3986 §3.1) or its scheme is not in the allowlist
-    /// (`https`, `http`, `ipfs`, `data`, ASCII-case-insensitive).
+    /// URI does not leave a partially-created token in storage.
+    ///
+    /// # Empty `logoURI`
+    ///
+    /// An empty `logoURI` is valid and skips both the slot write and the
+    /// event (TIP-1026 §"Factory Support": *"An empty `logoURI` skips both the
+    /// slot write and the event"*). This is intentionally **asymmetric** with
+    /// [`TIP20Token::set_logo_uri`], which always emits `LogoURIUpdated` —
+    /// including when called with `""` to clear the URI — because that is a
+    /// post-deploy state change. Do not "harmonize" the two paths.
+    ///
+    /// # Errors
+    /// - All errors from [`Self::create_token`]
+    /// - `LogoURITooLong` — `bytes(logoURI).length > 256`
+    /// - `InvalidLogoURI` — `logoURI` is non-empty and either has no
+    ///   parseable scheme (RFC 3986 §3.1) or its scheme is not in
+    ///   [`crate::tip20::ALLOWED_LOGO_URI_SCHEMES`]
     pub fn create_token_with_logo(
         &mut self,
         sender: Address,
@@ -178,7 +188,8 @@ impl TIP20Factory {
     ) -> Result<Address> {
         // Validate the logo URI up-front so a bad URI does not leave a
         // partially-created token in storage. Empty strings are permitted
-        // (they skip the subsequent slot write / event emission below).
+        // (they skip the subsequent slot write / event emission below; see
+        // the "Empty `logoURI`" doc section above).
         crate::tip20::validate_logo_uri(&call.logoURI)?;
 
         let token_address = self.create_token(
