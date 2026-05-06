@@ -33,11 +33,50 @@ impl BestPriorityTransactions<CoinbaseTipOrdering<TempoPooledTransaction>>
     }
 }
 
-/// Tracks which side of a [`MergeBestTransactions`] yielded the last transaction.
-#[derive(Debug, Clone, Copy)]
-enum MergeSource {
+/// Tracks which side of a [`MergeBestTransactions`] yielded a transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BestTransactionSource {
+    /// The transaction came from the left iterator.
     Left,
+    /// The transaction came from the right iterator.
     Right,
+}
+
+/// A [`BestTransactions`] extension for callers that need to retain the source
+/// of a transaction across buffered consumption.
+pub trait SourcedBestTransactions: BestTransactions {
+    /// Source identifier returned with each transaction.
+    type Source: Copy;
+
+    /// Returns the next best transaction and the source iterator that yielded it.
+    fn next_with_source(&mut self) -> Option<(Self::Item, Self::Source)>;
+
+    /// Marks a transaction as invalid in the provided source iterator.
+    fn mark_invalid_with_source(
+        &mut self,
+        transaction: &Self::Item,
+        kind: &InvalidPoolTransactionError,
+        source: Self::Source,
+    );
+}
+
+impl<T> SourcedBestTransactions for core::iter::Empty<T>
+where
+    core::iter::Empty<T>: BestTransactions<Item = T>,
+{
+    type Source = ();
+
+    fn next_with_source(&mut self) -> Option<(Self::Item, Self::Source)> {
+        None
+    }
+
+    fn mark_invalid_with_source(
+        &mut self,
+        _transaction: &Self::Item,
+        _kind: &InvalidPoolTransactionError,
+        _source: Self::Source,
+    ) {
+    }
 }
 
 /// A [`BestTransactions`] iterator that merges two individual implementations and always yields the next best item from either of the iterators.
@@ -51,7 +90,7 @@ where
     right: R,
     next_left: Option<(L::Item, Priority<T::PriorityValue>)>,
     next_right: Option<(L::Item, Priority<T::PriorityValue>)>,
-    last_source: Option<MergeSource>,
+    last_source: Option<BestTransactionSource>,
 }
 
 impl<L, R, T> MergeBestTransactions<L, R, T>
@@ -79,7 +118,9 @@ where
     T: TransactionOrdering,
 {
     /// Returns the next transaction from either the left or the right iterator with the higher priority.
-    fn next_best(&mut self) -> Option<(L::Item, Priority<T::PriorityValue>)> {
+    fn next_best(
+        &mut self,
+    ) -> Option<(L::Item, Priority<T::PriorityValue>, BestTransactionSource)> {
         if self.next_left.is_none() {
             self.next_left = self.left.next_tx_and_priority();
         }
@@ -94,29 +135,41 @@ where
             }
             // Only left has an item - take it
             (Some(_), None) => {
-                self.last_source = Some(MergeSource::Left);
+                self.last_source = Some(BestTransactionSource::Left);
                 let (item, priority) = self.next_left.take()?;
-                Some((item, priority))
+                Some((item, priority, BestTransactionSource::Left))
             }
             // Only right has an item - take it
             (None, Some(_)) => {
-                self.last_source = Some(MergeSource::Right);
+                self.last_source = Some(BestTransactionSource::Right);
                 let (item, priority) = self.next_right.take()?;
-                Some((item, priority))
+                Some((item, priority, BestTransactionSource::Right))
             }
             // Both sides have items - compare priorities and take the higher one
             (Some((_, left_priority)), Some((_, right_priority))) => {
                 // Higher priority value is better
                 if left_priority >= right_priority {
-                    self.last_source = Some(MergeSource::Left);
+                    self.last_source = Some(BestTransactionSource::Left);
                     let (item, priority) = self.next_left.take()?;
-                    Some((item, priority))
+                    Some((item, priority, BestTransactionSource::Left))
                 } else {
-                    self.last_source = Some(MergeSource::Right);
+                    self.last_source = Some(BestTransactionSource::Right);
                     let (item, priority) = self.next_right.take()?;
-                    Some((item, priority))
+                    Some((item, priority, BestTransactionSource::Right))
                 }
             }
+        }
+    }
+
+    fn mark_invalid_from_source(
+        &mut self,
+        transaction: &L::Item,
+        kind: &InvalidPoolTransactionError,
+        source: BestTransactionSource,
+    ) {
+        match source {
+            BestTransactionSource::Left => self.left.mark_invalid(transaction, kind),
+            BestTransactionSource::Right => self.right.mark_invalid(transaction, kind),
         }
     }
 }
@@ -130,7 +183,29 @@ where
     type Item = L::Item;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.next_best().map(|(tx, _)| tx)
+        self.next_best().map(|(tx, _, _)| tx)
+    }
+}
+
+impl<L, R, T> SourcedBestTransactions for MergeBestTransactions<L, R, T>
+where
+    L: BestPriorityTransactions<T, Item: Send> + Send,
+    R: BestPriorityTransactions<T, Item = L::Item> + Send,
+    T: TransactionOrdering,
+{
+    type Source = BestTransactionSource;
+
+    fn next_with_source(&mut self) -> Option<(Self::Item, Self::Source)> {
+        self.next_best().map(|(tx, _, source)| (tx, source))
+    }
+
+    fn mark_invalid_with_source(
+        &mut self,
+        transaction: &Self::Item,
+        kind: &InvalidPoolTransactionError,
+        source: Self::Source,
+    ) {
+        self.mark_invalid_from_source(transaction, kind, source);
     }
 }
 
@@ -142,8 +217,7 @@ where
 {
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: &InvalidPoolTransactionError) {
         match self.last_source {
-            Some(MergeSource::Left) => self.left.mark_invalid(transaction, kind),
-            Some(MergeSource::Right) => self.right.mark_invalid(transaction, kind),
+            Some(source) => self.mark_invalid_from_source(transaction, kind, source),
             None => {
                 self.left.mark_invalid(transaction, kind);
                 self.right.mark_invalid(transaction, kind);
@@ -251,6 +325,51 @@ where
 
     fn set_skip_blobs(&mut self, skip_blobs: bool) {
         self.inner.set_skip_blobs(skip_blobs);
+    }
+}
+
+impl<I> SourcedBestTransactions for StateAwareBestTransactions<I>
+where
+    I: SourcedBestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + Send,
+{
+    type Source = I::Source;
+
+    fn next_with_source(&mut self) -> Option<(Self::Item, Self::Source)> {
+        loop {
+            let (tx, source) = self.inner.next_with_source()?;
+
+            let Some(key) = tx.transaction.fee_balance_slot() else {
+                debug_assert!(false, "pool transaction must have cached fee_balance_slot");
+                continue;
+            };
+
+            if let Some(&balance) = self.decreased_balances.get(&key)
+                && balance < tx.transaction.fee_token_cost()
+            {
+                self.inner.mark_invalid_with_source(
+                    &tx,
+                    &InvalidPoolTransactionError::Consensus(
+                        InvalidTransactionError::InsufficientFunds(
+                            (balance, tx.transaction.fee_token_cost()).into(),
+                        ),
+                    ),
+                    source,
+                );
+                continue;
+            }
+
+            return Some((tx, source));
+        }
+    }
+
+    fn mark_invalid_with_source(
+        &mut self,
+        transaction: &Self::Item,
+        kind: &InvalidPoolTransactionError,
+        source: Self::Source,
+    ) {
+        self.inner
+            .mark_invalid_with_source(transaction, kind, source);
     }
 }
 
@@ -483,5 +602,38 @@ mod tests {
         assert_eq!(merged.next(), Some("L1"));
         assert_eq!(merged.next(), Some("L2"));
         assert_eq!(merged.next(), None);
+    }
+
+    #[test]
+    fn test_mark_invalid_with_source_handles_buffered_transactions() {
+        let left = MockBestTransactions::new(vec![("L1", 9), ("L2", 3)]);
+        let right = MockBestTransactions::new(vec![("R1", 10)]);
+
+        let left_invalidated = left.invalidated();
+        let right_invalidated = right.invalidated();
+
+        let mut merged = MergeBestTransactions::new(left, right);
+
+        let (first_tx, first_source) = merged.next_with_source().unwrap();
+        assert_eq!(first_tx, "R1");
+        assert_eq!(first_source, BestTransactionSource::Right);
+
+        let (second_tx, second_source) = merged.next_with_source().unwrap();
+        assert_eq!(second_tx, "L1");
+        assert_eq!(second_source, BestTransactionSource::Left);
+
+        let kind =
+            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported);
+        merged.mark_invalid_with_source(&first_tx, &kind, first_source);
+
+        assert!(
+            left_invalidated.lock().unwrap().is_empty(),
+            "left pool must NOT be invalidated for a buffered right-side tx"
+        );
+        assert_eq!(
+            *right_invalidated.lock().unwrap(),
+            vec!["R1"],
+            "right pool must receive invalidation even after later prefetches"
+        );
     }
 }

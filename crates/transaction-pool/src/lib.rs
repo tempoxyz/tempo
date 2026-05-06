@@ -21,7 +21,7 @@ pub mod metrics;
 pub mod paused;
 pub mod tt_2d_pool;
 
-pub use best::StateAwareBestTransactions;
+pub use best::{BestTransactionSource, SourcedBestTransactions, StateAwareBestTransactions};
 pub use maintain::TempoPoolUpdates;
 
 pub use metrics::{AA2dPoolMetrics, TempoPoolMaintenanceMetrics};

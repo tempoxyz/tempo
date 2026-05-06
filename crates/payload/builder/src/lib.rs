@@ -29,8 +29,7 @@ use reth_primitives_traits::{Recovered, transaction::error::InvalidTransactionEr
 use reth_revm::{State, context::Block, database::StateProviderDatabase};
 use reth_storage_api::{StateProvider, StateProviderFactory};
 use reth_transaction_pool::{
-    BestTransactions, BestTransactionsAttributes, TransactionPool, ValidPoolTransaction,
-    error::InvalidPoolTransactionError,
+    BestTransactionsAttributes, ValidPoolTransaction, error::InvalidPoolTransactionError,
 };
 use std::{
     sync::{
@@ -53,7 +52,7 @@ use tempo_primitives::{
     },
 };
 use tempo_transaction_pool::{
-    StateAwareBestTransactions, TempoTransactionPool,
+    SourcedBestTransactions, StateAwareBestTransactions, TempoTransactionPool,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
@@ -177,7 +176,7 @@ where
     ) -> Result<BuildOutcome<Self::BuiltPayload>, PayloadBuilderError> {
         self.build_payload(
             args,
-            |attributes| self.pool.best_transactions_with_attributes(attributes),
+            |attributes| self.pool.best_transactions_with_source(attributes),
             false,
         )
     }
@@ -230,7 +229,7 @@ where
         empty: bool,
     ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError>
     where
-        Txs: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+        Txs: SourcedBestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
     {
         let BuildArguments {
             mut cached_reads,
@@ -445,7 +444,7 @@ where
 
             check_cancel!();
 
-            let Some(pool_tx) = best_txs.next() else {
+            let Some((pool_tx, pool_tx_source)) = best_txs.next_with_source() else {
                 if build_until_interrupt && cumulative_gas_used < non_shared_gas_limit {
                     std::thread::sleep(Duration::from_millis(1));
                     continue;
@@ -464,12 +463,13 @@ where
             if cumulative_gas_used + max_regular_gas_used > non_shared_gas_limit {
                 // Mark this transaction as invalid since it doesn't fit
                 // The iterator will handle lane switching internally when appropriate
-                best_txs.mark_invalid(
+                best_txs.mark_invalid_with_source(
                     &pool_tx,
                     &InvalidPoolTransactionError::ExceedsGasLimit(
                         pool_tx.gas_limit(),
                         non_shared_gas_limit - cumulative_gas_used,
                     ),
+                    pool_tx_source,
                 );
                 self.metrics
                     .inc_pool_tx_skipped("exceeds_non_shared_gas_limit");
@@ -481,11 +481,12 @@ where
             if !pool_tx.transaction.is_payment()
                 && non_payment_gas_used + max_regular_gas_used > general_gas_limit
             {
-                best_txs.mark_invalid(
+                best_txs.mark_invalid_with_source(
                     &pool_tx,
                     &InvalidPoolTransactionError::Other(Box::new(
                         TempoPoolTransactionError::ExceedsNonPaymentLimit,
                     )),
+                    pool_tx_source,
                 );
                 self.metrics
                     .inc_pool_tx_skipped("exceeds_general_gas_limit");
@@ -507,12 +508,13 @@ where
             let estimated_block_size_with_tx = block_size_used + tx_rlp_length;
 
             if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
-                best_txs.mark_invalid(
+                best_txs.mark_invalid_with_source(
                     &pool_tx,
                     &InvalidPoolTransactionError::OversizedData {
                         size: estimated_block_size_with_tx,
                         limit: MAX_RLP_BLOCK_SIZE,
                     },
+                    pool_tx_source,
                 );
                 self.metrics.inc_pool_tx_skipped("oversized_block");
                 continue;
@@ -573,11 +575,12 @@ where
                         // if the transaction is invalid, we can skip it and all of its
                         // descendants
                         trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
-                        best_txs.mark_invalid(
+                        best_txs.mark_invalid_with_source(
                             &pool_tx,
                             &InvalidPoolTransactionError::Consensus(
                                 InvalidTransactionError::TxTypeNotSupported,
                             ),
+                            pool_tx_source,
                         );
                         self.metrics.inc_pool_tx_skipped("invalid_tx");
                     }

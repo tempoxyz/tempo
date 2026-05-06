@@ -3,8 +3,11 @@
 // Routes user nonces (nonce_key>0) to minimal 2D nonce pool
 
 use crate::{
-    amm::AmmLiquidityCache, best::MergeBestTransactions, transaction::TempoPooledTransaction,
-    tt_2d_pool::AA2dPool, validator::TempoTransactionValidator,
+    amm::AmmLiquidityCache,
+    best::{BestTransactionSource, MergeBestTransactions, SourcedBestTransactions},
+    transaction::TempoPooledTransaction,
+    tt_2d_pool::AA2dPool,
+    validator::TempoTransactionValidator,
 };
 use alloy_consensus::Transaction;
 use alloy_primitives::{
@@ -86,6 +89,19 @@ where
     /// Returns the configured client
     pub fn client(&self) -> &Client {
         self.protocol_pool.validator().validator().client()
+    }
+
+    /// Returns the best transactions with their source pool.
+    pub fn best_transactions_with_source(
+        &self,
+        _attributes: BestTransactionsAttributes,
+    ) -> impl SourcedBestTransactions<
+        Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+        Source = BestTransactionSource,
+    > {
+        let left = self.protocol_pool.inner().best_transactions();
+        let right = self.aa_2d_pool.read().best_transactions();
+        MergeBestTransactions::new(left, right)
     }
 
     /// Updates the 2d nonce pool with the given state changes.
