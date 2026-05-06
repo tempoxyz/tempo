@@ -57,4 +57,9 @@ contract TIP20 {
 
     /// Mapping of user address to their reward info
     mapping(address => UserRewardInfo) public userRewardInfo;
+
+    // ========== TIP-1026 Storage ==========
+
+    /// Token logo URI (must remain at the end — storage is append-only)
+    string public logoUri;
 }

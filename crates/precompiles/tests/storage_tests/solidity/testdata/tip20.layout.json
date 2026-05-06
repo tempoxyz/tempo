@@ -154,6 +154,14 @@
             "offset": 0,
             "slot": "17",
             "type": "t_mapping(t_address,t_struct(UserRewardInfo)20_storage)"
+          },
+          {
+            "astId": 83,
+            "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+            "label": "logoUri",
+            "offset": 0,
+            "slot": "18",
+            "type": "t_string_storage"
           }
         ],
         "types": {

@@ -173,7 +173,9 @@ fn test_tip20_layout() {
         // TIP20 Rewards
         global_reward_per_token,
         opted_in_supply,
-        user_reward_info
+        user_reward_info,
+        // TIP-1026: token logo URI (must remain at the end — storage is append-only)
+        logo_uri
     );
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
         panic_layout_mismatch("Layout", errors, &sol_path);
@@ -360,7 +362,9 @@ fn export_all_storage_constants() {
             // TIP20 Rewards
             global_reward_per_token,
             opted_in_supply,
-            user_reward_info
+            user_reward_info,
+            // TIP-1026: token logo URI (must remain at the end — storage is append-only)
+            logo_uri
         );
 
         let user_info_base_slot = slots::USER_REWARD_INFO;
