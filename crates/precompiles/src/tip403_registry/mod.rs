@@ -239,6 +239,8 @@ impl TIP403Registry {
         })
     }
 
+    /// Returns `account`'s receive-policy configuration. When the account has not
+    /// opted in, `hasReceivePolicy` is `false` and the other fields are zero/default.
     pub fn receive_policy(
         &self,
         call: ITIP403Registry::receivePolicyCall,
@@ -254,6 +256,10 @@ impl TIP403Registry {
         })
     }
 
+    /// Evaluates `receiver`'s receive policy for an inbound `(token, sender)` pair.
+    /// Returns `(authorized, reason, recovery_address)`. When the receiver has no
+    /// receive policy, always authorizes with `BlockedReason::NONE`. The token filter
+    /// is checked before the sender policy; the first failure determines `reason`.
     pub fn validate_receive_policy(
         &self,
         token: Address,
@@ -334,6 +340,16 @@ impl TIP403Registry {
         Ok(new_policy_id)
     }
 
+    /// Installs or replaces the caller's TIP-1028 receive policy. Both policy IDs must
+    /// be simple (whitelist/blacklist) or built-in. The recovery address is the only
+    /// account allowed to claim escrowed funds when set; zero falls back to the
+    /// recipient.
+    ///
+    /// # Errors
+    /// - `InvalidReceivePolicyAddress` — caller is the escrow address
+    /// - `VirtualAddressNotAllowed` — caller is a virtual address
+    /// - `PolicyNotFound` — `senderPolicyId` or `tokenFilterId` does not exist
+    /// - `InvalidReceivePolicyType` — referenced policy is not a simple policy
     pub fn set_receive_policy(
         &mut self,
         msg_sender: Address,
@@ -727,6 +743,8 @@ impl TIP403Registry {
         Ok(())
     }
 
+    /// Ensures `policy_id` is usable in a receive-policy slot: either a built-in or
+    /// an existing simple (whitelist/blacklist) policy.
     fn validate_receive_policy_id(&self, policy_id: u64) -> Result<()> {
         if self.builtin_authorization(policy_id).is_some() {
             return Ok(());
@@ -741,6 +759,8 @@ impl TIP403Registry {
         Ok(())
     }
 
+    /// Returns the [`PolicyType`] of a receive-policy slot. Built-ins decode their ID
+    /// directly; user policies must be simple.
     fn receive_policy_type(&self, policy_id: u64) -> Result<PolicyType> {
         if self.builtin_authorization(policy_id).is_some() {
             return (policy_id as u8)

@@ -21,8 +21,12 @@ use alloy::{
 use tempo_precompiles_macros::contract;
 use tempo_primitives::TempoAddressExt;
 
+/// On-chain version tag for the v1 [`ITIP1028Escrow::ClaimReceiptV1`] layout.
 pub const BLOCKED_RECEIPT_VERSION: u8 = 1;
 
+/// TIP-1028 escrow precompile. Holds funds debited from blocked inbound transfers and
+/// mints, keyed by a content-addressed hash of the receipt fields, and lets the recipient
+/// (or their recovery contract) claim them later.
 #[contract(addr = ESCROW_ADDRESS)]
 pub struct TIP1028Escrow {
     blocked_receipt_nonce: u64,
@@ -30,10 +34,17 @@ pub struct TIP1028Escrow {
 }
 
 impl TIP1028Escrow {
+    /// Initializes the escrow's storage layout. Called once at genesis/activation.
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
     }
 
+    /// Returns the unclaimed balance for a receipt, or zero if the receipt is unknown
+    /// or already claimed.
+    ///
+    /// # Errors
+    /// - `InvalidToken` — `call.token` is not a TIP-20 address
+    /// - `InvalidReceiptClaim` — receipt version is unsupported or fails to decode
     pub fn blocked_receipt_balance(
         &self,
         call: ITIP1028Escrow::blockedReceiptBalanceCall,
@@ -52,6 +63,15 @@ impl TIP1028Escrow {
         .read()
     }
 
+    /// Records a blocked inbound transfer or mint. Allocates a fresh nonce, writes the
+    /// claimable amount under the receipt's content hash, and emits `TransferBlocked`
+    /// for transfers (mints stay silent and surface via the parallel `Mint` event on
+    /// claim). Caller is responsible for moving the funds into [`ESCROW_ADDRESS`] in
+    /// the same checkpoint.
+    ///
+    /// # Errors
+    /// - `InvalidToken` — `token` is not a TIP-20 address
+    /// - `InvalidReceiptClaim` — `blocked_reason` is `NONE`/`__Invalid` or `kind` is `__Invalid`
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn store_blocked(
         &mut self,
@@ -112,6 +132,18 @@ impl TIP1028Escrow {
         Ok((blocked_nonce, blocked_at))
     }
 
+    /// Releases an escrowed receipt's funds to `call.to`. When `recoveryContract` is
+    /// zero the resolved master of `receipt.recipient` must be the caller; otherwise
+    /// only the recovery contract can claim. Zeroes the receipt amount and emits
+    /// `BlockedReceiptClaimed`. Atomic with the underlying token release.
+    ///
+    /// # Errors
+    /// - `InvalidToken` — `call.token` is not a TIP-20 address
+    /// - `InvalidClaimAddress` — `call.to` is the escrow address or the recipient
+    ///   cannot be resolved
+    /// - `UnauthorizedClaimer` — caller is neither the resolved receiver nor the
+    ///   recovery contract
+    /// - `InvalidReceiptClaim` — receipt is unknown, already claimed, or fails to decode
     pub fn claim_blocked(
         &mut self,
         msg_sender: Address,
@@ -177,6 +209,8 @@ impl TIP1028Escrow {
         Ok(())
     }
 
+    /// Returns the next blocked-receipt nonce and bumps the counter. Skips zero so
+    /// nonces are always nonzero (zero is reserved as "unset").
     fn next_blocked_receipt_nonce(&mut self) -> Result<u64> {
         let nonce = self.blocked_receipt_nonce.read()?.max(1);
         self.blocked_receipt_nonce.write(
@@ -187,6 +221,7 @@ impl TIP1028Escrow {
         Ok(nonce)
     }
 
+    /// ABI-decodes a v1 receipt. Errors if `receipt_version` is unsupported.
     fn decode_v1(receipt_version: u8, receipt: &[u8]) -> Result<ITIP1028Escrow::ClaimReceiptV1> {
         if receipt_version != BLOCKED_RECEIPT_VERSION {
             return Err(TIP1028EscrowError::invalid_receipt_claim().into());
@@ -195,6 +230,8 @@ impl TIP1028Escrow {
             .map_err(|_| TIP1028EscrowError::invalid_receipt_claim().into())
     }
 
+    /// Content-addressed key for the receipt amount mapping. Hashes every immutable
+    /// receipt field so any tampering yields a different (and empty) slot.
     fn receipt_key(
         &self,
         receipt_version: u8,

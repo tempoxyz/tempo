@@ -395,8 +395,7 @@ impl TIP20Token {
     /// - `SupplyCapExceeded` — minting would push total supply above the cap
     pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
         let to = Recipient::resolve(call.to)?;
-        if self.storage.spec().is_t6() && (call.to == ESCROW_ADDRESS || to.target == ESCROW_ADDRESS)
-        {
+        if self.storage.spec().is_t6() && to.target == ESCROW_ADDRESS {
             return Err(TIP1028EscrowError::escrow_address_reserved().into());
         }
 
@@ -421,8 +420,7 @@ impl TIP20Token {
         call: ITIP20::mintWithMemoCall,
     ) -> Result<()> {
         let to = Recipient::resolve(call.to)?;
-        if self.storage.spec().is_t6() && (call.to == ESCROW_ADDRESS || to.target == ESCROW_ADDRESS)
-        {
+        if self.storage.spec().is_t6() && to.target == ESCROW_ADDRESS {
             return Err(TIP1028EscrowError::escrow_address_reserved().into());
         }
 
@@ -705,8 +703,7 @@ impl TIP20Token {
     pub fn transfer(&mut self, msg_sender: Address, call: ITIP20::transferCall) -> Result<bool> {
         trace!(%msg_sender, ?call, "transferring TIP20");
         let to = Recipient::resolve(call.to)?;
-        if self.storage.spec().is_t6() && (call.to == ESCROW_ADDRESS || to.target == ESCROW_ADDRESS)
-        {
+        if self.storage.spec().is_t6() && to.target == ESCROW_ADDRESS {
             return Err(TIP1028EscrowError::escrow_address_reserved().into());
         }
 
@@ -742,8 +739,7 @@ impl TIP20Token {
         call: ITIP20::transferFromCall,
     ) -> Result<bool> {
         let to = Recipient::resolve(call.to)?;
-        if self.storage.spec().is_t6() && (call.to == ESCROW_ADDRESS || to.target == ESCROW_ADDRESS)
-        {
+        if self.storage.spec().is_t6() && to.target == ESCROW_ADDRESS {
             return Err(TIP1028EscrowError::escrow_address_reserved().into());
         }
 
@@ -768,8 +764,7 @@ impl TIP20Token {
         call: ITIP20::transferFromWithMemoCall,
     ) -> Result<bool> {
         let to = Recipient::resolve(call.to)?;
-        if self.storage.spec().is_t6() && (call.to == ESCROW_ADDRESS || to.target == ESCROW_ADDRESS)
-        {
+        if self.storage.spec().is_t6() && to.target == ESCROW_ADDRESS {
             return Err(TIP1028EscrowError::escrow_address_reserved().into());
         }
 
@@ -811,11 +806,8 @@ impl TIP20Token {
         to: Address,
         amount: U256,
     ) -> Result<bool> {
-        let to_input = to;
-        let to = Recipient::resolve(to_input)?;
-        if self.storage.spec().is_t6()
-            && (to_input == ESCROW_ADDRESS || to.target == ESCROW_ADDRESS)
-        {
+        let to = Recipient::resolve(to)?;
+        if self.storage.spec().is_t6() && to.target == ESCROW_ADDRESS {
             return Err(TIP1028EscrowError::escrow_address_reserved().into());
         }
 
@@ -831,6 +823,9 @@ impl TIP20Token {
         Ok(true)
     }
 
+    /// Allowance-aware inbound transfer: validates, consumes `msg_sender`'s allowance on
+    /// `from`, then routes through [`Self::transfer_or_escrow`]. Returns `true` if funds
+    /// reached the recipient, `false` if they were escrowed.
     fn _transfer_from(
         &mut self,
         msg_sender: Address,
@@ -845,6 +840,8 @@ impl TIP20Token {
         self.transfer_or_escrow(from, to, amount, kind, memo)
     }
 
+    /// Decrements `spender`'s allowance on `owner` by `amount`. No-op for infinite
+    /// allowances (`U256::MAX`). Errors with `InsufficientAllowance` if `amount > allowed`.
     fn consume_allowance(&mut self, owner: Address, spender: Address, amount: U256) -> Result<()> {
         let allowed = self.get_allowance(owner, spender)?;
         if amount > allowed {
@@ -867,8 +864,7 @@ impl TIP20Token {
         call: ITIP20::transferWithMemoCall,
     ) -> Result<()> {
         let to = Recipient::resolve(call.to)?;
-        if self.storage.spec().is_t6() && (call.to == ESCROW_ADDRESS || to.target == ESCROW_ADDRESS)
-        {
+        if self.storage.spec().is_t6() && to.target == ESCROW_ADDRESS {
             return Err(TIP1028EscrowError::escrow_address_reserved().into());
         }
 
@@ -1045,6 +1041,11 @@ impl TIP20Token {
         AccountKeychain::new().authorize_transfer(from, self.address, amount)
     }
 
+    /// TIP-1028 receive-policy gate for inbound transfers. Pre-T6 or when the recipient's
+    /// receive policy authorizes `from`, performs a normal [`Self::_transfer`] and returns
+    /// `true`. Otherwise debits `from` to [`ESCROW_ADDRESS`] and records a blocked entry
+    /// tagged with `kind` and `memo`, returning `false`. Callers must suppress
+    /// follow-up events (virtual hops, `TransferWithMemo`) when this returns `false`.
     fn transfer_or_escrow(
         &mut self,
         from: Address,
@@ -1086,6 +1087,12 @@ impl TIP20Token {
         Ok(false)
     }
 
+    /// TIP-1028 receive-policy gate for mints. Enforces `ISSUER_ROLE` and the TIP-403
+    /// mint-recipient check on `to`. Pre-T6 or when the recipient's receive policy
+    /// authorizes the mint, mints to `to` and returns `true`. Otherwise mints into
+    /// [`ESCROW_ADDRESS`] and records a blocked entry tagged with [`InboundKind::MINT`]
+    /// and `memo`, returning `false`. Callers must suppress follow-up events
+    /// (`Mint`, `TransferWithMemo`, virtual hops) when this returns `false`.
     fn mint_or_escrow(
         &mut self,
         msg_sender: Address,
@@ -1168,6 +1175,9 @@ impl TIP20Token {
         self.emit_event(to.build_transfer_event(from, amount))
     }
 
+    /// Atomically debits `originator` to [`ESCROW_ADDRESS`] and records the blocked
+    /// receipt under the master address resolved from `recipient`. The transfer and
+    /// escrow write are checkpointed together so a failure rolls back both.
     fn escrow_funds(
         &mut self,
         originator: Address,
