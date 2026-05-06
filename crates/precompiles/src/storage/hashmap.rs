@@ -26,6 +26,7 @@ pub struct HashMapStorageProvider {
     counter_sload: u64,
     counter_sstore: u64,
     snapshots: Vec<Snapshot>,
+    msg_sender: Option<Address>,
 
     /// Emitted events keyed by contract address.
     pub events: HashMap<Address, Vec<LogData>>,
@@ -63,6 +64,7 @@ impl HashMapStorageProvider {
                     .as_secs(),
             ),
             beneficiary: Address::ZERO,
+            msg_sender: None,
             block_number: 0,
             spec,
             amsterdam_eip8037_enabled: false,
@@ -239,6 +241,10 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
             self.events = snapshot.events;
         }
     }
+
+    fn msg_sender(&self) -> Option<Address> {
+        self.msg_sender
+    }
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -319,5 +325,10 @@ impl HashMapStorageProvider {
         self.internals
             .into_iter()
             .map(|((addr, slot), value)| (addr, slot, value))
+    }
+
+    /// Overrides the message sender.
+    pub fn set_msg_sender(&mut self, msg_sender: Address) {
+        self.msg_sender = Some(msg_sender);
     }
 }

@@ -814,6 +814,7 @@ mod tests {
 
             let mut amm = TipFeeManager::new();
             let amount = uint!(10000_U256);
+            StorageCtx.set_msg_sender(admin);
             let result = amm.mint(admin, token1, token2, amount, admin)?;
             let expected_mean = amount / uint!(2_U256);
             let expected_liquidity = expected_mean - MIN_LIQUIDITY;
@@ -1162,6 +1163,7 @@ mod tests {
             let amount_out = uint!(1000_U256);
             let expected_in = (amount_out * N) / SCALE + U256::ONE;
 
+            StorageCtx.set_msg_sender(admin);
             let amount_in =
                 amm.rebalance_swap(admin, user_token, validator_token, amount_out, recipient)?;
 
@@ -1202,6 +1204,7 @@ mod tests {
             let mut amm = TipFeeManager::new();
 
             let initial_amount = uint!(100000_U256);
+            StorageCtx.set_msg_sender(admin);
             let first_liquidity =
                 amm.mint(admin, user_token, validator_token, initial_amount, admin)?;
 
@@ -1216,6 +1219,7 @@ mod tests {
             let reserve_val = U256::from(pool_after_first.reserve_validator_token);
 
             let second_amount = uint!(50000_U256);
+            StorageCtx.set_msg_sender(second_user);
             let second_liquidity = amm.mint(
                 second_user,
                 user_token,
@@ -1264,6 +1268,7 @@ mod tests {
             let mut amm = TipFeeManager::new();
 
             let deposit_amount = uint!(100000_U256);
+            StorageCtx.set_msg_sender(admin);
             let liquidity = amm.mint(admin, user_token, validator_token, deposit_amount, admin)?;
 
             let expected_liquidity = deposit_amount / uint!(2_U256) - MIN_LIQUIDITY;
@@ -1327,6 +1332,7 @@ mod tests {
             let mut amm = TipFeeManager::new();
 
             let deposit_amount = uint!(100000_U256);
+            StorageCtx.set_msg_sender(admin);
             let liquidity = amm.mint(admin, user_token, validator_token, deposit_amount, admin)?;
 
             let result = amm.burn(
@@ -1440,6 +1446,7 @@ mod tests {
             let mut amm = TipFeeManager::new();
 
             let deposit_amount = uint!(100000_U256);
+            StorageCtx.set_msg_sender(admin);
             let liquidity = amm.mint(admin, user_token, validator_token, deposit_amount, admin)?;
 
             let pool_id = amm.pool_id(user_token, validator_token);
@@ -1484,6 +1491,7 @@ mod tests {
             let mut amm = TipFeeManager::new();
 
             let deposit_amount = uint!(100000_U256);
+            StorageCtx.set_msg_sender(admin);
             let liquidity = amm.mint(admin, user_token, validator_token, deposit_amount, admin)?;
 
             let pool_id = amm.pool_id(user_token, validator_token);
@@ -1529,6 +1537,7 @@ mod tests {
             let amount_out = amm.check_sufficient_liquidity(pool_id, uint!(50000_U256))?;
             amm.reserve_pool_liquidity(pool_id, amount_out)?;
 
+            StorageCtx.set_msg_sender(admin);
             amm.rebalance_swap(admin, user_token, validator_token, uint!(5000_U256), to)?;
             let pool = amm.pools[pool_id].read()?;
             let reserved = amm.pending_fee_swap_reservation[pool_id].t_read()?;
@@ -1564,6 +1573,7 @@ mod tests {
             let pool_id =
                 setup_pool_with_liquidity(&mut amm, user_token, validator_token, liq, liq)?;
             amm.check_sufficient_liquidity(pool_id, uint!(90000_U256))?;
+            StorageCtx.set_msg_sender(admin);
             assert!(
                 amm.rebalance_swap(admin, user_token, validator_token, uint!(5000_U256), to)
                     .is_ok()
@@ -1595,6 +1605,7 @@ mod tests {
             let mut amm = TipFeeManager::new();
 
             let deposit_amount = uint!(100000_U256);
+            StorageCtx.set_msg_sender(admin);
             let liquidity = amm.mint(admin, user_token, validator_token, deposit_amount, admin)?;
 
             let pool_id = amm.pool_id(user_token, validator_token);

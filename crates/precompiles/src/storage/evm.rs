@@ -20,6 +20,7 @@ pub struct EvmPrecompileStorageProvider<'a> {
     amsterdam_eip8037_enabled: bool,
     is_static: bool,
     gas_params: GasParams,
+    msg_sender: Option<Address>,
     /// Debug-only LIFO checkpoint validator. See [`Self::assert_lifo`].
     #[cfg(debug_assertions)]
     checkpoint_stack: Vec<(usize, usize)>,
@@ -45,6 +46,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             gas_params,
             #[cfg(debug_assertions)]
             checkpoint_stack: Vec::new(),
+            msg_sender: None,
         }
     }
 
@@ -85,6 +87,12 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             return Err(TempoPrecompileError::OutOfGas);
         }
         Ok(())
+    }
+
+    /// Sets the `msg.sender`.
+    pub fn with_msg_sender(mut self, msg_sender: Address) -> Self {
+        self.msg_sender = Some(msg_sender);
+        self
     }
 }
 
@@ -348,6 +356,11 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         #[cfg(debug_assertions)]
         self.assert_lifo(&checkpoint, "revert");
         self.internals.checkpoint_revert(checkpoint)
+    }
+
+    #[inline]
+    fn msg_sender(&self) -> Option<Address> {
+        self.msg_sender
     }
 }
 

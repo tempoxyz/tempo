@@ -459,6 +459,10 @@ where
     fn checkpoint_revert(&mut self, _: revm::context::journaled_state::JournalCheckpoint) {
         unreachable!("'checkpoint_revert' not supported in read-only context")
     }
+
+    fn msg_sender(&self) -> Option<Address> {
+        None
+    }
 }
 
 #[cfg(test)]

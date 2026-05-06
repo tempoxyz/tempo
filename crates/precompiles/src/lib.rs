@@ -170,7 +170,8 @@ macro_rules! tempo_precompile {
                 amsterdam_eip8037_enabled,
                 $input.is_static,
                 gas_params.clone(),
-            );
+            )
+            .with_msg_sender($input.caller);
             crate::storage::StorageCtx::enter(&mut storage, || {
                 $impl.call($input.data, $input.caller)
             })

@@ -780,6 +780,10 @@ impl TIP20Token {
             return Err(TIP20Error::unauthorized().into());
         }
 
+        if self.storage.msg_sender() != Some(from) {
+            return Err(TIP20Error::unauthorized().into());
+        }
+
         let to = Recipient::resolve(caller)?;
         self.validate_transfer(from, &to)?;
         self.check_and_update_spending_limit(from, amount)?;

@@ -257,6 +257,11 @@ impl StorageCtx {
         Self::try_with_storage(|storage| storage.recover_signer(digest, v, r, s))
     }
 
+    /// Returns the address of the caller of the current precompile invocation.
+    pub fn msg_sender(&self) -> Option<Address> {
+        Self::with_storage(|storage| storage.msg_sender())
+    }
+
     /// Returns a [`PrecompileOutput`] with [`revm::precompile::PrecompileStatus::Success`] and the current gas values.
     pub fn success_output(&self, output: Bytes) -> PrecompileOutput {
         PrecompileOutput::new(self.gas_used(), output, self.reservoir())
@@ -450,6 +455,11 @@ impl StorageCtx {
     /// NOTE: assumes storage tests always use the `HashMapStorageProvider`
     pub fn set_spec(&mut self, spec: TempoHardfork) {
         self.as_hashmap().set_spec(spec)
+    }
+
+    /// NOTE: assumes storage tests always use the `HashMapStorageProvider`
+    pub fn set_msg_sender(&mut self, msg_sender: Address) {
+        self.as_hashmap().set_msg_sender(msg_sender)
     }
 
     /// NOTE: assumes storage tests always use the `HashMapStorageProvider`

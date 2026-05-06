@@ -2230,6 +2230,7 @@ mod tests {
                 let (base_token, _) = setup_test_tokens(admin, alice, exchange.address, escrow)?;
                 exchange.create_pair(base_token)?;
 
+                StorageCtx.set_msg_sender(alice);
                 let result = exchange.place_flip(
                     alice,
                     base_token,
@@ -2364,6 +2365,7 @@ mod tests {
 
             // Place same-tick flip bid FIRST so it sits at the head of the bid
             // level and is the order consumed by the next swap-sell.
+            StorageCtx.set_msg_sender(alice);
             let flip_id = exchange
                 .place_flip(alice, base_token, amount, true, tick, tick, false)
                 .expect("same-tick flip should succeed on T5");
@@ -2377,6 +2379,7 @@ mod tests {
             // Bob sells exactly `amount` base, which fully consumes only the
             // flip bid (FIFO) and triggers the post-fill flip into an ask at
             // the same tick.
+            StorageCtx.set_msg_sender(bob);
             exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
 
             // Flip bid is gone, regular bid remains untouched.
@@ -2881,6 +2884,7 @@ mod tests {
                 setup_test_tokens(admin, alice, exchange.address, expected_escrow * 2)?;
             exchange.create_pair(base_token)?;
 
+            StorageCtx.set_msg_sender(alice);
             let flip_order_id =
                 exchange.place_flip(alice, base_token, amount, true, tick, flip_tick, false)?;
 

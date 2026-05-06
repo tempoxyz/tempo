@@ -158,6 +158,9 @@ pub trait PrecompileStorageProvider {
 
         Ok(recovered.ok().filter(|addr| !addr.is_zero()))
     }
+
+    /// Returns the address of the caller of the current precompile invocation.
+    fn msg_sender(&self) -> Option<Address>;
 }
 
 /// Storage operations for a given (contract) address.
