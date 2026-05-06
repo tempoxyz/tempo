@@ -100,11 +100,10 @@ pub enum AuthRole {
     MintRecipient,
 }
 
-/// Base policy metadata. Packed into a single storage slot.
+/// TIP403 policy data
 #[derive(Debug, Clone, Storable)]
 pub struct PolicyData {
-    // NOTE: enums are defined as u8, and leverage the sol! macro's `TryInto<u8>` impl
-    /// Discriminant of the [`PolicyType`] enum, stored as `u8` for slot packing.
+    // Policy type, either whitelist, blacklist or compound.
     pub policy_type: u8,
     /// Address authorized to modify this policy.
     pub admin: Address,
