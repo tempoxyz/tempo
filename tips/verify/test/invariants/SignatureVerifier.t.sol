@@ -64,6 +64,9 @@ contract SignatureVerifierInvariantTest is TempoTest {
     function setUp() public override {
         super.setUp();
 
+        // Fail fast if the precompile is not deployed at the active hardfork.
+        _requirePrecompile("SignatureVerifier", SIG_VERIFIER);
+
         targetContract(address(this));
 
         for (uint256 i = 0; i < 5; i++) {
@@ -378,9 +381,10 @@ contract SignatureVerifierInvariantTest is TempoTest {
         bytes memory sig = abi.encodePacked(garbageR, garbageS, garbageV);
         bytes32 hash = keccak256("sv4_secp");
 
-        // Only test cases where ecrecover returns address(0) (truly invalid)
+        // Only test cases where ecrecover returns address(0) (truly invalid).
+        // vm.assume rejects the input so foundry resamples instead of burning a slot.
         address ecResult = ecrecover(hash, garbageV, garbageR, garbageS);
-        if (ecResult != address(0)) return;
+        vm.assume(ecResult == address(0));
 
         if (_callBothRevert(hash, sig, address(0xdead))) {
             ghost_sv4_garbageAllowed++;
@@ -431,7 +435,10 @@ contract SignatureVerifierInvariantTest is TempoTest {
         }
     }
 
-    /// @notice SV4: ecrecover returns address(0) → precompile must revert (not return zero)
+    /// @notice SV4: ecrecover returns address(0) → both recover() and verify() must revert
+    /// @dev Routes through `_callBothRevert` so verify() is also exercised, not just recover().
+    ///      `_callBothRevert` additionally validates the revert error selector via
+    ///      `ghost_sv4_wrongError`.
     function handler_sv4_ecrecoverDifferential(
         bytes32 hash,
         bytes32 fuzzR,
@@ -442,14 +449,12 @@ contract SignatureVerifierInvariantTest is TempoTest {
     {
         fuzzV = (fuzzV % 2 == 0) ? 27 : 28;
 
+        // Only test cases where ecrecover returns address(0) (truly invalid).
         address ecResult = ecrecover(hash, fuzzV, fuzzR, fuzzS);
-        if (ecResult != address(0)) return;
+        vm.assume(ecResult == address(0));
 
         bytes memory sig = abi.encodePacked(fuzzR, fuzzS, fuzzV);
-        bytes memory cd = abi.encodeCall(verifier.recover, (hash, sig));
-        (bool ok,) = SIG_VERIFIER.staticcall(cd);
-
-        if (ok) {
+        if (_callBothRevert(hash, sig, address(0xdead))) {
             ghost_sv4_ecrecoverDiffFailed++;
         } else {
             ghost_sv4_ecrecoverDiffOk++;
@@ -460,22 +465,50 @@ contract SignatureVerifierInvariantTest is TempoTest {
                      SV6: TYPE DISAMBIGUATION
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice SV6: unknown type prefix bytes revert
-    function handler_sv6_unknownType(uint8 typeByte, uint256 sizeSeed) external {
-        if (typeByte >= TYPE_P256 && typeByte <= TYPE_KEYCHAIN_P256) typeByte = 0x05;
-        uint256 size = bound(sizeSeed, 66, 300);
-
-        bytes memory sig = new bytes(size);
+    /// @dev Builds a sig of the given size with the given first-byte type prefix.
+    function _sv6Build(uint8 typeByte, uint256 size) internal pure returns (bytes memory sig) {
+        sig = new bytes(size);
         sig[0] = bytes1(typeByte);
         for (uint256 i = 1; i < size; i++) {
             sig[i] = bytes1(uint8(i % 256));
         }
+    }
 
+    /// @dev Common SV6 dispatch — exercised by the typed variants below.
+    function _sv6Check(bytes memory sig) internal {
         if (_callBothRevert(keccak256("sv6"), sig, address(0xdead))) {
             ghost_sv6_unknownTypeAllowed++;
         } else {
             ghost_sv6_unknownTypeRejected++;
         }
+    }
+
+    /// @notice SV6: type byte 0x00 (legacy/zero) must revert.
+    function handler_sv6_typeZero(uint256 sizeSeed) external {
+        uint256 size = bound(sizeSeed, 66, 300);
+        _sv6Check(_sv6Build(0x00, size));
+    }
+
+    /// @notice SV6: type byte in unknown mid range (0x05–0x7F) must revert.
+    function handler_sv6_typeMid(uint8 typeByte, uint256 sizeSeed) external {
+        // Force into [0x05, 0x7F] (unused, below the high-bit boundary).
+        typeByte = uint8(0x05 + (uint256(typeByte) % 0x7B));
+        uint256 size = bound(sizeSeed, 66, 300);
+        _sv6Check(_sv6Build(typeByte, size));
+    }
+
+    /// @notice SV6: type byte with high bit set (0x80–0xFE) must revert.
+    function handler_sv6_typeHighBit(uint8 typeByte, uint256 sizeSeed) external {
+        // Force into [0x80, 0xFE].
+        typeByte = uint8(0x80 + (uint256(typeByte) % 0x7F));
+        uint256 size = bound(sizeSeed, 66, 300);
+        _sv6Check(_sv6Build(typeByte, size));
+    }
+
+    /// @notice SV6: type byte 0xFF (all ones) must revert.
+    function handler_sv6_typeFF(uint256 sizeSeed) external {
+        uint256 size = bound(sizeSeed, 66, 300);
+        _sv6Check(_sv6Build(0xFF, size));
     }
 
     /*//////////////////////////////////////////////////////////////
