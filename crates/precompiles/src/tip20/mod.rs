@@ -395,14 +395,20 @@ impl TIP20Token {
     /// - `SupplyCapExceeded` — minting would push total supply above the cap
     pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
         let to = Recipient::resolve(call.to)?;
-        self._mint(msg_sender, &to, call.amount)?;
+        if self.storage.spec().is_t6() && (call.to == ESCROW_ADDRESS || to.target == ESCROW_ADDRESS)
+        {
+            return Err(TIP1028EscrowError::escrow_address_reserved().into());
+        }
 
-        self.emit_event(TIP20Event::Mint(ITIP20::Mint {
-            to: call.to,
-            amount: call.amount,
-        }))?;
-        if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
-            self.emit_event(hop)?;
+        let minted = self.mint_or_escrow(msg_sender, &to, call.amount, B256::ZERO)?;
+        if minted {
+            self.emit_event(TIP20Event::Mint(ITIP20::Mint {
+                to: call.to,
+                amount: call.amount,
+            }))?;
+            if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
+                self.emit_event(hop)?;
+            }
         }
 
         Ok(())
@@ -415,32 +421,34 @@ impl TIP20Token {
         call: ITIP20::mintWithMemoCall,
     ) -> Result<()> {
         let to = Recipient::resolve(call.to)?;
-        self._mint(msg_sender, &to, call.amount)?;
+        if self.storage.spec().is_t6() && (call.to == ESCROW_ADDRESS || to.target == ESCROW_ADDRESS)
+        {
+            return Err(TIP1028EscrowError::escrow_address_reserved().into());
+        }
 
-        self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
-            from: Address::ZERO,
-            to: call.to,
-            amount: call.amount,
-            memo: call.memo,
-        }))?;
-        self.emit_event(TIP20Event::Mint(ITIP20::Mint {
-            to: call.to,
-            amount: call.amount,
-        }))?;
-        if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
-            self.emit_event(hop)?;
+        let minted = self.mint_or_escrow(msg_sender, &to, call.amount, call.memo)?;
+        if minted {
+            self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
+                from: Address::ZERO,
+                to: call.to,
+                amount: call.amount,
+                memo: call.memo,
+            }))?;
+            self.emit_event(TIP20Event::Mint(ITIP20::Mint {
+                to: call.to,
+                amount: call.amount,
+            }))?;
+            if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
+                self.emit_event(hop)?;
+            }
         }
         Ok(())
     }
 
-    /// Internal helper to mint new tokens and update balances.
-    fn _mint(&mut self, msg_sender: Address, to: &Recipient, amount: U256) -> Result<()> {
-        self.check_role(msg_sender, *ISSUER_ROLE)?;
+    /// Raw mint primitive: bumps total supply, credits `to.target`, emits the transfer event.
+    /// Callers must enforce the `ISSUER_ROLE` and TIP-403 mint-recipient checks upstream.
+    fn _mint(&mut self, to: &Recipient, amount: U256) -> Result<()> {
         let total_supply = self.total_supply()?;
-
-        // Check if the resolved target address is authorized to receive minted tokens
-        self.validate_mint(to)?;
-
         let new_supply = total_supply
             .checked_add(amount)
             .ok_or(TempoPrecompileError::under_overflow())?;
@@ -454,7 +462,7 @@ impl TIP20Token {
 
         self.set_total_supply(new_supply)?;
         let to_balance = self.get_balance(to.target)?;
-        let new_to_balance: alloy::primitives::Uint<256, 4> = to_balance
+        let new_to_balance = to_balance
             .checked_add(amount)
             .ok_or(TempoPrecompileError::under_overflow())?;
         self.set_balance(to.target, new_to_balance)?;
@@ -807,12 +815,20 @@ impl TIP20Token {
         to: Address,
         amount: U256,
     ) -> Result<bool> {
-        let to = Recipient::resolve(to)?;
+        let to_input = to;
+        let to = Recipient::resolve(to_input)?;
+        if self.storage.spec().is_t6()
+            && (to_input == ESCROW_ADDRESS || to.target == ESCROW_ADDRESS)
+        {
+            return Err(TIP1028EscrowError::escrow_address_reserved().into());
+        }
+
         self.validate_transfer(from, &to)?;
         self.check_and_update_spending_limit(from, amount)?;
 
-        self._transfer(from, &to, amount)?;
-        if let Some(hop) = to.build_virtual_transfer_event(amount) {
+        let transferred =
+            self.transfer_or_escrow(from, &to, amount, InboundKind::TRANSFER, B256::ZERO)?;
+        if transferred && let Some(hop) = to.build_virtual_transfer_event(amount) {
             self.emit_event(hop)?;
         }
 
@@ -1057,6 +1073,55 @@ impl TIP20Token {
             kind,
             memo,
         )?;
+        Ok(false)
+    }
+
+    fn mint_or_escrow(
+        &mut self,
+        msg_sender: Address,
+        to: &Recipient,
+        amount: U256,
+        memo: B256,
+    ) -> Result<bool> {
+        self.check_role(msg_sender, *ISSUER_ROLE)?;
+        self.validate_mint(to)?;
+
+        if !self.storage.spec().is_t6() {
+            self._mint(to, amount)?;
+            return Ok(true);
+        }
+
+        if to.target == ESCROW_ADDRESS {
+            return Err(TIP1028EscrowError::escrow_address_reserved().into());
+        }
+        let recipient = if let Some(virtual_addr) = to.virtual_addr {
+            virtual_addr
+        } else {
+            to.target
+        };
+
+        let (authorized, blocked_reason, recovery_address) = TIP403Registry::new()
+            .validate_receive_policy(self.address, Address::ZERO, to.target)?;
+        if authorized {
+            self._mint(to, amount)?;
+            return Ok(true);
+        }
+
+        let receiver = AddressRegistry::new().resolve_recipient(recipient)?;
+        let guard = self.storage.checkpoint();
+        self._mint(&Recipient::direct(ESCROW_ADDRESS), amount)?;
+        TIP1028Escrow::new().store_blocked(
+            self.address,
+            Address::ZERO,
+            receiver,
+            recipient,
+            recovery_address,
+            amount,
+            blocked_reason,
+            InboundKind::MINT,
+            memo,
+        )?;
+        guard.commit();
         Ok(false)
     }
 
