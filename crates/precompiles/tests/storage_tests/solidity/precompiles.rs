@@ -155,8 +155,8 @@ fn test_tip20_layout() {
         name,
         symbol,
         currency,
-        // Unused slot, kept for storage layout compatibility
-        _domain_separator,
+        // TIP-1026: token logo URI (reuses the previously-unused _domain_separator slot)
+        logo_uri,
         quote_token,
         next_quote_token,
         transfer_policy_id,
@@ -173,9 +173,7 @@ fn test_tip20_layout() {
         // TIP20 Rewards
         global_reward_per_token,
         opted_in_supply,
-        user_reward_info,
-        // TIP-1026: token logo URI (must remain at the end — storage is append-only)
-        logo_uri
+        user_reward_info
     );
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
         panic_layout_mismatch("Layout", errors, &sol_path);
@@ -344,8 +342,8 @@ fn export_all_storage_constants() {
             name,
             symbol,
             currency,
-            // Unused slot, kept for storage layout compatibility
-            _domain_separator,
+            // TIP-1026: token logo URI (reuses the previously-unused _domain_separator slot)
+            logo_uri,
             quote_token,
             next_quote_token,
             transfer_policy_id,
@@ -362,9 +360,7 @@ fn export_all_storage_constants() {
             // TIP20 Rewards
             global_reward_per_token,
             opted_in_supply,
-            user_reward_info,
-            // TIP-1026: token logo URI (must remain at the end — storage is append-only)
-            logo_uri
+            user_reward_info
         );
 
         let user_info_base_slot = slots::USER_REWARD_INFO;

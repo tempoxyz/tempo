@@ -80,8 +80,12 @@ pub struct TIP20Token {
     name: String,
     symbol: String,
     currency: String,
-    // Unused slot, kept for storage layout compatibility
-    _domain_separator: B256,
+    // TIP-1026: Token Logo URI.
+    // Reuses the previously-unused `_domain_separator` slot (always 0 on
+    // pre-T5 tokens), which reads as the empty string under Solidity's
+    // short-string encoding — matching the spec's "default empty" semantics.
+    // Assumes the slot was never written; do not write to it from pre-T5 code.
+    logo_uri: String,
     quote_token: Address,
     next_quote_token: Address,
     transfer_policy_id: u64,
@@ -100,9 +104,6 @@ pub struct TIP20Token {
     global_reward_per_token: U256,
     opted_in_supply: u128,
     user_reward_info: Mapping<Address, UserRewardInfo>,
-
-    // TIP-1026: Token Logo URI (must remain at the end — storage is append-only)
-    logo_uri: String,
 }
 
 /// EIP-712 Permit typehash: keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)")

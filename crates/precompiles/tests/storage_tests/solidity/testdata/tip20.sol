@@ -33,8 +33,8 @@ contract TIP20 {
     string public name;
     string public symbol;
     string public currency;
-    // Unused slot, kept for storage layout compatibility
-    bytes32 public domainSeparator;
+    /// Token logo URI (TIP-1026, reuses the previously-unused `domainSeparator` slot)
+    string public logoUri;
     address public quoteToken;
     address public nextQuoteToken;
     uint64 public transferPolicyId;
@@ -57,9 +57,4 @@ contract TIP20 {
 
     /// Mapping of user address to their reward info
     mapping(address => UserRewardInfo) public userRewardInfo;
-
-    // ========== TIP-1026 Storage ==========
-
-    /// Token logo URI (must remain at the end — storage is append-only)
-    string public logoUri;
 }
