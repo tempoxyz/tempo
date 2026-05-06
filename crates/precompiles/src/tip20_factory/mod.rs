@@ -163,34 +163,20 @@ impl TIP20Factory {
     /// Behaves identically to [`Self::create_token`] plus, when `logoURI` is
     /// non-empty, writes the URI to the new token's storage and emits
     /// `LogoURIUpdated` from the new token's address with `updater = sender`.
-    /// The logo URI is validated **before** the token is deployed so a rejected
-    /// URI does not leave a partially-created token in storage.
-    ///
-    /// # Empty `logoURI`
-    ///
-    /// An empty `logoURI` is valid and skips both the slot write and the
-    /// event (TIP-1026 §"Factory Support": *"An empty `logoURI` skips both the
-    /// slot write and the event"*). This is intentionally **asymmetric** with
-    /// [`TIP20Token::set_logo_uri`], which always emits `LogoURIUpdated` —
-    /// including when called with `""` to clear the URI — because that is a
-    /// post-deploy state change. Do not "harmonize" the two paths.
     ///
     /// # Errors
     /// - All errors from [`Self::create_token`]
     /// - `LogoURITooLong` — `bytes(logoURI).length > 256`
-    /// - `InvalidLogoURI` — `logoURI` is non-empty and either has no
-    ///   parseable scheme (RFC 3986 §3.1) or its scheme is not in
-    ///   [`crate::tip20::ALLOWED_LOGO_URI_SCHEMES`]
+    /// - `InvalidLogoURI` — `logoURI` is non-empty and fails validation
     pub fn create_token_with_logo(
         &mut self,
         sender: Address,
         call: createTokenWithLogoCall,
     ) -> Result<Address> {
-        // Validate the logo URI up-front so a bad URI does not leave a
-        // partially-created token in storage. Empty strings are permitted
-        // (they skip the subsequent slot write / event emission below; see
-        // the "Empty `logoURI`" doc section above).
-        crate::tip20::validate_logo_uri(&call.logoURI)?;
+        // Validate the logo URI up-front so a bad URI does not leave a partially-created token.
+        if !call.logoURI.is_empty() {
+            crate::tip20::validate_logo_uri(&call.logoURI)?;
+        }
 
         let token_address = self.create_token(
             sender,
@@ -473,9 +459,6 @@ mod tests {
 
     #[test]
     fn test_create_token_selector_and_event_unchanged() {
-        // Regression guard: TIP-1026 must not break ABI compatibility for the
-        // existing 6-arg createToken / TokenCreated event. See
-        // https://github.com/tempoxyz/tempo/pull/2996#discussion_r3146661496
         use alloy::sol_types::{SolCall, SolEvent};
 
         assert_eq!(
@@ -607,13 +590,6 @@ mod tests {
         })
     }
 
-    /// Wiring + atomicity test for `createTokenWithLogo` rejection paths.
-    ///
-    /// The validator itself is exhaustively unit-tested in
-    /// [`crate::tip20::tests::test_validate_logo_uri`]; this test only needs to
-    /// verify (a) both error variants surface through the factory, and (b)
-    /// rejection is *atomic* — no partially-created token is observable, as
-    /// proven by the same salt being reusable with a valid URI.
     #[test]
     fn test_create_token_with_logo_rejects_atomically() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);

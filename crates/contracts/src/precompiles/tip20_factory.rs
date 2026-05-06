@@ -27,16 +27,9 @@ crate::sol! {
 
         /// @notice Creates a token and sets its logoURI atomically (TIP-1026).
         /// @dev Solidity overload of `createToken` with an additional `logoURI` argument.
-        ///      The macro expands the two overloads to `createToken_0Call` (legacy) and
-        ///      `createToken_1Call` (with logo); both selectors are supported post-T5
-        ///      (legacy remains supported pre-T5 as well).
-        ///      The logo URI is validated **before** the token is deployed.
         ///      Reverts with `LogoURITooLong` if `bytes(logoURI).length > 256`, or
         ///      with `InvalidLogoURI` if `logoURI` is non-empty and either has no
-        ///      parseable scheme (RFC 3986 §3.1) or its scheme is not in the
-        ///      allowlist (`https`, `http`, `ipfs`, `data`, case-insensitive).
-        ///      The `LogoURIUpdated` event is emitted by the new token (not the factory)
-        ///      with `updater = msg.sender`.
+        ///      parseable scheme or its scheme is not in the allow-list.
         function createToken(
             string memory name,
             string memory symbol,

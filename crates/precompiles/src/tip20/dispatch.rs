@@ -770,8 +770,7 @@ mod tests {
         use crate::test_util::{assert_full_coverage, check_selector_coverage};
         use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls};
 
-        // Use T5 hardfork so T2-gated (permit, nonces, DOMAIN_SEPARATOR) and T5-gated
-        // (logoURI, setLogoURI) selectors are active.
+        // Use T5 hardfork so all selectors are active.
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         let admin = Address::random();
 
@@ -825,12 +824,6 @@ mod tests {
 
     #[test]
     fn test_logo_uri_pre_t5_deploy_post_t5_read_returns_empty() -> eyre::Result<()> {
-        // Storage append-only invariant: a token deployed before T5 must,
-        // after a T5 hardfork transition, expose `logoURI()` as the empty
-        // string (the freshly-introduced slot is uninitialized). This pins
-        // the assumption that the new `logo_uri: String` field at the end
-        // of `TIP20Token` does not collide with any pre-existing slot of
-        // pre-T5 tokens.
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
         let admin = Address::random();
         let token_address = StorageCtx::enter(&mut storage, || -> eyre::Result<Address> {

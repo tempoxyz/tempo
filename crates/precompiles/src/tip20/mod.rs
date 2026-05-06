@@ -48,34 +48,18 @@ use tempo_contracts::precompiles::DECIMALS as TIP20_DECIMALS;
 /// Maximum byte length of a token logo URI (TIP-1026).
 pub const MAX_LOGO_URI_BYTES: usize = 256;
 
-/// Allowlist of URI schemes accepted for [`TIP20Token::set_logo_uri`] (TIP-1026).
+/// Allowlist of ASCII-case-insensitive URI schemes accepted for [`TIP20Token::set_logo_uri`].
 ///
-/// Per the TIP-1026 review (PR #2996 Slack thread), the protocol validates the
-/// scheme prefix to make integration easier and to reject obviously dangerous
-/// values (e.g. `javascript:`). What the consumer does with the URI afterwards
-/// (rendering, fetching, etc.) is out of scope and remains the consumer's
-/// responsibility — see the spec's "Security Considerations" section.
-///
-/// Schemes are matched ASCII-case-insensitively per RFC 3986 §3.1.
-///
-/// # Consensus-critical
-///
-/// This list is part of state-transition validity: a `setLogoURI` /
-/// `createTokenWithLogo` call succeeds or reverts depending on whether the
-/// scheme is present here. **Any addition or removal must be gated behind a
-/// new hardfork** so historical replay continues to produce identical
-/// receipts; mutating this constant in place would silently change the
-/// validity of past blocks.
+/// TIP-1026 guarantees that the protocol validates the scheme prefix to make integration easier
+/// and reject obviously dangerous values (e.g. `javascript:`). What the consumer does with the URI
+/// afterwards (rendering, fetching, etc.) is out of scope and remains the consumer's responsibility.
 pub const ALLOWED_LOGO_URI_SCHEMES: &[&str] = &["https", "http", "ipfs", "data"];
 
 /// Validates a logo URI against the TIP-1026 protocol rules:
-/// length ≤ [`MAX_LOGO_URI_BYTES`] and (if non-empty) a syntactically
-/// well-formed URI whose scheme is in [`ALLOWED_LOGO_URI_SCHEMES`].
+/// - length ≤ [`MAX_LOGO_URI_BYTES`]
+/// - syntactically well-formed URI schemes in [`ALLOWED_LOGO_URI_SCHEMES`].
 ///
-/// Empty strings are accepted unconditionally (they clear the URI per spec).
-///
-/// Used by both [`TIP20Token::write_logo_uri`] and the factory's
-/// `createTokenWithLogo` overload to ensure consistent enforcement.
+/// Empty strings are accepted unconditionally.
 pub(crate) fn validate_logo_uri(uri: &str) -> Result<()> {
     if uri.len() > MAX_LOGO_URI_BYTES {
         return Err(TIP20Error::logo_uri_too_long().into());
@@ -86,11 +70,6 @@ pub(crate) fn validate_logo_uri(uri: &str) -> Result<()> {
     Ok(())
 }
 
-/// Returns `true` if `uri` is syntactically a URI (RFC 3986 §3.1 scheme
-/// followed by `:`) and its scheme is in [`ALLOWED_LOGO_URI_SCHEMES`].
-///
-/// Scheme grammar: `scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`,
-/// matched ASCII-case-insensitively.
 fn is_allowed_logo_uri(uri: &str) -> bool {
     let Some((scheme, _rest)) = uri.split_once(':') else {
         return false;
@@ -369,27 +348,10 @@ impl TIP20Token {
         self.write_logo_uri(msg_sender, call.newLogoURI)
     }
 
-    /// Internal helper: runs [`validate_logo_uri`] (length cap + scheme allowlist),
-    /// writes the slot, and emits `LogoURIUpdated`.
+    /// Internal helper: runs [`validate_logo_uri`] (length cap + scheme allowlist), stores the
+    /// value, and emits `LogoURIUpdated`.
     ///
-    /// # Authorization
-    ///
-    /// **This function performs NO role check.** It is `pub(crate)` precisely
-    /// because the factory needs to set the URI on a brand-new token where
-    /// the calling factory address is not — and must not be — in the new
-    /// token's `RolesAuth`, so the normal `DEFAULT_ADMIN_ROLE` check would
-    /// (correctly) reject it. Do not "fix" this by calling `check_role` here:
-    /// that would break `createTokenWithLogo`. Any new caller MUST perform
-    /// its own authorization upstream (as `set_logo_uri` does) or have an
-    /// equivalent justification (as the factory does at deploy time).
-    ///
-    /// # `updater`
-    ///
-    /// The `updater` field is written verbatim into the `LogoURIUpdated`
-    /// event. Callers are responsible for choosing the correct value
-    /// (`msg_sender` for `setLogoURI`, the original transaction sender for
-    /// the factory's deploy-time emission). It is intentionally not derived
-    /// from any internal state here.
+    /// **IMPORTANT:** this function performs NO role check. It is the caller's responsibility.
     pub(crate) fn write_logo_uri(&mut self, updater: Address, new_logo_uri: String) -> Result<()> {
         validate_logo_uri(&new_logo_uri)?;
 
@@ -2242,17 +2204,9 @@ pub(crate) mod tests {
         })
     }
 
-    /// Direct table-driven test of [`validate_logo_uri`] — the single source
-    /// of truth for TIP-1026 URI validation.
-    ///
-    /// `set_logo_uri` and `create_token_with_logo` both delegate here, so
-    /// integration tests in this file only need to verify the wiring (one
-    /// success case, one length-cap case, one auth case); enumerating every
-    /// scheme/syntax variant belongs at the validator level.
     #[test]
     fn test_validate_logo_uri() {
-        // Valid: empty (clears), all allowlisted schemes (case-insensitive),
-        // and exactly at the 256-byte cap.
+        // Valid: empty, all allowlisted schemes (case-insensitive), and exactly at the 256-byte cap.
         let prefix = "https://example.com/";
         let at_cap = format!("{prefix}{}", "a".repeat(MAX_LOGO_URI_BYTES - prefix.len()));
         assert_eq!(at_cap.len(), MAX_LOGO_URI_BYTES);
@@ -2281,9 +2235,7 @@ pub(crate) mod tests {
             Err(TempoPrecompileError::TIP20(TIP20Error::LogoURITooLong(_))),
         ));
 
-        // Disallowed schemes (canonical examples from the spec's security
-        // considerations and the Slack discussion) and malformed URIs (no
-        // parseable scheme per RFC 3986 §3.1) both surface as InvalidLogoURI.
+        // Disallowed schemes and malformed URIs
         for bad in [
             "javascript:alert(1)",
             "file:///etc/passwd",
@@ -2374,11 +2326,6 @@ pub(crate) mod tests {
         })
     }
 
-    /// Wiring test: a successful `set_logo_uri` writes the slot and emits
-    /// `LogoURIUpdated`. Also pins the default-empty initial value (folded in
-    /// from a previous standalone test). Validation behavior is exhaustively
-    /// tested in [`test_validate_logo_uri`]; this test only needs one
-    /// success case to prove the integration path is wired.
     #[test]
     fn test_set_logo_uri_writes_and_emits() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
