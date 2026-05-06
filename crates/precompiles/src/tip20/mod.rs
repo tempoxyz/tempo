@@ -1843,11 +1843,7 @@ pub(crate) mod tests {
                 .apply()?;
 
             // Pre-T5: caller is unchecked (preserves pre-TIP-1035 FeeAMM behavior).
-            assert!(
-                token
-                    .system_transfer_from(Address::random(), from, amount)
-                    .is_ok()
-            );
+            assert!(token.system_transfer_from(to, from, amount).is_ok());
             assert_eq!(
                 token.emitted_events().last().unwrap(),
                 &TIP20Event::Transfer(ITIP20::Transfer { from, to, amount }).into_log_data()
