@@ -3,8 +3,8 @@
 pub use IAccountKeychain::{
     IAccountKeychainErrors as AccountKeychainError, IAccountKeychainEvents as AccountKeychainEvent,
     authorizeKey_0Call as legacyAuthorizeKeyCall, authorizeKey_1Call as authorizeKeyCall,
-    getAllowedCallsReturn, getRemainingLimitWithPeriodCall,
-    getRemainingLimitWithPeriodReturn as getRemainingLimitReturn,
+    authorizeKey_2Call as authorizeKeyWithNonceCall, getAllowedCallsReturn,
+    getRemainingLimitWithPeriodCall, getRemainingLimitWithPeriodReturn as getRemainingLimitReturn,
 };
 
 crate::sol! {
@@ -111,6 +111,19 @@ crate::sol! {
             KeyRestrictions calldata config
         ) external;
 
+        /// Authorize a new key with a TIP-1053 replay nonce.
+        /// @dev The nonce must be non-zero and unused for the caller's account.
+        function authorizeKey(
+            address keyId,
+            SignatureType signatureType,
+            KeyRestrictions calldata config,
+            bytes32 nonce
+        ) external;
+
+        /// Burn a TIP-1053 key-authorization nonce without authorizing a key.
+        /// @dev Callable by the account root key or an active access key.
+        function burnKeyAuthorizationNonce(bytes32 nonce) external;
+
         /// Revoke an authorized key
         /// @param publicKey The public key to revoke
         function revokeKey(address keyId) external;
@@ -176,6 +189,9 @@ crate::sol! {
             address keyId
         ) external view returns (bool isScoped, CallScope[] memory scopes);
 
+        /// Returns whether a TIP-1053 key-authorization nonce has been consumed.
+        function isKeyAuthorizationNonceUsed(address account, bytes32 nonce) external view returns (bool);
+
         /// Get the key used in the current transaction
         /// @return The keyId used in the current transaction
         function getTransactionKey() external view returns (address);
@@ -194,6 +210,8 @@ crate::sol! {
         error SignatureTypeMismatch(uint8 expected, uint8 actual);
         error CallNotAllowed();
         error InvalidCallScope();
+        error InvalidKeyAuthorizationNonce();
+        error KeyAuthorizationNonceAlreadyUsed();
         error LegacyAuthorizeKeySelectorChanged(bytes4 newSelector);
     }
 }
@@ -264,6 +282,18 @@ impl AccountKeychainError {
     /// Creates an error for invalid scope configuration.
     pub const fn invalid_call_scope() -> Self {
         Self::InvalidCallScope(IAccountKeychain::InvalidCallScope {})
+    }
+
+    /// Creates an error for a zero or otherwise invalid TIP-1053 nonce.
+    pub const fn invalid_key_authorization_nonce() -> Self {
+        Self::InvalidKeyAuthorizationNonce(IAccountKeychain::InvalidKeyAuthorizationNonce {})
+    }
+
+    /// Creates an error for a TIP-1053 nonce that has already been consumed.
+    pub const fn key_authorization_nonce_already_used() -> Self {
+        Self::KeyAuthorizationNonceAlreadyUsed(
+            IAccountKeychain::KeyAuthorizationNonceAlreadyUsed {},
+        )
     }
 
     /// Creates an error for the legacy authorize-key selector being unavailable on T3+.

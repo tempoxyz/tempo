@@ -16,11 +16,11 @@ pub use tempo_contracts::precompiles::{
     IAccountKeychain,
     IAccountKeychain::{
         CallScope, KeyInfo, KeyRestrictions, SelectorRule, SignatureType, TokenLimit,
-        getAllowedCallsCall, getKeyCall, getRemainingLimitCall, getRemainingLimitWithPeriodCall,
-        getTransactionKeyCall, removeAllowedCallsCall, revokeKeyCall, setAllowedCallsCall,
-        updateSpendingLimitCall,
+        burnKeyAuthorizationNonceCall, getAllowedCallsCall, getKeyCall, getRemainingLimitCall,
+        getRemainingLimitWithPeriodCall, getTransactionKeyCall, isKeyAuthorizationNonceUsedCall,
+        removeAllowedCallsCall, revokeKeyCall, setAllowedCallsCall, updateSpendingLimitCall,
     },
-    authorizeKeyCall, getAllowedCallsReturn, getRemainingLimitReturn,
+    authorizeKeyCall, authorizeKeyWithNonceCall, getAllowedCallsReturn, getRemainingLimitReturn,
 };
 use tempo_primitives::TempoAddressExt;
 
@@ -80,6 +80,9 @@ pub struct AccountKeychain {
 
     // key_scopes[(account, keyId)] -> call scoping configuration.
     key_scopes: Mapping<B256, KeyScope>,
+
+    // key_authorization_nonces[account][nonce] -> true once a TIP-1053 nonce is consumed.
+    key_authorization_nonces: Mapping<Address, Mapping<B256, bool>>,
 
     // WARNING(rusowsky): transient storage slots must always be placed at the very end until the `contract`
     // macro is refactored and has 2 independent layouts (persistent and transient).
@@ -198,13 +201,52 @@ impl AccountKeychain {
     /// - `KeyAlreadyRevoked` — revoked keys cannot be re-authorized
     /// - `InvalidSignatureType` — must be Secp256k1, P256, or WebAuthn
     pub fn authorize_key(&mut self, msg_sender: Address, call: authorizeKeyCall) -> Result<()> {
-        let config = &call.config;
+        self.authorize_key_inner(
+            msg_sender,
+            call.keyId,
+            call.signatureType,
+            call.config,
+            None,
+        )
+    }
 
+    /// Registers a new access key and consumes a non-zero TIP-1053 nonce atomically with the
+    /// successful authorization.
+    pub fn authorize_key_with_nonce(
+        &mut self,
+        msg_sender: Address,
+        call: authorizeKeyWithNonceCall,
+    ) -> Result<()> {
+        self.authorize_key_inner(
+            msg_sender,
+            call.keyId,
+            call.signatureType,
+            call.config,
+            Some(call.nonce),
+        )
+    }
+
+    fn authorize_key_inner(
+        &mut self,
+        msg_sender: Address,
+        key_id: Address,
+        signature_type: SignatureType,
+        config: KeyRestrictions,
+        nonce: Option<B256>,
+    ) -> Result<()> {
+        let config = &config;
         self.ensure_admin_caller(msg_sender)?;
         let is_t3 = self.storage.spec().is_t3();
 
+        if let Some(nonce) = nonce {
+            if nonce == B256::ZERO || !self.storage.spec().is_t5() {
+                return Err(AccountKeychainError::invalid_key_authorization_nonce().into());
+            }
+        }
+        let has_nonce = nonce.is_some();
+
         // Validate inputs
-        if call.keyId == Address::ZERO {
+        if key_id == Address::ZERO {
             return Err(AccountKeychainError::zero_public_key().into());
         }
 
@@ -217,7 +259,7 @@ impl AccountKeychain {
         }
 
         // Check if key already exists (key exists if expiry > 0)
-        let existing_key = self.keys[msg_sender][call.keyId].read()?;
+        let existing_key = self.keys[msg_sender][key_id].read()?;
         if existing_key.expiry > 0 {
             return Err(AccountKeychainError::key_already_exists().into());
         }
@@ -228,7 +270,7 @@ impl AccountKeychain {
         }
 
         // Convert SignatureType enum to u8 for storage
-        let signature_type = match call.signatureType {
+        let signature_type = match signature_type {
             SignatureType::Secp256k1 => 0,
             SignatureType::P256 => 1,
             SignatureType::WebAuthn => 2,
@@ -243,12 +285,19 @@ impl AccountKeychain {
                     if !seen_tokens.insert(limit.token) {
                         return Err(AccountKeychainError::invalid_spending_limit().into());
                     }
+
+                    if has_nonce {
+                        Self::t3_spending_limit_cap(limit.amount)?;
+                    }
                 }
             }
 
             if config.allowAnyCalls {
                 None
             } else {
+                if has_nonce {
+                    self.validate_call_scopes(&config.allowedCalls)?;
+                }
                 Some(config.allowedCalls.as_slice())
             }
         } else {
@@ -263,6 +312,10 @@ impl AccountKeychain {
             None
         };
 
+        if let Some(nonce) = nonce {
+            self.consume_key_authorization_nonce(msg_sender, nonce)?;
+        }
+
         // Create and store the new key
         let new_key = AuthorizedKey {
             signature_type,
@@ -271,7 +324,7 @@ impl AccountKeychain {
             is_revoked: false,
         };
 
-        self.keys[msg_sender][call.keyId].write(new_key)?;
+        self.keys[msg_sender][key_id].write(new_key)?;
 
         let limits = config
             .enforceLimits
@@ -281,7 +334,7 @@ impl AccountKeychain {
 
         self.apply_key_authorization_restrictions(
             msg_sender,
-            call.keyId,
+            key_id,
             limits,
             allowed_call_configs,
         )?;
@@ -290,11 +343,25 @@ impl AccountKeychain {
         self.emit_event(AccountKeychainEvent::KeyAuthorized(
             IAccountKeychain::KeyAuthorized {
                 account: msg_sender,
-                publicKey: call.keyId,
+                publicKey: key_id,
                 signatureType: signature_type,
                 expiry: config.expiry,
             },
         ))
+    }
+
+    /// Burns a TIP-1053 nonce without authorizing a key.
+    pub fn burn_key_authorization_nonce(
+        &mut self,
+        msg_sender: Address,
+        call: burnKeyAuthorizationNonceCall,
+    ) -> Result<()> {
+        if !self.storage.spec().is_t5() {
+            return Err(AccountKeychainError::invalid_key_authorization_nonce().into());
+        }
+
+        self.ensure_nonce_burn_caller(msg_sender)?;
+        self.consume_key_authorization_nonce(msg_sender, call.nonce)
     }
 
     /// Permanently revokes an access key. Once revoked, a key ID can never be re-authorized for
@@ -581,6 +648,18 @@ impl AccountKeychain {
             isScoped: true,
             scopes,
         })
+    }
+
+    /// Returns whether a TIP-1053 key-authorization nonce has been consumed for an account.
+    pub fn is_key_authorization_nonce_used(
+        &self,
+        call: isKeyAuthorizationNonceUsedCall,
+    ) -> Result<bool> {
+        if call.nonce == B256::ZERO {
+            return Ok(false);
+        }
+
+        self.key_authorization_nonces[call.account][call.nonce].read()
     }
 
     /// Returns the access key used to authorize the current transaction (`Address::ZERO` = root key).
@@ -975,6 +1054,33 @@ impl AccountKeychain {
         }
 
         Ok(())
+    }
+
+    fn ensure_nonce_burn_caller(&self, msg_sender: Address) -> Result<()> {
+        let tx_origin = self.tx_origin.t_read()?;
+        if tx_origin.is_zero() || tx_origin != msg_sender {
+            return Err(AccountKeychainError::unauthorized_caller().into());
+        }
+
+        let transaction_key = self.transaction_key.t_read()?;
+        if !transaction_key.is_zero() {
+            let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
+            self.load_active_key(msg_sender, transaction_key, current_timestamp)?;
+        }
+
+        Ok(())
+    }
+
+    fn consume_key_authorization_nonce(&mut self, account: Address, nonce: B256) -> Result<()> {
+        if nonce == B256::ZERO {
+            return Err(AccountKeychainError::invalid_key_authorization_nonce().into());
+        }
+
+        if self.key_authorization_nonces[account][nonce].read()? {
+            return Err(AccountKeychainError::key_authorization_nonce_already_used().into());
+        }
+
+        self.key_authorization_nonces[account][nonce].write(true)
     }
 
     /// Load and validate a key exists, is not revoked, and is not expired.
@@ -1377,6 +1483,146 @@ mod tests {
             }
             _ => panic!("Expected AccountKeychainError, got: {error:?}"),
         }
+    }
+
+    fn assert_nonce_already_used(error: TempoPrecompileError) {
+        match error {
+            TempoPrecompileError::AccountKeychainError(e) => {
+                assert!(
+                    matches!(e, AccountKeychainError::KeyAuthorizationNonceAlreadyUsed(_)),
+                    "Expected KeyAuthorizationNonceAlreadyUsed error, got: {e:?}"
+                );
+            }
+            _ => panic!("Expected AccountKeychainError, got: {error:?}"),
+        }
+    }
+
+    fn unrestricted_restrictions() -> KeyRestrictions {
+        KeyRestrictions {
+            expiry: u64::MAX,
+            enforceLimits: false,
+            limits: vec![],
+            allowAnyCalls: true,
+            allowedCalls: vec![],
+        }
+    }
+
+    #[test]
+    fn test_t5_authorize_key_with_nonce_consumes_and_rejects_reuse() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let account = Address::random();
+        let first_key = Address::random();
+        let second_key = Address::random();
+        let nonce = B256::repeat_byte(0x53);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_tx_origin(account)?;
+
+            keychain.authorize_key_with_nonce(
+                account,
+                authorizeKeyWithNonceCall {
+                    keyId: first_key,
+                    signatureType: SignatureType::Secp256k1,
+                    config: unrestricted_restrictions(),
+                    nonce,
+                },
+            )?;
+
+            assert!(
+                keychain.is_key_authorization_nonce_used(isKeyAuthorizationNonceUsedCall {
+                    account,
+                    nonce,
+                })?
+            );
+
+            let replay = keychain.authorize_key_with_nonce(
+                account,
+                authorizeKeyWithNonceCall {
+                    keyId: second_key,
+                    signatureType: SignatureType::Secp256k1,
+                    config: unrestricted_restrictions(),
+                    nonce,
+                },
+            );
+            assert_nonce_already_used(replay.expect_err("nonce replay must fail"));
+
+            assert_eq!(keychain.keys[account][second_key].read()?.expiry, 0);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t5_burn_key_authorization_nonce_blocks_later_auth() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let account = Address::random();
+        let nonce = B256::repeat_byte(0x54);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_tx_origin(account)?;
+
+            keychain
+                .burn_key_authorization_nonce(account, burnKeyAuthorizationNonceCall { nonce })?;
+
+            assert!(
+                keychain.is_key_authorization_nonce_used(isKeyAuthorizationNonceUsedCall {
+                    account,
+                    nonce,
+                })?
+            );
+
+            let result = keychain.authorize_key_with_nonce(
+                account,
+                authorizeKeyWithNonceCall {
+                    keyId: Address::random(),
+                    signatureType: SignatureType::Secp256k1,
+                    config: unrestricted_restrictions(),
+                    nonce,
+                },
+            );
+            assert_nonce_already_used(result.expect_err("burned nonce must not authorize"));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t5_access_key_can_burn_key_authorization_nonce() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let account = Address::random();
+        let access_key = Address::random();
+        let nonce = B256::repeat_byte(0x55);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_tx_origin(account)?;
+
+            keychain.authorize_key(
+                account,
+                authorizeKeyCall {
+                    keyId: access_key,
+                    signatureType: SignatureType::Secp256k1,
+                    config: unrestricted_restrictions(),
+                },
+            )?;
+
+            keychain.set_transaction_key(access_key)?;
+            keychain
+                .burn_key_authorization_nonce(account, burnKeyAuthorizationNonceCall { nonce })?;
+
+            assert!(
+                keychain.is_key_authorization_nonce_used(isKeyAuthorizationNonceUsedCall {
+                    account,
+                    nonce,
+                })?
+            );
+
+            Ok(())
+        })
     }
 
     #[test]
