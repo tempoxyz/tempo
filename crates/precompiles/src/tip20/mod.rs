@@ -705,28 +705,11 @@ impl TIP20Token {
         self.validate_transfer(msg_sender, &to)?;
         self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
-        if self.storage.spec().is_t6() {
-            let (authorized, blocked_reason, recovery_address) = TIP403Registry::new()
-                .validate_receive_policy(self.address, msg_sender, to.target)?;
-
-            if !authorized {
-                self.escrow_funds(
-                    msg_sender,
-                    call.to,
-                    call.amount,
-                    recovery_address,
-                    blocked_reason,
-                    InboundKind::TRANSFER,
-                    B256::ZERO,
-                )?;
-                return Ok(true);
-            }
-        }
-
-        self._transfer(msg_sender, &to, call.amount)?;
-        if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
+        let transferred = self.transfer_or_escrow(msg_sender, &to, call.to, call.amount)?;
+        if transferred && let Some(hop) = to.build_virtual_transfer_event(call.amount) {
             self.emit_event(hop)?;
         }
+
         Ok(true)
     }
 
@@ -998,6 +981,41 @@ impl TIP20Token {
     /// - `SpendingLimitExceeded` — access key spending limit exceeded
     pub fn check_and_update_spending_limit(&mut self, from: Address, amount: U256) -> Result<()> {
         AccountKeychain::new().authorize_transfer(from, self.address, amount)
+    }
+
+    fn transfer_or_escrow(
+        &mut self,
+        from: Address,
+        to: &Recipient,
+        recipient: Address,
+        amount: U256,
+    ) -> Result<bool> {
+        if !self.storage.spec().is_t6() {
+            self._transfer(from, to, amount)?;
+            return Ok(true);
+        }
+
+        if recipient == ESCROW_ADDRESS || to.target == ESCROW_ADDRESS {
+            return Err(TIP1028EscrowError::escrow_address_reserved().into());
+        }
+
+        let (authorized, blocked_reason, recovery_address) =
+            TIP403Registry::new().validate_receive_policy(self.address, from, to.target)?;
+        if authorized {
+            self._transfer(from, to, amount)?;
+            return Ok(true);
+        }
+
+        self.escrow_funds(
+            from,
+            recipient,
+            amount,
+            recovery_address,
+            blocked_reason,
+            InboundKind::TRANSFER,
+            B256::ZERO,
+        )?;
+        Ok(false)
     }
 
     /// Core transfer: debits `from`, credits `to.target`, emits `Transfer(from, event_addr, amount)`.
