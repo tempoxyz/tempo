@@ -365,170 +365,6 @@ impl KeyAuthorization {
     }
 }
 
-impl Encodable for KeyAuthorization {
-    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-        alloy_rlp::Header {
-            list: true,
-            payload_length: self.payload_length(),
-        }
-        .encode(out);
-
-        self.chain_id.encode(out);
-        self.key_type.encode(out);
-        self.key_id.encode(out);
-
-        let nonce = self.normalized_nonce();
-        let include_allowed_calls = self.allowed_calls.is_some() || nonce.is_some();
-        let include_limits = self.limits.is_some() || include_allowed_calls;
-        let include_expiry = self.expiry.is_some() || include_limits;
-
-        if include_expiry {
-            encode_optional(&self.expiry, out);
-        }
-
-        if include_limits {
-            encode_optional(&self.limits, out);
-        }
-
-        if include_allowed_calls {
-            encode_optional(&self.allowed_calls, out);
-        }
-
-        if let Some(nonce) = nonce {
-            nonce.encode(out);
-        }
-    }
-
-    fn length(&self) -> usize {
-        alloy_rlp::Header {
-            list: true,
-            payload_length: self.payload_length(),
-        }
-        .length()
-            + self.payload_length()
-    }
-}
-
-impl KeyAuthorization {
-    fn payload_length(&self) -> usize {
-        let nonce = self.normalized_nonce();
-        let include_allowed_calls = self.allowed_calls.is_some() || nonce.is_some();
-        let include_limits = self.limits.is_some() || include_allowed_calls;
-        let include_expiry = self.expiry.is_some() || include_limits;
-
-        let mut len = self.chain_id.length() + self.key_type.length() + self.key_id.length();
-
-        if include_expiry {
-            len += optional_length(&self.expiry);
-        }
-
-        if include_limits {
-            len += optional_length(&self.limits);
-        }
-
-        if include_allowed_calls {
-            len += optional_length(&self.allowed_calls);
-        }
-
-        if let Some(nonce) = nonce {
-            len += nonce.length();
-        }
-
-        len
-    }
-}
-
-impl alloy_rlp::Decodable for KeyAuthorization {
-    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let header = alloy_rlp::Header::decode(buf)?;
-        if !header.list {
-            return Err(alloy_rlp::Error::UnexpectedString);
-        }
-
-        if header.payload_length > buf.len() {
-            return Err(alloy_rlp::Error::InputTooShort);
-        }
-
-        let (mut payload, rest) = buf.split_at(header.payload_length);
-        *buf = rest;
-
-        let chain_id = alloy_rlp::Decodable::decode(&mut payload)?;
-        let key_type = alloy_rlp::Decodable::decode(&mut payload)?;
-        let key_id = alloy_rlp::Decodable::decode(&mut payload)?;
-
-        let expiry = decode_optional_canonical(&mut payload, "expiry")?;
-
-        let limits = decode_optional_canonical(&mut payload, "limits")?;
-
-        let allowed_calls = decode_optional_canonical(&mut payload, "allowed_calls")?;
-
-        let nonce = if payload.is_empty() {
-            None
-        } else {
-            if payload.first() == Some(&alloy_rlp::EMPTY_STRING_CODE) {
-                return Err(alloy_rlp::Error::Custom(
-                    "key authorization nonce must be omitted when absent",
-                ));
-            }
-
-            let nonce = <B256 as alloy_rlp::Decodable>::decode(&mut payload)?;
-
-            if nonce == B256::ZERO {
-                return Err(alloy_rlp::Error::Custom(
-                    "zero key authorization nonce must be omitted",
-                ));
-            }
-
-            Some(nonce)
-        };
-
-        if !payload.is_empty() {
-            return Err(alloy_rlp::Error::UnexpectedLength);
-        }
-
-        Ok(Self {
-            chain_id,
-            key_type,
-            key_id,
-            expiry,
-            limits,
-            allowed_calls,
-            nonce,
-        })
-    }
-}
-
-fn encode_optional<T: Encodable>(value: &Option<T>, out: &mut dyn alloy_rlp::BufMut) {
-    if let Some(value) = value.as_ref() {
-        value.encode(out);
-    } else {
-        out.put_u8(alloy_rlp::EMPTY_STRING_CODE);
-    }
-}
-
-fn optional_length<T: Encodable>(value: &Option<T>) -> usize {
-    value.as_ref().map_or(1, Encodable::length)
-}
-
-fn decode_optional_canonical<T: alloy_rlp::Decodable>(
-    payload: &mut &[u8],
-    field: &'static str,
-) -> alloy_rlp::Result<Option<T>> {
-    if payload.is_empty() {
-        return Ok(None);
-    }
-
-    if payload.first() == Some(&alloy_rlp::EMPTY_STRING_CODE) {
-        if payload.len() == 1 {
-            return Err(alloy_rlp::Error::Custom(field));
-        }
-        *payload = &payload[1..];
-        Ok(None)
-    } else {
-        Ok(Some(T::decode(payload)?))
-    }
-}
-
 /// Error returned when a [`KeyAuthorization`]'s `chain_id` does not match the expected value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyAuthorizationChainIdError {
@@ -626,6 +462,101 @@ pub mod serde_nonzero_quantity_opt {
 mod rlp {
     use super::*;
     use alloy_rlp::{Decodable, Encodable};
+
+    /// RLP-only wrapper for TIP-1053's nonce semantics. Deriving directly on `Option<B256>`
+    /// would encode `Some(B256::ZERO)` as an explicit zero nonce, but the wire format reserves
+    /// zero as the absent sentinel and requires it to be omitted.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    struct KeyAuthorizationNonce(B256);
+
+    impl Encodable for KeyAuthorizationNonce {
+        fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+            self.0.encode(out)
+        }
+
+        fn length(&self) -> usize {
+            self.0.length()
+        }
+    }
+
+    impl Decodable for KeyAuthorizationNonce {
+        fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+            let nonce = B256::decode(buf)?;
+            if nonce == B256::ZERO {
+                return Err(alloy_rlp::Error::Custom(
+                    "zero key authorization nonce must be omitted",
+                ));
+            }
+            Ok(Self(nonce))
+        }
+    }
+
+    #[derive(
+        Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable,
+    )]
+    #[rlp(trailing(canonical))]
+    struct KeyAuthorizationWire {
+        chain_id: u64,
+        key_type: SignatureType,
+        key_id: Address,
+        expiry: Option<NonZeroU64>,
+        limits: Option<Vec<TokenLimit>>,
+        allowed_calls: Option<Vec<CallScope>>,
+        nonce: Option<KeyAuthorizationNonce>,
+    }
+
+    impl From<&KeyAuthorization> for KeyAuthorizationWire {
+        fn from(value: &KeyAuthorization) -> Self {
+            let KeyAuthorization {
+                chain_id,
+                key_type,
+                key_id,
+                expiry,
+                limits,
+                allowed_calls,
+                nonce: _,
+            } = value;
+            Self {
+                chain_id: *chain_id,
+                key_type: *key_type,
+                key_id: *key_id,
+                expiry: *expiry,
+                limits: limits.clone(),
+                allowed_calls: allowed_calls.clone(),
+                nonce: value.normalized_nonce().map(KeyAuthorizationNonce),
+            }
+        }
+    }
+
+    impl From<KeyAuthorizationWire> for KeyAuthorization {
+        fn from(value: KeyAuthorizationWire) -> Self {
+            Self {
+                chain_id: value.chain_id,
+                key_type: value.key_type,
+                key_id: value.key_id,
+                expiry: value.expiry,
+                limits: value.limits,
+                allowed_calls: value.allowed_calls,
+                nonce: value.nonce.map(|nonce| nonce.0),
+            }
+        }
+    }
+
+    impl Encodable for KeyAuthorization {
+        fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+            KeyAuthorizationWire::from(self).encode(out)
+        }
+
+        fn length(&self) -> usize {
+            KeyAuthorizationWire::from(self).length()
+        }
+    }
+
+    impl Decodable for KeyAuthorization {
+        fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+            Ok(KeyAuthorizationWire::decode(buf)?.into())
+        }
+    }
 
     #[derive(
         Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable,
