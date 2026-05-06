@@ -181,6 +181,7 @@ where
                 last_finalized_height,
                 marshal: marshal_mailbox.clone(),
                 fcu_heartbeat_interval: self.fcu_heartbeat_interval,
+                public_key: Some(self.signer.public_key()),
             },
         )
         .wrap_err("failed initialization executor actor")?;
