@@ -175,7 +175,7 @@ impl TIP20Factory {
     ) -> Result<Address> {
         // Validate the logo URI up-front so a bad URI does not leave a partially-created token.
         if !call.logoURI.is_empty() {
-            crate::tip20::validate_logo_uri(&call.logoURI)?;
+            crate::tip20::TIP20Token::validate_logo_uri(&call.logoURI)?;
         }
 
         let token_address = self.create_token(

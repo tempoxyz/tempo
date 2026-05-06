@@ -45,52 +45,6 @@ pub const U128_MAX: U256 = uint!(0xffffffffffffffffffffffffffffffff_U256);
 
 use tempo_contracts::precompiles::DECIMALS as TIP20_DECIMALS;
 
-/// Maximum byte length of a token logo URI (TIP-1026).
-pub const MAX_LOGO_URI_BYTES: usize = 256;
-
-/// Allowlist of ASCII-case-insensitive URI schemes accepted for [`TIP20Token::set_logo_uri`].
-///
-/// TIP-1026 guarantees that the protocol validates the scheme prefix to make integration easier
-/// and reject obviously dangerous values (e.g. `javascript:`). What the consumer does with the URI
-/// afterwards (rendering, fetching, etc.) is out of scope and remains the consumer's responsibility.
-pub const ALLOWED_LOGO_URI_SCHEMES: &[&str] = &["https", "http", "ipfs", "data"];
-
-/// Validates a logo URI against the TIP-1026 protocol rules:
-/// - length ≤ [`MAX_LOGO_URI_BYTES`]
-/// - syntactically well-formed URI schemes in [`ALLOWED_LOGO_URI_SCHEMES`].
-///
-/// Empty strings are accepted unconditionally.
-pub(crate) fn validate_logo_uri(uri: &str) -> Result<()> {
-    if uri.len() > MAX_LOGO_URI_BYTES {
-        return Err(TIP20Error::logo_uri_too_long().into());
-    }
-    if !uri.is_empty() && !is_allowed_logo_uri(uri) {
-        return Err(TIP20Error::invalid_logo_uri().into());
-    }
-    Ok(())
-}
-
-fn is_allowed_logo_uri(uri: &str) -> bool {
-    let Some((scheme, _rest)) = uri.split_once(':') else {
-        return false;
-    };
-
-    let mut bytes = scheme.bytes();
-    let Some(first) = bytes.next() else {
-        return false;
-    };
-    if !first.is_ascii_alphabetic() {
-        return false;
-    }
-    if !bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.')) {
-        return false;
-    }
-
-    ALLOWED_LOGO_URI_SCHEMES
-        .iter()
-        .any(|allowed| scheme.eq_ignore_ascii_case(allowed))
-}
-
 /// Validates that the given token's currency is `"USD"`.
 ///
 /// # Errors
@@ -330,6 +284,55 @@ impl TIP20Token {
         }))
     }
 
+    // ========== TIP-1026: Logo URI ==========
+
+    /// Maximum byte length of a token logo URI (TIP-1026).
+    pub const MAX_LOGO_URI_BYTES: usize = 256;
+
+    /// Allowlist of ASCII-case-insensitive URI schemes accepted for [`Self::set_logo_uri`].
+    ///
+    /// TIP-1026 guarantees that the protocol validates the scheme prefix to make integration easier
+    /// and reject obviously dangerous values (e.g. `javascript:`). What the consumer does with the URI
+    /// afterwards (rendering, fetching, etc.) is out of scope and remains the consumer's responsibility.
+    pub const ALLOWED_LOGO_URI_SCHEMES: &'static [&'static str] =
+        &["https", "http", "ipfs", "data"];
+
+    /// Validates a logo URI against the TIP-1026 protocol rules:
+    /// - length ≤ [`Self::MAX_LOGO_URI_BYTES`]
+    /// - syntactically well-formed URI schemes in [`Self::ALLOWED_LOGO_URI_SCHEMES`].
+    ///
+    /// Empty strings are accepted unconditionally.
+    pub(crate) fn validate_logo_uri(uri: &str) -> Result<()> {
+        if uri.len() > Self::MAX_LOGO_URI_BYTES {
+            return Err(TIP20Error::logo_uri_too_long().into());
+        }
+        if !uri.is_empty() && !Self::is_allowed_logo_uri(uri) {
+            return Err(TIP20Error::invalid_logo_uri().into());
+        }
+        Ok(())
+    }
+
+    fn is_allowed_logo_uri(uri: &str) -> bool {
+        let Some((scheme, _rest)) = uri.split_once(':') else {
+            return false;
+        };
+
+        let mut bytes = scheme.bytes();
+        let Some(first) = bytes.next() else {
+            return false;
+        };
+        if !first.is_ascii_alphabetic() {
+            return false;
+        }
+        if !bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.')) {
+            return false;
+        }
+
+        Self::ALLOWED_LOGO_URI_SCHEMES
+            .iter()
+            .any(|allowed| scheme.eq_ignore_ascii_case(allowed))
+    }
+
     /// Sets the logo URI for this token (TIP-1026). Empty strings are valid
     /// and clear the URI.
     ///
@@ -338,7 +341,7 @@ impl TIP20Token {
     /// - `LogoURITooLong` — `bytes(newLogoURI).length > 256`
     /// - `InvalidLogoURI` — `newLogoURI` is non-empty and either has no
     ///   parseable scheme (RFC 3986 §3.1) or its scheme is not in
-    ///   [`ALLOWED_LOGO_URI_SCHEMES`]
+    ///   [`Self::ALLOWED_LOGO_URI_SCHEMES`]
     pub fn set_logo_uri(
         &mut self,
         msg_sender: Address,
@@ -348,12 +351,12 @@ impl TIP20Token {
         self.write_logo_uri(msg_sender, call.newLogoURI)
     }
 
-    /// Internal helper: runs [`validate_logo_uri`] (length cap + scheme allowlist), stores the
+    /// Internal helper: runs [`Self::validate_logo_uri`] (length cap + scheme allowlist), stores the
     /// value, and emits `LogoURIUpdated`.
     ///
     /// **IMPORTANT:** this function performs NO role check. It is the caller's responsibility.
     pub(crate) fn write_logo_uri(&mut self, updater: Address, new_logo_uri: String) -> Result<()> {
-        validate_logo_uri(&new_logo_uri)?;
+        Self::validate_logo_uri(&new_logo_uri)?;
 
         self.logo_uri.write(new_logo_uri.clone())?;
 
@@ -362,6 +365,8 @@ impl TIP20Token {
             newLogoURI: new_logo_uri,
         }))
     }
+
+    // ========== End TIP-1026 ==========
 
     /// Pauses all token transfers.
     ///
@@ -2206,10 +2211,12 @@ pub(crate) mod tests {
 
     #[test]
     fn test_validate_logo_uri() {
+        const MAX: usize = TIP20Token::MAX_LOGO_URI_BYTES;
+
         // Valid: empty, all allowlisted schemes (case-insensitive), and exactly at the 256-byte cap.
         let prefix = "https://example.com/";
-        let at_cap = format!("{prefix}{}", "a".repeat(MAX_LOGO_URI_BYTES - prefix.len()));
-        assert_eq!(at_cap.len(), MAX_LOGO_URI_BYTES);
+        let at_cap = format!("{prefix}{}", "a".repeat(MAX - prefix.len()));
+        assert_eq!(at_cap.len(), MAX);
         for ok in [
             "",
             "https://example.com/icon.svg",
@@ -2220,18 +2227,18 @@ pub(crate) mod tests {
             "IPFS://Qm123",
             &at_cap,
         ] {
-            assert!(validate_logo_uri(ok).is_ok(), "expected Ok for {ok:?}");
+            assert!(
+                TIP20Token::validate_logo_uri(ok).is_ok(),
+                "expected Ok for {ok:?}"
+            );
         }
 
         // 257 bytes — one over the limit. Use a syntactically valid URI so
         // we exercise the length check, not the URI/scheme check.
-        let too_long = format!(
-            "{prefix}{}",
-            "a".repeat(MAX_LOGO_URI_BYTES + 1 - prefix.len())
-        );
-        assert_eq!(too_long.len(), MAX_LOGO_URI_BYTES + 1);
+        let too_long = format!("{prefix}{}", "a".repeat(MAX + 1 - prefix.len()));
+        assert_eq!(too_long.len(), MAX + 1);
         assert!(matches!(
-            validate_logo_uri(&too_long),
+            TIP20Token::validate_logo_uri(&too_long),
             Err(TempoPrecompileError::TIP20(TIP20Error::LogoURITooLong(_))),
         ));
 
@@ -2248,7 +2255,7 @@ pub(crate) mod tests {
         ] {
             assert!(
                 matches!(
-                    validate_logo_uri(bad),
+                    TIP20Token::validate_logo_uri(bad),
                     Err(TempoPrecompileError::TIP20(TIP20Error::InvalidLogoURI(_))),
                 ),
                 "expected InvalidLogoURI for {bad:?}"
