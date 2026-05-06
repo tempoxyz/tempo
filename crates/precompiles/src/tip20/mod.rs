@@ -706,6 +706,13 @@ impl TIP20Token {
 
     /// Transfers `amount` tokens from the caller to `to`. Enforces compliance via the
     /// [`TIP403Registry`] and deducts from the caller's [`AccountKeychain`] spending limit.
+    ///
+    /// # Errors
+    /// - `Paused` — token transfers are currently paused
+    /// - `InvalidRecipient` — recipient address is zero
+    /// - `PolicyForbids` — TIP-403 policy rejects sender or recipient
+    /// - `SpendingLimitExceeded` — access key spending limit exceeded
+    /// - `InsufficientBalance` — sender balance lower than transfer amount
     pub fn transfer(&mut self, msg_sender: Address, call: ITIP20::transferCall) -> Result<bool> {
         trace!(%msg_sender, ?call, "transferring TIP20");
         let to = Recipient::resolve(call.to)?;
@@ -732,6 +739,13 @@ impl TIP20Token {
 
     /// Transfers `amount` on behalf of `from` using the caller's allowance.
     /// Enforces compliance via the [`TIP403Registry`].
+    ///
+    /// # Errors
+    /// - `Paused` — token transfers are currently paused
+    /// - `InvalidRecipient` — recipient address is zero
+    /// - `PolicyForbids` — TIP-403 policy rejects sender or recipient
+    /// - `InsufficientAllowance` — caller allowance lower than transfer amount
+    /// - `InsufficientBalance` — `from` balance lower than transfer amount
     pub fn transfer_from(
         &mut self,
         msg_sender: Address,
