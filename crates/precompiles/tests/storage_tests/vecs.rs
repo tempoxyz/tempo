@@ -8,7 +8,7 @@ use tempo_chainspec::hardfork::TempoHardfork;
 fn test_vec_overwrite_unpacked_cleans_tail() -> error::Result<()> {
     let address = Address::random();
     let len_slot = U256::ONE;
-    for &hardfork in &[TempoHardfork::T3, TempoHardfork::T4] {
+    for &hardfork in &[TempoHardfork::T4, TempoHardfork::T5] {
         let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
         StorageCtx::enter(&mut storage, || {
             let mut handler = VecHandler::<U256>::new(len_slot, address);
@@ -27,10 +27,10 @@ fn test_vec_overwrite_unpacked_cleans_tail() -> error::Result<()> {
             for (i, old) in [33u64, 44, 55].iter().enumerate() {
                 let idx = (i + 2) as u64;
                 let raw = Slot::<U256>::new(dyn_tail_slot(len_slot, idx), address).read()?;
-                if hardfork.is_t4() {
-                    assert_eq!(raw, U256::ZERO, "T4: stale element {idx} must clear");
+                if hardfork.is_t5() {
+                    assert_eq!(raw, U256::ZERO, "T5: stale element {idx} must clear");
                 } else {
-                    assert_eq!(raw, U256::from(*old), "T3: stale elem {idx} must persist",);
+                    assert_eq!(raw, U256::from(*old), "T4: stale elem {idx} must persist",);
                 }
             }
             error::Result::Ok(())
@@ -43,7 +43,7 @@ fn test_vec_overwrite_unpacked_cleans_tail() -> error::Result<()> {
 fn test_vec_overwrite_packed_cleans_tail() -> error::Result<()> {
     let address = Address::random();
     let len_slot = U256::ONE;
-    for &hardfork in &[TempoHardfork::T3, TempoHardfork::T4] {
+    for &hardfork in &[TempoHardfork::T4, TempoHardfork::T5] {
         let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
         StorageCtx::enter(&mut storage, || {
             let mut handler = VecHandler::<u64>::new(len_slot, address);
@@ -59,10 +59,10 @@ fn test_vec_overwrite_packed_cleans_tail() -> error::Result<()> {
             // Slots 1 and 2 (which previously held elements [4..9]) fell off the tail.
             for slot_idx in 1..3 {
                 let raw = Slot::<U256>::new(dyn_tail_slot(len_slot, slot_idx), address).read()?;
-                if hardfork.is_t4() {
-                    assert_eq!(raw, U256::ZERO, "T4: stale slot {slot_idx} must clear");
+                if hardfork.is_t5() {
+                    assert_eq!(raw, U256::ZERO, "T5: stale slot {slot_idx} must clear");
                 } else {
-                    assert_ne!(raw, U256::ZERO, "T3: stale slot {slot_idx} must persist",);
+                    assert_ne!(raw, U256::ZERO, "T4: stale slot {slot_idx} must persist",);
                 }
             }
             error::Result::Ok(())
@@ -72,10 +72,10 @@ fn test_vec_overwrite_packed_cleans_tail() -> error::Result<()> {
 }
 
 #[test]
-fn test_t4_vec_push_skips_cleanup() -> error::Result<()> {
+fn test_t5_vec_push_skips_cleanup() -> error::Result<()> {
     let address = Address::random();
     let len_slot = U256::ONE;
-    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
     StorageCtx::enter(&mut storage, || {
         let mut handler = VecHandler::<String>::new(len_slot, address);
         handler.write(vec!["1".to_string(), "2".to_string(), "3".to_string()])?;

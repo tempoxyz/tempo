@@ -307,7 +307,7 @@ struct DynStringRecord {
 fn test_struct_overwrite_cleans_dyn_field_tails() -> error::Result<()> {
     let address = Address::random();
     let base_slot = U256::ONE;
-    for &hardfork in &[TempoHardfork::T3, TempoHardfork::T4] {
+    for &hardfork in &[TempoHardfork::T4, TempoHardfork::T5] {
         let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
         StorageCtx::enter(&mut storage, || {
             let mut handler = DynStringRecord::handle(base_slot, LayoutCtx::FULL, address);
@@ -337,21 +337,21 @@ fn test_struct_overwrite_cleans_dyn_field_tails() -> error::Result<()> {
             assert_eq!(loaded.static_a, U256::from(2));
             assert_eq!(loaded.static_b, 84);
 
-            // T4: stale tail chunks of both String fields are zeroed.
+            // T5: stale tail chunks of both String fields are zeroed.
             for i in 0..4 {
                 let tail = Slot::<U256>::new(dyn_tail_slot(inbound_slot, i), address).read()?;
-                if hardfork.is_t4() {
-                    assert_eq!(tail, U256::ZERO, "T4: inbound chunk {i} must clear");
+                if hardfork.is_t5() {
+                    assert_eq!(tail, U256::ZERO, "T5: inbound chunk {i} must clear");
                 } else {
-                    assert_ne!(tail, U256::ZERO, "T3: inbound chunk {i} shouldn't clear");
+                    assert_ne!(tail, U256::ZERO, "T4: inbound chunk {i} shouldn't clear");
                 }
             }
             for i in 0..3 {
                 let tail = Slot::<U256>::new(dyn_tail_slot(outbound_slot, i), address).read()?;
-                if hardfork.is_t4() {
-                    assert_eq!(tail, U256::ZERO, "T4: outbound chunk {i} must clear");
+                if hardfork.is_t5() {
+                    assert_eq!(tail, U256::ZERO, "T5: outbound chunk {i} must clear");
                 } else {
-                    assert_ne!(tail, U256::ZERO, "T3: outbound chunk {i} shouldn't clear");
+                    assert_ne!(tail, U256::ZERO, "T4: outbound chunk {i} shouldn't clear");
                 }
             }
             error::Result::Ok(())

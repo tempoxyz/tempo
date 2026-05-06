@@ -201,7 +201,7 @@ where
 }
 
 /// Generic store implementation for byte-like types (String, Bytes) using Solidity's encoding.
-/// On T4+ performs tail cleanup when the prior value was long and the new one takes fewer slots.
+/// On T5+ performs tail cleanup when the prior value was long and the new one takes fewer slots.
 #[inline]
 fn store_bytes_like<S: StorageOps>(
     bytes: &[u8],
@@ -213,8 +213,8 @@ fn store_bytes_like<S: StorageOps>(
     let new_is_long = new_len > 31;
     let mut data_slot: Option<U256> = None;
 
-    // (T4+) Cleanup stale tail if necessary.
-    if !ctx.skip_tail_cleanup() && StorageCtx.spec().is_t4() {
+    // (T5+) Cleanup stale tail if necessary.
+    if !ctx.skip_tail_cleanup() && StorageCtx.spec().is_t5() {
         let prev = storage.load(base_slot)?;
         // Only applicable to long strings, as short ones always get overridden.
         if is_long_string(prev) {

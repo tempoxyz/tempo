@@ -64,8 +64,8 @@ where
         debug_assert!(ctx.is_full(), "Dynamic arrays cannot be packed");
         let data_start = calc_data_slot(len_slot);
 
-        // (T4+) Cleanup stale tail, if necessary.
-        if !ctx.skip_tail_cleanup() && StorageCtx.spec().is_t4() {
+        // (T5+) Cleanup stale tail, if necessary.
+        if !ctx.skip_tail_cleanup() && StorageCtx.spec().is_t5() {
             let (prev_len, new_len) = (load_checked_len(storage, len_slot)?, self.len());
             if prev_len > new_len {
                 clear_elements::<T, S>(storage, data_start, new_len, prev_len)?;

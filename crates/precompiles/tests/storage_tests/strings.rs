@@ -89,7 +89,7 @@ proptest! {
 fn test_string_overwrite_long_to_short_cleans_tail() -> error::Result<()> {
     let address = Address::random();
     let base_slot = U256::ONE;
-    for &hardfork in &[TempoHardfork::T3, TempoHardfork::T4] {
+    for &hardfork in &[TempoHardfork::T4, TempoHardfork::T5] {
         let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
         StorageCtx::enter(&mut storage, || {
             let mut handler = Slot::<String>::new(base_slot, address);
@@ -101,10 +101,10 @@ fn test_string_overwrite_long_to_short_cleans_tail() -> error::Result<()> {
 
             for i in 0..4 {
                 let chunk = Slot::<U256>::new(dyn_tail_slot(base_slot, i), address).read()?;
-                if hardfork.is_t4() {
-                    assert_eq!(chunk, U256::ZERO, "T4: tail chunk {i} must clear");
+                if hardfork.is_t5() {
+                    assert_eq!(chunk, U256::ZERO, "T5: tail chunk {i} must clear");
                 } else {
-                    assert_ne!(chunk, U256::ZERO, "pre-T4: stale chunk {i} must persist");
+                    assert_ne!(chunk, U256::ZERO, "pre-T5: stale chunk {i} must persist");
                 }
             }
             error::Result::Ok(())
@@ -117,7 +117,7 @@ fn test_string_overwrite_long_to_short_cleans_tail() -> error::Result<()> {
 fn test_string_overwrite_long_to_shorter_long_cleans_only_excess() -> error::Result<()> {
     let address = Address::random();
     let base_slot = U256::ONE;
-    for &hardfork in &[TempoHardfork::T3, TempoHardfork::T4] {
+    for &hardfork in &[TempoHardfork::T4, TempoHardfork::T5] {
         let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
         StorageCtx::enter(&mut storage, || {
             let mut handler = Slot::<String>::new(base_slot, address);
@@ -136,10 +136,10 @@ fn test_string_overwrite_long_to_shorter_long_cleans_only_excess() -> error::Res
             // Chunks 2..7 fell off the tail.
             for i in 2..7 {
                 let chunk = Slot::<U256>::new(dyn_tail_slot(base_slot, i), address).read()?;
-                if hardfork.is_t4() {
-                    assert_eq!(chunk, U256::ZERO, "T4: stale chunk {i} must clear");
+                if hardfork.is_t5() {
+                    assert_eq!(chunk, U256::ZERO, "T5: stale chunk {i} must clear");
                 } else {
-                    assert_ne!(chunk, U256::ZERO, "pre-T4: stale chunk {i} must persist");
+                    assert_ne!(chunk, U256::ZERO, "pre-T5: stale chunk {i} must persist");
                 }
             }
             error::Result::Ok(())
