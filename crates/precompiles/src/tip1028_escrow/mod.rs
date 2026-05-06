@@ -57,6 +57,7 @@ impl TIP1028Escrow {
         &mut self,
         token: Address,
         originator: Address,
+        receiver: Address,
         recipient: Address,
         recovery_address: Address,
         amount: U256,
@@ -89,6 +90,24 @@ impl TIP1028Escrow {
         };
         let key = self.receipt_key(BLOCKED_RECEIPT_VERSION, token, recovery_address, &receipt)?;
         self.blocked_receipt_amount[key].write(amount)?;
+
+        if kind == ITIP1028Escrow::InboundKind::TRANSFER {
+            self.emit_event(TIP1028EscrowEvent::TransferBlocked(
+                ITIP1028Escrow::TransferBlocked {
+                    token,
+                    from: originator,
+                    receiver,
+                    receiptVersion: BLOCKED_RECEIPT_VERSION,
+                    blockedNonce: blocked_nonce,
+                    blockedAt: blocked_at,
+                    recipient,
+                    amount,
+                    blockedReason: blocked_reason as u8,
+                    recoveryContract: recovery_address,
+                    memo,
+                },
+            ))?;
+        }
 
         Ok((blocked_nonce, blocked_at))
     }

@@ -12,16 +12,16 @@ pub mod dispatch;
 pub mod rewards;
 pub mod roles;
 
-use tempo_contracts::precompiles::STABLECOIN_DEX_ADDRESS;
 pub use tempo_contracts::precompiles::{
     IRolesAuth, ITIP20, RolesAuthError, RolesAuthEvent, TIP20Error, TIP20Event, USD_CURRENCY,
 };
+use tempo_contracts::precompiles::{STABLECOIN_DEX_ADDRESS, TIP1028EscrowError};
 
 // Re-export the generated slots module for external access to storage slot constants
 pub use slots as tip20_slots;
 
 use crate::{
-    PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    ESCROW_ADDRESS, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
@@ -29,6 +29,7 @@ use crate::{
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
     tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
+    tip1028_escrow::{InboundKind, TIP1028Escrow},
 };
 use alloy::{
     primitives::{Address, B256, U256, keccak256, uint},
@@ -696,8 +697,33 @@ impl TIP20Token {
     pub fn transfer(&mut self, msg_sender: Address, call: ITIP20::transferCall) -> Result<bool> {
         trace!(%msg_sender, ?call, "transferring TIP20");
         let to = Recipient::resolve(call.to)?;
+        if self.storage.spec().is_t5() && (call.to == ESCROW_ADDRESS || to.target == ESCROW_ADDRESS)
+        {
+            return Err(TIP1028EscrowError::escrow_address_reserved().into());
+        }
+
         self.validate_transfer(msg_sender, &to)?;
         self.check_and_update_spending_limit(msg_sender, call.amount)?;
+
+        // T5+ validate the receive policy
+        if self.storage.spec().is_t5() {
+            let (authorized, blocked_reason, recovery_address) = TIP403Registry::new()
+                .validate_receive_policy(self.address, msg_sender, to.target)?;
+
+            // If not authorized, escrow funds and return
+            if !authorized {
+                self.escrow_funds(
+                    msg_sender,
+                    call.to,
+                    call.amount,
+                    recovery_address,
+                    blocked_reason,
+                    InboundKind::TRANSFER,
+                    B256::ZERO,
+                )?;
+                return Ok(true);
+            }
+        }
 
         self._transfer(msg_sender, &to, call.amount)?;
         if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
@@ -1007,6 +1033,34 @@ impl TIP20Token {
         }
 
         self.emit_event(to.build_transfer_event(from, amount))
+    }
+
+    fn escrow_funds(
+        &mut self,
+        originator: Address,
+        recipient: Address,
+        amount: U256,
+        recovery_address: Address,
+        blocked_reason: ITIP403Registry::BlockedReason,
+        kind: InboundKind,
+        memo: B256,
+    ) -> Result<()> {
+        let receiver = AddressRegistry::new().resolve_recipient(recipient)?;
+        let guard = self.storage.checkpoint();
+        self._transfer(originator, &Recipient::direct(ESCROW_ADDRESS), amount)?;
+        TIP1028Escrow::new().store_blocked(
+            self.address,
+            originator,
+            receiver,
+            recipient,
+            recovery_address,
+            amount,
+            blocked_reason,
+            kind,
+            memo,
+        )?;
+        guard.commit();
+        Ok(())
     }
 
     /// Transfers fee tokens from `from` to the fee manager before transaction execution.
