@@ -7,9 +7,8 @@ const TXGEN_DEFAULT_SEED = 99
 const TXGEN_SCRAPE_INTERVAL_MS = 500
 const TXGEN_DRAIN_TIMEOUT_SECS = 300
 const TXGEN_FUND_DRAIN_TIMEOUT_SECS = 120
-const TXGEN_EXPIRING_VALID_FOR_SECS = 25
-const TXGEN_TIP20_TOKEN = "0x20c0000000000000000000000000000000000000"
-const TXGEN_DEFAULT_RECIPIENT = "0x000000000000000000000000000000000000dEaD"
+const TXGEN_TIP20_TEMPLATE = "contrib/bench/txgen/tip20-template.yaml"
+const TXGEN_ERC20_ABI = "contrib/bench/txgen/erc20.abi.json"
 
 def shell-quote [value: any] {
     let s = ($value | into string)
@@ -62,21 +61,6 @@ def resolve-bench-binary [repo_dir: string] {
     error make { msg: $"txgen bench binary not found under ($repo_dir)/target/release/" }
 }
 
-def resolve-erc20-artifact [repo_dir: string] {
-    let repo_artifact = if $repo_dir != "" { $"($repo_dir)/examples/erc20.abi.json" } else { "" }
-    let local_artifact = ("bin/tempo-bench/artifacts/MockERC20.json" | path expand)
-
-    if $repo_artifact != "" and ($repo_artifact | path exists) {
-        $repo_artifact
-    } else if ($local_artifact | path exists) {
-        $local_artifact
-    } else if $repo_dir != "" {
-        error make { msg: $"txgen ERC20 ABI not found: ($repo_artifact)" }
-    } else {
-        error make { msg: $"ERC20 artifact not found: ($local_artifact)" }
-    }
-}
-
 def resolve-txgen-paths [repo_dir: string, txgen_tempo_bin: string, txgen_bench_bin: string] {
     let env_repo_dir = ($env.TXGEN_REPO_DIR? | default "")
     let explicit_repo = $repo_dir != "" or $env_repo_dir != ""
@@ -122,7 +106,6 @@ def resolve-txgen-paths [repo_dir: string, txgen_tempo_bin: string, txgen_bench_
 
     {
         repo_dir: $repo
-        erc20_artifact: (resolve-erc20-artifact $repo)
         txgen_tempo_bin: $generator
         txgen_bench_bin: $bench
     }
@@ -184,61 +167,9 @@ def wait-for-txpool-drain [rpc_url: string, timeout_secs: int] {
     print $"  Warning: txpool drain timeout reached after ($timeout_secs)s"
 }
 
-def write-tip20-spec [spec_path: string, erc20_artifact: string, chain_id: int, accounts: int] {
-    let artifact_path = ($erc20_artifact | path expand)
-    let abi_path = $"($spec_path).erc20.abi.json"
-    let artifact = (open $artifact_path)
-    let maybe_abi = ($artifact | get -o abi | default null)
-    let abi = if (($artifact | describe) | str starts-with "list") {
-        $artifact
-    } else if $maybe_abi != null {
-        $maybe_abi
-    } else {
-        error make { msg: $"ERC20 ABI not found in artifact: ($artifact_path)" }
-    }
-    $abi | to json | save -f $abi_path
-
-    let spec = [
-        $"chain_id: ($chain_id)"
-        ""
-        "gas:"
-        "  max_fee_per_gas: 100000000000"
-        "  max_priority_fee_per_gas: 100000000000"
-        ""
-        "accounts:"
-        "  users:"
-        $"    mnemonic: \"($TXGEN_ACCOUNT_MNEMONIC)\""
-        $"    range: [0, ($accounts)]"
-        ""
-        "artifacts:"
-        $"  ERC20: \"($abi_path)\""
-        ""
-        "templates:"
-        "  tip20_transfer:"
-        "    type: tempo"
-        "    from:"
-        "      pool: users"
-        "      select: random"
-        "    gas_limit: 300000"
-        "    max_fee_per_gas: 100000000000"
-        "    max_priority_fee_per_gas: 100000000000"
-        $"    fee_token: \"($TXGEN_TIP20_TOKEN)\""
-        "    expiring_nonce: true"
-        $"    valid_for_secs: ($TXGEN_EXPIRING_VALID_FOR_SECS)"
-        "    call:"
-        $"      to: \"($TXGEN_TIP20_TOKEN)\""
-        "      abi: ERC20"
-        "      function: transfer"
-        "      args:"
-        $"        - \"($TXGEN_DEFAULT_RECIPIENT)\""
-        "        - 1"
-        ""
-        "mix:"
-        "  - template: tip20_transfer"
-        "    weight: 100"
-    ] | str join "\n"
-
-    $spec | save -f $spec_path
+def write-tip20-spec [spec_path: string] {
+    cp $TXGEN_ERC20_ABI $"($spec_path | path dirname)/erc20.abi.json"
+    cp $TXGEN_TIP20_TEMPLATE $spec_path
 }
 
 def fund-txgen-accounts [txgen_bin: string, spec_path: string, rpc_url: string] {
@@ -269,7 +200,6 @@ def run-txgen-bench-single [
     --tempo-bin: string
     --txgen-tempo-bin: string
     --txgen-bench-bin: string
-    --erc20-artifact: string
     --genesis-path: string
     --datadir: string
     --run-label: string
@@ -383,7 +313,8 @@ def run-txgen-bench-single [
 
     let chain_id = (fetch-chain-id "http://localhost:8545")
     let spec_path = $"($results_dir)/txgen-spec-($run_label).yaml"
-    write-tip20-spec $spec_path $erc20_artifact $chain_id $accounts
+    write-tip20-spec $spec_path
+    $env.TXGEN_ACCOUNTS = ($accounts | into string)
     fund-txgen-accounts $txgen_tempo_bin $spec_path "http://localhost:8545"
 
     let raw_report_path = $"($results_dir)/txgen-report-($run_label).json"
@@ -836,7 +767,6 @@ def "main run" [
             --tempo-bin $run.tempo
             --txgen-tempo-bin $txgen.txgen_tempo_bin
             --txgen-bench-bin $txgen.txgen_bench_bin
-            --erc20-artifact $txgen.erc20_artifact
             --genesis-path $run.genesis
             --datadir $run.datadir
             --run-label $run.label
