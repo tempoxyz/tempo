@@ -21,12 +21,10 @@ use alloy::{
 use tempo_precompiles_macros::contract;
 use tempo_primitives::TempoAddressExt;
 
-/// On-chain version tag for the v1 [`ITIP1028Escrow::ClaimReceiptV1`] layout.
+/// Version tag for the v1 [`ITIP1028Escrow::ClaimReceiptV1`] layout.
 pub const BLOCKED_RECEIPT_VERSION: u8 = 1;
 
-/// TIP-1028 escrow precompile. Holds funds debited from blocked inbound transfers and
-/// mints, keyed by a content-addressed hash of the receipt fields, and lets the recipient
-/// (or their recovery contract) claim them later.
+/// TIP-1028 escrow holding blocked inbound transfers and mints until claimed.
 #[contract(addr = ESCROW_ADDRESS)]
 pub struct TIP1028Escrow {
     blocked_receipt_nonce: u64,
@@ -34,17 +32,12 @@ pub struct TIP1028Escrow {
 }
 
 impl TIP1028Escrow {
-    /// Initializes the escrow's storage layout. Called once at genesis/activation.
+    /// One-time storage initialization.
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
     }
 
-    /// Returns the unclaimed balance for a receipt, or zero if the receipt is unknown
-    /// or already claimed.
-    ///
-    /// # Errors
-    /// - `InvalidToken` — `call.token` is not a TIP-20 address
-    /// - `InvalidReceiptClaim` — receipt version is unsupported or fails to decode
+    /// Returns the unclaimed amount for a receipt, or zero if unknown or already claimed.
     pub fn blocked_receipt_balance(
         &self,
         call: ITIP1028Escrow::blockedReceiptBalanceCall,
@@ -63,15 +56,8 @@ impl TIP1028Escrow {
         .read()
     }
 
-    /// Records a blocked inbound transfer or mint. Allocates a fresh nonce, writes the
-    /// claimable amount under the receipt's content hash, and emits `TransferBlocked`
-    /// for transfers (mints stay silent and surface via the parallel `Mint` event on
-    /// claim). Caller is responsible for moving the funds into [`ESCROW_ADDRESS`] in
-    /// the same checkpoint.
-    ///
-    /// # Errors
-    /// - `InvalidToken` — `token` is not a TIP-20 address
-    /// - `InvalidReceiptClaim` — `blocked_reason` is `NONE`/`__Invalid` or `kind` is `__Invalid`
+    /// Records a blocked inbound `(token, sender, recipient)` and emits `TransferBlocked`
+    /// (transfers only). Caller moves the funds into escrow in the same checkpoint.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn store_blocked(
         &mut self,
