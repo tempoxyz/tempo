@@ -28,6 +28,8 @@ crate::sol! {
         function isAuthorizedRecipient(uint64 policyId, address user) external view returns (bool);
         function isAuthorizedMintRecipient(uint64 policyId, address user) external view returns (bool);
         function compoundPolicyData(uint64 policyId) external view returns (uint64 senderPolicyId, uint64 recipientPolicyId, uint64 mintRecipientPolicyId);
+        function receivePolicy(address account) external view returns (bool hasReceivePolicy, uint64 senderPolicyId, PolicyType senderPolicyType, uint64 tokenFilterId, PolicyType tokenFilterType, address recoveryAddress);
+        function validateReceivePolicy(address token, address sender, address receiver) external view returns (bool authorized, BlockedReason blockedReason);
 
         // State-Changing Functions
         function createPolicy(address admin, PolicyType policyType) external returns (uint64);
@@ -36,6 +38,7 @@ crate::sol! {
         function modifyPolicyWhitelist(uint64 policyId, address account, bool allowed) external;
         function modifyPolicyBlacklist(uint64 policyId, address account, bool restricted) external;
         function createCompoundPolicy(uint64 senderPolicyId, uint64 recipientPolicyId, uint64 mintRecipientPolicyId) external returns (uint64);
+        function setReceivePolicy(uint64 senderPolicyId, uint64 tokenFilterId, address recoveryAddress) external;
 
         // Events
         event PolicyAdminUpdated(uint64 indexed policyId, address indexed updater, address indexed admin);
@@ -43,6 +46,7 @@ crate::sol! {
         event WhitelistUpdated(uint64 indexed policyId, address indexed updater, address indexed account, bool allowed);
         event BlacklistUpdated(uint64 indexed policyId, address indexed updater, address indexed account, bool restricted);
         event CompoundPolicyCreated(uint64 indexed policyId, address indexed creator, uint64 senderPolicyId, uint64 recipientPolicyId, uint64 mintRecipientPolicyId);
+        event ReceivePolicyUpdated(address indexed account, uint64 senderPolicyId, uint64 tokenFilterId, address recoveryAddress);
 
         // Errors
         error Unauthorized();
@@ -51,6 +55,8 @@ crate::sol! {
         error InvalidPolicyType();
         error IncompatiblePolicyType();
         error VirtualAddressNotAllowed();
+        error InvalidReceivePolicyType();
+        error InvalidReceivePolicyAddress();
     }
 }
 
@@ -99,5 +105,13 @@ impl TIP403RegistryError {
     /// Virtual addresses are TIP-1022 forwarding aliases and cannot be used as policy members.
     pub const fn virtual_address_not_allowed() -> Self {
         Self::VirtualAddressNotAllowed(ITIP403Registry::VirtualAddressNotAllowed {})
+    }
+
+    pub const fn invalid_receive_policy_type() -> Self {
+        Self::InvalidReceivePolicyType(ITIP403Registry::InvalidReceivePolicyType {})
+    }
+
+    pub const fn invalid_receive_policy_address() -> Self {
+        Self::InvalidReceivePolicyAddress(ITIP403Registry::InvalidReceivePolicyAddress {})
     }
 }

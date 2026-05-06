@@ -13,7 +13,6 @@ use crate::{
     address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
-    tip20::TIP20Token,
 };
 use alloy::{
     primitives::{Address, B256, U256},
